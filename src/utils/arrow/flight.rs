@@ -97,7 +97,7 @@ pub async fn append_temporary_events(
 > {
     let schema = PARSEABLE
         .streams
-        .schema(stream_name)
+        .get_schema(stream_name)
         .map_err(|err| Status::failed_precondition(format!("Metadata Error: {}", err)))?;
     let rb = concat_batches(&schema, minute_result)
         .map_err(|err| Status::failed_precondition(format!("ArrowError: {}", err)))?;

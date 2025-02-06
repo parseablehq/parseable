@@ -113,7 +113,7 @@ impl FlightService for AirServiceImpl {
 
         let schema = PARSEABLE
             .streams
-            .schema(&table_name)
+            .get_schema(&table_name)
             .map_err(|err| Status::failed_precondition(err.to_string()))?;
 
         let options = IpcWriteOptions::default();

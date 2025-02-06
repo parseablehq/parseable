@@ -578,7 +578,7 @@ impl Streams {
         Ok(metadata.schema_version)
     }
 
-    pub fn schema(&self, stream_name: &str) -> Result<Arc<Schema>, StreamNotFound> {
+    pub fn get_schema(&self, stream_name: &str) -> Result<Arc<Schema>, StreamNotFound> {
         let map = self.read().expect(LOCK_EXPECT);
         let metadata = map
             .get(stream_name)

@@ -128,7 +128,7 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
 pub async fn schema(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
 
-    match PARSEABLE.streams.schema(&stream_name) {
+    match PARSEABLE.streams.get_schema(&stream_name) {
         Ok(_) => {}
         Err(_) if PARSEABLE.options.mode == Mode::Query => {
             if !PARSEABLE
@@ -142,7 +142,7 @@ pub async fn schema(stream_name: Path<String>) -> Result<impl Responder, StreamE
     };
     match update_schema_when_distributed(&vec![stream_name.clone()]).await {
         Ok(_) => {
-            let schema = PARSEABLE.streams.schema(&stream_name)?;
+            let schema = PARSEABLE.streams.get_schema(&stream_name)?;
             Ok((web::Json(schema), StatusCode::OK))
         }
         Err(err) => Err(StreamError::Custom {

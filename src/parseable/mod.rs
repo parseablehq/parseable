@@ -667,7 +667,7 @@ impl Parseable {
         let static_schema_flag = self.streams.get_static_schema_flag(&stream_name).unwrap();
         let time_partition = self.streams.get_time_partition(&stream_name).unwrap();
         if static_schema_flag {
-            let schema = self.streams.schema(&stream_name).unwrap();
+            let schema = self.streams.get_schema(&stream_name).unwrap();
 
             if let Some(custom_partition) = custom_partition {
                 let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
