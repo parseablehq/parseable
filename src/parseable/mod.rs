@@ -421,21 +421,14 @@ impl Parseable {
             log_source,
         } = headers.into();
 
-        if self.streams.contains(stream_name) && !update_stream_flag {
-            return Err(StreamError::Custom {
-                 msg: format!(
-                     "Logstream {stream_name} already exists, please create a new log stream with unique name"
-                 ),
-                 status: StatusCode::BAD_REQUEST,
-             });
-        }
-
-        if !self.streams.contains(stream_name)
-            && self.options.mode == Mode::Query
+        let stream_in_memory_dont_update =
+            self.streams.contains(stream_name) && !update_stream_flag;
+        let stream_in_storage_only_for_query_node = !self.streams.contains(stream_name)     // check if stream in storage only if not in memory
+            && self.options.mode == Mode::Query                                                   // and running in query mode
             && self
                 .create_stream_and_schema_from_storage(stream_name)
-                .await?
-        {
+                .await?;
+        if stream_in_memory_dont_update || stream_in_storage_only_for_query_node {
             return Err(StreamError::Custom {
                  msg: format!(
                      "Logstream {stream_name} already exists, please create a new log stream with unique name"
