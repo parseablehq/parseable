@@ -20,12 +20,14 @@ mod filter_optimizer;
 mod listing_table_builder;
 pub mod stream_schema_provider;
 
+use arrow_schema::DataType;
 use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
 
+use datafusion::common::exec_datafusion_err;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
-use datafusion::error::DataFusionError;
+use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::disk_manager::DiskManagerConfig;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::expr::Alias;
@@ -39,7 +41,9 @@ use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::ops::Bound;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Instant;
 use stream_schema_provider::collect_manifest_files;
 use sysinfo::System;
 
@@ -68,6 +72,8 @@ pub struct Query {
 }
 
 impl Query {
+
+
     // create session context for this query
     pub fn create_session_context(storage: Arc<dyn ObjectStorageProvider>) -> SessionContext {
         let runtime_config = storage
@@ -612,6 +618,92 @@ pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
     } else {
         objects
     }
+}
+
+struct AllQueries {
+    queries: Vec<String>,
+}
+
+impl AllQueries {
+    fn try_new(path: &Path) -> Result<Self> {
+        // ClickBench has all queries in a single file identified by line number
+        let all_queries = std::fs::read_to_string(path)
+            .map_err(|e| exec_datafusion_err!("Could not open {path:?}: {e}"))?;
+        Ok(Self {
+            queries: all_queries.lines().map(|s| s.to_string()).collect(),
+        })
+    }
+
+    /// Returns the text of query `query_id`
+    fn get_query(&self, query_id: usize) -> Result<&str> {
+        self.queries
+            .get(query_id)
+            .ok_or_else(|| {
+                let min_id = self.min_query_id();
+                let max_id = self.max_query_id();
+                exec_datafusion_err!(
+                    "Invalid query id {query_id}. Must be between {min_id} and {max_id}"
+                )
+            })
+            .map(|s| s.as_str())
+    }
+
+    fn min_query_id(&self) -> usize {
+        0
+    }
+
+    fn max_query_id(&self) -> usize {
+        self.queries.len() - 1
+    }
+}
+
+pub async fn run() -> Result<()> {
+    println!("Running benchmarks");
+    let queries_path: PathBuf = ["/home", "clickbench", "queries.sql"].iter().collect();
+    let queries = AllQueries::try_new(queries_path.as_path())?;
+    println!("queries loaded");
+    println!("query no. 1: {:?}", queries.get_query(1)?);
+    let query_range = queries.min_query_id()..=queries.max_query_id();
+    
+    // configure parquet options
+    let mut config = SessionConfig::new()
+            .with_target_partitions(num_cpus::get());
+    config.options_mut().execution.parquet.binary_as_string = true;
+
+    let ctx = SessionContext::new_with_config(config);
+    register_hits(&ctx).await?;
+
+    for query_id in query_range {
+        let sql = queries.get_query(query_id)?;
+        println!("Q{query_id}: {sql}");
+
+        let start = Instant::now();
+        let _ = ctx.sql(sql).await?.collect().await?;
+        let elapsed = start.elapsed().as_secs_f64();
+        println!("Q{query_id}  took {elapsed} seconds");
+        
+    }
+    Ok(())
+}
+
+/// Registers the `hits.parquet` as a table named `hits`
+async fn register_hits(ctx: &SessionContext) -> Result<()> {
+    let mut options: ParquetReadOptions<'_> = Default::default();
+    options.table_partition_cols = vec!["date", "hour", "minute"]
+        .iter()
+        .map(|s| (s.to_string(), DataType::Utf8))
+        .collect();
+    let path: PathBuf = ["/home", "ubuntu", "parseable", "hits"].iter().collect();
+    let path = path.as_os_str().to_str().unwrap();
+    println!("Registering 'hits' as {path}");
+    ctx.register_parquet("hits", path, options)
+        .await
+        .map_err(|e| {
+            DataFusionError::Context(
+                format!("Registering 'hits' as {path}"),
+                Box::new(e),
+            )
+        })
 }
 
 pub mod error {

@@ -41,7 +41,7 @@ use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
-use crate::query::{CountsRequest, CountsResponse, Query as LogicalQuery};
+use crate::query::{run, CountsRequest, CountsResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
@@ -69,6 +69,9 @@ pub struct Query {
 }
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
+
+    let _ = run().await;
+    println!("benchmarking complete");
     let session_state = QUERY_SESSION.state();
     let raw_logical_plan = match session_state
         .create_logical_plan(&query_request.query)
@@ -113,6 +116,8 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
             num_bins: 1,
         };
         let count_records = counts_req.get_bin_density().await?;
+        error!("Query executed successfully, record batches received in {:?}", time.elapsed().as_secs_f64());
+
         // NOTE: this should not panic, since there is atleast one bin, always
         let count = count_records[0].count;
         let response = if query_request.fields {
@@ -133,7 +138,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         return Ok(HttpResponse::Ok().json(response));
     }
     let (records, fields) = query.execute(table_name.clone()).await?;
-
+    error!("Query executed successfully, record batches received in {:?}", time.elapsed().as_secs_f64());
     let response = QueryResponse {
         records,
         fields,
