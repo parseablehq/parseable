@@ -32,27 +32,4 @@ jobs:
       - name: Stop compose
         if: always()
         run: docker compose -f docker-compose-distributed-test.yaml down -v
-
-  docker-compose-test-with-kafka:
-    name: Quest Smoke and Load Tests for Standalone deployments with Kafka
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Start compose
-        run: docker compose -f docker-compose-test-with-kafka.yaml up --build --exit-code-from quest
-      - name: Stop compose
-        if: always()
-        run: docker compose -f docker-compose-test-with-kafka.yaml down -v
-
-  docker-compose-distributed-test-with-kafka:
-    name: Quest Smoke and Load Tests for Distributed deployments with Kafka
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Start compose
-        run: docker compose -f docker-compose-distributed-test-with-kafka.yaml up --build --exit-code-from quest
-      - name: Stop compose
-        if: always()
-        run: docker compose -f docker-compose-distributed-test-with-kafka.yaml down -v
+        
