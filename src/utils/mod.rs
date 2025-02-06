@@ -163,10 +163,10 @@ pub fn get_user_from_request(req: &HttpRequest) -> Result<String, RBACError> {
 pub async fn delete_correlations_filters_dashboards_for_user(
     req: &HttpRequest,
 ) -> Result<(), RBACError> {
-    let session_key = extract_session_key_from_req(&req)
+    let session_key = extract_session_key_from_req(req)
         .map_err(|err| RBACError::Anyhow(anyhow::Error::msg(err.to_string())))?;
 
-    let user_id = get_user_from_request(&req).map(|s| get_hash(&s.to_string()))?;
+    let user_id = get_user_from_request(req).map(|s| get_hash(&s.to_string()))?;
     CORRELATIONS
         .delete_correlations_for_user(&user_id, &session_key)
         .await

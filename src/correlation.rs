@@ -206,7 +206,7 @@ impl Correlations {
     ) -> Result<(), CorrelationError> {
         let user_correlations =
             CORRELATIONS
-                .list_correlations(&session_key)
+                .list_correlations(session_key)
                 .await
                 .map_err(|error| {
                     CorrelationError::AnyhowError(anyhow::Error::msg(error.to_string()))
@@ -214,7 +214,7 @@ impl Correlations {
 
         for correlation in user_correlations.iter() {
             CORRELATIONS
-                .delete(&correlation.id, &user_id)
+                .delete(&correlation.id, user_id)
                 .await
                 .map_err(|error| {
                     CorrelationError::AnyhowError(anyhow::Error::msg(error.to_string()))
