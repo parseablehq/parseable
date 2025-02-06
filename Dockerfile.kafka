@@ -49,15 +49,16 @@ RUN cargo build --release --features kafka
 # final stage
 FROM gcr.io/distroless/cc-debian12:latest
 
+# Copy only the libraries that binary needs since kafka is statically linked
+ARG LIB_DIR
+COPY --from=builder /usr/lib/${LIB_DIR}/libsasl2.so.2 /usr/lib/${LIB_DIR}/
+COPY --from=builder /usr/lib/${LIB_DIR}/libssl.so.3   /usr/lib/${LIB_DIR}/
+COPY --from=builder /usr/lib/${LIB_DIR}/libcrypto.so.3 /usr/lib/${LIB_DIR}/
+
 WORKDIR /parseable
 
 # Copy the Parseable binary from builder
 COPY --from=builder /parseable/target/release/parseable /usr/bin/parseable
-
-# Copy only the libraries that binary needs since kafka is statically linked
-COPY --from=builder /usr/lib/x86_64-linux-gnu/libsasl2.so.2 /usr/lib/x86_64-linux-gnu/
-COPY --from=builder /usr/lib/x86_64-linux-gnu/libssl.so.3   /usr/lib/x86_64-linux-gnu/
-COPY --from=builder /usr/lib/x86_64-linux-gnu/libcrypto.so.3 /usr/lib/x86_64-linux-gnu/
 
 # Copy CA certificates
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
