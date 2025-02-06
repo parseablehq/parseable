@@ -374,10 +374,8 @@ impl Parseable {
         stream_type: StreamType,
         log_source: LogSource,
     ) -> Result<bool, PostError> {
-        let mut stream_exists = false;
         if self.streams.contains(stream_name) {
-            stream_exists = true;
-            return Ok(stream_exists);
+            return Ok(true);
         }
 
         // For distributed deployments, if the stream not found in memory map,
@@ -388,7 +386,7 @@ impl Parseable {
                 .create_stream_and_schema_from_storage(stream_name)
                 .await?
         {
-            return Ok(stream_exists);
+            return Ok(false);
         }
 
         self.create_stream(
@@ -403,7 +401,7 @@ impl Parseable {
         )
         .await?;
 
-        Ok(stream_exists)
+        Ok(false)
     }
 
     pub async fn create_update_stream(
