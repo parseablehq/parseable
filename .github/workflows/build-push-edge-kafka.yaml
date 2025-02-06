@@ -37,11 +37,24 @@ jobs:
         with:
           images: parseable/parseable
 
-      - name: Build and push
+      - name: Build and push x86_64
         uses: docker/build-push-action@ad44023a93711e3deb337508980b4b5e9bcdc5dc
         with:
           context: .
           file: ./Dockerfile.kafka
           push: true
           tags: parseable/parseable:edge-kafka
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
+          build-args: |
+            LIB_DIR=x86_64-linux-gnu
+
+      - name: Build and push aarch64
+        uses: docker/build-push-action@ad44023a93711e3deb337508980b4b5e9bcdc5dc
+        with:
+          context: .
+          file: ./Dockerfile.kafka
+          push: true
+          tags: parseable/parseable:edge-kafka
+          platforms: =linux/arm64
+          build-args: |
+            LIB_DIR=aarch64-linux-gnu
