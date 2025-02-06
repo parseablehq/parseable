@@ -32,7 +32,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
@@ -104,7 +104,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
 
     user_auth_for_query(&permissions, &tables)?;
 
-    let time = Instant::now();
+    let start = Instant::now();
     // Intercept `count(*)`` queries and use the counts API
     if let Some(column_name) = query.is_logical_plan_count_without_filters() {
         let counts_req = CountsRequest {
@@ -125,11 +125,12 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
             Value::Array(vec![json!({column_name: count})])
         };
 
-        let time = time.elapsed().as_secs_f64();
-
+        let time = start.elapsed().as_secs_f64();
         QUERY_EXECUTE_TIME
             .with_label_values(&[&table_name])
             .observe(time);
+
+        debug!("Query results returned in {time}s");
 
         return Ok(HttpResponse::Ok().json(response));
     }
@@ -141,15 +142,16 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         fill_null: query_request.send_null,
         with_fields: query_request.fields,
     }
-    .to_http()?;
+    .to_json()?;
 
-    let time = time.elapsed().as_secs_f64();
-
+    let time = start.elapsed().as_secs_f64();
     QUERY_EXECUTE_TIME
         .with_label_values(&[&table_name])
         .observe(time);
 
-    Ok(response)
+    debug!("Query results returned in {time}s");
+
+    Ok(HttpResponse::Ok().json(response))
 }
 
 pub async fn get_counts(

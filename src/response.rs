@@ -17,10 +17,8 @@
  */
 
 use crate::handlers::http::query::QueryError;
-use actix_web::HttpResponse;
 use datafusion::arrow::record_batch::RecordBatch;
 use serde_json::{json, Map, Value};
-use tracing::info;
 
 pub struct QueryResponse {
     pub records: Vec<RecordBatch>,
@@ -31,14 +29,7 @@ pub struct QueryResponse {
 
 impl QueryResponse {
     /// TODO: maybe this can be futher optimized by directly converting `arrow` to `serde_json` instead of serializing to bytes
-    pub fn to_http(&self) -> Result<HttpResponse, QueryError> {
-        info!("Returning query results");
-        let response = self.to_json()?;
-
-        Ok(HttpResponse::Ok().json(response))
-    }
-
-    fn to_json(&self) -> Result<Value, QueryError> {
+    pub fn to_json(&self) -> Result<Value, QueryError> {
         let buf = vec![];
         let mut writer = arrow_json::ArrayWriter::new(buf);
         let records: Vec<&RecordBatch> = self.records.iter().collect();
