@@ -189,6 +189,11 @@ impl Dashboards {
         s.retain(|d| d.dashboard_id != Some(dashboard_id.to_string()));
     }
 
+    pub fn delete_for_user(&self, user_id: &str) {
+        let mut s = self.0.write().expect(LOCK_EXPECT);
+        s.retain(|d| d.user_id != Some(user_id.to_string()));
+    }
+
     pub fn get_dashboard(&self, dashboard_id: &str, user_id: &str) -> Option<Dashboard> {
         self.0
             .read()

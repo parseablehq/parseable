@@ -199,26 +199,17 @@ impl Correlations {
         Ok(())
     }
 
-    pub async fn delete_correlations_for_user(
-        &self,
-        user_id: &str,
-        session_key: &SessionKey,
-    ) -> Result<(), CorrelationError> {
-        let user_correlations =
-            CORRELATIONS
-                .list_correlations(session_key)
-                .await
-                .map_err(|error| {
-                    CorrelationError::AnyhowError(anyhow::Error::msg(error.to_string()))
-                })?;
+    pub async fn delete_for_user(&self, user_id: &str) -> Result<(), CorrelationError> {
+        let correlations = self.0.read().await;
+        // Finding all correlations for user_id
+        let user_correlations: Vec<_> = correlations
+            .iter()
+            .filter(|corr_map| (corr_map.1.user_id.as_str() == user_id))
+            .collect();
 
+        // Removing them from the hashmap.
         for correlation in user_correlations.iter() {
-            CORRELATIONS
-                .delete(&correlation.id, user_id)
-                .await
-                .map_err(|error| {
-                    CorrelationError::AnyhowError(anyhow::Error::msg(error.to_string()))
-                })?;
+            self.0.write().await.remove_entry(correlation.0);
         }
         Ok(())
     }

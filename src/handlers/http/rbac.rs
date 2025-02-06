@@ -19,12 +19,13 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
+    correlation::CORRELATIONS,
     rbac::{map::roles, role::model::DefaultPrivilege, user, Users},
     storage::ObjectStorageError,
-    utils::delete_correlations_filters_dashboards_for_user,
+    users::{dashboards::DASHBOARDS, filters::FILTERS},
     validator::{self, error::UsernameValidationError},
 };
-use actix_web::{http::header::ContentType, web, HttpRequest, Responder};
+use actix_web::{http::header::ContentType, web, Responder};
 use http::StatusCode;
 use tokio::sync::Mutex;
 
@@ -157,10 +158,7 @@ pub async fn get_role(username: web::Path<String>) -> Result<impl Responder, RBA
 }
 
 // Handler for DELETE /api/v1/user/delete/{username}
-pub async fn delete_user(
-    req: HttpRequest,
-    username: web::Path<String>,
-) -> Result<impl Responder, RBACError> {
+pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
     let _ = UPDATE_LOCK.lock().await;
     // fail this request if the user does not exists
@@ -169,10 +167,13 @@ pub async fn delete_user(
     };
 
     // Deleting Correlations, Dashboards, Filters created by user
-    delete_correlations_filters_dashboards_for_user(&req)
+    CORRELATIONS
+        .delete_for_user(&username)
         .await
         .map_err(|err| RBACError::Anyhow(anyhow::Error::msg(err.to_string())))?;
 
+    DASHBOARDS.delete_for_user(&username);
+    FILTERS.delete_for_user(&username);
     // delete from parseable.json first
     let mut metadata = get_metadata().await?;
     metadata.users.retain(|user| user.username() != username);

@@ -25,13 +25,10 @@ pub mod time;
 pub mod uid;
 pub mod update;
 
-use crate::correlation::CORRELATIONS;
 use crate::handlers::http::rbac::RBACError;
 use crate::option::CONFIG;
 use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
-use crate::users::dashboards::DASHBOARDS;
-use crate::users::filters::FILTERS;
 use actix::extract_session_key_from_req;
 use actix_web::HttpRequest;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Utc};
@@ -158,30 +155,6 @@ pub fn get_user_from_request(req: &HttpRequest) -> Result<String, RBACError> {
     }
     let user_id = user_id.unwrap();
     Ok(user_id)
-}
-
-pub async fn delete_correlations_filters_dashboards_for_user(
-    req: &HttpRequest,
-) -> Result<(), RBACError> {
-    let session_key = extract_session_key_from_req(req)
-        .map_err(|err| RBACError::Anyhow(anyhow::Error::msg(err.to_string())))?;
-
-    let user_id = get_user_from_request(req).map(|s| get_hash(&s.to_string()))?;
-    CORRELATIONS
-        .delete_correlations_for_user(&user_id, &session_key)
-        .await
-        .map_err(|err| RBACError::Anyhow(anyhow::Error::msg(err.to_string())))?;
-
-    let dashboards = DASHBOARDS.list_dashboards_by_user(&user_id);
-    for dash in dashboards.iter() {
-        DASHBOARDS.delete_dashboard(dash.dashboard_id.as_ref().unwrap());
-    }
-
-    let filters = FILTERS.list_filters_by_user(&get_hash(&user_id));
-    for filter in filters {
-        FILTERS.delete_filter(filter.filter_id.as_ref().unwrap());
-    }
-    Ok(())
 }
 
 pub fn get_hash(key: &str) -> String {

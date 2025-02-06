@@ -18,17 +18,18 @@
 
 use std::collections::HashSet;
 
-use actix_web::{web, HttpRequest, Responder};
+use actix_web::{web, Responder};
 use tokio::sync::Mutex;
 
 use crate::{
+    correlation::CORRELATIONS,
     handlers::http::{modal::utils::rbac_utils::get_metadata, rbac::RBACError},
     rbac::{
         user::{self, User as ParseableUser},
         Users,
     },
     storage,
-    utils::delete_correlations_filters_dashboards_for_user,
+    users::{dashboards::DASHBOARDS, filters::FILTERS},
 };
 
 // async aware lock for updating storage metadata and user map atomicically
@@ -56,10 +57,7 @@ pub async fn post_user(
 }
 
 // Handler for DELETE /api/v1/user/delete/{username}
-pub async fn delete_user(
-    req: HttpRequest,
-    username: web::Path<String>,
-) -> Result<impl Responder, RBACError> {
+pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
     let _ = UPDATE_LOCK.lock().await;
     // fail this request if the user does not exists
@@ -68,9 +66,13 @@ pub async fn delete_user(
     };
 
     // Deleting Correlations, Dashboards, Filters created by user
-    delete_correlations_filters_dashboards_for_user(&req)
+    CORRELATIONS
+        .delete_for_user(&username)
         .await
         .map_err(|err| RBACError::Anyhow(anyhow::Error::msg(err.to_string())))?;
+
+    DASHBOARDS.delete_for_user(&username);
+    FILTERS.delete_for_user(&username);
 
     // delete from parseable.json first
     let mut metadata = get_metadata().await?;
