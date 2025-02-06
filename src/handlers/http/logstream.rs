@@ -456,7 +456,7 @@ pub async fn put_stream_hot_tier(
 
     if PARSEABLE
         .streams
-        .stream_type(&stream_name)
+        .get_stream_type(&stream_name)
         .is_ok_and(|t| t == StreamType::Internal)
     {
         return Err(StreamError::Custom {
@@ -549,7 +549,7 @@ pub async fn delete_stream_hot_tier(
 
     if PARSEABLE
         .streams
-        .stream_type(&stream_name)
+        .get_stream_type(&stream_name)
         .is_ok_and(|t| t == StreamType::Internal)
     {
         return Err(StreamError::Custom {

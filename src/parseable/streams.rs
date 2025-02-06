@@ -771,7 +771,7 @@ impl Streams {
             .collect()
     }
 
-    pub fn stream_type(&self, stream_name: &str) -> Result<StreamType, StreamNotFound> {
+    pub fn get_stream_type(&self, stream_name: &str) -> Result<StreamType, StreamNotFound> {
         let map = self.read().expect(LOCK_EXPECT);
         let metadata = map
             .get(stream_name)
