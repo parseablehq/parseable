@@ -94,6 +94,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.kafka
+      args: 
+        - LIB_DIR=x86_64-linux-gnu
     platform: linux/amd64
     command: [ "parseable", "s3-store", ]
     expose:
@@ -140,6 +142,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.kafka
+      args: 
+        - LIB_DIR=x86_64-linux-gnu
     platform: linux/amd64
     command: [ "parseable", "s3-store", ]
     expose:
