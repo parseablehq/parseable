@@ -25,6 +25,7 @@ use actix_web::{
     HttpRequest, Responder,
 };
 use bytes::Bytes;
+use tokio::sync::oneshot;
 use ulid::Ulid;
 
 use crate::alerts::{
@@ -55,7 +56,14 @@ pub async fn post(
     user_auth_for_query(&session_key, &alert.query).await?;
 
     // create scheduled tasks
-    let (handle, rx, tx) = schedule_alert_task(alert.get_eval_frequency(), alert.clone())?;
+    let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
+    let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
+    let handle = schedule_alert_task(
+        alert.get_eval_frequency(),
+        alert.clone(),
+        inbox_rx,
+        outbox_tx,
+    )?;
 
     // now that we've validated that the user can run this query
     // move on to saving the alert in ObjectStore
@@ -67,7 +75,9 @@ pub async fn post(
     let alert_bytes = serde_json::to_vec(&alert)?;
     store.put_object(&path, Bytes::from(alert_bytes)).await?;
 
-    ALERTS.update_task(alert.id, handle, rx, tx).await;
+    ALERTS
+        .update_task(alert.id, handle, outbox_rx, inbox_tx)
+        .await;
 
     Ok(web::Json(alert))
 }
@@ -136,7 +146,14 @@ pub async fn modify(
     alert.validate().await?;
 
     // modify task
-    let (handle, rx, tx) = schedule_alert_task(alert.get_eval_frequency(), alert.clone())?;
+    let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
+    let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
+    let handle = schedule_alert_task(
+        alert.get_eval_frequency(),
+        alert.clone(),
+        inbox_rx,
+        outbox_tx,
+    )?;
 
     // modify on disk
     CONFIG
@@ -148,7 +165,9 @@ pub async fn modify(
     // modify in memory
     ALERTS.update(&alert).await;
 
-    ALERTS.update_task(alert.id, handle, rx, tx).await;
+    ALERTS
+        .update_task(alert.id, handle, outbox_rx, inbox_tx)
+        .await;
 
     Ok(web::Json(alert))
 }

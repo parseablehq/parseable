@@ -294,17 +294,9 @@ pub fn run_local_sync() -> (
 pub fn schedule_alert_task(
     eval_frequency: u64,
     alert: AlertConfig,
-) -> Result<
-    (
-        task::JoinHandle<()>,
-        oneshot::Receiver<()>,
-        oneshot::Sender<()>,
-    ),
-    AlertError,
-> {
-    let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
-    let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
-
+    inbox_rx: oneshot::Receiver<()>,
+    outbox_tx: oneshot::Sender<()>,
+) -> Result<task::JoinHandle<()>, AlertError> {
     let handle = tokio::task::spawn(async move {
         info!("new alert task started for {alert:?}");
 
@@ -343,5 +335,5 @@ pub fn schedule_alert_task(
             }
         }
     });
-    Ok((handle, outbox_rx, inbox_tx))
+    Ok(handle)
 }
