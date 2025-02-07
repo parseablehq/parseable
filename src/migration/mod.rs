@@ -138,7 +138,7 @@ pub async fn run_migration(config: &Parseable) -> anyhow::Result<()> {
         let Some(metadata) = migration_stream(&stream_name, &*storage).await? else {
             continue;
         };
-        PARSEABLE.set_stream_meta(&stream_name, metadata).await;
+        config.get_or_create_stream(&stream_name).set_metadata(metadata).await;
     }
 
     Ok(())

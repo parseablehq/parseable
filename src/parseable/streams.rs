@@ -458,6 +458,11 @@ impl Stream {
         Schema::try_merge(vec![schema, current_schema]).unwrap()
     }
 
+    /// Stores the provided stream metadata in memory mapping
+    pub async fn set_metadata(&self, updated_metadata: LogStreamMetadata) {
+        *self.metadata.write().expect(LOCK_EXPECT) = updated_metadata;
+    }
+
     pub fn get_first_event(&self) -> Option<String> {
         self.metadata
             .read()

@@ -48,7 +48,7 @@ use crate::{
         object_storage::parseable_json_path, ObjectStorageError, ObjectStorageProvider,
         ObjectStoreFormat, Owner, Permisssion, StreamType,
     },
-    validator, LOCK_EXPECT,
+    validator,
 };
 
 mod staging;
@@ -172,32 +172,6 @@ impl Parseable {
 
         for staging in streams.values() {
             staging.flush()
-        }
-    }
-
-    /// Stores the provided stream metadata in memory mapping
-    pub async fn set_stream_meta(&self, stream_name: &str, updated_metadata: LogStreamMetadata) {
-        let map = self.streams.read().expect(LOCK_EXPECT);
-
-        match map.get(stream_name) {
-            Some(stream) => {
-                let mut metadata = stream.metadata.write().expect(LOCK_EXPECT);
-                *metadata = updated_metadata;
-            }
-            None => {
-                drop(map);
-                self.streams.write().expect(LOCK_EXPECT).insert(
-                    stream_name.to_owned(),
-                    Stream::new(
-                        self.options.clone(),
-                        stream_name,
-                        updated_metadata,
-                        self.ingestor_metadata
-                            .as_ref()
-                            .map(|meta| meta.get_ingestor_id()),
-                    ),
-                );
-            }
         }
     }
 
