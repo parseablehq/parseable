@@ -34,7 +34,10 @@ use itertools::Itertools;
 use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
-    file::properties::{WriterProperties, WriterPropertiesBuilder},
+    file::{
+        properties::{WriterProperties, WriterPropertiesBuilder},
+        FOOTER_SIZE,
+    },
     format::SortingColumn,
     schema::types::ColumnPath,
 };
@@ -218,7 +221,10 @@ impl<'a> Stream<'a> {
 
         dir.flatten()
             .map(|file| file.path())
-            .filter(|file| file.extension().is_some_and(|ext| ext.eq("parquet")))
+            .filter(|file| {
+                file.extension().is_some_and(|ext| ext.eq("parquet"))
+                    && std::fs::metadata(file).is_ok_and(|meta| meta.len() > FOOTER_SIZE as u64)
+            })
             .collect()
     }
 
