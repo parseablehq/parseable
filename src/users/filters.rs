@@ -16,6 +16,7 @@
  *
  */
 
+use datafusion::common::HashMap;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -70,7 +71,7 @@ pub struct Rules {
 }
 
 #[derive(Debug, Default)]
-pub struct Filters(RwLock<Vec<Filter>>);
+pub struct Filters(RwLock<HashMap<String, Filter>>);
 
 impl Filters {
     pub async fn load(&self) -> anyhow::Result<()> {
@@ -125,20 +126,34 @@ impl Filters {
         }
 
         let mut s = self.0.write().expect(LOCK_EXPECT);
-        s.append(&mut this);
+        s.extend(this.into_iter().map(|filter| {
+            (
+                filter
+                    .filter_id
+                    .clone()
+                    .unwrap_or_else(|| filter.clone().filter_name),
+                filter,
+            )
+        }));
 
         Ok(())
     }
 
     pub fn update(&self, filter: &Filter) {
         let mut s = self.0.write().expect(LOCK_EXPECT);
-        s.retain(|f| f.filter_id != filter.filter_id);
-        s.push(filter.clone());
+        s.retain(|_, f| f.filter_id != filter.filter_id);
+        s.insert(
+            filter
+                .filter_id
+                .clone()
+                .unwrap_or_else(|| filter.clone().filter_name),
+            filter.clone(),
+        );
     }
 
     pub fn delete_filter(&self, filter_id: &str) {
         let mut s = self.0.write().expect(LOCK_EXPECT);
-        s.retain(|f| f.filter_id != Some(filter_id.to_string()));
+        s.retain(|_, f| f.filter_id != Some(filter_id.to_string()));
     }
 
     pub fn get_filter(&self, filter_id: &str, user_id: &str) -> Option<Filter> {
@@ -146,10 +161,10 @@ impl Filters {
             .read()
             .expect(LOCK_EXPECT)
             .iter()
-            .find(|f| {
+            .find(|(_, f)| {
                 f.filter_id == Some(filter_id.to_string()) && f.user_id == Some(user_id.to_string())
             })
-            .cloned()
+            .map(|(_, f)| f.clone())
     }
 
     pub fn list_filters_by_user(&self, user_id: &str) -> Vec<Filter> {
@@ -157,8 +172,8 @@ impl Filters {
             .read()
             .expect(LOCK_EXPECT)
             .iter()
-            .filter(|f| f.user_id == Some(user_id.to_string()))
-            .cloned()
+            .filter(|(_, f)| f.user_id == Some(user_id.to_string()))
+            .map(|(_, f)| f.clone())
             .collect()
     }
 }

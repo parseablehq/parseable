@@ -16,7 +16,7 @@
  *
  */
 
-use std::sync::RwLock;
+use std::{collections::HashMap, sync::RwLock};
 
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -108,7 +108,7 @@ pub struct Dashboard {
 }
 
 #[derive(Default, Debug)]
-pub struct Dashboards(RwLock<Vec<Dashboard>>);
+pub struct Dashboards(RwLock<HashMap<String, Dashboard>>);
 
 impl Dashboards {
     pub async fn load(&self) -> anyhow::Result<()> {
@@ -173,20 +173,29 @@ impl Dashboards {
         }
 
         let mut s = self.0.write().expect(LOCK_EXPECT);
-        s.append(&mut this);
+        s.extend(
+            this.into_iter()
+                .map(|d| (d.dashboard_id.clone().unwrap_or_else(|| d.name.clone()), d)),
+        );
 
         Ok(())
     }
 
     pub fn update(&self, dashboard: &Dashboard) {
         let mut s = self.0.write().expect(LOCK_EXPECT);
-        s.retain(|d| d.dashboard_id != dashboard.dashboard_id);
-        s.push(dashboard.clone());
+        s.retain(|_, d| d.dashboard_id != dashboard.dashboard_id);
+        s.insert(
+            dashboard
+                .dashboard_id
+                .clone()
+                .unwrap_or(dashboard.name.clone()),
+            dashboard.clone(),
+        );
     }
 
     pub fn delete_dashboard(&self, dashboard_id: &str) {
         let mut s = self.0.write().expect(LOCK_EXPECT);
-        s.retain(|d| d.dashboard_id != Some(dashboard_id.to_string()));
+        s.remove(dashboard_id);
     }
 
     pub fn get_dashboard(&self, dashboard_id: &str, user_id: &str) -> Option<Dashboard> {
@@ -195,19 +204,19 @@ impl Dashboards {
             .expect(LOCK_EXPECT)
             .iter()
             .find(|d| {
-                d.dashboard_id == Some(dashboard_id.to_string())
-                    && d.user_id == Some(user_id.to_string())
+                d.1.dashboard_id == Some(dashboard_id.to_string())
+                    && d.1.user_id == Some(user_id.to_string())
             })
-            .cloned()
+            .map(|(_, d)| d.clone())
     }
 
-    pub fn list_dashboards_by_user(&self, user_id: &str) -> Vec<Dashboard> {
+    pub fn list_dashboards_by_user(&self, user_id: &str) -> HashMap<String, Dashboard> {
         self.0
             .read()
             .expect(LOCK_EXPECT)
             .iter()
-            .filter(|d| d.user_id == Some(user_id.to_string()))
-            .cloned()
+            .filter(|(_, d)| d.user_id == Some(user_id.to_string()))
+            .map(|(k, d)| (k.clone(), d.clone()))
             .collect()
     }
 }
