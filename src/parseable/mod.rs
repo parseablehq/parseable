@@ -17,17 +17,17 @@
  *
  */
 
-use std::{collections::HashMap, num::NonZeroU32, path::PathBuf, sync::Arc};
+use std::{collections::HashMap, num::NonZeroU32, path::PathBuf, str::FromStr, sync::Arc};
 
 use actix_web::http::header::HeaderMap;
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Local;
 use clap::{error::ErrorKind, Parser};
-use http::StatusCode;
+use http::{header::CONTENT_TYPE, HeaderName, HeaderValue, StatusCode};
 use once_cell::sync::Lazy;
 pub use staging::StagingError;
-use streams::{Stream, StreamRef};
+use streams::StreamRef;
 pub use streams::{StreamNotFound, Streams};
 use tracing::error;
 
@@ -36,10 +36,14 @@ use crate::connectors::kafka::config::KafkaConfig;
 use crate::{
     cli::{Cli, Options, StorageOptions},
     event::format::LogSource,
-    handlers::http::{
-        ingest::PostError,
-        logstream::error::{CreateStreamError, StreamError},
-        modal::{utils::logstream_utils::PutStreamHeaders, IngestorMetadata},
+    handlers::{
+        http::{
+            cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME},
+            ingest::PostError,
+            logstream::error::{CreateStreamError, StreamError},
+            modal::{utils::logstream_utils::PutStreamHeaders, IngestorMetadata},
+        },
+        STREAM_TYPE_KEY,
     },
     metadata::{LogStreamMetadata, SchemaVersion},
     option::Mode,
@@ -339,6 +343,30 @@ impl Parseable {
         );
 
         Ok(true)
+    }
+
+    pub async fn create_internal_stream_if_not_exists(&self) -> Result<(), StreamError> {
+        match self
+            .create_stream_if_not_exists(
+                INTERNAL_STREAM_NAME,
+                StreamType::Internal,
+                LogSource::Pmeta,
+            )
+            .await
+        {
+            Err(_) | Ok(true) => return Ok(()),
+            _ => {}
+        }
+
+        let mut header_map = HeaderMap::new();
+        header_map.insert(
+            HeaderName::from_str(STREAM_TYPE_KEY).unwrap(),
+            HeaderValue::from_str(&StreamType::Internal.to_string()).unwrap(),
+        );
+        header_map.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+        sync_streams_with_ingestors(header_map, Bytes::new(), INTERNAL_STREAM_NAME).await?;
+
+        Ok(())
     }
 
     // Check if the stream exists and create a new stream if doesn't exist

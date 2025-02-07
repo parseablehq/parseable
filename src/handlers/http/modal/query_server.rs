@@ -21,7 +21,6 @@ use crate::correlation::CORRELATIONS;
 use crate::handlers::airplane;
 use crate::handlers::http::base_path;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
-use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
 use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::handlers::http::{rbac, role};
@@ -100,7 +99,7 @@ impl ParseableServer for QueryServer {
         migration::run_migration(&PARSEABLE).await?;
 
         //create internal stream at server start
-        create_internal_stream_if_not_exists().await?;
+        PARSEABLE.create_internal_stream_if_not_exists().await?;
 
         if let Err(e) = CORRELATIONS.load().await {
             error!("{e}");

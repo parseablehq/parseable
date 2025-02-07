@@ -18,10 +18,8 @@
 
 use self::error::StreamError;
 use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
-use super::cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME};
 use super::query::update_schema_when_distributed;
-use crate::event::format::{override_data_type, LogSource};
-use crate::handlers::STREAM_TYPE_KEY;
+use crate::event::format::override_data_type;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
 use crate::metadata::SchemaVersion;
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
@@ -35,18 +33,15 @@ use crate::storage::{StreamInfo, StreamType};
 use crate::utils::actix::extract_session_key_from_req;
 use crate::{stats, validator, LOCK_EXPECT};
 
-use actix_web::http::header::{self, HeaderMap};
 use actix_web::http::StatusCode;
 use actix_web::web::{Json, Path};
 use actix_web::{web, HttpRequest, Responder};
 use arrow_json::reader::infer_json_schema_from_iterator;
 use bytes::Bytes;
 use chrono::Utc;
-use http::{HeaderName, HeaderValue};
 use itertools::Itertools;
 use serde_json::{json, Value};
 use std::fs;
-use std::str::FromStr;
 use std::sync::Arc;
 use tracing::warn;
 
@@ -534,27 +529,6 @@ pub async fn delete_stream_hot_tier(
     ))
 }
 
-pub async fn create_internal_stream_if_not_exists() -> Result<(), StreamError> {
-    if let Ok(stream_exists) = PARSEABLE
-        .create_stream_if_not_exists(INTERNAL_STREAM_NAME, StreamType::Internal, LogSource::Pmeta)
-        .await
-    {
-        if stream_exists {
-            return Ok(());
-        }
-        let mut header_map = HeaderMap::new();
-        header_map.insert(
-            HeaderName::from_str(STREAM_TYPE_KEY).unwrap(),
-            HeaderValue::from_str(&StreamType::Internal.to_string()).unwrap(),
-        );
-        header_map.insert(
-            header::CONTENT_TYPE,
-            HeaderValue::from_static("application/json"),
-        );
-        sync_streams_with_ingestors(header_map, Bytes::new(), INTERNAL_STREAM_NAME).await?;
-    }
-    Ok(())
-}
 #[allow(unused)]
 fn classify_json_error(kind: serde_json::error::Category) -> StatusCode {
     match kind {
