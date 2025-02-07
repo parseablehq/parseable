@@ -55,7 +55,7 @@ pub async fn post(
     user_auth_for_query(&session_key, &alert.query).await?;
 
     // create scheduled tasks
-    let (handle, rx, tx) = schedule_alert_task(alert.get_eval_frequency(), alert.clone()).await?;
+    let (handle, rx, tx) = schedule_alert_task(alert.get_eval_frequency(), alert.clone())?;
 
     // now that we've validated that the user can run this query
     // move on to saving the alert in ObjectStore
@@ -136,7 +136,7 @@ pub async fn modify(
     alert.validate().await?;
 
     // modify task
-    let (handle, rx, tx) = schedule_alert_task(alert.get_eval_frequency(), alert.clone()).await?;
+    let (handle, rx, tx) = schedule_alert_task(alert.get_eval_frequency(), alert.clone())?;
 
     // modify on disk
     CONFIG

@@ -734,7 +734,7 @@ impl Alerts {
 
         for alert in store.get_alerts().await.unwrap_or_default() {
             let (handle, rx, tx) =
-                schedule_alert_task(alert.get_eval_frequency(), alert.clone()).await?;
+                schedule_alert_task(alert.get_eval_frequency(), alert.clone())?;
 
             self.update_task(alert.id, handle, rx, tx).await;
 
