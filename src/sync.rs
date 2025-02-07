@@ -84,7 +84,7 @@ pub async fn object_store_sync() -> (
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
             let mut sync_interval = interval_at(
                 next_minute(),
-                Duration::from_secs(STORAGE_UPLOAD_INTERVAL as u64),
+                Duration::from_secs(STORAGE_UPLOAD_INTERVAL),
             );
 
             let mut inbox_rx = AssertUnwindSafe(inbox_rx);
@@ -148,7 +148,7 @@ pub async fn arrow_conversion() -> (
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
             let mut sync_interval = interval_at(
                 next_minute() + Duration::from_secs(5), // 5 second delay
-                Duration::from_secs(STORAGE_CONVERSION_INTERVAL as u64),
+                Duration::from_secs(STORAGE_CONVERSION_INTERVAL),
             );
 
             let mut inbox_rx = AssertUnwindSafe(inbox_rx);
