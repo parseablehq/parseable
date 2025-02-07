@@ -55,6 +55,6 @@ jobs:
           file: ./Dockerfile.kafka
           push: true
           tags: parseable/parseable:edge-kafka
-          platforms: =linux/arm64
+          platforms: linux/arm64
           build-args: |
             LIB_DIR=aarch64-linux-gnu
