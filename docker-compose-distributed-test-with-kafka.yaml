@@ -189,6 +189,7 @@ services:
   quest:
     platform: linux/amd64
     image: ghcr.io/parseablehq/quest:main
+    pull_policy: always
     command:
       [
         "load",
