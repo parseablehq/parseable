@@ -3042,12 +3042,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "minimal-lexical"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
-
-[[package]]
 name = "miniz_oxide"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3066,16 +3060,6 @@ dependencies = [
  "log",
  "wasi 0.11.0+wasi-snapshot-preview1",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "nom"
-version = "7.1.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
-dependencies = [
- "memchr",
- "minimal-lexical",
 ]
 
 [[package]]
@@ -3495,7 +3479,6 @@ dependencies = [
  "humantime-serde",
  "itertools 0.14.0",
  "lazy_static",
- "nom",
  "num_cpus",
  "object_store",
  "once_cell",
@@ -3513,7 +3496,6 @@ dependencies = [
  "rstest",
  "rustls 0.22.4",
  "rustls-pemfile 2.2.0",
- "sasl2-sys",
  "semver",
  "serde",
  "serde_json",
