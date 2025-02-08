@@ -3496,6 +3496,7 @@ dependencies = [
  "rstest",
  "rustls 0.22.4",
  "rustls-pemfile 2.2.0",
+ "sasl2-sys",
  "semver",
  "serde",
  "serde_json",
