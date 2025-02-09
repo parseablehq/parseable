@@ -56,11 +56,12 @@ impl ParseableSinkProcessor {
         let schema_version = STREAM_INFO.get_schema_version(stream_name)?;
 
         let (json_vec, total_payload_size) = Self::json_vec(records);
-        let batch_json_event = format::json::Event {
-            data: Value::Array(json_vec.to_vec()),
-        };
 
-        let (rb, is_first) = batch_json_event.into_recordbatch(
+        let (rb, is_first) = format::json::Event {
+            data: Value::Array(json_vec.to_vec()),
+            source: LogSource::Json,
+        }
+        .into_recordbatch(
             &schema,
             static_schema_flag,
             time_partition.as_ref(),
