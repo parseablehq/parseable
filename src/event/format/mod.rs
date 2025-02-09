@@ -26,12 +26,13 @@ use std::{
 use anyhow::{anyhow, Error as AnyError};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use chrono::DateTime;
+use chrono::{DateTime, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
     metadata::SchemaVersion,
+    storage::StreamType,
     utils::arrow::{get_field, get_timestamp_array, replace_columns},
 };
 
@@ -105,15 +106,20 @@ pub trait EventFormat: Sized {
 
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
 
-    fn into_recordbatch(
+    fn to_event(
         self,
+        stream_name: &str,
+        origin_size: u64,
         storage_schema: &HashMap<String, Arc<Field>>,
         static_schema_flag: bool,
-        time_partition: Option<&String>,
+        parsed_timestamp: NaiveDateTime,
+        time_partition: Option<String>,
+        custom_partition_values: HashMap<String, String>,
         schema_version: SchemaVersion,
-    ) -> Result<(RecordBatch, bool), AnyError> {
-        let (data, mut schema, is_first) =
-            self.to_data(storage_schema, time_partition, schema_version)?;
+        stream_type: StreamType,
+    ) -> Result<super::Event, AnyError> {
+        let (data, mut schema, is_first_event) =
+            self.to_data(storage_schema, time_partition.as_ref(), schema_version)?;
 
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
             return Err(anyhow!(
@@ -137,8 +143,13 @@ pub trait EventFormat: Sized {
         if !Self::is_schema_matching(new_schema.clone(), storage_schema, static_schema_flag) {
             return Err(anyhow!("Schema mismatch"));
         }
-        new_schema =
-            update_field_type_in_schema(new_schema, None, time_partition, None, schema_version);
+        new_schema = update_field_type_in_schema(
+            new_schema,
+            None,
+            time_partition.as_ref(),
+            None,
+            schema_version,
+        );
 
         let mut rb = Self::decode(data, new_schema.clone())?;
         rb = replace_columns(
@@ -148,7 +159,17 @@ pub trait EventFormat: Sized {
             &[Arc::new(get_timestamp_array(rb.num_rows()))],
         );
 
-        Ok((rb, is_first))
+        Ok(super::Event {
+            rb,
+            stream_name: stream_name.to_string(),
+            origin_format: "json",
+            origin_size,
+            is_first_event,
+            parsed_timestamp,
+            time_partition,
+            custom_partition_values,
+            stream_type,
+        })
     }
 
     fn is_schema_matching(

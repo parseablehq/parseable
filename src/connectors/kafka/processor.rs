@@ -60,24 +60,17 @@ impl ParseableSinkProcessor {
             data: Value::Array(json_vec.to_vec()),
         };
 
-        let (rb, is_first) = batch_json_event.into_recordbatch(
+        let p_event = batch_json_event.to_event(
+            stream_name,
+            total_payload_size,
             &schema,
             static_schema_flag,
-            time_partition.as_ref(),
+            Utc::now().naive_utc(),
+            time_partition,
+            HashMap::new(),
             schema_version,
+            StreamType::UserDefined,
         )?;
-
-        let p_event = ParseableEvent {
-            rb,
-            stream_name: stream_name.to_string(),
-            origin_format: "json",
-            origin_size: total_payload_size,
-            is_first_event: is_first,
-            parsed_timestamp: Utc::now().naive_utc(),
-            time_partition: None,
-            custom_partition_values: HashMap::new(),
-            stream_type: StreamType::UserDefined,
-        };
 
         Ok(p_event)
     }

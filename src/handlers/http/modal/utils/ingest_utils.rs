@@ -16,22 +16,18 @@
  *
  */
 
-use arrow_schema::Field;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use itertools::Itertools;
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use crate::{
-    event::{
-        format::{json, EventFormat, LogSource},
-        Event,
-    },
+    event::format::{json, EventFormat, LogSource},
     handlers::http::{
         ingest::PostError,
         kinesis::{flatten_kinesis_logs, Message},
     },
-    metadata::{SchemaVersion, STREAM_INFO},
+    metadata::STREAM_INFO,
     storage::StreamType,
     utils::json::{convert_array_to_object, flatten::convert_to_array},
 };
@@ -110,44 +106,22 @@ pub async fn push_logs(
             .ok_or(PostError::StreamNotFound(stream_name.to_owned()))?
             .schema
             .clone();
-        let (rb, is_first_event) = into_event_batch(
-            value,
-            schema,
-            static_schema_flag,
-            time_partition.as_ref(),
-            schema_version,
-        )?;
 
-        Event {
-            rb,
-            stream_name: stream_name.to_owned(),
-            origin_format: "json",
-            origin_size,
-            is_first_event,
-            parsed_timestamp,
-            time_partition: time_partition.clone(),
-            custom_partition_values,
-            stream_type: StreamType::UserDefined,
-        }
+        json::Event { data: value }
+            .to_event(
+                stream_name,
+                origin_size,
+                &schema,
+                static_schema_flag,
+                parsed_timestamp,
+                time_partition.clone(),
+                custom_partition_values,
+                schema_version,
+                StreamType::UserDefined,
+            )?
         .process()?;
     }
     Ok(())
-}
-
-pub fn into_event_batch(
-    data: Value,
-    schema: HashMap<String, Arc<Field>>,
-    static_schema_flag: bool,
-    time_partition: Option<&String>,
-    schema_version: SchemaVersion,
-) -> Result<(arrow_array::RecordBatch, bool), PostError> {
-    let (rb, is_first) = json::Event { data }.into_recordbatch(
-        &schema,
-        static_schema_flag,
-        time_partition,
-        schema_version,
-    )?;
-    Ok((rb, is_first))
 }
 
 pub fn get_custom_partition_values(
