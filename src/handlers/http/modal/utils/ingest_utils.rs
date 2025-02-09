@@ -35,41 +35,37 @@ use crate::{
     utils::json::flatten::convert_to_array,
 };
 
-pub async fn flatten_and_push_logs(
-    json: Value,
-    stream_name: &str,
-    log_source: &LogSource,
-) -> Result<(), PostError> {
-    match log_source {
+pub async fn flatten_and_push_logs(stream_name: &str, event: json::Event) -> Result<(), PostError> {
+    match event.source {
         LogSource::Kinesis => {
-            let message: Message = serde_json::from_value(json)?;
+            let message: Message = serde_json::from_value(event.data)?;
             let json = flatten_kinesis_logs(message);
-            for record in json {
-                push_logs(stream_name, record, LogSource::default()).await?;
+            for data in json {
+                let event = json::Event {
+                    data,
+                    source: event.source.clone(),
+                };
+                push_logs(stream_name, event).await?;
             }
         }
         LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
             return Err(PostError::OtelNotSupported);
         }
         _ => {
-            push_logs(stream_name, json, log_source.clone()).await?;
+            push_logs(stream_name, event).await?;
         }
     }
     Ok(())
 }
 
-pub async fn push_logs(stream_name: &str, data: Value, source: LogSource) -> Result<(), PostError> {
+pub async fn push_logs(stream_name: &str, event: json::Event) -> Result<(), PostError> {
     let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
     let time_partition_limit = STREAM_INFO.get_time_partition_limit(stream_name)?;
     let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
     let custom_partition = STREAM_INFO.get_custom_partition(stream_name)?;
     let schema_version = STREAM_INFO.get_schema_version(stream_name)?;
 
-    let event = json::Event {
-        data,
-        source: source.clone(),
-    };
-
+    let source = event.source.clone();
     let data = if time_partition.is_some() || custom_partition.is_some() {
         event.convert_array_to_object(
             time_partition.as_ref(),

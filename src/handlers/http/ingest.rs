@@ -20,7 +20,7 @@ use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
-use crate::event::format::LogSource;
+use crate::event::format::{json, LogSource};
 use crate::event::{
     self,
     error::EventError,
@@ -54,7 +54,7 @@ use std::sync::Arc;
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
 // creates if stream does not exist
-pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpResponse, PostError> {
+pub async fn ingest(req: HttpRequest, Json(data): Json<Value>) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
@@ -67,12 +67,13 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
     create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::default())
         .await?;
 
-    let log_source = req
+    let source = req
         .headers()
         .get(LOG_SOURCE_KEY)
         .and_then(|h| h.to_str().ok())
         .map_or(LogSource::default(), LogSource::from);
-    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+    let event = json::Event { data, source };
+    flatten_and_push_logs(&stream_name, event).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -136,7 +137,11 @@ pub async fn handle_otel_logs_ingestion(
     //custom flattening required for otel logs
     let logs: LogsData = serde_json::from_value(json)?;
     for record in flatten_otel_logs(&logs) {
-        push_logs(&stream_name, record, LogSource::OtelLogs).await?;
+        let event = json::Event {
+            data: record,
+            source: LogSource::OtelLogs,
+        };
+        push_logs(&stream_name, event).await?;
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -170,7 +175,11 @@ pub async fn handle_otel_metrics_ingestion(
     //custom flattening required for otel metrics
     let metrics: MetricsData = serde_json::from_value(json)?;
     for record in flatten_otel_metrics(metrics) {
-        push_logs(&stream_name, record, LogSource::OtelMetrics).await?;
+        let event = json::Event {
+            data: record,
+            source: LogSource::OtelMetrics,
+        };
+        push_logs(&stream_name, event).await?;
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -201,7 +210,11 @@ pub async fn handle_otel_traces_ingestion(
     //custom flattening required for otel traces
     let traces: TracesData = serde_json::from_value(json)?;
     for record in flatten_otel_traces(&traces) {
-        push_logs(&stream_name, record, LogSource::OtelTraces).await?;
+        let event = json::Event {
+            data: record,
+            source: LogSource::OtelTraces,
+        };
+        push_logs(&stream_name, event).await?;
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -213,7 +226,7 @@ pub async fn handle_otel_traces_ingestion(
 pub async fn post_event(
     req: HttpRequest,
     stream_name: Path<String>,
-    Json(json): Json<Value>,
+    Json(data): Json<Value>,
 ) -> Result<HttpResponse, PostError> {
     let stream_name = stream_name.into_inner();
     let internal_stream_names = STREAM_INFO.list_internal_streams();
@@ -234,12 +247,13 @@ pub async fn post_event(
         }
     }
 
-    let log_source = req
+    let source = req
         .headers()
         .get(LOG_SOURCE_KEY)
         .and_then(|h| h.to_str().ok())
         .map_or(LogSource::default(), LogSource::from);
-    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+    let event = json::Event { data, source };
+    flatten_and_push_logs(&stream_name, event).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
