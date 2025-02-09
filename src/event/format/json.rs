@@ -26,14 +26,82 @@ use arrow_schema::{DataType, Field, Fields, Schema};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use itertools::Itertools;
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, num::NonZeroU32, sync::Arc};
 use tracing::error;
 
-use super::EventFormat;
-use crate::{metadata::SchemaVersion, utils::arrow::get_field};
+use super::{EventFormat, LogSource};
+use crate::{
+    metadata::SchemaVersion,
+    utils::{
+        arrow::get_field,
+        json::flatten::{self, convert_to_array, generic_flattening, has_more_than_four_levels},
+    },
+};
 
 pub struct Event {
     pub data: Value,
+    pub source: LogSource,
+}
+
+impl Event {
+    /// calls the function `flatten_json` which results Vec<Value> or Error
+    /// in case when Vec<Value> is returned, converts the Vec<Value> to Value of Array
+    /// this is to ensure recursive flattening does not happen for heavily nested jsons
+    pub fn flatten_json_body(
+        &mut self,
+        time_partition: Option<&String>,
+        time_partition_limit: Option<NonZeroU32>,
+        custom_partition: Option<&String>,
+        schema_version: SchemaVersion,
+        validation_required: bool,
+    ) -> Result<(), anyhow::Error> {
+        // Flatten the json body only if new schema and has less than 4 levels of nesting
+        if schema_version == SchemaVersion::V1
+            && !has_more_than_four_levels(&self.data, 1)
+            && matches!(
+                self.source,
+                LogSource::Json | LogSource::Custom(_) | LogSource::Kinesis
+            )
+        {
+            let flattened_json = generic_flattening(&self.data)?;
+            self.data = convert_to_array(flattened_json)?
+        }
+
+        flatten::flatten(
+            &mut self.data,
+            "_",
+            time_partition,
+            time_partition_limit,
+            custom_partition,
+            validation_required,
+        )?;
+
+        Ok(())
+    }
+
+    pub fn convert_array_to_object(
+        mut self,
+        time_partition: Option<&String>,
+        time_partition_limit: Option<NonZeroU32>,
+        custom_partition: Option<&String>,
+        schema_version: SchemaVersion,
+    ) -> Result<Vec<Value>, anyhow::Error> {
+        self.flatten_json_body(
+            time_partition,
+            time_partition_limit,
+            custom_partition,
+            schema_version,
+            true,
+        )?;
+
+        let value_arr = match self.data {
+            Value::Array(arr) => arr,
+            value @ Value::Object(_) => vec![value],
+            _ => unreachable!("flatten would have failed beforehand"),
+        };
+
+        Ok(value_arr)
+    }
 }
 
 impl EventFormat for Event {

@@ -17,77 +17,10 @@
  */
 
 use std::fmt;
-use std::num::NonZeroU32;
 
-use flatten::{convert_to_array, generic_flattening, has_more_than_four_levels};
 use serde::de::Visitor;
-use serde_json;
-use serde_json::Value;
-
-use crate::event::format::LogSource;
-use crate::metadata::SchemaVersion;
 
 pub mod flatten;
-
-/// calls the function `flatten_json` which results Vec<Value> or Error
-/// in case when Vec<Value> is returned, converts the Vec<Value> to Value of Array
-/// this is to ensure recursive flattening does not happen for heavily nested jsons
-pub fn flatten_json_body(
-    body: Value,
-    time_partition: Option<&String>,
-    time_partition_limit: Option<NonZeroU32>,
-    custom_partition: Option<&String>,
-    schema_version: SchemaVersion,
-    validation_required: bool,
-    log_source: &LogSource,
-) -> Result<Value, anyhow::Error> {
-    // Flatten the json body only if new schema and has less than 4 levels of nesting
-    let mut nested_value = if schema_version == SchemaVersion::V1
-        && !has_more_than_four_levels(&body, 1)
-        && matches!(
-            log_source,
-            LogSource::Json | LogSource::Custom(_) | LogSource::Kinesis
-        ) {
-        let flattened_json = generic_flattening(&body)?;
-        convert_to_array(flattened_json)?
-    } else {
-        body
-    };
-    flatten::flatten(
-        &mut nested_value,
-        "_",
-        time_partition,
-        time_partition_limit,
-        custom_partition,
-        validation_required,
-    )?;
-    Ok(nested_value)
-}
-
-pub fn convert_array_to_object(
-    body: Value,
-    time_partition: Option<&String>,
-    time_partition_limit: Option<NonZeroU32>,
-    custom_partition: Option<&String>,
-    schema_version: SchemaVersion,
-    log_source: &LogSource,
-) -> Result<Vec<Value>, anyhow::Error> {
-    let data = flatten_json_body(
-        body,
-        time_partition,
-        time_partition_limit,
-        custom_partition,
-        schema_version,
-        true,
-        log_source,
-    )?;
-    let value_arr = match data {
-        Value::Array(arr) => arr,
-        value @ Value::Object(_) => vec![value],
-        _ => unreachable!("flatten would have failed beforehand"),
-    };
-    Ok(value_arr)
-}
 
 struct TrueFromStr;
 
@@ -144,7 +77,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::event::format::LogSource;
+    use crate::event::format::{json::Event, LogSource};
 
     use super::*;
     use serde::{Deserialize, Serialize};
@@ -152,40 +85,28 @@ mod tests {
 
     #[test]
     fn hierarchical_json_flattening_success() {
-        let value = json!({"a":{"b":{"e":["a","b"]}}});
+        let mut event = Event {
+            data: json!({"a":{"b":{"e":["a","b"]}}}),
+            source: LogSource::default(),
+        };
         let expected = json!([{"a_b_e": "a"}, {"a_b_e": "b"}]);
-        assert_eq!(
-            flatten_json_body(
-                value,
-                None,
-                None,
-                None,
-                crate::metadata::SchemaVersion::V1,
-                false,
-                &LogSource::default()
-            )
-            .unwrap(),
-            expected
-        );
+        event
+            .flatten_json_body(None, None, None, crate::metadata::SchemaVersion::V1, false)
+            .unwrap();
+        assert_eq!(event.data, expected);
     }
 
     #[test]
     fn hierarchical_json_flattening_failure() {
-        let value = json!({"a":{"b":{"c":{"d":{"e":["a","b"]}}}}});
+        let mut event = Event {
+            data: json!({"a":{"b":{"c":{"d":{"e":["a","b"]}}}}}),
+            source: LogSource::default(),
+        };
         let expected = json!({"a_b_c_d_e": ["a","b"]});
-        assert_eq!(
-            flatten_json_body(
-                value,
-                None,
-                None,
-                None,
-                crate::metadata::SchemaVersion::V1,
-                false,
-                &LogSource::default()
-            )
-            .unwrap(),
-            expected
-        );
+        event
+            .flatten_json_body(None, None, None, crate::metadata::SchemaVersion::V1, false)
+            .unwrap();
+        assert_eq!(event.data, expected);
     }
 
     #[derive(Serialize, Deserialize)]

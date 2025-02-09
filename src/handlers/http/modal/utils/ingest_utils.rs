@@ -16,11 +16,10 @@
  *
  */
 
-use arrow_schema::Field;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use itertools::Itertools;
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use crate::{
     event::{
@@ -31,9 +30,9 @@ use crate::{
         ingest::PostError,
         kinesis::{flatten_kinesis_logs, Message},
     },
-    metadata::{SchemaVersion, STREAM_INFO},
+    metadata::STREAM_INFO,
     storage::StreamType,
-    utils::json::{convert_array_to_object, flatten::convert_to_array},
+    utils::json::flatten::convert_to_array,
 };
 
 pub async fn flatten_and_push_logs(
@@ -46,47 +45,44 @@ pub async fn flatten_and_push_logs(
             let message: Message = serde_json::from_value(json)?;
             let json = flatten_kinesis_logs(message);
             for record in json {
-                push_logs(stream_name, record, &LogSource::default()).await?;
+                push_logs(stream_name, record, LogSource::default()).await?;
             }
         }
         LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
             return Err(PostError::OtelNotSupported);
         }
         _ => {
-            push_logs(stream_name, json, log_source).await?;
+            push_logs(stream_name, json, log_source.clone()).await?;
         }
     }
     Ok(())
 }
 
-pub async fn push_logs(
-    stream_name: &str,
-    json: Value,
-    log_source: &LogSource,
-) -> Result<(), PostError> {
+pub async fn push_logs(stream_name: &str, data: Value, source: LogSource) -> Result<(), PostError> {
     let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
     let time_partition_limit = STREAM_INFO.get_time_partition_limit(stream_name)?;
     let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
     let custom_partition = STREAM_INFO.get_custom_partition(stream_name)?;
     let schema_version = STREAM_INFO.get_schema_version(stream_name)?;
 
+    let event = json::Event {
+        data,
+        source: source.clone(),
+    };
+
     let data = if time_partition.is_some() || custom_partition.is_some() {
-        convert_array_to_object(
-            json,
+        event.convert_array_to_object(
             time_partition.as_ref(),
             time_partition_limit,
             custom_partition.as_ref(),
             schema_version,
-            log_source,
         )?
     } else {
-        vec![convert_to_array(convert_array_to_object(
-            json,
+        vec![convert_to_array(event.convert_array_to_object(
             None,
             None,
             None,
             schema_version,
-            log_source,
         )?)?]
     };
 
@@ -110,9 +106,12 @@ pub async fn push_logs(
             .ok_or(PostError::StreamNotFound(stream_name.to_owned()))?
             .schema
             .clone();
-        let (rb, is_first_event) = into_event_batch(
-            value,
-            schema,
+        let (rb, is_first_event) = json::Event {
+            data: value,
+            source: source.clone(),
+        }
+        .into_recordbatch(
+            &schema,
             static_schema_flag,
             time_partition.as_ref(),
             schema_version,
@@ -133,22 +132,6 @@ pub async fn push_logs(
         .await?;
     }
     Ok(())
-}
-
-pub fn into_event_batch(
-    data: Value,
-    schema: HashMap<String, Arc<Field>>,
-    static_schema_flag: bool,
-    time_partition: Option<&String>,
-    schema_version: SchemaVersion,
-) -> Result<(arrow_array::RecordBatch, bool), PostError> {
-    let (rb, is_first) = json::Event { data }.into_recordbatch(
-        &schema,
-        static_schema_flag,
-        time_partition,
-        schema_version,
-    )?;
-    Ok((rb, is_first))
 }
 
 pub fn get_custom_partition_values(

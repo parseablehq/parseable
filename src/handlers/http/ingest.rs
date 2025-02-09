@@ -88,7 +88,10 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             .ok_or(PostError::StreamNotFound(stream_name.clone()))?
             .schema
             .clone();
-        let event = format::json::Event { data: body_val };
+        let event = format::json::Event {
+            data: body_val,
+            source: LogSource::Pmeta,
+        };
         // For internal streams, use old schema
         event.into_recordbatch(&schema, false, None, SchemaVersion::V0)?
     };
@@ -133,7 +136,7 @@ pub async fn handle_otel_logs_ingestion(
     //custom flattening required for otel logs
     let logs: LogsData = serde_json::from_value(json)?;
     for record in flatten_otel_logs(&logs) {
-        push_logs(&stream_name, record, &log_source).await?;
+        push_logs(&stream_name, record, LogSource::OtelLogs).await?;
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -167,7 +170,7 @@ pub async fn handle_otel_metrics_ingestion(
     //custom flattening required for otel metrics
     let metrics: MetricsData = serde_json::from_value(json)?;
     for record in flatten_otel_metrics(metrics) {
-        push_logs(&stream_name, record, &log_source).await?;
+        push_logs(&stream_name, record, LogSource::OtelMetrics).await?;
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -198,7 +201,7 @@ pub async fn handle_otel_traces_ingestion(
     //custom flattening required for otel traces
     let traces: TracesData = serde_json::from_value(json)?;
     for record in flatten_otel_traces(&traces) {
-        push_logs(&stream_name, record, &log_source).await?;
+        push_logs(&stream_name, record, LogSource::OtelTraces).await?;
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -387,9 +390,9 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use crate::{
-        handlers::http::modal::utils::ingest_utils::into_event_batch,
+        event::format::{json, EventFormat, LogSource},
         metadata::SchemaVersion,
-        utils::json::{convert_array_to_object, flatten::convert_to_array},
+        utils::json::flatten::convert_to_array,
     };
 
     trait TestExt {
@@ -418,14 +421,18 @@ mod tests {
 
     #[test]
     fn basic_object_into_rb() {
-        let json = json!({
-            "c": 4.23,
-            "a": 1,
-            "b": "hello",
-        });
+        let event = json::Event {
+            data: json!({
+                "c": 4.23,
+                "a": 1,
+                "b": "hello",
+            }),
+            source: LogSource::default(),
+        };
 
-        let (rb, _) =
-            into_event_batch(json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = event
+            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
+            .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 4);
@@ -445,14 +452,18 @@ mod tests {
 
     #[test]
     fn basic_object_with_null_into_rb() {
-        let json = json!({
-            "a": 1,
-            "b": "hello",
-            "c": null
-        });
+        let event = json::Event {
+            data: json!({
+                "a": 1,
+                "b": "hello",
+                "c": null
+            }),
+            source: LogSource::default(),
+        };
 
-        let (rb, _) =
-            into_event_batch(json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = event
+            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
+            .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -468,10 +479,13 @@ mod tests {
 
     #[test]
     fn basic_object_derive_schema_into_rb() {
-        let json = json!({
-            "a": 1,
-            "b": "hello",
-        });
+        let event = json::Event {
+            data: json!({
+                "a": 1,
+                "b": "hello",
+            }),
+            source: LogSource::default(),
+        };
 
         let schema = fields_to_map(
             [
@@ -482,7 +496,9 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = into_event_batch(json, schema, false, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = event
+            .into_recordbatch(&schema, false, None, SchemaVersion::V0)
+            .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -498,10 +514,13 @@ mod tests {
 
     #[test]
     fn basic_object_schema_mismatch() {
-        let json = json!({
-            "a": 1,
-            "b": 1, // type mismatch
-        });
+        let event = json::Event {
+            data: json!({
+                "a": 1,
+                "b": 1, // type mismatch
+            }),
+            source: LogSource::default(),
+        };
 
         let schema = fields_to_map(
             [
@@ -512,12 +531,17 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(into_event_batch(json, schema, false, None, SchemaVersion::V0,).is_err());
+        assert!(event
+            .into_recordbatch(&schema, false, None, SchemaVersion::V0,)
+            .is_err());
     }
 
     #[test]
     fn empty_object() {
-        let json = json!({});
+        let event = json::Event {
+            data: json!({}),
+            source: LogSource::default(),
+        };
 
         let schema = fields_to_map(
             [
@@ -528,7 +552,9 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = into_event_batch(json, schema, false, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = event
+            .into_recordbatch(&schema, false, None, SchemaVersion::V0)
+            .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 1);
@@ -536,39 +562,40 @@ mod tests {
 
     #[test]
     fn non_object_arr_is_err() {
-        let json = json!([1]);
+        let event = json::Event {
+            data: json!([1]),
+            source: LogSource::default(),
+        };
 
-        assert!(convert_array_to_object(
-            json,
-            None,
-            None,
-            None,
-            SchemaVersion::V0,
-            &crate::event::format::LogSource::default()
-        )
-        .is_err())
+        assert!(event
+            .convert_array_to_object(None, None, None, SchemaVersion::V0,)
+            .is_err())
     }
 
     #[test]
     fn array_into_recordbatch_inffered_schema() {
-        let json = json!([
-            {
-                "b": "hello",
-            },
-            {
-                "b": "hello",
-                "a": 1,
-                "c": 1
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": null
-            },
-        ]);
+        let event = json::Event {
+            data: json!([
+                {
+                    "b": "hello",
+                },
+                {
+                    "b": "hello",
+                    "a": 1,
+                    "c": 1
+                },
+                {
+                    "a": 1,
+                    "b": "hello",
+                    "c": null
+                },
+            ]),
+            source: LogSource::default(),
+        };
 
-        let (rb, _) =
-            into_event_batch(json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = event
+            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
+            .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -596,26 +623,30 @@ mod tests {
 
     #[test]
     fn arr_with_null_into_rb() {
-        let json = json!([
-            {
-                "c": null,
-                "b": "hello",
-                "a": null
-            },
-            {
-                "a": 1,
-                "c": 1.22,
-                "b": "hello"
-            },
-            {
-                "b": "hello",
-                "a": 1,
-                "c": null
-            },
-        ]);
+        let event = json::Event {
+            data: json!([
+                {
+                    "c": null,
+                    "b": "hello",
+                    "a": null
+                },
+                {
+                    "a": 1,
+                    "c": 1.22,
+                    "b": "hello"
+                },
+                {
+                    "b": "hello",
+                    "a": 1,
+                    "c": null
+                },
+            ]),
+            source: LogSource::default(),
+        };
 
-        let (rb, _) =
-            into_event_batch(json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = event
+            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
+            .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -635,23 +666,26 @@ mod tests {
 
     #[test]
     fn arr_with_null_derive_schema_into_rb() {
-        let json = json!([
-            {
-                "c": null,
-                "b": "hello",
-                "a": null
-            },
-            {
-                "a": 1,
-                "c": 1.22,
-                "b": "hello"
-            },
-            {
-                "b": "hello",
-                "a": 1,
-                "c": null
-            },
-        ]);
+        let event = json::Event {
+            data: json!([
+                {
+                    "c": null,
+                    "b": "hello",
+                    "a": null
+                },
+                {
+                    "a": 1,
+                    "c": 1.22,
+                    "b": "hello"
+                },
+                {
+                    "b": "hello",
+                    "a": 1,
+                    "c": null
+                },
+            ]),
+            source: LogSource::default(),
+        };
 
         let schema = fields_to_map(
             [
@@ -662,7 +696,9 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = into_event_batch(json, schema, false, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = event
+            .into_recordbatch(&schema, false, None, SchemaVersion::V0)
+            .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -682,23 +718,26 @@ mod tests {
 
     #[test]
     fn arr_schema_mismatch() {
-        let json = json!([
-            {
-                "a": null,
-                "b": "hello",
-                "c": 1.24
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": 1
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": null
-            },
-        ]);
+        let event = json::Event {
+            data: json!([
+                {
+                    "a": null,
+                    "b": "hello",
+                    "c": 1.24
+                },
+                {
+                    "a": 1,
+                    "b": "hello",
+                    "c": 1
+                },
+                {
+                    "a": 1,
+                    "b": "hello",
+                    "c": null
+                },
+            ]),
+            source: LogSource::default(),
+        };
 
         let schema = fields_to_map(
             [
@@ -709,12 +748,14 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(into_event_batch(json, schema, false, None, SchemaVersion::V0,).is_err());
+        assert!(event
+            .into_recordbatch(&schema, false, None, SchemaVersion::V0,)
+            .is_err());
     }
 
     #[test]
     fn arr_obj_with_nested_type() {
-        let json = json!([
+        let data = json!([
             {
                 "a": 1,
                 "b": "hello",
@@ -734,27 +775,22 @@ mod tests {
                 "c": [{"a": 1, "b": 2}]
             },
         ]);
-        let flattened_json = convert_to_array(
-            convert_array_to_object(
-                json,
-                None,
-                None,
-                None,
-                SchemaVersion::V0,
-                &crate::event::format::LogSource::default(),
+        let event = json::Event {
+            data: convert_to_array(
+                json::Event {
+                    data,
+                    source: LogSource::default(),
+                }
+                .convert_array_to_object(None, None, None, SchemaVersion::V0)
+                .unwrap(),
             )
             .unwrap(),
-        )
-        .unwrap();
+            source: LogSource::default(),
+        };
 
-        let (rb, _) = into_event_batch(
-            flattened_json,
-            HashMap::default(),
-            false,
-            None,
-            SchemaVersion::V0,
-        )
-        .unwrap();
+        let (rb, _) = event
+            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
+            .unwrap();
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 5);
         assert_eq!(
@@ -802,7 +838,7 @@ mod tests {
 
     #[test]
     fn arr_obj_with_nested_type_v1() {
-        let json = json!([
+        let data = json!([
             {
                 "a": 1,
                 "b": "hello",
@@ -822,27 +858,22 @@ mod tests {
                 "c": [{"a": 1, "b": 2}]
             },
         ]);
-        let flattened_json = convert_to_array(
-            convert_array_to_object(
-                json,
-                None,
-                None,
-                None,
-                SchemaVersion::V1,
-                &crate::event::format::LogSource::default(),
+        let event = json::Event {
+            data: convert_to_array(
+                json::Event {
+                    data,
+                    source: LogSource::default(),
+                }
+                .convert_array_to_object(None, None, None, SchemaVersion::V1)
+                .unwrap(),
             )
             .unwrap(),
-        )
-        .unwrap();
+            source: LogSource::default(),
+        };
 
-        let (rb, _) = into_event_batch(
-            flattened_json,
-            HashMap::default(),
-            false,
-            None,
-            SchemaVersion::V1,
-        )
-        .unwrap();
+        let (rb, _) = event
+            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V1)
+            .unwrap();
 
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 5);
