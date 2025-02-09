@@ -23,15 +23,12 @@ pub mod audit;
 pub mod banner;
 mod catalog;
 mod cli;
+#[cfg(feature = "kafka")]
+pub mod connectors;
 pub mod correlation;
 mod event;
 pub mod handlers;
 pub mod hottier;
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
-pub mod kafka;
 mod livetail;
 pub mod metadata;
 pub mod metrics;
@@ -42,6 +39,7 @@ pub mod otel;
 pub mod query;
 pub mod rbac;
 mod response;
+mod staging;
 mod static_schema;
 mod stats;
 pub mod storage;
@@ -58,7 +56,8 @@ pub use handlers::http::modal::{
 use once_cell::sync::Lazy;
 use reqwest::{Client, ClientBuilder};
 
-pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
+pub const STORAGE_CONVERSION_INTERVAL: u32 = 60;
+pub const STORAGE_UPLOAD_INTERVAL: u32 = 30;
 
 // A single HTTP client for all outgoing HTTP requests from the parseable server
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {

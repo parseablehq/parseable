@@ -331,7 +331,7 @@ pub struct RollingWindow {
     // should always be "now"
     pub eval_end: String,
     // x minutes (5m)
-    pub eval_frequency: u32,
+    pub eval_frequency: u64,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -637,7 +637,7 @@ impl AlertConfig {
         columns
     }
 
-    pub fn get_eval_frequency(&self) -> u32 {
+    pub fn get_eval_frequency(&self) -> u64 {
         match &self.eval_type {
             EvalConfig::RollingWindow(rolling_window) => rolling_window.eval_frequency,
         }
