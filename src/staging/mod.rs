@@ -20,6 +20,8 @@
 use once_cell::sync::Lazy;
 pub use streams::{Stream, Streams};
 
+use crate::metadata::error::stream_info::MetadataError;
+
 mod reader;
 mod streams;
 mod writer;
@@ -34,6 +36,8 @@ pub enum StagingError {
     ObjectStorage(#[from] std::io::Error),
     #[error("Could not generate parquet file")]
     Create,
+    #[error("Metadata Error: {0}")]
+    Metadata(#[from] MetadataError),
 }
 
 /// Staging is made up of multiple streams, each stream's context is housed in a single `Stream` object.

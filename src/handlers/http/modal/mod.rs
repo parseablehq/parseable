@@ -49,6 +49,7 @@ use super::API_VERSION;
 use crate::handlers::http::health_check;
 use crate::oidc;
 use crate::option::CONFIG;
+use crate::staging::STAGING;
 
 pub type OpenIdClient = Arc<openid::Client<Discovered, oidc::Claims>>;
 
@@ -140,7 +141,7 @@ pub trait ParseableServer {
             // Perform S3 sync and wait for completion
             info!("Starting data sync to S3...");
 
-            if let Err(e) = CONFIG.storage().get_object_store().conversion(true).await {
+            if let Err(e) = STAGING.prepare_parquet(true) {
                 warn!("Failed to convert arrow files to parquet. {:?}", e);
             } else {
                 info!("Successfully converted arrow files to parquet.");
