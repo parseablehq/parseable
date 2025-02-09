@@ -103,10 +103,7 @@ impl Processor<Vec<ConsumerRecord>, ()> for ParseableSinkProcessor {
         let len = records.len();
         debug!("Processing {} records", len);
 
-        self.build_event_from_chunk(&records)
-            .await?
-            .process()
-            .await?;
+        self.build_event_from_chunk(&records).await?.process()?;
 
         debug!("Processed {} records", len);
         Ok(())

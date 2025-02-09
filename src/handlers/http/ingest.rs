@@ -103,8 +103,8 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
         custom_partition_values: HashMap::new(),
         stream_type: StreamType::Internal,
     }
-    .process()
-    .await?;
+    .process()?;
+
     Ok(())
 }
 

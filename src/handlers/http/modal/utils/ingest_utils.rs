@@ -129,8 +129,7 @@ pub async fn push_logs(
             custom_partition_values,
             stream_type: StreamType::UserDefined,
         }
-        .process()
-        .await?;
+        .process()?;
     }
     Ok(())
 }
