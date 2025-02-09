@@ -17,7 +17,7 @@
  */
 
 use super::logstream::error::{CreateStreamError, StreamError};
-use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
+use super::modal::utils::ingest_utils::flatten_and_push_logs;
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
 use crate::event::format::LogSource;
@@ -31,9 +31,6 @@ use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
 use crate::metadata::error::stream_info::MetadataError;
 use crate::metadata::{SchemaVersion, STREAM_INFO};
 use crate::option::{Mode, CONFIG};
-use crate::otel::logs::flatten_otel_logs;
-use crate::otel::metrics::flatten_otel_metrics;
-use crate::otel::traces::flatten_otel_traces;
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::flatten::JsonFlattenError;
@@ -44,9 +41,6 @@ use arrow_schema::Schema;
 use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
-use opentelemetry_proto::tonic::logs::v1::LogsData;
-use opentelemetry_proto::tonic::metrics::v1::MetricsData;
-use opentelemetry_proto::tonic::trace::v1::TracesData;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -130,11 +124,7 @@ pub async fn handle_otel_logs_ingestion(
     let stream_name = stream_name.to_str().unwrap().to_owned();
     create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelLogs).await?;
 
-    //custom flattening required for otel logs
-    let logs: LogsData = serde_json::from_value(json)?;
-    for record in flatten_otel_logs(&logs) {
-        push_logs(&stream_name, record, &log_source).await?;
-    }
+    flatten_and_push_logs(json, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -164,11 +154,7 @@ pub async fn handle_otel_metrics_ingestion(
     )
     .await?;
 
-    //custom flattening required for otel metrics
-    let metrics: MetricsData = serde_json::from_value(json)?;
-    for record in flatten_otel_metrics(metrics) {
-        push_logs(&stream_name, record, &log_source).await?;
-    }
+    flatten_and_push_logs(json, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -195,11 +181,7 @@ pub async fn handle_otel_traces_ingestion(
     create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelTraces)
         .await?;
 
-    //custom flattening required for otel traces
-    let traces: TracesData = serde_json::from_value(json)?;
-    for record in flatten_otel_traces(&traces) {
-        push_logs(&stream_name, record, &log_source).await?;
-    }
+    flatten_and_push_logs(json, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
