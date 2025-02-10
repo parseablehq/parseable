@@ -47,7 +47,17 @@ pub struct Event {
 // Events holds the schema related to a each event for a single log stream
 impl Event {
     pub async fn process(self) -> Result<(), EventError> {
-        let key = get_schema_key(&self.rb.schema().fields);
+        let mut key = get_schema_key(&self.rb.schema().fields);
+        if self.time_partition.is_some() {
+            let parsed_timestamp_to_min = self.parsed_timestamp.format("%Y%m%dT%H%M").to_string();
+            key.push_str(&parsed_timestamp_to_min);
+        }
+
+        if !self.custom_partition_values.is_empty() {
+            for (k, v) in self.custom_partition_values.iter().sorted_by_key(|v| v.0) {
+                key.push_str(&format!("&{k}={v}"));
+            }
+        }
         if self.is_first_event {
             commit_schema(&self.stream_name, self.rb.schema())?;
         }

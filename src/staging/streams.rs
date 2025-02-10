@@ -165,7 +165,7 @@ impl<'a> Stream<'a> {
             .filter(|file| file.extension().is_some_and(|ext| ext.eq("arrows")))
             .sorted_by_key(|f| f.metadata().unwrap().created().unwrap())
             .collect();
-        
+
         paths
     }
 
@@ -179,33 +179,29 @@ impl<'a> Stream<'a> {
         shutdown_signal: bool,
     ) -> HashMap<PathBuf, Vec<PathBuf>> {
         let now = Utc::now();
-    
+
         // Extract date and time components of current time
         let now_date = (now.year(), now.month(), now.day());
         let now_time = (now.hour(), now.minute());
 
         let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         let mut arrow_files = self.arrow_files();
-        arrow_files = arrow_files
-            .into_iter()
-            .filter(|path| {
-                let created_at = path.metadata().unwrap().created().unwrap();
-                let created_at: DateTime<Utc> = created_at.into();
-                let created_date = (created_at.year(), created_at.month(), created_at.day());
-                let created_time = (created_at.hour(), created_at.minute());
-        
-                let same_date = now_date == created_date;
-                let same_time = now_time == created_time;
-        
-                // if the shutdown signal is false i.e. normal condition
-                // don't keep the ones for the current minute
-                if !shutdown_signal {
-                    !same_date || !same_time
-                } else {
-                    true
-                }
-            })
-            .collect();
+        arrow_files.retain(|path| {
+            let created_at = path.metadata().unwrap().created().unwrap();
+            let created_at: DateTime<Utc> = created_at.into();
+            let created_date = (created_at.year(), created_at.month(), created_at.day());
+            let created_time = (created_at.hour(), created_at.minute());
+
+            let same_date = now_date == created_date;
+            let same_time = now_time == created_time;
+            // if the shutdown signal is false i.e. normal condition
+            // don't keep the ones for the current minute
+            if !shutdown_signal {
+                !same_date || !same_time
+            } else {
+                true
+            }
+        });
 
         let random_string =
             rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 15);
