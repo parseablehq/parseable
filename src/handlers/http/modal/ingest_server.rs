@@ -16,6 +16,8 @@
  *
  */
 
+use std::thread;
+
 use super::ingest::ingestor_logstream;
 use super::ingest::ingestor_rbac;
 use super::ingest::ingestor_role;
@@ -54,7 +56,6 @@ use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
 use tokio::sync::oneshot;
-use tracing::error;
 use tracing::info;
 
 /// Metadata associated with this ingestor server
@@ -199,15 +200,9 @@ impl ParseableServer for IngestServer {
 
         migration::run_migration(&CONFIG).await?;
 
-        let (localsync_handler, mut localsync_outbox, localsync_inbox) =
-            sync::run_local_sync().await;
-        let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
-            sync::object_store_sync().await;
-        let (
-            mut remote_conversion_handler,
-            mut remote_conversion_outbox,
-            mut remote_conversion_inbox,
-        ) = sync::arrow_conversion().await;
+        // Run sync on a background thread
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        thread::spawn(|| sync::handler(cancel_rx));
 
         tokio::spawn(airplane::server());
 
@@ -215,49 +210,11 @@ impl ParseableServer for IngestServer {
         set_ingestor_metadata().await?;
 
         // Ingestors shouldn't have to deal with OpenId auth flow
-        let app = self.start(shutdown_rx, prometheus.clone(), None);
+        let result = self.start(shutdown_rx, prometheus.clone(), None).await;
+        // Cancel sync jobs
+        cancel_tx.send(()).expect("Cancellation should not fail");
 
-        tokio::pin!(app);
-        loop {
-            tokio::select! {
-                e = &mut app => {
-                    // actix server finished .. stop other threads and stop the server
-                    remote_sync_inbox.send(()).unwrap_or(());
-                    localsync_inbox.send(()).unwrap_or(());
-                    remote_conversion_inbox.send(()).unwrap_or(());
-                    if let Err(e) = localsync_handler.await {
-                        error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    if let Err(e) = remote_sync_handler.await {
-                        error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    if let Err(e) = remote_conversion_handler.await {
-                        error!("Error joining remote_conversion_handler: {:?}", e);
-                    }
-                    return e
-                },
-                _ = &mut localsync_outbox => {
-                    // crash the server if localsync fails for any reason
-                    // panic!("Local Sync thread died. Server will fail now!")
-                    return Err(anyhow::Error::msg("Failed to sync local data to drive. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
-                },
-                _ = &mut remote_sync_outbox => {
-                    // remote_sync failed, this is recoverable by just starting remote_sync thread again
-                    if let Err(e) = remote_sync_handler.await {
-                        error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
-                },
-                _ = &mut remote_conversion_outbox => {
-                    // remote_conversion failed, this is recoverable by just starting remote_conversion thread again
-                    if let Err(e) = remote_conversion_handler.await {
-                        error!("Error joining remote_conversion_handler: {:?}", e);
-                    }
-                    (remote_conversion_handler, remote_conversion_outbox, remote_conversion_inbox) = sync::arrow_conversion().await;
-                }
-
-            }
-        }
+        result
     }
 }
 
