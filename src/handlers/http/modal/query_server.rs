@@ -16,6 +16,8 @@
  *
  */
 
+use std::thread;
+
 use crate::alerts::ALERTS;
 use crate::correlation::CORRELATIONS;
 use crate::handlers::airplane;
@@ -26,10 +28,9 @@ use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::handlers::http::{rbac, role};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
-use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
-use crate::{analytics, migration, storage};
+use crate::{analytics, migration, storage, sync};
 use actix_web::web::{resource, ServiceConfig};
 use actix_web::{web, Scope};
 use actix_web_prometheus::PrometheusMetrics;
@@ -132,44 +133,18 @@ impl ParseableServer for QueryServer {
             hot_tier_manager.put_internal_stream_hot_tier().await?;
             hot_tier_manager.download_from_s3()?;
         };
-        let (localsync_handler, mut localsync_outbox, localsync_inbox) =
-            sync::run_local_sync().await;
-        let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
-            sync::object_store_sync().await;
+
+        // Run sync on a background thread
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        thread::spawn(|| sync::handler(cancel_rx));
 
         tokio::spawn(airplane::server());
-        let app = self.start(shutdown_rx, prometheus.clone(), PARSEABLE.options.openid());
 
-        tokio::pin!(app);
-        loop {
-            tokio::select! {
-                e = &mut app => {
-                    // actix server finished .. stop other threads and stop the server
-                    remote_sync_inbox.send(()).unwrap_or(());
-                    localsync_inbox.send(()).unwrap_or(());
-                    if let Err(e) = localsync_handler.await {
-                        error!("Error joining localsync_handler: {:?}", e);
-                    }
-                    if let Err(e) = remote_sync_handler.await {
-                        error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    return e
-                },
-                _ = &mut localsync_outbox => {
-                    // crash the server if localsync fails for any reason
-                    // panic!("Local Sync thread died. Server will fail now!")
-                    return Err(anyhow::Error::msg("Failed to sync local data to drive. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
-                },
-                _ = &mut remote_sync_outbox => {
-                    // remote_sync failed, this is recoverable by just starting remote_sync thread again
-                    if let Err(e) = remote_sync_handler.await {
-                        error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
-                }
+        let result = self.start(shutdown_rx, prometheus.clone(), None).await;
+        // Cancel sync jobs
+        cancel_tx.send(()).expect("Cancellation should not fail");
 
-            };
-        }
+        result
     }
 }
 

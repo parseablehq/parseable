@@ -33,11 +33,14 @@ use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
 use parquet::{
-    arrow::ArrowWriter, basic::Encoding, file::properties::WriterProperties, format::SortingColumn,
+    arrow::ArrowWriter,
+    basic::Encoding,
+    file::{properties::WriterProperties, FOOTER_SIZE},
+    format::SortingColumn,
     schema::types::ColumnPath,
 };
 use rand::distributions::DistString;
-use tracing::error;
+use tracing::{error, trace};
 
 use crate::{
     cli::Options,
@@ -233,7 +236,10 @@ impl Stream {
 
         dir.flatten()
             .map(|file| file.path())
-            .filter(|file| file.extension().is_some_and(|ext| ext.eq("parquet")))
+            .filter(|file| {
+                file.extension().is_some_and(|ext| ext.eq("parquet"))
+                    && std::fs::metadata(file).is_ok_and(|meta| meta.len() > FOOTER_SIZE as u64)
+            })
             .collect()
     }
 
@@ -406,24 +412,32 @@ impl Stream {
             let props = self.parquet_writer_props(&merged_schema, time_partition, custom_partition);
             schemas.push(merged_schema.clone());
             let schema = Arc::new(merged_schema);
-            let parquet_file = OpenOptions::new()
+            let mut part_path = parquet_path.to_owned();
+            part_path.set_extension("part");
+            let mut part_file = OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(&parquet_path)
+                .open(&part_path)
                 .map_err(|_| StagingError::Create)?;
-            let mut writer = ArrowWriter::try_new(&parquet_file, schema.clone(), Some(props))?;
+            let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props))?;
             for ref record in record_reader.merged_iter(schema, time_partition.cloned()) {
                 writer.write(record)?;
             }
-
             writer.close()?;
-            if parquet_file.metadata().unwrap().len() < parquet::file::FOOTER_SIZE as u64 {
+
+            if part_file.metadata().unwrap().len() < parquet::file::FOOTER_SIZE as u64 {
                 error!(
                     "Invalid parquet file {:?} detected for stream {}, removing it",
-                    &parquet_path, &self.stream_name
+                    &part_path, &self.stream_name
                 );
-                remove_file(parquet_path).unwrap();
+                remove_file(part_path).unwrap();
             } else {
+                trace!("Parquet file successfully constructed");
+                if let Err(e) = std::fs::rename(&part_path, &parquet_path) {
+                    error!(
+                        "Couldn't rename part file: {part_path:?} -> {parquet_path:?}, error = {e}"
+                    );
+                }
                 for file in arrow_files {
                     // warn!("file-\n{file:?}\n");
                     let file_size = file.metadata().unwrap().len();

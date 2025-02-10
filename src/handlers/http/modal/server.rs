@@ -16,6 +16,8 @@
  *
  */
 
+use std::thread;
+
 use crate::alerts::ALERTS;
 use crate::analytics;
 use crate::correlation::CORRELATIONS;
@@ -130,15 +132,9 @@ impl ParseableServer for Server {
             hot_tier_manager.download_from_s3()?;
         };
 
-        let (localsync_handler, mut localsync_outbox, localsync_inbox) =
-            sync::run_local_sync().await;
-        let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
-            sync::object_store_sync().await;
-        let (
-            mut remote_conversion_handler,
-            mut remote_conversion_outbox,
-            mut remote_conversion_inbox,
-        ) = sync::arrow_conversion().await;
+        // Run sync on a background thread
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        thread::spawn(|| sync::handler(cancel_rx));
 
         if PARSEABLE.options.send_analytics {
             analytics::init_analytics_scheduler()?;
@@ -147,50 +143,13 @@ impl ParseableServer for Server {
         tokio::spawn(handlers::livetail::server());
         tokio::spawn(handlers::airplane::server());
 
-        let app = self.start(shutdown_rx, prometheus.clone(), PARSEABLE.options.openid());
+        let result = self
+            .start(shutdown_rx, prometheus.clone(), PARSEABLE.options.openid())
+            .await;
+        // Cancel sync jobs
+        cancel_tx.send(()).expect("Cancellation should not fail");
 
-        tokio::pin!(app);
-
-        loop {
-            tokio::select! {
-                e = &mut app => {
-                    // actix server finished .. stop other threads and stop the server
-                    remote_sync_inbox.send(()).unwrap_or(());
-                    localsync_inbox.send(()).unwrap_or(());
-                    remote_conversion_inbox.send(()).unwrap_or(());
-                    if let Err(e) = localsync_handler.await {
-                        error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    if let Err(e) = remote_sync_handler.await {
-                        error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    if let Err(e) = remote_conversion_handler.await {
-                        error!("Error joining remote_conversion_handler: {:?}", e);
-                    }
-                    return e
-                },
-                _ = &mut localsync_outbox => {
-                    // crash the server if localsync fails for any reason
-                    // panic!("Local Sync thread died. Server will fail now!")
-                    return Err(anyhow::Error::msg("Failed to sync local data to drive. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
-                },
-                _ = &mut remote_sync_outbox => {
-                    // remote_sync failed, this is recoverable by just starting remote_sync thread again
-                    if let Err(e) = remote_sync_handler.await {
-                        error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
-                },
-                _ = &mut remote_conversion_outbox => {
-                    // remote_conversion failed, this is recoverable by just starting remote_conversion thread again
-                    if let Err(e) = remote_conversion_handler.await {
-                        error!("Error joining remote_conversion_handler: {:?}", e);
-                    }
-                    (remote_conversion_handler, remote_conversion_outbox, remote_conversion_inbox) = sync::arrow_conversion().await;
-                }
-
-            };
-        }
+        return result;
     }
 }
 

@@ -27,7 +27,7 @@ use once_cell::sync::Lazy;
 use serde_json::Error as SerdeError;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
-use tokio::sync::oneshot::{Receiver, Sender};
+use tokio::sync::oneshot::{self, Receiver, Sender};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tracing::{trace, warn};
@@ -733,10 +733,17 @@ impl Alerts {
         let store = PARSEABLE.storage.get_object_store();
 
         for alert in store.get_alerts().await.unwrap_or_default() {
-            let (handle, rx, tx) =
-                schedule_alert_task(alert.get_eval_frequency(), alert.clone()).await?;
+            let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
+            let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
+            let handle = schedule_alert_task(
+                alert.get_eval_frequency(),
+                alert.clone(),
+                inbox_rx,
+                outbox_tx,
+            )?;
 
-            self.update_task(alert.id, handle, rx, tx).await;
+            self.update_task(alert.id, handle, outbox_rx, inbox_tx)
+                .await;
 
             map.insert(alert.id, alert);
         }

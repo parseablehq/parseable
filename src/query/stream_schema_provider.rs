@@ -92,7 +92,10 @@ impl SchemaProvider for GlobalSchemaProvider {
     async fn table(&self, name: &str) -> DataFusionResult<Option<Arc<dyn TableProvider>>> {
         if self.table_exist(name) {
             Ok(Some(Arc::new(StandardTableProvider {
-                schema: PARSEABLE.get_stream(name).expect(STREAM_EXISTS).get_schema(),
+                schema: PARSEABLE
+                    .get_stream(name)
+                    .expect(STREAM_EXISTS)
+                    .get_schema(),
                 stream: name.to_owned(),
                 url: self.storage.store_url(),
             })))
