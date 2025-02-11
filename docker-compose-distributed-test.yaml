@@ -53,7 +53,8 @@ services:
       timeout: 20s
       retries: 5
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
     deploy:
       restart_policy:
         condition: on-failure
@@ -89,8 +90,10 @@ services:
       timeout: 20s
       retries: 5
     depends_on:
-      - parseable-query
-      - minio
+      parseable-query:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     deploy:
       restart_policy:
         condition: on-failure
@@ -121,9 +124,12 @@ services:
     networks:
       - parseable-internal
     depends_on:
-      - parseable-query
-      - parseable-ingest-one
-      - minio
+      parseable-query:
+        condition: service_healthy
+      parseable-ingest-one:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     deploy:
       restart_policy:
         condition: on-failure

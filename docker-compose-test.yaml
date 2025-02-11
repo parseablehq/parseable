@@ -44,7 +44,8 @@ services:
       - P_CHECK_UPDATE=false
       - P_PARQUET_COMPRESSION_ALGO=snappy
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness" ]
       interval: 15s
@@ -76,7 +77,8 @@ services:
       "parseable"
     ]
     depends_on:
-      - parseable
+      parseable:
+        condition: service_healthy
     networks:
       - parseable-internal
     deploy:

@@ -49,8 +49,10 @@ services:
       - P_KAFKA_BOOTSTRAP_SERVERS=kafka-0:9092
       # additional settings like security, tuning, etc.
     depends_on:
-      - minio
-      - kafka-0
+      minio:
+        condition: service_healthy
+      kafka-0:
+        condition: service_healthy
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness" ]
       interval: 15s
@@ -82,7 +84,8 @@ services:
       "parseable"
     ]
     depends_on:
-      - parseable
+      parseable:
+        condition: service_healthy
     networks:
       - parseable-internal
     deploy:
@@ -153,7 +156,8 @@ services:
       - LOG_RATE=5000
       - TOTAL_LOGS=500_000
     depends_on:
-      - kafka-0
+      kafka-0:
+        condition: service_healthy
     networks:
       - parseable-internal
     deploy:

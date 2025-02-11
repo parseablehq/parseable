@@ -11,8 +11,10 @@ services:
     volumes:
       - ./parseable-ingest-haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     depends_on:
-      - parseable-ingest-one
-      - parseable-ingest-two
+      parseable-ingest-one:
+        condition: service_healthy
+      parseable-ingest-two:
+        condition: service_healthy
     networks:
       - parseable-internal
     healthcheck:
@@ -210,9 +212,12 @@ services:
     networks:
       - parseable-internal
     depends_on:
-      - parseable-query
-      - parseable-ingest-haproxy
-      - minio
+      parseable-query:
+        condition: service_healthy
+      parseable-ingest-haproxy:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     deploy:
       restart_policy:
         condition: on-failure
