@@ -46,8 +46,6 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Local, Utc};
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
-use futures::stream::FuturesUnordered;
-use futures::StreamExt;
 use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
@@ -748,91 +746,6 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
         Ok(())
     }
-
-    async fn conversion(&self, shutdown_signal: bool) -> Result<(), ObjectStorageError> {
-        if !Path::new(&CONFIG.staging_dir()).exists() {
-            return Ok(());
-        }
-
-        let mut conversion_tasks = FuturesUnordered::new();
-        for stream in STREAM_INFO.list_streams() {
-            conversion_tasks.push(conversion_for_stream(stream, shutdown_signal));
-        }
-
-        while let Some(res) = conversion_tasks.next().await {
-            if let Err(err) = res {
-                error!("Failed to run conversion task {err:?}");
-                return Err(err);
-            }
-        }
-
-        Ok(())
-    }
-}
-
-async fn conversion_for_stream(
-    stream: String,
-    shutdown_signal: bool,
-) -> Result<(), ObjectStorageError> {
-    info!("Starting arrow_conversion job for stream- {stream}");
-
-    let time_partition = STREAM_INFO
-        .get_time_partition(&stream)
-        .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-    let custom_partition = STREAM_INFO
-        .get_custom_partition(&stream)
-        .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-    let stage = STAGING.get_or_create_stream(&stream);
-
-    // read arrow files on disk
-    // convert them to parquet
-    let schema = stage
-        .convert_disk_files_to_parquet(
-            time_partition.as_ref(),
-            custom_partition.as_ref(),
-            shutdown_signal,
-        )
-        .map_err(|err| {
-            warn!("Error while converting arrow to parquet- {err:?}");
-            ObjectStorageError::UnhandledError(Box::new(err))
-        })?;
-
-    // check if there is already a schema file in staging pertaining to this stream
-    // if yes, then merge them and save
-
-    if let Some(schema) = schema {
-        let static_schema_flag = STREAM_INFO
-            .get_static_schema_flag(&stream)
-            .map_err(|err| ObjectStorageError::UnhandledError(Box::new(err)))?;
-        if !static_schema_flag {
-            // schema is dynamic, read from staging and merge if present
-
-            // need to add something before .schema to make the file have an extension of type `schema`
-            let path =
-                RelativePathBuf::from_iter([format!("{stream}.schema")]).to_path(&stage.data_path);
-
-            let staging_schemas = stage.get_schemas_if_present();
-            if let Some(mut staging_schemas) = staging_schemas {
-                warn!(
-                    "Found {} schemas in staging for stream- {stream}",
-                    staging_schemas.len()
-                );
-                staging_schemas.push(schema);
-                let merged_schema = Schema::try_merge(staging_schemas)
-                    .map_err(|e| ObjectStorageError::Custom(e.to_string()))?;
-
-                warn!("writing merged schema to path- {path:?}");
-                // save the merged schema on staging disk
-                // the path should be stream/.ingestor.id.schema
-                fs::write(path, to_bytes(&merged_schema))?;
-            } else {
-                info!("writing single schema to path- {path:?}");
-                fs::write(path, to_bytes(&schema))?;
-            }
-        }
-    }
-
-    Ok(())
 }
 
 pub async fn commit_schema_to_storage(

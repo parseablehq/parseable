@@ -19,7 +19,7 @@
 
 use std::{
     collections::HashMap,
-    fs::{remove_file, File, OpenOptions},
+    fs::{self, remove_file, File, OpenOptions},
     path::{Path, PathBuf},
     process,
     sync::{Arc, Mutex, RwLock},
@@ -42,15 +42,17 @@ use parquet::{
     schema::types::ColumnPath,
 };
 use rand::distributions::DistString;
-use tracing::{error, trace};
+use relative_path::RelativePathBuf;
+use tracing::{error, info, trace, warn};
 
 use crate::{
     cli::Options,
     event::DEFAULT_TIMESTAMP_KEY,
     handlers::http::modal::ingest_server::INGESTOR_META,
+    metadata::{LOCK_EXPECT, STREAM_INFO},
     metrics,
     option::{Mode, CONFIG},
-    storage::{StreamType, OBJECT_STORE_DATA_GRANULARITY},
+    storage::{object_storage::to_bytes, StreamType, OBJECT_STORE_DATA_GRANULARITY},
     utils::minute_to_slot,
 };
 
@@ -276,6 +278,62 @@ impl<'a> Stream<'a> {
         parquet_path.set_file_name(filename_with_random_number);
         parquet_path.set_extension("parquet");
         parquet_path
+    }
+
+    /// Converts arrow files in staging into parquet files, does so only for past minutes when run with `!shutdown_signal`
+    fn prepare_parquet(&self, shutdown_signal: bool) -> Result<(), StagingError> {
+        info!(
+            "Starting arrow_conversion job for stream- {}",
+            self.stream_name
+        );
+
+        let time_partition = STREAM_INFO.get_time_partition(&self.stream_name)?;
+        let custom_partition = STREAM_INFO.get_custom_partition(&self.stream_name)?;
+
+        // read arrow files on disk
+        // convert them to parquet
+        let schema = self
+            .convert_disk_files_to_parquet(
+                time_partition.as_ref(),
+                custom_partition.as_ref(),
+                shutdown_signal,
+            )
+            .inspect_err(|err| warn!("Error while converting arrow to parquet- {err:?}"))?;
+
+        // check if there is already a schema file in staging pertaining to this stream
+        // if yes, then merge them and save
+
+        if let Some(schema) = schema {
+            let static_schema_flag = STREAM_INFO.get_static_schema_flag(&self.stream_name)?;
+            if !static_schema_flag {
+                // schema is dynamic, read from staging and merge if present
+
+                // need to add something before .schema to make the file have an extension of type `schema`
+                let path = RelativePathBuf::from_iter([format!("{}.schema", self.stream_name)])
+                    .to_path(&self.data_path);
+
+                let staging_schemas = self.get_schemas_if_present();
+                if let Some(mut staging_schemas) = staging_schemas {
+                    warn!(
+                        "Found {} schemas in staging for stream- {}",
+                        staging_schemas.len(),
+                        self.stream_name
+                    );
+                    staging_schemas.push(schema);
+                    let merged_schema = Schema::try_merge(staging_schemas)?;
+
+                    warn!("writing merged schema to path- {path:?}");
+                    // save the merged schema on staging disk
+                    // the path should be stream/.ingestor.id.schema
+                    fs::write(path, to_bytes(&merged_schema))?;
+                } else {
+                    info!("writing single schema to path- {path:?}");
+                    fs::write(path, to_bytes(&schema))?;
+                }
+            }
+        }
+
+        Ok(())
     }
 
     pub fn recordbatches_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
@@ -505,6 +563,21 @@ impl Streams {
         for staging in streams.values() {
             staging.flush()
         }
+    }
+
+    /// Convert arrow files into parquet, preparing it for upload
+    pub fn prepare_parquet(&self, shutdown_signal: bool) -> Result<(), StagingError> {
+        if !Path::new(&CONFIG.staging_dir()).exists() {
+            return Ok(());
+        }
+
+        for stream in self.read().expect(LOCK_EXPECT).values() {
+            stream
+                .prepare_parquet(shutdown_signal)
+                .inspect_err(|err| error!("Failed to run conversion task {err:?}"))?;
+        }
+
+        Ok(())
     }
 }
 

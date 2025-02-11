@@ -213,7 +213,7 @@ impl ParseableServer for IngestServer {
         let result = self.start(shutdown_rx, prometheus.clone(), None).await;
         // Cancel sync jobs
         cancel_tx.send(()).expect("Cancellation should not fail");
-        
+
         result
     }
 }

@@ -742,7 +742,8 @@ impl Alerts {
                 outbox_tx,
             )?;
 
-            self.update_task(alert.id, handle, outbox_rx, inbox_tx).await;
+            self.update_task(alert.id, handle, outbox_rx, inbox_tx)
+                .await;
 
             map.insert(alert.id, alert);
         }
