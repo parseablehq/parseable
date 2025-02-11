@@ -19,7 +19,7 @@
 
 use std::{
     collections::HashMap,
-    fs::{remove_file, File, OpenOptions},
+    fs::{remove_file, write, File, OpenOptions},
     num::NonZeroU32,
     path::{Path, PathBuf},
     process,
@@ -40,7 +40,8 @@ use parquet::{
     schema::types::ColumnPath,
 };
 use rand::distributions::DistString;
-use tracing::{error, trace};
+use relative_path::RelativePathBuf;
+use tracing::{error, info, trace, warn};
 
 use crate::{
     cli::Options,
@@ -48,7 +49,9 @@ use crate::{
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
-    storage::{retention::Retention, StreamType, OBJECT_STORE_DATA_GRANULARITY},
+    storage::{
+        object_storage::to_bytes, retention::Retention, StreamType, OBJECT_STORE_DATA_GRANULARITY,
+    },
     utils::minute_to_slot,
     LOCK_EXPECT,
 };
@@ -291,6 +294,59 @@ impl Stream {
         parquet_path.set_file_name(filename_with_random_number);
         parquet_path.set_extension("parquet");
         parquet_path
+    }
+
+    /// Converts arrow files in staging into parquet files, does so only for past minutes when run with `!shutdown_signal`
+    pub fn prepare_parquet(&self, shutdown_signal: bool) -> Result<(), StagingError> {
+        info!(
+            "Starting arrow_conversion job for stream- {}",
+            self.stream_name
+        );
+
+        let time_partition = self.get_time_partition();
+        let custom_partition = self.get_custom_partition();
+
+        // read arrow files on disk
+        // convert them to parquet
+        let schema = self
+            .convert_disk_files_to_parquet(
+                time_partition.as_ref(),
+                custom_partition.as_ref(),
+                shutdown_signal,
+            )
+            .inspect_err(|err| warn!("Error while converting arrow to parquet- {err:?}"))?;
+
+        // check if there is already a schema file in staging pertaining to this stream
+        // if yes, then merge them and save
+
+        if let Some(mut schema) = schema {
+            let static_schema_flag = self.get_static_schema_flag();
+            if !static_schema_flag {
+                // schema is dynamic, read from staging and merge if present
+
+                // need to add something before .schema to make the file have an extension of type `schema`
+                let path = RelativePathBuf::from_iter([format!("{}.schema", self.stream_name)])
+                    .to_path(&self.data_path);
+
+                let staging_schemas = self.get_schemas_if_present();
+                if let Some(mut staging_schemas) = staging_schemas {
+                    warn!(
+                        "Found {} schemas in staging for stream- {}",
+                        staging_schemas.len(),
+                        self.stream_name
+                    );
+                    staging_schemas.push(schema);
+                    schema = Schema::try_merge(staging_schemas)?;
+                }
+
+                // save the merged schema on staging disk
+                // the path should be stream/.ingestor.{id}.schema
+                info!("writing schema to path - {path:?}");
+                write(path, to_bytes(&schema))?;
+            }
+        }
+
+        Ok(())
     }
 
     pub fn recordbatches_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
@@ -661,6 +717,23 @@ impl Streams {
             })
             .map(|(k, _)| k.clone())
             .collect()
+    }
+
+    /// Convert arrow files into parquet, preparing it for upload
+    pub fn prepare_parquet(&self, shutdown_signal: bool) -> Result<(), StagingError> {
+        let streams: Vec<Arc<Stream>> = self
+            .read()
+            .expect(LOCK_EXPECT)
+            .values()
+            .map(Arc::clone)
+            .collect();
+        for stream in streams {
+            stream
+                .prepare_parquet(shutdown_signal)
+                .inspect_err(|err| error!("Failed to run conversion task {err:?}"))?;
+        }
+
+        Ok(())
     }
 }
 

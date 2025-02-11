@@ -30,4 +30,6 @@ pub enum StagingError {
     ObjectStorage(#[from] std::io::Error),
     #[error("Could not generate parquet file")]
     Create,
+    // #[error("Metadata Error: {0}")]
+    // Metadata(#[from] MetadataError),
 }

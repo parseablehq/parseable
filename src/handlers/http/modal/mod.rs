@@ -139,7 +139,7 @@ pub trait ParseableServer {
             // Perform S3 sync and wait for completion
             info!("Starting data sync to S3...");
 
-            if let Err(e) = PARSEABLE.storage.get_object_store().conversion(true).await {
+            if let Err(e) = PARSEABLE.streams.prepare_parquet(true) {
                 warn!("Failed to convert arrow files to parquet. {:?}", e);
             } else {
                 info!("Successfully converted arrow files to parquet.");

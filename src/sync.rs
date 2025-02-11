@@ -207,7 +207,7 @@ pub fn arrow_conversion() -> (
                         if let Err(e) = monitor_task_duration(
                             "arrow_conversion",
                             Duration::from_secs(30),
-                            || async { PARSEABLE.storage.get_object_store().conversion(false).await },
+                            || async { PARSEABLE.streams.prepare_parquet(false) },
                         ).await
                         {
                             warn!("failed to convert local arrow data to parquet. {e:?}");
