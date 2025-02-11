@@ -149,7 +149,7 @@ services:
   kafka-log-generator:
     build:
       context: ./scripts
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.debug
     environment:
       - KAFKA_BROKERS=kafka-0:9092
       - KAFKA_TOPIC=test-logs-stream

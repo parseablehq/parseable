@@ -57,7 +57,7 @@ services:
   parseable-query:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.debug
     platform: linux/amd64
     command: [ "parseable", "s3-store" ]
     ports:
