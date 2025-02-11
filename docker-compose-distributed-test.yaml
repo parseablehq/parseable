@@ -45,6 +45,7 @@ services:
       - P_CHECK_UPDATE=false
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=query
+      - RUST_LOG=warn
     networks:
       - parseable-internal
     healthcheck:
@@ -82,6 +83,7 @@ services:
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=ingest
       - P_INGESTOR_ENDPOINT=parseable-ingest-one:8000
+      - RUST_LOG=warn
     networks:
       - parseable-internal
     healthcheck:
