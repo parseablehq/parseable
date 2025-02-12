@@ -16,6 +16,31 @@
  *
  */
 
+use std::{path::Path, sync::Arc};
+
+use actix_web::{middleware::from_fn, web::ServiceConfig, App, HttpServer};
+use actix_web_prometheus::PrometheusMetrics;
+use async_trait::async_trait;
+use base64::Engine;
+use bytes::Bytes;
+use openid::Discovered;
+use relative_path::RelativePathBuf;
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use ssl_acceptor::get_ssl_acceptor;
+use tokio::sync::oneshot;
+use tracing::{error, info, warn};
+
+use crate::{
+    cli::Options,
+    oidc::Claims,
+    parseable::PARSEABLE,
+    storage::PARSEABLE_ROOT_DIRECTORY,
+    utils::{get_ingestor_id, get_url},
+};
+
+use super::{audit, cross_origin_config, health_check, API_BASE_PATH, API_VERSION};
+
 pub mod ingest;
 pub mod ingest_server;
 pub mod query;
@@ -24,33 +49,7 @@ pub mod server;
 pub mod ssl_acceptor;
 pub mod utils;
 
-use std::path::Path;
-use std::sync::Arc;
-
-use actix_web::middleware::from_fn;
-use actix_web::web::ServiceConfig;
-use actix_web::App;
-use actix_web::HttpServer;
-use actix_web_prometheus::PrometheusMetrics;
-use async_trait::async_trait;
-use base64::Engine;
-use bytes::Bytes;
-use openid::Discovered;
-use serde::Deserialize;
-use serde::Serialize;
-use ssl_acceptor::get_ssl_acceptor;
-use tokio::sync::oneshot;
-use tracing::{error, info, warn};
-
-use super::audit;
-use super::cross_origin_config;
-use super::API_BASE_PATH;
-use super::API_VERSION;
-use crate::handlers::http::health_check;
-use crate::oidc;
-use crate::option::CONFIG;
-
-pub type OpenIdClient = Arc<openid::Client<Discovered, oidc::Claims>>;
+pub type OpenIdClient = Arc<openid::Client<Discovered, Claims>>;
 
 // to be decided on what the Default version should be
 pub const DEFAULT_VERSION: &str = "v3";
@@ -68,7 +67,11 @@ pub trait ParseableServer {
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>>;
 
     /// code that describes starting and setup procedures for each type of server
-    async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()>;
+    async fn init(
+        &self,
+        prometheus: &PrometheusMetrics,
+        shutdown_rx: oneshot::Receiver<()>,
+    ) -> anyhow::Result<()>;
 
     /// configure the server
     async fn start(
@@ -93,9 +96,9 @@ pub trait ParseableServer {
 
         // get the ssl stuff
         let ssl = get_ssl_acceptor(
-            &CONFIG.options.tls_cert_path,
-            &CONFIG.options.tls_key_path,
-            &CONFIG.options.trusted_ca_certs_path,
+            &PARSEABLE.options.tls_cert_path,
+            &PARSEABLE.options.tls_key_path,
+            &PARSEABLE.options.trusted_ca_certs_path,
         )?;
 
         // fn that creates the app
@@ -118,10 +121,10 @@ pub trait ParseableServer {
         // Start the server with or without TLS
         let srv = if let Some(config) = ssl {
             http_server
-                .bind_rustls_0_22(&CONFIG.options.address, config)?
+                .bind_rustls_0_22(&PARSEABLE.options.address, config)?
                 .run()
         } else {
-            http_server.bind(&CONFIG.options.address)?.run()
+            http_server.bind(&PARSEABLE.options.address)?.run()
         };
 
         // Graceful shutdown handling
@@ -135,7 +138,19 @@ pub trait ParseableServer {
 
             // Perform S3 sync and wait for completion
             info!("Starting data sync to S3...");
-            if let Err(e) = CONFIG.storage().get_object_store().sync(true).await {
+
+            if let Err(e) = PARSEABLE.streams.prepare_parquet(true) {
+                warn!("Failed to convert arrow files to parquet. {:?}", e);
+            } else {
+                info!("Successfully converted arrow files to parquet.");
+            }
+
+            if let Err(e) = PARSEABLE
+                .storage
+                .get_object_store()
+                .upload_files_from_staging()
+                .await
+            {
                 warn!("Failed to sync local data with object store. {:?}", e);
             } else {
                 info!("Successfully synced all data to S3.");
@@ -163,7 +178,7 @@ pub trait ParseableServer {
     }
 }
 
-#[derive(Serialize, Debug, Deserialize, Default, Clone, Eq, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, Eq, PartialEq)]
 pub struct IngestorMetadata {
     pub version: String,
     pub port: String,
@@ -175,34 +190,167 @@ pub struct IngestorMetadata {
 }
 
 impl IngestorMetadata {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         port: String,
         domain_name: String,
-        version: String,
         bucket_name: String,
         username: &str,
         password: &str,
         ingestor_id: String,
         flight_port: String,
     ) -> Self {
-        let token = base64::prelude::BASE64_STANDARD.encode(format!("{}:{}", username, password));
-
-        let token = format!("Basic {}", token);
+        let token = base64::prelude::BASE64_STANDARD.encode(format!("{username}:{password}"));
 
         Self {
             port,
             domain_name,
-            version,
+            version: DEFAULT_VERSION.to_string(),
             bucket_name,
-            token,
+            token: format!("Basic {token}"),
             ingestor_id,
             flight_port,
         }
     }
 
+    /// Capture metadata information by either loading it from staging or starting fresh
+    pub fn load() -> Arc<Self> {
+        // all the files should be in the staging directory root
+        let entries = std::fs::read_dir(&PARSEABLE.options.local_staging_path)
+            .expect("Couldn't read from file");
+        let url = get_url();
+        let port = url.port().unwrap_or(80).to_string();
+        let url = url.to_string();
+        let Options {
+            username, password, ..
+        } = PARSEABLE.options.as_ref();
+        let staging_path = PARSEABLE.staging_dir();
+        let flight_port = PARSEABLE.options.flight_port.to_string();
+
+        for entry in entries {
+            // cause the staging directory will have only one file with ingestor in the name
+            // so the JSON Parse should not error unless the file is corrupted
+            let path = entry.expect("Should be a directory entry").path();
+            let flag = path
+                .file_name()
+                .unwrap_or_default()
+                .to_str()
+                .unwrap_or_default()
+                .contains("ingestor");
+
+            if flag {
+                // get the ingestor metadata from staging
+                let text = std::fs::read(path).expect("File should be present");
+                let mut meta: Value = serde_json::from_slice(&text).expect("Valid JSON");
+
+                // migrate the staging meta
+                let obj = meta
+                    .as_object_mut()
+                    .expect("Could Not parse Ingestor Metadata Json");
+
+                if obj.get("flight_port").is_none() {
+                    obj.insert(
+                        "flight_port".to_owned(),
+                        Value::String(PARSEABLE.options.flight_port.to_string()),
+                    );
+                }
+
+                let mut meta: IngestorMetadata =
+                    serde_json::from_value(meta).expect("Couldn't write to disk");
+
+                // compare url endpoint and port
+                if meta.domain_name != url {
+                    info!(
+                        "Domain Name was Updated. Old: {} New: {}",
+                        meta.domain_name, url
+                    );
+                    meta.domain_name = url;
+                }
+
+                if meta.port != port {
+                    info!("Port was Updated. Old: {} New: {}", meta.port, port);
+                    meta.port = port;
+                }
+
+                let token =
+                    base64::prelude::BASE64_STANDARD.encode(format!("{}:{}", username, password));
+
+                let token = format!("Basic {}", token);
+
+                if meta.token != token {
+                    // TODO: Update the message to be more informative with username and password
+                    info!(
+                        "Credentials were Updated. Old: {} New: {}",
+                        meta.token, token
+                    );
+                    meta.token = token;
+                }
+
+                meta.put_on_disk(staging_path)
+                    .expect("Couldn't write to disk");
+                return Arc::new(meta);
+            }
+        }
+
+        let storage = PARSEABLE.storage.get_object_store();
+        let meta = Self::new(
+            port,
+            url,
+            storage.get_bucket_name(),
+            username,
+            password,
+            get_ingestor_id(),
+            flight_port,
+        );
+
+        meta.put_on_disk(staging_path)
+            .expect("Should Be valid Json");
+        Arc::new(meta)
+    }
+
     pub fn get_ingestor_id(&self) -> String {
         self.ingestor_id.clone()
+    }
+
+    #[inline(always)]
+    pub fn file_path(&self) -> RelativePathBuf {
+        RelativePathBuf::from_iter([
+            PARSEABLE_ROOT_DIRECTORY,
+            &format!("ingestor.{}.json", self.get_ingestor_id()),
+        ])
+    }
+
+    pub async fn migrate(&self) -> anyhow::Result<Option<IngestorMetadata>> {
+        let imp = self.file_path();
+        let bytes = match PARSEABLE.storage.get_object_store().get_object(&imp).await {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return Ok(None);
+            }
+        };
+        let mut json = serde_json::from_slice::<Value>(&bytes)?;
+        let meta = json
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("Unable to parse Ingester Metadata"))?;
+        let fp = meta.get("flight_port");
+
+        if fp.is_none() {
+            meta.insert(
+                "flight_port".to_owned(),
+                Value::String(PARSEABLE.options.flight_port.to_string()),
+            );
+        }
+        let bytes = Bytes::from(serde_json::to_vec(&json)?);
+
+        let resource: IngestorMetadata = serde_json::from_value(json)?;
+        resource.put_on_disk(PARSEABLE.staging_dir())?;
+
+        PARSEABLE
+            .storage
+            .get_object_store()
+            .put_object(&imp, bytes)
+            .await?;
+
+        Ok(Some(resource))
     }
 
     /// Puts the ingestor info into the staging.
@@ -227,18 +375,17 @@ mod test {
     use bytes::Bytes;
     use rstest::rstest;
 
-    use super::{IngestorMetadata, DEFAULT_VERSION};
+    use super::IngestorMetadata;
 
     #[rstest]
     fn test_deserialize_resource() {
         let lhs: IngestorMetadata = IngestorMetadata::new(
             "8000".to_string(),
             "https://localhost:8000".to_string(),
-            DEFAULT_VERSION.to_string(),
             "somebucket".to_string(),
             "admin",
             "admin",
-            "ingestor_id".to_string(),
+            "ingestor_id".to_owned(),
             "8002".to_string(),
         );
 
@@ -252,11 +399,10 @@ mod test {
         let im = IngestorMetadata::new(
             "8000".to_string(),
             "https://localhost:8000".to_string(),
-            DEFAULT_VERSION.to_string(),
             "somebucket".to_string(),
             "admin",
             "admin",
-            "ingestor_id".to_string(),
+            "ingestor_id".to_owned(),
             "8002".to_string(),
         );
 

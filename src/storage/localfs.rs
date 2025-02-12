@@ -36,10 +36,11 @@ use crate::{
     handlers::http::users::USERS_ROOT_DIR,
     metrics::storage::{azureblob::REQUEST_RESPONSE_TIME, StorageMetrics},
     option::validation,
+    parseable::LogStream,
 };
 
 use super::{
-    LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, ALERTS_ROOT_DIRECTORY,
+    ObjectStorage, ObjectStorageError, ObjectStorageProvider, ALERTS_ROOT_DIRECTORY,
     PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
@@ -63,6 +64,10 @@ pub struct FSConfig {
 }
 
 impl ObjectStorageProvider for FSConfig {
+    fn name(&self) -> &'static str {
+        "drive"
+    }
+
     fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder {
         RuntimeEnvBuilder::new()
     }

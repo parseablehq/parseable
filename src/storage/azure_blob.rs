@@ -46,11 +46,12 @@ use url::Url;
 use crate::{
     handlers::http::users::USERS_ROOT_DIR,
     metrics::storage::{azureblob::REQUEST_RESPONSE_TIME, StorageMetrics},
+    parseable::LogStream,
 };
 
 use super::{
     metrics_layer::MetricLayer, object_storage::parseable_json_path, to_object_store_path,
-    LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, CONNECT_TIMEOUT_SECS,
+    ObjectStorage, ObjectStorageError, ObjectStorageProvider, CONNECT_TIMEOUT_SECS,
     PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME,
     STREAM_ROOT_DIRECTORY,
 };
@@ -156,6 +157,10 @@ impl AzureBlobConfig {
 }
 
 impl ObjectStorageProvider for AzureBlobConfig {
+    fn name(&self) -> &'static str {
+        "blob-store"
+    }
+
     fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder {
         let azure = self.get_default_builder().build().unwrap();
         // limit objectstore to a concurrent request limit
