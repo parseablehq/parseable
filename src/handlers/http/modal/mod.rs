@@ -21,12 +21,12 @@ use std::{path::Path, sync::Arc};
 use actix_web::{middleware::from_fn, web::ServiceConfig, App, HttpServer};
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
-use base64::Engine;
+use base64::{prelude::BASE64_STANDARD, Engine};
 use bytes::Bytes;
 use openid::Discovered;
 use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use ssl_acceptor::get_ssl_acceptor;
 use tokio::sync::oneshot;
 use tracing::{error, info, warn};
@@ -215,8 +215,10 @@ impl IngestorMetadata {
     /// Capture metadata information by either loading it from staging or starting fresh
     pub fn load(options: &Options, storage: &dyn ObjectStorageProvider) -> Arc<Self> {
         // all the files should be in the staging directory root
-        let entries =
-            std::fs::read_dir(options.staging_dir()).expect("Couldn't read from file");
+        let entries = options
+            .staging_dir()
+            .read_dir()
+            .expect("Couldn't read from file");
         let url = options.get_url();
         let port = url.port().unwrap_or(80).to_string();
         let url = url.to_string();
@@ -230,65 +232,48 @@ impl IngestorMetadata {
             // cause the staging directory will have only one file with ingestor in the name
             // so the JSON Parse should not error unless the file is corrupted
             let path = entry.expect("Should be a directory entry").path();
-            let flag = path
+            if !path
                 .file_name()
-                .unwrap_or_default()
-                .to_str()
-                .unwrap_or_default()
-                .contains("ingestor");
-
-            if flag {
-                // get the ingestor metadata from staging
-                let text = std::fs::read(path).expect("File should be present");
-                let mut meta: Value = serde_json::from_slice(&text).expect("Valid JSON");
-
-                // migrate the staging meta
-                let obj = meta
-                    .as_object_mut()
-                    .expect("Could Not parse Ingestor Metadata Json");
-
-                if obj.get("flight_port").is_none() {
-                    obj.insert(
-                        "flight_port".to_owned(),
-                        Value::String(options.flight_port.to_string()),
-                    );
-                }
-
-                let mut meta: IngestorMetadata =
-                    serde_json::from_value(meta).expect("Couldn't write to disk");
-
-                // compare url endpoint and port
-                if meta.domain_name != url {
-                    info!(
-                        "Domain Name was Updated. Old: {} New: {}",
-                        meta.domain_name, url
-                    );
-                    meta.domain_name = url;
-                }
-
-                if meta.port != port {
-                    info!("Port was Updated. Old: {} New: {}", meta.port, port);
-                    meta.port = port;
-                }
-
-                let token =
-                    base64::prelude::BASE64_STANDARD.encode(format!("{}:{}", username, password));
-
-                let token = format!("Basic {}", token);
-
-                if meta.token != token {
-                    // TODO: Update the message to be more informative with username and password
-                    info!(
-                        "Credentials were Updated. Old: {} New: {}",
-                        meta.token, token
-                    );
-                    meta.token = token;
-                }
-
-                meta.put_on_disk(staging_path)
-                    .expect("Couldn't write to disk");
-                return Arc::new(meta);
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.contains("ingestor"))
+            {
+                continue;
             }
+
+            // get the ingestor metadata from staging
+            let bytes = std::fs::read(path).expect("File should be present");
+            let mut meta = Self::from_bytes(&bytes).expect("Extracted ingestor metadata");
+
+            // compare url endpoint and port, update
+            if meta.domain_name != url {
+                info!(
+                    "Domain Name was Updated. Old: {} New: {}",
+                    meta.domain_name, url
+                );
+                meta.domain_name = url;
+            }
+
+            if meta.port != port {
+                info!("Port was Updated. Old: {} New: {}", meta.port, port);
+                meta.port = port;
+            }
+
+            let token = format!(
+                "Basic {}",
+                BASE64_STANDARD.encode(format!("{username}:{password}"))
+            );
+            if meta.token != token {
+                // TODO: Update the message to be more informative with username and password
+                warn!(
+                    "Credentials were Updated. Tokens updated; Old: {} New: {}",
+                    meta.token, token
+                );
+                meta.token = token;
+            }
+            meta.put_on_disk(staging_path)
+                .expect("Couldn't write to disk");
+
+            return Arc::new(meta);
         }
 
         let storage = storage.get_object_store();
@@ -319,6 +304,15 @@ impl IngestorMetadata {
         ])
     }
 
+    /// Updates json with `flight_port` field if not already present
+    fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+        let mut json: Map<String, Value> = serde_json::from_slice(bytes)?;
+        json.entry("flight_port")
+            .or_insert_with(|| Value::String(PARSEABLE.options.flight_port.to_string()));
+
+        Ok(serde_json::from_value(Value::Object(json))?)
+    }
+
     pub async fn migrate(&self) -> anyhow::Result<Option<IngestorMetadata>> {
         let imp = self.file_path();
         let bytes = match PARSEABLE.storage.get_object_store().get_object(&imp).await {
@@ -327,21 +321,10 @@ impl IngestorMetadata {
                 return Ok(None);
             }
         };
-        let mut json = serde_json::from_slice::<Value>(&bytes)?;
-        let meta = json
-            .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("Unable to parse Ingester Metadata"))?;
-        let fp = meta.get("flight_port");
 
-        if fp.is_none() {
-            meta.insert(
-                "flight_port".to_owned(),
-                Value::String(PARSEABLE.options.flight_port.to_string()),
-            );
-        }
-        let bytes = Bytes::from(serde_json::to_vec(&json)?);
+        let resource = Self::from_bytes(&bytes)?;
+        let bytes = Bytes::from(serde_json::to_vec(&resource)?);
 
-        let resource: IngestorMetadata = serde_json::from_value(json)?;
         resource.put_on_disk(PARSEABLE.options.staging_dir())?;
 
         PARSEABLE
