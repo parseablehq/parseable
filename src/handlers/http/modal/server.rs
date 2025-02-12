@@ -54,7 +54,7 @@ use crate::{
         middleware::{DisAllowRootUser, RouteExt},
         oidc, role, MAX_EVENT_PAYLOAD_SIZE,
     },
-    option::CONFIG,
+    parseable::PARSEABLE,
     rbac::role::Action,
 };
 
@@ -94,9 +94,9 @@ impl ParseableServer for Server {
     }
 
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>> {
-        migration::run_file_migration(&CONFIG).await?;
-        let parseable_json = CONFIG.validate_storage().await?;
-        migration::run_metadata_migration(&CONFIG, &parseable_json).await?;
+        migration::run_file_migration(&PARSEABLE).await?;
+        let parseable_json = PARSEABLE.validate_storage().await?;
+        migration::run_metadata_migration(&PARSEABLE, &parseable_json).await?;
 
         Ok(parseable_json)
     }
@@ -107,9 +107,9 @@ impl ParseableServer for Server {
         prometheus: &PrometheusMetrics,
         shutdown_rx: oneshot::Receiver<()>,
     ) -> anyhow::Result<()> {
-        CONFIG.storage().register_store_metrics(prometheus);
+        PARSEABLE.storage.register_store_metrics(prometheus);
 
-        migration::run_migration(&CONFIG).await?;
+        migration::run_migration(&PARSEABLE).await?;
 
         if let Err(e) = CORRELATIONS.load().await {
             error!("{e}");
@@ -136,7 +136,7 @@ impl ParseableServer for Server {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         thread::spawn(|| sync::handler(cancel_rx));
 
-        if CONFIG.options.send_analytics {
+        if PARSEABLE.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
 
@@ -144,7 +144,7 @@ impl ParseableServer for Server {
         tokio::spawn(handlers::airplane::server());
 
         let result = self
-            .start(shutdown_rx, prometheus.clone(), CONFIG.options.openid())
+            .start(shutdown_rx, prometheus.clone(), PARSEABLE.options.openid())
             .await;
         // Cancel sync jobs
         cancel_tx.send(()).expect("Cancellation should not fail");

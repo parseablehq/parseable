@@ -18,138 +18,39 @@
 
 use std::thread;
 
-use super::ingest::ingestor_logstream;
-use super::ingest::ingestor_rbac;
-use super::ingest::ingestor_role;
-use super::server::Server;
-use super::IngestorMetadata;
-use super::OpenIdClient;
-use super::ParseableServer;
-use super::DEFAULT_VERSION;
-use crate::analytics;
-use crate::handlers::airplane;
-use crate::handlers::http::ingest;
-use crate::handlers::http::logstream;
-use crate::handlers::http::middleware::DisAllowRootUser;
-use crate::handlers::http::middleware::RouteExt;
-use crate::handlers::http::role;
-use crate::migration;
-use crate::migration::metadata_migration::migrate_ingester_metadata;
-use crate::rbac::role::Action;
-use crate::storage::object_storage::ingestor_metadata_path;
-use crate::storage::object_storage::parseable_json_path;
-use crate::storage::ObjectStorageError;
-use crate::storage::PARSEABLE_ROOT_DIRECTORY;
-use crate::sync;
-
-use crate::utils::get_ingestor_id;
-use crate::utils::get_url;
-use crate::{handlers::http::base_path, option::CONFIG};
-
 use actix_web::web;
 use actix_web::Scope;
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use base64::Engine;
 use bytes::Bytes;
-use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
 use tokio::sync::oneshot;
-use tracing::info;
 
-/// Metadata associated with this ingestor server
-pub static INGESTOR_META: Lazy<IngestorMetadata> = Lazy::new(|| {
-    // all the files should be in the staging directory root
-    let entries =
-        std::fs::read_dir(&CONFIG.options.local_staging_path).expect("Couldn't read from file");
-    let url = get_url();
-    let port = url.port().unwrap_or(80).to_string();
-    let url = url.to_string();
+use crate::{
+    analytics,
+    handlers::{
+        airplane,
+        http::{
+            base_path, ingest, logstream,
+            middleware::{DisAllowRootUser, RouteExt},
+            role,
+        },
+    },
+    migration,
+    parseable::PARSEABLE,
+    rbac::role::Action,
+    storage::{object_storage::parseable_json_path, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY},
+    sync, Server,
+};
 
-    for entry in entries {
-        // cause the staging directory will have only one file with ingestor in the name
-        // so the JSON Parse should not error unless the file is corrupted
-        let path = entry.expect("Should be a directory entry").path();
-        let flag = path
-            .file_name()
-            .unwrap_or_default()
-            .to_str()
-            .unwrap_or_default()
-            .contains("ingestor");
+use super::{
+    ingest::{ingestor_logstream, ingestor_rbac, ingestor_role},
+    OpenIdClient, ParseableServer,
+};
 
-        if flag {
-            // get the ingestor metadata from staging
-            let text = std::fs::read(path).expect("File should be present");
-            let mut meta: Value = serde_json::from_slice(&text).expect("Valid JSON");
-
-            // migrate the staging meta
-            let obj = meta
-                .as_object_mut()
-                .expect("Could Not parse Ingestor Metadata Json");
-
-            if obj.get("flight_port").is_none() {
-                obj.insert(
-                    "flight_port".to_owned(),
-                    Value::String(CONFIG.options.flight_port.to_string()),
-                );
-            }
-
-            let mut meta: IngestorMetadata =
-                serde_json::from_value(meta).expect("Couldn't write to disk");
-
-            // compare url endpoint and port
-            if meta.domain_name != url {
-                info!(
-                    "Domain Name was Updated. Old: {} New: {}",
-                    meta.domain_name, url
-                );
-                meta.domain_name = url;
-            }
-
-            if meta.port != port {
-                info!("Port was Updated. Old: {} New: {}", meta.port, port);
-                meta.port = port;
-            }
-
-            let token = base64::prelude::BASE64_STANDARD.encode(format!(
-                "{}:{}",
-                CONFIG.options.username, CONFIG.options.password
-            ));
-
-            let token = format!("Basic {}", token);
-
-            if meta.token != token {
-                // TODO: Update the message to be more informative with username and password
-                info!(
-                    "Credentials were Updated. Old: {} New: {}",
-                    meta.token, token
-                );
-                meta.token = token;
-            }
-
-            meta.put_on_disk(CONFIG.staging_dir())
-                .expect("Couldn't write to disk");
-            return meta;
-        }
-    }
-
-    let store = CONFIG.storage().get_object_store();
-    let out = IngestorMetadata::new(
-        port,
-        url,
-        DEFAULT_VERSION.to_string(),
-        store.get_bucket_name(),
-        &CONFIG.options.username,
-        &CONFIG.options.password,
-        get_ingestor_id(),
-        CONFIG.options.flight_port.to_string(),
-    );
-
-    out.put_on_disk(CONFIG.staging_dir())
-        .expect("Should Be valid Json");
-    out
-});
+pub const INGESTOR_EXPECT: &str = "Ingestor Metadata should be set in ingestor mode";
 
 pub struct IngestServer;
 
@@ -176,7 +77,7 @@ impl ParseableServer for IngestServer {
 
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>> {
         // parseable can't use local storage for persistence when running a distributed setup
-        if CONFIG.get_storage_mode_string() == "Local drive" {
+        if PARSEABLE.storage.name() == "drive" {
             return Err(anyhow::Error::msg(
                 "This instance of the Parseable server has been configured to run in a distributed setup, it doesn't support local storage.",
             ));
@@ -196,9 +97,9 @@ impl ParseableServer for IngestServer {
         prometheus: &PrometheusMetrics,
         shutdown_rx: oneshot::Receiver<()>,
     ) -> anyhow::Result<()> {
-        CONFIG.storage().register_store_metrics(prometheus);
+        PARSEABLE.storage.register_store_metrics(prometheus);
 
-        migration::run_migration(&CONFIG).await?;
+        migration::run_migration(&PARSEABLE).await?;
 
         // Run sync on a background thread
         let (cancel_tx, cancel_rx) = oneshot::channel();
@@ -206,8 +107,8 @@ impl ParseableServer for IngestServer {
 
         tokio::spawn(airplane::server());
 
-        // set the ingestor metadata
-        set_ingestor_metadata().await?;
+        // write the ingestor metadata to storage
+        PARSEABLE.store_ingestor_metadata().await?;
 
         // Ingestors shouldn't have to deal with OpenId auth flow
         let result = self.start(shutdown_rx, prometheus.clone(), None).await;
@@ -348,47 +249,14 @@ impl IngestServer {
     }
 }
 
-// create the ingestor metadata and put the .ingestor.json file in the object store
-pub async fn set_ingestor_metadata() -> anyhow::Result<()> {
-    let storage_ingestor_metadata = migrate_ingester_metadata().await?;
-    let store = CONFIG.storage().get_object_store();
-
-    // find the meta file in staging if not generate new metadata
-    let resource = INGESTOR_META.clone();
-    // use the id that was generated/found in the staging and
-    // generate the path for the object store
-    let path = ingestor_metadata_path(None);
-
-    // we are considering that we can always get from object store
-    if let Some(mut store_data) = storage_ingestor_metadata {
-        if store_data.domain_name != INGESTOR_META.domain_name {
-            store_data
-                .domain_name
-                .clone_from(&INGESTOR_META.domain_name);
-            store_data.port.clone_from(&INGESTOR_META.port);
-
-            let resource = Bytes::from(serde_json::to_vec(&store_data)?);
-
-            // if pushing to object store fails propagate the error
-            store.put_object(&path, resource).await?;
-        }
-    } else {
-        let resource = Bytes::from(serde_json::to_vec(&resource)?);
-
-        store.put_object(&path, resource).await?;
-    }
-
-    Ok(())
-}
-
 // check for querier state. Is it there, or was it there in the past
 // this should happen before the set the ingestor metadata
 async fn check_querier_state() -> anyhow::Result<Option<Bytes>, ObjectStorageError> {
     // how do we check for querier state?
     // based on the work flow of the system, the querier will always need to start first
     // i.e the querier will create the `.parseable.json` file
-    let parseable_json = CONFIG
-        .storage()
+    let parseable_json = PARSEABLE
+        .storage
         .get_object_store()
         .get_object(&parseable_json_path())
         .await
@@ -404,7 +272,7 @@ async fn check_querier_state() -> anyhow::Result<Option<Bytes>, ObjectStorageErr
 
 async fn validate_credentials() -> anyhow::Result<()> {
     // check if your creds match with others
-    let store = CONFIG.storage().get_object_store();
+    let store = PARSEABLE.storage.get_object_store();
     let base_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
     let ingestor_metadata = store
         .get_objects(
@@ -423,7 +291,7 @@ async fn validate_credentials() -> anyhow::Result<()> {
 
         let token = base64::prelude::BASE64_STANDARD.encode(format!(
             "{}:{}",
-            CONFIG.options.username, CONFIG.options.password
+            PARSEABLE.options.username, PARSEABLE.options.password
         ));
 
         let token = format!("Basic {}", token);

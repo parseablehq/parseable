@@ -19,7 +19,8 @@
 
 use std::{
     collections::HashMap,
-    fs::{self, remove_file, File, OpenOptions},
+    fs::{remove_file, write, File, OpenOptions},
+    num::NonZeroU32,
     path::{Path, PathBuf},
     process,
     sync::{Arc, Mutex, RwLock},
@@ -27,17 +28,14 @@ use std::{
 
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
-use arrow_schema::Schema;
+use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
 use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
-    file::{
-        properties::{WriterProperties, WriterPropertiesBuilder},
-        FOOTER_SIZE,
-    },
+    file::{properties::WriterProperties, FOOTER_SIZE},
     format::SortingColumn,
     schema::types::ColumnPath,
 };
@@ -48,42 +46,60 @@ use tracing::{error, info, trace, warn};
 use crate::{
     cli::Options,
     event::DEFAULT_TIMESTAMP_KEY,
-    handlers::http::modal::ingest_server::INGESTOR_META,
-    metadata::{LOCK_EXPECT, STREAM_INFO},
+    metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
-    option::{Mode, CONFIG},
-    storage::{object_storage::to_bytes, StreamType, OBJECT_STORE_DATA_GRANULARITY},
+    option::Mode,
+    storage::{
+        object_storage::to_bytes, retention::Retention, StreamType, OBJECT_STORE_DATA_GRANULARITY,
+    },
     utils::minute_to_slot,
+    LOCK_EXPECT,
 };
 
 use super::{
-    reader::{MergedRecordReader, MergedReverseRecordReader},
-    writer::Writer,
-    StagingError,
+    staging::{
+        reader::{MergedRecordReader, MergedReverseRecordReader},
+        writer::Writer,
+        StagingError,
+    },
+    LogStream,
 };
+
+#[derive(Debug, thiserror::Error)]
+#[error("Stream not found: {0}")]
+pub struct StreamNotFound(pub String);
 
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 
-pub type StreamRef<'a> = Arc<Stream<'a>>;
+pub type StreamRef = Arc<Stream>;
 
-/// State of staging associated with a single stream of data in parseable.
-pub struct Stream<'a> {
+/// All state associated with a single logstream in Parseable.
+pub struct Stream {
     pub stream_name: String,
+    pub metadata: RwLock<LogStreamMetadata>,
     pub data_path: PathBuf,
-    pub options: &'a Options,
+    pub options: Arc<Options>,
     pub writer: Mutex<Writer>,
+    pub ingestor_id: Option<String>,
 }
 
-impl<'a> Stream<'a> {
-    pub fn new(options: &'a Options, stream_name: impl Into<String>) -> StreamRef<'a> {
+impl Stream {
+    pub fn new(
+        options: Arc<Options>,
+        stream_name: impl Into<String>,
+        metadata: LogStreamMetadata,
+        ingestor_id: Option<String>,
+    ) -> StreamRef {
         let stream_name = stream_name.into();
         let data_path = options.local_stream_data_path(&stream_name);
 
         Arc::new(Self {
             stream_name,
+            metadata: RwLock::new(metadata),
             data_path,
             options,
             writer: Mutex::new(Writer::default()),
+            ingestor_id,
         })
     }
 
@@ -137,8 +153,8 @@ impl<'a> Stream<'a> {
         custom_partition_values: &HashMap<String, String>,
     ) -> PathBuf {
         let mut hostname = hostname::get().unwrap().into_string().unwrap();
-        if self.options.mode == Mode::Ingest {
-            hostname.push_str(&INGESTOR_META.get_ingestor_id());
+        if let Some(id) = &self.ingestor_id {
+            hostname.push_str(id);
         }
         let filename = format!(
             "{}{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.{ARROW_FILE_EXTENSION}",
@@ -281,14 +297,14 @@ impl<'a> Stream<'a> {
     }
 
     /// Converts arrow files in staging into parquet files, does so only for past minutes when run with `!shutdown_signal`
-    fn prepare_parquet(&self, shutdown_signal: bool) -> Result<(), StagingError> {
+    pub fn prepare_parquet(&self, shutdown_signal: bool) -> Result<(), StagingError> {
         info!(
             "Starting arrow_conversion job for stream- {}",
             self.stream_name
         );
 
-        let time_partition = STREAM_INFO.get_time_partition(&self.stream_name)?;
-        let custom_partition = STREAM_INFO.get_custom_partition(&self.stream_name)?;
+        let time_partition = self.get_time_partition();
+        let custom_partition = self.get_custom_partition();
 
         // read arrow files on disk
         // convert them to parquet
@@ -303,8 +319,8 @@ impl<'a> Stream<'a> {
         // check if there is already a schema file in staging pertaining to this stream
         // if yes, then merge them and save
 
-        if let Some(schema) = schema {
-            let static_schema_flag = STREAM_INFO.get_static_schema_flag(&self.stream_name)?;
+        if let Some(mut schema) = schema {
+            let static_schema_flag = self.get_static_schema_flag();
             if !static_schema_flag {
                 // schema is dynamic, read from staging and merge if present
 
@@ -320,16 +336,13 @@ impl<'a> Stream<'a> {
                         self.stream_name
                     );
                     staging_schemas.push(schema);
-                    let merged_schema = Schema::try_merge(staging_schemas)?;
-
-                    warn!("writing merged schema to path- {path:?}");
-                    // save the merged schema on staging disk
-                    // the path should be stream/.ingestor.id.schema
-                    fs::write(path, to_bytes(&merged_schema))?;
-                } else {
-                    info!("writing single schema to path- {path:?}");
-                    fs::write(path, to_bytes(&schema))?;
+                    schema = Schema::try_merge(staging_schemas)?;
                 }
+
+                // save the merged schema on staging disk
+                // the path should be stream/.ingestor.{id}.schema
+                info!("writing schema to path - {path:?}");
+                write(path, to_bytes(&schema))?;
             }
         }
 
@@ -344,7 +357,7 @@ impl<'a> Stream<'a> {
         self.writer.lock().unwrap().mem.clear();
     }
 
-    fn flush(&self) {
+    pub fn flush(&self) {
         let mut disk_writers = {
             let mut writer = self.writer.lock().unwrap();
             // Flush memory
@@ -357,6 +370,53 @@ impl<'a> Stream<'a> {
         for writer in disk_writers.values_mut() {
             _ = writer.finish();
         }
+    }
+
+    fn parquet_writer_props(
+        &self,
+        merged_schema: &Schema,
+        time_partition: Option<&String>,
+        custom_partition: Option<&String>,
+    ) -> WriterProperties {
+        // Determine time partition field
+        let time_partition_field = time_partition.map_or(DEFAULT_TIMESTAMP_KEY, |tp| tp.as_str());
+
+        // Find time partition index
+        let time_partition_idx = merged_schema.index_of(time_partition_field).unwrap_or(0);
+
+        let mut props = WriterProperties::builder()
+            .set_max_row_group_size(self.options.row_group_size)
+            .set_compression(self.options.parquet_compression.into())
+            .set_column_encoding(
+                ColumnPath::new(vec![time_partition_field.to_string()]),
+                Encoding::DELTA_BINARY_PACKED,
+            );
+
+        // Create sorting columns
+        let mut sorting_column_vec = vec![SortingColumn {
+            column_idx: time_partition_idx as i32,
+            descending: true,
+            nulls_first: true,
+        }];
+
+        // Describe custom partition column encodings and sorting
+        if let Some(custom_partition) = custom_partition {
+            for partition in custom_partition.split(',') {
+                if let Ok(idx) = merged_schema.index_of(partition) {
+                    let column_path = ColumnPath::new(vec![partition.to_string()]);
+                    props = props.set_column_encoding(column_path, Encoding::DELTA_BYTE_ARRAY);
+
+                    sorting_column_vec.push(SortingColumn {
+                        column_idx: idx as i32,
+                        descending: true,
+                        nulls_first: true,
+                    });
+                }
+            }
+        }
+
+        // Set sorting columns
+        props.set_sorting_columns(Some(sorting_column_vec)).build()
     }
 
     /// This function reads arrow files, groups their schemas
@@ -405,13 +465,7 @@ impl<'a> Stream<'a> {
             }
             let merged_schema = record_reader.merged_schema();
 
-            let props = parquet_writer_props(
-                self.options,
-                &merged_schema,
-                time_partition,
-                custom_partition,
-            )
-            .build();
+            let props = self.parquet_writer_props(&merged_schema, time_partition, custom_partition);
             schemas.push(merged_schema.clone());
             let schema = Arc::new(merged_schema);
             let mut part_path = parquet_path.to_owned();
@@ -473,105 +527,207 @@ impl<'a> Stream<'a> {
 
         Schema::try_merge(vec![schema, current_schema]).unwrap()
     }
-}
 
-fn parquet_writer_props(
-    options: &Options,
-    merged_schema: &Schema,
-    time_partition: Option<&String>,
-    custom_partition: Option<&String>,
-) -> WriterPropertiesBuilder {
-    // Determine time partition field
-    let time_partition_field = time_partition.map_or(DEFAULT_TIMESTAMP_KEY, |tp| tp.as_str());
-
-    // Find time partition index
-    let time_partition_idx = merged_schema.index_of(time_partition_field).unwrap_or(0);
-
-    let mut props = WriterProperties::builder()
-        .set_max_row_group_size(options.row_group_size)
-        .set_compression(options.parquet_compression.into())
-        .set_column_encoding(
-            ColumnPath::new(vec![time_partition_field.to_string()]),
-            Encoding::DELTA_BINARY_PACKED,
-        );
-
-    // Create sorting columns
-    let mut sorting_column_vec = vec![SortingColumn {
-        column_idx: time_partition_idx as i32,
-        descending: true,
-        nulls_first: true,
-    }];
-
-    // Describe custom partition column encodings and sorting
-    if let Some(custom_partition) = custom_partition {
-        for partition in custom_partition.split(',') {
-            if let Ok(idx) = merged_schema.index_of(partition) {
-                let column_path = ColumnPath::new(vec![partition.to_string()]);
-                props = props.set_column_encoding(column_path, Encoding::DELTA_BYTE_ARRAY);
-
-                sorting_column_vec.push(SortingColumn {
-                    column_idx: idx as i32,
-                    descending: true,
-                    nulls_first: true,
-                });
-            }
-        }
+    /// Stores the provided stream metadata in memory mapping
+    pub async fn set_metadata(&self, updated_metadata: LogStreamMetadata) {
+        *self.metadata.write().expect(LOCK_EXPECT) = updated_metadata;
     }
 
-    // Set sorting columns
-    props.set_sorting_columns(Some(sorting_column_vec))
+    pub fn get_first_event(&self) -> Option<String> {
+        self.metadata
+            .read()
+            .expect(LOCK_EXPECT)
+            .first_event_at
+            .clone()
+    }
+
+    pub fn get_time_partition(&self) -> Option<String> {
+        self.metadata
+            .read()
+            .expect(LOCK_EXPECT)
+            .time_partition
+            .clone()
+    }
+
+    pub fn get_time_partition_limit(&self) -> Option<NonZeroU32> {
+        self.metadata
+            .read()
+            .expect(LOCK_EXPECT)
+            .time_partition_limit
+    }
+
+    pub fn get_custom_partition(&self) -> Option<String> {
+        self.metadata
+            .read()
+            .expect(LOCK_EXPECT)
+            .custom_partition
+            .clone()
+    }
+
+    pub fn get_static_schema_flag(&self) -> bool {
+        self.metadata.read().expect(LOCK_EXPECT).static_schema_flag
+    }
+
+    pub fn get_retention(&self) -> Option<Retention> {
+        self.metadata.read().expect(LOCK_EXPECT).retention.clone()
+    }
+
+    pub fn get_schema_version(&self) -> SchemaVersion {
+        self.metadata.read().expect(LOCK_EXPECT).schema_version
+    }
+
+    pub fn get_schema(&self) -> Arc<Schema> {
+        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+
+        // sort fields on read from hashmap as order of fields can differ.
+        // This provides a stable output order if schema is same between calls to this function
+        let fields: Fields = metadata
+            .schema
+            .values()
+            .sorted_by_key(|field| field.name())
+            .cloned()
+            .collect();
+
+        Arc::new(Schema::new(fields))
+    }
+
+    pub fn get_schema_raw(&self) -> HashMap<String, Arc<Field>> {
+        self.metadata.read().expect(LOCK_EXPECT).schema.clone()
+    }
+
+    pub fn set_retention(&self, retention: Retention) {
+        self.metadata.write().expect(LOCK_EXPECT).retention = Some(retention);
+    }
+
+    pub fn set_first_event_at(&self, first_event_at: &str) {
+        self.metadata.write().expect(LOCK_EXPECT).first_event_at = Some(first_event_at.to_owned());
+    }
+
+    /// Removes the `first_event_at` timestamp for the specified stream from the LogStreamMetadata.
+    ///
+    /// This function is called during the retention task, when the parquet files along with the manifest files are deleted from the storage.
+    /// The manifest path is removed from the snapshot in the stream.json
+    /// and the first_event_at value in the stream.json is removed.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream_name` - The name of the stream for which the `first_event_at` timestamp is to be removed.
+    ///
+    /// # Returns
+    ///
+    /// * `Result<(), StreamNotFound>` - Returns `Ok(())` if the `first_event_at` timestamp is successfully removed,
+    ///   or a `StreamNotFound` if the stream metadata is not found.
+    ///
+    /// # Examples
+    /// ```ignore
+    /// ```rust
+    /// let result = metadata.remove_first_event_at("my_stream");
+    /// match result {
+    ///     Ok(()) => println!("first-event-at removed successfully"),
+    ///     Err(e) => eprintln!("Error removing first-event-at from PARSEABLE.streams: {}", e),
+    /// }
+    /// ```
+    pub fn reset_first_event_at(&self) {
+        self.metadata
+            .write()
+            .expect(LOCK_EXPECT)
+            .first_event_at
+            .take();
+    }
+
+    pub fn set_time_partition_limit(&self, time_partition_limit: NonZeroU32) {
+        self.metadata
+            .write()
+            .expect(LOCK_EXPECT)
+            .time_partition_limit = Some(time_partition_limit);
+    }
+
+    pub fn set_custom_partition(&self, custom_partition: Option<&String>) {
+        self.metadata.write().expect(LOCK_EXPECT).custom_partition = custom_partition.cloned();
+    }
+
+    pub fn set_hot_tier(&self, enable: bool) {
+        self.metadata.write().expect(LOCK_EXPECT).hot_tier_enabled = enable;
+    }
+
+    pub fn get_stream_type(&self) -> StreamType {
+        self.metadata.read().expect(LOCK_EXPECT).stream_type
+    }
 }
 
 #[derive(Deref, DerefMut, Default)]
-pub struct Streams(RwLock<HashMap<String, StreamRef<'static>>>);
+pub struct Streams(RwLock<HashMap<String, StreamRef>>);
 
+// PARSEABLE.streams should be updated
+// 1. During server start up
+// 2. When a new stream is created (make a new entry in the map)
+// 3. When a stream is deleted (remove the entry from the map)
+// 4. When first event is sent to stream (update the schema)
+// 5. When set alert API is called (update the alert)
 impl Streams {
-    /// Try to get the handle of a stream in staging, if it doesn't exist return `None`.
-    pub fn get_stream(&self, stream_name: &str) -> Option<StreamRef<'static>> {
-        self.read().unwrap().get(stream_name).cloned()
-    }
-
-    /// Get the handle to a stream in staging, create one if it doesn't exist
-    pub fn get_or_create_stream(&self, stream_name: &str) -> StreamRef<'static> {
-        if let Some(staging) = self.get_stream(stream_name) {
-            return staging;
-        }
-
-        let staging = Stream::new(&CONFIG.options, stream_name);
-
-        // Gets write privileges only for creating the stream when it doesn't already exist.
+    pub fn create(
+        &self,
+        options: Arc<Options>,
+        stream_name: String,
+        metadata: LogStreamMetadata,
+        ingestor_id: Option<String>,
+    ) -> StreamRef {
+        let stream = Stream::new(options, &stream_name, metadata, ingestor_id);
         self.write()
-            .unwrap()
-            .insert(stream_name.to_owned(), staging.clone());
+            .expect(LOCK_EXPECT)
+            .insert(stream_name, stream.clone());
 
-        staging
+        stream
     }
 
-    pub fn clear(&self, stream_name: &str) {
-        if let Some(stream) = self.write().unwrap().get(stream_name) {
-            stream.clear();
-        }
+    /// TODO: validate possibility of stream continuing to exist despite being deleted
+    pub fn delete(&self, stream_name: &str) {
+        self.write().expect(LOCK_EXPECT).remove(stream_name);
     }
 
-    pub fn delete_stream(&self, stream_name: &str) {
-        self.write().unwrap().remove(stream_name);
+    pub fn contains(&self, stream_name: &str) -> bool {
+        self.read().expect(LOCK_EXPECT).contains_key(stream_name)
     }
 
-    pub fn flush_all(&self) {
-        let streams = self.read().unwrap();
+    /// Returns the number of logstreams that parseable is aware of
+    pub fn len(&self) -> usize {
+        self.read().expect(LOCK_EXPECT).len()
+    }
 
-        for staging in streams.values() {
-            staging.flush()
-        }
+    /// Returns true if parseable is not aware of any streams
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Listing of logstream names that parseable is aware of
+    pub fn list(&self) -> Vec<LogStream> {
+        self.read()
+            .expect(LOCK_EXPECT)
+            .keys()
+            .map(String::clone)
+            .collect()
+    }
+
+    pub fn list_internal_streams(&self) -> Vec<String> {
+        let map = self.read().expect(LOCK_EXPECT);
+
+        map.iter()
+            .filter(|(_, stream)| {
+                stream.metadata.read().expect(LOCK_EXPECT).stream_type == StreamType::Internal
+            })
+            .map(|(k, _)| k.clone())
+            .collect()
     }
 
     /// Convert arrow files into parquet, preparing it for upload
     pub fn prepare_parquet(&self, shutdown_signal: bool) -> Result<(), StagingError> {
-        if !Path::new(&CONFIG.staging_dir()).exists() {
-            return Ok(());
-        }
-
-        for stream in self.read().expect(LOCK_EXPECT).values() {
+        let streams: Vec<Arc<Stream>> = self
+            .read()
+            .expect(LOCK_EXPECT)
+            .values()
+            .map(Arc::clone)
+            .collect();
+        for stream in streams {
             stream
                 .prepare_parquet(shutdown_signal)
                 .inspect_err(|err| error!("Failed to run conversion task {err:?}"))?;
@@ -597,8 +753,13 @@ mod tests {
     fn test_staging_new_with_valid_stream() {
         let stream_name = "test_stream";
 
-        let options = Options::default();
-        let staging = Stream::new(&options, stream_name);
+        let options = Arc::new(Options::default());
+        let staging = Stream::new(
+            options.clone(),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         assert_eq!(
             staging.data_path,
@@ -610,8 +771,13 @@ mod tests {
     fn test_staging_with_special_characters() {
         let stream_name = "test_stream_!@#$%^&*()";
 
-        let options = Options::default();
-        let staging = Stream::new(&options, stream_name);
+        let options = Arc::new(Options::default());
+        let staging = Stream::new(
+            options.clone(),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         assert_eq!(
             staging.data_path,
@@ -623,8 +789,13 @@ mod tests {
     fn test_staging_data_path_initialization() {
         let stream_name = "example_stream";
 
-        let options = Options::default();
-        let staging = Stream::new(&options, stream_name);
+        let options = Arc::new(Options::default());
+        let staging = Stream::new(
+            options.clone(),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         assert_eq!(
             staging.data_path,
@@ -636,8 +807,13 @@ mod tests {
     fn test_staging_with_alphanumeric_stream_name() {
         let stream_name = "test123stream";
 
-        let options = Options::default();
-        let staging = Stream::new(&options, stream_name);
+        let options = Arc::new(Options::default());
+        let staging = Stream::new(
+            options.clone(),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         assert_eq!(
             staging.data_path,
@@ -653,7 +829,12 @@ mod tests {
             local_staging_path: temp_dir.path().to_path_buf(),
             ..Default::default()
         };
-        let staging = Stream::new(&options, "test_stream");
+        let staging = Stream::new(
+            Arc::new(options),
+            "test_stream",
+            LogStreamMetadata::default(),
+            None,
+        );
 
         let files = staging.arrow_files();
 
@@ -671,7 +852,12 @@ mod tests {
         let custom_partition_values = HashMap::new();
 
         let options = Options::default();
-        let staging = Stream::new(&options, stream_name);
+        let staging = Stream::new(
+            Arc::new(options),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         let expected_path = staging.data_path.join(format!(
             "{}{stream_hash}.date={}.hour={:02}.minute={}.{}.{ARROW_FILE_EXTENSION}",
@@ -701,7 +887,12 @@ mod tests {
         custom_partition_values.insert("key2".to_string(), "value2".to_string());
 
         let options = Options::default();
-        let staging = Stream::new(&options, stream_name);
+        let staging = Stream::new(
+            Arc::new(options),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         let expected_path = staging.data_path.join(format!(
             "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.{ARROW_FILE_EXTENSION}",
@@ -726,8 +917,13 @@ mod tests {
             ..Default::default()
         };
         let stream = "test_stream".to_string();
-        let result =
-            Stream::new(&options, &stream).convert_disk_files_to_parquet(None, None, false)?;
+        let result = Stream::new(
+            Arc::new(options),
+            &stream,
+            LogStreamMetadata::default(),
+            None,
+        )
+        .convert_disk_files_to_parquet(None, None, false)?;
         assert!(result.is_none());
         // Verify metrics were set to 0
         let staging_files = metrics::STAGING_FILES.with_label_values(&[&stream]).get();
@@ -773,12 +969,17 @@ mod tests {
     fn different_minutes_multiple_arrow_files_to_parquet() {
         let temp_dir = TempDir::new().unwrap();
         let stream_name = "test_stream";
-        let options = Options {
+        let options = Arc::new(Options {
             local_staging_path: temp_dir.path().to_path_buf(),
             row_group_size: 1048576,
             ..Default::default()
-        };
-        let staging = Stream::new(&options, stream_name);
+        });
+        let staging = Stream::new(
+            options.clone(),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         // Create test arrow files
         let schema = Schema::new(vec![
@@ -799,7 +1000,7 @@ mod tests {
         drop(staging);
 
         // Start with a fresh staging
-        let staging = Stream::new(&options, stream_name);
+        let staging = Stream::new(options, stream_name, LogStreamMetadata::default(), None);
         let result = staging
             .convert_disk_files_to_parquet(None, None, true)
             .unwrap();
@@ -817,12 +1018,17 @@ mod tests {
     fn same_minute_multiple_arrow_files_to_parquet() {
         let temp_dir = TempDir::new().unwrap();
         let stream_name = "test_stream";
-        let options = Options {
+        let options = Arc::new(Options {
             local_staging_path: temp_dir.path().to_path_buf(),
             row_group_size: 1048576,
             ..Default::default()
-        };
-        let staging: Arc<Stream<'_>> = Stream::new(&options, stream_name);
+        });
+        let staging = Stream::new(
+            options.clone(),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         // Create test arrow files
         let schema = Schema::new(vec![
@@ -843,7 +1049,7 @@ mod tests {
         drop(staging);
 
         // Start with a fresh staging
-        let staging = Stream::new(&options, stream_name);
+        let staging = Stream::new(options, stream_name, LogStreamMetadata::default(), None);
         let result = staging
             .convert_disk_files_to_parquet(None, None, true)
             .unwrap();
@@ -861,12 +1067,17 @@ mod tests {
     async fn miss_current_arrow_file_when_converting_to_parquet() {
         let temp_dir = TempDir::new().unwrap();
         let stream_name = "test_stream";
-        let options = Options {
+        let options = Arc::new(Options {
             local_staging_path: temp_dir.path().to_path_buf(),
             row_group_size: 1048576,
             ..Default::default()
-        };
-        let staging = Stream::new(&options, stream_name);
+        });
+        let staging = Stream::new(
+            options.clone(),
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+        );
 
         // Create test arrow files
         let schema = Schema::new(vec![
@@ -892,7 +1103,7 @@ mod tests {
         drop(staging);
 
         // Start with a fresh staging
-        let staging = Stream::new(&options, stream_name);
+        let staging = Stream::new(options, stream_name, LogStreamMetadata::default(), None);
         let result = staging
             .convert_disk_files_to_parquet(None, None, false)
             .unwrap();
