@@ -22,10 +22,7 @@ use itertools::Itertools;
 use reqwest;
 use serde_json::{json, Value};
 
-use crate::{
-    metadata::{error::stream_info::MetadataError, STREAM_INFO},
-    option::CONFIG,
-};
+use crate::{parseable::StreamNotFound, parseable::PARSEABLE};
 
 const OPEN_AI_URL: &str = "https://api.openai.com/v1/chat/completions";
 
@@ -87,13 +84,13 @@ fn build_request_body(ai_prompt: String) -> impl serde::Serialize {
 }
 
 pub async fn make_llm_request(body: web::Json<AiPrompt>) -> Result<HttpResponse, LLMError> {
-    let api_key = match &CONFIG.options.open_ai_key {
+    let api_key = match &PARSEABLE.options.open_ai_key {
         Some(api_key) if api_key.len() > 3 => api_key,
         _ => return Err(LLMError::InvalidAPIKey),
     };
 
     let stream_name = &body.stream;
-    let schema = STREAM_INFO.schema(stream_name)?;
+    let schema = PARSEABLE.get_stream(stream_name)?.get_schema();
     let filtered_schema = schema
         .flattened_fields()
         .into_iter()
@@ -146,7 +143,7 @@ pub enum LLMError {
     #[error("{0}")]
     APIError(String),
     #[error("{0}")]
-    StreamDoesNotExist(#[from] MetadataError),
+    StreamDoesNotExist(#[from] StreamNotFound),
 }
 
 impl actix_web::ResponseError for LLMError {
