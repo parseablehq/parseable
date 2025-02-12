@@ -69,7 +69,7 @@ pub const STREAM_EXISTS: &str = "Stream exists";
 /// Shared state of the Parseable server.
 pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| match Cli::parse().storage {
     StorageOptions::Local(args) => {
-        if args.options.local_staging_path == args.storage.root {
+        if args.options.staging_dir() == &args.storage.root {
             clap::Error::raw(
                 ErrorKind::ValueValidation,
                 "Cannot use same path for storage and staging",

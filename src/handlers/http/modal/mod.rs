@@ -216,14 +216,14 @@ impl IngestorMetadata {
     pub fn load(options: &Options, storage: &dyn ObjectStorageProvider) -> Arc<Self> {
         // all the files should be in the staging directory root
         let entries =
-            std::fs::read_dir(&options.local_staging_path).expect("Couldn't read from file");
+            std::fs::read_dir(options.staging_dir()).expect("Couldn't read from file");
         let url = options.get_url();
         let port = url.port().unwrap_or(80).to_string();
         let url = url.to_string();
         let Options {
             username, password, ..
         } = options;
-        let staging_path = &options.local_staging_path;
+        let staging_path = options.staging_dir();
         let flight_port = options.flight_port.to_string();
 
         for entry in entries {
