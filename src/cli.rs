@@ -17,7 +17,7 @@
  */
 
 use clap::Parser;
-use std::{env, path::PathBuf};
+use std::{env, fs, path::PathBuf};
 
 use url::Url;
 
@@ -384,6 +384,14 @@ impl Options {
 
     pub fn is_default_creds(&self) -> bool {
         self.username == DEFAULT_USERNAME && self.password == DEFAULT_PASSWORD
+    }
+
+    /// Path to staging directory, ensures that it exists or panics
+    pub fn staging_dir(&self) -> &PathBuf {
+        fs::create_dir_all(&self.local_staging_path)
+            .expect("Should be able to create dir if doesn't exist");
+
+        &self.local_staging_path
     }
 
     /// TODO: refactor and document

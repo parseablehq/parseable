@@ -342,7 +342,7 @@ impl IngestorMetadata {
         let bytes = Bytes::from(serde_json::to_vec(&json)?);
 
         let resource: IngestorMetadata = serde_json::from_value(json)?;
-        resource.put_on_disk(PARSEABLE.staging_dir())?;
+        resource.put_on_disk(PARSEABLE.options.staging_dir())?;
 
         PARSEABLE
             .storage

@@ -217,10 +217,6 @@ impl Parseable {
         self.storage.clone()
     }
 
-    pub fn staging_dir(&self) -> &PathBuf {
-        &self.options.local_staging_path
-    }
-
     pub fn hot_tier_dir(&self) -> &Option<PathBuf> {
         &self.options.hot_tier_storage_path
     }
