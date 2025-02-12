@@ -67,6 +67,7 @@ services:
   quest:
     image: ghcr.io/parseablehq/quest:main
     platform: linux/amd64
+    pull_policy: always
     command: [
       "load",
       "http://parseable:8000",
