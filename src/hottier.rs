@@ -26,8 +26,7 @@ use std::{
 use crate::{
     catalog::manifest::{File, Manifest},
     handlers::http::cluster::INTERNAL_STREAM_NAME,
-    metadata::{error::stream_info::MetadataError, STREAM_INFO},
-    option::CONFIG,
+    parseable::PARSEABLE,
     storage::{ObjectStorage, ObjectStorageError},
     utils::{extract_datetime, human_size::bytes_to_human_size},
     validator::error::HotTierValidationError,
@@ -84,7 +83,7 @@ impl HotTierManager {
     pub fn global() -> Option<&'static HotTierManager> {
         static INSTANCE: OnceCell<HotTierManager> = OnceCell::new();
 
-        CONFIG
+        PARSEABLE
             .options
             .hot_tier_storage_path
             .as_ref()
@@ -98,7 +97,7 @@ impl HotTierManager {
     ) -> Result<(u64, u64), HotTierError> {
         let mut total_hot_tier_size = 0;
         let mut total_hot_tier_used_size = 0;
-        for stream in STREAM_INFO.list_streams() {
+        for stream in PARSEABLE.streams.list() {
             if self.check_stream_hot_tier_exists(&stream) && stream != current_stream {
                 let stream_hot_tier = self.get_hot_tier(&stream).await?;
                 total_hot_tier_size += &stream_hot_tier.size;
@@ -142,7 +141,7 @@ impl HotTierManager {
 
         let (total_hot_tier_size, total_hot_tier_used_size) =
             self.get_hot_tiers_size(stream).await?;
-        let disk_threshold = (CONFIG.options.max_disk_usage * total_space as f64) / 100.0;
+        let disk_threshold = (PARSEABLE.options.max_disk_usage * total_space as f64) / 100.0;
         let max_allowed_hot_tier_size = disk_threshold
             - total_hot_tier_size as f64
             - (used_space as f64
@@ -246,7 +245,7 @@ impl HotTierManager {
     ///sync the hot tier files from S3 to the hot tier directory for all streams
     async fn sync_hot_tier(&self) -> Result<(), HotTierError> {
         let mut sync_hot_tier_tasks = FuturesUnordered::new();
-        for stream in STREAM_INFO.list_streams() {
+        for stream in PARSEABLE.streams.list() {
             if self.check_stream_hot_tier_exists(&stream) {
                 sync_hot_tier_tasks.push(self.process_stream(stream));
             }
@@ -267,7 +266,7 @@ impl HotTierManager {
         let stream_hot_tier = self.get_hot_tier(&stream).await?;
         let mut parquet_file_size = stream_hot_tier.used_size;
 
-        let object_store = CONFIG.storage().get_object_store();
+        let object_store = PARSEABLE.storage.get_object_store();
         let mut s3_manifest_file_list = object_store.list_manifest_files(&stream).await?;
         self.process_manifest(
             &stream,
@@ -375,8 +374,8 @@ impl HotTierManager {
         let parquet_file_path = RelativePathBuf::from(parquet_file.file_path.clone());
         fs::create_dir_all(parquet_path.parent().unwrap()).await?;
         let mut file = fs::File::create(parquet_path.clone()).await?;
-        let parquet_data = CONFIG
-            .storage()
+        let parquet_data = PARSEABLE
+            .storage
             .get_object_store()
             .get_object(&parquet_file_path)
             .await?;
@@ -632,7 +631,7 @@ impl HotTierManager {
             }
 
             if ((used_space + size_to_download) as f64 * 100.0 / total_space as f64)
-                > CONFIG.options.max_disk_usage
+                > PARSEABLE.options.max_disk_usage
             {
                 return Ok(false);
             }
@@ -783,8 +782,6 @@ pub enum HotTierError {
     ObjectStorageError(#[from] ObjectStorageError),
     #[error("{0}")]
     ParquetError(#[from] ParquetError),
-    #[error("{0}")]
-    MetadataError(#[from] MetadataError),
     #[error("{0}")]
     HotTierValidationError(#[from] HotTierValidationError),
     #[error("{0}")]

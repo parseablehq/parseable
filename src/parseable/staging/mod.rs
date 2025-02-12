@@ -17,12 +17,8 @@
  *
  */
 
-use once_cell::sync::Lazy;
-pub use streams::{Stream, Streams};
-
-mod reader;
-mod streams;
-mod writer;
+pub mod reader;
+pub mod writer;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StagingError {
@@ -34,8 +30,6 @@ pub enum StagingError {
     ObjectStorage(#[from] std::io::Error),
     #[error("Could not generate parquet file")]
     Create,
+    // #[error("Metadata Error: {0}")]
+    // Metadata(#[from] MetadataError),
 }
-
-/// Staging is made up of multiple streams, each stream's context is housed in a single `Stream` object.
-/// `STAGING` is a globally shared mapping of `Streams` that are in staging.
-pub static STAGING: Lazy<Streams> = Lazy::new(Streams::default);

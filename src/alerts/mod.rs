@@ -27,7 +27,7 @@ use once_cell::sync::Lazy;
 use serde_json::Error as SerdeError;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
-use tokio::sync::oneshot::{Receiver, Sender};
+use tokio::sync::oneshot::{self, Receiver, Sender};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tracing::{trace, warn};
@@ -36,7 +36,7 @@ use ulid::Ulid;
 pub mod alerts_utils;
 pub mod target;
 
-use crate::option::CONFIG;
+use crate::parseable::PARSEABLE;
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::map::SessionKey;
 use crate::storage;
@@ -650,8 +650,8 @@ impl AlertConfig {
     fn get_context(&self) -> Context {
         let deployment_instance = format!(
             "{}://{}",
-            CONFIG.options.get_scheme(),
-            CONFIG.options.address
+            PARSEABLE.options.get_scheme(),
+            PARSEABLE.options.address
         );
         let deployment_id = storage::StorageMetadata::global().deployment_id;
         let deployment_mode = storage::StorageMetadata::global().mode.to_string();
@@ -730,13 +730,20 @@ impl Alerts {
     /// Loads alerts from disk, blocks
     pub async fn load(&self) -> Result<(), AlertError> {
         let mut map = self.alerts.write().await;
-        let store = CONFIG.storage().get_object_store();
+        let store = PARSEABLE.storage.get_object_store();
 
         for alert in store.get_alerts().await.unwrap_or_default() {
-            let (handle, rx, tx) =
-                schedule_alert_task(alert.get_eval_frequency(), alert.clone()).await?;
+            let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
+            let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
+            let handle = schedule_alert_task(
+                alert.get_eval_frequency(),
+                alert.clone(),
+                inbox_rx,
+                outbox_tx,
+            )?;
 
-            self.update_task(alert.id, handle, rx, tx).await;
+            self.update_task(alert.id, handle, outbox_rx, inbox_tx)
+                .await;
 
             map.insert(alert.id, alert);
         }
@@ -785,7 +792,7 @@ impl Alerts {
         new_state: AlertState,
         trigger_notif: Option<String>,
     ) -> Result<(), AlertError> {
-        let store = CONFIG.storage().get_object_store();
+        let store = PARSEABLE.storage.get_object_store();
 
         // read and modify alert
         let mut alert = self.get_alert_by_id(alert_id).await?;

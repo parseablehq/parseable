@@ -29,7 +29,7 @@ use once_cell::sync::Lazy;
 use tokio::task::JoinHandle;
 use tracing::{info, warn};
 
-use crate::metadata::STREAM_INFO;
+use crate::parseable::PARSEABLE;
 
 type SchedulerHandle = JoinHandle<()>;
 
@@ -45,18 +45,16 @@ pub fn init_scheduler() {
     let mut scheduler = AsyncScheduler::new();
     let func = move || async {
         //get retention every day at 12 am
-        for stream in STREAM_INFO.list_streams() {
-            let retention = STREAM_INFO.get_retention(&stream);
-
-            match retention {
-                Ok(config) => {
-                    if let Some(config) = config {
+        for stream_name in PARSEABLE.streams.list() {
+            match PARSEABLE.get_stream(&stream_name) {
+                Ok(stream) => {
+                    if let Some(config) = stream.get_retention() {
                         for Task { action, days, .. } in config.tasks.into_iter() {
                             match action {
                                 Action::Delete => {
-                                    let stream = stream.to_string();
+                                    let stream_name = stream_name.clone();
                                     tokio::spawn(async move {
-                                        action::delete(stream.clone(), u32::from(days)).await;
+                                        action::delete(stream_name, u32::from(days)).await;
                                     });
                                 }
                             };
@@ -64,7 +62,7 @@ pub fn init_scheduler() {
                     }
                 }
                 Err(err) => {
-                    warn!("failed to load retention config for {stream} due to {err:?}")
+                    warn!("failed to load retention config for {stream_name} due to {err:?}")
                 }
             };
         }
@@ -172,7 +170,7 @@ impl From<Retention> for Vec<TaskView> {
 
 mod action {
     use crate::catalog::remove_manifest_from_snapshot;
-    use crate::{metadata, option::CONFIG};
+    use crate::parseable::PARSEABLE;
     use chrono::{Days, NaiveDate, Utc};
     use futures::{stream::FuturesUnordered, StreamExt};
     use itertools::Itertools;
@@ -181,7 +179,7 @@ mod action {
 
     pub(super) async fn delete(stream_name: String, days: u32) {
         info!("running retention task - delete for stream={stream_name}");
-        let store = CONFIG.storage().get_object_store();
+        let store = PARSEABLE.storage.get_object_store();
 
         let retain_until = get_retain_until(Utc::now().date_naive(), days as u64);
 
@@ -202,8 +200,8 @@ mod action {
             for date in dates_to_delete {
                 let path = RelativePathBuf::from_iter([&stream_name, &date]);
                 delete_tasks.push(async move {
-                    CONFIG
-                        .storage()
+                    PARSEABLE
+                        .storage
                         .get_object_store()
                         .delete_prefix(&path)
                         .await
@@ -219,13 +217,12 @@ mod action {
                 }
             }
             if let Ok(Some(first_event_at)) = res_remove_manifest {
-                if let Err(err) =
-                    metadata::STREAM_INFO.set_first_event_at(&stream_name, &first_event_at)
-                {
-                    error!(
+                match PARSEABLE.get_stream(&stream_name) {
+                    Ok(stream) => stream.set_first_event_at(&first_event_at),
+                    Err(err) => error!(
                         "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
                         stream_name
-                    );
+                    ),
                 }
             }
         }

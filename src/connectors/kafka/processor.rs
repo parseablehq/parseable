@@ -16,24 +16,27 @@
  *
  */
 
-use crate::connectors::common::processor::Processor;
-use crate::connectors::kafka::config::BufferConfig;
-use crate::connectors::kafka::{ConsumerRecord, StreamConsumer, TopicPartition};
-use crate::event::format::EventFormat;
-use crate::event::format::{self, LogSource};
-use crate::event::Event as ParseableEvent;
-use crate::handlers::http::ingest::create_stream_if_not_exists;
-use crate::metadata::STREAM_INFO;
-use crate::storage::StreamType;
+use std::{collections::HashMap, sync::Arc};
+
 use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::StreamExt;
 use rdkafka::consumer::{CommitMode, Consumer};
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error};
+
+use crate::{
+    connectors::common::processor::Processor,
+    event::{
+        format::{json, EventFormat, LogSource},
+        Event as ParseableEvent,
+    },
+    parseable::PARSEABLE,
+    storage::StreamType,
+};
+
+use super::{config::BufferConfig, ConsumerRecord, StreamConsumer, TopicPartition};
 
 #[derive(Default, Debug, Clone)]
 pub struct ParseableSinkProcessor;
@@ -48,16 +51,19 @@ impl ParseableSinkProcessor {
             .map(|r| r.topic.as_str())
             .unwrap_or_default();
 
-        create_stream_if_not_exists(stream_name, StreamType::UserDefined, LogSource::Json).await?;
+        PARSEABLE
+            .create_stream_if_not_exists(stream_name, StreamType::UserDefined, LogSource::Json)
+            .await?;
 
-        let schema = STREAM_INFO.schema_raw(stream_name)?;
-        let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
-        let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
-        let schema_version = STREAM_INFO.get_schema_version(stream_name)?;
+        let stream = PARSEABLE.get_stream(stream_name)?;
+        let schema = stream.get_schema_raw();
+        let time_partition = stream.get_time_partition();
+        let static_schema_flag = stream.get_static_schema_flag();
+        let schema_version = stream.get_schema_version();
 
         let (json_vec, total_payload_size) = Self::json_vec(records);
-        let batch_json_event = format::json::Event {
-            data: Value::Array(json_vec.to_vec()),
+        let batch_json_event = json::Event {
+            data: Value::Array(json_vec),
         };
 
         let (rb, is_first) = batch_json_event.into_recordbatch(

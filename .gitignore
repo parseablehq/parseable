@@ -10,7 +10,7 @@ key.pem
 helm-releases/.DS_Store
 .DS_Store
 env-file
-parseable
+parseable/*
 parseable_*
 parseable-env-secret
 cache

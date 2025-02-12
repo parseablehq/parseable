@@ -34,6 +34,8 @@ RUN cargo build
 # final stage
 FROM docker.io/debian:bookworm-slim
 
+RUN apt update && apt install -y curl
+
 WORKDIR /parseable
 
 # Copy the static binary into the final image

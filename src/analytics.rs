@@ -16,16 +16,6 @@
  *
  *
  */
-
-use crate::about::{current, platform};
-use crate::handlers::http::cluster::utils::check_liveness;
-use crate::handlers::http::{base_path_without_preceding_slash, cluster};
-use crate::handlers::STREAM_NAME_HEADER_KEY;
-use crate::option::{Mode, CONFIG};
-use crate::{metadata, stats};
-use crate::{storage, HTTP_CLIENT};
-
-use crate::stats::Stats;
 use actix_web::{web, HttpRequest, Responder};
 use chrono::{DateTime, Utc};
 use clokwerk::{AsyncScheduler, Interval};
@@ -39,6 +29,21 @@ use std::time::Duration;
 use sysinfo::System;
 use tracing::{error, info};
 use ulid::Ulid;
+
+use crate::{
+    about::{current, platform},
+    handlers::{
+        http::{
+            base_path_without_preceding_slash,
+            cluster::{self, utils::check_liveness},
+        },
+        STREAM_NAME_HEADER_KEY,
+    },
+    option::Mode,
+    parseable::PARSEABLE,
+    stats::{self, Stats},
+    storage, HTTP_CLIENT,
+};
 
 const ANALYTICS_SERVER_URL: &str = "https://analytics.parseable.io:80";
 const ANALYTICS_SEND_INTERVAL_SECONDS: Interval = clokwerk::Interval::Hours(1);
@@ -111,8 +116,8 @@ impl Report {
             cpu_count,
             memory_total_bytes: mem_total,
             platform: platform().to_string(),
-            storage_mode: CONFIG.get_storage_mode_string().to_string(),
-            server_mode: CONFIG.options.mode,
+            storage_mode: PARSEABLE.get_storage_mode_string().to_string(),
+            server_mode: PARSEABLE.options.mode,
             version: current().released_version.to_string(),
             commit_hash: current().commit_hash,
             active_ingestors: ingestor_metrics.0,
@@ -148,7 +153,7 @@ pub async fn get_analytics(_: HttpRequest) -> impl Responder {
 }
 
 fn total_streams() -> usize {
-    metadata::STREAM_INFO.list_streams().len()
+    PARSEABLE.streams.len()
 }
 
 fn total_event_stats() -> (Stats, Stats, Stats) {
@@ -164,7 +169,7 @@ fn total_event_stats() -> (Stats, Stats, Stats) {
     let mut deleted_parquet_bytes: u64 = 0;
     let mut deleted_json_bytes: u64 = 0;
 
-    for stream in metadata::STREAM_INFO.list_streams() {
+    for stream in PARSEABLE.streams.list() {
         let Some(stats) = stats::get_current_stats(&stream, "json") else {
             continue;
         };
@@ -219,7 +224,7 @@ async fn fetch_ingestors_metrics(
     let mut vec = vec![];
     let mut active_ingestors = 0u64;
     let mut offline_ingestors = 0u64;
-    if CONFIG.options.mode == Mode::Query {
+    if PARSEABLE.options.mode == Mode::Query {
         // send analytics for ingest servers
 
         // ingestor infos should be valid here, if not some thing is wrong

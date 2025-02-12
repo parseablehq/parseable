@@ -59,7 +59,7 @@ pub struct Metadata {}
 pub fn convert_static_schema_to_arrow_schema(
     static_schema: StaticSchema,
     time_partition: &str,
-    custom_partition: &str,
+    custom_partition: Option<&String>,
 ) -> Result<Arc<Schema>, AnyError> {
     let mut parsed_schema = ParsedSchema {
         fields: Vec::new(),
@@ -67,7 +67,7 @@ pub fn convert_static_schema_to_arrow_schema(
     };
     let mut time_partition_exists = false;
 
-    if !custom_partition.is_empty() {
+    if let Some(custom_partition) = custom_partition {
         let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
         let mut custom_partition_exists = HashMap::with_capacity(custom_partition_list.len());
 

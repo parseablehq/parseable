@@ -25,7 +25,7 @@ use argon2::{
 
 use rand::distributions::{Alphanumeric, DistString};
 
-use crate::option::CONFIG;
+use crate::parseable::PARSEABLE;
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
@@ -137,8 +137,8 @@ pub struct PassCode {
 }
 
 pub fn get_admin_user() -> User {
-    let username = CONFIG.options.username.clone();
-    let password = CONFIG.options.password.clone();
+    let username = PARSEABLE.options.username.clone();
+    let password = PARSEABLE.options.password.clone();
     let hashcode = gen_hash(&password);
 
     User {

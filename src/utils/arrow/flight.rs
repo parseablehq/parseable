@@ -19,12 +19,9 @@
 use crate::event::Event;
 use crate::handlers::http::ingest::push_logs_unchecked;
 use crate::handlers::http::query::Query as QueryJson;
-use crate::metadata::STREAM_INFO;
+use crate::parseable::PARSEABLE;
 use crate::query::stream_schema_provider::include_now;
-use crate::{
-    handlers::http::modal::IngestorMetadata,
-    option::{Mode, CONFIG},
-};
+use crate::{handlers::http::modal::IngestorMetadata, option::Mode};
 
 use arrow_array::RecordBatch;
 use arrow_flight::encode::FlightDataEncoderBuilder;
@@ -98,9 +95,10 @@ pub async fn append_temporary_events(
     Event,
     Status,
 > {
-    let schema = STREAM_INFO
-        .schema(stream_name)
-        .map_err(|err| Status::failed_precondition(format!("Metadata Error: {}", err)))?;
+    let schema = PARSEABLE
+        .get_stream(stream_name)
+        .map_err(|err| Status::failed_precondition(format!("Metadata Error: {}", err)))?
+        .get_schema();
     let rb = concat_batches(&schema, minute_result)
         .map_err(|err| Status::failed_precondition(format!("ArrowError: {}", err)))?;
 
@@ -135,7 +133,7 @@ pub fn send_to_ingester(start: i64, end: i64) -> bool {
     );
     let ex = [Expr::BinaryExpr(ex1), Expr::BinaryExpr(ex2)];
 
-    CONFIG.options.mode == Mode::Query && include_now(&ex, &None)
+    PARSEABLE.options.mode == Mode::Query && include_now(&ex, &None)
 }
 
 fn lit_timestamp_milli(time: i64) -> Expr {

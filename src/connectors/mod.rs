@@ -16,34 +16,32 @@
  *
  */
 
-use crate::connectors::common::processor::Processor;
-use crate::connectors::common::shutdown::Shutdown;
-use crate::connectors::kafka::config::KafkaConfig;
-use crate::connectors::kafka::consumer::KafkaStreams;
-use crate::connectors::kafka::metrics::KafkaMetricsCollector;
-use crate::connectors::kafka::processor::ParseableSinkProcessor;
-use crate::connectors::kafka::rebalance_listener::RebalanceListener;
-use crate::connectors::kafka::sink::KafkaSinkConnector;
-use crate::connectors::kafka::state::StreamState;
-use crate::connectors::kafka::{ConsumerRecord, KafkaContext};
-use crate::option::{Mode, CONFIG};
-use actix_web_prometheus::PrometheusMetrics;
-use prometheus::Registry;
 use std::sync::Arc;
+
+use actix_web_prometheus::PrometheusMetrics;
+use common::{processor::Processor, shutdown::Shutdown};
+use kafka::{
+    config::KafkaConfig, consumer::KafkaStreams, metrics::KafkaMetricsCollector,
+    processor::ParseableSinkProcessor, rebalance_listener::RebalanceListener,
+    sink::KafkaSinkConnector, state::StreamState, ConsumerRecord, KafkaContext,
+};
+use prometheus::Registry;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
+
+use crate::{option::Mode, parseable::PARSEABLE};
 
 pub mod common;
 pub mod kafka;
 
 pub async fn init(prometheus: &PrometheusMetrics) -> anyhow::Result<()> {
-    if matches!(CONFIG.options.mode, Mode::Ingest | Mode::All) {
-        match CONFIG.kafka_config.validate() {
+    if matches!(PARSEABLE.options.mode, Mode::Ingest | Mode::All) {
+        match PARSEABLE.kafka_config.validate() {
             Err(e) => {
                 warn!("Kafka connector configuration invalid. {}", e);
             }
             Ok(_) => {
-                let config = CONFIG.kafka_config.clone();
+                let config = PARSEABLE.kafka_config.clone();
                 let shutdown_handle = Shutdown::default();
                 let registry = prometheus.registry.clone();
                 let processor = ParseableSinkProcessor;
