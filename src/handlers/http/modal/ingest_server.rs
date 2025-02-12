@@ -24,7 +24,6 @@ use super::IngestorMetadata;
 use super::OpenIdClient;
 use super::ParseableServer;
 use crate::analytics;
-use crate::handlers::airplane;
 use crate::handlers::http::ingest;
 use crate::handlers::http::logstream;
 use crate::handlers::http::middleware::DisAllowRootUser;
@@ -109,7 +108,7 @@ impl ParseableServer for IngestServer {
         let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
             sync::object_store_sync().await;
 
-        tokio::spawn(airplane::server());
+        // tokio::spawn(airplane::server());
 
         // set the ingestor metadata
         set_ingestor_metadata().await?;

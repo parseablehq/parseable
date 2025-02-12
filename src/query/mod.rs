@@ -19,8 +19,11 @@
 mod filter_optimizer;
 mod listing_table_builder;
 pub mod stream_schema_provider;
+pub mod catalog;
+pub mod functions;
+pub mod object_storage;
 
-use arrow_schema::DataType;
+use catalog::DynamicObjectStoreCatalog;
 use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
@@ -29,12 +32,14 @@ use datafusion::common::exec_datafusion_err;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::disk_manager::DiskManagerConfig;
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
     Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
 };
 use datafusion::prelude::*;
+use functions::ParquetMetadataFunc;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
@@ -658,6 +663,8 @@ impl AllQueries {
 }
 
 pub async fn run() -> Result<()> {
+    let rt_config = RuntimeEnvBuilder::new();
+    let runtime_env = rt_config.build().unwrap();
     println!("Running benchmarks");
     let queries_path: PathBuf = ["/home","ubuntu", "clickbench", "queries.sql"].iter().collect();
     let queries = AllQueries::try_new(queries_path.as_path())?;
@@ -676,15 +683,27 @@ pub async fn run() -> Result<()> {
     config.options_mut().execution.parquet.pushdown_filters = true;
     config.options_mut().execution.parquet.reorder_filters = true;
     config.options_mut().execution.use_row_number_estimates_to_optimize_partitioning = true;
-    let ctx = SessionContext::new_with_config(config);
+    // enable dynamic file query
+    let ctx =
+        SessionContext::new_with_config_rt(config, Arc::new(runtime_env))
+            .enable_url_table();
+    ctx.refresh_catalogs().await?;
+    // install dynamic catalog provider that can register required object stores
+    ctx.register_catalog_list(Arc::new(DynamicObjectStoreCatalog::new(
+        ctx.state().catalog_list().clone(),
+        ctx.state_weak_ref(),
+    )));
+    // register `parquet_metadata` table function to get metadata from parquet files
+    ctx.register_udtf("parquet_metadata", Arc::new(ParquetMetadataFunc {}));
+    
     register_hits(&ctx).await?;
 
     for query_id in query_range {
         let sql = queries.get_query(query_id)?;
-        println!("Q{query_id}: {sql}");
-
+        let plan = ctx.state().create_logical_plan(sql).await?;
         let start = Instant::now();
-        let _ = ctx.sql(sql).await?.collect().await?;
+        let df = ctx.execute_logical_plan(plan).await?;
+        let _ = df.collect().await?;
         let elapsed = start.elapsed().as_secs_f64();
         println!("Q{query_id}  took {elapsed} seconds");
         
@@ -694,14 +713,14 @@ pub async fn run() -> Result<()> {
 
 /// Registers the `hits.parquet` as a table named `hits`
 async fn register_hits(ctx: &SessionContext) -> Result<()> {
-    let mut options: ParquetReadOptions<'_> = Default::default();
-    options.table_partition_cols = vec!["date", "hour", "minute"]
-        .iter()
-        .map(|s| (s.to_string(), DataType::Utf8))
-        .collect();
-    let schema = STREAM_INFO.schema("hits").unwrap();
-    options.schema = Some(&schema);
-    let path: PathBuf = ["/home", "ubuntu", "parseable", "data", "hits"].iter().collect();
+    let options: ParquetReadOptions<'_> = Default::default();
+    // options.table_partition_cols = vec!["date", "hour", "minute"]
+    //     .iter()
+    //     .map(|s| (s.to_string(), DataType::Utf8))
+    //     .collect();
+    // let schema = STREAM_INFO.schema("hits").unwrap();
+    // options.schema = Some(&schema);
+    let path: PathBuf = ["/home", "ubuntu", "clickbench",  "hits.parquet"].iter().collect();
     let path = path.as_os_str().to_str().unwrap();
     println!("Registering 'hits' as {path}");
     ctx.register_parquet("hits", path, options)

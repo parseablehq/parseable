@@ -136,7 +136,7 @@ impl ParseableServer for Server {
         }
 
         tokio::spawn(handlers::livetail::server());
-        tokio::spawn(handlers::airplane::server());
+        // tokio::spawn(handlers::airplane::server());
 
         let app = self.start(shutdown_rx, prometheus, CONFIG.options.openid());
 

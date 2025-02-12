@@ -29,6 +29,10 @@ use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
 use datafusion::catalog::Session;
 use datafusion::common::stats::Precision;
+use datafusion::common::Constraints;
+use datafusion::config::TableParquetOptions;
+use datafusion::datasource::listing::file_compression_type::FileCompressionType;
+use datafusion::datasource::physical_plan::ParquetSource;
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::physical_expr::LexOrdering;
 use datafusion::{
@@ -163,6 +167,10 @@ impl StandardTableProvider {
                     limit,
                     output_ordering: vec![LexOrdering::from_iter([sort_expr])],
                     table_partition_cols: Vec::new(),
+                    constraints: Constraints::default(),
+                    file_compression_type: FileCompressionType::ZSTD,
+                    new_lines_in_values: false,
+                    source: Arc::new(ParquetSource::new(TableParquetOptions::default())),
                 },
                 filters.as_ref(),
             )
@@ -338,6 +346,7 @@ impl StandardTableProvider {
                         max_value: Precision::Exact(max),
                         min_value: Precision::Exact(min),
                         distinct_count: Precision::Absent,
+                        sum_value: Precision::Absent
                     })
                     .unwrap_or_default()
             })

@@ -9,15 +9,31 @@ build = "build.rs"
 
 [dependencies]
 # Arrow and DataFusion ecosystem
-arrow-array = { version = "53.0.0" }
-arrow-flight = { version = "53.0.0", features = ["tls"] }
-arrow-ipc = { version = "53.0.0", features = ["zstd"] }
-arrow-json = "53.0.0"
-arrow-schema = { version = "53.0.0", features = ["serde"] }
-arrow-select = "53.0.0"
-datafusion = "44.0.0"
-object_store = { version = "0.11.2", features = ["cloud", "aws", "azure"] }
-parquet = "53.0.0"
+arrow = { version = "54.1.0", features = [
+    "prettyprint",
+    "chrono-tz",
+] }
+arrow-array = { version = "54.1.0" }
+arrow-json = "54.1.0"
+arrow-select = "54.1.0"
+arrow-buffer = { version = "54.1.0", default-features = false }
+arrow-flight = { version = "54.1.0", features = [
+    "flight-sql-experimental",
+    "tls"
+] }
+arrow-ipc = { version = "54.1.0", default-features = false, features = [
+    "zstd",
+] }
+arrow-ord = { version = "54.1.0", default-features = false }
+arrow-schema = { version = "54.1.0", features = ["serde"]  }
+datafusion = {git = "https://github.com/apache/datafusion", branch = "main" }
+object_store = { version = "0.11.2", features = ["cloud", "aws", "azure", "gcp", "http"] }
+parking_lot = "0.12"
+parquet = { version = "54.1.0", default-features = false, features = [
+    "arrow",
+    "async",
+    "object_store",
+] }
 
 # Web server and HTTP-related
 actix-cors = "0.7.0"
@@ -117,6 +133,9 @@ thiserror = "2.0.0"
 ulid = { version = "1.0", features = ["serde"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 structopt-derive = "0.4.18"
+dirs = "6.0.0"
+aws-config = "1.5.16"
+aws-credential-types = "1.2.1"
 
 [build-dependencies]
 cargo_toml = "0.20.1"
@@ -129,7 +148,7 @@ zip = { version = "2.2.0", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 rstest = "0.23.0"
-arrow = "53.0.0"
+
 
 [package.metadata.parseable_ui]
 assets-url = "https://github.com/parseablehq/console/releases/download/v0.9.18/build.zip"
