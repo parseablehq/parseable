@@ -25,8 +25,7 @@ use tokio::{select, task};
 use tracing::{error, info, trace, warn};
 
 use crate::alerts::{alerts_utils, AlertConfig, AlertError};
-use crate::option::CONFIG;
-use crate::staging::STAGING;
+use crate::parseable::PARSEABLE;
 use crate::storage::LOCAL_SYNC_INTERVAL;
 use crate::{STORAGE_CONVERSION_INTERVAL, STORAGE_UPLOAD_INTERVAL};
 
@@ -146,11 +145,10 @@ pub fn object_store_sync() -> (
                             "object_store_sync",
                             Duration::from_secs(15),
                             || async {
-                                CONFIG
-                                    .storage()
+                                PARSEABLE
+                                    .storage
                                     .get_object_store()
-                                    .upload_files_from_staging()
-                                    .await
+                                    .upload_files_from_staging().await
                             },
                         )
                         .await
@@ -209,7 +207,7 @@ pub fn arrow_conversion() -> (
                         if let Err(e) = monitor_task_duration(
                             "arrow_conversion",
                             Duration::from_secs(30),
-                            || async { STAGING.prepare_parquet(false) },
+                            || async { PARSEABLE.streams.prepare_parquet(false) },
                         ).await
                         {
                             warn!("failed to convert local arrow data to parquet. {e:?}");
@@ -262,7 +260,7 @@ pub fn run_local_sync() -> (
                 select! {
                     _ = sync_interval.tick() => {
                         trace!("Flushing Arrows to disk...");
-                        STAGING.flush_all();
+                        PARSEABLE.flush_all_streams();
                     },
                     res = &mut inbox_rx => {match res{
                         Ok(_) => break,

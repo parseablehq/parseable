@@ -23,8 +23,8 @@ use std::sync::RwLock;
 
 use super::TimeFilter;
 use crate::{
-    metadata::LOCK_EXPECT, migration::to_bytes, option::CONFIG,
-    storage::object_storage::filter_path, utils::get_hash,
+    migration::to_bytes, parseable::PARSEABLE, storage::object_storage::filter_path,
+    utils::get_hash, LOCK_EXPECT,
 };
 
 pub static FILTERS: Lazy<Filters> = Lazy::new(Filters::default);
@@ -75,7 +75,7 @@ pub struct Filters(RwLock<Vec<Filter>>);
 impl Filters {
     pub async fn load(&self) -> anyhow::Result<()> {
         let mut this = vec![];
-        let store = CONFIG.storage().get_object_store();
+        let store = PARSEABLE.storage.get_object_store();
         let all_filters = store.get_all_saved_filters().await.unwrap_or_default();
         for (filter_relative_path, filters) in all_filters {
             for filter in filters {

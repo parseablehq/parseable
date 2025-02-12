@@ -23,10 +23,9 @@ use crate::correlation::CORRELATIONS;
 use crate::handlers::airplane;
 use crate::handlers::http::base_path;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
-use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
-use crate::handlers::http::{self, role};
 use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
+use crate::handlers::http::{rbac, role};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
 use crate::users::dashboards::DASHBOARDS;
@@ -40,11 +39,11 @@ use bytes::Bytes;
 use tokio::sync::oneshot;
 use tracing::{error, info};
 
-use crate::{option::CONFIG, ParseableServer};
+use crate::parseable::PARSEABLE;
+use crate::Server;
 
 use super::query::{querier_ingest, querier_logstream, querier_rbac, querier_role};
-use super::server::Server;
-use super::OpenIdClient;
+use super::{OpenIdClient, ParseableServer};
 
 pub struct QueryServer;
 
@@ -77,15 +76,15 @@ impl ParseableServer for QueryServer {
 
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>> {
         // parseable can't use local storage for persistence when running a distributed setup
-        if CONFIG.get_storage_mode_string() == "Local drive" {
+        if PARSEABLE.storage.name() == "drive" {
             return Err(anyhow::anyhow!(
                  "This instance of the Parseable server has been configured to run in a distributed setup, it doesn't support local storage.",
              ));
         }
 
-        migration::run_file_migration(&CONFIG).await?;
-        let parseable_json = CONFIG.validate_storage().await?;
-        migration::run_metadata_migration(&CONFIG, &parseable_json).await?;
+        migration::run_file_migration(&PARSEABLE).await?;
+        let parseable_json = PARSEABLE.validate_storage().await?;
+        migration::run_metadata_migration(&PARSEABLE, &parseable_json).await?;
 
         Ok(parseable_json)
     }
@@ -96,12 +95,12 @@ impl ParseableServer for QueryServer {
         prometheus: &PrometheusMetrics,
         shutdown_rx: oneshot::Receiver<()>,
     ) -> anyhow::Result<()> {
-        CONFIG.storage().register_store_metrics(prometheus);
+        PARSEABLE.storage.register_store_metrics(prometheus);
 
-        migration::run_migration(&CONFIG).await?;
+        migration::run_migration(&PARSEABLE).await?;
 
         //create internal stream at server start
-        create_internal_stream_if_not_exists().await?;
+        PARSEABLE.create_internal_stream_if_not_exists().await?;
 
         if let Err(e) = CORRELATIONS.load().await {
             error!("{e}");
@@ -123,11 +122,11 @@ impl ParseableServer for QueryServer {
 
         // all internal data structures populated now.
         // start the analytics scheduler if enabled
-        if CONFIG.options.send_analytics {
+        if PARSEABLE.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
 
-        if matches!(init_cluster_metrics_schedular(), Ok(())) {
+        if init_cluster_metrics_schedular().is_ok() {
             info!("Cluster metrics scheduler started successfully");
         }
         if let Some(hot_tier_manager) = HotTierManager::global() {
@@ -176,11 +175,7 @@ impl QueryServer {
             .service(
                 web::resource("")
                     // GET /user => List all users
-                    .route(
-                        web::get()
-                            .to(http::rbac::list_users)
-                            .authorize(Action::ListUser),
-                    ),
+                    .route(web::get().to(rbac::list_users).authorize(Action::ListUser)),
             )
             .service(
                 web::resource("/{username}")
@@ -209,7 +204,7 @@ impl QueryServer {
                     )
                     .route(
                         web::get()
-                            .to(http::rbac::get_role)
+                            .to(rbac::get_role)
                             .authorize_for_user(Action::GetUserRoles),
                     ),
             )
