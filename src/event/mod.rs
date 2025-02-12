@@ -58,7 +58,6 @@ impl Event {
                 key.push_str(&format!("&{k}={v}"));
             }
         }
-
         if self.is_first_event {
             commit_schema(&self.stream_name, self.rb.schema())?;
         }

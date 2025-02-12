@@ -28,7 +28,7 @@ use std::{
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::Schema;
-use chrono::{NaiveDateTime, Timelike, Utc};
+use chrono::{DateTime, Datelike, NaiveDateTime, Timelike, Utc};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
 use parquet::{
@@ -141,8 +141,7 @@ impl<'a> Stream<'a> {
             hostname.push_str(&INGESTOR_META.get_ingestor_id());
         }
         let filename = format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.{ARROW_FILE_EXTENSION}",
-            Utc::now().format("%Y%m%dT%H%M"),
+            "{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
@@ -160,11 +159,11 @@ impl<'a> Stream<'a> {
             return vec![];
         };
 
-        let paths = dir
+        let paths: Vec<PathBuf> = dir
             .flatten()
             .map(|file| file.path())
             .filter(|file| file.extension().is_some_and(|ext| ext.eq("arrows")))
-            .sorted_by_key(|f| f.metadata().unwrap().modified().unwrap())
+            .sorted_by_key(|f| f.metadata().unwrap().created().unwrap())
             .collect();
 
         paths
@@ -177,24 +176,32 @@ impl<'a> Stream<'a> {
     /// Only includes ones starting from the previous minute
     pub fn arrow_files_grouped_exclude_time(
         &self,
-        exclude: NaiveDateTime,
         shutdown_signal: bool,
     ) -> HashMap<PathBuf, Vec<PathBuf>> {
+        let now = Utc::now();
+
+        // Extract date and time components of current time
+        let now_date = (now.year(), now.month(), now.day());
+        let now_time = (now.hour(), now.minute());
+
         let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
         let mut arrow_files = self.arrow_files();
+        arrow_files.retain(|path| {
+            let created_at = path.metadata().unwrap().created().unwrap();
+            let created_at: DateTime<Utc> = created_at.into();
+            let created_date = (created_at.year(), created_at.month(), created_at.day());
+            let created_time = (created_at.hour(), created_at.minute());
 
-        // if the shutdown signal is false i.e. normal condition
-        // don't keep the ones for the current minute
-        if !shutdown_signal {
-            arrow_files.retain(|path| {
-                !path
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .starts_with(&exclude.format("%Y%m%dT%H%M").to_string())
-            });
-        }
+            let same_date = now_date == created_date;
+            let same_time = now_time == created_time;
+            // if the shutdown signal is false i.e. normal condition
+            // don't keep the ones for the current minute
+            if !shutdown_signal {
+                !same_date || !same_time
+            } else {
+                true
+            }
+        });
 
         let random_string =
             rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 15);
@@ -370,8 +377,7 @@ impl<'a> Stream<'a> {
     ) -> Result<Option<Schema>, StagingError> {
         let mut schemas = Vec::new();
 
-        let time = chrono::Utc::now().naive_utc();
-        let staging_files = self.arrow_files_grouped_exclude_time(time, shutdown_signal);
+        let staging_files = self.arrow_files_grouped_exclude_time(shutdown_signal);
         if staging_files.is_empty() {
             metrics::STAGING_FILES
                 .with_label_values(&[&self.stream_name])
@@ -400,9 +406,12 @@ impl<'a> Stream<'a> {
             }
 
             let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
+            println!("Number of valid readers: {}", record_reader.readers.len());
+
             if record_reader.readers.is_empty() {
                 continue;
             }
+
             let merged_schema = record_reader.merged_schema();
 
             let props = parquet_writer_props(
@@ -422,9 +431,13 @@ impl<'a> Stream<'a> {
                 .open(&part_path)
                 .map_err(|_| StagingError::Create)?;
             let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props))?;
+            let mut input_count = 0;
             for ref record in record_reader.merged_iter(schema, time_partition.cloned()) {
+                let batch_size = record.num_rows();
                 writer.write(record)?;
+                input_count += batch_size;
             }
+            println!("Total input count: {}", input_count);
             writer.close()?;
 
             if part_file.metadata().unwrap().len() < parquet::file::FOOTER_SIZE as u64 {

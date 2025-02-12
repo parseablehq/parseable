@@ -84,15 +84,37 @@ pub struct MergedReverseRecordReader {
 impl MergedReverseRecordReader {
     pub fn try_new(files: &[PathBuf]) -> Self {
         let mut readers = Vec::with_capacity(files.len());
+
         for file in files {
-            let Ok(reader) = get_reverse_reader(File::open(file).unwrap()) else {
-                error!("Invalid file detected, ignoring it: {:?}", file);
-                continue;
-            };
-
-            readers.push(reader);
+            match File::open(file) {
+                Ok(file) => {
+                    // Create two readers - one for counting and one for keeping
+                    match (get_reverse_reader(file.try_clone().unwrap()), get_reverse_reader(file.try_clone().unwrap())) {
+                        (Ok(count_reader), Ok(keep_reader)) => {
+                            // Count records from the first reader
+                            let count: usize = count_reader
+                                .flat_map(|r| r.ok())
+                                .map(|b| b.num_rows()).count();
+                                
+                            println!("File {:?} has {} records", file, count);
+                            
+                            // Keep the second reader for actual processing
+                            readers.push(keep_reader);
+                        }
+                        _ => {
+                            error!("Invalid file detected, ignoring it: {:?}", file);
+                            continue;
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to open file {:?}: {}", file, e);
+                    continue;
+                }
+            }
         }
-
+    
+        println!("Total valid readers: {}", readers.len());
         Self { readers }
     }
 
@@ -248,17 +270,29 @@ pub fn get_reverse_reader<T: Read + Seek>(
 ) -> Result<StreamReader<BufReader<OffsetReader<T>>>, io::Error> {
     let mut offset = 0;
     let mut messages = Vec::new();
+    let mut record_count = 0;
 
     while let Some(res) = find_limit_and_type(&mut reader).transpose() {
         match res {
             Ok((header, size)) => {
+                // Log message type and size
+                // println!("Message type: {:?}, size: {}", header, size);
                 messages.push((header, offset, size));
+                if header == MessageHeader::RecordBatch {
+                    record_count += 1;
+                }
                 offset += size;
             }
-            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => {
+                println!("Reached EOF after {} record batches", record_count);
+                break;
+            }
             Err(err) => return Err(err),
         }
     }
+
+    println!("Total record batches found: {}", record_count);
+    println!("Total messages found: {}", messages.len());
 
     // reverse everything leaving the first because it has schema message.
     messages[1..].reverse();
@@ -273,8 +307,52 @@ pub fn get_reverse_reader<T: Read + Seek>(
     Ok(StreamReader::try_new(BufReader::new(OffsetReader::new(reader, messages)), None).unwrap())
 }
 
-// return limit for
 fn find_limit_and_type(
+    reader: &mut (impl Read + Seek),
+) -> Result<Option<(MessageHeader, usize)>, io::Error> {
+    let mut size = 0;
+    let marker = reader.read_u32::<LittleEndian>()?;
+    size += 4;
+
+    if marker != 0xFFFFFFFF {
+        println!("Invalid marker: {:x}", marker);
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Invalid Continuation Marker: {:x}", marker),
+        ));
+    }
+
+    let metadata_size = reader.read_u32::<LittleEndian>()? as usize;
+    size += 4;
+
+    if metadata_size == 0x00000000 {
+        println!("Found end of stream (metadata_size = 0)");
+        return Ok(None);
+    }
+
+    // println!("Metadata size: {}", metadata_size);
+
+    let mut message = vec![0u8; metadata_size];
+    reader.read_exact(&mut message)?;
+    size += metadata_size;
+
+    let message = unsafe { root_as_message_unchecked(&message) };
+    let header = message.header_type();
+    let message_size = message.bodyLength();
+    
+    // println!("Message header: {:?}, body length: {}", header, message_size);
+    
+    size += message_size as usize;
+
+    let padding = (8 - (size % 8)) % 8;
+    reader.seek(SeekFrom::Current(padding as i64 + message_size))?;
+    size += padding;
+
+    Ok(Some((header, size)))
+}
+
+// return limit for
+fn find_limit_and_type1(
     reader: &mut (impl Read + Seek),
 ) -> Result<Option<(MessageHeader, usize)>, io::Error> {
     let mut size = 0;
