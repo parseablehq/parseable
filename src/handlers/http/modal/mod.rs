@@ -242,7 +242,7 @@ impl IngestorMetadata {
 
             // get the ingestor metadata from staging
             let bytes = std::fs::read(path).expect("File should be present");
-            let mut meta = Self::from_bytes(&bytes).expect("Extracted ingestor metadata");
+            let mut meta = Self::from_bytes(&bytes, options.flight_port).expect("Extracted ingestor metadata");
 
             // compare url endpoint and port, update
             if meta.domain_name != url {
@@ -305,10 +305,10 @@ impl IngestorMetadata {
     }
 
     /// Updates json with `flight_port` field if not already present
-    fn from_bytes(bytes: &[u8]) -> anyhow::Result<Self> {
+    fn from_bytes(bytes: &[u8], flight_port: u16) -> anyhow::Result<Self> {
         let mut json: Map<String, Value> = serde_json::from_slice(bytes)?;
         json.entry("flight_port")
-            .or_insert_with(|| Value::String(PARSEABLE.options.flight_port.to_string()));
+            .or_insert_with(|| Value::String(flight_port.to_string()));
 
         Ok(serde_json::from_value(Value::Object(json))?)
     }
@@ -322,7 +322,7 @@ impl IngestorMetadata {
             }
         };
 
-        let resource = Self::from_bytes(&bytes)?;
+        let resource = Self::from_bytes(&bytes, PARSEABLE.options.flight_port)?;
         let bytes = Bytes::from(serde_json::to_vec(&resource)?);
 
         resource.put_on_disk(PARSEABLE.options.staging_dir())?;
