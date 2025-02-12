@@ -406,9 +406,12 @@ impl<'a> Stream<'a> {
             }
 
             let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
+            println!("Number of valid readers: {}", record_reader.readers.len());
+
             if record_reader.readers.is_empty() {
                 continue;
             }
+
             let merged_schema = record_reader.merged_schema();
 
             let props = parquet_writer_props(
@@ -428,9 +431,13 @@ impl<'a> Stream<'a> {
                 .open(&part_path)
                 .map_err(|_| StagingError::Create)?;
             let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props))?;
+            let mut input_count = 0;
             for ref record in record_reader.merged_iter(schema, time_partition.cloned()) {
+                let batch_size = record.num_rows();
                 writer.write(record)?;
+                input_count += batch_size;
             }
+            println!("Total input count: {}", input_count);
             writer.close()?;
 
             if part_file.metadata().unwrap().len() < parquet::file::FOOTER_SIZE as u64 {
