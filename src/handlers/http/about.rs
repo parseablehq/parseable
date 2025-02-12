@@ -21,7 +21,8 @@ use serde_json::{json, Value};
 
 use crate::{
     about::{self, get_latest_release},
-    option::{Mode, CONFIG},
+    option::Mode,
+    parseable::PARSEABLE,
     storage::StorageMetadata,
 };
 use std::path::PathBuf;
@@ -41,7 +42,7 @@ use std::path::PathBuf;
 ///     "staging": staging,
 ///     "grpcPort": grpc_port,
 ///     "store": {
-///         "type": CONFIG.get_storage_mode_string(),
+///         "type": PARSEABLE.get_storage_mode_string(),
 ///         "path": store_endpoint
 ///     }
 /// }
@@ -61,31 +62,31 @@ pub async fn about() -> Json<Value> {
     let current_version = format!("v{}", current_release.released_version);
     let commit = current_release.commit_hash;
     let deployment_id = meta.deployment_id.to_string();
-    let mode = CONFIG.get_server_mode_string();
-    let staging = if CONFIG.options.mode == Mode::Query {
+    let mode = PARSEABLE.get_server_mode_string();
+    let staging = if PARSEABLE.options.mode == Mode::Query {
         "".to_string()
     } else {
-        CONFIG.staging_dir().display().to_string()
+        PARSEABLE.staging_dir().display().to_string()
     };
-    let grpc_port = CONFIG.options.grpc_port;
+    let grpc_port = PARSEABLE.options.grpc_port;
 
-    let store_endpoint = CONFIG.storage().get_endpoint();
-    let is_llm_active = &CONFIG.options.open_ai_key.is_some();
+    let store_endpoint = PARSEABLE.storage.get_endpoint();
+    let is_llm_active = &PARSEABLE.options.open_ai_key.is_some();
     let llm_provider = is_llm_active.then_some("OpenAI");
-    let is_oidc_active = CONFIG.options.openid().is_some();
+    let is_oidc_active = PARSEABLE.options.openid().is_some();
     let ui_version = option_env!("UI_VERSION").unwrap_or("development");
 
-    let hot_tier_details: String = if CONFIG.hot_tier_dir().is_none() {
+    let hot_tier_details: String = if PARSEABLE.hot_tier_dir().is_none() {
         "Disabled".to_string()
     } else {
-        let hot_tier_dir: &Option<PathBuf> = CONFIG.hot_tier_dir();
+        let hot_tier_dir: &Option<PathBuf> = PARSEABLE.hot_tier_dir();
         format!(
             "Enabled, Path: {}",
             hot_tier_dir.as_ref().unwrap().display(),
         )
     };
 
-    let ms_clarity_tag = &CONFIG.options.ms_clarity_tag;
+    let ms_clarity_tag = &PARSEABLE.options.ms_clarity_tag;
 
     Json(json!({
         "version": current_version,
@@ -103,7 +104,7 @@ pub async fn about() -> Json<Value> {
         "hotTier": hot_tier_details,
         "grpcPort": grpc_port,
         "store": {
-            "type": CONFIG.get_storage_mode_string(),
+            "type": PARSEABLE.get_storage_mode_string(),
             "path": store_endpoint
         },
         "analytics": {
