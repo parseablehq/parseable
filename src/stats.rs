@@ -184,7 +184,7 @@ pub fn delete_stats(stream_name: &str, format: &'static str) -> prometheus::Resu
 }
 
 pub fn event_labels<'a>(stream_name: &'a str, format: &'static str) -> [&'a str; 2] {
-    [stream_name, format]
+    ["data", stream_name, format]
 }
 
 pub fn storage_size_labels(stream_name: &str) -> [&str; 3] {
