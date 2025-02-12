@@ -31,9 +31,11 @@ use crate::{
         ingest::PostError,
         kinesis::{flatten_kinesis_logs, Message},
     },
-    metadata::{SchemaVersion, STREAM_INFO},
+    metadata::SchemaVersion,
+    parseable::{StreamNotFound, PARSEABLE},
     storage::StreamType,
     utils::json::{convert_array_to_object, flatten::convert_to_array},
+    LOCK_EXPECT,
 };
 
 pub async fn flatten_and_push_logs(
@@ -64,11 +66,14 @@ pub async fn push_logs(
     json: Value,
     log_source: &LogSource,
 ) -> Result<(), PostError> {
-    let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
-    let time_partition_limit = STREAM_INFO.get_time_partition_limit(stream_name)?;
-    let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
-    let custom_partition = STREAM_INFO.get_custom_partition(stream_name)?;
-    let schema_version = STREAM_INFO.get_schema_version(stream_name)?;
+    let stream = PARSEABLE.get_stream(stream_name)?;
+    let time_partition = stream.get_time_partition();
+    let time_partition_limit = PARSEABLE
+        .get_stream(stream_name)?
+        .get_time_partition_limit();
+    let static_schema_flag = stream.get_static_schema_flag();
+    let custom_partition = stream.get_custom_partition();
+    let schema_version = stream.get_schema_version();
 
     let data = if time_partition.is_some() || custom_partition.is_some() {
         convert_array_to_object(
@@ -103,11 +108,15 @@ pub async fn push_logs(
             }
             None => HashMap::new(),
         };
-        let schema = STREAM_INFO
+        let schema = PARSEABLE
+            .streams
             .read()
             .unwrap()
             .get(stream_name)
-            .ok_or(PostError::StreamNotFound(stream_name.to_owned()))?
+            .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?
+            .metadata
+            .read()
+            .expect(LOCK_EXPECT)
             .schema
             .clone();
         let (rb, is_first_event) = into_event_batch(

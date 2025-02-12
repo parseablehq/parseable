@@ -16,14 +16,10 @@
  *
  */
 
-use bytes::Bytes;
 use rand::distributions::DistString;
 use serde_json::{json, Map, Value as JsonValue};
 
-use crate::{
-    handlers::http::modal::IngestorMetadata, option::CONFIG,
-    storage::object_storage::ingestor_metadata_path,
-};
+use crate::parseable::PARSEABLE;
 
 /*
 v1
@@ -46,7 +42,7 @@ pub fn v1_v3(mut storage_metadata: JsonValue) -> JsonValue {
     metadata.insert("users".to_string(), JsonValue::Array(vec![]));
     metadata.insert("streams".to_string(), JsonValue::Array(vec![]));
     metadata.insert("roles".to_string(), JsonValue::Array(vec![]));
-    metadata.insert("server_mode".to_string(), json!(CONFIG.options.mode));
+    metadata.insert("server_mode".to_string(), json!(PARSEABLE.options.mode));
     storage_metadata
 }
 
@@ -107,7 +103,7 @@ pub fn v2_v3(mut storage_metadata: JsonValue) -> JsonValue {
         "roles".to_string(),
         JsonValue::Object(Map::from_iter(privileges_map)),
     );
-    metadata.insert("server_mode".to_string(), json!(CONFIG.options.mode));
+    metadata.insert("server_mode".to_string(), json!(PARSEABLE.options.mode));
     storage_metadata
 }
 
@@ -118,7 +114,7 @@ pub fn v3_v4(mut storage_metadata: JsonValue) -> JsonValue {
     let sm = metadata.get("server_mode");
 
     if sm.is_none() || sm.unwrap().as_str().unwrap() == "All" {
-        metadata.insert("server_mode".to_string(), json!(CONFIG.options.mode));
+        metadata.insert("server_mode".to_string(), json!(PARSEABLE.options.mode));
     }
 
     let roles = metadata.get_mut("roles").unwrap().as_object_mut().unwrap();
@@ -145,17 +141,17 @@ pub fn v4_v5(mut storage_metadata: JsonValue) -> JsonValue {
 
     match metadata.get("server_mode") {
         None => {
-            metadata.insert("server_mode".to_string(), json!(CONFIG.options.mode));
+            metadata.insert("server_mode".to_string(), json!(PARSEABLE.options.mode));
         }
         Some(JsonValue::String(mode)) => match mode.as_str() {
             "Query" => {
                 metadata.insert(
                     "querier_endpoint".to_string(),
-                    JsonValue::String(CONFIG.options.address.clone()),
+                    JsonValue::String(PARSEABLE.options.address.clone()),
                 );
             }
             "All" => {
-                metadata.insert("server_mode".to_string(), json!(CONFIG.options.mode));
+                metadata.insert("server_mode".to_string(), json!(PARSEABLE.options.mode));
             }
             _ => (),
         },
@@ -171,38 +167,4 @@ pub fn remove_querier_metadata(mut storage_metadata: JsonValue) -> JsonValue {
     metadata.remove("querier_endpoint");
     metadata.remove("querier_auth_token");
     storage_metadata
-}
-
-pub async fn migrate_ingester_metadata() -> anyhow::Result<Option<IngestorMetadata>> {
-    let imp = ingestor_metadata_path(None);
-    let bytes = match CONFIG.storage().get_object_store().get_object(&imp).await {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            return Ok(None);
-        }
-    };
-    let mut json = serde_json::from_slice::<JsonValue>(&bytes)?;
-    let meta = json
-        .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("Unable to parse Ingester Metadata"))?;
-    let fp = meta.get("flight_port");
-
-    if fp.is_none() {
-        meta.insert(
-            "flight_port".to_owned(),
-            JsonValue::String(CONFIG.options.flight_port.to_string()),
-        );
-    }
-    let bytes = Bytes::from(serde_json::to_vec(&json)?);
-
-    let resource: IngestorMetadata = serde_json::from_value(json)?;
-    resource.put_on_disk(CONFIG.staging_dir())?;
-
-    CONFIG
-        .storage()
-        .get_object_store()
-        .put_object(&imp, bytes)
-        .await?;
-
-    Ok(Some(resource))
 }
