@@ -129,7 +129,7 @@ impl Parseable {
         storage: Arc<dyn ObjectStorageProvider>,
     ) -> Self {
         let ingestor_metadata = match &options.mode {
-            Mode::Ingest => Some(IngestorMetadata::load()),
+            Mode::Ingest => Some(IngestorMetadata::load(&options, storage.as_ref())),
             _ => None,
         };
         Parseable {

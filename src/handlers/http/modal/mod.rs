@@ -35,8 +35,8 @@ use crate::{
     cli::Options,
     oidc::Claims,
     parseable::PARSEABLE,
-    storage::PARSEABLE_ROOT_DIRECTORY,
-    utils::{get_ingestor_id, get_url},
+    storage::{ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY},
+    utils::get_ingestor_id,
 };
 
 use super::{audit, cross_origin_config, health_check, API_BASE_PATH, API_VERSION};
@@ -213,18 +213,18 @@ impl IngestorMetadata {
     }
 
     /// Capture metadata information by either loading it from staging or starting fresh
-    pub fn load() -> Arc<Self> {
+    pub fn load(options: &Options, storage: &dyn ObjectStorageProvider) -> Arc<Self> {
         // all the files should be in the staging directory root
-        let entries = std::fs::read_dir(&PARSEABLE.options.local_staging_path)
-            .expect("Couldn't read from file");
-        let url = get_url();
+        let entries =
+            std::fs::read_dir(&options.local_staging_path).expect("Couldn't read from file");
+        let url = options.get_url();
         let port = url.port().unwrap_or(80).to_string();
         let url = url.to_string();
         let Options {
             username, password, ..
-        } = PARSEABLE.options.as_ref();
-        let staging_path = PARSEABLE.staging_dir();
-        let flight_port = PARSEABLE.options.flight_port.to_string();
+        } = options;
+        let staging_path = &options.local_staging_path;
+        let flight_port = options.flight_port.to_string();
 
         for entry in entries {
             // cause the staging directory will have only one file with ingestor in the name
@@ -250,7 +250,7 @@ impl IngestorMetadata {
                 if obj.get("flight_port").is_none() {
                     obj.insert(
                         "flight_port".to_owned(),
-                        Value::String(PARSEABLE.options.flight_port.to_string()),
+                        Value::String(options.flight_port.to_string()),
                     );
                 }
 
@@ -291,7 +291,7 @@ impl IngestorMetadata {
             }
         }
 
-        let storage = PARSEABLE.storage.get_object_store();
+        let storage = storage.get_object_store();
         let meta = Self::new(
             port,
             url,
