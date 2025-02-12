@@ -669,7 +669,6 @@ pub async fn run() -> Result<()> {
     let queries_path: PathBuf = ["/home","ubuntu", "clickbench", "queries.sql"].iter().collect();
     let queries = AllQueries::try_new(queries_path.as_path())?;
     println!("queries loaded");
-    println!("query no. 1: {:?}", queries.get_query(1)?);
     let query_range = queries.min_query_id()..=queries.max_query_id();
     
     // configure parquet options
