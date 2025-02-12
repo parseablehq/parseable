@@ -242,7 +242,8 @@ impl IngestorMetadata {
 
             // get the ingestor metadata from staging
             let bytes = std::fs::read(path).expect("File should be present");
-            let mut meta = Self::from_bytes(&bytes, options.flight_port).expect("Extracted ingestor metadata");
+            let mut meta =
+                Self::from_bytes(&bytes, options.flight_port).expect("Extracted ingestor metadata");
 
             // compare url endpoint and port, update
             if meta.domain_name != url {
@@ -375,6 +376,18 @@ mod test {
         let rhs = serde_json::from_slice::<IngestorMetadata>(br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=", "ingestor_id": "ingestor_id","flight_port": "8002"}"#).unwrap();
 
         assert_eq!(rhs, lhs);
+    }
+
+    #[test]
+    fn from_bytes_with_port() {
+        let meta = IngestorMetadata::from_bytes(br#"{"version": "", "port": "", "domain_name": "", "bucket_name": "", "token": "", "ingestor_id": "", "flight_port": ""}"#, 10).expect("Deserializable");
+        assert_eq!(meta.flight_port, "");
+    }
+
+    #[test]
+    fn from_bytes_without_port() {
+        let meta = IngestorMetadata::from_bytes(br#"{"version": "", "port": "", "domain_name": "", "bucket_name": "", "token": "", "ingestor_id": ""}"#, 10).expect("Deserializable");
+        assert_eq!(meta.flight_port, "10");
     }
 
     #[rstest]
