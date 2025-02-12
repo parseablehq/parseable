@@ -15,152 +15,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-
-use crate::cli::{Cli, Options, StorageOptions, DEFAULT_PASSWORD, DEFAULT_USERNAME};
-#[cfg(feature = "kafka")]
-use crate::connectors::kafka::config::KafkaConfig;
-use crate::storage::object_storage::parseable_json_path;
-use crate::storage::{ObjectStorageError, ObjectStorageProvider};
-use bytes::Bytes;
-use clap::error::ErrorKind;
-use clap::Parser;
-use once_cell::sync::Lazy;
 use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use std::sync::Arc;
-
-pub const JOIN_COMMUNITY: &str =
-    "Join us on Parseable Slack community for questions : https://logg.ing/community";
-pub static CONFIG: Lazy<Arc<Config>> = Lazy::new(|| Arc::new(Config::new()));
-
-#[derive(Debug)]
-pub struct Config {
-    pub options: Options,
-    storage: Arc<dyn ObjectStorageProvider>,
-    pub storage_name: &'static str,
-    #[cfg(feature = "kafka")]
-    pub kafka_config: KafkaConfig,
-}
-
-impl Config {
-    fn new() -> Self {
-        match Cli::parse().storage {
-            StorageOptions::Local(args) => {
-                if args.options.local_staging_path == args.storage.root {
-                    clap::Error::raw(
-                        ErrorKind::ValueValidation,
-                        "Cannot use same path for storage and staging",
-                    )
-                    .exit();
-                }
-
-                if args.options.hot_tier_storage_path.is_some() {
-                    clap::Error::raw(
-                        ErrorKind::ValueValidation,
-                        "Cannot use hot tier with local-store subcommand.",
-                    )
-                    .exit();
-                }
-
-                Config {
-                    options: args.options,
-                    storage: Arc::new(args.storage),
-                    storage_name: "drive",
-                    #[cfg(feature = "kafka")]
-                    kafka_config: args.kafka,
-                }
-            }
-            StorageOptions::S3(args) => Config {
-                options: args.options,
-                storage: Arc::new(args.storage),
-                storage_name: "s3",
-                #[cfg(feature = "kafka")]
-                kafka_config: args.kafka,
-            },
-            StorageOptions::Blob(args) => Config {
-                options: args.options,
-                storage: Arc::new(args.storage),
-                storage_name: "blob_store",
-                #[cfg(feature = "kafka")]
-                kafka_config: args.kafka,
-            },
-        }
-    }
-
-    // validate the storage, if the proper path for staging directory is provided
-    // if the proper data directory is provided, or s3 bucket is provided etc
-    pub async fn validate_storage(&self) -> Result<Option<Bytes>, ObjectStorageError> {
-        let obj_store = self.storage.get_object_store();
-        let rel_path = parseable_json_path();
-        let mut has_parseable_json = false;
-        let parseable_json_result = obj_store.get_object(&rel_path).await;
-        if parseable_json_result.is_ok() {
-            has_parseable_json = true;
-        }
-
-        // Lists all the directories in the root of the bucket/directory
-        // can be a stream (if it contains .stream.json file) or not
-        let has_dirs = match obj_store.list_dirs().await {
-            Ok(dirs) => !dirs.is_empty(),
-            Err(_) => false,
-        };
-
-        let has_streams = obj_store.list_streams().await.is_ok();
-        if !has_dirs && !has_parseable_json {
-            return Ok(None);
-        }
-        if has_streams {
-            return Ok(Some(parseable_json_result.unwrap()));
-        }
-
-        if self.get_storage_mode_string() == "Local drive" {
-            return Err(ObjectStorageError::Custom(format!("Could not start the server because directory '{}' contains stale data, please use an empty directory, and restart the server.\n{}", self.storage.get_endpoint(), JOIN_COMMUNITY)));
-        }
-
-        // S3 bucket mode
-        Err(ObjectStorageError::Custom(format!("Could not start the server because bucket '{}' contains stale data, please use an empty bucket and restart the server.\n{}", self.storage.get_endpoint(), JOIN_COMMUNITY)))
-    }
-
-    pub fn storage(&self) -> Arc<dyn ObjectStorageProvider> {
-        self.storage.clone()
-    }
-
-    pub fn staging_dir(&self) -> &PathBuf {
-        &self.options.local_staging_path
-    }
-
-    pub fn hot_tier_dir(&self) -> &Option<PathBuf> {
-        &self.options.hot_tier_storage_path
-    }
-
-    pub fn is_default_creds(&self) -> bool {
-        self.options.username == DEFAULT_USERNAME && self.options.password == DEFAULT_PASSWORD
-    }
-
-    // returns the string representation of the storage mode
-    // drive --> Local drive
-    // s3 --> S3 bucket
-    // azure_blob --> Azure Blob Storage
-    pub fn get_storage_mode_string(&self) -> &str {
-        if self.storage_name == "drive" {
-            return "Local drive";
-        } else if self.storage_name == "s3" {
-            return "S3 bucket";
-        } else if self.storage_name == "blob_store" {
-            return "Azure Blob Storage";
-        }
-        "Unknown"
-    }
-
-    pub fn get_server_mode_string(&self) -> &str {
-        match self.options.mode {
-            Mode::Query => "Distributed (Query)",
-            Mode::Ingest => "Distributed (Ingest)",
-            Mode::All => "Standalone",
-        }
-    }
-}
 
 #[derive(Debug, Default, Eq, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum Mode {
@@ -168,6 +24,21 @@ pub enum Mode {
     Ingest,
     #[default]
     All,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Starting Standalone Mode is not permitted when Distributed Mode is enabled. Please restart the server with Distributed Mode enabled.")]
+pub struct StandaloneWithDistributed;
+
+impl Mode {
+    // An instance is not allowed
+    pub fn standalone_after_distributed(&self) -> Result<(), StandaloneWithDistributed> {
+        if *self == Mode::Query {
+            return Err(StandaloneWithDistributed);
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]

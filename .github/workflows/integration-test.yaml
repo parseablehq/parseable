@@ -11,7 +11,7 @@ jobs:
 
   docker-compose-test:
     name: Quest Smoke and Load Tests for Standalone deployments
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -23,7 +23,7 @@ jobs:
 
   docker-compose-distributed-test:
     name: Quest Smoke and Load Tests for Distributed deployments
-    runs-on: self-hosted
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
