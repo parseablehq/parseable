@@ -28,19 +28,22 @@ use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
 
-use datafusion::common::exec_datafusion_err;
+use datafusion::common::{exec_datafusion_err, plan_err};
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
+use datafusion::config::ConfigFileType;
+use datafusion::datasource::listing::ListingTableUrl;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::disk_manager::DiskManagerConfig;
 use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
-    Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
+    Aggregate, DdlStatement, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan
 };
 use datafusion::prelude::*;
 use functions::ParquetMetadataFunc;
 use itertools::Itertools;
+use object_storage::get_object_store;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
@@ -695,13 +698,12 @@ pub async fn run() -> Result<()> {
     // register `parquet_metadata` table function to get metadata from parquet files
     ctx.register_udtf("parquet_metadata", Arc::new(ParquetMetadataFunc {}));
     
-    register_hits(&ctx).await?;
+    register_hits().await?;
 
     for query_id in query_range {
         let sql = queries.get_query(query_id)?;
-        let plan = ctx.state().create_logical_plan(sql).await?;
         let start = Instant::now();
-        let df = ctx.execute_logical_plan(plan).await?;
+        let df = ctx.sql(sql).await?;
         let _ = df.collect().await?;
         let elapsed = start.elapsed().as_secs_f64();
         println!("Q{query_id}  took {elapsed} seconds");
@@ -711,25 +713,39 @@ pub async fn run() -> Result<()> {
 }
 
 /// Registers the `hits.parquet` as a table named `hits`
-async fn register_hits(ctx: &SessionContext) -> Result<()> {
-    let options: ParquetReadOptions<'_> = Default::default();
-    // options.table_partition_cols = vec!["date", "hour", "minute"]
-    //     .iter()
-    //     .map(|s| (s.to_string(), DataType::Utf8))
-    //     .collect();
-    // let schema = STREAM_INFO.schema("hits").unwrap();
-    // options.schema = Some(&schema);
-    let path: PathBuf = ["/home", "ubuntu", "clickbench",  "hits.parquet"].iter().collect();
-    let path = path.as_os_str().to_str().unwrap();
-    println!("Registering 'hits' as {path}");
-    ctx.register_parquet("hits", path, options)
-        .await
-        .map_err(|e| {
-            DataFusionError::Context(
-                format!("Registering 'hits' as {path}"),
-                Box::new(e),
-            )
-        })
+async fn register_hits() -> Result<()> {
+    
+    let location = "/home/ubuntu/clickbench/hits.parquet";
+    let sql = "CREATE EXTERNAL TABLE hits STORED AS PARQUET LOCATION '{location}' OPTIONS ('binary_as_string' 'true')";
+    let ctx = SessionContext::new();
+    let plan = ctx.state().create_logical_plan(sql).await?;
+    println!("plan: {plan}");
+    if let LogicalPlan::Ddl(DdlStatement::CreateExternalTable(cmd)) = &plan {
+        println!("cmd: {:?}", cmd);
+        let format =Some(ConfigFileType::PARQUET);
+        let table_path = ListingTableUrl::parse(location)?;
+        println!("table_path: {table_path}");
+        let scheme = table_path.scheme();
+        let url = table_path.as_ref();
+        // Clone and modify the default table options based on the provided options
+        let mut table_options = ctx.state().default_table_options();
+        println!("table_options: {:?}", table_options);
+        if let Some(format) = format {
+            table_options.set_config_format(format);
+        }
+        table_options.alter_with_string_hash_map(&cmd.options)?;
+        // Retrieve the appropriate object store based on the scheme, URL, and modified table options
+        let store =
+        get_object_store(&ctx.state(), scheme, url, &table_options).await?;
+
+        // Register the retrieved object store in the session context's runtime environment
+        ctx.register_object_store(url, store);
+        
+    } else {
+        return plan_err!("LogicalPlan is not a CreateExternalTable");
+    }
+
+    Ok(())
 }
 
 pub mod error {
