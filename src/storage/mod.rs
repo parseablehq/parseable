@@ -19,7 +19,9 @@
 use crate::{
     catalog::snapshot::Snapshot,
     event::format::LogSource,
-    metadata::{error::stream_info::MetadataError, SchemaVersion},
+    metadata::SchemaVersion,
+    option::StandaloneWithDistributed,
+    parseable::StreamNotFound,
     stats::FullStats,
     utils::json::{deserialize_string_as_true, serialize_bool_as_true},
 };
@@ -45,10 +47,6 @@ pub use s3::S3Config;
 pub use store_metadata::{
     put_remote_metadata, put_staging_metadata, resolve_parseable_metadata, StorageMetadata,
 };
-
-/// Name of a Stream
-/// NOTE: this used to be a struct, flattened out for simplicity
-pub type LogStream = String;
 
 // metadata file names in a Stream prefix
 pub const STREAM_METADATA_FILE_NAME: &str = ".stream.json";
@@ -255,6 +253,10 @@ pub enum ObjectStorageError {
     UnhandledError(Box<dyn std::error::Error + Send + Sync + 'static>),
     #[error("Error: {0}")]
     PathError(relative_path::FromPathError),
-    #[error("Error: {0}")]
-    MetadataError(#[from] MetadataError),
+
+    #[error("{0}")]
+    StreamNotFound(#[from] StreamNotFound),
+
+    #[error("{0}")]
+    StandaloneWithDistributed(#[from] StandaloneWithDistributed),
 }

@@ -27,7 +27,7 @@ services:
   parseable:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.debug
     platform: linux/amd64
     command: [ "parseable", "s3-store", ]
     ports:
@@ -43,8 +43,10 @@ services:
       - P_PASSWORD=parseableadmin
       - P_CHECK_UPDATE=false
       - P_PARQUET_COMPRESSION_ALGO=snappy
+      - RUST_LOG=warn
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
     healthcheck:
       test: [ "CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness" ]
       interval: 15s
@@ -60,8 +62,8 @@ services:
 
   quest:
     image: ghcr.io/parseablehq/quest:main
-    pull_policy: always
     platform: linux/amd64
+    pull_policy: always
     command: [
       "load",
       "http://parseable:8000",
@@ -76,7 +78,8 @@ services:
       "parseable"
     ]
     depends_on:
-      - parseable
+      parseable:
+        condition: service_healthy
     networks:
       - parseable-internal
     deploy:
