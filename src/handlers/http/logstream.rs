@@ -165,14 +165,15 @@ pub async fn get_retention(stream_name: Path<String>) -> Result<impl Responder, 
     // For query mode, if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if PARSEABLE.options.mode == Mode::Query {
-        match PARSEABLE
-            .create_stream_and_schema_from_storage(&stream_name)
-            .await
-        {
-            Ok(true) => {}
-            Ok(false) | Err(_) => return Err(StreamNotFound(stream_name.clone()).into()),
-        }
+    if PARSEABLE.options.mode == Mode::Query
+        && matches!(
+            PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await,
+            Ok(false) | Err(_)
+        )
+    {
+        return Err(StreamNotFound(stream_name.clone()).into());
     }
 
     let retention = PARSEABLE
@@ -191,17 +192,18 @@ pub async fn put_retention(
     // For query mode, if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if PARSEABLE.options.mode == Mode::Query {
-        match PARSEABLE
-            .create_stream_and_schema_from_storage(&stream_name)
-            .await
-        {
-            Ok(true) => {}
-            Ok(false) | Err(_) => return Err(StreamNotFound(stream_name.clone()).into()),
-        }
+    if PARSEABLE.options.mode == Mode::Query
+        && matches!(
+            PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await,
+            Ok(false) | Err(_)
+        )
+    {
+        return Err(StreamNotFound(stream_name.clone()).into());
     }
-    let stream = PARSEABLE.get_stream(&stream_name)?;
 
+    let stream = PARSEABLE.get_stream(&stream_name)?;
     let retention: Retention = match serde_json::from_value(json) {
         Ok(retention) => retention,
         Err(err) => return Err(StreamError::InvalidRetentionConfig(err)),
@@ -231,15 +233,14 @@ pub async fn get_stats(
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if PARSEABLE.options.mode == Mode::Query {
-            match PARSEABLE
-                .create_stream_and_schema_from_storage(&stream_name)
-                .await
-            {
-                Ok(true) => {}
-                Ok(false) | Err(_) => return Err(StreamNotFound(stream_name.clone()).into()),
-            }
-        } else {
+        if PARSEABLE.options.mode != Mode::Query
+            || matches!(
+                PARSEABLE
+                    .create_stream_and_schema_from_storage(&stream_name)
+                    .await,
+                Ok(false) | Err(_)
+            )
+        {
             return Err(StreamNotFound(stream_name).into());
         }
     }
@@ -325,15 +326,14 @@ pub async fn get_stats(
 pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
     if !PARSEABLE.streams.contains(&stream_name) {
-        if PARSEABLE.options.mode == Mode::Query {
-            match PARSEABLE
-                .create_stream_and_schema_from_storage(&stream_name)
-                .await
-            {
-                Ok(true) => {}
-                Ok(false) | Err(_) => return Err(StreamNotFound(stream_name.clone()).into()),
-            }
-        } else {
+        if PARSEABLE.options.mode != Mode::Query
+            || matches!(
+                PARSEABLE
+                    .create_stream_and_schema_from_storage(&stream_name)
+                    .await,
+                Ok(false) | Err(_)
+            )
+        {
             return Err(StreamNotFound(stream_name).into());
         }
     }
@@ -385,14 +385,15 @@ pub async fn put_stream_hot_tier(
     // For query mode, if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if PARSEABLE.options.mode == Mode::Query {
-        match PARSEABLE
-            .create_stream_and_schema_from_storage(&stream_name)
-            .await
-        {
-            Ok(true) => {}
-            Ok(false) | Err(_) => return Err(StreamNotFound(stream_name.clone()).into()),
-        }
+    if PARSEABLE.options.mode == Mode::Query
+        && matches!(
+            PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await,
+            Ok(false) | Err(_)
+        )
+    {
+        return Err(StreamNotFound(stream_name.clone()).into());
     }
 
     let stream = PARSEABLE.get_stream(&stream_name)?;
@@ -439,15 +440,14 @@ pub async fn get_stream_hot_tier(stream_name: Path<String>) -> Result<impl Respo
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if PARSEABLE.options.mode == Mode::Query {
-            match PARSEABLE
-                .create_stream_and_schema_from_storage(&stream_name)
-                .await
-            {
-                Ok(true) => {}
-                Ok(false) | Err(_) => return Err(StreamNotFound(stream_name.clone()).into()),
-            }
-        } else {
+        if PARSEABLE.options.mode != Mode::Query
+            || matches!(
+                PARSEABLE
+                    .create_stream_and_schema_from_storage(&stream_name)
+                    .await,
+                Ok(false) | Err(_)
+            )
+        {
             return Err(StreamNotFound(stream_name).into());
         }
     }
@@ -468,14 +468,15 @@ pub async fn delete_stream_hot_tier(
     // For query mode, if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if PARSEABLE.options.mode == Mode::Query {
-        match PARSEABLE
-            .create_stream_and_schema_from_storage(&stream_name)
-            .await
-        {
-            Ok(true) => {}
-            Ok(false) | Err(_) => return Err(StreamNotFound(stream_name.clone()).into()),
-        }
+    if PARSEABLE.options.mode == Mode::Query
+        && matches!(
+            PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await,
+            Ok(false) | Err(_)
+        )
+    {
+        return Err(StreamNotFound(stream_name.clone()).into());
     }
 
     if PARSEABLE.get_stream(&stream_name)?.get_stream_type() == StreamType::Internal {
