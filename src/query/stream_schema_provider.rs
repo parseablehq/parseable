@@ -346,7 +346,7 @@ impl StandardTableProvider {
                         max_value: Precision::Exact(max),
                         min_value: Precision::Exact(min),
                         distinct_count: Precision::Absent,
-                        sum_value: Precision::Absent
+                        sum_value: Precision::Absent,
                     })
                     .unwrap_or_default()
             })

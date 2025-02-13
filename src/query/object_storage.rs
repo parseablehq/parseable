@@ -51,9 +51,7 @@ pub async fn get_s3_object_store_builder(
     let bucket_name = get_bucket_name(url)?;
     let mut builder = AmazonS3Builder::from_env().with_bucket_name(bucket_name);
 
-    if let (Some(access_key_id), Some(secret_access_key)) =
-        (access_key_id, secret_access_key)
-    {
+    if let (Some(access_key_id), Some(secret_access_key)) = (access_key_id, secret_access_key) {
         builder = builder
             .with_access_key_id(access_key_id)
             .with_secret_access_key(secret_access_key);
@@ -267,12 +265,7 @@ impl ExtensionOptions for AwsOptions {
         struct Visitor(Vec<ConfigEntry>);
 
         impl Visit for Visitor {
-            fn some<V: Display>(
-                &mut self,
-                key: &str,
-                value: V,
-                description: &'static str,
-            ) {
+            fn some<V: Display>(&mut self, key: &str, value: V, description: &'static str) {
                 self.0.push(ConfigEntry {
                     key: key.to_string(),
                     value: Some(value.to_string()),
@@ -352,12 +345,7 @@ impl ExtensionOptions for GcpOptions {
         struct Visitor(Vec<ConfigEntry>);
 
         impl Visit for Visitor {
-            fn some<V: Display>(
-                &mut self,
-                key: &str,
-                value: V,
-                description: &'static str,
-            ) {
+            fn some<V: Display>(&mut self, key: &str, value: V, description: &'static str) {
                 self.0.push(ConfigEntry {
                     key: key.to_string(),
                     value: Some(value.to_string()),
@@ -379,11 +367,8 @@ impl ExtensionOptions for GcpOptions {
             .visit(&mut v, "service_account_path", "");
         self.service_account_key
             .visit(&mut v, "service_account_key", "");
-        self.application_credentials_path.visit(
-            &mut v,
-            "application_credentials_path",
-            "",
-        );
+        self.application_credentials_path
+            .visit(&mut v, "application_credentials_path", "");
         v.0
     }
 }
@@ -401,36 +386,28 @@ pub(crate) async fn get_object_store(
     let store: Arc<dyn ObjectStore> = match scheme {
         "s3" => {
             let Some(options) = table_options.extensions.get::<AwsOptions>() else {
-                return exec_err!(
-                    "Given table options incompatible with the 's3' scheme"
-                );
+                return exec_err!("Given table options incompatible with the 's3' scheme");
             };
             let builder = get_s3_object_store_builder(url, options).await?;
             Arc::new(builder.build()?)
         }
         "oss" => {
             let Some(options) = table_options.extensions.get::<AwsOptions>() else {
-                return exec_err!(
-                    "Given table options incompatible with the 'oss' scheme"
-                );
+                return exec_err!("Given table options incompatible with the 'oss' scheme");
             };
             let builder = get_oss_object_store_builder(url, options)?;
             Arc::new(builder.build()?)
         }
         "cos" => {
             let Some(options) = table_options.extensions.get::<AwsOptions>() else {
-                return exec_err!(
-                    "Given table options incompatible with the 'cos' scheme"
-                );
+                return exec_err!("Given table options incompatible with the 'cos' scheme");
             };
             let builder = get_cos_object_store_builder(url, options)?;
             Arc::new(builder.build()?)
         }
         "gs" | "gcs" => {
             let Some(options) = table_options.extensions.get::<GcpOptions>() else {
-                return exec_err!(
-                    "Given table options incompatible with the 'gs'/'gcs' scheme"
-                );
+                return exec_err!("Given table options incompatible with the 'gs'/'gcs' scheme");
             };
             let builder = get_gcs_object_store_builder(url, options)?;
             Arc::new(builder.build()?)
@@ -447,9 +424,7 @@ pub(crate) async fn get_object_store(
                 .runtime_env()
                 .object_store_registry
                 .get_store(url)
-                .map_err(|_| {
-                    exec_datafusion_err!("Unsupported object store scheme: {}", scheme)
-                })?
+                .map_err(|_| exec_datafusion_err!("Unsupported object store scheme: {}", scheme))?
         }
     };
     Ok(store)

@@ -114,23 +114,27 @@ impl EventFormat for Event {
                 .iter()
                 .map(|field| {
                     if matches!(field.data_type(), DataType::Utf8View) {
-                        Arc::new(Field::new(field.name(), DataType::Utf8, field.is_nullable()))
+                        Arc::new(Field::new(
+                            field.name(),
+                            DataType::Utf8,
+                            field.is_nullable(),
+                        ))
                     } else {
                         field.clone()
                     }
                 })
                 .collect::<Vec<_>>(),
         );
-    
+
         let array_capacity = round_upto_multiple_of_64(data.len());
         let mut reader = ReaderBuilder::new(Arc::new(temp_schema))
             .with_batch_size(array_capacity)
             .with_coerce_primitive(false)
             .with_strict_mode(false)
             .build_decoder()?;
-    
+
         reader.serialize(&data)?;
-        
+
         match reader.flush() {
             Ok(Some(temp_batch)) => {
                 // Convert Utf8 arrays to Utf8View arrays where needed
@@ -144,13 +148,18 @@ impl EventFormat for Event {
                                 .as_any()
                                 .downcast_ref::<StringArray>()
                                 .expect("Expected StringArray");
-                            Arc::new(StringViewArray::from(string_array.iter().map(|s| s.map(|s| s.to_string())).collect::<Vec<_>>()))
+                            Arc::new(StringViewArray::from(
+                                string_array
+                                    .iter()
+                                    .map(|s| s.map(|s| s.to_string()))
+                                    .collect::<Vec<_>>(),
+                            ))
                         } else {
                             col.clone()
                         }
                     })
                     .collect();
-    
+
                 Ok(RecordBatch::try_new(schema, new_columns)?)
             }
             Err(err) => Err(anyhow!("Failed to create recordbatch due to {:?}", err)),

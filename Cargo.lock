@@ -3783,6 +3783,7 @@ dependencies = [
  "serde_repr",
  "sha1_smol",
  "sha2",
+ "sqlparser",
  "static-files",
  "structopt-derive",
  "sysinfo",

@@ -15,7 +15,6 @@
 //  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //  *
 //  */
-
 // use crate::event::Event;
 // use crate::handlers::http::ingest::push_logs_unchecked;
 // use crate::handlers::http::query::Query as QueryJson;

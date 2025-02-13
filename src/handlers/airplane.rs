@@ -15,7 +15,6 @@
 //  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
 //  *
 //  */
-
 // use arrow_array::RecordBatch;
 // use arrow_flight::flight_service_server::FlightServiceServer;
 // use arrow_flight::PollInfo;

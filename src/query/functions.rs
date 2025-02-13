@@ -63,109 +63,109 @@ pub enum Function {
 // ];
 
 impl Function {
-//     pub fn function_details(&self) -> Result<&str> {
-//         let details = match self {
-//             Function::Select => {
-//                 r#"
-// Command:     SELECT
-// Description: retrieve rows from a table or view
-// Syntax:
-// SELECT [ ALL | DISTINCT [ ON ( expression [, ...] ) ] ]
-//     [ * | expression [ [ AS ] output_name ] [, ...] ]
-//     [ FROM from_item [, ...] ]
-//     [ WHERE condition ]
-//     [ GROUP BY [ ALL | DISTINCT ] grouping_element [, ...] ]
-//     [ HAVING condition ]
-//     [ WINDOW window_name AS ( window_definition ) [, ...] ]
-//     [ { UNION | INTERSECT | EXCEPT } [ ALL | DISTINCT ] select ]
-//     [ ORDER BY expression [ ASC | DESC | USING operator ] [ NULLS { FIRST | LAST } ] [, ...] ]
-//     [ LIMIT { count | ALL } ]
-//     [ OFFSET start [ ROW | ROWS ] ]
+    //     pub fn function_details(&self) -> Result<&str> {
+    //         let details = match self {
+    //             Function::Select => {
+    //                 r#"
+    // Command:     SELECT
+    // Description: retrieve rows from a table or view
+    // Syntax:
+    // SELECT [ ALL | DISTINCT [ ON ( expression [, ...] ) ] ]
+    //     [ * | expression [ [ AS ] output_name ] [, ...] ]
+    //     [ FROM from_item [, ...] ]
+    //     [ WHERE condition ]
+    //     [ GROUP BY [ ALL | DISTINCT ] grouping_element [, ...] ]
+    //     [ HAVING condition ]
+    //     [ WINDOW window_name AS ( window_definition ) [, ...] ]
+    //     [ { UNION | INTERSECT | EXCEPT } [ ALL | DISTINCT ] select ]
+    //     [ ORDER BY expression [ ASC | DESC | USING operator ] [ NULLS { FIRST | LAST } ] [, ...] ]
+    //     [ LIMIT { count | ALL } ]
+    //     [ OFFSET start [ ROW | ROWS ] ]
 
-// where from_item can be one of:
+    // where from_item can be one of:
 
-//     [ ONLY ] table_name [ * ] [ [ AS ] alias [ ( column_alias [, ...] ) ] ]
-//                 [ TABLESAMPLE sampling_method ( argument [, ...] ) [ REPEATABLE ( seed ) ] ]
-//     [ LATERAL ] ( select ) [ AS ] alias [ ( column_alias [, ...] ) ]
-//     with_query_name [ [ AS ] alias [ ( column_alias [, ...] ) ] ]
-//     [ LATERAL ] function_name ( [ argument [, ...] ] )
-//                 [ WITH ORDINALITY ] [ [ AS ] alias [ ( column_alias [, ...] ) ] ]
-//     [ LATERAL ] function_name ( [ argument [, ...] ] ) [ AS ] alias ( column_definition [, ...] )
-//     [ LATERAL ] function_name ( [ argument [, ...] ] ) AS ( column_definition [, ...] )
-//     [ LATERAL ] ROWS FROM( function_name ( [ argument [, ...] ] ) [ AS ( column_definition [, ...] ) ] [, ...] )
-//                 [ WITH ORDINALITY ] [ [ AS ] alias [ ( column_alias [, ...] ) ] ]
-//     from_item [ NATURAL ] join_type from_item [ ON join_condition | USING ( join_column [, ...] ) [ AS join_using_alias ] ]
+    //     [ ONLY ] table_name [ * ] [ [ AS ] alias [ ( column_alias [, ...] ) ] ]
+    //                 [ TABLESAMPLE sampling_method ( argument [, ...] ) [ REPEATABLE ( seed ) ] ]
+    //     [ LATERAL ] ( select ) [ AS ] alias [ ( column_alias [, ...] ) ]
+    //     with_query_name [ [ AS ] alias [ ( column_alias [, ...] ) ] ]
+    //     [ LATERAL ] function_name ( [ argument [, ...] ] )
+    //                 [ WITH ORDINALITY ] [ [ AS ] alias [ ( column_alias [, ...] ) ] ]
+    //     [ LATERAL ] function_name ( [ argument [, ...] ] ) [ AS ] alias ( column_definition [, ...] )
+    //     [ LATERAL ] function_name ( [ argument [, ...] ] ) AS ( column_definition [, ...] )
+    //     [ LATERAL ] ROWS FROM( function_name ( [ argument [, ...] ] ) [ AS ( column_definition [, ...] ) ] [, ...] )
+    //                 [ WITH ORDINALITY ] [ [ AS ] alias [ ( column_alias [, ...] ) ] ]
+    //     from_item [ NATURAL ] join_type from_item [ ON join_condition | USING ( join_column [, ...] ) [ AS join_using_alias ] ]
 
-// and grouping_element can be one of:
+    // and grouping_element can be one of:
 
-//     ( )
-//     expression
-//     ( expression [, ...] )
+    //     ( )
+    //     expression
+    //     ( expression [, ...] )
 
-// and with_query is:
+    // and with_query is:
 
-//     with_query_name [ ( column_name [, ...] ) ] AS [ [ NOT ] MATERIALIZED ] ( select | values | insert | update | delete )
+    //     with_query_name [ ( column_name [, ...] ) ] AS [ [ NOT ] MATERIALIZED ] ( select | values | insert | update | delete )
 
-// TABLE [ ONLY ] table_name [ * ]"#
-//             }
-//             Function::Explain => {
-//                 r#"
-// Command:     EXPLAIN
-// Description: show the execution plan of a statement
-// Syntax:
-// EXPLAIN [ ANALYZE ] statement
-// "#
-//             }
-//             Function::Show => {
-//                 r#"
-// Command:     SHOW
-// Description: show the value of a run-time parameter
-// Syntax:
-// SHOW name
-// "#
-//             }
-//             Function::CreateTable => {
-//                 r#"
-// Command:     CREATE TABLE
-// Description: define a new table
-// Syntax:
-// CREATE [ EXTERNAL ]  TABLE table_name ( [
-//   { column_name data_type }
-//     [, ... ]
-// ] )
-// "#
-//             }
-//             Function::CreateTableAs => {
-//                 r#"
-// Command:     CREATE TABLE AS
-// Description: define a new table from the results of a query
-// Syntax:
-// CREATE TABLE table_name
-//     [ (column_name [, ...] ) ]
-//     AS query
-//     [ WITH [ NO ] DATA ]
-// "#
-//             }
-//             Function::Insert => {
-//                 r#"
-// Command:     INSERT
-// Description: create new rows in a table
-// Syntax:
-// INSERT INTO table_name [ ( column_name [, ...] ) ]
-//     { VALUES ( { expression } [, ...] ) [, ...] }
-// "#
-//             }
-//             Function::DropTable => {
-//                 r#"
-// Command:     DROP TABLE
-// Description: remove a table
-// Syntax:
-// DROP TABLE [ IF EXISTS ] name [, ...]
-// "#
-//             }
-//         };
-//         Ok(details)
-//     }
+    // TABLE [ ONLY ] table_name [ * ]"#
+    //             }
+    //             Function::Explain => {
+    //                 r#"
+    // Command:     EXPLAIN
+    // Description: show the execution plan of a statement
+    // Syntax:
+    // EXPLAIN [ ANALYZE ] statement
+    // "#
+    //             }
+    //             Function::Show => {
+    //                 r#"
+    // Command:     SHOW
+    // Description: show the value of a run-time parameter
+    // Syntax:
+    // SHOW name
+    // "#
+    //             }
+    //             Function::CreateTable => {
+    //                 r#"
+    // Command:     CREATE TABLE
+    // Description: define a new table
+    // Syntax:
+    // CREATE [ EXTERNAL ]  TABLE table_name ( [
+    //   { column_name data_type }
+    //     [, ... ]
+    // ] )
+    // "#
+    //             }
+    //             Function::CreateTableAs => {
+    //                 r#"
+    // Command:     CREATE TABLE AS
+    // Description: define a new table from the results of a query
+    // Syntax:
+    // CREATE TABLE table_name
+    //     [ (column_name [, ...] ) ]
+    //     AS query
+    //     [ WITH [ NO ] DATA ]
+    // "#
+    //             }
+    //             Function::Insert => {
+    //                 r#"
+    // Command:     INSERT
+    // Description: create new rows in a table
+    // Syntax:
+    // INSERT INTO table_name [ ( column_name [, ...] ) ]
+    //     { VALUES ( { expression } [, ...] ) [, ...] }
+    // "#
+    //             }
+    //             Function::DropTable => {
+    //                 r#"
+    // Command:     DROP TABLE
+    // Description: remove a table
+    // Syntax:
+    // DROP TABLE [ IF EXISTS ] name [, ...]
+    // "#
+    //             }
+    //         };
+    //         Ok(details)
+    //     }
 }
 
 impl FromStr for Function {
@@ -324,14 +324,13 @@ impl TableFunctionImpl for ParquetMetadataFunc {
             Some(Expr::Literal(ScalarValue::Utf8(Some(s)))) => s, // single quote: parquet_metadata('x.parquet')
             Some(Expr::Column(Column { name, .. })) => name, // double quote: parquet_metadata("x.parquet")
             _ => {
-                return plan_err!(
-                    "parquet_metadata requires string argument as its input"
-                );
+                return plan_err!("parquet_metadata requires string argument as its input");
             }
         };
 
         let file = File::open(filename.clone())?;
-        let reader = SerializedFileReader::new(file).map_err(datafusion::error::DataFusionError::from)?;
+        let reader =
+            SerializedFileReader::new(file).map_err(datafusion::error::DataFusionError::from)?;
         let metadata = reader.metadata();
 
         let schema = Arc::new(Schema::new(vec![
@@ -399,13 +398,11 @@ impl TableFunctionImpl for ParquetMetadataFunc {
                 let converted_type = column.column_descr().converted_type();
 
                 if let Some(s) = column.statistics() {
-                    let (min_val, max_val) =
-                        convert_parquet_statistics(s, converted_type);
+                    let (min_val, max_val) = convert_parquet_statistics(s, converted_type);
                     stats_min_arr.push(min_val.clone());
                     stats_max_arr.push(max_val.clone());
                     stats_null_count_arr.push(s.null_count_opt().map(|c| c as i64));
-                    stats_distinct_count_arr
-                        .push(s.distinct_count_opt().map(|c| c as i64));
+                    stats_distinct_count_arr.push(s.distinct_count_opt().map(|c| c as i64));
                     stats_min_value_arr.push(min_val);
                     stats_max_value_arr.push(max_val);
                 } else {
