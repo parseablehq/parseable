@@ -227,7 +227,7 @@ pub async fn get_stats(
 ) -> Result<HttpResponse, StreamError> {
     let stream_name = stream_name.into_inner();
 
-    if cfg!(not(test)) && !PARSEABLE.streams.contains(&stream_name) {
+    if !PARSEABLE.streams.contains(&stream_name) {
         // For query mode, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
@@ -633,27 +633,6 @@ mod tests {
     use actix_web::test::TestRequest;
 
     use crate::handlers::http::modal::utils::logstream_utils::PutStreamHeaders;
-
-    // TODO: Fix this test with routes
-    // #[actix_web::test]
-    // #[should_panic]
-    // async fn get_stats_panics_without_logstream() {
-    //     let req = TestRequest::default().to_http_request();
-    //     let _ = get_stats(req).await;
-    // }
-
-    // #[actix_web::test]
-    // async fn get_stats_stream_not_found_error_for_unknown_logstream() -> anyhow::Result<()> {
-    //     match get_stats(
-    //         web::Path::from("test".to_string()),
-    //         Query(StatsParams { date: None }),
-    //     )
-    //     .await
-    //     {
-    //         Err(StreamError::StreamNotFound(_)) => Ok(()),
-    //         _ => bail!("expected StreamNotFound error"),
-    //     }
-    // }
 
     #[actix_web::test]
     async fn header_without_log_source() {
