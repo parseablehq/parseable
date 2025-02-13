@@ -630,14 +630,9 @@ pub mod error {
 
 #[cfg(test)]
 mod tests {
-    use actix_web::{test::TestRequest, web};
-    use anyhow::bail;
+    use actix_web::test::TestRequest;
 
-    use crate::{
-        handlers::http::modal::utils::logstream_utils::PutStreamHeaders, stats::StatsParams,
-    };
-
-    use super::{error::StreamError, *};
+    use crate::handlers::http::modal::utils::logstream_utils::PutStreamHeaders;
 
     // TODO: Fix this test with routes
     // #[actix_web::test]
