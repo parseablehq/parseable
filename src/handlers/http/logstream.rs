@@ -229,20 +229,19 @@ pub async fn get_stats(
 ) -> Result<HttpResponse, StreamError> {
     let stream_name = stream_name.into_inner();
 
-    if !PARSEABLE.streams.contains(&stream_name) {
-        // For query mode, if the stream not found in memory map,
-        //check if it exists in the storage
-        //create stream and schema from storage
-        if PARSEABLE.options.mode != Mode::Query
+    // For query mode, if the stream not found in memory map,
+    //check if it exists in the storage
+    //create stream and schema from storage
+    if !PARSEABLE.streams.contains(&stream_name)
+        && (PARSEABLE.options.mode != Mode::Query
             || matches!(
                 PARSEABLE
                     .create_stream_and_schema_from_storage(&stream_name)
                     .await,
                 Ok(false) | Err(_)
-            )
-        {
-            return Err(StreamNotFound(stream_name).into());
-        }
+            ))
+    {
+        return Err(StreamNotFound(stream_name).into());
     }
 
     if let Some(stats) = params.get_stats(&stream_name) {
@@ -325,17 +324,16 @@ pub async fn get_stats(
 
 pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
-    if !PARSEABLE.streams.contains(&stream_name) {
-        if PARSEABLE.options.mode != Mode::Query
+    if !PARSEABLE.streams.contains(&stream_name)
+        && (PARSEABLE.options.mode != Mode::Query
             || matches!(
                 PARSEABLE
                     .create_stream_and_schema_from_storage(&stream_name)
                     .await,
                 Ok(false) | Err(_)
-            )
-        {
-            return Err(StreamNotFound(stream_name).into());
-        }
+            ))
+    {
+        return Err(StreamNotFound(stream_name).into());
     }
     let storage = PARSEABLE.storage.get_object_store();
     // if first_event_at is not found in memory map, check if it exists in the storage
@@ -436,20 +434,19 @@ pub async fn put_stream_hot_tier(
 pub async fn get_stream_hot_tier(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
 
-    if !PARSEABLE.streams.contains(&stream_name) {
-        // For query mode, if the stream not found in memory map,
-        //check if it exists in the storage
-        //create stream and schema from storage
-        if PARSEABLE.options.mode != Mode::Query
+    // For query mode, if the stream not found in memory map,
+    //check if it exists in the storage
+    //create stream and schema from storage
+    if !PARSEABLE.streams.contains(&stream_name)
+        && (PARSEABLE.options.mode != Mode::Query
             || matches!(
                 PARSEABLE
                     .create_stream_and_schema_from_storage(&stream_name)
                     .await,
                 Ok(false) | Err(_)
-            )
-        {
-            return Err(StreamNotFound(stream_name).into());
-        }
+            ))
+    {
+        return Err(StreamNotFound(stream_name).into());
     }
 
     let Some(hot_tier_manager) = HotTierManager::global() else {
