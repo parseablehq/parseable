@@ -28,6 +28,7 @@ pub mod connectors;
 pub mod correlation;
 mod event;
 pub mod handlers;
+pub mod home;
 pub mod hottier;
 mod livetail;
 mod metadata;

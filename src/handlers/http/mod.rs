@@ -33,6 +33,7 @@ mod audit;
 pub mod cluster;
 pub mod correlation;
 pub mod health_check;
+pub mod home;
 pub mod ingest;
 mod kinesis;
 pub mod llm;

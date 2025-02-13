@@ -87,7 +87,8 @@ impl ParseableServer for Server {
                     .service(Self::get_user_role_webscope())
                     .service(Self::get_counts_webscope())
                     .service(Self::get_alerts_webscope())
-                    .service(Self::get_metrics_webscope()),
+                    .service(Self::get_metrics_webscope())
+                    .service(Self::get_prism_home()),
             )
             .service(Self::get_ingest_otel_factory())
             .service(Self::get_generated());
@@ -154,6 +155,10 @@ impl ParseableServer for Server {
 }
 
 impl Server {
+    pub fn get_prism_home() -> Resource {
+        web::resource("/home").route(web::get().to(http::home::home_api))
+    }
+
     pub fn get_metrics_webscope() -> Scope {
         web::scope("/metrics").service(
             web::resource("").route(web::get().to(metrics::get).authorize(Action::Metrics)),
