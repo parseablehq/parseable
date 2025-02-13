@@ -36,11 +36,11 @@ use tracing::{debug, error};
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
-use crate::metadata::STREAM_INFO;
 
 use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
-use crate::option::{Mode, CONFIG};
+use crate::option::Mode;
+use crate::parseable::PARSEABLE;
 use crate::query::error::ExecuteError;
 use crate::query::{CountsRequest, CountsResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
@@ -51,8 +51,6 @@ use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::time::{TimeParseError, TimeRange};
 use crate::utils::user_auth_for_query;
-
-use super::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
 
 /// Query Request through http endpoint.
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -173,7 +171,7 @@ pub async fn get_counts(
 }
 
 pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), QueryError> {
-    if CONFIG.options.mode == Mode::Query {
+    if PARSEABLE.options.mode == Mode::Query {
         for table in tables {
             if let Ok(new_schema) = fetch_schema(table).await {
                 // commit schema merges the schema internally and updates the schema in storage.
@@ -191,12 +189,14 @@ pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), 
 /// get list of streams from memory and storage
 /// create streams for memory from storage if they do not exist
 pub async fn create_streams_for_querier() {
-    let querier_streams = STREAM_INFO.list_streams();
-    let store = CONFIG.storage().get_object_store();
+    let querier_streams = PARSEABLE.streams.list();
+    let store = PARSEABLE.storage.get_object_store();
     let storage_streams = store.list_streams().await.unwrap();
     for stream_name in storage_streams {
         if !querier_streams.contains(&stream_name) {
-            let _ = create_stream_and_schema_from_storage(&stream_name).await;
+            let _ = PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await;
         }
     }
 }

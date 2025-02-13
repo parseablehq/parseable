@@ -17,10 +17,6 @@
  *
  */
 
-use crate::analytics;
-use crate::option::Config;
-use crate::storage::StorageMetadata;
-use crate::utils::update::{self, LatestRelease};
 use chrono::Duration;
 use chrono_humanize::{Accuracy, Tense};
 use crossterm::style::Stylize;
@@ -29,6 +25,11 @@ use std::env;
 use std::path::Path;
 use sysinfo::System;
 use ulid::Ulid;
+
+use crate::analytics;
+use crate::cli::Options;
+use crate::storage::StorageMetadata;
+use crate::utils::update::{self, LatestRelease};
 
 // Expose some static variables for internal usage
 pub static LATEST_RELEASE: OnceCell<Option<LatestRelease>> = OnceCell::new();
@@ -99,7 +100,7 @@ impl ParseableVersion {
 
 pub fn print_about(
     current_version: semver::Version,
-    latest_release: Option<update::LatestRelease>,
+    latest_release: Option<LatestRelease>,
     commit_hash: String,
 ) {
     eprint!(
@@ -123,7 +124,7 @@ pub fn print_about(
     );
 }
 
-fn print_latest_release(latest_release: update::LatestRelease) {
+fn print_latest_release(latest_release: LatestRelease) {
     let time_since_latest_release = chrono::Utc::now() - latest_release.date;
     let time_since_latest_release = humanize_time(time_since_latest_release);
     let fmt_latest_version = format!(
@@ -133,10 +134,10 @@ fn print_latest_release(latest_release: update::LatestRelease) {
     eprint!("{}", fmt_latest_version.red());
 }
 
-pub async fn print(config: &Config, meta: &StorageMetadata) {
+pub async fn print(options: &Options, meta: &StorageMetadata) {
     // print current version
     let current = current();
-    let latest_release = if config.options.check_update {
+    let latest_release = if options.check_update {
         update::get_latest(&meta.deployment_id).await.ok()
     } else {
         None

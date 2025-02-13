@@ -35,7 +35,7 @@ use crate::{
         rbac::RBACError,
         users::{CORRELATION_DIR, USERS_ROOT_DIR},
     },
-    option::CONFIG,
+    parseable::PARSEABLE,
     query::QUERY_SESSION,
     rbac::{map::SessionKey, Users},
     storage::ObjectStorageError,
@@ -53,7 +53,7 @@ pub struct Correlations(RwLock<CorrelationMap>);
 impl Correlations {
     // Load correlations from storage
     pub async fn load(&self) -> anyhow::Result<()> {
-        let store = CONFIG.storage().get_object_store();
+        let store = PARSEABLE.storage.get_object_store();
         let all_correlations = store.get_all_correlations().await.unwrap_or_default();
 
         for correlations_bytes in all_correlations.values().flatten() {
@@ -122,8 +122,8 @@ impl Correlations {
         // Update in storage
         let correlation_bytes = serde_json::to_vec(&correlation)?.into();
         let path = correlation.path();
-        CONFIG
-            .storage()
+        PARSEABLE
+            .storage
             .get_object_store()
             .put_object(&path, correlation_bytes)
             .await?;
@@ -157,8 +157,8 @@ impl Correlations {
         // Update in storage
         let correlation_bytes = serde_json::to_vec(&updated_correlation)?.into();
         let path = updated_correlation.path();
-        CONFIG
-            .storage()
+        PARSEABLE
+            .storage
             .get_object_store()
             .put_object(&path, correlation_bytes)
             .await?;
@@ -190,8 +190,8 @@ impl Correlations {
 
         // Delete from storage
         let path = correlation.path();
-        CONFIG
-            .storage()
+        PARSEABLE
+            .storage
             .get_object_store()
             .delete_object(&path)
             .await?;
