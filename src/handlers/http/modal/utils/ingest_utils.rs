@@ -29,10 +29,17 @@ use crate::{
     event::{
         format::{json, EventFormat, LogSource},
         Event,
-    }, handlers::http::{
+    },
+    handlers::http::{
         ingest::PostError,
         kinesis::{flatten_kinesis_logs, Message},
-    }, metadata::SchemaVersion, otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces}, parseable::{StreamNotFound, PARSEABLE}, storage::StreamType, utils::json::{convert_array_to_object, flatten::convert_to_array}, LOCK_EXPECT
+    },
+    metadata::SchemaVersion,
+    otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
+    parseable::{StreamNotFound, PARSEABLE},
+    storage::StreamType,
+    utils::json::{convert_array_to_object, flatten::convert_to_array},
+    LOCK_EXPECT,
 };
 
 pub async fn flatten_and_push_logs(
