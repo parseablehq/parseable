@@ -18,7 +18,8 @@
 
 use std::sync::Arc;
 
-use serde::{Deserialize, Serialize};
+use chrono::NaiveDate;
+use serde::{Deserialize, Deserializer, Serialize};
 use tracing::warn;
 
 use crate::{
@@ -210,12 +211,13 @@ pub fn storage_size_labels_date<'a>(stream_name: &'a str, date: &'a str) -> [&'a
 
 #[derive(Debug, Deserialize)]
 pub struct StatsParams {
-    pub date: Option<String>,
+    #[serde(deserialize_with = "deserialize_date")]
+    pub date: Option<NaiveDate>,
 }
 
 impl StatsParams {
     pub fn get_stats(self, stream_name: &str) -> Option<Stats> {
-        let date = self.date?;
+        let date = self.date?.to_string();
         let event_labels = event_labels_date(stream_name, "json", &date);
         let storage_size_labels = storage_size_labels_date(stream_name, &date);
         let events_ingested = EVENTS_INGESTED_DATE
@@ -237,4 +239,17 @@ impl StatsParams {
             storage: storage_size,
         })
     }
+}
+
+pub fn deserialize_date<'de, D>(deserializer: D) -> Result<Option<NaiveDate>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(s) = Option::<String>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+
+    NaiveDate::parse_from_str(&s, "%Y-%m-%d")
+        .map(Some)
+        .map_err(serde::de::Error::custom)
 }
