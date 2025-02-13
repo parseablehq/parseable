@@ -47,7 +47,16 @@ use tracing::warn;
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
-    if !PARSEABLE.streams.contains(&stream_name) {
+    // Error out if stream doesn't exist in memory, or in the case of query node, in storage as well
+    if !PARSEABLE.streams.contains(&stream_name)
+        && PARSEABLE.options.mode == Mode::Query
+        && matches!(
+            PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await,
+            Ok(true) | Err(_)
+        )
+    {
         return Err(StreamNotFound(stream_name).into());
     }
 
