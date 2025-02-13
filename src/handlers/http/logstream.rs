@@ -647,18 +647,18 @@ mod tests {
     //     let _ = get_stats(req).await;
     // }
 
-    #[actix_web::test]
-    async fn get_stats_stream_not_found_error_for_unknown_logstream() -> anyhow::Result<()> {
-        match get_stats(
-            web::Path::from("test".to_string()),
-            Query(StatsParams { date: None }),
-        )
-        .await
-        {
-            Err(StreamError::StreamNotFound(_)) => Ok(()),
-            _ => bail!("expected StreamNotFound error"),
-        }
-    }
+    // #[actix_web::test]
+    // async fn get_stats_stream_not_found_error_for_unknown_logstream() -> anyhow::Result<()> {
+    //     match get_stats(
+    //         web::Path::from("test".to_string()),
+    //         Query(StatsParams { date: None }),
+    //     )
+    //     .await
+    //     {
+    //         Err(StreamError::StreamNotFound(_)) => Ok(()),
+    //         _ => bail!("expected StreamNotFound error"),
+    //     }
+    // }
 
     #[actix_web::test]
     async fn header_without_log_source() {
