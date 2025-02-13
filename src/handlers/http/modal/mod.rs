@@ -378,16 +378,18 @@ mod test {
         assert_eq!(rhs, lhs);
     }
 
-    #[test]
-    fn from_bytes_with_port() {
-        let meta = IngestorMetadata::from_bytes(br#"{"version": "", "port": "", "domain_name": "", "bucket_name": "", "token": "", "ingestor_id": "", "flight_port": ""}"#, 10).expect("Deserializable");
-        assert_eq!(meta.flight_port, "");
+    #[rstest]
+    fn test_from_bytes_adds_flight_port() {
+        let json = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","ingestor_id":"ingestor_id"}"#;
+        let meta = IngestorMetadata::from_bytes(json, 8002).unwrap();
+        assert_eq!(meta.flight_port, "8002");
     }
 
-    #[test]
-    fn from_bytes_without_port() {
-        let meta = IngestorMetadata::from_bytes(br#"{"version": "", "port": "", "domain_name": "", "bucket_name": "", "token": "", "ingestor_id": ""}"#, 10).expect("Deserializable");
-        assert_eq!(meta.flight_port, "10");
+    #[rstest]
+    fn test_from_bytes_preserves_existing_flight_port() {
+        let json = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","ingestor_id":"ingestor_id","flight_port":"9000"}"#;
+        let meta = IngestorMetadata::from_bytes(json, 8002).unwrap();
+        assert_eq!(meta.flight_port, "9000");
     }
 
     #[rstest]
