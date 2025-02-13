@@ -46,6 +46,94 @@ impl QueriedStats {
             storage,
         }
     }
+
+    pub fn merge(stats: Vec<Self>) -> Self {
+        // get the stream name
+        let stream_name = stats[1].stream.clone();
+
+        let min_time = stats.iter().map(|x| x.time).min().unwrap_or_else(Utc::now);
+
+        let cumulative_ingestion =
+            stats
+                .iter()
+                .map(|x| &x.ingestion)
+                .fold(IngestionStats::default(), |acc, x| IngestionStats {
+                    count: acc.count + x.count,
+
+                    size: format!(
+                        "{} Bytes",
+                        acc.size.split(' ').collect_vec()[0]
+                            .parse::<u64>()
+                            .unwrap_or_default()
+                            + x.size.split(' ').collect_vec()[0]
+                                .parse::<u64>()
+                                .unwrap_or_default()
+                    ),
+                    format: x.format.clone(),
+                    lifetime_count: acc.lifetime_count + x.lifetime_count,
+                    lifetime_size: format!(
+                        "{} Bytes",
+                        acc.lifetime_size.split(' ').collect_vec()[0]
+                            .parse::<u64>()
+                            .unwrap_or_default()
+                            + x.lifetime_size.split(' ').collect_vec()[0]
+                                .parse::<u64>()
+                                .unwrap_or_default()
+                    ),
+                    deleted_count: acc.deleted_count + x.deleted_count,
+                    deleted_size: format!(
+                        "{} Bytes",
+                        acc.deleted_size.split(' ').collect_vec()[0]
+                            .parse::<u64>()
+                            .unwrap_or_default()
+                            + x.deleted_size.split(' ').collect_vec()[0]
+                                .parse::<u64>()
+                                .unwrap_or_default()
+                    ),
+                });
+
+        let cumulative_storage =
+            stats
+                .iter()
+                .map(|x| &x.storage)
+                .fold(StorageStats::default(), |acc, x| StorageStats {
+                    size: format!(
+                        "{} Bytes",
+                        acc.size.split(' ').collect_vec()[0]
+                            .parse::<u64>()
+                            .unwrap_or_default()
+                            + x.size.split(' ').collect_vec()[0]
+                                .parse::<u64>()
+                                .unwrap_or_default()
+                    ),
+                    format: x.format.clone(),
+                    lifetime_size: format!(
+                        "{} Bytes",
+                        acc.lifetime_size.split(' ').collect_vec()[0]
+                            .parse::<u64>()
+                            .unwrap_or_default()
+                            + x.lifetime_size.split(' ').collect_vec()[0]
+                                .parse::<u64>()
+                                .unwrap_or_default()
+                    ),
+                    deleted_size: format!(
+                        "{} Bytes",
+                        acc.deleted_size.split(' ').collect_vec()[0]
+                            .parse::<u64>()
+                            .unwrap_or_default()
+                            + x.deleted_size.split(' ').collect_vec()[0]
+                                .parse::<u64>()
+                                .unwrap_or_default()
+                    ),
+                });
+
+        QueriedStats::new(
+            &stream_name,
+            min_time,
+            cumulative_ingestion,
+            cumulative_storage,
+        )
+    }
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -128,94 +216,6 @@ impl StorageStats {
             deleted_size,
         }
     }
-}
-
-pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
-    // get the stream name
-    let stream_name = stats[1].stream.clone();
-
-    let min_time = stats.iter().map(|x| x.time).min().unwrap_or_else(Utc::now);
-
-    let cumulative_ingestion =
-        stats
-            .iter()
-            .map(|x| &x.ingestion)
-            .fold(IngestionStats::default(), |acc, x| IngestionStats {
-                count: acc.count + x.count,
-
-                size: format!(
-                    "{} Bytes",
-                    acc.size.split(' ').collect_vec()[0]
-                        .parse::<u64>()
-                        .unwrap_or_default()
-                        + x.size.split(' ').collect_vec()[0]
-                            .parse::<u64>()
-                            .unwrap_or_default()
-                ),
-                format: x.format.clone(),
-                lifetime_count: acc.lifetime_count + x.lifetime_count,
-                lifetime_size: format!(
-                    "{} Bytes",
-                    acc.lifetime_size.split(' ').collect_vec()[0]
-                        .parse::<u64>()
-                        .unwrap_or_default()
-                        + x.lifetime_size.split(' ').collect_vec()[0]
-                            .parse::<u64>()
-                            .unwrap_or_default()
-                ),
-                deleted_count: acc.deleted_count + x.deleted_count,
-                deleted_size: format!(
-                    "{} Bytes",
-                    acc.deleted_size.split(' ').collect_vec()[0]
-                        .parse::<u64>()
-                        .unwrap_or_default()
-                        + x.deleted_size.split(' ').collect_vec()[0]
-                            .parse::<u64>()
-                            .unwrap_or_default()
-                ),
-            });
-
-    let cumulative_storage =
-        stats
-            .iter()
-            .map(|x| &x.storage)
-            .fold(StorageStats::default(), |acc, x| StorageStats {
-                size: format!(
-                    "{} Bytes",
-                    acc.size.split(' ').collect_vec()[0]
-                        .parse::<u64>()
-                        .unwrap_or_default()
-                        + x.size.split(' ').collect_vec()[0]
-                            .parse::<u64>()
-                            .unwrap_or_default()
-                ),
-                format: x.format.clone(),
-                lifetime_size: format!(
-                    "{} Bytes",
-                    acc.lifetime_size.split(' ').collect_vec()[0]
-                        .parse::<u64>()
-                        .unwrap_or_default()
-                        + x.lifetime_size.split(' ').collect_vec()[0]
-                            .parse::<u64>()
-                            .unwrap_or_default()
-                ),
-                deleted_size: format!(
-                    "{} Bytes",
-                    acc.deleted_size.split(' ').collect_vec()[0]
-                        .parse::<u64>()
-                        .unwrap_or_default()
-                        + x.deleted_size.split(' ').collect_vec()[0]
-                            .parse::<u64>()
-                            .unwrap_or_default()
-                ),
-            });
-
-    QueriedStats::new(
-        &stream_name,
-        min_time,
-        cumulative_ingestion,
-        cumulative_storage,
-    )
 }
 
 pub async fn check_liveness(domain_name: &str) -> bool {

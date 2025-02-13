@@ -43,11 +43,11 @@ use std::time::{Duration, Instant};
 use super::metrics_layer::MetricLayer;
 use super::object_storage::parseable_json_path;
 use super::{
-    LogStream, ObjectStorageProvider, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME,
-    STREAM_ROOT_DIRECTORY,
+    ObjectStorageProvider, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 use crate::handlers::http::users::USERS_ROOT_DIR;
 use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
+use crate::parseable::LogStream;
 use crate::storage::{ObjectStorage, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY};
 use std::collections::HashMap;
 
@@ -285,6 +285,10 @@ impl S3Config {
 }
 
 impl ObjectStorageProvider for S3Config {
+    fn name(&self) -> &'static str {
+        "s3"
+    }
+
     fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder {
         let s3 = self.get_default_builder().build().unwrap();
 
