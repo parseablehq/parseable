@@ -257,12 +257,9 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     ) -> Result<(), ObjectStorageError> {
         let path = stream_json_path(stream_name);
         let stream_metadata = self.get_object(&path).await?;
-        let stats =
-            serde_json::to_value(retention).expect("rentention tasks are perfectly serializable");
-        let mut stream_metadata: serde_json::Value =
+        let mut stream_metadata: ObjectStoreFormat =
             serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
-
-        stream_metadata["retention"] = stats;
+        stream_metadata.retention = Some(retention.clone());
 
         self.put_object(&path, to_bytes(&stream_metadata)).await
     }

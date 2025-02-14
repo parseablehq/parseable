@@ -190,7 +190,7 @@ pub async fn get_retention(stream_name: Path<String>) -> Result<impl Responder, 
 
 pub async fn put_retention(
     stream_name: Path<String>,
-    Json(json): Json<Value>,
+    Json(retention): Json<Retention>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
 
@@ -204,11 +204,6 @@ pub async fn put_retention(
     {
         return Err(StreamNotFound(stream_name).into());
     }
-
-    let retention: Retention = match serde_json::from_value(json) {
-        Ok(retention) => retention,
-        Err(err) => return Err(StreamError::InvalidRetentionConfig(err)),
-    };
 
     PARSEABLE
         .storage
