@@ -129,7 +129,7 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
     Ok((web::Json(schema), StatusCode::OK))
 }
 
-pub async fn schema(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
+pub async fn get_schema(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
 
     // Ensure parseable is aware of stream in distributed mode
