@@ -134,7 +134,7 @@ pub async fn schema(stream_name: Path<String>) -> Result<impl Responder, StreamE
 
     // Ensure parseable is aware of stream in distributed mode
     if PARSEABLE.options.mode == Mode::Query
-        && PARSEABLE
+        && !PARSEABLE
             .create_stream_and_schema_from_storage(&stream_name)
             .await?
     {
