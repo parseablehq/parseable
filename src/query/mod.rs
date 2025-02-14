@@ -23,39 +23,41 @@ mod listing_table_builder;
 pub mod object_storage;
 pub mod stream_schema_provider;
 
-use catalog::DynamicObjectStoreCatalog;
+// use catalog::DynamicObjectStoreCatalog;
 use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
 
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
-use datafusion::common::{exec_datafusion_err, plan_err};
-use datafusion::config::ConfigFileType;
-use datafusion::datasource::listing::ListingTableUrl;
+// use datafusion::common::{exec_datafusion_err, plan_err};
+// use datafusion::config::ConfigFileType;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::disk_manager::DiskManagerConfig;
-use datafusion::execution::runtime_env::RuntimeEnvBuilder;
+// use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
-    Aggregate, DdlStatement, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
+    Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
 };
-use datafusion::physical_plan::execution_plan::EmissionType;
-use datafusion::physical_plan::{collect, execute_stream, ExecutionPlanProperties};
+// use datafusion::physical_plan::execution_plan::EmissionType;
+// use datafusion::physical_plan::{collect, execute_stream, ExecutionPlanProperties};
 use datafusion::prelude::*;
-use datafusion::sql::parser::DFParser;
-use functions::ParquetMetadataFunc;
+// use datafusion::sql::parser::DFParser;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::ops::Bound;
-use std::path::{Path, PathBuf};
+// use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Instant;
 use stream_schema_provider::collect_manifest_files;
 use sysinfo::System;
+
+use std::fs;
+use std::io;
 
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
@@ -628,133 +630,191 @@ pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
     }
 }
 
-struct AllQueries {
-    queries: Vec<String>,
+// struct AllQueries {
+//     queries: Vec<String>,
+// }
+
+// impl AllQueries {
+//     fn try_new(path: &Path) -> Result<Self> {
+//         // ClickBench has all queries in a single file identified by line number
+//         let all_queries = std::fs::read_to_string(path)
+//             .map_err(|e| exec_datafusion_err!("Could not open {path:?}: {e}"))?;
+//         Ok(Self {
+//             queries: all_queries.lines().map(|s| s.to_string()).collect(),
+//         })
+//     }
+
+//     /// Returns the text of query `query_id`
+//     fn get_query(&self, query_id: usize) -> Result<&str> {
+//         self.queries
+//             .get(query_id)
+//             .ok_or_else(|| {
+//                 let min_id = self.min_query_id();
+//                 let max_id = self.max_query_id();
+//                 exec_datafusion_err!(
+//                     "Invalid query id {query_id}. Must be between {min_id} and {max_id}"
+//                 )
+//             })
+//             .map(|s| s.as_str())
+//     }
+
+//     fn min_query_id(&self) -> usize {
+//         0
+//     }
+
+//     fn max_query_id(&self) -> usize {
+//         self.queries.len() - 1
+//     }
+// }
+
+// pub async fn run() -> Result<()> {
+//     let rt_config = RuntimeEnvBuilder::new();
+//     let runtime_env = rt_config.build().unwrap();
+//     println!("Running benchmarks");
+//     let queries_path: PathBuf = ["/home", "ubuntu", "queries.sql"]
+//         .iter()
+//         .collect();
+//     let queries = AllQueries::try_new(queries_path.as_path())?;
+//     println!("queries loaded");
+//     let query_range = queries.min_query_id()..=queries.max_query_id();
+
+//     // configure parquet options
+//     let mut config = SessionConfig::new()
+//         .with_parquet_pruning(true)
+//         .with_target_partitions(num_cpus::get())
+//         .with_coalesce_batches(true)
+//         .with_collect_statistics(true)
+//         .with_parquet_page_index_pruning(true);
+//     config.options_mut().execution.parquet.binary_as_string = true;
+//     config.options_mut().execution.parquet.pushdown_filters = true;
+//     config.options_mut().execution.parquet.reorder_filters = true;
+//     config
+//         .options_mut()
+//         .execution
+//         .use_row_number_estimates_to_optimize_partitioning = true;
+//     // enable dynamic file query
+//     let ctx = SessionContext::new_with_config_rt(config, Arc::new(runtime_env)).enable_url_table();
+//     ctx.refresh_catalogs().await?;
+//     // install dynamic catalog provider that can register required object stores
+//     ctx.register_catalog_list(Arc::new(DynamicObjectStoreCatalog::new(
+//         ctx.state().catalog_list().clone(),
+//         ctx.state_weak_ref(),
+//     )));
+
+//     let sql = "CREATE EXTERNAL TABLE hits STORED AS PARQUET LOCATION '/home/ubuntu/clickbench/hits.parquet' OPTIONS ('binary_as_string' 'true')";
+//     let task_ctx = ctx.task_ctx();
+//     let dialect = &task_ctx.session_config().options().sql_parser.dialect;
+//     let dialect = sqlparser::dialect::dialect_from_str(dialect).unwrap();
+//     let plan = ctx.state().create_logical_plan(sql).await?;
+//     if let LogicalPlan::Ddl(DdlStatement::CreateExternalTable(cmd)) = &plan {
+//         let format = Some(ConfigFileType::PARQUET);
+//         // Clone and modify the default table options based on the provided options
+//         let mut table_options = ctx.state().default_table_options();
+//         if let Some(format) = format {
+//             table_options.set_config_format(format);
+//         }
+//         table_options.alter_with_string_hash_map(&cmd.options)?;
+
+//         ctx.sql(&sql).await?;
+//         for query_id in query_range {
+//             let sql = queries.get_query(query_id)?;
+//             let statements = DFParser::parse_sql_with_dialect(&sql, dialect.as_ref())?;
+//             for statement in statements {
+//                 let plan = ctx.state().statement_to_plan(statement).await?;
+//                 let df = ctx.execute_logical_plan(plan).await?;
+//                 let physical_plan = df.create_physical_plan().await?;
+//                 if physical_plan.boundedness().is_unbounded() {
+//                     if physical_plan.pipeline_behavior() == EmissionType::Final {
+//                         return plan_err!(
+//                             "The given query can generate a valid result only once \
+//                             the source finishes, but the source is unbounded"
+//                         );
+//                     }
+//                     // As the input stream comes, we can generate results.
+//                     // However, memory safety is not guaranteed.
+//                     let start = Instant::now();
+//                     let _ = execute_stream(physical_plan, task_ctx.clone())?;
+//                     let elapsed = start.elapsed().as_secs_f64();
+//                     println!("Query{query_id}  took {elapsed} seconds");
+//                 } else {
+//                     // Bounded stream; collected results are printed after all input consumed.
+//                     let start = Instant::now();
+//                     let _ = collect(physical_plan, task_ctx.clone()).await?;
+//                     let elapsed = start.elapsed().as_secs_f64();
+//                     println!("Q{query_id}  took {elapsed} seconds");
+//                 }
+//             }
+//         }
+//     } else {
+//         return plan_err!("LogicalPlan is not a CreateExternalTable");
+//     }
+
+//     Ok(())
+// }
+
+#[derive(Debug, Serialize)]
+struct BenchmarkResult {
+    query_num: usize,
+    iteration: usize,
+    elapsed_seconds: f64,
 }
 
-impl AllQueries {
-    fn try_new(path: &Path) -> Result<Self> {
-        // ClickBench has all queries in a single file identified by line number
-        let all_queries = std::fs::read_to_string(path)
-            .map_err(|e| exec_datafusion_err!("Could not open {path:?}: {e}"))?;
-        Ok(Self {
-            queries: all_queries.lines().map(|s| s.to_string()).collect(),
-        })
-    }
-
-    /// Returns the text of query `query_id`
-    fn get_query(&self, query_id: usize) -> Result<&str> {
-        self.queries
-            .get(query_id)
-            .ok_or_else(|| {
-                let min_id = self.min_query_id();
-                let max_id = self.max_query_id();
-                exec_datafusion_err!(
-                    "Invalid query id {query_id}. Must be between {min_id} and {max_id}"
-                )
-            })
-            .map(|s| s.as_str())
-    }
-
-    fn min_query_id(&self) -> usize {
-        0
-    }
-
-    fn max_query_id(&self) -> usize {
-        self.queries.len() - 1
-    }
+#[derive(Debug, Serialize)]
+struct BenchmarkResponse {
+    results: Vec<BenchmarkResult>,
 }
 
-pub async fn run() -> Result<()> {
-    let rt_config = RuntimeEnvBuilder::new();
-    let runtime_env = rt_config.build().unwrap();
-    println!("Running benchmarks");
-    let queries_path: PathBuf = ["/home", "ubuntu", "clickbench", "queries_bk.sql"]
-        .iter()
-        .collect();
-    let queries = AllQueries::try_new(queries_path.as_path())?;
-    println!("queries loaded");
-    let query_range = queries.min_query_id()..=queries.max_query_id();
+pub async fn run_benchmark() {
+    const TRIES: usize = 1;
 
-    // configure parquet options
-    let mut config = SessionConfig::new()
-        .with_parquet_pruning(true)
-        .with_target_partitions(num_cpus::get())
-        .with_coalesce_batches(true)
-        .with_collect_statistics(true)
-        .with_parquet_page_index_pruning(true);
-    config.options_mut().execution.parquet.binary_as_string = true;
-    config.options_mut().execution.parquet.pushdown_filters = true;
-    config.options_mut().execution.parquet.reorder_filters = true;
-    config
-        .options_mut()
-        .execution
-        .use_row_number_estimates_to_optimize_partitioning = true;
-    // enable dynamic file query
-    let ctx = SessionContext::new_with_config_rt(config, Arc::new(runtime_env)).enable_url_table();
-    ctx.refresh_catalogs().await?;
-    // install dynamic catalog provider that can register required object stores
-    ctx.register_catalog_list(Arc::new(DynamicObjectStoreCatalog::new(
-        ctx.state().catalog_list().clone(),
-        ctx.state_weak_ref(),
-    )));
-    // register `parquet_metadata` table function to get metadata from parquet files
-    ctx.register_udtf("parquet_metadata", Arc::new(ParquetMetadataFunc {}));
-
-    let location = "/home/ubuntu/clickbench/hits.parquet";
+    let mut results = Vec::new();
+    let mut query_num = 1;
+    // Create session context
+    let ctx = SessionContext::new();
     let sql = "CREATE EXTERNAL TABLE hits STORED AS PARQUET LOCATION '/home/ubuntu/clickbench/hits.parquet' OPTIONS ('binary_as_string' 'true')";
-    let task_ctx = ctx.task_ctx();
-    let dialect = &task_ctx.session_config().options().sql_parser.dialect;
-    let dialect = sqlparser::dialect::dialect_from_str(dialect).unwrap();
-    let plan = ctx.state().create_logical_plan(sql).await?;
-    println!("plan: {plan}");
-    if let LogicalPlan::Ddl(DdlStatement::CreateExternalTable(cmd)) = &plan {
-        println!("cmd: {:?}", cmd);
-        let format = Some(ConfigFileType::PARQUET);
-        let table_path = ListingTableUrl::parse(location)?;
-        println!("table_path: {table_path}");
-        // Clone and modify the default table options based on the provided options
-        let mut table_options = ctx.state().default_table_options();
-        println!("table_options: {:?}", table_options);
-        if let Some(format) = format {
-            table_options.set_config_format(format);
-        }
-        table_options.alter_with_string_hash_map(&cmd.options)?;
+    let _ = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
+    // Read queries from file
+    let queries = fs::read_to_string("/home/ubuntu/queries.sql").unwrap();
+    
+    
+    for query in queries.lines() {
+        // Write current query to temporary file
+        fs::write("/tmp/query.sql", &query).unwrap();
 
-        ctx.sql(&sql).await?;
-        for query_id in query_range {
-            let sql = queries.get_query(query_id)?;
-            let statements = DFParser::parse_sql_with_dialect(&sql, dialect.as_ref())?;
-            for statement in statements {
-                let plan = ctx.state().statement_to_plan(statement).await?;
-                let df = ctx.execute_logical_plan(plan).await?;
-                let physical_plan = df.create_physical_plan().await?;
-                if physical_plan.boundedness().is_unbounded() {
-                    if physical_plan.pipeline_behavior() == EmissionType::Final {
-                        return plan_err!(
-                            "The given query can generate a valid result only once \
-                            the source finishes, but the source is unbounded"
-                        );
-                    }
-                    // As the input stream comes, we can generate results.
-                    // However, memory safety is not guaranteed.
-                    let start = Instant::now();
-                    let _ = execute_stream(physical_plan, task_ctx.clone())?;
-                    let elapsed = start.elapsed().as_secs_f64();
-                    println!("Q{query_id}  took {elapsed} seconds");
-                } else {
-                    // Bounded stream; collected results are printed after all input consumed.
-                    let start = Instant::now();
-                    let _ = collect(physical_plan, task_ctx.clone()).await?;
-                    let elapsed = start.elapsed().as_secs_f64();
-                    println!("Q{query_id}  took {elapsed} seconds");
-                }
-            }
+        for iteration in 1..=TRIES {
+            // Clear caches
+            clear_caches().unwrap();
+
+            // Execute and time the query
+            let start = Instant::now();
+            ctx.sql(&query).await.unwrap().collect().await.unwrap();
+            let elapsed = start.elapsed().as_secs_f64();
+            let benchmark_result = BenchmarkResult {
+                query_num,
+                iteration,
+                elapsed_seconds: elapsed,
+            };
+            println!("Query {query_num} iteration {iteration} took {elapsed} seconds");
+            // Record result
+            results.push(benchmark_result);
+
         }
-    } else {
-        return plan_err!("LogicalPlan is not a CreateExternalTable");
+        query_num += 1;
     }
 
+    println!("{}", serde_json::to_string(&BenchmarkResponse { results }).unwrap());
+}
+
+fn clear_caches() -> io::Result<()> {
+    // Sync filesystems
+    Command::new("sync").status()?;
+    
+    // Clear caches using sudo
+    Command::new("sudo")
+        .args(&["tee", "/proc/sys/vm/drop_caches"])
+        .arg("3")
+        .output()?;
+    
     Ok(())
 }
 pub mod error {

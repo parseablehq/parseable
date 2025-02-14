@@ -23,11 +23,11 @@ pub struct DynamicObjectStoreCatalog {
     state: Weak<RwLock<SessionState>>,
 }
 
-impl DynamicObjectStoreCatalog {
-    pub fn new(inner: Arc<dyn CatalogProviderList>, state: Weak<RwLock<SessionState>>) -> Self {
-        Self { inner, state }
-    }
-}
+// impl DynamicObjectStoreCatalog {
+//     pub fn new(inner: Arc<dyn CatalogProviderList>, state: Weak<RwLock<SessionState>>) -> Self {
+//         Self { inner, state }
+//     }
+// }
 
 impl CatalogProviderList for DynamicObjectStoreCatalog {
     fn as_any(&self) -> &dyn Any {

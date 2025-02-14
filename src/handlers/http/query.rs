@@ -41,7 +41,7 @@ use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
-use crate::query::{run, CountsRequest, CountsResponse, Query as LogicalQuery};
+use crate::query::{run_benchmark, CountsRequest, CountsResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
@@ -69,7 +69,7 @@ pub struct Query {
 }
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
-    let _ = run().await;
+    let _ = run_benchmark().await;
     println!("benchmarking complete");
     let session_state = QUERY_SESSION.state();
     let raw_logical_plan = match session_state
