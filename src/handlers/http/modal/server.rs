@@ -349,7 +349,7 @@ impl Server {
                         // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
                         web::resource("/schema").route(
                             web::get()
-                                .to(logstream::schema)
+                                .to(logstream::get_schema)
                                 .authorize_for_stream(Action::GetSchema),
                         ),
                     )

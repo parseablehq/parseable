@@ -26,7 +26,6 @@ pub mod uid;
 pub mod update;
 
 use crate::handlers::http::rbac::RBACError;
-use crate::parseable::PARSEABLE;
 use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use actix::extract_session_key_from_req;
@@ -34,9 +33,7 @@ use actix_web::HttpRequest;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use regex::Regex;
 use sha2::{Digest, Sha256};
-use std::env;
 use tracing::debug;
-use url::Url;
 
 /// Convert minutes to a slot range
 /// e.g. given minute = 15 and OBJECT_STORE_DATA_GRANULARITY = 10 returns "10-19"
@@ -53,72 +50,6 @@ pub fn minute_to_slot(minute: u32, data_granularity: u32) -> Option<String> {
 
     let block_end = (block_n + 1) * data_granularity - 1;
     Some(format!("{block_start:02}-{block_end:02}"))
-}
-
-pub fn get_url() -> Url {
-    if PARSEABLE.options.ingestor_endpoint.is_empty() {
-        return format!(
-            "{}://{}",
-            PARSEABLE.options.get_scheme(),
-            PARSEABLE.options.address
-        )
-        .parse::<Url>() // if the value was improperly set, this will panic before hand
-        .unwrap_or_else(|err| {
-            panic!("{err}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.", PARSEABLE.options.address)
-        });
-    }
-
-    let ingestor_endpoint = &PARSEABLE.options.ingestor_endpoint;
-
-    if ingestor_endpoint.starts_with("http") {
-        panic!("Invalid value `{}`, please set the environement variable `P_INGESTOR_ENDPOINT` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.", ingestor_endpoint);
-    }
-
-    let addr_from_env = ingestor_endpoint.split(':').collect::<Vec<&str>>();
-
-    if addr_from_env.len() != 2 {
-        panic!("Invalid value `{}`, please set the environement variable `P_INGESTOR_ENDPOINT` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.", ingestor_endpoint);
-    }
-
-    let mut hostname = addr_from_env[0].to_string();
-    let mut port = addr_from_env[1].to_string();
-
-    // if the env var value fits the pattern $VAR_NAME:$VAR_NAME
-    // fetch the value from the specified env vars
-    if hostname.starts_with('$') {
-        let var_hostname = hostname[1..].to_string();
-        hostname = get_from_env(&var_hostname);
-
-        if hostname.is_empty() {
-            panic!("The environement variable `{}` is not set, please set as <ip address / DNS> without the scheme (e.g., 192.168.1.1 or example.com). Please refer to the documentation: https://logg.ing/env for more details.", var_hostname);
-        }
-        if hostname.starts_with("http") {
-            panic!("Invalid value `{}`, please set the environement variable `{}` to `<ip address / DNS>` without the scheme (e.g., 192.168.1.1 or example.com). Please refer to the documentation: https://logg.ing/env for more details.", hostname, var_hostname);
-        } else {
-            hostname = format!("{}://{}", PARSEABLE.options.get_scheme(), hostname);
-        }
-    }
-
-    if port.starts_with('$') {
-        let var_port = port[1..].to_string();
-        port = get_from_env(&var_port);
-
-        if port.is_empty() {
-            panic!(
-                "Port is not set in the environement variable `{}`. Please refer to the documentation: https://logg.ing/env for more details.",
-                var_port
-            );
-        }
-    }
-
-    format!("{}://{}:{}", PARSEABLE.options.get_scheme(), hostname, port)
-        .parse::<Url>()
-        .expect("Valid URL")
-}
-
-/// util fuction to fetch value from an env var
-fn get_from_env(var_to_fetch: &str) -> String {
-    env::var(var_to_fetch).unwrap_or_else(|_| "".to_string())
 }
 
 pub fn get_ingestor_id() -> String {
