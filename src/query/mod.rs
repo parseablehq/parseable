@@ -33,18 +33,16 @@ use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, Tr
 // use datafusion::config::ConfigFileType;
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::disk_manager::DiskManagerConfig;
-use datafusion::execution::runtime_env::{RuntimeEnv, RuntimeEnvBuilder};
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 // use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
     Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
 };
-use datafusion::physical_expr::create_physical_expr;
 use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
 use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion::physical_plan::{collect as PhysicalPlanCollect, ExecutionPlan, Partitioning};
-use datafusion::physical_plan::filter::FilterExec;
+use datafusion::physical_plan::{collect, ExecutionPlan, Partitioning};
 // use datafusion::physical_plan::execution_plan::EmissionType;
 // use datafusion::physical_plan::{collect, execute_stream, ExecutionPlanProperties};
 use datafusion::prelude::*;
@@ -56,14 +54,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::ops::Bound;
 // use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Instant;
 use stream_schema_provider::collect_manifest_files;
 use sysinfo::System;
 
 use std::fs;
-use std::io;
 
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
@@ -758,31 +754,28 @@ pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
 //     Ok(())
 // }
 
-#[derive(Debug, Serialize)]
-struct BenchmarkResult {
-    query_num: usize,
-    iteration: usize,
-    elapsed_seconds: f64,
-}
-
-
 pub async fn run_benchmark() {
     const TRIES: usize = 1;
-
-    let mut results = Vec::new();
     let mut query_num = 1;
-
-    // 1. Configure Runtime Environment with parallelism
     let runtime_config = RuntimeEnvBuilder::new()  // Number of partitions for parallel processing
     .with_disk_manager(DiskManagerConfig::NewOs);
 
-    let runtime = RuntimeEnv::new(runtime_config).unwrap();
+
+    let runtime = runtime_config.build().unwrap();
 
 
     // Create session context
     let mut config = SessionConfig::new().with_coalesce_batches(true)
-    .with_target_partitions(8)
-    .with_batch_size(50000);
+    .with_collect_statistics(true)
+    .with_parquet_bloom_filter_pruning(true)
+    .with_parquet_page_index_pruning(true)
+    .with_parquet_pruning(true)
+    .with_prefer_existing_sort(true)
+    .with_repartition_file_scans(true)
+    .with_round_robin_repartition(true)
+    .with_repartition_sorts(true)
+    .with_batch_size(50000)
+    .with_target_partitions(8);
     config.options_mut().execution.parquet.binary_as_string = true;
     config.options_mut().execution.use_row_number_estimates_to_optimize_partitioning = true;
     config.options_mut().execution.parquet.pushdown_filters = true;
@@ -800,112 +793,84 @@ pub async fn run_benchmark() {
     // Read queries from file
     let queries = fs::read_to_string("/home/ubuntu/queries.sql").unwrap();
     
-    
+    let mut total_elapsed = 0.0;
     for query in queries.lines() {
         fs::write("/tmp/query.sql", &query).unwrap();
     
-        for iteration in 1..=TRIES {
-            clear_caches().unwrap();
-            
+        for iteration in 1..=TRIES {            
             
             // Create the query plan
             let df = ctx.sql(&query).await.unwrap();
-            let logical_plan = df.logical_plan().clone();
+            //let logical_plan = df.logical_plan().clone();
             let physical_plan = df.create_physical_plan().await.unwrap();
     
             // Add coalesce
-            let mut exec_plan: Arc<dyn ExecutionPlan> = Arc::new(CoalesceBatchesExec::new(physical_plan, 50000));
-    
-            // Check if plan contains filter and add FilterExec
-            fn has_filter(plan: &LogicalPlan) -> bool {
-                match plan {
-                    LogicalPlan::Filter(_) => true,
-                    LogicalPlan::Projection(proj) => has_filter(proj.input.as_ref()),
-                    LogicalPlan::Aggregate(agg) => has_filter(agg.input.as_ref()),
-                    LogicalPlan::Join(join) => {
-                        has_filter(join.left.as_ref()) || has_filter(join.right.as_ref())
-                    },
-                    LogicalPlan::Window(window) => has_filter(window.input.as_ref()),
-                    LogicalPlan::Sort(sort) => has_filter(sort.input.as_ref()),
-                    LogicalPlan::Limit(limit) => has_filter(limit.input.as_ref()),
-                    _ => false,
-                }
-            }
-    
-            // Extract filter expressions from logical plan
-            fn extract_filters(plan: &LogicalPlan) -> Vec<Expr> {
-                match plan {
-                    LogicalPlan::Filter(filter) => vec![filter.predicate.clone()],
-                    LogicalPlan::Projection(proj) => extract_filters(proj.input.as_ref()),
-                    LogicalPlan::Aggregate(agg) => extract_filters(agg.input.as_ref()),
-                    LogicalPlan::Join(join) => {
-                        let mut filters = extract_filters(join.left.as_ref());
-                        filters.extend(extract_filters(join.right.as_ref()));
-                        filters
-                    },
-                    _ => vec![],
-                }
-            }
-    
-            if has_filter(&logical_plan) {
-                let filters = extract_filters(&logical_plan);
-                for filter_expr in filters {
-                    
-
-                    if let Ok(physical_filter_expr) =  create_physical_expr(
-                        &filter_expr,
-                        &logical_plan.schema(),
-                        &ctx.state().execution_props(),
-
-                    ) {
-                        exec_plan = Arc::new(FilterExec::try_new(
-                            physical_filter_expr,
-                            exec_plan,
-                        ).unwrap());
-                    }
-
-                    
-                }
-            }
-    
-            // Execute the plan
+            let exec_plan: Arc<dyn ExecutionPlan> = Arc::new(CoalesceBatchesExec::new(physical_plan, 8192));
             let task_ctx = ctx.task_ctx();
-            let start = Instant::now();
-            
-        //let _ = execute_parallel(exec_plan.clone(), ctx.task_ctx()).await.unwrap();
-            // Add repartitioning for better parallelism
-    let repartitioned = Arc::new(RepartitionExec::try_new(
-        exec_plan,
-        Partitioning::RoundRobinBatch(8),
-    ).unwrap());
-            let _ = PhysicalPlanCollect(repartitioned, task_ctx).await.unwrap();
+            let repartitioned = Arc::new(RepartitionExec::try_new(
+                exec_plan,
+                Partitioning::RoundRobinBatch(8),
+            ).unwrap());
+    let start = Instant::now();
+            let _query_response = collect(repartitioned, task_ctx).await.unwrap();
     
             let elapsed = start.elapsed().as_secs_f64();
-            let benchmark_result = BenchmarkResult {
-                query_num,
-                iteration,
-                elapsed_seconds: elapsed,
-            };
+            total_elapsed += elapsed;
             println!("Query {query_num} iteration {iteration} took {elapsed} seconds");
-            results.push(benchmark_result);
+            
         }
         query_num += 1;
     }
+    println!("Total time: {total_elapsed} seconds");
 
 }
 
-fn clear_caches() -> io::Result<()> {
-    // Sync filesystems
-    Command::new("sync").status()?;
+// // Check if plan contains filter and add FilterExec
+// fn has_filter(plan: &LogicalPlan) -> bool {
+//     println!("Plan: {plan}");
+//     match plan {
+//         LogicalPlan::Filter(_) => true,
+//         LogicalPlan::Projection(proj) => has_filter(proj.input.as_ref()),
+//         LogicalPlan::Aggregate(agg) => has_filter(agg.input.as_ref()),
+//         LogicalPlan::Join(join) => {
+//             has_filter(join.left.as_ref()) || has_filter(join.right.as_ref())
+//         },
+//         LogicalPlan::Window(window) => has_filter(window.input.as_ref()),
+//         LogicalPlan::Sort(sort) => has_filter(sort.input.as_ref()),
+//         LogicalPlan::Limit(limit) => has_filter(limit.input.as_ref()),
+//         _ => false,
+//     }
+// }
+
+// Extract filter expressions from logical plan
+// fn extract_filters(plan: &LogicalPlan) -> Vec<Expr> {
+//     match plan {
+//         LogicalPlan::Filter(filter) => vec![filter.predicate.clone()],
+//         LogicalPlan::Projection(proj) => extract_filters(proj.input.as_ref()),
+//         LogicalPlan::Aggregate(agg) => extract_filters(agg.input.as_ref()),
+//         LogicalPlan::Join(join) => {
+//             let mut filters = extract_filters(join.left.as_ref());
+//             filters.extend(extract_filters(join.right.as_ref()));
+//             filters
+//         },
+//         LogicalPlan::Limit(limit) => extract_filters(limit.input.as_ref()),
+//         LogicalPlan::Sort(sort) => extract_filters(sort.input.as_ref()),
+//         _ => vec![],
+//     }
+// }
+
+// fn clear_caches() -> io::Result<()> {
+//     // Sync filesystems
+//     Command::new("sync").status()?;
     
-    // Clear caches using sudo
-    Command::new("sudo")
-        .args(&["tee", "/proc/sys/vm/drop_caches"])
-        .arg("3")
-        .output()?;
+//     // Clear caches using sudo
+//     Command::new("sudo")
+//         .args(&["tee", "/proc/sys/vm/drop_caches"])
+//         .arg("3")
+//         .output()?;
     
-    Ok(())
-}
+//     Ok(())
+// }
 pub mod error {
     use crate::{metadata::error::stream_info::MetadataError, storage::ObjectStorageError};
     use datafusion::error::DataFusionError;
