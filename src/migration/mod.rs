@@ -325,7 +325,8 @@ pub fn to_bytes(any: &(impl ?Sized + Serialize)) -> Bytes {
 }
 
 pub fn get_staging_metadata(config: &Parseable) -> anyhow::Result<Option<serde_json::Value>> {
-    let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME).to_path(config.staging_dir());
+    let path =
+        RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME).to_path(config.options.staging_dir());
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) => match err.kind() {
@@ -351,7 +352,7 @@ pub fn put_staging_metadata(
     config: &Parseable,
     metadata: &serde_json::Value,
 ) -> anyhow::Result<()> {
-    let path = config.staging_dir().join(".parseable.json");
+    let path = config.options.staging_dir().join(".parseable.json");
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)
