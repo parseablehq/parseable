@@ -66,7 +66,7 @@ pub async fn about() -> Json<Value> {
     let staging = if PARSEABLE.options.mode == Mode::Query {
         "".to_string()
     } else {
-        PARSEABLE.staging_dir().display().to_string()
+        PARSEABLE.options.staging_dir().display().to_string()
     };
     let grpc_port = PARSEABLE.options.grpc_port;
 
