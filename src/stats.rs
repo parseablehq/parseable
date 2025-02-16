@@ -1,5 +1,3 @@
-use tracing::warn;
-
 /*
  * Parseable Server (C) 2022 - 2024 Parseable, Inc.
  *
@@ -17,6 +15,14 @@ use tracing::warn;
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+
+use std::sync::Arc;
+
+use prometheus::core::Collector;
+use prometheus::proto::MetricFamily;
+use prometheus::IntGaugeVec;
+use tracing::warn;
+
 use crate::metrics::{
     DELETED_EVENTS_STORAGE_SIZE, EVENTS_DELETED, EVENTS_DELETED_SIZE, EVENTS_INGESTED,
     EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
@@ -24,7 +30,6 @@ use crate::metrics::{
     LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE,
 };
 use crate::storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat};
-use std::sync::Arc;
 
 /// Helper struct type created by copying stats values from metadata
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq)]
@@ -176,11 +181,24 @@ pub fn delete_stats(stream_name: &str, format: &'static str) -> prometheus::Resu
     LIFETIME_EVENTS_INGESTED_SIZE.remove_label_values(&event_labels)?;
     LIFETIME_EVENTS_STORAGE_SIZE.remove_label_values(&storage_size_labels)?;
 
-    EVENTS_INGESTED_DATE.remove_label_values(&event_labels)?;
-    EVENTS_INGESTED_SIZE_DATE.remove_label_values(&event_labels)?;
-    EVENTS_STORAGE_SIZE_DATE.remove_label_values(&storage_size_labels)?;
+    delete_with_label_prefix(&EVENTS_INGESTED_DATE, &event_labels);
+    delete_with_label_prefix(&EVENTS_INGESTED_SIZE_DATE, &event_labels);
+    delete_with_label_prefix(&EVENTS_STORAGE_SIZE_DATE, &storage_size_labels);
 
     Ok(())
+}
+
+fn delete_with_label_prefix(metrics: &IntGaugeVec, prefix: &[&str]) {
+    let families: Vec<MetricFamily> = metrics.collect().into_iter().collect();
+    for metric in families.iter().flat_map(|m| m.get_metric()) {
+        let label: Vec<&str> = metric.get_label().iter().map(|l| l.get_value()).collect();
+        if !label.starts_with(prefix) {
+            continue;
+        }
+        if let Err(err) = metrics.remove_label_values(&label) {
+            warn!("Error = {err}");
+        }
+    }
 }
 
 pub fn event_labels<'a>(stream_name: &'a str, format: &'static str) -> [&'a str; 2] {
