@@ -176,13 +176,16 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         Ok(())
     }
 
-    async fn update_custom_partition_in_stream(
+    async fn update_custom_partitions_in_stream(
         &self,
         stream_name: &str,
-        custom_partition: Option<&String>,
+        custom_partitions: &[String],
     ) -> Result<(), ObjectStorageError> {
+        if custom_partitions.is_empty() {
+            return Ok(());
+        }
         let mut format = self.get_object_store_format(stream_name).await?;
-        format.custom_partition = custom_partition.cloned();
+        format.custom_partitions = custom_partitions.to_vec();
         let format_json = to_bytes(&format);
         self.put_object(&stream_json_path(stream_name), format_json)
             .await?;
@@ -651,7 +654,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             debug!("Starting object_store_sync for stream- {stream_name}");
 
             let stream = PARSEABLE.get_or_create_stream(&stream_name);
-            let custom_partition = stream.get_custom_partition();
+            let custom_partitions = stream.get_custom_partitions();
             for file in stream.parquet_files() {
                 let filename = file
                     .file_name()
@@ -673,13 +676,8 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                     .add(compressed_size as i64);
                 let mut file_suffix = str::replacen(filename, ".", "/", 3);
 
-                let custom_partition_clone = custom_partition.clone();
-                if custom_partition_clone.is_some() {
-                    let custom_partition_fields = custom_partition_clone.unwrap();
-                    let custom_partition_list =
-                        custom_partition_fields.split(',').collect::<Vec<&str>>();
-                    file_suffix =
-                        str::replacen(filename, ".", "/", 3 + custom_partition_list.len());
+                if !custom_partitions.is_empty() {
+                    file_suffix = str::replacen(filename, ".", "/", 3 + custom_partitions.len());
                 }
 
                 let stream_relative_path = format!("{stream_name}/{file_suffix}");

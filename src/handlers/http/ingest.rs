@@ -512,7 +512,7 @@ mod tests {
             json,
             None,
             None,
-            None,
+            &[],
             SchemaVersion::V0,
             &crate::event::format::LogSource::default()
         )
@@ -709,7 +709,7 @@ mod tests {
                 json,
                 None,
                 None,
-                None,
+                &[],
                 SchemaVersion::V0,
                 &crate::event::format::LogSource::default(),
             )
@@ -797,7 +797,7 @@ mod tests {
                 json,
                 None,
                 None,
-                None,
+                &[],
                 SchemaVersion::V1,
                 &crate::event::format::LogSource::default(),
             )
