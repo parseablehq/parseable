@@ -25,12 +25,15 @@ use prometheus::IntGaugeVec;
 use serde::{Deserialize, Deserializer, Serialize};
 use tracing::warn;
 
-use crate::{metrics::{
-    DELETED_EVENTS_STORAGE_SIZE, EVENTS_DELETED, EVENTS_DELETED_SIZE, EVENTS_INGESTED,
-    EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
-    EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
-    LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE,
-}, storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat}};
+use crate::{
+    metrics::{
+        DELETED_EVENTS_STORAGE_SIZE, EVENTS_DELETED, EVENTS_DELETED_SIZE, EVENTS_INGESTED,
+        EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
+        EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
+        LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE,
+    },
+    storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat},
+};
 
 /// Helper struct type created by copying stats values from metadata
 #[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
