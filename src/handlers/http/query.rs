@@ -19,6 +19,7 @@
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, HttpResponse, Responder};
+use arrow_schema::ArrowError;
 use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
@@ -36,10 +37,9 @@ use tracing::error;
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
 
-use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::Mode;
-use crate::parseable::PARSEABLE;
+use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::query::error::ExecuteError;
 use crate::query::{CountsRequest, CountsResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
@@ -174,7 +174,9 @@ pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), 
                 // commit schema merges the schema internally and updates the schema in storage.
                 commit_schema_to_storage(table, new_schema.clone()).await?;
 
-                commit_schema(table, Arc::new(new_schema))?;
+                PARSEABLE
+                    .get_stream(table)?
+                    .commit_schema(Arc::new(new_schema))?;
             }
         }
     }
@@ -318,6 +320,10 @@ Description: {0}"#
     ActixError(#[from] actix_web::Error),
     #[error("Error: {0}")]
     Anyhow(#[from] anyhow::Error),
+    #[error("Missing stream {0}")]
+    StreamNotFound(#[from] StreamNotFound),
+    #[error("Arrow error: {0}")]
+    Arrow(#[from] ArrowError),
 }
 
 impl actix_web::ResponseError for QueryError {

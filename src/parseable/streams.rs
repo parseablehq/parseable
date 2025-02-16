@@ -28,7 +28,7 @@ use std::{
 
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
-use arrow_schema::{Field, Fields, Schema};
+use arrow_schema::{ArrowError, Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
@@ -652,6 +652,22 @@ impl Stream {
 
     pub fn get_stream_type(&self) -> StreamType {
         self.metadata.read().expect(LOCK_EXPECT).stream_type
+    }
+
+    pub fn commit_schema(&self, schema: Arc<Schema>) -> Result<(), ArrowError> {
+        let map = &mut self.metadata.write().expect(LOCK_EXPECT).schema;
+        // Construct updated schema
+        let current_schema = Schema::new(map.values().cloned().collect::<Fields>());
+        let schema = Schema::try_merge(vec![current_schema, schema.as_ref().clone()])?;
+        let updated_schema: HashMap<String, Arc<Field>> = schema
+            .fields
+            .iter()
+            .map(|f| (f.name().clone(), f.clone()))
+            .collect();
+        // Update schema
+        _ = std::mem::replace(map, updated_schema);
+
+        Ok(())
     }
 }
 

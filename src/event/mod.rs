@@ -17,17 +17,17 @@
 *
 */
 
-pub mod format;
+use std::{collections::HashMap, sync::Arc};
 
 use arrow_array::RecordBatch;
-use arrow_schema::{Field, Fields, Schema};
-use itertools::Itertools;
-use std::sync::Arc;
-
-use self::error::EventError;
-use crate::{metadata::update_stats, parseable::PARSEABLE, storage::StreamType, LOCK_EXPECT};
+use arrow_schema::Field;
 use chrono::NaiveDateTime;
-use std::collections::HashMap;
+use error::EventError;
+use itertools::Itertools;
+
+use crate::{metadata::update_stats, parseable::PARSEABLE, storage::StreamType};
+
+pub mod format;
 
 pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
 
@@ -59,11 +59,12 @@ impl Event {
             }
         }
 
+        let stream = PARSEABLE.get_or_create_stream(&self.stream_name);
         if self.is_first_event {
-            commit_schema(&self.stream_name, self.rb.schema())?;
+            stream.commit_schema(self.rb.schema())?;
         }
 
-        PARSEABLE.get_or_create_stream(&self.stream_name).push(
+        stream.push(
             &key,
             &self.rb,
             self.parsed_timestamp,
@@ -107,23 +108,6 @@ pub fn get_schema_key(fields: &[Arc<Field>]) -> String {
     }
     let hash = hasher.digest();
     format!("{hash:x}")
-}
-
-pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), EventError> {
-    let mut stream_metadata = PARSEABLE.streams.write().expect("lock poisoned");
-
-    let map = &mut stream_metadata
-        .get_mut(stream_name)
-        .expect("map has entry for this stream name")
-        .metadata
-        .write()
-        .expect(LOCK_EXPECT)
-        .schema;
-    let current_schema = Schema::new(map.values().cloned().collect::<Fields>());
-    let schema = Schema::try_merge(vec![current_schema, schema.as_ref().clone()])?;
-    map.clear();
-    map.extend(schema.fields.iter().map(|f| (f.name().clone(), f.clone())));
-    Ok(())
 }
 
 pub mod error {
