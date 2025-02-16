@@ -42,10 +42,7 @@ use super::{config::BufferConfig, ConsumerRecord, StreamConsumer, TopicPartition
 pub struct ParseableSinkProcessor;
 
 impl ParseableSinkProcessor {
-    async fn build_event_from_chunk(
-        &self,
-        records: &[ConsumerRecord],
-    ) -> anyhow::Result<ParseableEvent> {
+    async fn process_event_from_chunk(&self, records: &[ConsumerRecord]) -> anyhow::Result<()> {
         let stream_name = records
             .first()
             .map(|r| r.topic.as_str())
@@ -73,7 +70,7 @@ impl ParseableSinkProcessor {
             schema_version,
         )?;
 
-        let p_event = ParseableEvent {
+        ParseableEvent {
             rb,
             stream_name: stream_name.to_string(),
             origin_format: "json",
@@ -83,9 +80,11 @@ impl ParseableSinkProcessor {
             time_partition: None,
             custom_partition_values: HashMap::new(),
             stream_type: StreamType::UserDefined,
-        };
+        }
+        .process()
+        .await?;
 
-        Ok(p_event)
+        Ok(())
     }
 
     fn json_vec(records: &[ConsumerRecord]) -> (Vec<Value>, u64) {
@@ -109,10 +108,7 @@ impl Processor<Vec<ConsumerRecord>, ()> for ParseableSinkProcessor {
         let len = records.len();
         debug!("Processing {} records", len);
 
-        self.build_event_from_chunk(&records)
-            .await?
-            .process()
-            .await?;
+        self.process_event_from_chunk(&records).await?;
 
         debug!("Processed {} records", len);
         Ok(())
