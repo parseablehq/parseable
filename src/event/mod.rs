@@ -25,7 +25,7 @@ use chrono::NaiveDateTime;
 use error::EventError;
 use itertools::Itertools;
 
-use crate::{metadata::update_stats, parseable::PARSEABLE, storage::StreamType};
+use crate::{metadata::update_stats, parseable::Stream, storage::StreamType};
 
 pub mod format;
 
@@ -46,7 +46,7 @@ pub struct Event {
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
-    pub async fn process(self) -> Result<(), EventError> {
+    pub async fn process(self, stream: &Stream) -> Result<(), EventError> {
         let mut key = get_schema_key(&self.rb.schema().fields);
         if self.time_partition.is_some() {
             let parsed_timestamp_to_min = self.parsed_timestamp.format("%Y%m%dT%H%M").to_string();
@@ -59,7 +59,6 @@ impl Event {
             }
         }
 
-        let stream = PARSEABLE.get_or_create_stream(&self.stream_name);
         if self.is_first_event {
             stream.commit_schema(self.rb.schema())?;
         }
@@ -85,10 +84,10 @@ impl Event {
         Ok(())
     }
 
-    pub fn process_unchecked(&self) -> Result<(), EventError> {
+    pub fn process_unchecked(&self, stream: &Stream) -> Result<(), EventError> {
         let key = get_schema_key(&self.rb.schema().fields);
 
-        PARSEABLE.get_or_create_stream(&self.stream_name).push(
+        stream.push(
             &key,
             &self.rb,
             self.parsed_timestamp,

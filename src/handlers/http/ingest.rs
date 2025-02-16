@@ -29,8 +29,9 @@ use opentelemetry_proto::tonic::metrics::v1::MetricsData;
 use opentelemetry_proto::tonic::trace::v1::TracesData;
 use serde_json::Value;
 
+use crate::event;
 use crate::event::error::EventError;
-use crate::event::format::{self, EventFormat, LogSource};
+use crate::event::format::{json, EventFormat, LogSource};
 use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
 use crate::metadata::SchemaVersion;
 use crate::option::Mode;
@@ -41,7 +42,6 @@ use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::flatten::JsonFlattenError;
-use crate::{event, LOCK_EXPECT};
 
 use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
@@ -78,21 +78,12 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
 pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
     let size: usize = body.len();
     let parsed_timestamp = Utc::now().naive_utc();
-    let (rb, is_first) = {
-        let body_val: Value = serde_json::from_slice(&body)?;
-        let hash_map = PARSEABLE.streams.read().unwrap();
-        let schema = hash_map
-            .get(&stream_name)
-            .ok_or_else(|| StreamNotFound(stream_name.clone()))?
-            .metadata
-            .read()
-            .expect(LOCK_EXPECT)
-            .schema
-            .clone();
-        let event = format::json::Event { data: body_val };
-        // For internal streams, use old schema
-        event.into_recordbatch(&schema, false, None, SchemaVersion::V0)?
-    };
+    let stream = PARSEABLE.get_stream(&stream_name)?;
+    let body_val: Value = serde_json::from_slice(&body)?;
+    let schema = stream.get_schema_raw();
+    let event = json::Event { data: body_val };
+    // For internal streams, use old schema
+    let (rb, is_first) = event.into_recordbatch(&schema, false, None, SchemaVersion::V0)?;
     event::Event {
         rb,
         stream_name,
@@ -104,7 +95,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
         custom_partition_values: HashMap::new(),
         stream_type: StreamType::Internal,
     }
-    .process()
+    .process(&stream)
     .await?;
     Ok(())
 }
@@ -254,6 +245,7 @@ pub async fn push_logs_unchecked(
     batches: RecordBatch,
     stream_name: &str,
 ) -> Result<event::Event, PostError> {
+    let stream = PARSEABLE.get_stream(stream_name)?;
     let unchecked_event = event::Event {
         rb: batches,
         stream_name: stream_name.to_string(),
@@ -265,7 +257,7 @@ pub async fn push_logs_unchecked(
         custom_partition_values: HashMap::new(), // should be an empty map for unchecked push
         stream_type: StreamType::UserDefined,
     };
-    unchecked_event.process_unchecked()?;
+    unchecked_event.process_unchecked(&stream)?;
 
     Ok(unchecked_event)
 }
