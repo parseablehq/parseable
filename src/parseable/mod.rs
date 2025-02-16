@@ -69,7 +69,7 @@ pub const STREAM_EXISTS: &str = "Stream exists";
 /// Shared state of the Parseable server.
 pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| match Cli::parse().storage {
     StorageOptions::Local(args) => {
-        if args.options.local_staging_path == args.storage.root {
+        if args.options.staging_dir() == &args.storage.root {
             clap::Error::raw(
                 ErrorKind::ValueValidation,
                 "Cannot use same path for storage and staging",
@@ -129,7 +129,7 @@ impl Parseable {
         storage: Arc<dyn ObjectStorageProvider>,
     ) -> Self {
         let ingestor_metadata = match &options.mode {
-            Mode::Ingest => Some(IngestorMetadata::load()),
+            Mode::Ingest => Some(IngestorMetadata::load(&options, storage.as_ref())),
             _ => None,
         };
         Parseable {
@@ -167,6 +167,16 @@ impl Parseable {
                 .as_ref()
                 .map(|meta| meta.get_ingestor_id()),
         )
+    }
+
+    /// Checks for the stream in memory, or loads it from storage when in distributed mode
+    pub async fn check_or_load_stream(&self, stream_name: &str) -> bool {
+        !self.streams.contains(stream_name)
+            && (self.options.mode != Mode::Query
+                || !self
+                    .create_stream_and_schema_from_storage(stream_name)
+                    .await
+                    .unwrap_or_default())
     }
 
     /// Writes all streams in staging onto disk, awaiting conversion into parquet.
@@ -215,10 +225,6 @@ impl Parseable {
 
     pub fn storage(&self) -> Arc<dyn ObjectStorageProvider> {
         self.storage.clone()
-    }
-
-    pub fn staging_dir(&self) -> &PathBuf {
-        &self.options.local_staging_path
     }
 
     pub fn hot_tier_dir(&self) -> &Option<PathBuf> {
@@ -755,16 +761,14 @@ impl Parseable {
             .await
         {
             error!(
-                "Failed to update first_event_at in storage for stream {:?}: {err:?}",
-                stream_name
+                "Failed to update first_event_at in storage for stream {stream_name:?}: {err:?}"
             );
         }
 
         match self.get_stream(stream_name) {
             Ok(stream) => stream.set_first_event_at(first_event_at),
             Err(err) => error!(
-                "Failed to update first_event_at in stream info for stream {:?}: {err:?}",
-                stream_name
+                "Failed to update first_event_at in stream info for stream {stream_name:?}: {err:?}"
             ),
         }
 

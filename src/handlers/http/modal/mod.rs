@@ -21,12 +21,12 @@ use std::{path::Path, sync::Arc};
 use actix_web::{middleware::from_fn, web::ServiceConfig, App, HttpServer};
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
-use base64::Engine;
+use base64::{prelude::BASE64_STANDARD, Engine};
 use bytes::Bytes;
 use openid::Discovered;
 use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use ssl_acceptor::get_ssl_acceptor;
 use tokio::sync::oneshot;
 use tracing::{error, info, warn};
@@ -35,8 +35,8 @@ use crate::{
     cli::Options,
     oidc::Claims,
     parseable::PARSEABLE,
-    storage::PARSEABLE_ROOT_DIRECTORY,
-    utils::{get_ingestor_id, get_url},
+    storage::{ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY},
+    utils::get_ingestor_id,
 };
 
 use super::{audit, cross_origin_config, health_check, API_BASE_PATH, API_VERSION};
@@ -213,85 +213,71 @@ impl IngestorMetadata {
     }
 
     /// Capture metadata information by either loading it from staging or starting fresh
-    pub fn load() -> Arc<Self> {
+    pub fn load(options: &Options, storage: &dyn ObjectStorageProvider) -> Arc<Self> {
         // all the files should be in the staging directory root
-        let entries = std::fs::read_dir(&PARSEABLE.options.local_staging_path)
+        let entries = options
+            .staging_dir()
+            .read_dir()
             .expect("Couldn't read from file");
-        let url = get_url();
+        let url = options.get_url();
         let port = url.port().unwrap_or(80).to_string();
         let url = url.to_string();
         let Options {
             username, password, ..
-        } = PARSEABLE.options.as_ref();
-        let staging_path = PARSEABLE.staging_dir();
-        let flight_port = PARSEABLE.options.flight_port.to_string();
+        } = options;
+        let staging_path = options.staging_dir();
+        let flight_port = options.flight_port.to_string();
 
         for entry in entries {
             // cause the staging directory will have only one file with ingestor in the name
             // so the JSON Parse should not error unless the file is corrupted
             let path = entry.expect("Should be a directory entry").path();
-            let flag = path
+            if !path
                 .file_name()
-                .unwrap_or_default()
-                .to_str()
-                .unwrap_or_default()
-                .contains("ingestor");
-
-            if flag {
-                // get the ingestor metadata from staging
-                let text = std::fs::read(path).expect("File should be present");
-                let mut meta: Value = serde_json::from_slice(&text).expect("Valid JSON");
-
-                // migrate the staging meta
-                let obj = meta
-                    .as_object_mut()
-                    .expect("Could Not parse Ingestor Metadata Json");
-
-                if obj.get("flight_port").is_none() {
-                    obj.insert(
-                        "flight_port".to_owned(),
-                        Value::String(PARSEABLE.options.flight_port.to_string()),
-                    );
-                }
-
-                let mut meta: IngestorMetadata =
-                    serde_json::from_value(meta).expect("Couldn't write to disk");
-
-                // compare url endpoint and port
-                if meta.domain_name != url {
-                    info!(
-                        "Domain Name was Updated. Old: {} New: {}",
-                        meta.domain_name, url
-                    );
-                    meta.domain_name = url;
-                }
-
-                if meta.port != port {
-                    info!("Port was Updated. Old: {} New: {}", meta.port, port);
-                    meta.port = port;
-                }
-
-                let token =
-                    base64::prelude::BASE64_STANDARD.encode(format!("{}:{}", username, password));
-
-                let token = format!("Basic {}", token);
-
-                if meta.token != token {
-                    // TODO: Update the message to be more informative with username and password
-                    info!(
-                        "Credentials were Updated. Old: {} New: {}",
-                        meta.token, token
-                    );
-                    meta.token = token;
-                }
-
-                meta.put_on_disk(staging_path)
-                    .expect("Couldn't write to disk");
-                return Arc::new(meta);
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.contains("ingestor"))
+            {
+                continue;
             }
+
+            // get the ingestor metadata from staging
+            let bytes = std::fs::read(path).expect("File should be present");
+            let mut meta =
+                Self::from_bytes(&bytes, options.flight_port).expect("Extracted ingestor metadata");
+
+            // compare url endpoint and port, update
+            if meta.domain_name != url {
+                info!(
+                    "Domain Name was Updated. Old: {} New: {}",
+                    meta.domain_name, url
+                );
+                meta.domain_name = url;
+            }
+
+            if meta.port != port {
+                info!("Port was Updated. Old: {} New: {}", meta.port, port);
+                meta.port = port;
+            }
+
+            let token = format!(
+                "Basic {}",
+                BASE64_STANDARD.encode(format!("{username}:{password}"))
+            );
+            if meta.token != token {
+                // TODO: Update the message to be more informative with username and password
+                warn!(
+                    "Credentials were Updated. Tokens updated; Old: {} New: {}",
+                    meta.token, token
+                );
+                meta.token = token;
+            }
+            meta.put_on_disk(staging_path)
+                .expect("Couldn't write to disk");
+
+            return Arc::new(meta);
         }
 
-        let storage = PARSEABLE.storage.get_object_store();
+        let storage = storage.get_object_store();
         let meta = Self::new(
             port,
             url,
@@ -319,6 +305,15 @@ impl IngestorMetadata {
         ])
     }
 
+    /// Updates json with `flight_port` field if not already present
+    fn from_bytes(bytes: &[u8], flight_port: u16) -> anyhow::Result<Self> {
+        let mut json: Map<String, Value> = serde_json::from_slice(bytes)?;
+        json.entry("flight_port")
+            .or_insert_with(|| Value::String(flight_port.to_string()));
+
+        Ok(serde_json::from_value(Value::Object(json))?)
+    }
+
     pub async fn migrate(&self) -> anyhow::Result<Option<IngestorMetadata>> {
         let imp = self.file_path();
         let bytes = match PARSEABLE.storage.get_object_store().get_object(&imp).await {
@@ -327,22 +322,11 @@ impl IngestorMetadata {
                 return Ok(None);
             }
         };
-        let mut json = serde_json::from_slice::<Value>(&bytes)?;
-        let meta = json
-            .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("Unable to parse Ingester Metadata"))?;
-        let fp = meta.get("flight_port");
 
-        if fp.is_none() {
-            meta.insert(
-                "flight_port".to_owned(),
-                Value::String(PARSEABLE.options.flight_port.to_string()),
-            );
-        }
-        let bytes = Bytes::from(serde_json::to_vec(&json)?);
+        let resource = Self::from_bytes(&bytes, PARSEABLE.options.flight_port)?;
+        let bytes = Bytes::from(serde_json::to_vec(&resource)?);
 
-        let resource: IngestorMetadata = serde_json::from_value(json)?;
-        resource.put_on_disk(PARSEABLE.staging_dir())?;
+        resource.put_on_disk(PARSEABLE.options.staging_dir())?;
 
         PARSEABLE
             .storage
@@ -392,6 +376,20 @@ mod test {
         let rhs = serde_json::from_slice::<IngestorMetadata>(br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=", "ingestor_id": "ingestor_id","flight_port": "8002"}"#).unwrap();
 
         assert_eq!(rhs, lhs);
+    }
+
+    #[rstest]
+    fn test_from_bytes_adds_flight_port() {
+        let json = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","ingestor_id":"ingestor_id"}"#;
+        let meta = IngestorMetadata::from_bytes(json, 8002).unwrap();
+        assert_eq!(meta.flight_port, "8002");
+    }
+
+    #[rstest]
+    fn test_from_bytes_preserves_existing_flight_port() {
+        let json = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","ingestor_id":"ingestor_id","flight_port":"9000"}"#;
+        let meta = IngestorMetadata::from_bytes(json, 8002).unwrap();
+        assert_eq!(meta.flight_port, "9000");
     }
 
     #[rstest]

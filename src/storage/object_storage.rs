@@ -36,8 +36,7 @@ use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::R
 use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
-use tracing::info;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 use ulid::Ulid;
 
 use crate::alerts::AlertConfig;
@@ -329,12 +328,9 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     ) -> Result<(), ObjectStorageError> {
         let path = stream_json_path(stream_name);
         let stream_metadata = self.get_object(&path).await?;
-        let stats =
-            serde_json::to_value(retention).expect("rentention tasks are perfectly serializable");
-        let mut stream_metadata: serde_json::Value =
+        let mut stream_metadata: ObjectStoreFormat =
             serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
-
-        stream_metadata["retention"] = stats;
+        stream_metadata.retention = Some(retention.clone());
 
         self.put_object(&path, to_bytes(&stream_metadata)).await
     }
@@ -717,13 +713,13 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     }
 
     async fn upload_files_from_staging(&self) -> Result<(), ObjectStorageError> {
-        if !Path::new(&PARSEABLE.staging_dir()).exists() {
+        if !Path::new(&PARSEABLE.options.staging_dir()).exists() {
             return Ok(());
         }
 
         // get all streams
         for stream_name in PARSEABLE.streams.list() {
-            info!("Starting object_store_sync for stream- {stream_name}");
+            debug!("Starting object_store_sync for stream- {stream_name}");
 
             let stream = PARSEABLE.get_or_create_stream(&stream_name);
             let custom_partition = stream.get_custom_partition();
