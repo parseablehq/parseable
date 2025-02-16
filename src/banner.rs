@@ -104,7 +104,7 @@ async fn storage_info(config: &Parseable) {
         Staging Path:       \"{}\"",
         "Storage:".to_string().bold(),
         config.get_storage_mode_string(),
-        config.staging_dir().to_string_lossy(),
+        config.options.staging_dir().to_string_lossy(),
     );
 
     if let Some(path) = &config.options.hot_tier_storage_path {
