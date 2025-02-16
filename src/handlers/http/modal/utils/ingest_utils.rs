@@ -27,10 +27,8 @@ use crate::{
         format::{json, EventFormat, LogSource},
         Event,
     },
-    handlers::http::{
-        ingest::PostError,
-        kinesis::{flatten_kinesis_logs, Message},
-    },
+    handlers::http::ingest::PostError,
+    kinesis::{flatten_kinesis_logs, Message},
     metadata::SchemaVersion,
     parseable::{StreamNotFound, PARSEABLE},
     storage::StreamType,
