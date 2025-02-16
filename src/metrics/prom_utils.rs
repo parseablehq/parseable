@@ -19,7 +19,7 @@
 use crate::handlers::http::base_path_without_preceding_slash;
 use crate::handlers::http::ingest::PostError;
 use crate::handlers::http::modal::IngestorMetadata;
-use crate::utils::get_url;
+use crate::parseable::PARSEABLE;
 use crate::HTTP_CLIENT;
 use actix_web::http::header;
 use chrono::NaiveDateTime;
@@ -61,7 +61,7 @@ struct StorageMetrics {
 
 impl Default for Metrics {
     fn default() -> Self {
-        let url = get_url();
+        let url = PARSEABLE.options.get_url();
         let address = format!(
             "http://{}:{}",
             url.domain()

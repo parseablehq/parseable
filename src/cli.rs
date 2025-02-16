@@ -17,9 +17,12 @@
  */
 
 use clap::Parser;
-use std::path::PathBuf;
+use std::{env, fs, path::PathBuf};
 
 use url::Url;
+
+#[cfg(feature = "kafka")]
+use crate::connectors::kafka::config::KafkaConfig;
 
 use crate::{
     oidc::{self, OpenidConfig},
@@ -84,6 +87,9 @@ pub struct LocalStoreArgs {
     pub options: Options,
     #[command(flatten)]
     pub storage: FSConfig,
+    #[cfg(feature = "kafka")]
+    #[command(flatten)]
+    pub kafka: KafkaConfig,
 }
 
 #[derive(Parser)]
@@ -92,6 +98,9 @@ pub struct S3StoreArgs {
     pub options: Options,
     #[command(flatten)]
     pub storage: S3Config,
+    #[cfg(feature = "kafka")]
+    #[command(flatten)]
+    pub kafka: KafkaConfig,
 }
 
 #[derive(Parser)]
@@ -100,9 +109,12 @@ pub struct BlobStoreArgs {
     pub options: Options,
     #[command(flatten)]
     pub storage: AzureBlobConfig,
+    #[cfg(feature = "kafka")]
+    #[command(flatten)]
+    pub kafka: KafkaConfig,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Default)]
 pub struct Options {
     // Authentication
     #[arg(long, env = "P_USERNAME", help = "Admin username to be set for this Parseable server", default_value = DEFAULT_USERNAME)]
@@ -283,55 +295,7 @@ pub struct Options {
     pub ingestor_endpoint: String,
 
     #[command(flatten)]
-    oidc: Option<OidcConfig>,
-
-    // Kafka configuration (conditionally compiled)
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    #[arg(long, env = "P_KAFKA_TOPICS", help = "Kafka topics to subscribe to")]
-    pub kafka_topics: Option<String>,
-
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    #[arg(long, env = "P_KAFKA_HOST", help = "Address and port for Kafka server")]
-    pub kafka_host: Option<String>,
-
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    #[arg(long, env = "P_KAFKA_GROUP", help = "Kafka group")]
-    pub kafka_group: Option<String>,
-
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    #[arg(long, env = "P_KAFKA_CLIENT_ID", help = "Kafka client id")]
-    pub kafka_client_id: Option<String>,
-
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    #[arg(
-        long,
-        env = "P_KAFKA_SECURITY_PROTOCOL",
-        value_parser = validation::kafka_security_protocol,
-        help = "Kafka security protocol"
-    )]
-    pub kafka_security_protocol: Option<crate::kafka::SslProtocol>,
-
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    #[arg(long, env = "P_KAFKA_PARTITIONS", help = "Kafka partitions")]
-    pub kafka_partitions: Option<String>,
+    pub oidc: Option<OidcConfig>,
 
     // Audit logging
     #[arg(
@@ -416,5 +380,79 @@ impl Options {
             issuer: issuer.clone(),
             origin,
         })
+    }
+
+    pub fn is_default_creds(&self) -> bool {
+        self.username == DEFAULT_USERNAME && self.password == DEFAULT_PASSWORD
+    }
+
+    /// Path to staging directory, ensures that it exists or panics
+    pub fn staging_dir(&self) -> &PathBuf {
+        fs::create_dir_all(&self.local_staging_path)
+            .expect("Should be able to create dir if doesn't exist");
+
+        &self.local_staging_path
+    }
+
+    /// TODO: refactor and document
+    pub fn get_url(&self) -> Url {
+        if self.ingestor_endpoint.is_empty() {
+            return format!(
+                "{}://{}",
+                self.get_scheme(),
+                self.address
+            )
+            .parse::<Url>() // if the value was improperly set, this will panic before hand
+            .unwrap_or_else(|err| {
+                panic!("{err}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.", self.address)
+            });
+        }
+
+        let ingestor_endpoint = &self.ingestor_endpoint;
+
+        if ingestor_endpoint.starts_with("http") {
+            panic!("Invalid value `{}`, please set the environement variable `P_INGESTOR_ENDPOINT` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.", ingestor_endpoint);
+        }
+
+        let addr_from_env = ingestor_endpoint.split(':').collect::<Vec<&str>>();
+
+        if addr_from_env.len() != 2 {
+            panic!("Invalid value `{}`, please set the environement variable `P_INGESTOR_ENDPOINT` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.", ingestor_endpoint);
+        }
+
+        let mut hostname = addr_from_env[0].to_string();
+        let mut port = addr_from_env[1].to_string();
+
+        // if the env var value fits the pattern $VAR_NAME:$VAR_NAME
+        // fetch the value from the specified env vars
+        if hostname.starts_with('$') {
+            let var_hostname = hostname[1..].to_string();
+            hostname = env::var(&var_hostname).unwrap_or_default();
+
+            if hostname.is_empty() {
+                panic!("The environement variable `{}` is not set, please set as <ip address / DNS> without the scheme (e.g., 192.168.1.1 or example.com). Please refer to the documentation: https://logg.ing/env for more details.", var_hostname);
+            }
+            if hostname.starts_with("http") {
+                panic!("Invalid value `{}`, please set the environement variable `{}` to `<ip address / DNS>` without the scheme (e.g., 192.168.1.1 or example.com). Please refer to the documentation: https://logg.ing/env for more details.", hostname, var_hostname);
+            } else {
+                hostname = format!("{}://{}", self.get_scheme(), hostname);
+            }
+        }
+
+        if port.starts_with('$') {
+            let var_port = port[1..].to_string();
+            port = env::var(&var_port).unwrap_or_default();
+
+            if port.is_empty() {
+                panic!(
+                    "Port is not set in the environement variable `{}`. Please refer to the documentation: https://logg.ing/env for more details.",
+                    var_port
+                );
+            }
+        }
+
+        format!("{}://{}:{}", self.get_scheme(), hostname, port)
+            .parse::<Url>()
+            .expect("Valid URL")
     }
 }

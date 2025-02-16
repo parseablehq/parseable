@@ -14,7 +14,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 # build stage
-FROM rust:1.83.0-alpine AS builder
+FROM rust:1.84.0-alpine AS builder
 
 LABEL org.opencontainers.image.title="Parseable"
 LABEL maintainer="Parseable Team <hi@parseable.io>"
@@ -27,7 +27,7 @@ RUN apk add --no-cache build-base git bash
 WORKDIR /parseable
 
 # Cache dependencies
-COPY Cargo.toml Cargo.lock build.rs .git ./
+COPY Cargo.toml Cargo.lock build.rs ./
 RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && rm -rf src
 
 # Build the actual binary
