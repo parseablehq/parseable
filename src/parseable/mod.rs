@@ -47,7 +47,7 @@ use crate::{
     },
     metadata::{LogStreamMetadata, SchemaVersion},
     option::Mode,
-    static_schema::{convert_static_schema_to_arrow_schema, StaticSchema},
+    static_schema::StaticSchema,
     storage::{
         object_storage::parseable_json_path, ObjectStorageError, ObjectStorageProvider,
         ObjectStoreFormat, Owner, Permisssion, StreamType,
@@ -485,13 +485,28 @@ impl Parseable {
             }
         }
 
-        let schema = validate_static_schema(
-            body,
-            stream_name,
-            &time_partition,
-            custom_partition.as_ref(),
-            static_schema_flag,
-        )?;
+        let schema = if static_schema_flag {
+            if body.is_empty() {
+                return Err(CreateStreamError::Custom {
+                         msg: format!(
+                             "Please provide schema in the request body for static schema logstream {stream_name}"
+                         ),
+                         status: StatusCode::BAD_REQUEST,
+                     }.into());
+            }
+
+            let static_schema: StaticSchema = serde_json::from_slice(body)?;
+            static_schema
+                .convert_to_arrow_schema(&time_partition, custom_partition.as_ref())
+                .map_err(|_| CreateStreamError::Custom {
+                    msg: format!(
+                        "Unable to commit static schema, logstream {stream_name} not created"
+                    ),
+                    status: StatusCode::BAD_REQUEST,
+                })?
+        } else {
+            Arc::new(Schema::empty())
+        };
 
         self.create_stream(
             stream_name.to_string(),
@@ -776,37 +791,6 @@ impl Parseable {
 
         Some(first_event_at.to_string())
     }
-}
-
-pub fn validate_static_schema(
-    body: &Bytes,
-    stream_name: &str,
-    time_partition: &str,
-    custom_partition: Option<&String>,
-    static_schema_flag: bool,
-) -> Result<Arc<Schema>, CreateStreamError> {
-    if !static_schema_flag {
-        return Ok(Arc::new(Schema::empty()));
-    }
-
-    if body.is_empty() {
-        return Err(CreateStreamError::Custom {
-                 msg: format!(
-                     "Please provide schema in the request body for static schema logstream {stream_name}"
-                 ),
-                 status: StatusCode::BAD_REQUEST,
-             });
-    }
-
-    let static_schema: StaticSchema = serde_json::from_slice(body)?;
-    let parsed_schema =
-        convert_static_schema_to_arrow_schema(static_schema, time_partition, custom_partition)
-            .map_err(|_| CreateStreamError::Custom {
-                msg: format!("Unable to commit static schema, logstream {stream_name} not created"),
-                status: StatusCode::BAD_REQUEST,
-            })?;
-
-    Ok(parsed_schema)
 }
 
 pub fn validate_time_partition_limit(
