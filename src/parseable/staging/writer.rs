@@ -18,13 +18,11 @@
  */
 
 use std::{
-    collections::{HashMap, HashSet},
-    fs::File,
-    sync::Arc,
+    collections::{HashMap, HashSet}, fs::File, io::BufWriter, sync::Arc
 };
 
 use arrow_array::RecordBatch;
-use arrow_ipc::writer::StreamWriter;
+use arrow_ipc::writer::FileWriter;
 use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
 use itertools::Itertools;
@@ -34,7 +32,7 @@ use crate::utils::arrow::adapt_batch;
 #[derive(Default)]
 pub struct Writer {
     pub mem: MemWriter<16384>,
-    pub disk: HashMap<String, StreamWriter<File>>,
+    pub disk: HashMap<String, FileWriter<BufWriter<File>>>,
 }
 
 /// Structure to keep recordbatches in memory.

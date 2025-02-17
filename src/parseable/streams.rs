@@ -27,7 +27,7 @@ use std::{
 };
 
 use arrow_array::RecordBatch;
-use arrow_ipc::writer::StreamWriter;
+use arrow_ipc::writer::FileWriter;
 use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::{Deref, DerefMut};
@@ -57,11 +57,7 @@ use crate::{
 };
 
 use super::{
-    staging::{
-        reader::{MergedRecordReader, MergedReverseRecordReader},
-        writer::Writer,
-        StagingError,
-    },
+    staging::{reader::MergedRecordReader, writer::Writer, StagingError},
     LogStream,
 };
 
@@ -132,7 +128,7 @@ impl Stream {
                         .append(true)
                         .open(&file_path)?;
 
-                    let mut writer = StreamWriter::try_new(file, &record.schema())
+                    let mut writer = FileWriter::try_new_buffered(file, &record.schema())
                         .expect("File and RecordBatch both are checked");
 
                     writer.write(record)?;
@@ -444,7 +440,7 @@ impl Stream {
                 .set(0);
         }
 
-        // warn!("staging files-\n{staging_files:?}\n");
+        warn!("staging files-\n{staging_files:?}\n");
         for (parquet_path, arrow_files) in staging_files {
             metrics::STAGING_FILES
                 .with_label_values(&[&self.stream_name])
@@ -459,7 +455,7 @@ impl Stream {
                     .add(file_size as i64);
             }
 
-            let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
+            let record_reader = MergedRecordReader::try_new(&arrow_files).unwrap();
             if record_reader.readers.is_empty() {
                 continue;
             }
@@ -524,7 +520,6 @@ impl Stream {
         }
 
         let schema = record_reader.merged_schema();
-
         Schema::try_merge(vec![schema, current_schema]).unwrap()
     }
 
