@@ -34,12 +34,12 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && r
 COPY src ./src
 RUN cargo build --release
 
-# Final stage with a minimal runtime image
-FROM alpine:latest
+# Final stage as base-image
+FROM scratch
 
-WORKDIR /parseable
+WORKDIR /
 
 # Copy the static binary into the final image
-COPY --from=builder /parseable/target/release/parseable /usr/bin/parseable
+COPY --from=builder /parseable/target/release/parseable /parseable
 
-CMD ["/usr/bin/parseable"]
+ENTRYPOINT ["/parseable"]
