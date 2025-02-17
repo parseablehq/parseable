@@ -455,7 +455,7 @@ impl Stream {
                     .add(file_size as i64);
             }
 
-            let record_reader = MergedRecordReader::try_new(&arrow_files).unwrap();
+            let record_reader = MergedRecordReader::new(&arrow_files);
             if record_reader.readers.is_empty() {
                 continue;
             }
@@ -514,7 +514,7 @@ impl Stream {
 
     pub fn updated_schema(&self, current_schema: Schema) -> Schema {
         let staging_files = self.arrow_files();
-        let record_reader = MergedRecordReader::try_new(&staging_files).unwrap();
+        let record_reader = MergedRecordReader::new(&staging_files);
         if record_reader.readers.is_empty() {
             return current_schema;
         }

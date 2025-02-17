@@ -41,7 +41,7 @@ pub struct MergedRecordReader {
 }
 
 impl MergedRecordReader {
-    pub fn try_new(files: &[PathBuf]) -> Result<Self, ()> {
+    pub fn new(files: &[PathBuf]) -> Self {
         let mut readers = Vec::with_capacity(files.len());
 
         for file in files {
@@ -61,7 +61,7 @@ impl MergedRecordReader {
             }
         }
 
-        Ok(Self { readers })
+        Self { readers }
     }
 
     pub fn merged_schema(&self) -> Schema {

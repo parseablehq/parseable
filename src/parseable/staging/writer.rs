@@ -18,7 +18,10 @@
  */
 
 use std::{
-    collections::{HashMap, HashSet}, fs::File, io::BufWriter, sync::Arc
+    collections::{HashMap, HashSet},
+    fs::File,
+    io::BufWriter,
+    sync::Arc,
 };
 
 use arrow_array::RecordBatch;
