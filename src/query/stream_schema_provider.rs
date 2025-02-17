@@ -739,14 +739,12 @@ pub fn include_now(filters: &[Expr], time_partition: &Option<String>) -> bool {
 
     let time_filters = extract_primary_filter(filters, time_partition);
 
-    let upper_bound_matches = time_filters.iter().any(|filter| match filter {
+    if time_filters.iter().any(|filter| match filter {
         PartialTimeFilter::High(Bound::Excluded(time))
         | PartialTimeFilter::High(Bound::Included(time))
-        | PartialTimeFilter::Eq(time) => time > &current_minute,
+        | PartialTimeFilter::Eq(time) => time >= &current_minute,
         _ => false,
-    });
-
-    if upper_bound_matches {
+    }) {
         return true;
     }
 
