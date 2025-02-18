@@ -16,17 +16,30 @@
  *
  */
 
-use crate::event::DEFAULT_TIMESTAMP_KEY;
-use crate::utils::arrow::get_field;
-use anyhow::{anyhow, Error as AnyError};
-use serde::{Deserialize, Serialize};
-use std::str;
+use std::{collections::HashMap, sync::Arc};
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use std::{collections::HashMap, sync::Arc};
+use serde::{Deserialize, Serialize};
+
+use crate::{event::DEFAULT_TIMESTAMP_KEY, utils::arrow::get_field};
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StaticSchema {
     fields: Vec<SchemaFields>,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum StaticSchemaError {
+    #[error(
+        "custom partition field {0} does not exist in the schema for the static schema logstream"
+    )]
+    MissingCustomPartition(String),
+    #[error(
+        "time partition field {0} does not exist in the schema for the static schema logstream"
+    )]
+    MissingTimePartition(String),
+    #[error("field {DEFAULT_TIMESTAMP_KEY} is a reserved field")]
+    MissingDefaultTimePartition,
 }
 
 impl StaticSchema {
@@ -34,14 +47,16 @@ impl StaticSchema {
         self,
         time_partition: &str,
         custom_partition: Option<&String>,
-    ) -> Result<Arc<Schema>, AnyError> {
+    ) -> Result<Arc<Schema>, StaticSchemaError> {
         let mut fields = Vec::new();
         let mut time_partition_exists = false;
 
         if let Some(custom_partition) = custom_partition {
             for partition in custom_partition.split(',') {
                 if !self.fields.iter().any(|field| field.name == partition) {
-                    return Err(anyhow!("custom partition field {partition} does not exist in the schema for the static schema logstream"));
+                    return Err(StaticSchemaError::MissingCustomPartition(
+                        partition.to_owned(),
+                    ));
                 }
             }
         }
@@ -86,7 +101,9 @@ impl StaticSchema {
         }
 
         if !time_partition.is_empty() && !time_partition_exists {
-            return Err(anyhow!("time partition field {time_partition} does not exist in the schema for the static schema logstream"));
+            return Err(StaticSchemaError::MissingTimePartition(
+                time_partition.to_owned(),
+            ));
         }
 
         let mut schema: Vec<Arc<Field>> = Vec::new();
@@ -96,10 +113,7 @@ impl StaticSchema {
         }
 
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
-            return Err(anyhow!(
-                "field {} is a reserved field",
-                DEFAULT_TIMESTAMP_KEY
-            ));
+            return Err(StaticSchemaError::MissingDefaultTimePartition);
         };
 
         // add the p_timestamp field to the event schema to the 0th index

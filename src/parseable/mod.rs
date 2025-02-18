@@ -498,9 +498,9 @@ impl Parseable {
             let static_schema: StaticSchema = serde_json::from_slice(body)?;
             static_schema
                 .convert_to_arrow_schema(&time_partition, custom_partition.as_ref())
-                .map_err(|_| CreateStreamError::Custom {
+                .map_err(|err| CreateStreamError::Custom {
                     msg: format!(
-                        "Unable to commit static schema, logstream {stream_name} not created"
+                        "Unable to commit static schema, logstream {stream_name} not created; Error: {err}"
                     ),
                     status: StatusCode::BAD_REQUEST,
                 })?
