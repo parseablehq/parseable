@@ -292,7 +292,7 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
     if let Some(status) = &span_record.status {
         span_record_json.extend(flatten_status(status));
     }
-    
+
     // if span_record.events is null, code should still flatten other elements in the span record - this is handled in the if block
     // else block handles the flattening the span record that includes events and links records in each span record
     if span_records_json.is_empty() {
