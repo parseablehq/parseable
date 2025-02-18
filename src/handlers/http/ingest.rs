@@ -64,6 +64,14 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
         .get(LOG_SOURCE_KEY)
         .and_then(|h| h.to_str().ok())
         .map_or(LogSource::default(), LogSource::from);
+
+    if matches!(
+        log_source,
+        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces
+    ) {
+        return Err(PostError::OtelNotSupported);
+    }
+
     flatten_and_push_logs(json, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
@@ -227,6 +235,14 @@ pub async fn post_event(
         .get(LOG_SOURCE_KEY)
         .and_then(|h| h.to_str().ok())
         .map_or(LogSource::default(), LogSource::from);
+
+    if matches!(
+        log_source,
+        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces
+    ) {
+        return Err(PostError::OtelNotSupported);
+    }
+
     flatten_and_push_logs(json, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
