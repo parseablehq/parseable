@@ -30,7 +30,7 @@ use datafusion::execution::disk_manager::DiskManagerConfig;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
-    Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
+    Aggregate, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
 };
 use datafusion::prelude::*;
 use itertools::Itertools;
@@ -54,96 +54,95 @@ use crate::event;
 use crate::handlers::http::query::QueryError;
 use crate::option::Mode;
 use crate::parseable::PARSEABLE;
-use crate::storage::{ObjectStorageProvider, ObjectStoreFormat, STREAM_ROOT_DIRECTORY};
+use crate::storage::{ObjectStoreFormat, STREAM_ROOT_DIRECTORY};
 use crate::utils::time::TimeRange;
 
-pub static QUERY_SESSION: Lazy<SessionContext> =
-    Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
+pub static QUERY_SESSION: Lazy<SessionContext> = Lazy::new(|| {
+    let runtime_config = PARSEABLE
+        .storage
+        .get_datafusion_runtime()
+        .with_disk_manager(DiskManagerConfig::NewOs);
+
+    let (pool_size, fraction) = match PARSEABLE.options.query_memory_pool_size {
+        Some(size) => (size, 1.),
+        None => {
+            let mut system = System::new();
+            system.refresh_memory();
+            let available_mem = system.available_memory();
+            (available_mem as usize, 0.85)
+        }
+    };
+
+    let runtime_config = runtime_config.with_memory_limit(pool_size, fraction);
+    let runtime = Arc::new(runtime_config.build().unwrap());
+
+    let mut config = SessionConfig::default()
+        .with_parquet_pruning(true)
+        .with_prefer_existing_sort(true)
+        .with_round_robin_repartition(true);
+
+    // For more details refer https://datafusion.apache.org/user-guide/configs.html
+
+    // Reduce the number of rows read (if possible)
+    config.options_mut().execution.parquet.enable_page_index = true;
+
+    // Pushdown filters allows DF to push the filters as far down in the plan as possible
+    // and thus, reducing the number of rows decoded
+    config.options_mut().execution.parquet.pushdown_filters = true;
+
+    // Reorder filters allows DF to decide the order of filters minimizing the cost of filter evaluation
+    config.options_mut().execution.parquet.reorder_filters = true;
+
+    // Enable StringViewArray
+    // https://www.influxdata.com/blog/faster-queries-with-stringview-part-one-influxdb/
+    config
+        .options_mut()
+        .execution
+        .parquet
+        .schema_force_view_types = true;
+
+    let state = SessionStateBuilder::new()
+        .with_default_features()
+        .with_config(config)
+        .with_runtime_env(runtime)
+        .build();
+
+    let schema_provider = Arc::new(GlobalSchemaProvider {
+        storage: PARSEABLE.storage.get_object_store(),
+    });
+    state
+        .catalog_list()
+        .catalog(&state.config_options().catalog.default_catalog)
+        .expect("default catalog is provided by datafusion")
+        .register_schema(
+            &state.config_options().catalog.default_schema,
+            schema_provider,
+        )
+        .unwrap();
+
+    SessionContext::new_with_state(state)
+});
 
 // A query request by client
 #[derive(Debug)]
 pub struct Query {
-    pub raw_logical_plan: LogicalPlan,
+    pub plan: LogicalPlan,
     pub time_range: TimeRange,
     pub filter_tag: Option<Vec<String>>,
+    pub stream_names: Vec<String>,
 }
 
 impl Query {
-    // create session context for this query
-    pub fn create_session_context(storage: Arc<dyn ObjectStorageProvider>) -> SessionContext {
-        let runtime_config = storage
-            .get_datafusion_runtime()
-            .with_disk_manager(DiskManagerConfig::NewOs);
-
-        let (pool_size, fraction) = match PARSEABLE.options.query_memory_pool_size {
-            Some(size) => (size, 1.),
-            None => {
-                let mut system = System::new();
-                system.refresh_memory();
-                let available_mem = system.available_memory();
-                (available_mem as usize, 0.85)
-            }
-        };
-
-        let runtime_config = runtime_config.with_memory_limit(pool_size, fraction);
-        let runtime = Arc::new(runtime_config.build().unwrap());
-
-        let mut config = SessionConfig::default()
-            .with_parquet_pruning(true)
-            .with_prefer_existing_sort(true)
-            .with_round_robin_repartition(true);
-
-        // For more details refer https://datafusion.apache.org/user-guide/configs.html
-
-        // Reduce the number of rows read (if possible)
-        config.options_mut().execution.parquet.enable_page_index = true;
-
-        // Pushdown filters allows DF to push the filters as far down in the plan as possible
-        // and thus, reducing the number of rows decoded
-        config.options_mut().execution.parquet.pushdown_filters = true;
-
-        // Reorder filters allows DF to decide the order of filters minimizing the cost of filter evaluation
-        config.options_mut().execution.parquet.reorder_filters = true;
-
-        // Enable StringViewArray
-        // https://www.influxdata.com/blog/faster-queries-with-stringview-part-one-influxdb/
-        config
-            .options_mut()
-            .execution
-            .parquet
-            .schema_force_view_types = true;
-
-        let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(config)
-            .with_runtime_env(runtime)
-            .build();
-
-        let schema_provider = Arc::new(GlobalSchemaProvider {
-            storage: storage.get_object_store(),
-        });
-        state
-            .catalog_list()
-            .catalog(&state.config_options().catalog.default_catalog)
-            .expect("default catalog is provided by datafusion")
-            .register_schema(
-                &state.config_options().catalog.default_schema,
-                schema_provider,
-            )
-            .unwrap();
-
-        SessionContext::new_with_state(state)
-    }
-
-    pub async fn execute(
-        &self,
-        stream_name: String,
-    ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
-        let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
-
-        let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan(&time_partition))
-            .await?;
+    pub async fn execute(self) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
+        let stream_name = self
+            .stream_names
+            .first()
+            .ok_or_else(|| ExecuteError::NoStream)?;
+        let time_partition = PARSEABLE
+            .get_or_create_stream(stream_name)
+            .get_time_partition();
+        let logical_plan = self.final_logical_plan(time_partition.as_ref());
+        let df = QUERY_SESSION.execute_logical_plan(logical_plan).await?;
 
         let fields = df
             .schema()
@@ -161,63 +160,56 @@ impl Query {
         Ok((results, fields))
     }
 
-    pub async fn get_dataframe(&self, stream_name: String) -> Result<DataFrame, ExecuteError> {
-        let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
+    pub async fn get_dataframe(self) -> Result<DataFrame, ExecuteError> {
+        let stream_name = self.stream_names.first().ok_or(ExecuteError::NoStream)?;
+        let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
 
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan(&time_partition))
+            .execute_logical_plan(self.final_logical_plan(time_partition.as_ref()))
             .await?;
 
         Ok(df)
     }
 
     /// return logical plan with all time filters applied through
-    fn final_logical_plan(&self, time_partition: &Option<String>) -> LogicalPlan {
+    fn final_logical_plan(self, time_partition: Option<&String>) -> LogicalPlan {
         // see https://github.com/apache/arrow-datafusion/pull/8400
         // this can be eliminated in later version of datafusion but with slight caveat
         // transform cannot modify stringified plans by itself
         // we by knowing this plan is not in the optimization procees chose to overwrite the stringified plan
+        let LogicalPlan::Explain(mut explain) = self.plan else {
+            return transform(
+                self.plan,
+                self.time_range.start.naive_utc(),
+                self.time_range.end.naive_utc(),
+                time_partition,
+            )
+            .data;
+        };
 
-        match self.raw_logical_plan.clone() {
-            LogicalPlan::Explain(plan) => {
-                let transformed = transform(
-                    plan.plan.as_ref().clone(),
-                    self.time_range.start.naive_utc(),
-                    self.time_range.end.naive_utc(),
-                    time_partition,
-                );
-                LogicalPlan::Explain(Explain {
-                    verbose: plan.verbose,
-                    stringified_plans: vec![transformed
-                        .data
-                        .to_stringified(PlanType::InitialLogicalPlan)],
-                    plan: Arc::new(transformed.data),
-                    schema: plan.schema,
-                    logical_optimization_succeeded: plan.logical_optimization_succeeded,
-                })
-            }
-            x => {
-                transform(
-                    x,
-                    self.time_range.start.naive_utc(),
-                    self.time_range.end.naive_utc(),
-                    time_partition,
-                )
-                .data
-            }
-        }
+        let transformed = transform(
+            explain.plan.as_ref().clone(),
+            self.time_range.start.naive_utc(),
+            self.time_range.end.naive_utc(),
+            time_partition,
+        );
+        explain.stringified_plans = vec![transformed
+            .data
+            .to_stringified(PlanType::InitialLogicalPlan)];
+        explain.plan = Arc::new(transformed.data);
+
+        LogicalPlan::Explain(explain)
     }
 
-    pub fn first_table_name(&self) -> Option<String> {
-        let mut visitor = TableScanVisitor::default();
-        let _ = self.raw_logical_plan.visit(&mut visitor);
-        visitor.into_inner().pop()
+    // name of the main/first stream in the query
+    pub fn first_stream_name(&self) -> Option<&String> {
+        self.stream_names.first()
     }
 
     /// Evaluates to Some("count(*)") | Some("column_name") if the logical plan is a Projection: SELECT COUNT(*) | SELECT COUNT(*) as column_name
     pub fn is_logical_plan_count_without_filters(&self) -> Option<&String> {
         // Check if the raw logical plan is a Projection: SELECT
-        let LogicalPlan::Projection(Projection { input, expr, .. }) = &self.raw_logical_plan else {
+        let LogicalPlan::Projection(Projection { input, expr, .. }) = &self.plan else {
             return None;
         };
         // Check if the input of the Projection is an Aggregate: COUNT(*)
@@ -422,6 +414,7 @@ impl TreeNodeVisitor<'_> for TableScanVisitor {
     }
 }
 
+// transform the plan to apply time filters
 pub async fn get_manifest_list(
     stream_name: &str,
     time_range: &TimeRange,
@@ -492,80 +485,52 @@ fn transform(
     plan: LogicalPlan,
     start_time: NaiveDateTime,
     end_time: NaiveDateTime,
-    time_partition: &Option<String>,
+    time_partition: Option<&String>,
 ) -> Transformed<LogicalPlan> {
-    plan.transform(&|plan| match plan {
-        LogicalPlan::TableScan(table) => {
-            let mut new_filters = vec![];
-            if !table_contains_any_time_filters(&table, time_partition) {
-                let mut _start_time_filter: Expr;
-                let mut _end_time_filter: Expr;
-                match time_partition {
-                    Some(time_partition) => {
-                        _start_time_filter =
-                            PartialTimeFilter::Low(std::ops::Bound::Included(start_time))
-                                .binary_expr(Expr::Column(Column::new(
-                                    Some(table.table_name.to_owned()),
-                                    time_partition.clone(),
-                                )));
-                        _end_time_filter =
-                            PartialTimeFilter::High(std::ops::Bound::Excluded(end_time))
-                                .binary_expr(Expr::Column(Column::new(
-                                    Some(table.table_name.to_owned()),
-                                    time_partition,
-                                )));
-                    }
-                    None => {
-                        _start_time_filter =
-                            PartialTimeFilter::Low(std::ops::Bound::Included(start_time))
-                                .binary_expr(Expr::Column(Column::new(
-                                    Some(table.table_name.to_owned()),
-                                    event::DEFAULT_TIMESTAMP_KEY,
-                                )));
-                        _end_time_filter =
-                            PartialTimeFilter::High(std::ops::Bound::Excluded(end_time))
-                                .binary_expr(Expr::Column(Column::new(
-                                    Some(table.table_name.to_owned()),
-                                    event::DEFAULT_TIMESTAMP_KEY,
-                                )));
-                    }
-                }
+    plan.transform(|plan| {
+        let LogicalPlan::TableScan(table) = &plan else {
+            return Ok(Transformed::no(plan));
+        };
 
-                new_filters.push(_start_time_filter);
-                new_filters.push(_end_time_filter);
-            }
-            let new_filter = new_filters.into_iter().reduce(and);
-            if let Some(new_filter) = new_filter {
-                let filter =
-                    Filter::try_new(new_filter, Arc::new(LogicalPlan::TableScan(table))).unwrap();
-                Ok(Transformed::yes(LogicalPlan::Filter(filter)))
-            } else {
-                Ok(Transformed::no(LogicalPlan::TableScan(table)))
-            }
+        // Early return if filters already exist
+        if query_can_be_filtered_on_stream_time_partition(table, time_partition) {
+            return Ok(Transformed::no(plan));
         }
-        x => Ok(Transformed::no(x)),
+
+        let stream = table.table_name.clone();
+        let time_partition = time_partition.map_or(event::DEFAULT_TIMESTAMP_KEY, |x| x.as_str());
+        let column_expr = Expr::Column(Column::new(Some(stream), time_partition));
+
+        // Reconstruct plan with start and end time filters
+        let low_filter =
+            PartialTimeFilter::Low(Bound::Included(start_time)).binary_expr(column_expr.clone());
+        let high_filter =
+            PartialTimeFilter::High(Bound::Excluded(end_time)).binary_expr(column_expr);
+        let filter = Filter::try_new(and(low_filter, high_filter), Arc::new(plan))?;
+
+        Ok(Transformed::yes(LogicalPlan::Filter(filter)))
     })
     .expect("transform only transforms the tablescan")
 }
 
-fn table_contains_any_time_filters(
+// check if the query contains the streams's time partition as filter
+fn query_can_be_filtered_on_stream_time_partition(
     table: &datafusion::logical_expr::TableScan,
-    time_partition: &Option<String>,
+    time_partition: Option<&String>,
 ) -> bool {
     table
         .filters
         .iter()
-        .filter_map(|x| {
-            if let Expr::BinaryExpr(binexpr) = x {
-                Some(binexpr)
-            } else {
-                None
-            }
+        .filter_map(|x| match x {
+            Expr::BinaryExpr(binexpr) => Some(binexpr),
+            _ => None,
         })
         .any(|expr| {
-            matches!(&*expr.left, Expr::Column(Column { name, .. })
-            if ((time_partition.is_some() && name == time_partition.as_ref().unwrap()) ||
-            (!time_partition.is_some() && name == event::DEFAULT_TIMESTAMP_KEY)))
+            matches!(
+                &*expr.left,
+                Expr::Column(Column { name, .. })
+                    if time_partition.map_or(event::DEFAULT_TIMESTAMP_KEY, |n| n.as_str()) ==  name
+            )
         })
 }
 
@@ -625,6 +590,8 @@ pub mod error {
         ObjectStorage(#[from] ObjectStorageError),
         #[error("Query Execution failed due to error in datafusion: {0}")]
         Datafusion(#[from] DataFusionError),
+        #[error("Query Execution failed due to missing stream name in query")]
+        NoStream,
         #[error("{0}")]
         StreamNotFound(#[from] StreamNotFound),
     }

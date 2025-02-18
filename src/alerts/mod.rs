@@ -37,7 +37,8 @@ pub mod alerts_utils;
 pub mod target;
 
 use crate::parseable::PARSEABLE;
-use crate::query::{TableScanVisitor, QUERY_SESSION};
+use crate::query::error::ExecuteError;
+use crate::query::{Query, TableScanVisitor, QUERY_SESSION};
 use crate::rbac::map::SessionKey;
 use crate::storage;
 use crate::storage::ObjectStorageError;
@@ -479,13 +480,14 @@ impl AlertConfig {
         self.validate_configs()?;
 
         let session_state = QUERY_SESSION.state();
-        let raw_logical_plan = session_state.create_logical_plan(&self.query).await?;
+        let plan = session_state.create_logical_plan(&self.query).await?;
 
         // create a visitor to extract the table names present in query
         let mut visitor = TableScanVisitor::default();
-        let _ = raw_logical_plan.visit(&mut visitor);
+        let _ = plan.visit(&mut visitor);
+        let stream_names = visitor.into_inner();
 
-        let table = visitor.into_inner().first().unwrap().to_owned();
+        let table = stream_names.first().unwrap().to_owned();
 
         let lowercase = self.query.split(&table).collect_vec()[0].to_lowercase();
 
@@ -505,27 +507,21 @@ impl AlertConfig {
         let time_range = TimeRange::parse_human_time("1m", "now")
             .map_err(|err| AlertError::CustomError(err.to_string()))?;
 
-        let query = crate::query::Query {
-            raw_logical_plan,
+        let query = Query {
+            plan,
             time_range,
             filter_tag: None,
+            stream_names,
         };
 
         // for now proceed in a similar fashion as we do in query
         // TODO: in case of multiple table query does the selection of time partition make a difference? (especially when the tables don't have overlapping data)
-        let stream_name = if let Some(stream_name) = query.first_table_name() {
-            stream_name
-        } else {
-            return Err(AlertError::CustomError(format!(
-                "Table name not found in query- {}",
-                self.query
-            )));
-        };
-
-        let base_df = query
-            .get_dataframe(stream_name)
-            .await
-            .map_err(|err| AlertError::CustomError(err.to_string()))?;
+        let base_df = query.get_dataframe().await.map_err(|err| match err {
+            ExecuteError::NoStream => {
+                AlertError::CustomError(format!("Table name not found in query- {}", self.query))
+            }
+            err => AlertError::CustomError(err.to_string()),
+        })?;
 
         // now that we have base_df, verify that it has
         // columns from aggregate config
