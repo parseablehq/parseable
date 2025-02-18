@@ -103,9 +103,10 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
         let users_dir = RelativePathBuf::from_iter([USERS_ROOT_DIR]);
         for user in self.list_dirs_relative(&users_dir).await? {
-            let stream_dir = RelativePathBuf::from_iter([USERS_ROOT_DIR, &user]);
+            let stream_dir = RelativePathBuf::from_iter([USERS_ROOT_DIR, &user, "filters"]);
             for stream in self.list_dirs_relative(&stream_dir).await? {
-                let filters_path = RelativePathBuf::from(&stream);
+                let filters_path =
+                    RelativePathBuf::from_iter([USERS_ROOT_DIR, &user, "filters", &stream]);
                 let filter_bytes = self
                     .get_objects(
                         Some(&filters_path),
@@ -118,6 +119,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                     .extend(filter_bytes);
             }
         }
+
         Ok(filters)
     }
 
@@ -128,9 +130,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
         let users_dir = RelativePathBuf::from_iter([USERS_ROOT_DIR]);
         for user in self.list_dirs_relative(&users_dir).await? {
-            let user_dashboard_path =
-                object_store::path::Path::from(format!("{USERS_ROOT_DIR}/{user}/dashboards"));
-            let dashboards_path = RelativePathBuf::from(&user_dashboard_path);
+            let dashboards_path = RelativePathBuf::from_iter([USERS_ROOT_DIR, &user, "dashboards"]);
             let dashboard_bytes = self
                 .get_objects(
                     Some(&dashboards_path),
@@ -143,6 +143,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 .or_default()
                 .extend(dashboard_bytes);
         }
+
         Ok(dashboards)
     }
 
@@ -155,9 +156,8 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
         let users_dir = RelativePathBuf::from_iter([USERS_ROOT_DIR]);
         for user in self.list_dirs_relative(&users_dir).await? {
-            let user_correlation_path =
-                object_store::path::Path::from(format!("{USERS_ROOT_DIR}/{user}/correlations",));
-            let correlations_path = RelativePathBuf::from(&user_correlation_path);
+            let correlations_path =
+                RelativePathBuf::from_iter([USERS_ROOT_DIR, &user, "correlations"]);
             let correlation_bytes = self
                 .get_objects(
                     Some(&correlations_path),
@@ -170,6 +170,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 .or_default()
                 .extend(correlation_bytes);
         }
+
         Ok(correlations)
     }
 
