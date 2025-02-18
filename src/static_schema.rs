@@ -33,13 +33,13 @@ pub enum StaticSchemaError {
     #[error(
         "custom partition field {0} does not exist in the schema for the static schema logstream"
     )]
-    MissingCustomPartition(String),
+    MissingCustom(String),
     #[error(
         "time partition field {0} does not exist in the schema for the static schema logstream"
     )]
-    MissingTimePartition(String),
+    MissingTime(String),
     #[error("field {DEFAULT_TIMESTAMP_KEY} is a reserved field")]
-    MissingDefaultTimePartition,
+    DefaultTime,
 }
 
 impl StaticSchema {
@@ -54,9 +54,7 @@ impl StaticSchema {
         if let Some(custom_partition) = custom_partition {
             for partition in custom_partition.split(',') {
                 if !self.fields.iter().any(|field| field.name == partition) {
-                    return Err(StaticSchemaError::MissingCustomPartition(
-                        partition.to_owned(),
-                    ));
+                    return Err(StaticSchemaError::MissingCustom(partition.to_owned()));
                 }
             }
         }
@@ -101,9 +99,7 @@ impl StaticSchema {
         }
 
         if !time_partition.is_empty() && !time_partition_exists {
-            return Err(StaticSchemaError::MissingTimePartition(
-                time_partition.to_owned(),
-            ));
+            return Err(StaticSchemaError::MissingTime(time_partition.to_owned()));
         }
 
         let mut schema: Vec<Arc<Field>> = Vec::new();
@@ -113,7 +109,7 @@ impl StaticSchema {
         }
 
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
-            return Err(StaticSchemaError::MissingDefaultTimePartition);
+            return Err(StaticSchemaError::DefaultTime);
         };
 
         // add the p_timestamp field to the event schema to the 0th index
