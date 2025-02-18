@@ -25,10 +25,8 @@ use crate::event::DEFAULT_TIMESTAMP_KEY;
 
 const DEFAULT_NULLABLE: bool = true;
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct StaticSchema {
-    fields: Vec<SchemaFields>,
-}
+type FieldName = String;
+type FieldType = String;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StaticSchemaError {
@@ -42,6 +40,17 @@ pub enum StaticSchemaError {
     MissingTime(String),
     #[error("field {DEFAULT_TIMESTAMP_KEY:?} is a reserved field")]
     DefaultTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct SchemaFields {
+    name: FieldName,
+    data_type: FieldType,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StaticSchema {
+    fields: Vec<SchemaFields>,
 }
 
 impl StaticSchema {
@@ -107,10 +116,4 @@ impl StaticSchema {
         // prepare the record batch and new fields to be added
         Ok(Arc::new(Schema::new(schema)))
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct SchemaFields {
-    name: String,
-    data_type: String,
 }
