@@ -21,7 +21,7 @@ use std::{collections::HashMap, sync::Arc};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use serde::{Deserialize, Serialize};
 
-use crate::{event::DEFAULT_TIMESTAMP_KEY, utils::arrow::get_field};
+use crate::event::DEFAULT_TIMESTAMP_KEY;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StaticSchema {
@@ -59,6 +59,10 @@ impl StaticSchema {
             }
         }
         for mut field in self.fields {
+            if field.name == DEFAULT_TIMESTAMP_KEY {
+                return Err(StaticSchemaError::DefaultTime);
+            }
+
             if !time_partition.is_empty() && field.name == time_partition {
                 time_partition_exists = true;
                 field.data_type = "datetime".to_string();
@@ -107,10 +111,6 @@ impl StaticSchema {
             let field = Field::new(field.name.clone(), field.data_type.clone(), field.nullable);
             schema.push(Arc::new(field));
         }
-
-        if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
-            return Err(StaticSchemaError::DefaultTime);
-        };
 
         // add the p_timestamp field to the event schema to the 0th index
         schema.insert(
