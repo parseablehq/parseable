@@ -38,7 +38,7 @@ pub enum StaticSchemaError {
         "time partition field {0} does not exist in the schema for the static schema logstream"
     )]
     MissingTime(String),
-    #[error("field {DEFAULT_TIMESTAMP_KEY} is a reserved field")]
+    #[error("field {DEFAULT_TIMESTAMP_KEY:?} is a reserved field")]
     DefaultTime,
 }
 
