@@ -23,7 +23,7 @@ use http::StatusCode;
 use itertools::Itertools;
 use serde::Serialize;
 
-use crate::{alerts::{get_alerts_info, AlertsInfo, ALERTS}, correlation::CORRELATIONS, handlers::http::logstream::get_stats_date, parseable::PARSEABLE, rbac::{map::SessionKey, role::Action, Users}, stats::Stats, users::{dashboards::DASHBOARDS, filters::FILTERS}};
+use crate::{alerts::{get_alerts_info, AlertError, AlertsInfo, ALERTS}, correlation::{CorrelationError, CORRELATIONS}, handlers::http::logstream::{error::StreamError, get_stats_date}, parseable::PARSEABLE, rbac::{map::SessionKey, role::Action, Users}, stats::Stats, users::{dashboards::DASHBOARDS, filters::FILTERS}};
 
 #[derive(Debug, Serialize, Default)]
 struct StreamInfo {
@@ -83,8 +83,7 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Ho
     // do we need to move alerts into the PARSEABLE struct?
     let alert_titles = ALERTS
         .list_alerts_for_user(key.clone())
-        .await
-        .map_err(|err| HomeError::Anyhow(anyhow::Error::msg(err.to_string())))?
+        .await?
         .iter()
         .map(|alert| TitleAndId {
             title: alert.title.clone(),
@@ -94,8 +93,7 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Ho
 
     let correlation_titles = CORRELATIONS
         .list_correlations(key)
-        .await
-        .map_err(|err| HomeError::Anyhow(anyhow::Error::msg(err.to_string())))?
+        .await?
         .iter()
         .map(|corr| TitleAndId {
             title: corr.title.clone(),
@@ -123,8 +121,7 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Ho
         })
         .collect_vec();
     
-    let alerts_info = get_alerts_info().await
-        .map_err(|err| HomeError::Anyhow(anyhow::Error::msg(err.to_string())))?;
+    let alerts_info = get_alerts_info().await?;
 
     let dates = (0..7)
         .map(|i| Local::now().checked_sub_signed(chrono::Duration::days(i)).unwrap())
@@ -141,8 +138,7 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Ho
 
         for stream in stream_titles.iter() {
             let stats = get_stats_date(stream, &date)
-                .await
-                .map_err(|err| HomeError::Anyhow(anyhow::Error::msg(err.to_string())))?;
+                .await?;
 
             details.events += stats.events;
             details.ingestion_size += stats.ingestion;
@@ -172,12 +168,21 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Ho
 pub enum HomeError {
     #[error("Error: {0}")]
     Anyhow(#[from] anyhow::Error),
+    #[error("AlertError: {0}")]
+    AlertError(#[from] AlertError),
+    #[error("CorrelationError: {0}")]
+    CorrelationError(#[from] CorrelationError),
+    #[error("StreamError: {0}")]
+    StreamError(#[from] StreamError)
 }
 
 impl actix_web::ResponseError for HomeError {
     fn status_code(&self) -> http::StatusCode {
         match self {
             HomeError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            HomeError::AlertError(e) => e.status_code(),
+            HomeError::CorrelationError(e) => e.status_code(),
+            HomeError::StreamError(e) => e.status_code()
         }
     }
 
