@@ -32,6 +32,9 @@ use arrow_schema::{ArrowError, Field, Fields, Schema};
 use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
+use opentelemetry_proto::tonic::{
+    logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
+};
 use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
@@ -55,6 +58,7 @@ use crate::{
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
+    otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
     storage::{
         object_storage::to_bytes, retention::Retention, StreamType, OBJECT_STORE_DATA_GRANULARITY,
     },
@@ -119,14 +123,32 @@ impl Stream {
     ) -> Result<(), PostError> {
         match log_source {
             LogSource::Kinesis => {
+                //custom flattening required for Amazon Kinesis
                 let message: Message = serde_json::from_value(json)?;
-                let json = flatten_kinesis_logs(message);
-                for record in json {
+                for record in flatten_kinesis_logs(message) {
                     self.push_logs(record, &LogSource::default()).await?;
                 }
             }
-            LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
-                return Err(PostError::OtelNotSupported);
+            LogSource::OtelLogs => {
+                //custom flattening required for otel logs
+                let logs: LogsData = serde_json::from_value(json)?;
+                for record in flatten_otel_logs(&logs) {
+                    self.push_logs(record, log_source).await?;
+                }
+            }
+            LogSource::OtelTraces => {
+                //custom flattening required for otel traces
+                let traces: TracesData = serde_json::from_value(json)?;
+                for record in flatten_otel_traces(&traces) {
+                    self.push_logs(record, log_source).await?;
+                }
+            }
+            LogSource::OtelMetrics => {
+                //custom flattening required for otel metrics
+                let metrics: MetricsData = serde_json::from_value(json)?;
+                for record in flatten_otel_metrics(metrics) {
+                    self.push_logs(record, log_source).await?;
+                }
             }
             _ => {
                 self.push_logs(json, log_source).await?;

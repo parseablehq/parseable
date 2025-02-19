@@ -24,9 +24,6 @@ use arrow_array::RecordBatch;
 use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
-use opentelemetry_proto::tonic::logs::v1::LogsData;
-use opentelemetry_proto::tonic::metrics::v1::MetricsData;
-use opentelemetry_proto::tonic::trace::v1::TracesData;
 use serde_json::Value;
 
 use crate::event;
@@ -35,9 +32,6 @@ use crate::event::format::{json, EventFormat, LogSource};
 use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
 use crate::metadata::SchemaVersion;
 use crate::option::Mode;
-use crate::otel::logs::flatten_otel_logs;
-use crate::otel::metrics::flatten_otel_metrics;
-use crate::otel::traces::flatten_otel_traces;
 use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
@@ -69,6 +63,14 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
         .get(LOG_SOURCE_KEY)
         .and_then(|h| h.to_str().ok())
         .map_or(LogSource::default(), LogSource::from);
+
+    if matches!(
+        log_source,
+        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces
+    ) {
+        return Err(PostError::OtelNotSupported);
+    }
+
     PARSEABLE
         .get_stream(&stream_name)?
         .flatten_and_push_logs(json, &log_source)
@@ -125,13 +127,11 @@ pub async fn handle_otel_logs_ingestion(
     PARSEABLE
         .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelLogs)
         .await?;
-    let stream = PARSEABLE.get_stream(&stream_name)?;
 
-    //custom flattening required for otel logs
-    let logs: LogsData = serde_json::from_value(json)?;
-    for record in flatten_otel_logs(&logs) {
-        stream.push_logs(record, &log_source).await?;
-    }
+    PARSEABLE
+        .get_stream(&stream_name)?
+        .flatten_and_push_logs(json, &log_source)
+        .await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -161,13 +161,11 @@ pub async fn handle_otel_metrics_ingestion(
             LogSource::OtelMetrics,
         )
         .await?;
-    let stream = PARSEABLE.get_stream(&stream_name)?;
 
-    //custom flattening required for otel metrics
-    let metrics: MetricsData = serde_json::from_value(json)?;
-    for record in flatten_otel_metrics(metrics) {
-        stream.push_logs(record, &log_source).await?;
-    }
+    PARSEABLE
+        .get_stream(&stream_name)?
+        .flatten_and_push_logs(json, &log_source)
+        .await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -194,13 +192,11 @@ pub async fn handle_otel_traces_ingestion(
     PARSEABLE
         .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelTraces)
         .await?;
-    let stream = PARSEABLE.get_stream(&stream_name)?;
 
-    //custom flattening required for otel traces
-    let traces: TracesData = serde_json::from_value(json)?;
-    for record in flatten_otel_traces(&traces) {
-        stream.push_logs(record, &log_source).await?;
-    }
+    PARSEABLE
+        .get_stream(&stream_name)?
+        .flatten_and_push_logs(json, &log_source)
+        .await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -241,6 +237,14 @@ pub async fn post_event(
         .get(LOG_SOURCE_KEY)
         .and_then(|h| h.to_str().ok())
         .map_or(LogSource::default(), LogSource::from);
+
+    if matches!(
+        log_source,
+        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces
+    ) {
+        return Err(PostError::OtelNotSupported);
+    }
+
     PARSEABLE
         .get_stream(&stream_name)?
         .flatten_and_push_logs(json, &log_source)
