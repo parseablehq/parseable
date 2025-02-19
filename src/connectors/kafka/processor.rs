@@ -81,8 +81,7 @@ impl ParseableSinkProcessor {
             custom_partition_values: HashMap::new(),
             stream_type: StreamType::UserDefined,
         }
-        .process(&stream)
-        .await?;
+        .process(&stream)?;
 
         Ok(())
     }

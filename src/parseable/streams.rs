@@ -216,9 +216,9 @@ impl Stream {
                 custom_partition_values,
                 stream_type: StreamType::UserDefined,
             }
-            .process(self)
-            .await?;
+            .process(self)?;
         }
+
         Ok(())
     }
 

@@ -46,7 +46,7 @@ pub struct Event {
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
-    pub async fn process(self, stream: &Stream) -> Result<(), EventError> {
+    pub fn process(self, stream: &Stream) -> Result<(), EventError> {
         let mut key = get_schema_key(&self.rb.schema().fields);
         if self.time_partition.is_some() {
             let parsed_timestamp_to_min = self.parsed_timestamp.format("%Y%m%dT%H%M").to_string();
