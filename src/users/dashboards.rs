@@ -18,7 +18,9 @@
 
 use std::sync::RwLock;
 
+use chrono::Utc;
 use once_cell::sync::Lazy;
+use rand::distributions::DistString;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -32,10 +34,22 @@ use super::TimeFilter;
 pub static DASHBOARDS: Lazy<Dashboards> = Lazy::new(Dashboards::default);
 pub const CURRENT_DASHBOARD_VERSION: &str = "v3";
 
+fn gen_tile_id() -> String {
+    get_hash(
+        format!(
+            "{}{}",
+            rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 8),
+            Utc::now().timestamp_micros()
+        )
+        .as_str(),
+    )
+}
+
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Tiles {
     name: String,
-    pub tile_id: Option<String>,
+    #[serde(default = "gen_tile_id")]
+    pub tile_id: String,
     description: String,
     query: String,
     order: Option<u64>,
@@ -95,12 +109,22 @@ pub struct TickConfig {
     unit: String,
 }
 
+fn default_version() -> String {
+    CURRENT_DASHBOARD_VERSION.to_owned()
+}
+
+fn gen_dashboard_id() -> String {
+    get_hash(Utc::now().timestamp_micros().to_string().as_str())
+}
+
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Dashboard {
-    pub version: Option<String>,
+    #[serde(default = "default_version")]
+    pub version: String,
     name: String,
     description: String,
-    pub dashboard_id: Option<String>,
+    #[serde(default = "gen_dashboard_id")]
+    pub dashboard_id: String,
     pub user_id: Option<String>,
     pub time_filter: Option<TimeFilter>,
     refresh_interval: u64,
@@ -184,19 +208,18 @@ impl Dashboards {
         s.push(dashboard.clone());
     }
 
-    pub fn delete_dashboard(&self, dashboard_id: &str) {
+    pub fn delete(&self, dashboard_id: &str) {
         let mut s = self.0.write().expect(LOCK_EXPECT);
-        s.retain(|d| d.dashboard_id != Some(dashboard_id.to_string()));
+        s.retain(|d| d.dashboard_id != dashboard_id);
     }
 
-    pub fn get_dashboard(&self, dashboard_id: &str, user_id: &str) -> Option<Dashboard> {
+    pub fn get(&self, dashboard_id: &str, user_id: &str) -> Option<Dashboard> {
         self.0
             .read()
             .expect(LOCK_EXPECT)
             .iter()
             .find(|d| {
-                d.dashboard_id == Some(dashboard_id.to_string())
-                    && d.user_id == Some(user_id.to_string())
+                d.dashboard_id == dashboard_id && d.user_id.as_ref().is_some_and(|id| id == user_id)
             })
             .cloned()
     }
