@@ -724,8 +724,8 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
             let stream = PARSEABLE.get_or_create_stream(&stream_name);
             let custom_partition = stream.get_custom_partition();
-            for file in stream.parquet_files() {
-                let filename = file
+            for path in stream.parquet_files() {
+                let filename = path
                     .file_name()
                     .expect("only parquet files are returned by iterator")
                     .to_str()
@@ -733,7 +733,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
                 let mut file_date_part = filename.split('.').collect::<Vec<&str>>()[0];
                 file_date_part = file_date_part.split('=').collect::<Vec<&str>>()[1];
-                let compressed_size = file.metadata().map_or(0, |meta| meta.len());
+                let compressed_size = path.metadata().map_or(0, |meta| meta.len());
                 STORAGE_SIZE
                     .with_label_values(&["data", &stream_name, "parquet"])
                     .add(compressed_size as i64);
@@ -757,8 +757,8 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 let stream_relative_path = format!("{stream_name}/{file_suffix}");
 
                 // Try uploading the file, handle potential errors without breaking the loop
-                if let Err(e) = self.upload_file(&stream_relative_path, &file).await {
-                    error!("Failed to upload file {}: {:?}", filename, e);
+                if let Err(e) = self.upload_file(&stream_relative_path, &path).await {
+                    error!("Failed to upload file {filename:?}: {e}");
                     continue; // Skip to the next file
                 }
 
@@ -767,17 +767,21 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                     .to_string();
                 let store = PARSEABLE.storage().get_object_store();
                 let manifest =
-                    catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
+                    catalog::create_from_parquet_file(absolute_path.clone(), &path).unwrap();
                 catalog::update_snapshot(store, &stream_name, manifest).await?;
 
-                let _ = remove_file(file);
+                if let Err(e) = remove_file(path) {
+                    warn!("Failed to remove staged file: {e}");
+                }
             }
 
             for path in stream.schema_files() {
                 let file = File::open(&path)?;
                 let schema: Schema = serde_json::from_reader(file)?;
                 commit_schema_to_storage(&stream_name, schema).await?;
-                let _ = remove_file(path);
+                if let Err(e) = remove_file(path) {
+                    warn!("Failed to remove staged file: {e}");
+                }
             }
         }
 
