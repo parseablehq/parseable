@@ -21,31 +21,33 @@ pub mod metadata_migration;
 mod schema_migration;
 mod stream_metadata_migration;
 
-use std::{fs::OpenOptions, sync::Arc};
+use std::{collections::HashMap, fs::OpenOptions, sync::Arc};
 
-use crate::{
-    metadata::load_stream_metadata_on_server_start,
-    option::{Config, Mode, CONFIG},
-    storage::{
-        object_storage::{parseable_json_path, schema_path, stream_json_path},
-        ObjectStorage, ObjectStorageError, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
-        STREAM_ROOT_DIRECTORY,
-    },
-};
 use arrow_schema::Schema;
 use bytes::Bytes;
 use relative_path::RelativePathBuf;
 use serde::Serialize;
 use serde_json::Value;
-use tracing::error;
+
+use crate::{
+    metadata::{load_daily_metrics, update_data_type_time_partition, LogStreamMetadata},
+    metrics::fetch_stats_from_storage,
+    option::Mode,
+    parseable::{Parseable, PARSEABLE},
+    storage::{
+        object_storage::{parseable_json_path, schema_path, stream_json_path},
+        ObjectStorage, ObjectStorageError, ObjectStoreFormat, PARSEABLE_METADATA_FILE_NAME,
+        PARSEABLE_ROOT_DIRECTORY, STREAM_ROOT_DIRECTORY,
+    },
+};
 
 /// Migrate the metdata from v1 or v2 to v3
 /// This is a one time migration
 pub async fn run_metadata_migration(
-    config: &Config,
+    config: &Parseable,
     parseable_json: &Option<Bytes>,
 ) -> anyhow::Result<()> {
-    let object_store = config.storage().get_object_store();
+    let object_store = config.storage.get_object_store();
     let mut storage_metadata: Option<Value> = None;
     if parseable_json.is_some() {
         storage_metadata = serde_json::from_slice(parseable_json.as_ref().unwrap())
@@ -130,16 +132,25 @@ pub async fn run_metadata_migration(
 }
 
 /// run the migration for all streams
-pub async fn run_migration(config: &Config) -> anyhow::Result<()> {
-    let storage = config.storage().get_object_store();
+pub async fn run_migration(config: &Parseable) -> anyhow::Result<()> {
+    let storage = config.storage.get_object_store();
     for stream_name in storage.list_streams().await? {
-        migration_stream(&stream_name, &*storage).await?;
+        let Some(metadata) = migration_stream(&stream_name, &*storage).await? else {
+            continue;
+        };
+        config
+            .get_or_create_stream(&stream_name)
+            .set_metadata(metadata)
+            .await;
     }
 
     Ok(())
 }
 
-async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::Result<()> {
+async fn migration_stream(
+    stream: &str,
+    storage: &dyn ObjectStorage,
+) -> anyhow::Result<Option<LogStreamMetadata>> {
     let mut arrow_schema: Schema = Schema::empty();
 
     //check if schema exists for the node
@@ -186,8 +197,8 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
 
     let mut stream_meta_found = true;
     if stream_metadata.is_empty() {
-        if CONFIG.options.mode != Mode::Ingest {
-            return Ok(());
+        if PARSEABLE.options.mode != Mode::Ingest {
+            return Ok(None);
         }
         stream_meta_found = false;
     }
@@ -251,15 +262,59 @@ async fn migration_stream(stream: &str, storage: &dyn ObjectStorage) -> anyhow::
         arrow_schema = serde_json::from_slice(&schema)?;
     }
 
-    if let Err(err) =
-        load_stream_metadata_on_server_start(storage, stream, arrow_schema, stream_metadata_value)
-            .await
-    {
-        error!("could not populate local metadata. {:?}", err);
-        return Err(err.into());
-    }
+    // Setup logstream meta on startup
+    let ObjectStoreFormat {
+        schema_version,
+        created_at,
+        first_event_at,
+        retention,
+        snapshot,
+        stats,
+        time_partition,
+        time_partition_limit,
+        custom_partition,
+        static_schema_flag,
+        hot_tier_enabled,
+        stream_type,
+        log_source,
+        ..
+    } = serde_json::from_value(stream_metadata_value).unwrap_or_default();
+    let storage = PARSEABLE.storage.get_object_store();
 
-    Ok(())
+    // update the schema and store it back
+    // NOTE: write could be saved, but the cost is cheap, given the low possibilities of being called multiple times
+    update_data_type_time_partition(&mut arrow_schema, time_partition.as_ref()).await?;
+    storage.put_schema(stream, &arrow_schema).await?;
+    //load stats from storage
+    fetch_stats_from_storage(stream, stats).await;
+    load_daily_metrics(&snapshot.manifest_list, stream);
+
+    let schema = PARSEABLE
+        .get_or_create_stream(stream)
+        .updated_schema(arrow_schema);
+    let schema = HashMap::from_iter(
+        schema
+            .fields
+            .iter()
+            .map(|v| (v.name().to_owned(), v.clone())),
+    );
+
+    let metadata = LogStreamMetadata {
+        schema_version,
+        schema,
+        retention,
+        created_at,
+        first_event_at,
+        time_partition,
+        time_partition_limit: time_partition_limit.and_then(|limit| limit.parse().ok()),
+        custom_partition,
+        static_schema_flag,
+        hot_tier_enabled,
+        stream_type,
+        log_source,
+    };
+
+    Ok(Some(metadata))
 }
 
 #[inline(always)]
@@ -269,8 +324,9 @@ pub fn to_bytes(any: &(impl ?Sized + Serialize)) -> Bytes {
         .expect("serialize cannot fail")
 }
 
-pub fn get_staging_metadata(config: &Config) -> anyhow::Result<Option<serde_json::Value>> {
-    let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME).to_path(config.staging_dir());
+pub fn get_staging_metadata(config: &Parseable) -> anyhow::Result<Option<serde_json::Value>> {
+    let path =
+        RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME).to_path(config.options.staging_dir());
     let bytes = match std::fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) => match err.kind() {
@@ -292,8 +348,11 @@ pub async fn put_remote_metadata(
     Ok(storage.put_object(&path, metadata).await?)
 }
 
-pub fn put_staging_metadata(config: &Config, metadata: &serde_json::Value) -> anyhow::Result<()> {
-    let path = config.staging_dir().join(".parseable.json");
+pub fn put_staging_metadata(
+    config: &Parseable,
+    metadata: &serde_json::Value,
+) -> anyhow::Result<()> {
+    let path = config.options.staging_dir().join(".parseable.json");
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)
@@ -303,8 +362,8 @@ pub fn put_staging_metadata(config: &Config, metadata: &serde_json::Value) -> an
     Ok(())
 }
 
-pub async fn run_file_migration(config: &Config) -> anyhow::Result<()> {
-    let object_store = config.storage().get_object_store();
+pub async fn run_file_migration(config: &Parseable) -> anyhow::Result<()> {
+    let object_store = config.storage.get_object_store();
 
     let old_meta_file_path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME);
 

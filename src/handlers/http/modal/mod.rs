@@ -16,6 +16,31 @@
  *
  */
 
+use std::{path::Path, sync::Arc};
+
+use actix_web::{middleware::from_fn, web::ServiceConfig, App, HttpServer};
+use actix_web_prometheus::PrometheusMetrics;
+use async_trait::async_trait;
+use base64::{prelude::BASE64_STANDARD, Engine};
+use bytes::Bytes;
+use openid::Discovered;
+use relative_path::RelativePathBuf;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
+use ssl_acceptor::get_ssl_acceptor;
+use tokio::sync::oneshot;
+use tracing::{error, info, warn};
+
+use crate::{
+    cli::Options,
+    oidc::Claims,
+    parseable::PARSEABLE,
+    storage::{ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY},
+    utils::get_ingestor_id,
+};
+
+use super::{audit, cross_origin_config, health_check, API_BASE_PATH, API_VERSION};
+
 pub mod ingest;
 pub mod ingest_server;
 pub mod query;
@@ -24,33 +49,7 @@ pub mod server;
 pub mod ssl_acceptor;
 pub mod utils;
 
-use std::path::Path;
-use std::sync::Arc;
-
-use actix_web::middleware::from_fn;
-use actix_web::web::ServiceConfig;
-use actix_web::App;
-use actix_web::HttpServer;
-use actix_web_prometheus::PrometheusMetrics;
-use async_trait::async_trait;
-use base64::Engine;
-use bytes::Bytes;
-use openid::Discovered;
-use serde::Deserialize;
-use serde::Serialize;
-use ssl_acceptor::get_ssl_acceptor;
-use tokio::sync::oneshot;
-use tracing::{error, info, warn};
-
-use super::audit;
-use super::cross_origin_config;
-use super::API_BASE_PATH;
-use super::API_VERSION;
-use crate::handlers::http::health_check;
-use crate::oidc;
-use crate::option::CONFIG;
-
-pub type OpenIdClient = Arc<openid::Client<Discovered, oidc::Claims>>;
+pub type OpenIdClient = Arc<openid::Client<Discovered, Claims>>;
 
 // to be decided on what the Default version should be
 pub const DEFAULT_VERSION: &str = "v3";
@@ -97,9 +96,9 @@ pub trait ParseableServer {
 
         // get the ssl stuff
         let ssl = get_ssl_acceptor(
-            &CONFIG.options.tls_cert_path,
-            &CONFIG.options.tls_key_path,
-            &CONFIG.options.trusted_ca_certs_path,
+            &PARSEABLE.options.tls_cert_path,
+            &PARSEABLE.options.tls_key_path,
+            &PARSEABLE.options.trusted_ca_certs_path,
         )?;
 
         // fn that creates the app
@@ -122,10 +121,10 @@ pub trait ParseableServer {
         // Start the server with or without TLS
         let srv = if let Some(config) = ssl {
             http_server
-                .bind_rustls_0_22(&CONFIG.options.address, config)?
+                .bind_rustls_0_22(&PARSEABLE.options.address, config)?
                 .run()
         } else {
-            http_server.bind(&CONFIG.options.address)?.run()
+            http_server.bind(&PARSEABLE.options.address)?.run()
         };
 
         // Graceful shutdown handling
@@ -140,14 +139,14 @@ pub trait ParseableServer {
             // Perform S3 sync and wait for completion
             info!("Starting data sync to S3...");
 
-            if let Err(e) = CONFIG.storage().get_object_store().conversion(true).await {
+            if let Err(e) = PARSEABLE.streams.prepare_parquet(true) {
                 warn!("Failed to convert arrow files to parquet. {:?}", e);
             } else {
                 info!("Successfully converted arrow files to parquet.");
             }
 
-            if let Err(e) = CONFIG
-                .storage()
+            if let Err(e) = PARSEABLE
+                .storage
                 .get_object_store()
                 .upload_files_from_staging()
                 .await
@@ -179,7 +178,7 @@ pub trait ParseableServer {
     }
 }
 
-#[derive(Serialize, Debug, Deserialize, Default, Clone, Eq, PartialEq)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone, Eq, PartialEq)]
 pub struct IngestorMetadata {
     pub version: String,
     pub port: String,
@@ -191,34 +190,151 @@ pub struct IngestorMetadata {
 }
 
 impl IngestorMetadata {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         port: String,
         domain_name: String,
-        version: String,
         bucket_name: String,
         username: &str,
         password: &str,
         ingestor_id: String,
         flight_port: String,
     ) -> Self {
-        let token = base64::prelude::BASE64_STANDARD.encode(format!("{}:{}", username, password));
-
-        let token = format!("Basic {}", token);
+        let token = base64::prelude::BASE64_STANDARD.encode(format!("{username}:{password}"));
 
         Self {
             port,
             domain_name,
-            version,
+            version: DEFAULT_VERSION.to_string(),
             bucket_name,
-            token,
+            token: format!("Basic {token}"),
             ingestor_id,
             flight_port,
         }
     }
 
+    /// Capture metadata information by either loading it from staging or starting fresh
+    pub fn load(options: &Options, storage: &dyn ObjectStorageProvider) -> Arc<Self> {
+        // all the files should be in the staging directory root
+        let entries = options
+            .staging_dir()
+            .read_dir()
+            .expect("Couldn't read from file");
+        let url = options.get_url();
+        let port = url.port().unwrap_or(80).to_string();
+        let url = url.to_string();
+        let Options {
+            username, password, ..
+        } = options;
+        let staging_path = options.staging_dir();
+        let flight_port = options.flight_port.to_string();
+
+        for entry in entries {
+            // cause the staging directory will have only one file with ingestor in the name
+            // so the JSON Parse should not error unless the file is corrupted
+            let path = entry.expect("Should be a directory entry").path();
+            if !path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.contains("ingestor"))
+            {
+                continue;
+            }
+
+            // get the ingestor metadata from staging
+            let bytes = std::fs::read(path).expect("File should be present");
+            let mut meta =
+                Self::from_bytes(&bytes, options.flight_port).expect("Extracted ingestor metadata");
+
+            // compare url endpoint and port, update
+            if meta.domain_name != url {
+                info!(
+                    "Domain Name was Updated. Old: {} New: {}",
+                    meta.domain_name, url
+                );
+                meta.domain_name = url;
+            }
+
+            if meta.port != port {
+                info!("Port was Updated. Old: {} New: {}", meta.port, port);
+                meta.port = port;
+            }
+
+            let token = format!(
+                "Basic {}",
+                BASE64_STANDARD.encode(format!("{username}:{password}"))
+            );
+            if meta.token != token {
+                // TODO: Update the message to be more informative with username and password
+                warn!(
+                    "Credentials were Updated. Tokens updated; Old: {} New: {}",
+                    meta.token, token
+                );
+                meta.token = token;
+            }
+            meta.put_on_disk(staging_path)
+                .expect("Couldn't write to disk");
+
+            return Arc::new(meta);
+        }
+
+        let storage = storage.get_object_store();
+        let meta = Self::new(
+            port,
+            url,
+            storage.get_bucket_name(),
+            username,
+            password,
+            get_ingestor_id(),
+            flight_port,
+        );
+
+        meta.put_on_disk(staging_path)
+            .expect("Should Be valid Json");
+        Arc::new(meta)
+    }
+
     pub fn get_ingestor_id(&self) -> String {
         self.ingestor_id.clone()
+    }
+
+    #[inline(always)]
+    pub fn file_path(&self) -> RelativePathBuf {
+        RelativePathBuf::from_iter([
+            PARSEABLE_ROOT_DIRECTORY,
+            &format!("ingestor.{}.json", self.get_ingestor_id()),
+        ])
+    }
+
+    /// Updates json with `flight_port` field if not already present
+    fn from_bytes(bytes: &[u8], flight_port: u16) -> anyhow::Result<Self> {
+        let mut json: Map<String, Value> = serde_json::from_slice(bytes)?;
+        json.entry("flight_port")
+            .or_insert_with(|| Value::String(flight_port.to_string()));
+
+        Ok(serde_json::from_value(Value::Object(json))?)
+    }
+
+    pub async fn migrate(&self) -> anyhow::Result<Option<IngestorMetadata>> {
+        let imp = self.file_path();
+        let bytes = match PARSEABLE.storage.get_object_store().get_object(&imp).await {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return Ok(None);
+            }
+        };
+
+        let resource = Self::from_bytes(&bytes, PARSEABLE.options.flight_port)?;
+        let bytes = Bytes::from(serde_json::to_vec(&resource)?);
+
+        resource.put_on_disk(PARSEABLE.options.staging_dir())?;
+
+        PARSEABLE
+            .storage
+            .get_object_store()
+            .put_object(&imp, bytes)
+            .await?;
+
+        Ok(Some(resource))
     }
 
     /// Puts the ingestor info into the staging.
@@ -243,18 +359,17 @@ mod test {
     use bytes::Bytes;
     use rstest::rstest;
 
-    use super::{IngestorMetadata, DEFAULT_VERSION};
+    use super::IngestorMetadata;
 
     #[rstest]
     fn test_deserialize_resource() {
         let lhs: IngestorMetadata = IngestorMetadata::new(
             "8000".to_string(),
             "https://localhost:8000".to_string(),
-            DEFAULT_VERSION.to_string(),
             "somebucket".to_string(),
             "admin",
             "admin",
-            "ingestor_id".to_string(),
+            "ingestor_id".to_owned(),
             "8002".to_string(),
         );
 
@@ -264,15 +379,28 @@ mod test {
     }
 
     #[rstest]
+    fn test_from_bytes_adds_flight_port() {
+        let json = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","ingestor_id":"ingestor_id"}"#;
+        let meta = IngestorMetadata::from_bytes(json, 8002).unwrap();
+        assert_eq!(meta.flight_port, "8002");
+    }
+
+    #[rstest]
+    fn test_from_bytes_preserves_existing_flight_port() {
+        let json = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","ingestor_id":"ingestor_id","flight_port":"9000"}"#;
+        let meta = IngestorMetadata::from_bytes(json, 8002).unwrap();
+        assert_eq!(meta.flight_port, "9000");
+    }
+
+    #[rstest]
     fn test_serialize_resource() {
         let im = IngestorMetadata::new(
             "8000".to_string(),
             "https://localhost:8000".to_string(),
-            DEFAULT_VERSION.to_string(),
             "somebucket".to_string(),
             "admin",
             "admin",
-            "ingestor_id".to_string(),
+            "ingestor_id".to_owned(),
             "8002".to_string(),
         );
 
