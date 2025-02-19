@@ -17,7 +17,7 @@
  */
 
 pub mod about;
-mod alerts;
+pub mod alerts;
 pub mod analytics;
 pub mod audit;
 pub mod banner;
