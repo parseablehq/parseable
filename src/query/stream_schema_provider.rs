@@ -16,25 +16,20 @@
  *
  */
 
-use crate::catalog::manifest::File;
-use crate::hottier::HotTierManager;
-use crate::option::Mode;
-use crate::parseable::STREAM_EXISTS;
-use crate::{
-    catalog::snapshot::{self, Snapshot},
-    storage::{ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
-};
+use std::any::Any;
+use std::collections::HashMap;
+use std::ops::Bound;
+use std::os::unix::fs::MetadataExt;
+use std::sync::Arc;
+
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef, SortOptions};
 use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, TimeDelta, Timelike, Utc};
-use datafusion::catalog::Session;
-use datafusion::common::stats::Precision;
-use datafusion::logical_expr::utils::conjunction;
-use datafusion::physical_expr::LexOrdering;
 use datafusion::{
-    catalog::SchemaProvider,
+    catalog::{SchemaProvider, Session},
     common::{
+        stats::Precision,
         tree_node::{TreeNode, TreeNodeRecursion},
         ToDFSchema,
     },
@@ -46,28 +41,32 @@ use datafusion::{
     },
     error::{DataFusionError, Result as DataFusionResult},
     execution::{context::SessionState, object_store::ObjectStoreUrl},
-    logical_expr::{BinaryExpr, Operator, TableProviderFilterPushDown, TableType},
-    physical_expr::{create_physical_expr, PhysicalSortExpr},
+    logical_expr::{
+        utils::conjunction, BinaryExpr, Operator, TableProviderFilterPushDown, TableType,
+    },
+    physical_expr::{create_physical_expr, LexOrdering, PhysicalSortExpr},
     physical_plan::{self, empty::EmptyExec, union::UnionExec, ExecutionPlan, Statistics},
     prelude::Expr,
     scalar::ScalarValue,
 };
-
 use futures_util::{stream::FuturesOrdered, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use object_store::{path::Path, ObjectStore};
 use relative_path::RelativePathBuf;
-use std::{any::Any, collections::HashMap, ops::Bound, sync::Arc};
 use url::Url;
 
 use crate::{
     catalog::{
-        self, column::TypedStatistics, manifest::Manifest, snapshot::ManifestItem, ManifestFile,
+        self, column::TypedStatistics, manifest::File, manifest::Manifest, snapshot::ManifestItem,
+        snapshot::Snapshot, ManifestFile,
     },
     event::DEFAULT_TIMESTAMP_KEY,
+    hottier::HotTierManager,
     metrics::QUERY_CACHE_HIT,
+    option::Mode,
     parseable::PARSEABLE,
-    storage::ObjectStorage,
+    parseable::STREAM_EXISTS,
+    storage::{ObjectStorage, ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
 };
 
 use super::listing_table_builder::ListingTableBuilder;
@@ -221,6 +220,50 @@ impl StandardTableProvider {
         .await?;
 
         Ok(())
+    }
+
+    async fn get_staging_execution_plan(
+        &self,
+        execution_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+        state: &dyn Session,
+        time_partition: Option<&String>,
+    ) -> Result<(), DataFusionError> {
+        let Ok(staging) = PARSEABLE.get_stream(&self.stream) else {
+            return Ok(());
+        };
+        let records = staging.recordbatches_cloned(&self.schema);
+        let reversed_mem_table = reversed_mem_table(records, self.schema.clone())?;
+
+        let memory_exec = reversed_mem_table
+            .scan(state, projection, filters, limit)
+            .await?;
+        execution_plans.push(memory_exec);
+
+        let target_partition = num_cpus::get();
+        let mut partitioned_files = Vec::from_iter((0..target_partition).map(|_| Vec::new()));
+        for (index, file_path) in staging.parquet_files().into_iter().enumerate() {
+            let Ok(file_meta) = file_path.metadata() else {
+                continue;
+            };
+            let file = PartitionedFile::new(file_path.display().to_string(), file_meta.size());
+            partitioned_files[index % target_partition].push(file)
+        }
+
+        self.create_parquet_physical_plan(
+            execution_plans,
+            ObjectStoreUrl::parse("file:///").unwrap(),
+            partitioned_files,
+            Statistics::new_unknown(&self.schema),
+            projection,
+            filters,
+            limit,
+            state,
+            time_partition.cloned(),
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -443,17 +486,17 @@ impl TableProvider for StandardTableProvider {
         }
 
         if is_within_staging_window(&time_filters) {
-            if let Ok(staging) = PARSEABLE.get_stream(&self.stream) {
-                let records = staging.recordbatches_cloned(&self.schema);
-                let reversed_mem_table = reversed_mem_table(records, self.schema.clone())?;
-
-                let memory_exec = reversed_mem_table
-                    .scan(state, projection, filters, limit)
-                    .await?;
-                execution_plans.push(memory_exec);
-            }
+            self.get_staging_execution_plan(
+                &mut execution_plans,
+                projection,
+                filters,
+                limit,
+                state,
+                time_partition.as_ref(),
+            )
+            .await?;
         };
-        let mut merged_snapshot: snapshot::Snapshot = Snapshot::default();
+        let mut merged_snapshot = Snapshot::default();
         if PARSEABLE.options.mode == Mode::Query {
             let path = RelativePathBuf::from_iter([&self.stream, STREAM_ROOT_DIRECTORY]);
             let obs = glob_storage
