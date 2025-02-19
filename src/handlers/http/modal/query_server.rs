@@ -71,7 +71,11 @@ impl ParseableServer for QueryServer {
                     .service(Server::get_alerts_webscope())
                     .service(Self::get_cluster_web_scope()),
             )
-            .service(web::scope(&prism_base_path()).service(Server::get_prism_home()))
+            .service(
+                web::scope(&prism_base_path())
+                    .service(Server::get_prism_home())
+                    .service(Server::get_prism_logstream()),
+            )
             .service(Server::get_generated());
     }
 

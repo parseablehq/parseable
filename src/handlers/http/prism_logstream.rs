@@ -16,24 +16,16 @@
  *
  */
 
-use actix_web::{web, HttpRequest, Responder};
-
-use crate::{
-    home::{generate_home_response, HomeError},
-    utils::actix::extract_session_key_from_req,
+use actix_web::{
+    web::{self, Path},
+    Responder,
 };
 
-/// Fetches the data to populate Prism's home
-///
-///
-/// # Returns
-///
-/// A JSONified version of the `HomeResponse` struct.
-pub async fn home_api(req: HttpRequest) -> Result<impl Responder, HomeError> {
-    let key = extract_session_key_from_req(&req)
-        .map_err(|err| HomeError::Anyhow(anyhow::Error::msg(err.to_string())))?;
+use crate::prism::logstream::{get_prism_logstream_info, PrismLogstreamError};
 
-    let res = generate_home_response(&key).await?;
+/// This API is essentially just combining the responses of /info and /schema together
+pub async fn get_info(stream_name: Path<String>) -> Result<impl Responder, PrismLogstreamError> {
+    let prism_logstream_info = get_prism_logstream_info(&stream_name).await?;
 
-    Ok(web::Json(res))
+    Ok(web::Json(prism_logstream_info))
 }

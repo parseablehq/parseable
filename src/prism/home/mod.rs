@@ -66,11 +66,13 @@ pub struct HomeResponse {
     filter_titles: Vec<TitleAndId>,
 }
 
-pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, HomeError> {
+pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, PrismHomeError> {
     let user_id = if let Some(user_id) = Users.get_username_from_session(key) {
         user_id
     } else {
-        return Err(HomeError::Anyhow(anyhow::Error::msg("User does not exist")));
+        return Err(PrismHomeError::Anyhow(anyhow::Error::msg(
+            "User does not exist",
+        )));
     };
 
     // get all stream titles
@@ -180,7 +182,7 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Ho
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum HomeError {
+pub enum PrismHomeError {
     #[error("Error: {0}")]
     Anyhow(#[from] anyhow::Error),
     #[error("AlertError: {0}")]
@@ -191,13 +193,13 @@ pub enum HomeError {
     StreamError(#[from] StreamError),
 }
 
-impl actix_web::ResponseError for HomeError {
+impl actix_web::ResponseError for PrismHomeError {
     fn status_code(&self) -> http::StatusCode {
         match self {
-            HomeError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            HomeError::AlertError(e) => e.status_code(),
-            HomeError::CorrelationError(e) => e.status_code(),
-            HomeError::StreamError(e) => e.status_code(),
+            PrismHomeError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PrismHomeError::AlertError(e) => e.status_code(),
+            PrismHomeError::CorrelationError(e) => e.status_code(),
+            PrismHomeError::StreamError(e) => e.status_code(),
         }
     }
 
