@@ -103,10 +103,9 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
         let users_dir = RelativePathBuf::from_iter([USERS_ROOT_DIR]);
         for user in self.list_dirs_relative(&users_dir).await? {
-            let stream_dir = RelativePathBuf::from_iter([USERS_ROOT_DIR, &user, "filters"]);
+            let stream_dir = users_dir.join(&user).join("filters");
             for stream in self.list_dirs_relative(&stream_dir).await? {
-                let filters_path =
-                    RelativePathBuf::from_iter([USERS_ROOT_DIR, &user, "filters", &stream]);
+                let filters_path = stream_dir.join(&stream);
                 let filter_bytes = self
                     .get_objects(
                         Some(&filters_path),
@@ -130,7 +129,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
         let users_dir = RelativePathBuf::from_iter([USERS_ROOT_DIR]);
         for user in self.list_dirs_relative(&users_dir).await? {
-            let dashboards_path = RelativePathBuf::from_iter([USERS_ROOT_DIR, &user, "dashboards"]);
+            let dashboards_path = users_dir.join(&user).join("dashboards");
             let dashboard_bytes = self
                 .get_objects(
                     Some(&dashboards_path),
@@ -156,8 +155,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
         let users_dir = RelativePathBuf::from_iter([USERS_ROOT_DIR]);
         for user in self.list_dirs_relative(&users_dir).await? {
-            let correlations_path =
-                RelativePathBuf::from_iter([USERS_ROOT_DIR, &user, "correlations"]);
+            let correlations_path = users_dir.join(&user).join("correlations");
             let correlation_bytes = self
                 .get_objects(
                     Some(&correlations_path),
