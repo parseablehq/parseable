@@ -15,40 +15,46 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-use super::object_storage::parseable_json_path;
-use super::{
-    ObjectStorage, ObjectStorageError, ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY,
-    SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+
+use std::{
+    collections::{BTreeMap, HashSet},
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
 };
+
 use async_trait::async_trait;
 use bytes::Bytes;
-use datafusion::datasource::listing::ListingTableUrl;
-use datafusion::datasource::object_store::{
-    DefaultObjectStoreRegistry, ObjectStoreRegistry, ObjectStoreUrl,
+use datafusion::{
+    datasource::listing::ListingTableUrl,
+    execution::{
+        object_store::{DefaultObjectStoreRegistry, ObjectStoreRegistry, ObjectStoreUrl},
+        runtime_env::RuntimeEnvBuilder,
+    },
 };
-use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-use futures::stream::FuturesUnordered;
-use futures::{StreamExt, TryStreamExt};
-use object_store::azure::{MicrosoftAzure, MicrosoftAzureBuilder};
-use object_store::{BackoffConfig, ClientOptions, ObjectStore, PutPayload, RetryConfig};
+use futures::{stream::FuturesUnordered, StreamExt, TryStreamExt};
+use object_store::{
+    azure::{MicrosoftAzure, MicrosoftAzureBuilder},
+    limit::LimitStore,
+    path::Path as StorePath,
+    BackoffConfig, ClientOptions, ObjectStore, PutPayload, RetryConfig,
+};
 use relative_path::{RelativePath, RelativePathBuf};
-use std::path::Path as StdPath;
 use tracing::{error, info};
 use url::Url;
 
-use super::metrics_layer::MetricLayer;
-use crate::handlers::http::users::USERS_ROOT_DIR;
-use crate::metrics::storage::azureblob::REQUEST_RESPONSE_TIME;
-use crate::metrics::storage::StorageMetrics;
-use crate::parseable::LogStream;
-use object_store::limit::LimitStore;
-use object_store::path::Path as StorePath;
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use crate::{
+    handlers::http::users::USERS_ROOT_DIR,
+    metrics::storage::{azureblob::REQUEST_RESPONSE_TIME, StorageMetrics},
+    parseable::LogStream,
+};
 
-const CONNECT_TIMEOUT_SECS: u64 = 5;
-const REQUEST_TIMEOUT_SECS: u64 = 300;
+use super::{
+    metrics_layer::MetricLayer, object_storage::parseable_json_path, to_object_store_path,
+    ObjectStorage, ObjectStorageError, ObjectStorageProvider, CONNECT_TIMEOUT_SECS,
+    PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME,
+    STREAM_ROOT_DIRECTORY,
+};
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -161,7 +167,7 @@ impl ObjectStorageProvider for AzureBlobConfig {
         let azure = LimitStore::new(azure, super::MAX_OBJECT_STORE_REQUESTS);
         let azure = MetricLayer::new(azure);
 
-        let object_store_registry: DefaultObjectStoreRegistry = DefaultObjectStoreRegistry::new();
+        let object_store_registry = DefaultObjectStoreRegistry::new();
         let url = ObjectStoreUrl::parse(format!("https://{}.blob.core.windows.net", self.account))
             .unwrap();
         object_store_registry.register_store(url.as_ref(), Arc::new(azure));
@@ -188,10 +194,6 @@ impl ObjectStorageProvider for AzureBlobConfig {
     fn register_store_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {
         self.register_metrics(handler)
     }
-}
-
-pub fn to_object_store_path(path: &RelativePath) -> StorePath {
-    StorePath::from(path.as_str())
 }
 
 // ObjStoreClient is generic client to enable interactions with different cloudprovider's
@@ -347,7 +349,7 @@ impl BlobStore {
         }
         Ok(result_file_list)
     }
-    async fn _upload_file(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
+    async fn _upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
         let instant = Instant::now();
 
         // // TODO: Uncomment this when multipart is fixed
@@ -376,7 +378,7 @@ impl BlobStore {
     }
 
     // TODO: introduce parallel, multipart-uploads if required
-    // async fn _upload_multipart(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
+    // async fn _upload_multipart(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
     //     let mut buf = vec![0u8; MULTIPART_UPLOAD_SIZE / 2];
     //     let mut file = OpenOptions::new().read(true).open(path).await?;
 
@@ -623,7 +625,7 @@ impl ObjectStorage for BlobStore {
         Ok(files)
     }
 
-    async fn upload_file(&self, key: &str, path: &StdPath) -> Result<(), ObjectStorageError> {
+    async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
         self._upload_file(key, path).await?;
 
         Ok(())
@@ -663,126 +665,21 @@ impl ObjectStorage for BlobStore {
             .collect::<Vec<_>>())
     }
 
-    async fn get_all_dashboards(
+    async fn list_dirs_relative(
         &self,
-    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
-        let mut dashboards: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
-        let users_root_path = object_store::path::Path::from(USERS_ROOT_DIR);
-        let resp = self
-            .client
-            .list_with_delimiter(Some(&users_root_path))
-            .await?;
+        relative_path: &RelativePath,
+    ) -> Result<Vec<String>, ObjectStorageError> {
+        let prefix = object_store::path::Path::from(relative_path.as_str());
+        let resp = self.client.list_with_delimiter(Some(&prefix)).await?;
 
-        let users = resp
+        Ok(resp
             .common_prefixes
             .iter()
             .flat_map(|path| path.parts())
-            .filter(|name| name.as_ref() != USERS_ROOT_DIR)
             .map(|name| name.as_ref().to_string())
-            .collect::<Vec<_>>();
-        for user in users {
-            let user_dashboard_path =
-                object_store::path::Path::from(format!("{USERS_ROOT_DIR}/{user}/dashboards"));
-            let dashboards_path = RelativePathBuf::from(&user_dashboard_path);
-            let dashboard_bytes = self
-                .get_objects(
-                    Some(&dashboards_path),
-                    Box::new(|file_name| file_name.ends_with(".json")),
-                )
-                .await?;
-
-            dashboards
-                .entry(dashboards_path)
-                .or_default()
-                .extend(dashboard_bytes);
-        }
-        Ok(dashboards)
+            .collect::<Vec<_>>())
     }
 
-    async fn get_all_saved_filters(
-        &self,
-    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
-        let mut filters: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
-        let users_root_path = object_store::path::Path::from(USERS_ROOT_DIR);
-        let resp = self
-            .client
-            .list_with_delimiter(Some(&users_root_path))
-            .await?;
-
-        let users = resp
-            .common_prefixes
-            .iter()
-            .flat_map(|path| path.parts())
-            .filter(|name| name.as_ref() != USERS_ROOT_DIR)
-            .map(|name| name.as_ref().to_string())
-            .collect::<Vec<_>>();
-        for user in users {
-            let user_filters_path =
-                object_store::path::Path::from(format!("{USERS_ROOT_DIR}/{user}/filters",));
-            let resp = self
-                .client
-                .list_with_delimiter(Some(&user_filters_path))
-                .await?;
-            let streams = resp
-                .common_prefixes
-                .iter()
-                .filter(|name| name.as_ref() != USERS_ROOT_DIR)
-                .map(|name| name.as_ref().to_string())
-                .collect::<Vec<_>>();
-            for stream in streams {
-                let filters_path = RelativePathBuf::from(&stream);
-                let filter_bytes = self
-                    .get_objects(
-                        Some(&filters_path),
-                        Box::new(|file_name| file_name.ends_with(".json")),
-                    )
-                    .await?;
-                filters
-                    .entry(filters_path)
-                    .or_default()
-                    .extend(filter_bytes);
-            }
-        }
-        Ok(filters)
-    }
-
-    ///fetch all correlations uploaded in object store
-    /// return the correlation file path and all correlation json bytes for each file path
-    async fn get_all_correlations(
-        &self,
-    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
-        let mut correlations: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
-        let users_root_path = object_store::path::Path::from(USERS_ROOT_DIR);
-        let resp = self
-            .client
-            .list_with_delimiter(Some(&users_root_path))
-            .await?;
-
-        let users = resp
-            .common_prefixes
-            .iter()
-            .flat_map(|path| path.parts())
-            .filter(|name| name.as_ref() != USERS_ROOT_DIR)
-            .map(|name| name.as_ref().to_string())
-            .collect::<Vec<_>>();
-        for user in users {
-            let user_correlation_path =
-                object_store::path::Path::from(format!("{USERS_ROOT_DIR}/{user}/correlations"));
-            let correlations_path = RelativePathBuf::from(&user_correlation_path);
-            let correlation_bytes = self
-                .get_objects(
-                    Some(&correlations_path),
-                    Box::new(|file_name| file_name.ends_with(".json")),
-                )
-                .await?;
-
-            correlations
-                .entry(correlations_path)
-                .or_default()
-                .extend(correlation_bytes);
-        }
-        Ok(correlations)
-    }
     fn get_bucket_name(&self) -> String {
         self.container.clone()
     }

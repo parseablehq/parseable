@@ -16,6 +16,11 @@
  *
  */
 
+use chrono::Local;
+use object_store::path::Path;
+use relative_path::RelativePath;
+use serde::{Deserialize, Serialize};
+
 use crate::{
     catalog::snapshot::Snapshot,
     event::format::LogSource,
@@ -26,15 +31,10 @@ use crate::{
     utils::json::{deserialize_string_as_true, serialize_bool_as_true},
 };
 
-use chrono::Local;
-use serde::{Deserialize, Serialize};
-
-use std::fmt::Debug;
-
 mod azure_blob;
 mod localfs;
 mod metrics_layer;
-pub(crate) mod object_storage;
+pub mod object_storage;
 pub mod retention;
 mod s3;
 mod store_metadata;
@@ -77,6 +77,9 @@ const ACCESS_ALL: &str = "all";
 
 pub const CURRENT_OBJECT_STORE_VERSION: &str = "v5";
 pub const CURRENT_SCHEMA_VERSION: &str = "v5";
+
+const CONNECT_TIMEOUT_SECS: u64 = 5;
+const REQUEST_TIMEOUT_SECS: u64 = 300;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectStoreFormat {
@@ -259,4 +262,8 @@ pub enum ObjectStorageError {
 
     #[error("{0}")]
     StandaloneWithDistributed(#[from] StandaloneWithDistributed),
+}
+
+pub fn to_object_store_path(path: &RelativePath) -> Path {
+    Path::from(path.as_str())
 }
