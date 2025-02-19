@@ -16,11 +16,7 @@
  *
  */
 
-use std::any::Any;
-use std::collections::HashMap;
-use std::ops::Bound;
-use std::os::unix::fs::MetadataExt;
-use std::sync::Arc;
+use std::{any::Any, collections::HashMap, ops::Bound, sync::Arc};
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef, SortOptions};
@@ -44,8 +40,8 @@ use datafusion::{
     logical_expr::{
         utils::conjunction, BinaryExpr, Operator, TableProviderFilterPushDown, TableType,
     },
-    physical_expr::{create_physical_expr, LexOrdering, PhysicalSortExpr},
-    physical_plan::{self, empty::EmptyExec, union::UnionExec, ExecutionPlan, Statistics},
+    physical_expr::{create_physical_expr, expressions::col, LexOrdering, PhysicalSortExpr},
+    physical_plan::{empty::EmptyExec, union::UnionExec, ExecutionPlan, Statistics},
     prelude::Expr,
     scalar::ScalarValue,
 };
@@ -57,20 +53,20 @@ use url::Url;
 
 use crate::{
     catalog::{
-        self, column::TypedStatistics, manifest::File, manifest::Manifest, snapshot::ManifestItem,
-        snapshot::Snapshot, ManifestFile,
+        column::{Column, TypedStatistics},
+        manifest::{File, Manifest},
+        snapshot::{ManifestItem, Snapshot},
+        ManifestFile, Snapshot as CatalogSnapshot,
     },
     event::DEFAULT_TIMESTAMP_KEY,
     hottier::HotTierManager,
     metrics::QUERY_CACHE_HIT,
     option::Mode,
-    parseable::PARSEABLE,
-    parseable::STREAM_EXISTS,
+    parseable::{PARSEABLE, STREAM_EXISTS},
     storage::{ObjectStorage, ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
 };
 
 use super::listing_table_builder::ListingTableBuilder;
-use crate::catalog::Snapshot as CatalogSnapshot;
 
 // schema provider for stream based on global data
 #[derive(Debug)]
@@ -141,9 +137,9 @@ impl StandardTableProvider {
 
         let sort_expr = PhysicalSortExpr {
             expr: if let Some(time_partition) = time_partition {
-                physical_plan::expressions::col(&time_partition, &self.schema)?
+                col(&time_partition, &self.schema)?
             } else {
-                physical_plan::expressions::col(DEFAULT_TIMESTAMP_KEY, &self.schema)?
+                col(DEFAULT_TIMESTAMP_KEY, &self.schema)?
             },
             options: SortOptions {
                 descending: true,
@@ -249,7 +245,7 @@ impl StandardTableProvider {
             let Ok(file_meta) = file_path.metadata() else {
                 continue;
             };
-            let file = PartitionedFile::new(file_path.display().to_string(), file_meta.size());
+            let file = PartitionedFile::new(file_path.display().to_string(), file_meta.len());
             partitioned_files[index % target_partition].push(file)
         }
 
@@ -324,12 +320,11 @@ impl StandardTableProvider {
 
     fn partitioned_files(
         &self,
-        manifest_files: Vec<catalog::manifest::File>,
+        manifest_files: Vec<File>,
     ) -> (Vec<Vec<PartitionedFile>>, datafusion::common::Statistics) {
         let target_partition = num_cpus::get();
         let mut partitioned_files = Vec::from_iter((0..target_partition).map(|_| Vec::new()));
-        let mut column_statistics =
-            HashMap::<String, Option<catalog::column::TypedStatistics>>::new();
+        let mut column_statistics = HashMap::<String, Option<TypedStatistics>>::new();
         let mut count = 0;
         for (index, file) in manifest_files
             .into_iter()
@@ -337,7 +332,7 @@ impl StandardTableProvider {
             .map(|(x, y)| (x % target_partition, y))
         {
             #[allow(unused_mut)]
-            let catalog::manifest::File {
+            let File {
                 mut file_path,
                 num_rows,
                 columns,
@@ -404,12 +399,12 @@ impl StandardTableProvider {
 }
 
 async fn collect_from_snapshot(
-    snapshot: &catalog::snapshot::Snapshot,
+    snapshot: &Snapshot,
     time_filters: &[PartialTimeFilter],
     object_store: Arc<dyn ObjectStore>,
     filters: &[Expr],
     limit: Option<usize>,
-) -> Result<Vec<catalog::manifest::File>, DataFusionError> {
+) -> Result<Vec<File>, DataFusionError> {
     let items = snapshot.manifests(time_filters);
     let manifest_files = collect_manifest_files(
         object_store,
@@ -895,7 +890,7 @@ pub fn extract_primary_filter(
 }
 
 trait ManifestExt: ManifestFile {
-    fn find_matching_column(&self, partial_filter: &Expr) -> Option<&catalog::column::Column> {
+    fn find_matching_column(&self, partial_filter: &Expr) -> Option<&Column> {
         let name = match partial_filter {
             Expr::BinaryExpr(binary_expr) => {
                 let Expr::Column(col) = binary_expr.left.as_ref() else {
