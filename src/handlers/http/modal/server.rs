@@ -26,6 +26,7 @@ use crate::handlers::http::about;
 use crate::handlers::http::alerts;
 use crate::handlers::http::base_path;
 use crate::handlers::http::health_check;
+use crate::handlers::http::prism_base_path;
 use crate::handlers::http::query;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
@@ -87,9 +88,9 @@ impl ParseableServer for Server {
                     .service(Self::get_user_role_webscope())
                     .service(Self::get_counts_webscope())
                     .service(Self::get_alerts_webscope())
-                    .service(Self::get_metrics_webscope())
-                    .service(Self::get_prism_home()),
+                    .service(Self::get_metrics_webscope()),
             )
+            .service(web::scope(&prism_base_path()).service(Self::get_prism_home()))
             .service(Self::get_ingest_otel_factory())
             .service(Self::get_generated());
     }

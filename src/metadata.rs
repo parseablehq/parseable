@@ -17,7 +17,7 @@
  */
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use chrono::{Local, NaiveDateTime};
+use chrono::{NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::num::NonZeroU32;
@@ -105,7 +105,7 @@ impl LogStreamMetadata {
     ) -> Self {
         LogStreamMetadata {
             created_at: if created_at.is_empty() {
-                Local::now().to_rfc3339()
+                Utc::now().to_rfc3339()
             } else {
                 created_at
             },

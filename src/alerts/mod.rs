@@ -883,7 +883,7 @@ pub struct AlertsInfo {
     triggered: u64,
     low: u64,
     medium: u64,
-    high: u64
+    high: u64,
 }
 
 // TODO: add RBAC
@@ -920,6 +920,6 @@ pub async fn get_alerts_info() -> Result<AlertsInfo, AlertError> {
         triggered,
         low,
         medium,
-        high
+        high,
     })
 }

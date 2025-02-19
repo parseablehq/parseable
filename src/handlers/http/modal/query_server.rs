@@ -21,9 +21,9 @@ use std::thread;
 use crate::alerts::ALERTS;
 use crate::correlation::CORRELATIONS;
 use crate::handlers::airplane;
-use crate::handlers::http::base_path;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
+use crate::handlers::http::{base_path, prism_base_path};
 use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::handlers::http::{rbac, role};
 use crate::hottier::HotTierManager;
@@ -69,9 +69,9 @@ impl ParseableServer for QueryServer {
                     .service(Server::get_counts_webscope())
                     .service(Server::get_metrics_webscope())
                     .service(Server::get_alerts_webscope())
-                    .service(Self::get_cluster_web_scope())
-                    .service(Server::get_prism_home()),
+                    .service(Self::get_cluster_web_scope()),
             )
+            .service(web::scope(&prism_base_path()).service(Server::get_prism_home()))
             .service(Server::get_generated());
     }
 

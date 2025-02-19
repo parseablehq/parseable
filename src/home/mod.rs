@@ -16,14 +16,21 @@
  *
  */
 
-
 use actix_web::http::header::ContentType;
-use chrono::Local;
+use chrono::Utc;
 use http::StatusCode;
 use itertools::Itertools;
 use serde::Serialize;
 
-use crate::{alerts::{get_alerts_info, AlertError, AlertsInfo, ALERTS}, correlation::{CorrelationError, CORRELATIONS}, handlers::http::logstream::{error::StreamError, get_stats_date}, parseable::PARSEABLE, rbac::{map::SessionKey, role::Action, Users}, stats::Stats, users::{dashboards::DASHBOARDS, filters::FILTERS}};
+use crate::{
+    alerts::{get_alerts_info, AlertError, AlertsInfo, ALERTS},
+    correlation::{CorrelationError, CORRELATIONS},
+    handlers::http::logstream::{error::StreamError, get_stats_date},
+    parseable::PARSEABLE,
+    rbac::{map::SessionKey, role::Action, Users},
+    stats::Stats,
+    users::{dashboards::DASHBOARDS, filters::FILTERS},
+};
 
 #[derive(Debug, Serialize, Default)]
 struct StreamInfo {
@@ -43,7 +50,7 @@ struct DatedStats {
 #[derive(Debug, Serialize)]
 struct TitleAndId {
     title: String,
-    id: String
+    id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -54,15 +61,12 @@ pub struct HomeResponse {
     stream_info: StreamInfo,
     stats_details: Vec<DatedStats>,
     stream_titles: Vec<String>,
-    
-    
+
     dashboard_titles: Vec<TitleAndId>,
     filter_titles: Vec<TitleAndId>,
-    
 }
 
 pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, HomeError> {
-    
     let user_id = if let Some(user_id) = Users.get_username_from_session(key) {
         user_id
     } else {
@@ -70,16 +74,17 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Ho
     };
 
     // get all stream titles
-    let stream_titles = PARSEABLE.streams
+    let stream_titles: Vec<String> = PARSEABLE
+        .streams
         .list()
-        .iter()
+        .into_iter()
         .filter(|logstream| {
-            Users.authorize(key.clone(), Action::ListStream, Some(&logstream), None) == crate::rbac::Response::Authorized
+            Users.authorize(key.clone(), Action::ListStream, Some(logstream), None)
+                == crate::rbac::Response::Authorized
         })
-        .map(|logstream| logstream.clone())
-        .collect_vec();
+        .collect();
 
-    // get all alert titles (TODO: RBAC)
+    // get all alert IDs (TODO: RBAC)
     // do we need to move alerts into the PARSEABLE struct?
     let alert_titles = ALERTS
         .list_alerts_for_user(key.clone())
@@ -87,44 +92,51 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Ho
         .iter()
         .map(|alert| TitleAndId {
             title: alert.title.clone(),
-            id: alert.id.to_string()
+            id: alert.id.to_string(),
         })
         .collect_vec();
 
+    // get correlation IDs
     let correlation_titles = CORRELATIONS
         .list_correlations(key)
         .await?
         .iter()
         .map(|corr| TitleAndId {
             title: corr.title.clone(),
-            id: corr.id.clone()
+            id: corr.id.clone(),
         })
         .collect_vec();
 
+    // get dashboard IDs
     let dashboard_titles = DASHBOARDS
         .list_dashboards_by_user(&user_id)
         .iter()
         .map(|dashboard| TitleAndId {
             title: dashboard.name.clone(),
-            id: dashboard.dashboard_id.as_ref().unwrap().clone()
+            id: dashboard.dashboard_id.as_ref().unwrap().clone(),
         })
         .collect_vec();
 
+    // get filter IDs
     let filter_titles = FILTERS
         .list_filters_by_user(&user_id)
         .iter()
-        .map(|filter| {
-            TitleAndId {
-                title: filter.filter_name.clone(),
-                id: filter.filter_id.as_ref().unwrap().clone()
-            }
+        .map(|filter| TitleAndId {
+            title: filter.filter_name.clone(),
+            id: filter.filter_id.as_ref().unwrap().clone(),
         })
         .collect_vec();
-    
+
+    // get alerts info (distribution of alerts based on severity and state)
     let alerts_info = get_alerts_info().await?;
 
+    // generate dates for date-wise stats
     let dates = (0..7)
-        .map(|i| Local::now().checked_sub_signed(chrono::Duration::days(i)).unwrap())
+        .map(|i| {
+            Utc::now()
+                .checked_sub_signed(chrono::Duration::days(i))
+                .unwrap()
+        })
         .map(|date| date.format("%Y-%m-%d").to_string())
         .collect_vec();
 
@@ -133,17 +145,20 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Ho
     let mut summary = StreamInfo::default();
 
     for date in dates.iter() {
-        let mut details = DatedStats::default();
-        details.date = date.clone();
+        let mut details = DatedStats {
+            date: date.clone(),
+            ..Default::default()
+        };
 
         for stream in stream_titles.iter() {
-            let stats = get_stats_date(stream, &date)
-                .await?;
+            let stats = get_stats_date(stream, date).await?;
 
+            // collect date-wise stats for all streams
             details.events += stats.events;
             details.ingestion_size += stats.ingestion;
             details.storage_size += stats.storage;
 
+            // collect all 7-day stats for all streams
             summary.stats_summary.events += stats.events;
             summary.stats_summary.ingestion += stats.ingestion;
             summary.stats_summary.storage += stats.storage;
@@ -160,7 +175,7 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Ho
         correlation_titles,
         dashboard_titles,
         filter_titles,
-        alerts_info
+        alerts_info,
     })
 }
 
@@ -173,7 +188,7 @@ pub enum HomeError {
     #[error("CorrelationError: {0}")]
     CorrelationError(#[from] CorrelationError),
     #[error("StreamError: {0}")]
-    StreamError(#[from] StreamError)
+    StreamError(#[from] StreamError),
 }
 
 impl actix_web::ResponseError for HomeError {
@@ -182,7 +197,7 @@ impl actix_web::ResponseError for HomeError {
             HomeError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             HomeError::AlertError(e) => e.status_code(),
             HomeError::CorrelationError(e) => e.status_code(),
-            HomeError::StreamError(e) => e.status_code()
+            HomeError::StreamError(e) => e.status_code(),
         }
     }
 
