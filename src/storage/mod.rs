@@ -109,7 +109,7 @@ pub struct ObjectStoreFormat {
     pub time_partition_limit: Option<String>,
     #[serde(
         deserialize_with = "deserialize_custom_partitions",
-        serialize_with = "serialize_custom_partitions",
+        serialize_with = "serialize_custom_partitions"
     )]
     pub custom_partitions: Vec<String>,
     #[serde(
@@ -140,7 +140,7 @@ pub struct StreamInfo {
     pub time_partition_limit: Option<String>,
     #[serde(
         deserialize_with = "deserialize_custom_partitions",
-        serialize_with = "serialize_custom_partitions",
+        serialize_with = "serialize_custom_partitions"
     )]
     pub custom_partition: Vec<String>,
     #[serde(

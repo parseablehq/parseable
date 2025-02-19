@@ -330,18 +330,11 @@ pub fn has_more_than_four_levels(value: &Value, current_level: usize) -> bool {
 
 // Converts a Vector of values into a `Value::Array`, as long as all of them are objects
 pub fn convert_to_array(flattened: Vec<Value>) -> Result<Value, JsonFlattenError> {
-    let mut result = Vec::new();
-    for item in flattened {
-        let mut map = Map::new();
-        let Some(item) = item.as_object() else {
-            return Err(JsonFlattenError::ExpectedObjectInArray);
-        };
-        for (key, value) in item {
-            map.insert(key.clone(), value.clone());
-        }
-        result.push(Value::Object(map));
+    if flattened.iter().any(|item| !item.is_object()) {
+        return Err(JsonFlattenError::ExpectedObjectInArray);
     }
-    Ok(Value::Array(result))
+
+    Ok(Value::Array(flattened))
 }
 
 #[cfg(test)]
