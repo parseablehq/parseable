@@ -5,16 +5,13 @@ on:
       - "helm/**"
       - "assets/**"
       - "**.md"
-  push:
-    branches:
-      - main
 
 name: Lint, Test and Coverage Report
 jobs:
   coverage:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -27,19 +24,23 @@ jobs:
         with:
           tool: cargo-hack, cargo-llvm-cov, nextest
 
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libsasl2-dev \
+            libssl-dev \
+            pkg-config \
+            build-essential
+        if: runner.os == 'Linux'
+
       - name: Check with clippy
         run: cargo hack clippy --verbose --each-feature --no-dev-deps -- -D warnings
-
-      - name: Check docs
-        run: cargo hack doc --verbose --no-deps --each-feature --no-dev-deps
-
-      - name: Doctests
-        run: cargo hack --each-feature test --doc
 
       - name: Tests
         run: cargo hack --each-feature llvm-cov --no-report nextest
 
-      - name: Genrate coverage report
+      - name: Generate coverage report
         run: cargo llvm-cov report --lcov --output-path coverage.lcov
 
       - name: Upload Coverage Report

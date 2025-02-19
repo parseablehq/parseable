@@ -1,10 +1,10 @@
-version: "3.7"
 networks:
   parseable-internal:
+
 services:
   # minio
   minio:
-    image: minio/minio:RELEASE.2023-02-10T18-48-39Z
+    image: minio/minio:RELEASE.2025-02-03T21-03-04Z
     entrypoint:
       - sh
       - -euc
@@ -16,9 +16,9 @@ services:
       - MINIO_ROOT_PASSWORD=supersecret
       - MINIO_UPDATE=off
     ports:
-      - 9000:9000
+      - "9000:9000"
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
       interval: 15s
       timeout: 20s
       retries: 5
@@ -28,10 +28,11 @@ services:
   parseable-query:
     build:
       context: .
-      dockerfile: Dockerfile
-    command: ["parseable", "s3-store"]
+      dockerfile: Dockerfile.debug
+    platform: linux/amd64
+    command: [ "parseable", "s3-store" ]
     ports:
-      - 8000:8000
+      - "8000:8000"
     environment:
       - P_S3_URL=http://minio:9000
       - P_S3_ACCESS_KEY=parseable
@@ -44,15 +45,17 @@ services:
       - P_CHECK_UPDATE=false
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=query
+      - RUST_LOG=warn
     networks:
       - parseable-internal
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness"]
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness" ]
       interval: 15s
       timeout: 20s
       retries: 5
     depends_on:
-      - minio
+      minio:
+        condition: service_healthy
     deploy:
       restart_policy:
         condition: on-failure
@@ -62,10 +65,11 @@ services:
   parseable-ingest-one:
     build:
       context: .
-      dockerfile: Dockerfile
-    command: ["parseable", "s3-store"]
+      dockerfile: Dockerfile.debug
+    platform: linux/amd64
+    command: [ "parseable", "s3-store", ]
     ports:
-      - 8000
+      - "8000"
     environment:
       - P_S3_URL=http://minio:9000
       - P_S3_ACCESS_KEY=parseable
@@ -79,16 +83,19 @@ services:
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=ingest
       - P_INGESTOR_ENDPOINT=parseable-ingest-one:8000
+      - RUST_LOG=warn
     networks:
       - parseable-internal
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness"]
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness" ]
       interval: 15s
       timeout: 20s
       retries: 5
     depends_on:
-      - parseable-query
-      - minio
+      parseable-query:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     deploy:
       restart_policy:
         condition: on-failure
@@ -98,6 +105,7 @@ services:
   quest:
     platform: linux/amd64
     image: ghcr.io/parseablehq/quest:main
+    pull_policy: always
     command:
       [
         "load",
@@ -118,9 +126,12 @@ services:
     networks:
       - parseable-internal
     depends_on:
-      - parseable-query
-      - parseable-ingest-one
-      - minio
+      parseable-query:
+        condition: service_healthy
+      parseable-ingest-one:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
     deploy:
       restart_policy:
         condition: on-failure

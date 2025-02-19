@@ -32,7 +32,7 @@ use object_store::{BackoffConfig, ClientOptions, ObjectStore, PutPayload, RetryC
 use relative_path::{RelativePath, RelativePathBuf};
 use tracing::{error, info};
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fmt::Display;
 use std::iter::Iterator;
 use std::path::Path as StdPath;
@@ -47,7 +47,8 @@ use super::{
 };
 use crate::handlers::http::users::USERS_ROOT_DIR;
 use crate::metrics::storage::{s3::REQUEST_RESPONSE_TIME, StorageMetrics};
-use crate::storage::{LogStream, ObjectStorage, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY};
+use crate::parseable::LogStream;
+use crate::storage::{ObjectStorage, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY};
 use std::collections::HashMap;
 
 // in bytes
@@ -284,6 +285,10 @@ impl S3Config {
 }
 
 impl ObjectStorageProvider for S3Config {
+    fn name(&self) -> &'static str {
+        "s3"
+    }
+
     fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder {
         let s3 = self.get_default_builder().build().unwrap();
 
@@ -402,8 +407,8 @@ impl S3 {
         Ok(())
     }
 
-    async fn _list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
-        let mut result_file_list: Vec<LogStream> = Vec::new();
+    async fn _list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
+        let mut result_file_list = HashSet::new();
         let resp = self.client.list_with_delimiter(None).await?;
 
         let streams = resp
@@ -423,7 +428,7 @@ impl S3 {
                 .iter()
                 .any(|name| name.location.filename().unwrap().ends_with("stream.json"))
             {
-                result_file_list.push(LogStream { name: stream });
+                result_file_list.insert(stream);
             }
         }
 
@@ -709,19 +714,17 @@ impl ObjectStorage for S3 {
         }
     }
 
-    async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
-        let streams = self._list_streams().await?;
-
-        Ok(streams)
+    async fn list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
+        self._list_streams().await
     }
 
-    async fn list_old_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
+    async fn list_old_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
         let resp = self.client.list_with_delimiter(None).await?;
 
         let common_prefixes = resp.common_prefixes; // get all dirs
 
         // return prefixes at the root level
-        let dirs: Vec<_> = common_prefixes
+        let dirs: HashSet<_> = common_prefixes
             .iter()
             .filter_map(|path| path.parts().next())
             .map(|name| name.as_ref().to_string())
@@ -738,7 +741,7 @@ impl ObjectStorage for S3 {
 
         stream_json_check.try_collect::<()>().await?;
 
-        Ok(dirs.into_iter().map(|name| LogStream { name }).collect())
+        Ok(dirs)
     }
 
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError> {

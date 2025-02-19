@@ -19,7 +19,9 @@
 use crate::{
     catalog::snapshot::Snapshot,
     event::format::LogSource,
-    metadata::{error::stream_info::MetadataError, SchemaVersion},
+    metadata::SchemaVersion,
+    option::StandaloneWithDistributed,
+    parseable::StreamNotFound,
     stats::FullStats,
     utils::json::{deserialize_string_as_true, serialize_bool_as_true},
 };
@@ -35,11 +37,9 @@ mod metrics_layer;
 pub(crate) mod object_storage;
 pub mod retention;
 mod s3;
-pub mod staging;
 mod store_metadata;
 
 use self::retention::Retention;
-pub use self::staging::StorageDir;
 pub use azure_blob::AzureBlobConfig;
 pub use localfs::FSConfig;
 pub use object_storage::{ObjectStorage, ObjectStorageProvider};
@@ -54,7 +54,7 @@ pub const PARSEABLE_METADATA_FILE_NAME: &str = ".parseable.json";
 pub const STREAM_ROOT_DIRECTORY: &str = ".stream";
 pub const PARSEABLE_ROOT_DIRECTORY: &str = ".parseable";
 pub const SCHEMA_FILE_NAME: &str = ".schema";
-pub const ALERT_FILE_NAME: &str = ".alert.json";
+pub const ALERTS_ROOT_DIRECTORY: &str = ".alerts";
 pub const MANIFEST_FILE: &str = "manifest.json";
 
 /// local sync interval to move data.records to /tmp dir of that stream.
@@ -113,9 +113,10 @@ pub struct ObjectStoreFormat {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub static_schema_flag: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub hot_tier_enabled: Option<bool>,
-    pub stream_type: Option<String>,
+    #[serde(default)]
+    pub hot_tier_enabled: bool,
+    #[serde(default)]
+    pub stream_type: StreamType,
     #[serde(default)]
     pub log_source: LogSource,
 }
@@ -140,7 +141,8 @@ pub struct StreamInfo {
         skip_serializing_if = "std::ops::Not::not"
     )]
     pub static_schema_flag: bool,
-    pub stream_type: Option<String>,
+    #[serde(default)]
+    pub stream_type: StreamType,
     pub log_source: LogSource,
 }
 
@@ -205,7 +207,7 @@ impl Default for ObjectStoreFormat {
             version: CURRENT_SCHEMA_VERSION.to_string(),
             schema_version: SchemaVersion::V1, // Newly created streams should be v1
             objectstore_format: CURRENT_OBJECT_STORE_VERSION.to_string(),
-            stream_type: Some(StreamType::UserDefined.to_string()),
+            stream_type: StreamType::UserDefined,
             created_at: Local::now().to_rfc3339(),
             first_event_at: None,
             owner: Owner::new("".to_string(), "".to_string()),
@@ -217,15 +219,10 @@ impl Default for ObjectStoreFormat {
             time_partition_limit: None,
             custom_partition: None,
             static_schema_flag: false,
-            hot_tier_enabled: None,
+            hot_tier_enabled: false,
             log_source: LogSource::default(),
         }
     }
-}
-
-#[derive(serde::Serialize, PartialEq, Debug)]
-pub struct LogStream {
-    pub name: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -256,6 +253,10 @@ pub enum ObjectStorageError {
     UnhandledError(Box<dyn std::error::Error + Send + Sync + 'static>),
     #[error("Error: {0}")]
     PathError(relative_path::FromPathError),
-    #[error("Error: {0}")]
-    MetadataError(#[from] MetadataError),
+
+    #[error("{0}")]
+    StreamNotFound(#[from] StreamNotFound),
+
+    #[error("{0}")]
+    StandaloneWithDistributed(#[from] StandaloneWithDistributed),
 }

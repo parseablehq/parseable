@@ -21,14 +21,14 @@ use crossterm::style::Stylize;
 
 use crate::about;
 use crate::utils::uid::Uid;
-use crate::{option::Config, storage::StorageMetadata};
+use crate::{parseable::Parseable, storage::StorageMetadata};
 
-pub async fn print(config: &Config, meta: &StorageMetadata) {
+pub async fn print(config: &Parseable, meta: &StorageMetadata) {
     print_ascii_art();
     let scheme = config.options.get_scheme();
     status_info(config, &scheme, meta.deployment_id);
     storage_info(config).await;
-    about::print(config, meta).await;
+    about::print(&config.options, meta).await;
     println!();
 }
 
@@ -46,7 +46,7 @@ fn print_ascii_art() {
     eprint!("{ascii_name}");
 }
 
-fn status_info(config: &Config, scheme: &str, id: Uid) {
+fn status_info(config: &Parseable, scheme: &str, id: Uid) {
     let address = format!(
         "\"{}://{}\" ({}), \":{}\" (livetail), \":{}\" (flight protocol)",
         scheme,
@@ -59,7 +59,7 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
     let mut credentials =
         String::from("\"As set in P_USERNAME and P_PASSWORD environment variables\"");
 
-    if config.is_default_creds() {
+    if config.options.is_default_creds() {
         credentials = "\"Using default creds admin, admin. Please set credentials with P_USERNAME and P_PASSWORD.\"".red().to_string();
     }
 
@@ -93,7 +93,7 @@ fn status_info(config: &Config, scheme: &str, id: Uid) {
 /// - Mode (`Local drive`, `S3 bucket`)
 /// - Staging (temporary landing point for incoming events)
 /// - Store (path where the data is stored and its latency)
-async fn storage_info(config: &Config) {
+async fn storage_info(config: &Parseable) {
     let storage = config.storage();
     let latency = storage.get_object_store().get_latency().await;
 
@@ -104,7 +104,7 @@ async fn storage_info(config: &Config) {
         Staging Path:       \"{}\"",
         "Storage:".to_string().bold(),
         config.get_storage_mode_string(),
-        config.staging_dir().to_string_lossy(),
+        config.options.staging_dir().to_string_lossy(),
     );
 
     if let Some(path) = &config.options.hot_tier_storage_path {

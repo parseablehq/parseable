@@ -17,7 +17,7 @@
  */
 use super::object_storage::parseable_json_path;
 use super::{
-    LogStream, ObjectStorage, ObjectStorageError, ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY,
+    ObjectStorage, ObjectStorageError, ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY,
     SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 use async_trait::async_trait;
@@ -40,9 +40,10 @@ use super::metrics_layer::MetricLayer;
 use crate::handlers::http::users::USERS_ROOT_DIR;
 use crate::metrics::storage::azureblob::REQUEST_RESPONSE_TIME;
 use crate::metrics::storage::StorageMetrics;
+use crate::parseable::LogStream;
 use object_store::limit::LimitStore;
 use object_store::path::Path as StorePath;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -150,6 +151,10 @@ impl AzureBlobConfig {
 }
 
 impl ObjectStorageProvider for AzureBlobConfig {
+    fn name(&self) -> &'static str {
+        "blob-store"
+    }
+
     fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder {
         let azure = self.get_default_builder().build().unwrap();
         // limit objectstore to a concurrent request limit
@@ -266,8 +271,8 @@ impl BlobStore {
         Ok(())
     }
 
-    async fn _list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
-        let mut result_file_list: Vec<LogStream> = Vec::new();
+    async fn _list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
+        let mut result_file_list = HashSet::new();
         let resp = self.client.list_with_delimiter(None).await?;
 
         let streams = resp
@@ -287,7 +292,7 @@ impl BlobStore {
                 .iter()
                 .any(|name| name.location.filename().unwrap().ends_with("stream.json"))
             {
-                result_file_list.push(LogStream { name: stream });
+                result_file_list.insert(stream);
             }
         }
 
@@ -573,19 +578,17 @@ impl ObjectStorage for BlobStore {
         }
     }
 
-    async fn list_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
-        let streams = self._list_streams().await?;
-
-        Ok(streams)
+    async fn list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
+        self._list_streams().await
     }
 
-    async fn list_old_streams(&self) -> Result<Vec<LogStream>, ObjectStorageError> {
+    async fn list_old_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
         let resp = self.client.list_with_delimiter(None).await?;
 
         let common_prefixes = resp.common_prefixes; // get all dirs
 
         // return prefixes at the root level
-        let dirs: Vec<_> = common_prefixes
+        let dirs: HashSet<_> = common_prefixes
             .iter()
             .filter_map(|path| path.parts().next())
             .map(|name| name.as_ref().to_string())
@@ -602,7 +605,7 @@ impl ObjectStorage for BlobStore {
 
         stream_json_check.try_collect::<()>().await?;
 
-        Ok(dirs.into_iter().map(|name| LogStream { name }).collect())
+        Ok(dirs.into_iter().collect())
     }
 
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError> {

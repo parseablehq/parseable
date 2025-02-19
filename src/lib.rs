@@ -17,21 +17,18 @@
  */
 
 pub mod about;
-mod alerts;
+pub mod alerts;
 pub mod analytics;
 pub mod audit;
 pub mod banner;
 mod catalog;
 mod cli;
+#[cfg(feature = "kafka")]
+pub mod connectors;
 pub mod correlation;
 mod event;
 pub mod handlers;
 pub mod hottier;
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
-pub mod kafka;
 mod livetail;
 mod metadata;
 pub mod metrics;
@@ -39,6 +36,7 @@ pub mod migration;
 mod oidc;
 pub mod option;
 pub mod otel;
+pub mod parseable;
 mod query;
 pub mod rbac;
 mod response;
@@ -58,7 +56,11 @@ pub use handlers::http::modal::{
 use once_cell::sync::Lazy;
 use reqwest::{Client, ClientBuilder};
 
-pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
+// It is very unlikely that panic will occur when dealing with locks.
+pub const LOCK_EXPECT: &str = "Thread shouldn't panic while holding a lock";
+
+pub const STORAGE_CONVERSION_INTERVAL: u64 = 60;
+pub const STORAGE_UPLOAD_INTERVAL: u64 = 30;
 
 // A single HTTP client for all outgoing HTTP requests from the parseable server
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {

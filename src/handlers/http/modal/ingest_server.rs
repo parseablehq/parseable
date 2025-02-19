@@ -16,47 +16,41 @@
  *
  */
 
-use super::ingest::ingestor_logstream;
-use super::ingest::ingestor_rbac;
-use super::ingest::ingestor_role;
-use super::server::Server;
-use super::IngestorMetadata;
-use super::OpenIdClient;
-use super::ParseableServer;
-use crate::analytics;
-use crate::handlers::airplane;
-use crate::handlers::http::ingest;
-use crate::handlers::http::logstream;
-use crate::handlers::http::middleware::DisAllowRootUser;
-use crate::handlers::http::middleware::RouteExt;
-use crate::handlers::http::role;
-use crate::metrics;
-use crate::migration;
-use crate::migration::metadata_migration::migrate_ingester_metadata;
-use crate::rbac::role::Action;
-use crate::storage::object_storage::ingestor_metadata_path;
-use crate::storage::object_storage::parseable_json_path;
-use crate::storage::staging;
-use crate::storage::ObjectStorageError;
-use crate::storage::PARSEABLE_ROOT_DIRECTORY;
-use crate::sync;
+use std::thread;
 
-use crate::{handlers::http::base_path, option::CONFIG};
 use actix_web::web;
-use actix_web::web::resource;
 use actix_web::Scope;
+use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use base64::Engine;
 use bytes::Bytes;
-use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
 use tokio::sync::oneshot;
-use tracing::error;
 
-/// ! have to use a guard before using it
-pub static INGESTOR_META: Lazy<IngestorMetadata> =
-    Lazy::new(|| staging::get_ingestor_info().expect("Should Be valid Json"));
+use crate::{
+    analytics,
+    handlers::{
+        airplane,
+        http::{
+            base_path, ingest, logstream,
+            middleware::{DisAllowRootUser, RouteExt},
+            role,
+        },
+    },
+    migration,
+    parseable::PARSEABLE,
+    rbac::role::Action,
+    storage::{object_storage::parseable_json_path, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY},
+    sync, Server,
+};
+
+use super::{
+    ingest::{ingestor_logstream, ingestor_rbac, ingestor_role},
+    OpenIdClient, ParseableServer,
+};
+
+pub const INGESTOR_EXPECT: &str = "Ingestor Metadata should be set in ingestor mode";
 
 pub struct IngestServer;
 
@@ -83,10 +77,10 @@ impl ParseableServer for IngestServer {
 
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>> {
         // parseable can't use local storage for persistence when running a distributed setup
-        if CONFIG.get_storage_mode_string() == "Local drive" {
+        if PARSEABLE.storage.name() == "drive" {
             return Err(anyhow::Error::msg(
-                 "This instance of the Parseable server has been configured to run in a distributed setup, it doesn't support local storage.",
-             ));
+                "This instance of the Parseable server has been configured to run in a distributed setup, it doesn't support local storage.",
+            ));
         }
 
         // check for querier state. Is it there, or was it there in the past
@@ -98,55 +92,30 @@ impl ParseableServer for IngestServer {
     }
 
     /// configure the server and start an instance to ingest data
-    async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
-        let prometheus = metrics::build_metrics_handler();
-        CONFIG.storage().register_store_metrics(&prometheus);
+    async fn init(
+        &self,
+        prometheus: &PrometheusMetrics,
+        shutdown_rx: oneshot::Receiver<()>,
+    ) -> anyhow::Result<()> {
+        PARSEABLE.storage.register_store_metrics(prometheus);
 
-        migration::run_migration(&CONFIG).await?;
+        migration::run_migration(&PARSEABLE).await?;
 
-        let (localsync_handler, mut localsync_outbox, localsync_inbox) =
-            sync::run_local_sync().await;
-        let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
-            sync::object_store_sync().await;
+        // Run sync on a background thread
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        thread::spawn(|| sync::handler(cancel_rx));
 
         tokio::spawn(airplane::server());
 
-        // set the ingestor metadata
-        set_ingestor_metadata().await?;
+        // write the ingestor metadata to storage
+        PARSEABLE.store_ingestor_metadata().await?;
 
         // Ingestors shouldn't have to deal with OpenId auth flow
-        let app = self.start(shutdown_rx, prometheus, None);
+        let result = self.start(shutdown_rx, prometheus.clone(), None).await;
+        // Cancel sync jobs
+        cancel_tx.send(()).expect("Cancellation should not fail");
 
-        tokio::pin!(app);
-        loop {
-            tokio::select! {
-                e = &mut app => {
-                    // actix server finished .. stop other threads and stop the server
-                    remote_sync_inbox.send(()).unwrap_or(());
-                    localsync_inbox.send(()).unwrap_or(());
-                    if let Err(e) = localsync_handler.await {
-                        error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    if let Err(e) = remote_sync_handler.await {
-                        error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    return e
-                },
-                _ = &mut localsync_outbox => {
-                    // crash the server if localsync fails for any reason
-                    // panic!("Local Sync thread died. Server will fail now!")
-                    return Err(anyhow::Error::msg("Failed to sync local data to drive. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
-                },
-                _ = &mut remote_sync_outbox => {
-                    // remote_sync failed, this is recoverable by just starting remote_sync thread again
-                    if let Err(e) = remote_sync_handler.await {
-                        error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
-                }
-
-            };
-        }
+        result
     }
 }
 
@@ -166,21 +135,21 @@ impl IngestServer {
     pub fn get_user_role_webscope() -> Scope {
         web::scope("/role")
             // GET Role List
-            .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
+            .service(web::resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
             .service(
                 // PUT and GET Default Role
-                resource("/default")
+                web::resource("/default")
                     .route(web::put().to(role::put_default).authorize(Action::PutRole))
                     .route(web::get().to(role::get_default).authorize(Action::GetRole)),
             )
             .service(
                 // PUT, GET, DELETE Roles
-                resource("/{name}")
+                web::resource("/{name}")
                     .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
                     .route(web::get().to(role::get).authorize(Action::GetRole)),
             )
             .service(
-                resource("/{name}/sync")
+                web::resource("/{name}/sync")
                     .route(web::put().to(ingestor_role::put).authorize(Action::PutRole)),
             )
     }
@@ -249,7 +218,7 @@ impl IngestServer {
                             web::put()
                                 .to(ingestor_logstream::put_stream)
                                 .authorize_for_stream(Action::CreateStream),
-                        )
+                        ),
                 )
                 .service(
                     // GET "/logstream/{logstream}/info" ==> Get info for given log stream
@@ -280,47 +249,14 @@ impl IngestServer {
     }
 }
 
-// create the ingestor metadata and put the .ingestor.json file in the object store
-pub async fn set_ingestor_metadata() -> anyhow::Result<()> {
-    let storage_ingestor_metadata = migrate_ingester_metadata().await?;
-    let store = CONFIG.storage().get_object_store();
-
-    // find the meta file in staging if not generate new metadata
-    let resource = INGESTOR_META.clone();
-    // use the id that was generated/found in the staging and
-    // generate the path for the object store
-    let path = ingestor_metadata_path(None);
-
-    // we are considering that we can always get from object store
-    if let Some(mut store_data) = storage_ingestor_metadata {
-        if store_data.domain_name != INGESTOR_META.domain_name {
-            store_data
-                .domain_name
-                .clone_from(&INGESTOR_META.domain_name);
-            store_data.port.clone_from(&INGESTOR_META.port);
-
-            let resource = Bytes::from(serde_json::to_vec(&store_data)?);
-
-            // if pushing to object store fails propagate the error
-            store.put_object(&path, resource).await?;
-        }
-    } else {
-        let resource = Bytes::from(serde_json::to_vec(&resource)?);
-
-        store.put_object(&path, resource).await?;
-    }
-
-    Ok(())
-}
-
 // check for querier state. Is it there, or was it there in the past
 // this should happen before the set the ingestor metadata
 async fn check_querier_state() -> anyhow::Result<Option<Bytes>, ObjectStorageError> {
     // how do we check for querier state?
     // based on the work flow of the system, the querier will always need to start first
     // i.e the querier will create the `.parseable.json` file
-    let parseable_json = CONFIG
-        .storage()
+    let parseable_json = PARSEABLE
+        .storage
         .get_object_store()
         .get_object(&parseable_json_path())
         .await
@@ -336,7 +272,7 @@ async fn check_querier_state() -> anyhow::Result<Option<Bytes>, ObjectStorageErr
 
 async fn validate_credentials() -> anyhow::Result<()> {
     // check if your creds match with others
-    let store = CONFIG.storage().get_object_store();
+    let store = PARSEABLE.storage.get_object_store();
     let base_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
     let ingestor_metadata = store
         .get_objects(
@@ -355,7 +291,7 @@ async fn validate_credentials() -> anyhow::Result<()> {
 
         let token = base64::prelude::BASE64_STANDARD.encode(format!(
             "{}:{}",
-            CONFIG.options.username, CONFIG.options.password
+            PARSEABLE.options.username, PARSEABLE.options.password
         ));
 
         let token = format!("Basic {}", token);

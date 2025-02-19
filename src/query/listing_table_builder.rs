@@ -34,7 +34,7 @@ use object_store::{path::Path, ObjectMeta, ObjectStore};
 use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
     storage::{ObjectStorage, OBJECT_STORE_DATA_GRANULARITY},
-    utils::TimePeriod,
+    utils::time::TimeRange,
 };
 
 use super::PartialTimeFilter;
@@ -88,12 +88,8 @@ impl ListingTableBuilder {
         };
 
         // Generate prefixes for the given time range
-        let prefixes = TimePeriod::new(
-            start_time.and_utc(),
-            end_time.and_utc(),
-            OBJECT_STORE_DATA_GRANULARITY,
-        )
-        .generate_prefixes();
+        let prefixes = TimeRange::new(start_time.and_utc(), end_time.and_utc())
+            .generate_prefixes(OBJECT_STORE_DATA_GRANULARITY);
 
         // Categorizes prefixes into "minute" and general resolve lists.
         let mut minute_resolve = HashMap::<String, Vec<String>>::new();

@@ -52,12 +52,13 @@ use crate::catalog::snapshot::Snapshot;
 use crate::catalog::Snapshot as CatalogSnapshot;
 use crate::event;
 use crate::handlers::http::query::QueryError;
-use crate::metadata::STREAM_INFO;
-use crate::option::{Mode, CONFIG};
+use crate::option::Mode;
+use crate::parseable::PARSEABLE;
 use crate::storage::{ObjectStorageProvider, ObjectStoreFormat, STREAM_ROOT_DIRECTORY};
 use crate::utils::time::TimeRange;
+
 pub static QUERY_SESSION: Lazy<SessionContext> =
-    Lazy::new(|| Query::create_session_context(CONFIG.storage()));
+    Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
 
 // A query request by client
 #[derive(Debug)]
@@ -74,7 +75,7 @@ impl Query {
             .get_datafusion_runtime()
             .with_disk_manager(DiskManagerConfig::NewOs);
 
-        let (pool_size, fraction) = match CONFIG.options.query_memory_pool_size {
+        let (pool_size, fraction) = match PARSEABLE.options.query_memory_pool_size {
             Some(size) => (size, 1.),
             None => {
                 let mut system = System::new();
@@ -138,7 +139,7 @@ impl Query {
         &self,
         stream_name: String,
     ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
-        let time_partition = STREAM_INFO.get_time_partition(&stream_name)?;
+        let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
 
         let df = QUERY_SESSION
             .execute_logical_plan(self.final_logical_plan(&time_partition))
@@ -158,6 +159,16 @@ impl Query {
 
         let results = df.collect().await?;
         Ok((results, fields))
+    }
+
+    pub async fn get_dataframe(&self, stream_name: String) -> Result<DataFrame, ExecuteError> {
+        let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
+
+        let df = QUERY_SESSION
+            .execute_logical_plan(self.final_logical_plan(&time_partition))
+            .await?;
+
+        Ok(df)
     }
 
     /// return logical plan with all time filters applied through
@@ -277,9 +288,10 @@ impl CountsRequest {
     /// get the sum of `num_rows` between the `startTime` and `endTime`,
     /// divide that by number of bins and return in a manner acceptable for the console
     pub async fn get_bin_density(&self) -> Result<Vec<CountsRecord>, QueryError> {
-        let time_partition = STREAM_INFO
-            .get_time_partition(&self.stream.clone())
+        let time_partition = PARSEABLE
+            .get_stream(&self.stream)
             .map_err(|err| anyhow::Error::msg(err.to_string()))?
+            .get_time_partition()
             .unwrap_or_else(|| event::DEFAULT_TIMESTAMP_KEY.to_owned());
 
         // get time range
@@ -386,7 +398,7 @@ pub struct CountsResponse {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct TableScanVisitor {
+pub struct TableScanVisitor {
     tables: Vec<String>,
 }
 
@@ -414,7 +426,7 @@ pub async fn get_manifest_list(
     stream_name: &str,
     time_range: &TimeRange,
 ) -> Result<Vec<Manifest>, QueryError> {
-    let glob_storage = CONFIG.storage().get_object_store();
+    let glob_storage = PARSEABLE.storage.get_object_store();
 
     let object_store = QUERY_SESSION
         .state()
@@ -433,7 +445,7 @@ pub async fn get_manifest_list(
     let mut merged_snapshot: Snapshot = Snapshot::default();
 
     // get a list of manifests
-    if CONFIG.options.mode == Mode::Query {
+    if PARSEABLE.options.mode == Mode::Query {
         let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
         let obs = glob_storage
             .get_objects(
@@ -604,7 +616,7 @@ pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
 }
 
 pub mod error {
-    use crate::{metadata::error::stream_info::MetadataError, storage::ObjectStorageError};
+    use crate::{parseable::StreamNotFound, storage::ObjectStorageError};
     use datafusion::error::DataFusionError;
 
     #[derive(Debug, thiserror::Error)]
@@ -613,8 +625,8 @@ pub mod error {
         ObjectStorage(#[from] ObjectStorageError),
         #[error("Query Execution failed due to error in datafusion: {0}")]
         Datafusion(#[from] DataFusionError),
-        #[error("Query Execution failed due to error in fetching metadata: {0}")]
-        Metadata(#[from] MetadataError),
+        #[error("{0}")]
+        StreamNotFound(#[from] StreamNotFound),
     }
 }
 

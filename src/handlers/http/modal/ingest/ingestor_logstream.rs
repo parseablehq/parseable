@@ -25,15 +25,8 @@ use tracing::warn;
 
 use crate::{
     catalog::remove_manifest_from_snapshot,
-    event,
-    handlers::http::{
-        logstream::error::StreamError,
-        modal::utils::logstream_utils::{
-            create_stream_and_schema_from_storage, create_update_stream,
-        },
-    },
-    metadata,
-    option::CONFIG,
+    handlers::http::logstream::error::StreamError,
+    parseable::{StreamNotFound, PARSEABLE},
     static_schema::StaticSchema,
     stats,
 };
@@ -43,16 +36,17 @@ pub async fn retention_cleanup(
     Json(date_list): Json<Vec<String>>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
-    let storage = CONFIG.storage().get_object_store();
+    let storage = PARSEABLE.storage.get_object_store();
     // if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if !metadata::STREAM_INFO.stream_exists(&stream_name)
-        && !create_stream_and_schema_from_storage(&stream_name)
+    if !PARSEABLE.streams.contains(&stream_name)
+        && !PARSEABLE
+            .create_stream_and_schema_from_storage(&stream_name)
             .await
             .unwrap_or(false)
     {
-        return Err(StreamError::StreamNotFound(stream_name.clone()));
+        return Err(StreamNotFound(stream_name.clone()).into());
     }
 
     let res = remove_manifest_from_snapshot(storage.clone(), &stream_name, date_list).await;
@@ -66,16 +60,17 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     // if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if !metadata::STREAM_INFO.stream_exists(&stream_name)
-        && !create_stream_and_schema_from_storage(&stream_name)
+    if !PARSEABLE.streams.contains(&stream_name)
+        && !PARSEABLE
+            .create_stream_and_schema_from_storage(&stream_name)
             .await
             .unwrap_or(false)
     {
-        return Err(StreamError::StreamNotFound(stream_name.clone()));
+        return Err(StreamNotFound(stream_name.clone()).into());
     }
 
-    metadata::STREAM_INFO.delete_stream(&stream_name);
-    event::STREAM_WRITERS.delete_stream(&stream_name);
+    // Delete from memory
+    PARSEABLE.streams.delete(&stream_name);
     stats::delete_stats(&stream_name, "json")
         .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
 
@@ -88,12 +83,13 @@ pub async fn put_stream(
     static_schema: Option<Json<StaticSchema>>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
-    create_update_stream(
-        req.headers(),
-        static_schema.as_ref().map(|Json(s)| s),
-        &stream_name,
-    )
-    .await?;
+    PARSEABLE
+        .create_update_stream(
+            req.headers(),
+            static_schema.as_ref().map(|Json(s)| s),
+            &stream_name,
+        )
+        .await?;
 
     Ok(("Log stream created", StatusCode::OK))
 }

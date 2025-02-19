@@ -16,32 +16,34 @@
  *
  */
 
+use std::thread;
+
+use crate::alerts::ALERTS;
 use crate::correlation::CORRELATIONS;
 use crate::handlers::airplane;
 use crate::handlers::http::base_path;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
-use crate::handlers::http::logstream::create_internal_stream_if_not_exists;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
-use crate::handlers::http::{self, role};
 use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
+use crate::handlers::http::{rbac, role};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
-use crate::sync;
 use crate::users::dashboards::DASHBOARDS;
 use crate::users::filters::FILTERS;
-use crate::{analytics, metrics, migration, storage};
+use crate::{analytics, migration, storage, sync};
 use actix_web::web::{resource, ServiceConfig};
 use actix_web::{web, Scope};
+use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::oneshot;
 use tracing::{error, info};
 
-use crate::{option::CONFIG, ParseableServer};
+use crate::parseable::PARSEABLE;
+use crate::Server;
 
 use super::query::{querier_ingest, querier_logstream, querier_rbac, querier_role};
-use super::server::Server;
-use super::OpenIdClient;
+use super::{OpenIdClient, ParseableServer};
 
 pub struct QueryServer;
 
@@ -66,6 +68,7 @@ impl ParseableServer for QueryServer {
                     .service(Self::get_user_role_webscope())
                     .service(Server::get_counts_webscope())
                     .service(Server::get_metrics_webscope())
+                    .service(Server::get_alerts_webscope())
                     .service(Self::get_cluster_web_scope()),
             )
             .service(Server::get_generated());
@@ -73,88 +76,75 @@ impl ParseableServer for QueryServer {
 
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>> {
         // parseable can't use local storage for persistence when running a distributed setup
-        if CONFIG.get_storage_mode_string() == "Local drive" {
+        if PARSEABLE.storage.name() == "drive" {
             return Err(anyhow::anyhow!(
                  "This instance of the Parseable server has been configured to run in a distributed setup, it doesn't support local storage.",
              ));
         }
 
-        migration::run_file_migration(&CONFIG).await?;
-        let parseable_json = CONFIG.validate_storage().await?;
-        migration::run_metadata_migration(&CONFIG, &parseable_json).await?;
+        migration::run_file_migration(&PARSEABLE).await?;
+        let parseable_json = PARSEABLE.validate_storage().await?;
+        migration::run_metadata_migration(&PARSEABLE, &parseable_json).await?;
 
         Ok(parseable_json)
     }
 
     /// initialize the server, run migrations as needed and start an instance
-    async fn init(&self, shutdown_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
-        let prometheus = metrics::build_metrics_handler();
-        CONFIG.storage().register_store_metrics(&prometheus);
+    async fn init(
+        &self,
+        prometheus: &PrometheusMetrics,
+        shutdown_rx: oneshot::Receiver<()>,
+    ) -> anyhow::Result<()> {
+        PARSEABLE.storage.register_store_metrics(prometheus);
 
-        migration::run_migration(&CONFIG).await?;
+        migration::run_migration(&PARSEABLE).await?;
 
         //create internal stream at server start
-        create_internal_stream_if_not_exists().await?;
+        PARSEABLE.create_internal_stream_if_not_exists().await?;
 
         if let Err(e) = CORRELATIONS.load().await {
             error!("{e}");
         }
-        FILTERS.load().await?;
-        DASHBOARDS.load().await?;
+        if let Err(err) = FILTERS.load().await {
+            error!("{err}")
+        };
+
+        if let Err(err) = DASHBOARDS.load().await {
+            error!("{err}")
+        };
+
+        if let Err(err) = ALERTS.load().await {
+            error!("{err}")
+        };
+
         // track all parquet files already in the data directory
         storage::retention::load_retention_from_global();
 
         // all internal data structures populated now.
         // start the analytics scheduler if enabled
-        if CONFIG.options.send_analytics {
+        if PARSEABLE.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
 
-        if matches!(init_cluster_metrics_schedular(), Ok(())) {
+        if init_cluster_metrics_schedular().is_ok() {
             info!("Cluster metrics scheduler started successfully");
         }
         if let Some(hot_tier_manager) = HotTierManager::global() {
             hot_tier_manager.put_internal_stream_hot_tier().await?;
             hot_tier_manager.download_from_s3()?;
         };
-        let (localsync_handler, mut localsync_outbox, localsync_inbox) =
-            sync::run_local_sync().await;
-        let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
-            sync::object_store_sync().await;
+
+        // Run sync on a background thread
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        thread::spawn(|| sync::handler(cancel_rx));
 
         tokio::spawn(airplane::server());
-        let app = self.start(shutdown_rx, prometheus, CONFIG.options.openid());
 
-        tokio::pin!(app);
-        loop {
-            tokio::select! {
-                e = &mut app => {
-                    // actix server finished .. stop other threads and stop the server
-                    remote_sync_inbox.send(()).unwrap_or(());
-                    localsync_inbox.send(()).unwrap_or(());
-                    if let Err(e) = localsync_handler.await {
-                        error!("Error joining localsync_handler: {:?}", e);
-                    }
-                    if let Err(e) = remote_sync_handler.await {
-                        error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    return e
-                },
-                _ = &mut localsync_outbox => {
-                    // crash the server if localsync fails for any reason
-                    // panic!("Local Sync thread died. Server will fail now!")
-                    return Err(anyhow::Error::msg("Failed to sync local data to drive. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
-                },
-                _ = &mut remote_sync_outbox => {
-                    // remote_sync failed, this is recoverable by just starting remote_sync thread again
-                    if let Err(e) = remote_sync_handler.await {
-                        error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
-                }
+        let result = self.start(shutdown_rx, prometheus.clone(), None).await;
+        // Cancel sync jobs
+        cancel_tx.send(()).expect("Cancellation should not fail");
 
-            };
-        }
+        result
     }
 }
 
@@ -185,11 +175,7 @@ impl QueryServer {
             .service(
                 web::resource("")
                     // GET /user => List all users
-                    .route(
-                        web::get()
-                            .to(http::rbac::list_users)
-                            .authorize(Action::ListUser),
-                    ),
+                    .route(web::get().to(rbac::list_users).authorize(Action::ListUser)),
             )
             .service(
                 web::resource("/{username}")
@@ -218,7 +204,7 @@ impl QueryServer {
                     )
                     .route(
                         web::get()
-                            .to(http::rbac::get_role)
+                            .to(rbac::get_role)
                             .authorize_for_user(Action::GetUserRoles),
                     ),
             )
@@ -286,25 +272,10 @@ impl QueryServer {
                         ),
                     )
                     .service(
-                        web::resource("/alert")
-                            // PUT "/logstream/{logstream}/alert" ==> Set alert for given log stream
-                            .route(
-                                web::put()
-                                    .to(logstream::put_alert)
-                                    .authorize_for_stream(Action::PutAlert),
-                            )
-                            // GET "/logstream/{logstream}/alert" ==> Get alert for given log stream
-                            .route(
-                                web::get()
-                                    .to(logstream::get_alert)
-                                    .authorize_for_stream(Action::GetAlert),
-                            ),
-                    )
-                    .service(
                         // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
                         web::resource("/schema").route(
                             web::get()
-                                .to(logstream::schema)
+                                .to(logstream::get_schema)
                                 .authorize_for_stream(Action::GetSchema),
                         ),
                     )
