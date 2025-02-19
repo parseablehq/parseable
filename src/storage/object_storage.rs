@@ -101,7 +101,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
         let mut filters: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
 
-        let users_dir = RelativePathBuf::from_iter([USERS_ROOT_DIR]);
+        let users_dir = RelativePathBuf::from(USERS_ROOT_DIR);
         for user in self.list_dirs_relative(&users_dir).await? {
             let stream_dir = users_dir.join(&user).join("filters");
             for stream in self.list_dirs_relative(&stream_dir).await? {
@@ -127,7 +127,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
         let mut dashboards: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
 
-        let users_dir = RelativePathBuf::from_iter([USERS_ROOT_DIR]);
+        let users_dir = RelativePathBuf::from(USERS_ROOT_DIR);
         for user in self.list_dirs_relative(&users_dir).await? {
             let dashboards_path = users_dir.join(&user).join("dashboards");
             let dashboard_bytes = self
@@ -153,7 +153,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
         let mut correlations: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
 
-        let users_dir = RelativePathBuf::from_iter([USERS_ROOT_DIR]);
+        let users_dir = RelativePathBuf::from(USERS_ROOT_DIR);
         for user in self.list_dirs_relative(&users_dir).await? {
             let correlations_path = users_dir.join(&user).join("correlations");
             let correlation_bytes = self
@@ -376,7 +376,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     }
 
     async fn get_alerts(&self) -> Result<Vec<AlertConfig>, ObjectStorageError> {
-        let alerts_path = RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY]);
+        let alerts_path = RelativePathBuf::from(ALERTS_ROOT_DIRECTORY);
         let alerts = self
             .get_objects(
                 Some(&alerts_path),
@@ -700,7 +700,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     }
 
     async fn get_correlations(&self) -> Result<Vec<Bytes>, CorrelationError> {
-        let correlation_path = RelativePathBuf::from_iter([CORRELATION_DIR]);
+        let correlation_path = RelativePathBuf::from(CORRELATION_DIR);
         let correlation_bytes = self
             .get_objects(
                 Some(&correlation_path),
