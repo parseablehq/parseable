@@ -304,14 +304,14 @@ impl Stream {
         );
 
         let time_partition = self.get_time_partition();
-        let custom_partition = self.get_custom_partition();
+        let custom_partitions = self.get_custom_partitions();
 
         // read arrow files on disk
         // convert them to parquet
         let schema = self
             .convert_disk_files_to_parquet(
                 time_partition.as_ref(),
-                custom_partition.as_ref(),
+                custom_partitions,
                 shutdown_signal,
             )
             .inspect_err(|err| warn!("Error while converting arrow to parquet- {err:?}"))?;
@@ -376,7 +376,7 @@ impl Stream {
         &self,
         merged_schema: &Schema,
         time_partition: Option<&String>,
-        custom_partition: Option<&String>,
+        custom_partitions: &Vec<String>,
     ) -> WriterProperties {
         // Determine time partition field
         let time_partition_field = time_partition.map_or(DEFAULT_TIMESTAMP_KEY, |tp| tp.as_str());
@@ -400,18 +400,16 @@ impl Stream {
         }];
 
         // Describe custom partition column encodings and sorting
-        if let Some(custom_partition) = custom_partition {
-            for partition in custom_partition.split(',') {
-                if let Ok(idx) = merged_schema.index_of(partition) {
-                    let column_path = ColumnPath::new(vec![partition.to_string()]);
-                    props = props.set_column_encoding(column_path, Encoding::DELTA_BYTE_ARRAY);
+        for partition in custom_partitions {
+            if let Ok(idx) = merged_schema.index_of(partition) {
+                let column_path = ColumnPath::new(vec![partition.to_string()]);
+                props = props.set_column_encoding(column_path, Encoding::DELTA_BYTE_ARRAY);
 
-                    sorting_column_vec.push(SortingColumn {
-                        column_idx: idx as i32,
-                        descending: true,
-                        nulls_first: true,
-                    });
-                }
+                sorting_column_vec.push(SortingColumn {
+                    column_idx: idx as i32,
+                    descending: true,
+                    nulls_first: true,
+                });
             }
         }
 
@@ -425,7 +423,7 @@ impl Stream {
     pub fn convert_disk_files_to_parquet(
         &self,
         time_partition: Option<&String>,
-        custom_partition: Option<&String>,
+        custom_partitions: Vec<String>,
         shutdown_signal: bool,
     ) -> Result<Option<Schema>, StagingError> {
         let mut schemas = Vec::new();
@@ -465,7 +463,8 @@ impl Stream {
             }
             let merged_schema = record_reader.merged_schema();
 
-            let props = self.parquet_writer_props(&merged_schema, time_partition, custom_partition);
+            let props =
+                self.parquet_writer_props(&merged_schema, time_partition, &custom_partitions);
             schemas.push(merged_schema.clone());
             let schema = Arc::new(merged_schema);
             let mut part_path = parquet_path.to_owned();
@@ -556,11 +555,11 @@ impl Stream {
             .time_partition_limit
     }
 
-    pub fn get_custom_partition(&self) -> Option<String> {
+    pub fn get_custom_partitions(&self) -> Vec<String> {
         self.metadata
             .read()
             .expect(LOCK_EXPECT)
-            .custom_partition
+            .custom_partitions
             .clone()
     }
 
@@ -642,8 +641,8 @@ impl Stream {
             .time_partition_limit = Some(time_partition_limit);
     }
 
-    pub fn set_custom_partition(&self, custom_partition: Option<&String>) {
-        self.metadata.write().expect(LOCK_EXPECT).custom_partition = custom_partition.cloned();
+    pub fn set_custom_partitions(&self, custom_partitions: Vec<String>) {
+        self.metadata.write().expect(LOCK_EXPECT).custom_partitions = custom_partitions;
     }
 
     pub fn set_hot_tier(&self, enable: bool) {
@@ -923,7 +922,7 @@ mod tests {
             LogStreamMetadata::default(),
             None,
         )
-        .convert_disk_files_to_parquet(None, None, false)?;
+        .convert_disk_files_to_parquet(None, vec![], false)?;
         assert!(result.is_none());
         // Verify metrics were set to 0
         let staging_files = metrics::STAGING_FILES.with_label_values(&[&stream]).get();
@@ -1002,7 +1001,7 @@ mod tests {
         // Start with a fresh staging
         let staging = Stream::new(options, stream_name, LogStreamMetadata::default(), None);
         let result = staging
-            .convert_disk_files_to_parquet(None, None, true)
+            .convert_disk_files_to_parquet(None, vec![], true)
             .unwrap();
 
         assert!(result.is_some());
@@ -1051,7 +1050,7 @@ mod tests {
         // Start with a fresh staging
         let staging = Stream::new(options, stream_name, LogStreamMetadata::default(), None);
         let result = staging
-            .convert_disk_files_to_parquet(None, None, true)
+            .convert_disk_files_to_parquet(None, vec![], true)
             .unwrap();
 
         assert!(result.is_some());
@@ -1105,7 +1104,7 @@ mod tests {
         // Start with a fresh staging
         let staging = Stream::new(options, stream_name, LogStreamMetadata::default(), None);
         let result = staging
-            .convert_disk_files_to_parquet(None, None, false)
+            .convert_disk_files_to_parquet(None, vec![], false)
             .unwrap();
 
         assert!(result.is_some());

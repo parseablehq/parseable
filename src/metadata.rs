@@ -83,7 +83,7 @@ pub struct LogStreamMetadata {
     pub first_event_at: Option<String>,
     pub time_partition: Option<String>,
     pub time_partition_limit: Option<NonZeroU32>,
-    pub custom_partition: Option<String>,
+    pub custom_partitions: Vec<String>,
     pub static_schema_flag: bool,
     pub hot_tier_enabled: bool,
     pub stream_type: StreamType,
@@ -94,9 +94,9 @@ impl LogStreamMetadata {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         created_at: String,
-        time_partition: String,
+        time_partition: Option<String>,
         time_partition_limit: Option<NonZeroU32>,
-        custom_partition: Option<String>,
+        custom_partitions: Vec<String>,
         static_schema_flag: bool,
         static_schema: HashMap<String, Arc<Field>>,
         stream_type: StreamType,
@@ -109,13 +109,9 @@ impl LogStreamMetadata {
             } else {
                 created_at
             },
-            time_partition: if time_partition.is_empty() {
-                None
-            } else {
-                Some(time_partition)
-            },
+            time_partition,
             time_partition_limit,
-            custom_partition,
+            custom_partitions,
             static_schema_flag,
             schema: if static_schema.is_empty() {
                 HashMap::new()

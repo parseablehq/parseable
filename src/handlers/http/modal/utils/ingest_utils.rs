@@ -18,7 +18,6 @@
 
 use arrow_schema::Field;
 use chrono::{DateTime, NaiveDateTime, Utc};
-use itertools::Itertools;
 use opentelemetry_proto::tonic::{
     logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
 };
@@ -36,10 +35,9 @@ use crate::{
     },
     metadata::SchemaVersion,
     otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
-    parseable::{StreamNotFound, PARSEABLE},
+    parseable::PARSEABLE,
     storage::StreamType,
     utils::json::{convert_array_to_object, flatten::convert_to_array},
-    LOCK_EXPECT,
 };
 
 pub async fn flatten_and_push_logs(
@@ -90,19 +88,17 @@ async fn push_logs(
 ) -> Result<(), PostError> {
     let stream = PARSEABLE.get_stream(stream_name)?;
     let time_partition = stream.get_time_partition();
-    let time_partition_limit = PARSEABLE
-        .get_stream(stream_name)?
-        .get_time_partition_limit();
+    let time_partition_limit = stream.get_time_partition_limit();
     let static_schema_flag = stream.get_static_schema_flag();
-    let custom_partition = stream.get_custom_partition();
+    let custom_partitions = stream.get_custom_partitions();
     let schema_version = stream.get_schema_version();
 
-    let data = if time_partition.is_some() || custom_partition.is_some() {
+    let data = if time_partition.is_some() || !custom_partitions.is_empty() {
         convert_array_to_object(
             json,
             time_partition.as_ref(),
             time_partition_limit,
-            custom_partition.as_ref(),
+            &custom_partitions,
             schema_version,
             log_source,
         )?
@@ -111,7 +107,7 @@ async fn push_logs(
             json,
             None,
             None,
-            None,
+            &[],
             schema_version,
             log_source,
         )?)?]
@@ -123,24 +119,8 @@ async fn push_logs(
             Some(time_partition) => get_parsed_timestamp(&value, time_partition)?,
             _ => Utc::now().naive_utc(),
         };
-        let custom_partition_values = match custom_partition.as_ref() {
-            Some(custom_partition) => {
-                let custom_partitions = custom_partition.split(',').collect_vec();
-                get_custom_partition_values(&value, &custom_partitions)
-            }
-            None => HashMap::new(),
-        };
-        let schema = PARSEABLE
-            .streams
-            .read()
-            .unwrap()
-            .get(stream_name)
-            .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?
-            .metadata
-            .read()
-            .expect(LOCK_EXPECT)
-            .schema
-            .clone();
+        let custom_partition_values = get_custom_partition_values(&value, &custom_partitions);
+        let schema = stream.get_schema_raw();
         let (rb, is_first_event) = into_event_batch(
             value,
             schema,
@@ -183,7 +163,7 @@ pub fn into_event_batch(
 
 pub fn get_custom_partition_values(
     json: &Value,
-    custom_partition_list: &[&str],
+    custom_partition_list: &[String],
 ) -> HashMap<String, String> {
     let mut custom_partition_values: HashMap<String, String> = HashMap::new();
     for custom_partition_field in custom_partition_list {
