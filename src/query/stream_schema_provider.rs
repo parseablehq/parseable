@@ -234,14 +234,15 @@ impl StandardTableProvider {
         let Ok(staging) = PARSEABLE.get_stream(&self.stream) else {
             return Ok(());
         };
-        let records = staging.recordbatches_cloned(&self.schema);
-        let reversed_mem_table = reversed_mem_table(records, self.schema.clone())?;
 
-        let memory_exec = reversed_mem_table
+        // Staging arrow exection plan
+        let records = staging.recordbatches_cloned(&self.schema);
+        let arrow_exec = reversed_mem_table(records, self.schema.clone())?
             .scan(state, projection, filters, limit)
             .await?;
-        execution_plans.push(memory_exec);
+        execution_plans.push(arrow_exec);
 
+        // Partititon parquet files on disk among the available CPUs
         let target_partition = num_cpus::get();
         let mut partitioned_files = Vec::from_iter((0..target_partition).map(|_| Vec::new()));
         for (index, file_path) in staging.parquet_files().into_iter().enumerate() {
@@ -252,6 +253,9 @@ impl StandardTableProvider {
             partitioned_files[index % target_partition].push(file)
         }
 
+        // NOTE: There is the possibility of a parquet file being pushed to object store
+        // and deleted from staging in the time it takes for datafusion to get to it.
+        // Staging parquet execution plan
         self.create_parquet_physical_plan(
             execution_plans,
             ObjectStoreUrl::parse("file:///").unwrap(),
