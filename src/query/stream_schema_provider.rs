@@ -27,7 +27,7 @@ use crate::{
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef, SortOptions};
 use bytes::Bytes;
-use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
+use chrono::{DateTime, NaiveDateTime, TimeDelta, Timelike, Utc};
 use datafusion::catalog::Session;
 use datafusion::common::stats::Precision;
 use datafusion::logical_expr::utils::conjunction;
@@ -442,7 +442,7 @@ impl TableProvider for StandardTableProvider {
             return Err(DataFusionError::Plan("potentially unbounded query on time range. Table scanning requires atleast one time bound".to_string()));
         }
 
-        if include_now(filters, &time_partition) {
+        if is_within_staging_window(&time_filters) {
             if let Ok(staging) = PARSEABLE.get_stream(&self.stream) {
                 let records = staging.recordbatches_cloned(&self.schema);
                 let reversed_mem_table = reversed_mem_table(records, self.schema.clone())?;
@@ -730,23 +730,21 @@ fn return_listing_time_filters(
     }
 }
 
-pub fn include_now(filters: &[Expr], time_partition: &Option<String>) -> bool {
-    let current_minute = Utc::now()
+/// We should consider data in staging for queries concerning a time period,
+/// ending within 5 minutes from now. e.g. If current time is 5
+pub fn is_within_staging_window(time_filters: &[PartialTimeFilter]) -> bool {
+    let five_minutes_back = (Utc::now() - TimeDelta::minutes(5))
         .with_second(0)
         .and_then(|x| x.with_nanosecond(0))
         .expect("zeroed value is valid")
         .naive_utc();
 
-    let time_filters = extract_primary_filter(filters, time_partition);
-
-    let upper_bound_matches = time_filters.iter().any(|filter| match filter {
+    if time_filters.iter().any(|filter| match filter {
         PartialTimeFilter::High(Bound::Excluded(time))
         | PartialTimeFilter::High(Bound::Included(time))
-        | PartialTimeFilter::Eq(time) => time > &current_minute,
+        | PartialTimeFilter::Eq(time) => time >= &five_minutes_back,
         _ => false,
-    });
-
-    if upper_bound_matches {
+    }) {
         return true;
     }
 
@@ -828,7 +826,7 @@ pub async fn collect_manifest_files(
 }
 
 // Extract start time and end time from filter predicate
-fn extract_primary_filter(
+pub fn extract_primary_filter(
     filters: &[Expr],
     time_partition: &Option<String>,
 ) -> Vec<PartialTimeFilter> {
