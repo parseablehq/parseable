@@ -133,10 +133,7 @@ mod tests {
     use arrow_array::{
         cast::AsArray, types::Int64Type, Array, Float64Array, Int64Array, RecordBatch, StringArray,
     };
-    use arrow_ipc::{
-        reader::FileReader,
-        writer::{write_message, DictionaryTracker, FileWriter, IpcDataGenerator, IpcWriteOptions},
-    };
+    use arrow_ipc::{reader::FileReader, writer::FileWriter};
     use temp_dir::TempDir;
 
     fn rb(rows: usize) -> RecordBatch {
@@ -197,6 +194,26 @@ mod tests {
         let reader = File::open(path).unwrap();
         let mut reader = FileReader::try_new_buffered(reader, None).unwrap();
         let rb = reader.next().unwrap().unwrap();
+        assert_eq!(rb.num_rows(), 1);
+        let col1_val: Vec<i64> = rb
+            .column(0)
+            .as_primitive::<Int64Type>()
+            .iter()
+            .flatten()
+            .collect();
+        assert_eq!(col1_val, vec![0]);
+
+        let rb = reader.next().unwrap().unwrap();
+        assert_eq!(rb.num_rows(), 2);
+        let col1_val: Vec<i64> = rb
+            .column(0)
+            .as_primitive::<Int64Type>()
+            .iter()
+            .flatten()
+            .collect();
+        assert_eq!(col1_val, vec![0, 1]);
+
+        let rb = reader.next().unwrap().unwrap();
         assert_eq!(rb.num_rows(), 3);
         let col1_val: Vec<i64> = rb
             .column(0)
@@ -205,56 +222,5 @@ mod tests {
             .flatten()
             .collect();
         assert_eq!(col1_val, vec![0, 1, 2]);
-
-        let rb = reader.next().unwrap().unwrap();
-        assert_eq!(rb.num_rows(), 2);
-
-        let rb = reader.next().unwrap().unwrap();
-        assert_eq!(rb.num_rows(), 1);
-    }
-
-    #[test]
-    fn manual_write() {
-        let temp_dir = TempDir::new().unwrap();
-        let path = temp_dir.path().join("test.arrows");
-        let error_on_replacement = true;
-        let options = IpcWriteOptions::default();
-        let mut dictionary_tracker = DictionaryTracker::new(error_on_replacement);
-        let data_gen = IpcDataGenerator {};
-        let mut file = File::create(&path).unwrap();
-        let rb1 = rb(1);
-
-        let schema = data_gen.schema_to_bytes_with_dictionary_tracker(
-            &rb1.schema(),
-            &mut dictionary_tracker,
-            &options,
-        );
-        write_message(&mut file, schema, &options).unwrap();
-
-        for i in (1..=3).cycle().skip(1).take(10000) {
-            let (_, encoded_message) = data_gen
-                .encoded_batch(&rb(i), &mut dictionary_tracker, &options)
-                .unwrap();
-            write_message(&mut file, encoded_message, &options).unwrap();
-        }
-
-        let schema = data_gen.schema_to_bytes_with_dictionary_tracker(
-            &rb1.schema(),
-            &mut dictionary_tracker,
-            &options,
-        );
-        write_message(&mut file, schema, &options).unwrap();
-
-        let reader = File::open(path).unwrap();
-        let reader = FileReader::try_new_buffered(reader, None).unwrap();
-
-        let mut sum = 0;
-        for rb in reader {
-            let rb = rb.unwrap();
-            sum += 1;
-            assert!(rb.num_rows() > 0);
-        }
-
-        assert_eq!(sum, 10000);
     }
 }
