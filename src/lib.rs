@@ -29,6 +29,7 @@ pub mod correlation;
 mod event;
 pub mod handlers;
 pub mod hottier;
+mod kinesis;
 mod livetail;
 mod metadata;
 pub mod metrics;

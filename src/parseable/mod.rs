@@ -28,7 +28,7 @@ use http::{header::CONTENT_TYPE, HeaderName, HeaderValue, StatusCode};
 use once_cell::sync::Lazy;
 pub use staging::StagingError;
 use streams::StreamRef;
-pub use streams::{StreamNotFound, Streams};
+pub use streams::{Stream, StreamNotFound, Streams};
 use tracing::error;
 
 #[cfg(feature = "kafka")]

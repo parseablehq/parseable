@@ -17,17 +17,17 @@
 *
 */
 
-pub mod format;
+use std::{collections::HashMap, sync::Arc};
 
 use arrow_array::RecordBatch;
-use arrow_schema::{Field, Fields, Schema};
-use itertools::Itertools;
-use std::sync::Arc;
-
-use self::error::EventError;
-use crate::{metadata::update_stats, parseable::PARSEABLE, storage::StreamType, LOCK_EXPECT};
+use arrow_schema::Field;
 use chrono::NaiveDateTime;
-use std::collections::HashMap;
+use error::EventError;
+use itertools::Itertools;
+
+use crate::{metadata::update_stats, parseable::Stream, storage::StreamType};
+
+pub mod format;
 
 pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
 
@@ -46,7 +46,7 @@ pub struct Event {
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
-    pub fn process(self) -> Result<(), EventError> {
+    pub fn process(self, stream: &Stream) -> Result<(), EventError> {
         let mut key = get_schema_key(&self.rb.schema().fields);
         if self.time_partition.is_some() {
             let parsed_timestamp_to_min = self.parsed_timestamp.format("%Y%m%dT%H%M").to_string();
@@ -60,10 +60,10 @@ impl Event {
         }
 
         if self.is_first_event {
-            commit_schema(&self.stream_name, self.rb.schema())?;
+            stream.commit_schema(self.rb.schema())?;
         }
 
-        PARSEABLE.get_or_create_stream(&self.stream_name).push(
+        stream.push(
             &key,
             &self.rb,
             self.parsed_timestamp,
@@ -84,10 +84,10 @@ impl Event {
         Ok(())
     }
 
-    pub fn process_unchecked(&self) -> Result<(), EventError> {
+    pub fn process_unchecked(&self, stream: &Stream) -> Result<(), EventError> {
         let key = get_schema_key(&self.rb.schema().fields);
 
-        PARSEABLE.get_or_create_stream(&self.stream_name).push(
+        stream.push(
             &key,
             &self.rb,
             self.parsed_timestamp,
@@ -107,23 +107,6 @@ pub fn get_schema_key(fields: &[Arc<Field>]) -> String {
     }
     let hash = hasher.digest();
     format!("{hash:x}")
-}
-
-pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), EventError> {
-    let mut stream_metadata = PARSEABLE.streams.write().expect("lock poisoned");
-
-    let map = &mut stream_metadata
-        .get_mut(stream_name)
-        .expect("map has entry for this stream name")
-        .metadata
-        .write()
-        .expect(LOCK_EXPECT)
-        .schema;
-    let current_schema = Schema::new(map.values().cloned().collect::<Fields>());
-    let schema = Schema::try_merge(vec![current_schema, schema.as_ref().clone()])?;
-    map.clear();
-    map.extend(schema.fields.iter().map(|f| (f.name().clone(), f.clone())));
-    Ok(())
 }
 
 pub mod error {
