@@ -239,15 +239,19 @@ impl StandardTableProvider {
             .await?;
         execution_plans.push(arrow_exec);
 
-        // Partititon parquet files on disk among the available CPUs
-        let target_partition = num_cpus::get();
-        let mut partitioned_files = Vec::from_iter((0..target_partition).map(|_| Vec::new()));
-        for (index, file_path) in staging.parquet_files().into_iter().enumerate() {
+        // Get a list of parquet files still in staging, order by filename
+        let mut parquet_files = staging.parquet_files();
+        parquet_files.sort_by(|a, b| a.cmp(b).reverse());
+
+        // NOTE: We don't partition among CPUs to ensure consistent results.
+        // i.e. We were seeing in-consistent ordering when querying over parquets in staging.
+        let mut partitioned_files = Vec::with_capacity(parquet_files.len());
+        for file_path in parquet_files {
             let Ok(file_meta) = file_path.metadata() else {
                 continue;
             };
             let file = PartitionedFile::new(file_path.display().to_string(), file_meta.len());
-            partitioned_files[index % target_partition].push(file)
+            partitioned_files.push(file)
         }
 
         // NOTE: There is the possibility of a parquet file being pushed to object store
@@ -256,7 +260,7 @@ impl StandardTableProvider {
         self.create_parquet_physical_plan(
             execution_plans,
             ObjectStoreUrl::parse("file:///").unwrap(),
-            partitioned_files,
+            vec![partitioned_files],
             Statistics::new_unknown(&self.schema),
             projection,
             filters,
