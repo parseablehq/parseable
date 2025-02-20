@@ -19,8 +19,9 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    fs::File,
+    fs::{File, OpenOptions},
     io::BufWriter,
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -32,10 +33,58 @@ use itertools::Itertools;
 
 use crate::utils::arrow::adapt_batch;
 
+use super::{StagingError, ARROW_FILE_EXTENSION, ARROW_PART_FILE_EXTENSION};
+
+/// Context regarding `.arrows` file being persisted onto disk
+pub struct DiskWriter {
+    inner: FileWriter<BufWriter<File>>,
+    // Used to ensure un"finish"ed arrow files are renamed on "finish"
+    path_prefix: PathBuf,
+}
+
+impl DiskWriter {
+    pub fn new(path_prefix: PathBuf, schema: &Schema) -> Result<Self, StagingError> {
+        // Live writes happen into partfile
+        let mut partfile_path = path_prefix.clone();
+        partfile_path.set_extension(ARROW_PART_FILE_EXTENSION);
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(partfile_path)?;
+
+        Ok(Self {
+            inner: FileWriter::try_new_buffered(file, schema)
+                .expect("File and RecordBatch both are checked"),
+            path_prefix,
+        })
+    }
+
+    /// Appends records into an `.arrows` file
+    pub fn write(&mut self, batch: &RecordBatch) -> Result<(), StagingError> {
+        self.inner.write(batch).map_err(StagingError::Arrow)
+    }
+
+    /// Ensures `.arrows`` file in staging directory is "finish"ed and renames it from "part".
+    pub fn finish(mut self) -> Result<(), StagingError> {
+        self.inner.finish()?;
+
+        let mut partfile_path = self.path_prefix.clone();
+        partfile_path.set_extension(ARROW_PART_FILE_EXTENSION);
+
+        let mut arrows_path = self.path_prefix;
+        arrows_path.set_extension(ARROW_FILE_EXTENSION);
+
+        // Rename from part file to finished arrows file
+        std::fs::rename(partfile_path, arrows_path)?;
+
+        Ok(())
+    }
+}
+
 #[derive(Default)]
 pub struct Writer {
     pub mem: MemWriter<16384>,
-    pub disk: HashMap<String, FileWriter<BufWriter<File>>>,
+    pub disk: HashMap<String, DiskWriter>,
 }
 
 /// Structure to keep recordbatches in memory.

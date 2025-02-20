@@ -27,7 +27,6 @@ use std::{
 };
 
 use arrow_array::RecordBatch;
-use arrow_ipc::writer::FileWriter;
 use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::{Deref, DerefMut};
@@ -41,7 +40,7 @@ use parquet::{
 };
 use rand::distributions::DistString;
 use relative_path::RelativePathBuf;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     cli::Options,
@@ -57,15 +56,17 @@ use crate::{
 };
 
 use super::{
-    staging::{reader::MergedRecordReader, writer::Writer, StagingError},
+    staging::{
+        reader::MergedRecordReader,
+        writer::{DiskWriter, Writer},
+        StagingError,
+    },
     LogStream,
 };
 
 #[derive(Debug, thiserror::Error)]
 #[error("Stream not found: {0}")]
 pub struct StreamNotFound(pub String);
-
-const ARROW_FILE_EXTENSION: &str = "data.arrows";
 
 pub type StreamRef = Arc<Stream>;
 
@@ -116,22 +117,15 @@ impl Stream {
                 }
                 None => {
                     // entry is not present thus we create it
-                    let file_path = self.path_by_current_time(
+                    let path_prefix = self.path_prefix_by_current_time(
                         schema_key,
                         parsed_timestamp,
                         custom_partition_values,
                     );
-                    std::fs::create_dir_all(&self.data_path)?;
 
-                    let file = OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&file_path)?;
-
-                    let mut writer = FileWriter::try_new_buffered(file, &record.schema())
-                        .expect("File and RecordBatch both are checked");
-
+                    let mut writer = DiskWriter::new(path_prefix, &record.schema())?;
                     writer.write(record)?;
+
                     guard.disk.insert(schema_key.to_owned(), writer);
                 }
             };
@@ -142,7 +136,7 @@ impl Stream {
         Ok(())
     }
 
-    pub fn path_by_current_time(
+    pub fn path_prefix_by_current_time(
         &self,
         stream_hash: &str,
         parsed_timestamp: NaiveDateTime,
@@ -153,7 +147,7 @@ impl Stream {
             hostname.push_str(id);
         }
         let filename = format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.{ARROW_FILE_EXTENSION}",
+            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}",
             Utc::now().format("%Y%m%dT%H%M"),
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
@@ -345,8 +339,26 @@ impl Stream {
         Ok(())
     }
 
-    pub fn recordbatches_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
-        self.writer.lock().unwrap().mem.recordbatch_cloned(schema)
+    /// Returns records batches as found in staging
+    pub fn recordbatches_cloned(
+        &self,
+        schema: &Arc<Schema>,
+        time_partition: Option<String>,
+    ) -> Vec<RecordBatch> {
+        // All records found in memory
+        let mut records = self.writer.lock().unwrap().mem.recordbatch_cloned(schema);
+        // Append records batches picked up from `.arrows` files
+        let arrow_files = self.arrow_files();
+        let record_reader = MergedRecordReader::new(&arrow_files);
+        if record_reader.readers.is_empty() {
+            return vec![];
+        }
+        let mut from_file = record_reader
+            .merged_iter(schema.clone(), time_partition)
+            .collect();
+        records.append(&mut from_file);
+
+        records
     }
 
     pub fn clear(&self) {
@@ -354,7 +366,7 @@ impl Stream {
     }
 
     pub fn flush(&self) {
-        let mut disk_writers = {
+        let disk_writers = {
             let mut writer = self.writer.lock().unwrap();
             // Flush memory
             writer.mem.clear();
@@ -363,8 +375,12 @@ impl Stream {
         };
 
         // Flush disk
-        for writer in disk_writers.values_mut() {
-            _ = writer.finish();
+        for (_, writer) in disk_writers {
+            if let Err(err) = writer.finish() {
+                warn!("Couldn't finish `.arrows` file: {err}");
+            } else {
+                debug!("Finished `.arrows` file sync onto disk")
+            }
         }
     }
 
@@ -855,7 +871,7 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}.{ARROW_FILE_EXTENSION}",
+            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}",
             Utc::now().format("%Y%m%dT%H%M"),
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
@@ -863,8 +879,11 @@ mod tests {
             hostname::get().unwrap().into_string().unwrap()
         ));
 
-        let generated_path =
-            staging.path_by_current_time(stream_hash, parsed_timestamp, &custom_partition_values);
+        let generated_path = staging.path_prefix_by_current_time(
+            stream_hash,
+            parsed_timestamp,
+            &custom_partition_values,
+        );
 
         assert_eq!(generated_path, expected_path);
     }
@@ -890,7 +909,7 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.{ARROW_FILE_EXTENSION}",
+            "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}",
             Utc::now().format("%Y%m%dT%H%M"),
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
@@ -898,8 +917,11 @@ mod tests {
             hostname::get().unwrap().into_string().unwrap()
         ));
 
-        let generated_path =
-            staging.path_by_current_time(stream_hash, parsed_timestamp, &custom_partition_values);
+        let generated_path = staging.path_prefix_by_current_time(
+            stream_hash,
+            parsed_timestamp,
+            &custom_partition_values,
+        );
 
         assert_eq!(generated_path, expected_path);
     }

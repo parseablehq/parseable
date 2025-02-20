@@ -20,6 +20,12 @@
 pub mod reader;
 pub mod writer;
 
+/// File extension for "finish"ed arrow files in staging
+const ARROW_FILE_EXTENSION: &str = "data.arrows";
+
+/// File extension for un"finish"ed arrow files in staging
+const ARROW_PART_FILE_EXTENSION: &str = "part.arrows";
+
 #[derive(Debug, thiserror::Error)]
 pub enum StagingError {
     #[error("Unable to create recordbatch stream")]
