@@ -25,7 +25,12 @@ use itertools::Itertools;
 use std::sync::Arc;
 
 use self::error::EventError;
-use crate::{metadata::update_stats, parseable::PARSEABLE, storage::StreamType, LOCK_EXPECT};
+use crate::{
+    metadata::update_stats,
+    parseable::{StagingError, PARSEABLE},
+    storage::StreamType,
+    LOCK_EXPECT,
+};
 use chrono::NaiveDateTime;
 use std::collections::HashMap;
 
@@ -109,7 +114,7 @@ pub fn get_schema_key(fields: &[Arc<Field>]) -> String {
     format!("{hash:x}")
 }
 
-pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), EventError> {
+pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), StagingError> {
     let mut stream_metadata = PARSEABLE.streams.write().expect("lock poisoned");
 
     let map = &mut stream_metadata
@@ -127,16 +132,13 @@ pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), Event
 }
 
 pub mod error {
-    use arrow_schema::ArrowError;
 
     use crate::{parseable::StagingError, storage::ObjectStorageError};
 
     #[derive(Debug, thiserror::Error)]
     pub enum EventError {
-        #[error("Stream Writer Failed: {0}")]
-        StreamWriter(#[from] StagingError),
-        #[error("Stream Writer Failed: {0}")]
-        Arrow(#[from] ArrowError),
+        #[error("Staging Failed: {0}")]
+        Staging(#[from] StagingError),
         #[error("ObjectStorage Error: {0}")]
         ObjectStorage(#[from] ObjectStorageError),
     }
