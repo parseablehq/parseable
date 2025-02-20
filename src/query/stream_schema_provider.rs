@@ -218,6 +218,7 @@ impl StandardTableProvider {
         Ok(())
     }
 
+    /// Create an exection plan over the records in arrows and parquet that are still in staging, awaiting push to object storage
     async fn get_staging_execution_plan(
         &self,
         execution_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
