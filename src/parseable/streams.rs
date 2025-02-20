@@ -122,6 +122,7 @@ impl Stream {
                         parsed_timestamp,
                         custom_partition_values,
                     );
+                    std::fs::create_dir_all(&self.data_path)?;
 
                     let mut writer = DiskWriter::new(path_prefix, &record.schema())?;
                     writer.write(record)?;
