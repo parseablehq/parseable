@@ -59,8 +59,15 @@ use reqwest::{Client, ClientBuilder};
 // It is very unlikely that panic will occur when dealing with locks.
 pub const LOCK_EXPECT: &str = "Thread shouldn't panic while holding a lock";
 
-pub const STORAGE_CONVERSION_INTERVAL: u64 = 60;
-pub const STORAGE_UPLOAD_INTERVAL: u64 = 30;
+/// Describes the duration at the end of which in-memory buffers are flushed,
+/// arrows files are "finished" and compacted into parquet files.
+pub const LOCAL_SYNC_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Duration used to configure prefix generation.
+pub const OBJECT_STORE_DATA_GRANULARITY: u32 = LOCAL_SYNC_INTERVAL.as_secs() as u32 / 60;
+
+/// Describes the duration at the end of which parquets are pushed into objectstore.
+pub const STORAGE_UPLOAD_INTERVAL: Duration = Duration::from_secs(60);
 
 // A single HTTP client for all outgoing HTTP requests from the parseable server
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {

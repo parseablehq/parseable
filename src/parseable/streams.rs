@@ -49,11 +49,9 @@ use crate::{
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
-    storage::{
-        object_storage::to_bytes, retention::Retention, StreamType, OBJECT_STORE_DATA_GRANULARITY,
-    },
+    storage::{object_storage::to_bytes, retention::Retention, StreamType},
     utils::minute_to_slot,
-    LOCK_EXPECT,
+    LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
 };
 
 use super::{
