@@ -76,7 +76,7 @@ pub struct Stream {
     pub metadata: RwLock<LogStreamMetadata>,
     pub data_path: PathBuf,
     pub options: Arc<Options>,
-    pub writer: Mutex<Writer>,
+    pub writer: Mutex<Writer<16384>>,
     pub ingestor_id: Option<String>,
 }
 
@@ -379,7 +379,7 @@ impl Stream {
         };
 
         // Flush disk
-        for (_, writer) in disk_writers {
+        for (_, mut writer) in disk_writers {
             if let Err(err) = writer.finish() {
                 warn!("Couldn't finish `.arrows` file: {err}");
             } else {

@@ -37,17 +37,22 @@ use crate::utils::arrow::adapt_batch;
 use super::StagingError;
 
 /// Context regarding `.arrows` file being persisted onto disk
-pub struct DiskWriter {
+pub struct DiskWriter<const N: usize> {
     inner: FileWriter<BufWriter<File>>,
-    // Used to ensure un"finish"ed arrow files are renamed on "finish"
+    /// Used to ensure un"finish"ed arrow files are renamed on "finish"
     path_prefix: PathBuf,
+    /// Number of rows written onto disk
+    count: usize,
+    /// Denotes distinct files created with similar schema during the same minute by the same ingestor
+    file_id: usize,
 }
 
-impl DiskWriter {
+impl<const N: usize> DiskWriter<N> {
     pub fn new(path_prefix: PathBuf, schema: &Schema) -> Result<Self, StagingError> {
+        let file_id = 0;
         // Live writes happen into partfile
         let mut partfile_path = path_prefix.clone();
-        partfile_path.set_extension(ARROW_PART_FILE_EXTENSION);
+        partfile_path.set_extension(format!("{file_id}.{ARROW_PART_FILE_EXTENSION}"));
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -57,35 +62,56 @@ impl DiskWriter {
             inner: FileWriter::try_new_buffered(file, schema)
                 .expect("File and RecordBatch both are checked"),
             path_prefix,
+            count: 0,
+            file_id,
         })
     }
 
-    /// Appends records into an `.arrows` file
-    pub fn write(&mut self, batch: &RecordBatch) -> Result<(), StagingError> {
-        self.inner.write(batch).map_err(StagingError::Arrow)
+    /// Appends records into an `{file_id}.part.arrows` files,
+    /// flushing onto disk and increments count on breaching row limit.
+    pub fn write(&mut self, rb: &RecordBatch) -> Result<(), StagingError> {
+        if self.count + rb.num_rows() >= N {
+            let left = N - self.count;
+            let left_slice = rb.slice(0, left);
+            self.inner.write(&left_slice)?;
+            self.finish()?;
+
+            // Write leftover records into new files until all have been written
+            if left < rb.num_rows() {
+                let right = rb.num_rows() - left;
+                self.write(&rb.slice(left, right))?;
+            }
+        } else {
+            self.inner.write(rb)?;
+        }
+
+        Ok(())
     }
 
     /// Ensures `.arrows`` file in staging directory is "finish"ed and renames it from "part".
-    pub fn finish(mut self) -> Result<(), StagingError> {
+    pub fn finish(&mut self) -> Result<(), StagingError> {
         self.inner.finish()?;
 
         let mut partfile_path = self.path_prefix.clone();
-        partfile_path.set_extension(ARROW_PART_FILE_EXTENSION);
+        partfile_path.set_extension(format!("{}.{ARROW_PART_FILE_EXTENSION}", self.file_id));
 
-        let mut arrows_path = self.path_prefix;
-        arrows_path.set_extension(ARROW_FILE_EXTENSION);
+        let mut arrows_path = self.path_prefix.clone();
+        arrows_path.set_extension(format!("{}.{ARROW_FILE_EXTENSION}", self.file_id));
 
         // Rename from part file to finished arrows file
         std::fs::rename(partfile_path, arrows_path)?;
+
+        self.file_id += 1;
+        self.count = 0;
 
         Ok(())
     }
 }
 
 #[derive(Default)]
-pub struct Writer {
-    pub mem: MemWriter<16384>,
-    pub disk: HashMap<String, DiskWriter>,
+pub struct Writer<const N: usize> {
+    pub mem: MemWriter<N>,
+    pub disk: HashMap<String, DiskWriter<N>>,
 }
 
 /// Structure to keep recordbatches in memory.
