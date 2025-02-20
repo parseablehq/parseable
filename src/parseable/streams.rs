@@ -61,7 +61,7 @@ use super::{
         writer::{DiskWriter, Writer},
         StagingError,
     },
-    LogStream,
+    LogStream, ARROW_FILE_EXTENSION,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -170,7 +170,10 @@ impl Stream {
         let paths = dir
             .flatten()
             .map(|file| file.path())
-            .filter(|file| file.extension().is_some_and(|ext| ext.eq("arrows")))
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|f| f.to_string_lossy().ends_with(ARROW_FILE_EXTENSION))
+            })
             .sorted_by_key(|f| f.metadata().unwrap().modified().unwrap())
             .collect();
 

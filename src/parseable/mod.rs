@@ -58,6 +58,12 @@ use crate::{
 mod staging;
 mod streams;
 
+/// File extension for "finish"ed arrow files in staging
+const ARROW_FILE_EXTENSION: &str = "data.arrows";
+
+/// File extension for un"finish"ed arrow files in staging
+const ARROW_PART_FILE_EXTENSION: &str = "part.arrows";
+
 /// Name of a Stream
 /// NOTE: this used to be a struct, flattened out for simplicity
 pub type LogStream = String;

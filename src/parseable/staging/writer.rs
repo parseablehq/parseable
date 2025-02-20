@@ -31,9 +31,10 @@ use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
 use itertools::Itertools;
 
+use crate::parseable::{ARROW_FILE_EXTENSION, ARROW_PART_FILE_EXTENSION};
 use crate::utils::arrow::adapt_batch;
 
-use super::{StagingError, ARROW_FILE_EXTENSION, ARROW_PART_FILE_EXTENSION};
+use super::StagingError;
 
 /// Context regarding `.arrows` file being persisted onto disk
 pub struct DiskWriter {
