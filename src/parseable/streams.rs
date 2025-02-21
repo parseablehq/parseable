@@ -478,10 +478,9 @@ impl Stream {
 
             for file in &arrow_files {
                 let file_size = file.metadata().unwrap().len();
-                let file_type = file.extension().unwrap().to_str().unwrap();
 
                 metrics::STORAGE_SIZE
-                    .with_label_values(&["staging", &self.stream_name, file_type])
+                    .with_label_values(&["staging", &self.stream_name, ARROW_FILE_EXTENSION])
                     .add(file_size as i64);
             }
 
@@ -523,13 +522,12 @@ impl Stream {
                 for file in arrow_files {
                     // warn!("file-\n{file:?}\n");
                     let file_size = file.metadata().unwrap().len();
-                    let file_type = file.extension().unwrap().to_str().unwrap();
                     if remove_file(file.clone()).is_err() {
                         error!("Failed to delete file. Unstable state");
                         process::abort()
                     }
                     metrics::STORAGE_SIZE
-                        .with_label_values(&["staging", &self.stream_name, file_type])
+                        .with_label_values(&["staging", &self.stream_name, ARROW_FILE_EXTENSION])
                         .sub(file_size as i64);
                 }
             }
