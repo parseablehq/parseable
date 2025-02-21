@@ -66,6 +66,7 @@ use super::{
     LogStream, ARROW_FILE_EXTENSION,
 };
 
+// NOTE: this requires that custom partition values should not have special characters in their name/value
 static ARROWS_NAME_STRUCTURE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"^[a-zA-Z0-9&=]+\.(?P<front>\S+)\.\d+\.data\.arrows$").expect("Validated regex")
 });
