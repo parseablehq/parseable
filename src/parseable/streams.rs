@@ -67,7 +67,7 @@ use super::{
 };
 
 /// Regex pattern for parsing arrow file names.
-/// 
+///
 /// # Format
 /// The expected format is: `<schema_key>.<front_part>.<file_id>.data.arrows`
 /// where:
@@ -76,11 +76,11 @@ use super::{
 /// - front_part: Captured for parquet file naming, contains the timestamp associted with current/time-partition
 ///               as well as the custom partitioning key=value pairs (e.g., "date=2020-01-21.hour=10.minute=30.key1=value1.key2=value2.ee529ffc8e76")
 /// - file_id: Numeric id for individual arrows files
-/// 
+///
 /// # Limitations
 /// - Partition keys and values must only contain alphanumeric characters
 /// - Special characters in partition values will cause the pattern to fail in capturing
-/// 
+///
 /// # Examples
 /// Valid: "key1=value1,key2=value2"
 /// Invalid: "key1=special!value,key2=special#value"
@@ -88,16 +88,16 @@ static ARROWS_NAME_STRUCTURE: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"^[a-zA-Z0-9&=]+\.(?P<front>\S+)\.\d+\.data\.arrows$").expect("Validated regex")
 });
 
+/// Returns the filename for parquet if provided arrows file path is valid as per our expectation
 fn arrow_path_to_parquet(path: &Path, random_string: &str) -> Option<PathBuf> {
     let filename = path.file_name().unwrap().to_str().unwrap();
     let filename = ARROWS_NAME_STRUCTURE
         .captures(filename)
         .and_then(|c| c.get(1))?
         .as_str();
-    let filename_with_random_number = format!("{filename}.data.{random_string}.arrows");
+    let filename_with_random_number = format!("{filename}.data.{random_string}.parquet");
     let mut parquet_path = path.to_owned();
     parquet_path.set_file_name(filename_with_random_number);
-    parquet_path.set_extension("parquet");
 
     Some(parquet_path)
 }
