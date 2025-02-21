@@ -31,6 +31,7 @@ use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
+use once_cell::sync::Lazy;
 use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
@@ -39,6 +40,7 @@ use parquet::{
     schema::types::ColumnPath,
 };
 use rand::distributions::DistString;
+use regex::Regex;
 use relative_path::RelativePathBuf;
 use tracing::{debug, error, info, trace, warn};
 
@@ -63,6 +65,10 @@ use super::{
     },
     LogStream, ARROW_FILE_EXTENSION,
 };
+
+static ARROWS_NAME_STRUCTURE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^[[:alnum:]]+\.(?P<front>\S+)\.\d+\.data\.arrows$").expect("Validated regex")
+});
 
 #[derive(Debug, thiserror::Error)]
 #[error("Stream not found: {0}")]
@@ -281,10 +287,14 @@ impl Stream {
     }
 
     fn arrow_path_to_parquet(path: &Path, random_string: &str) -> PathBuf {
-        let filename = path.file_stem().unwrap().to_str().unwrap();
-        let (_, filename) = filename.split_once('.').unwrap();
-        assert!(filename.contains('.'), "contains the delim `.`");
-        let filename_with_random_number = format!("{filename}.{random_string}.arrows");
+        let filename = path.file_name().unwrap().to_str().unwrap();
+        let filename = ARROWS_NAME_STRUCTURE
+            .captures(filename)
+            .unwrap()
+            .get(1)
+            .unwrap()
+            .as_str();
+        let filename_with_random_number = format!("{filename}.data.{random_string}.arrows");
         let mut parquet_path = path.to_owned();
         parquet_path.set_file_name(filename_with_random_number);
         parquet_path.set_extension("parquet");
@@ -298,7 +308,7 @@ impl Stream {
             self.stream_name
         );
 
-        let time_partition = self.get_time_partition();
+        let time_partition: Option<String> = self.get_time_partition();
         let custom_partition = self.get_custom_partition();
 
         // read arrow files on disk
