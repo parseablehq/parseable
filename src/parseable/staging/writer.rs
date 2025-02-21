@@ -201,20 +201,15 @@ impl<const N: usize> MutableBuffer<N> {
     fn push(&mut self, rb: &RecordBatch) -> Option<Vec<RecordBatch>> {
         if self.inner.len() + rb.num_rows() >= N {
             let left = N - self.inner.len();
-            let right = rb.num_rows() - left;
             let left_slice = rb.slice(0, left);
-            let right_slice = if left < rb.num_rows() {
-                Some(rb.slice(left, right))
-            } else {
-                None
-            };
             self.inner.push(left_slice);
             // take all records
             let src = Vec::with_capacity(self.inner.len());
             let inner = std::mem::replace(&mut self.inner, src);
 
-            if let Some(right_slice) = right_slice {
-                self.inner.push(right_slice);
+            if left < rb.num_rows() {
+                let right = rb.num_rows() - left;
+                self.inner.push(rb.slice(left, right));
             }
 
             Some(inner)
