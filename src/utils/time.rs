@@ -307,7 +307,7 @@ impl Minute {
     /// ### PANICS
     /// If the provided `data_granularity` value isn't cleanly divisble from 60
     pub fn to_slot(self, data_granularity: u32) -> String {
-        assert!(data_granularity % 60 == 0);
+        assert!(60 % data_granularity == 0);
         let block_n = self.block / data_granularity;
         let block_start = block_n * data_granularity;
         if data_granularity == 1 {
