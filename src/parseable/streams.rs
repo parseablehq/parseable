@@ -355,7 +355,7 @@ impl Stream {
         let arrow_files = self.arrow_files();
         let record_reader = MergedRecordReader::new(&arrow_files);
         if record_reader.readers.is_empty() {
-            return vec![];
+            return records;
         }
         let mut from_file = record_reader
             .merged_iter(schema.clone(), time_partition)
