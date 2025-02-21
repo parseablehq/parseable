@@ -83,6 +83,7 @@ impl<const N: usize> DiskWriter<N> {
             }
         } else {
             self.inner.write(rb)?;
+            self.count += rb.num_rows();
         }
 
         Ok(())
