@@ -115,7 +115,7 @@ impl<const N: usize> DiskWriter<N> {
             .append(true)
             .open(partfile_path)?;
 
-        self.inner = FileWriter::try_new_buffered(file, &self.inner.schema())
+        self.inner = FileWriter::try_new_buffered(file, self.inner.schema())
             .expect("File and RecordBatch both are checked");
 
         Ok(())
