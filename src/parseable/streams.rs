@@ -124,7 +124,8 @@ impl Stream {
                     );
                     std::fs::create_dir_all(&self.data_path)?;
 
-                    let mut writer = DiskWriter::new(path_prefix, &record.schema())?;
+                    let mut writer =
+                        DiskWriter::new(path_prefix.display().to_string(), &record.schema())?;
                     writer.write(record)?;
 
                     guard.disk.insert(schema_key.to_owned(), writer);

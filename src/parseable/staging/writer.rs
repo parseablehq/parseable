@@ -21,7 +21,6 @@ use std::{
     collections::{HashMap, HashSet},
     fs::{File, OpenOptions},
     io::BufWriter,
-    path::PathBuf,
     sync::Arc,
 };
 
@@ -40,7 +39,7 @@ use super::StagingError;
 pub struct DiskWriter<const N: usize> {
     inner: FileWriter<BufWriter<File>>,
     /// Used to ensure un"finish"ed arrow files are renamed on "finish"
-    path_prefix: PathBuf,
+    path_prefix: String,
     /// Number of rows written onto disk
     count: usize,
     /// Denotes distinct files created with similar schema during the same minute by the same ingestor
@@ -48,11 +47,10 @@ pub struct DiskWriter<const N: usize> {
 }
 
 impl<const N: usize> DiskWriter<N> {
-    pub fn new(path_prefix: PathBuf, schema: &Schema) -> Result<Self, StagingError> {
+    pub fn new(path_prefix: String, schema: &Schema) -> Result<Self, StagingError> {
         let file_id = 0;
         // Live writes happen into partfile
-        let mut partfile_path = path_prefix.clone();
-        partfile_path.set_extension(format!("{file_id}.{ARROW_PART_FILE_EXTENSION}"));
+        let partfile_path = format!("{path_prefix}.{file_id}.{ARROW_PART_FILE_EXTENSION}");
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -93,11 +91,14 @@ impl<const N: usize> DiskWriter<N> {
     pub fn finish(&mut self) -> Result<(), StagingError> {
         self.inner.finish()?;
 
-        let mut partfile_path = self.path_prefix.clone();
-        partfile_path.set_extension(format!("{}.{ARROW_PART_FILE_EXTENSION}", self.file_id));
-
-        let mut arrows_path = self.path_prefix.clone();
-        arrows_path.set_extension(format!("{}.{ARROW_FILE_EXTENSION}", self.file_id));
+        let partfile_path = format!(
+            "{}.{}.{ARROW_PART_FILE_EXTENSION}",
+            self.path_prefix, self.file_id
+        );
+        let arrows_path = format!(
+            "{}.{}.{ARROW_FILE_EXTENSION}",
+            self.path_prefix, self.file_id
+        );
 
         // Rename from part file to finished arrows file
         std::fs::rename(partfile_path, arrows_path)?;
