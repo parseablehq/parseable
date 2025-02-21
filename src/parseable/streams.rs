@@ -157,15 +157,15 @@ impl Stream {
             hostname.push_str(id);
         }
         let filename = format!(
-            "{}{stream_hash}.{}.minute={}.{}.{hostname}.{ARROW_FILE_EXTENSION}",
+            "{}{stream_hash}.{}.minute={}.{}{hostname}.{ARROW_FILE_EXTENSION}",
             Utc::now().format("%Y%m%dT%H%M"),
             parsed_timestamp.format("date=%Y-%m-%d.hour=%H"),
             Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             custom_partition_values
                 .iter()
                 .sorted_by_key(|v| v.0)
-                .map(|(key, value)| format!("{key}={value}"))
-                .join(".")
+                .map(|(key, value)| format!("{key}={value}."))
+                .join("")
         );
         self.data_path.join(filename)
     }
