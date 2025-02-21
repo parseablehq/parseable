@@ -67,7 +67,7 @@ use super::{
 };
 
 static ARROWS_NAME_STRUCTURE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"^[[:alnum:]]+\.(?P<front>\S+)\.\d+\.data\.arrows$").expect("Validated regex")
+    Regex::new(r"^[a-zA-Z0-9&=]+\.(?P<front>\S+)\.\d+\.data\.arrows$").expect("Validated regex")
 });
 
 fn arrow_path_to_parquet(path: &Path, random_string: &str) -> Option<PathBuf> {
