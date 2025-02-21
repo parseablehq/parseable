@@ -460,7 +460,6 @@ impl Stream {
                 .set(0);
         }
 
-        warn!("staging files-\n{staging_files:?}\n");
         for (parquet_path, arrow_files) in staging_files {
             metrics::STAGING_FILES
                 .with_label_values(&[&self.stream_name])
