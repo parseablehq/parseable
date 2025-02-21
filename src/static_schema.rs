@@ -23,7 +23,7 @@ use serde::{Deserialize, Serialize};
 use std::str;
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::{HashMap,HashSet} , sync::Arc};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StaticSchema {
     fields: Vec<SchemaFields>,
@@ -87,7 +87,12 @@ pub fn convert_static_schema_to_arrow_schema(
             }
         }
     }
+
+    let mut existing_field_names: HashSet<String> = HashSet::new();
+
     for mut field in static_schema.fields {
+
+        validate_field_names(&field.name, &mut existing_field_names)?;
         if !time_partition.is_empty() && field.name == time_partition {
             time_partition_exists = true;
             field.data_type = "datetime".to_string();
@@ -139,6 +144,7 @@ pub fn convert_static_schema_to_arrow_schema(
 fn add_parseable_fields_to_static_schema(
     parsed_schema: ParsedSchema,
 ) -> Result<Arc<Schema>, AnyError> {
+
     let mut schema: Vec<Arc<Field>> = Vec::new();
     for field in parsed_schema.fields.iter() {
         let field = Field::new(field.name.clone(), field.data_type.clone(), field.nullable);
@@ -175,4 +181,17 @@ fn default_dict_id() -> i64 {
 }
 fn default_dict_is_ordered() -> bool {
     false
+}
+
+fn validate_field_names(field_name: &str, existing_fields: &mut HashSet<String>) -> Result<(), AnyError> {
+
+    if field_name.is_empty() {
+        return Err(anyhow!("field names should not be empty"));
+    }
+
+    if !existing_fields.insert(field_name.to_string()) {
+        return Err(anyhow!("duplicate field name: {}", field_name));
+    }
+
+    Ok(())
 }
