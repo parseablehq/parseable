@@ -16,9 +16,7 @@
  *
  */
 
-use chrono::{DateTime, NaiveDate, TimeDelta, Timelike, Utc};
-
-use super::minute_to_slot;
+use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeDelta, Timelike, Utc};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TimeParseError {
@@ -231,8 +229,8 @@ impl TimeRange {
         prefixes: &mut Vec<String>,
     ) {
         let mut push_prefix = |block: u32| {
-            if let Some(minute_slot) = minute_to_slot(block * data_granularity, data_granularity) {
-                let prefix = format!("{hour_prefix}minute={minute_slot}/");
+            if let Ok(minute) = Minute::try_from(block * data_granularity) {
+                let prefix = format!("{hour_prefix}minute={}/", minute.to_slot(data_granularity));
                 prefixes.push(prefix);
             }
         };
@@ -263,6 +261,48 @@ impl TimeRange {
             time_bounds.end_minute = 60;
         }
         time_bounds
+    }
+}
+
+/// Describes a minute block
+#[derive(Debug, Clone, Copy)]
+pub struct Minute {
+    block: u32,
+}
+
+impl TryFrom<u32> for Minute {
+    type Error = u32;
+
+    /// Returns a Minute if block is an acceptable minute value, else returns it as is
+    fn try_from(block: u32) -> Result<Self, Self::Error> {
+        if block >= 60 {
+            return Err(block);
+        }
+
+        Ok(Self { block })
+    }
+}
+
+impl From<NaiveDateTime> for Minute {
+    fn from(timestamp: NaiveDateTime) -> Self {
+        Self {
+            block: timestamp.minute(),
+        }
+    }
+}
+
+impl Minute {
+    /// Convert minutes to a slot range
+    /// e.g. given minute = 15 and OBJECT_STORE_DATA_GRANULARITY = 10 returns "10-19"
+    pub fn to_slot(self, data_granularity: u32) -> String {
+        let block_n = self.block / data_granularity;
+        let block_start = block_n * data_granularity;
+        if data_granularity == 1 {
+            return format!("{block_start:02}");
+        }
+
+        let block_end = (block_n + 1) * data_granularity - 1;
+        format!("{block_start:02}-{block_end:02}")
     }
 }
 

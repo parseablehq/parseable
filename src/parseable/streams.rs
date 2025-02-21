@@ -29,7 +29,7 @@ use std::{
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{Field, Fields, Schema};
-use chrono::{NaiveDateTime, Timelike, Utc};
+use chrono::{NaiveDateTime, Utc};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
 use parquet::{
@@ -52,7 +52,7 @@ use crate::{
     storage::{
         object_storage::to_bytes, retention::Retention, StreamType, OBJECT_STORE_DATA_GRANULARITY,
     },
-    utils::minute_to_slot,
+    utils::time::Minute,
     LOCK_EXPECT,
 };
 
@@ -157,16 +157,15 @@ impl Stream {
             hostname.push_str(id);
         }
         let filename = format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.{ARROW_FILE_EXTENSION}",
+            "{}{stream_hash}.{}.minute={}.{}.{hostname}.{ARROW_FILE_EXTENSION}",
             Utc::now().format("%Y%m%dT%H%M"),
-            parsed_timestamp.date(),
-            parsed_timestamp.hour(),
-            minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
+            parsed_timestamp.format("date=%Y-%m-%d.hour=%H"),
+            Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             custom_partition_values
                 .iter()
                 .sorted_by_key(|v| v.0)
-                .map(|(key, value)| format!("{key}={value}."))
-                .join("")
+                .map(|(key, value)| format!("{key}={value}"))
+                .join(".")
         );
         self.data_path.join(filename)
     }
@@ -860,11 +859,10 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}.{ARROW_FILE_EXTENSION}",
+            "{}{stream_hash}.{}.minute={}.{}.{ARROW_FILE_EXTENSION}",
             Utc::now().format("%Y%m%dT%H%M"),
-            parsed_timestamp.date(),
-            parsed_timestamp.hour(),
-            minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
+            parsed_timestamp.format("date=%Y-%m-%d.hour=%H"),
+            Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             hostname::get().unwrap().into_string().unwrap()
         ));
 
@@ -895,11 +893,10 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.{ARROW_FILE_EXTENSION}",
+            "{}{stream_hash}.{}.minute={}.key1=value1.key2=value2.{}.{ARROW_FILE_EXTENSION}",
             Utc::now().format("%Y%m%dT%H%M"),
-            parsed_timestamp.date(),
-            parsed_timestamp.hour(),
-            minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
+            parsed_timestamp.format("date=%Y-%m-%d.hour=%H"),
+            Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             hostname::get().unwrap().into_string().unwrap()
         ));
 
