@@ -264,7 +264,16 @@ impl TimeRange {
     }
 }
 
-/// Describes a minute block
+/// Represents a minute value (0-59) and provides methods for converting it to a slot range.
+///
+/// # Examples
+///
+/// ```
+/// use crate::utils::time::Minute;
+///
+/// let minute = Minute::try_from(15).unwrap();
+/// assert_eq!(minute.to_slot(10), "10-19");
+/// ```
 #[derive(Debug, Clone, Copy)]
 pub struct Minute {
     block: u32,
