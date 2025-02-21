@@ -136,7 +136,6 @@ impl ListingTableBuilder {
                     .list(Some(&object_store::path::Path::from(prefix)))
                     .try_collect::<Vec<_>>()
                     .await
-                    .map_err(Into::into)
             }));
         }
 
