@@ -106,6 +106,18 @@ impl<const N: usize> DiskWriter<N> {
         self.file_id += 1;
         self.count = 0;
 
+        let partfile_path = format!(
+            "{}.{}.{ARROW_PART_FILE_EXTENSION}",
+            self.path_prefix, self.file_id
+        );
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(partfile_path)?;
+
+        self.inner = FileWriter::try_new_buffered(file, &self.inner.schema())
+            .expect("File and RecordBatch both are checked");
+
         Ok(())
     }
 }
