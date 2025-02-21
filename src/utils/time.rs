@@ -470,4 +470,34 @@ mod tests {
         let left = prefixes.iter().map(String::as_str).collect::<Vec<&str>>();
         assert_eq!(left.as_slice(), right);
     }
+
+    #[test]
+    fn valid_minute_to_minute_slot() {
+        let res = Minute::try_from(10);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().to_slot(1), "10");
+    }
+
+    #[test]
+    fn invalid_minute() {
+        assert!(Minute::try_from(100).is_err());
+    }
+
+    #[test]
+    fn minute_from_timestamp() {
+        let timestamp = NaiveDateTime::parse_from_str("2025-01-01 02:03", "%Y-%m-%d %H:%M").unwrap();
+        assert_eq!(Minute::from(timestamp).to_slot(1), "03");
+    }
+
+    #[test]
+    fn slot_5_min_from_timestamp() {
+        let timestamp = NaiveDateTime::parse_from_str("2025-01-01 02:03", "%Y-%m-%d %H:%M").unwrap();
+        assert_eq!(Minute::from(timestamp).to_slot(5), "00-04");
+    }
+
+    #[test]
+    fn slot_30_min_from_timestamp() {
+        let timestamp = NaiveDateTime::parse_from_str("2025-01-01 02:33", "%Y-%m-%d %H:%M").unwrap();
+        assert_eq!(Minute::from(timestamp).to_slot(30), "30-59");
+    }
 }
