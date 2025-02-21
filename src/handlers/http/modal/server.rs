@@ -26,6 +26,7 @@ use crate::handlers::http::about;
 use crate::handlers::http::alerts;
 use crate::handlers::http::base_path;
 use crate::handlers::http::health_check;
+use crate::handlers::http::prism_base_path;
 use crate::handlers::http::query;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
@@ -89,6 +90,7 @@ impl ParseableServer for Server {
                     .service(Self::get_alerts_webscope())
                     .service(Self::get_metrics_webscope()),
             )
+            .service(web::scope(&prism_base_path()).service(Self::get_prism_home()))
             .service(Self::get_ingest_otel_factory())
             .service(Self::get_generated());
     }
@@ -154,6 +156,18 @@ impl ParseableServer for Server {
 }
 
 impl Server {
+    pub fn get_prism_home() -> Resource {
+        web::resource("/home").route(web::get().to(http::prism_home::home_api))
+    }
+
+    pub fn get_prism_logstream() -> Scope {
+        web::scope("/logstream").service(
+            web::scope("/{logstream}").service(
+                web::resource("/info").route(web::get().to(http::prism_logstream::get_info)),
+            ),
+        )
+    }
+
     pub fn get_metrics_webscope() -> Scope {
         web::scope("/metrics").service(
             web::resource("").route(web::get().to(metrics::get).authorize(Action::Metrics)),

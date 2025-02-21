@@ -98,7 +98,7 @@ pub struct TickConfig {
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Dashboard {
     pub version: Option<String>,
-    name: String,
+    pub name: String,
     description: String,
     pub dashboard_id: Option<String>,
     pub user_id: Option<String>,
