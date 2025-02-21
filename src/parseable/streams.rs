@@ -325,8 +325,7 @@ impl Stream {
         // if yes, then merge them and save
 
         if let Some(mut schema) = schema {
-            let static_schema_flag = self.get_static_schema_flag();
-            if !static_schema_flag {
+            if !self.get_static_schema_flag() {
                 // schema is dynamic, read from staging and merge if present
 
                 // need to add something before .schema to make the file have an extension of type `schema`
@@ -477,7 +476,16 @@ impl Stream {
                 .set(arrow_files.len() as i64);
 
             for file in &arrow_files {
-                let file_size = file.metadata().unwrap().len();
+                let file_size = match file.metadata() {
+                    Ok(meta) => meta.len(),
+                    Err(err) => {
+                        error!(
+                            "Looks like the file ({}) was removed; Error = {err}",
+                            file.display()
+                        );
+                        continue;
+                    }
+                };
 
                 metrics::STORAGE_SIZE
                     .with_label_values(&["staging", &self.stream_name, ARROW_FILE_EXTENSION])
