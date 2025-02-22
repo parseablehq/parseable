@@ -66,6 +66,9 @@ use super::{
     LogStream, ARROW_FILE_EXTENSION,
 };
 
+// ~16K rows is default in-memory limit for each recordbatch
+const MAX_RECORD_BATCH_SIZE: usize = 16384;
+
 /// Regex pattern for parsing arrow file names.
 ///
 /// # Format
@@ -113,8 +116,8 @@ pub struct Stream {
     pub metadata: RwLock<LogStreamMetadata>,
     pub data_path: PathBuf,
     pub options: Arc<Options>,
-    /// Writer with a 16KB buffer size for optimal I/O performance.
-    pub writer: Mutex<Writer<16384>>,
+    /// Writer with a ~16K rows limit for optimal I/O performance.
+    pub writer: Mutex<Writer<MAX_RECORD_BATCH_SIZE>>,
     pub ingestor_id: Option<String>,
 }
 
@@ -147,6 +150,11 @@ impl Stream {
         custom_partition_values: &HashMap<String, String>,
         stream_type: StreamType,
     ) -> Result<(), StagingError> {
+        let row_count = record.num_rows();
+        if row_count > MAX_RECORD_BATCH_SIZE {
+            return Err(StagingError::RowLimit(row_count));
+        }
+
         let mut guard = self.writer.lock().unwrap();
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
             match guard.disk.get_mut(schema_key) {

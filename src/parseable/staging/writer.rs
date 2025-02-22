@@ -37,13 +37,13 @@ use crate::utils::arrow::adapt_batch;
 use super::StagingError;
 
 /// Context regarding `.arrows` file being persisted onto disk
-pub struct DiskWriter<const N: usize> {
+pub struct DiskWriter {
     inner: FileWriter<BufWriter<File>>,
     /// Used to ensure un"finish"ed arrow files are renamed on "finish"
     path_prefix: String,
 }
 
-impl<const N: usize> DiskWriter<N> {
+impl DiskWriter {
     pub fn new(path_prefix: String, schema: &Schema) -> Result<Self, StagingError> {
         // Live writes happen into partfile
         let partfile_path = format!("{path_prefix}.{ARROW_PART_FILE_EXTENSION}");
@@ -79,12 +79,6 @@ impl<const N: usize> DiskWriter<N> {
 
         Ok(())
     }
-}
-
-#[derive(Default)]
-pub struct Writer<const N: usize> {
-    pub mem: MemWriter<N>,
-    pub disk: HashMap<String, DiskWriter<N>>,
 }
 
 /// Structure to keep recordbatches in memory.
@@ -177,4 +171,10 @@ impl<const N: usize> MutableBuffer<N> {
             None
         }
     }
+}
+
+#[derive(Default)]
+pub struct Writer<const N: usize> {
+    pub mem: MemWriter<N>,
+    pub disk: HashMap<String, DiskWriter>,
 }
