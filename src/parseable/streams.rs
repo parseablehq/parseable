@@ -27,11 +27,11 @@ use std::{
 };
 
 use arrow_array::RecordBatch;
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
+use once_cell::sync::Lazy;
 use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
@@ -40,8 +40,9 @@ use parquet::{
     schema::types::ColumnPath,
 };
 use rand::distributions::DistString;
+use regex::Regex;
 use relative_path::RelativePathBuf;
-use tracing::{error, info, trace, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     cli::Options,
@@ -58,18 +59,54 @@ use crate::{
 
 use super::{
     staging::{
-        reader::{MergedRecordReader, MergedReverseRecordReader},
-        writer::Writer,
+        reader::MergedRecordReader,
+        writer::{DiskWriter, Writer},
         StagingError,
     },
-    LogStream,
+    LogStream, ARROW_FILE_EXTENSION,
 };
+
+// ~16K rows is default in-memory limit for each recordbatch
+const MAX_RECORD_BATCH_SIZE: usize = 16384;
+
+/// Regex pattern for parsing arrow file names.
+///
+/// # Format
+/// The expected format is: `<schema_key>.<front_part>.data.arrows`
+/// where:
+/// - schema_key: A key that is associated with the timestamp at ingestion, hash of arrow schema and the key-value
+///               pairs joined by '&' and '=' (e.g., "20200201T1830f8a5fc1edc567d56&key1=value1&key2=value2")
+/// - front_part: Captured for parquet file naming, contains the timestamp associted with current/time-partition
+///               as well as the custom partitioning key=value pairs (e.g., "date=2020-01-21.hour=10.minute=30.key1=value1.key2=value2.ee529ffc8e76")
+///
+/// # Limitations
+/// - Partition keys and values must only contain alphanumeric characters
+/// - Special characters in partition values will cause the pattern to fail in capturing
+///
+/// # Examples
+/// Valid: "key1=value1,key2=value2"
+/// Invalid: "key1=special!value,key2=special#value"
+static ARROWS_NAME_STRUCTURE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^[a-zA-Z0-9&=]+\.(?P<front>\S+)\.data\.arrows$").expect("Validated regex")
+});
+
+/// Returns the filename for parquet if provided arrows file path is valid as per our expectation
+fn arrow_path_to_parquet(path: &Path, random_string: &str) -> Option<PathBuf> {
+    let filename = path.file_name().unwrap().to_str().unwrap();
+    let filename = ARROWS_NAME_STRUCTURE
+        .captures(filename)
+        .and_then(|c| c.get(1))?
+        .as_str();
+    let filename_with_random_number = format!("{filename}.data.{random_string}.parquet");
+    let mut parquet_path = path.to_owned();
+    parquet_path.set_file_name(filename_with_random_number);
+
+    Some(parquet_path)
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("Stream not found: {0}")]
 pub struct StreamNotFound(pub String);
-
-const ARROW_FILE_EXTENSION: &str = "data.arrows";
 
 pub type StreamRef = Arc<Stream>;
 
@@ -79,7 +116,8 @@ pub struct Stream {
     pub metadata: RwLock<LogStreamMetadata>,
     pub data_path: PathBuf,
     pub options: Arc<Options>,
-    pub writer: Mutex<Writer>,
+    /// Writer with a ~16K rows limit for optimal I/O performance.
+    pub writer: Mutex<Writer<MAX_RECORD_BATCH_SIZE>>,
     pub ingestor_id: Option<String>,
 }
 
@@ -112,6 +150,11 @@ impl Stream {
         custom_partition_values: &HashMap<String, String>,
         stream_type: StreamType,
     ) -> Result<(), StagingError> {
+        let row_count = record.num_rows();
+        if row_count > MAX_RECORD_BATCH_SIZE {
+            return Err(StagingError::RowLimit(row_count));
+        }
+
         let mut guard = self.writer.lock().unwrap();
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
             match guard.disk.get_mut(schema_key) {
@@ -120,22 +163,17 @@ impl Stream {
                 }
                 None => {
                     // entry is not present thus we create it
-                    let file_path = self.path_by_current_time(
+                    let path_prefix = self.path_prefix_by_current_time(
                         schema_key,
                         parsed_timestamp,
                         custom_partition_values,
                     );
                     std::fs::create_dir_all(&self.data_path)?;
 
-                    let file = OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&file_path)?;
-
-                    let mut writer = StreamWriter::try_new(file, &record.schema())
-                        .expect("File and RecordBatch both are checked");
-
+                    let mut writer =
+                        DiskWriter::new(path_prefix.display().to_string(), &record.schema())?;
                     writer.write(record)?;
+
                     guard.disk.insert(schema_key.to_owned(), writer);
                 }
             };
@@ -146,7 +184,7 @@ impl Stream {
         Ok(())
     }
 
-    pub fn path_by_current_time(
+    pub fn path_prefix_by_current_time(
         &self,
         stream_hash: &str,
         parsed_timestamp: NaiveDateTime,
@@ -157,7 +195,7 @@ impl Stream {
             hostname.push_str(id);
         }
         let filename = format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.{ARROW_FILE_EXTENSION}",
+            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}",
             Utc::now().format("%Y%m%dT%H%M"),
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
@@ -179,7 +217,10 @@ impl Stream {
         let paths = dir
             .flatten()
             .map(|file| file.path())
-            .filter(|file| file.extension().is_some_and(|ext| ext.eq("arrows")))
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|f| f.to_string_lossy().ends_with(ARROW_FILE_EXTENSION))
+            })
             .sorted_by_key(|f| f.metadata().unwrap().modified().unwrap())
             .collect();
 
@@ -221,12 +262,13 @@ impl Stream {
                     &arrow_file_path, self.stream_name
                 );
                 remove_file(&arrow_file_path).unwrap();
-            } else {
-                let key = Self::arrow_path_to_parquet(&arrow_file_path, &random_string);
+            } else if let Some(key) = arrow_path_to_parquet(&arrow_file_path, &random_string) {
                 grouped_arrow_file
                     .entry(key)
                     .or_default()
                     .push(arrow_file_path);
+            } else {
+                warn!("Unexpected arrows file: {}", arrow_file_path.display());
             }
         }
         grouped_arrow_file
@@ -285,17 +327,6 @@ impl Stream {
         }
     }
 
-    fn arrow_path_to_parquet(path: &Path, random_string: &str) -> PathBuf {
-        let filename = path.file_stem().unwrap().to_str().unwrap();
-        let (_, filename) = filename.split_once('.').unwrap();
-        assert!(filename.contains('.'), "contains the delim `.`");
-        let filename_with_random_number = format!("{filename}.{random_string}.arrows");
-        let mut parquet_path = path.to_owned();
-        parquet_path.set_file_name(filename_with_random_number);
-        parquet_path.set_extension("parquet");
-        parquet_path
-    }
-
     /// Converts arrow files in staging into parquet files, does so only for past minutes when run with `!shutdown_signal`
     pub fn prepare_parquet(&self, shutdown_signal: bool) -> Result<(), StagingError> {
         info!(
@@ -303,7 +334,7 @@ impl Stream {
             self.stream_name
         );
 
-        let time_partition = self.get_time_partition();
+        let time_partition: Option<String> = self.get_time_partition();
         let custom_partition = self.get_custom_partition();
 
         // read arrow files on disk
@@ -320,8 +351,7 @@ impl Stream {
         // if yes, then merge them and save
 
         if let Some(mut schema) = schema {
-            let static_schema_flag = self.get_static_schema_flag();
-            if !static_schema_flag {
+            if !self.get_static_schema_flag() {
                 // schema is dynamic, read from staging and merge if present
 
                 // need to add something before .schema to make the file have an extension of type `schema`
@@ -349,8 +379,26 @@ impl Stream {
         Ok(())
     }
 
-    pub fn recordbatches_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
-        self.writer.lock().unwrap().mem.recordbatch_cloned(schema)
+    /// Returns records batches as found in staging
+    pub fn recordbatches_cloned(
+        &self,
+        schema: &Arc<Schema>,
+        time_partition: Option<String>,
+    ) -> Vec<RecordBatch> {
+        // All records found in memory
+        let mut records = self.writer.lock().unwrap().mem.recordbatch_cloned(schema);
+        // Append records batches picked up from `.arrows` files
+        let arrow_files = self.arrow_files();
+        let record_reader = MergedRecordReader::new(&arrow_files);
+        if record_reader.readers.is_empty() {
+            return records;
+        }
+        let mut from_file = record_reader
+            .merged_iter(schema.clone(), time_partition)
+            .collect();
+        records.append(&mut from_file);
+
+        records
     }
 
     pub fn clear(&self) {
@@ -358,7 +406,7 @@ impl Stream {
     }
 
     pub fn flush(&self) {
-        let mut disk_writers = {
+        let disk_writers = {
             let mut writer = self.writer.lock().unwrap();
             // Flush memory
             writer.mem.clear();
@@ -367,8 +415,12 @@ impl Stream {
         };
 
         // Flush disk
-        for writer in disk_writers.values_mut() {
-            _ = writer.finish();
+        for (_, mut writer) in disk_writers {
+            if let Err(err) = writer.finish() {
+                warn!("Couldn't finish `.arrows` file: {err}");
+            } else {
+                debug!("Finished `.arrows` file sync onto disk")
+            }
         }
     }
 
@@ -444,22 +496,29 @@ impl Stream {
                 .set(0);
         }
 
-        // warn!("staging files-\n{staging_files:?}\n");
         for (parquet_path, arrow_files) in staging_files {
             metrics::STAGING_FILES
                 .with_label_values(&[&self.stream_name])
                 .set(arrow_files.len() as i64);
 
             for file in &arrow_files {
-                let file_size = file.metadata().unwrap().len();
-                let file_type = file.extension().unwrap().to_str().unwrap();
+                let file_size = match file.metadata() {
+                    Ok(meta) => meta.len(),
+                    Err(err) => {
+                        error!(
+                            "Looks like the file ({}) was removed; Error = {err}",
+                            file.display()
+                        );
+                        continue;
+                    }
+                };
 
                 metrics::STORAGE_SIZE
-                    .with_label_values(&["staging", &self.stream_name, file_type])
+                    .with_label_values(&["staging", &self.stream_name, ARROW_FILE_EXTENSION])
                     .add(file_size as i64);
             }
 
-            let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
+            let record_reader = MergedRecordReader::new(&arrow_files);
             if record_reader.readers.is_empty() {
                 continue;
             }
@@ -497,13 +556,12 @@ impl Stream {
                 for file in arrow_files {
                     // warn!("file-\n{file:?}\n");
                     let file_size = file.metadata().unwrap().len();
-                    let file_type = file.extension().unwrap().to_str().unwrap();
                     if remove_file(file.clone()).is_err() {
                         error!("Failed to delete file. Unstable state");
                         process::abort()
                     }
                     metrics::STORAGE_SIZE
-                        .with_label_values(&["staging", &self.stream_name, file_type])
+                        .with_label_values(&["staging", &self.stream_name, ARROW_FILE_EXTENSION])
                         .sub(file_size as i64);
                 }
             }
@@ -518,13 +576,12 @@ impl Stream {
 
     pub fn updated_schema(&self, current_schema: Schema) -> Schema {
         let staging_files = self.arrow_files();
-        let record_reader = MergedRecordReader::try_new(&staging_files).unwrap();
+        let record_reader = MergedRecordReader::new(&staging_files);
         if record_reader.readers.is_empty() {
             return current_schema;
         }
 
         let schema = record_reader.merged_schema();
-
         Schema::try_merge(vec![schema, current_schema]).unwrap()
     }
 
@@ -860,7 +917,7 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}.{ARROW_FILE_EXTENSION}",
+            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}",
             Utc::now().format("%Y%m%dT%H%M"),
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
@@ -868,8 +925,11 @@ mod tests {
             hostname::get().unwrap().into_string().unwrap()
         ));
 
-        let generated_path =
-            staging.path_by_current_time(stream_hash, parsed_timestamp, &custom_partition_values);
+        let generated_path = staging.path_prefix_by_current_time(
+            stream_hash,
+            parsed_timestamp,
+            &custom_partition_values,
+        );
 
         assert_eq!(generated_path, expected_path);
     }
@@ -895,7 +955,7 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.{ARROW_FILE_EXTENSION}",
+            "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}",
             Utc::now().format("%Y%m%dT%H%M"),
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
@@ -903,8 +963,11 @@ mod tests {
             hostname::get().unwrap().into_string().unwrap()
         ));
 
-        let generated_path =
-            staging.path_by_current_time(stream_hash, parsed_timestamp, &custom_partition_values);
+        let generated_path = staging.path_prefix_by_current_time(
+            stream_hash,
+            parsed_timestamp,
+            &custom_partition_values,
+        );
 
         assert_eq!(generated_path, expected_path);
     }
