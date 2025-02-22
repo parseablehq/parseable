@@ -29,6 +29,7 @@ use arrow_ipc::writer::FileWriter;
 use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
 use itertools::Itertools;
+use tracing::trace;
 
 use crate::parseable::{ARROW_FILE_EXTENSION, ARROW_PART_FILE_EXTENSION};
 use crate::utils::arrow::adapt_batch;
@@ -40,17 +41,12 @@ pub struct DiskWriter<const N: usize> {
     inner: FileWriter<BufWriter<File>>,
     /// Used to ensure un"finish"ed arrow files are renamed on "finish"
     path_prefix: String,
-    /// Number of rows written onto disk
-    count: usize,
-    /// Denotes distinct files created with similar schema during the same minute by the same ingestor
-    file_id: usize,
 }
 
 impl<const N: usize> DiskWriter<N> {
     pub fn new(path_prefix: String, schema: &Schema) -> Result<Self, StagingError> {
-        let file_id = 0;
         // Live writes happen into partfile
-        let partfile_path = format!("{path_prefix}.{file_id}.{ARROW_PART_FILE_EXTENSION}");
+        let partfile_path = format!("{path_prefix}.{ARROW_PART_FILE_EXTENSION}");
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -60,29 +56,12 @@ impl<const N: usize> DiskWriter<N> {
             inner: FileWriter::try_new_buffered(file, schema)
                 .expect("File and RecordBatch both are checked"),
             path_prefix,
-            count: 0,
-            file_id,
         })
     }
 
-    /// Appends records into an `{file_id}.part.arrows` files,
-    /// flushing onto disk and increments count on breaching row limit.
+    /// Appends records into a `.part.arrows` file
     pub fn write(&mut self, rb: &RecordBatch) -> Result<(), StagingError> {
-        if self.count + rb.num_rows() >= N {
-            let left = N - self.count;
-            let left_slice = rb.slice(0, left);
-            self.inner.write(&left_slice)?;
-            self.finish()?;
-
-            // Write leftover records into new files until all have been written
-            if left < rb.num_rows() {
-                let right = rb.num_rows() - left;
-                self.write(&rb.slice(left, right))?;
-            }
-        } else {
-            self.inner.write(rb)?;
-            self.count += rb.num_rows();
-        }
+        self.inner.write(rb)?;
 
         Ok(())
     }
@@ -91,32 +70,12 @@ impl<const N: usize> DiskWriter<N> {
     pub fn finish(&mut self) -> Result<(), StagingError> {
         self.inner.finish()?;
 
-        let partfile_path = format!(
-            "{}.{}.{ARROW_PART_FILE_EXTENSION}",
-            self.path_prefix, self.file_id
-        );
-        let arrows_path = format!(
-            "{}.{}.{ARROW_FILE_EXTENSION}",
-            self.path_prefix, self.file_id
-        );
+        let partfile_path = format!("{}.{ARROW_PART_FILE_EXTENSION}", self.path_prefix);
+        let arrows_path = format!("{}.{ARROW_FILE_EXTENSION}", self.path_prefix);
 
         // Rename from part file to finished arrows file
-        std::fs::rename(partfile_path, arrows_path)?;
-
-        self.file_id += 1;
-        self.count = 0;
-
-        let partfile_path = format!(
-            "{}.{}.{ARROW_PART_FILE_EXTENSION}",
-            self.path_prefix, self.file_id
-        );
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(partfile_path)?;
-
-        self.inner = FileWriter::try_new_buffered(file, self.inner.schema())
-            .expect("File and RecordBatch both are checked");
+        std::fs::rename(partfile_path, &arrows_path)?;
+        trace!("Finished arrows file: {arrows_path}");
 
         Ok(())
     }
