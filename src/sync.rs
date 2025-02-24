@@ -20,6 +20,7 @@ use chrono::{TimeDelta, Timelike};
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use tokio::sync::oneshot;
+use tokio::task::JoinSet;
 use tokio::time::{interval_at, sleep, Duration, Instant};
 use tokio::{select, task};
 use tracing::{error, info, trace, warn};
@@ -183,23 +184,18 @@ pub fn local_sync() -> (
 
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
             let mut sync_interval = interval_at(next_minute(), LOCAL_SYNC_INTERVAL);
+            let mut joinset = JoinSet::new();
 
             loop {
                 select! {
+                    // Spawns a flush+conversion task every `LOCAL_SYNC_INTERVAL` seconds
                     _ = sync_interval.tick() => {
-                        trace!("Flushing Arrows to disk...");
-                        PARSEABLE.flush_all_streams();
-
-                        trace!("Converting Arrow to Parquet... ");
-                        if let Err(e) = monitor_task_duration(
-                            "arrow_conversion",
-                            Duration::from_secs(30),
-                            || async { PARSEABLE.streams.prepare_parquet(false) },
-                        ).await
-                        {
-                            warn!("failed to convert local arrow data to parquet. {e:?}");
-                        }
+                        joinset.spawn(flush_and_convert());
                     },
+                    // Joins and logs errors in spawned tasks
+                    Some(Err(e)) = joinset.join_next(), if !joinset.is_empty() => {
+                        error!("Issue joining flush+conversion: {e}")
+                    }
                     res = &mut inbox_rx => {match res{
                         Ok(_) => break,
                         Err(_) => {
@@ -272,4 +268,19 @@ pub fn schedule_alert_task(
         }
     });
     Ok(handle)
+}
+
+/// Asynchronously flushes all streams when called, then compacts them into parquet files ready to be pushed onto objectstore
+async fn flush_and_convert() {
+    trace!("Flushing Arrows to disk...");
+    PARSEABLE.flush_all_streams();
+
+    trace!("Converting Arrow to Parquet... ");
+    if let Err(e) = monitor_task_duration("arrow_conversion", Duration::from_secs(30), || async {
+        PARSEABLE.streams.prepare_parquet(false)
+    })
+    .await
+    {
+        warn!("failed to convert local arrow data to parquet. {e:?}");
+    }
 }
