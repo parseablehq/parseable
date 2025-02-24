@@ -16,10 +16,9 @@
  *
  */
 
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use async_trait::async_trait;
-use chrono::Utc;
 use futures_util::StreamExt;
 use rdkafka::consumer::{CommitMode, Consumer};
 use serde_json::Value;
@@ -58,6 +57,7 @@ impl ParseableSinkProcessor {
         let stream = PARSEABLE.get_stream(stream_name)?;
         let schema = stream.get_schema_raw();
         let time_partition = stream.get_time_partition();
+        let custom_partition = stream.get_custom_partition();
         let static_schema_flag = stream.get_static_schema_flag();
         let schema_version = stream.get_schema_version();
 
@@ -71,27 +71,16 @@ impl ParseableSinkProcessor {
             }
         }
 
-        let (rb, is_first) = json::Event {
-            json: Value::Array(json_vec),
-        }
-        .into_recordbatch(
+        let p_event = json::Event::new(Value::Array(json_vec)).into_event(
+            stream_name.to_string(),
+            total_payload_size,
             &schema,
             static_schema_flag,
+            custom_partition.as_ref(),
             time_partition.as_ref(),
             schema_version,
+            StreamType::UserDefined,
         )?;
-
-        let p_event = ParseableEvent {
-            rb,
-            stream_name: stream_name.to_string(),
-            origin_format: "json",
-            origin_size: total_payload_size,
-            is_first_event: is_first,
-            parsed_timestamp: Utc::now().naive_utc(),
-            time_partition: None,
-            custom_partition_values: HashMap::new(),
-            stream_type: StreamType::UserDefined,
-        };
 
         Ok(p_event)
     }

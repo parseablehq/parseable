@@ -26,6 +26,7 @@ use chrono::Utc;
 use http::StatusCode;
 use serde_json::Value;
 
+use crate::event;
 use crate::event::error::EventError;
 use crate::event::format::{self, EventFormat, LogSource};
 use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
@@ -35,7 +36,6 @@ use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::flatten::JsonFlattenError;
-use crate::{event, LOCK_EXPECT};
 
 use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::flatten_and_push_logs;
@@ -79,34 +79,22 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
 
 pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
     let size: usize = body.len();
-    let parsed_timestamp = Utc::now().naive_utc();
-    let (rb, is_first) = {
-        let json: Value = serde_json::from_slice(&body)?;
-        let hash_map = PARSEABLE.streams.read().unwrap();
-        let schema = hash_map
-            .get(&stream_name)
-            .ok_or_else(|| StreamNotFound(stream_name.clone()))?
-            .metadata
-            .read()
-            .expect(LOCK_EXPECT)
-            .schema
-            .clone();
-        let event = format::json::Event { json };
-        // For internal streams, use old schema
-        event.into_recordbatch(&schema, false, None, SchemaVersion::V0)?
-    };
-    event::Event {
-        rb,
-        stream_name,
-        origin_format: "json",
-        origin_size: size as u64,
-        is_first_event: is_first,
-        parsed_timestamp,
-        time_partition: None,
-        custom_partition_values: HashMap::new(),
-        stream_type: StreamType::Internal,
-    }
-    .process()?;
+    let json: Value = serde_json::from_slice(&body)?;
+    let schema = PARSEABLE.get_stream(&stream_name)?.get_schema_raw();
+
+    // For internal streams, use old schema
+    format::json::Event::new(json)
+        .into_event(
+            stream_name,
+            size as u64,
+            &schema,
+            false,
+            None,
+            None,
+            SchemaVersion::V0,
+            StreamType::Internal,
+        )?
+        .process()?;
 
     Ok(())
 }
@@ -392,7 +380,7 @@ mod tests {
             "b": "hello",
         });
 
-        let (rb, _) = json::Event { json }
+        let (rb, _) = json::Event::new(json)
             .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
             .unwrap();
 
@@ -420,7 +408,7 @@ mod tests {
             "c": null
         });
 
-        let (rb, _) = json::Event { json }
+        let (rb, _) = json::Event::new(json)
             .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
             .unwrap();
 
@@ -452,7 +440,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = json::Event { json }
+        let (rb, _) = json::Event::new(json)
             .into_recordbatch(&schema, false, None, SchemaVersion::V0)
             .unwrap();
 
@@ -484,7 +472,7 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(json::Event { json }
+        assert!(json::Event::new(json)
             .into_recordbatch(&schema, false, None, SchemaVersion::V0,)
             .is_err());
     }
@@ -502,7 +490,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = json::Event { json }
+        let (rb, _) = json::Event::new(json)
             .into_recordbatch(&schema, false, None, SchemaVersion::V0)
             .unwrap();
 
@@ -543,7 +531,7 @@ mod tests {
             },
         ]);
 
-        let (rb, _) = json::Event { json }
+        let (rb, _) = json::Event::new(json)
             .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
             .unwrap();
 
@@ -591,7 +579,7 @@ mod tests {
             },
         ]);
 
-        let (rb, _) = json::Event { json }
+        let (rb, _) = json::Event::new(json)
             .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
             .unwrap();
 
@@ -640,7 +628,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = json::Event { json }
+        let (rb, _) = json::Event::new(json)
             .into_recordbatch(&schema, false, None, SchemaVersion::V0)
             .unwrap();
 
@@ -689,7 +677,7 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(json::Event { json }
+        assert!(json::Event::new(json)
             .into_recordbatch(&schema, false, None, SchemaVersion::V0,)
             .is_err());
     }
@@ -729,11 +717,9 @@ mod tests {
         )
         .unwrap();
 
-        let (rb, _) = json::Event {
-            json: flattened_json,
-        }
-        .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
-        .unwrap();
+        let (rb, _) = json::Event::new(flattened_json)
+            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
+            .unwrap();
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 5);
         assert_eq!(
@@ -814,9 +800,7 @@ mod tests {
         )
         .unwrap();
 
-        let (rb, _) = json::Event {
-            json: flattened_json,
-        }
+        let (rb, _) = json::Event::new(flattened_json)
         .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V1)
         .unwrap();
 

@@ -23,6 +23,7 @@ use anyhow::anyhow;
 use arrow_array::RecordBatch;
 use arrow_json::reader::{infer_json_schema_from_iterator, ReaderBuilder};
 use arrow_schema::{DataType, Field, Fields, Schema};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use itertools::Itertools;
 use serde_json::Value;
@@ -30,10 +31,20 @@ use std::{collections::HashMap, sync::Arc};
 use tracing::error;
 
 use super::EventFormat;
-use crate::{metadata::SchemaVersion, utils::arrow::get_field};
+use crate::{metadata::SchemaVersion, storage::StreamType, utils::arrow::get_field};
 
 pub struct Event {
     pub json: Value,
+    ingestion_time: DateTime<Utc>,
+}
+
+impl Event {
+    pub fn new(json: Value) -> Self {
+        Self {
+            json,
+            ingestion_time: Utc::now(),
+        }
+    }
 }
 
 impl EventFormat for Event {
@@ -120,6 +131,82 @@ impl EventFormat for Event {
             Ok(None) => unreachable!("all records are added to one rb"),
         }
     }
+
+    fn into_event(
+        self,
+        stream_name: String,
+        origin_size: u64,
+        storage_schema: &HashMap<String, Arc<Field>>,
+        static_schema_flag: bool,
+        custom_partitions: Option<&String>,
+        time_partition: Option<&String>,
+        schema_version: SchemaVersion,
+        stream_type: StreamType,
+    ) -> Result<super::Event, anyhow::Error> {
+        let custom_partition_values = match custom_partitions.as_ref() {
+            Some(custom_partition) => {
+                let custom_partitions = custom_partition.split(',').collect_vec();
+                get_custom_partition_values(&self.json, &custom_partitions)
+            }
+            None => HashMap::new(),
+        };
+
+        let parsed_timestamp = match time_partition {
+            Some(time_partition) => get_parsed_timestamp(&self.json, time_partition)?,
+            _ => self.ingestion_time.naive_utc(),
+        };
+
+        let (rb, is_first_event) = self.into_recordbatch(
+            storage_schema,
+            static_schema_flag,
+            time_partition,
+            schema_version,
+        )?;
+
+        Ok(super::Event {
+            rb,
+            stream_name,
+            origin_format: "json",
+            origin_size,
+            is_first_event,
+            parsed_timestamp,
+            time_partition: None,
+            custom_partition_values,
+            stream_type,
+        })
+    }
+}
+
+pub fn get_custom_partition_values(
+    json: &Value,
+    custom_partition_list: &[&str],
+) -> HashMap<String, String> {
+    let mut custom_partition_values: HashMap<String, String> = HashMap::new();
+    for custom_partition_field in custom_partition_list {
+        let custom_partition_value = json.get(custom_partition_field.trim()).unwrap().to_owned();
+        let custom_partition_value = match custom_partition_value {
+            e @ Value::Number(_) | e @ Value::Bool(_) => e.to_string(),
+            Value::String(s) => s,
+            _ => "".to_string(),
+        };
+        custom_partition_values.insert(
+            custom_partition_field.trim().to_string(),
+            custom_partition_value,
+        );
+    }
+    custom_partition_values
+}
+
+fn get_parsed_timestamp(
+    json: &Value,
+    time_partition: &str,
+) -> Result<NaiveDateTime, anyhow::Error> {
+    let current_time = json
+        .get(time_partition)
+        .ok_or_else(|| anyhow!("Missing field for time partition in json: {time_partition}"))?;
+    let parsed_time: DateTime<Utc> = serde_json::from_value(current_time.clone())?;
+
+    Ok(parsed_time.naive_utc())
 }
 
 // Returns arrow schema with the fields that are present in the request body
@@ -223,5 +310,39 @@ fn valid_type(data_type: &DataType, value: &Value, schema_version: SchemaVersion
             error!("Unsupported datatype {:?}, value {:?}", data_type, value);
             unreachable!()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn parse_time_parition_from_value() {
+        let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
+        let parsed = get_parsed_timestamp(&json, "timestamp");
+
+        let expected = NaiveDateTime::from_str("2025-05-15T15:30:00").unwrap();
+        assert_eq!(parsed.unwrap(), expected);
+    }
+
+    #[test]
+    fn time_parition_not_in_json() {
+        let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
+        let parsed = get_parsed_timestamp(&json, "timestamp");
+
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn time_parition_not_parseable_as_datetime() {
+        let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
+        let parsed = get_parsed_timestamp(&json, "timestamp");
+
+        assert!(parsed.is_err());
     }
 }

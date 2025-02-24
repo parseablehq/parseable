@@ -32,10 +32,11 @@ use serde_json::Value;
 
 use crate::{
     metadata::SchemaVersion,
+    storage::StreamType,
     utils::arrow::{get_field, get_timestamp_array, replace_columns},
 };
 
-use super::DEFAULT_TIMESTAMP_KEY;
+use super::{Event, DEFAULT_TIMESTAMP_KEY};
 
 pub mod json;
 
@@ -172,6 +173,18 @@ pub trait EventFormat: Sized {
         }
         true
     }
+
+    fn into_event(
+        self,
+        stream_name: String,
+        origin_size: u64,
+        storage_schema: &HashMap<String, Arc<Field>>,
+        static_schema_flag: bool,
+        custom_partitions: Option<&String>,
+        time_partition: Option<&String>,
+        schema_version: SchemaVersion,
+        stream_type: StreamType,
+    ) -> Result<Event, AnyError>;
 }
 
 pub fn get_existing_field_names(
