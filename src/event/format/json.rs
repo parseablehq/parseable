@@ -33,7 +33,7 @@ use super::EventFormat;
 use crate::{metadata::SchemaVersion, utils::arrow::get_field};
 
 pub struct Event {
-    pub data: Value,
+    pub json: Value,
 }
 
 impl EventFormat for Event {
@@ -52,7 +52,7 @@ impl EventFormat for Event {
         // incoming event may be a single json or a json array
         // but Data (type defined above) is a vector of json values
         // hence we need to convert the incoming event to a vector of json values
-        let value_arr = match self.data {
+        let value_arr = match self.json {
             Value::Array(arr) => arr,
             value @ Value::Object(_) => vec![value],
             _ => unreachable!("flatten would have failed beforehand"),

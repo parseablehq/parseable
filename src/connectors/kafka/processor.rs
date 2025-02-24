@@ -61,12 +61,20 @@ impl ParseableSinkProcessor {
         let static_schema_flag = stream.get_static_schema_flag();
         let schema_version = stream.get_schema_version();
 
-        let (json_vec, total_payload_size) = Self::json_vec(records);
-        let batch_json_event = json::Event {
-            data: Value::Array(json_vec),
-        };
+        let mut json_vec = Vec::with_capacity(records.len());
+        let mut total_payload_size = 0u64;
 
-        let (rb, is_first) = batch_json_event.into_recordbatch(
+        for record in records.iter().filter_map(|r| r.payload.as_ref()) {
+            total_payload_size += record.len() as u64;
+            if let Ok(value) = serde_json::from_slice::<Value>(record) {
+                json_vec.push(value);
+            }
+        }
+
+        let (rb, is_first) = json::Event {
+            json: Value::Array(json_vec),
+        }
+        .into_recordbatch(
             &schema,
             static_schema_flag,
             time_partition.as_ref(),
@@ -87,31 +95,17 @@ impl ParseableSinkProcessor {
 
         Ok(p_event)
     }
-
-    fn json_vec(records: &[ConsumerRecord]) -> (Vec<Value>, u64) {
-        let mut json_vec = Vec::with_capacity(records.len());
-        let mut total_payload_size = 0u64;
-
-        for record in records.iter().filter_map(|r| r.payload.as_ref()) {
-            total_payload_size += record.len() as u64;
-            if let Ok(value) = serde_json::from_slice::<Value>(record) {
-                json_vec.push(value);
-            }
-        }
-
-        (json_vec, total_payload_size)
-    }
 }
 
 #[async_trait]
 impl Processor<Vec<ConsumerRecord>, ()> for ParseableSinkProcessor {
     async fn process(&self, records: Vec<ConsumerRecord>) -> anyhow::Result<()> {
         let len = records.len();
-        debug!("Processing {} records", len);
+        debug!("Processing {len} records");
 
         self.build_event_from_chunk(&records).await?.process()?;
 
-        debug!("Processed {} records", len);
+        debug!("Processed {len} records");
         Ok(())
     }
 }

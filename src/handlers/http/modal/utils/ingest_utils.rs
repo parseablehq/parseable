@@ -16,14 +16,13 @@
  *
  */
 
-use arrow_schema::Field;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use itertools::Itertools;
 use opentelemetry_proto::tonic::{
     logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
 };
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 
 use crate::{
     event::{
@@ -34,7 +33,6 @@ use crate::{
         ingest::PostError,
         kinesis::{flatten_kinesis_logs, Message},
     },
-    metadata::SchemaVersion,
     otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
     parseable::{StreamNotFound, PARSEABLE},
     storage::StreamType,
@@ -117,16 +115,16 @@ async fn push_logs(
         )?)?]
     };
 
-    for value in data {
-        let origin_size = serde_json::to_vec(&value).unwrap().len() as u64; // string length need not be the same as byte length
+    for json in data {
+        let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
         let parsed_timestamp = match time_partition.as_ref() {
-            Some(time_partition) => get_parsed_timestamp(&value, time_partition)?,
+            Some(time_partition) => get_parsed_timestamp(&json, time_partition)?,
             _ => Utc::now().naive_utc(),
         };
         let custom_partition_values = match custom_partition.as_ref() {
             Some(custom_partition) => {
                 let custom_partitions = custom_partition.split(',').collect_vec();
-                get_custom_partition_values(&value, &custom_partitions)
+                get_custom_partition_values(&json, &custom_partitions)
             }
             None => HashMap::new(),
         };
@@ -141,9 +139,8 @@ async fn push_logs(
             .expect(LOCK_EXPECT)
             .schema
             .clone();
-        let (rb, is_first_event) = into_event_batch(
-            value,
-            schema,
+        let (rb, is_first_event) = json::Event { json }.into_recordbatch(
+            &schema,
             static_schema_flag,
             time_partition.as_ref(),
             schema_version,
@@ -163,22 +160,6 @@ async fn push_logs(
         .process()?;
     }
     Ok(())
-}
-
-pub fn into_event_batch(
-    data: Value,
-    schema: HashMap<String, Arc<Field>>,
-    static_schema_flag: bool,
-    time_partition: Option<&String>,
-    schema_version: SchemaVersion,
-) -> Result<(arrow_array::RecordBatch, bool), PostError> {
-    let (rb, is_first) = json::Event { data }.into_recordbatch(
-        &schema,
-        static_schema_flag,
-        time_partition,
-        schema_version,
-    )?;
-    Ok((rb, is_first))
 }
 
 pub fn get_custom_partition_values(
