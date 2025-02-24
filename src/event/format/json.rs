@@ -333,7 +333,7 @@ mod tests {
 
     #[test]
     fn time_parition_not_in_json() {
-        let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
+        let json = json!({"hello": "world!"});
         let parsed = get_parsed_timestamp(&json, "timestamp");
 
         assert!(parsed.is_err());
@@ -341,7 +341,7 @@ mod tests {
 
     #[test]
     fn time_parition_not_parseable_as_datetime() {
-        let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
+        let json = json!({"timestamp": "not time"});
         let parsed = get_parsed_timestamp(&json, "timestamp");
 
         assert!(parsed.is_err());
