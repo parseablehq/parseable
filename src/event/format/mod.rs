@@ -174,6 +174,7 @@ pub trait EventFormat: Sized {
         true
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn into_event(
         self,
         stream_name: String,

@@ -132,6 +132,7 @@ impl EventFormat for Event {
         }
     }
 
+    /// Converts a JSON event into a Parseable Event
     fn into_event(
         self,
         stream_name: String,
