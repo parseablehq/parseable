@@ -444,21 +444,27 @@ impl Stream {
                 .set(0);
         }
 
+        //find sum of arrow files in staging directory for a stream
+        let total_arrow_files = staging_files.values().map(|v| v.len()).sum::<usize>();
+        metrics::STAGING_FILES
+            .with_label_values(&[&self.stream_name])
+            .set(total_arrow_files as i64);
+
+        //find sum of file sizes of all arrow files in staging_files
+        let total_arrow_files_size = staging_files
+            .values()
+            .map(|v| {
+                v.iter()
+                    .map(|file| file.metadata().unwrap().len())
+                    .sum::<u64>()
+            })
+            .sum::<u64>();
+        metrics::STORAGE_SIZE
+            .with_label_values(&["staging", &self.stream_name, "arrows"])
+            .set(total_arrow_files_size as i64);
+
         // warn!("staging files-\n{staging_files:?}\n");
         for (parquet_path, arrow_files) in staging_files {
-            metrics::STAGING_FILES
-                .with_label_values(&[&self.stream_name])
-                .set(arrow_files.len() as i64);
-
-            for file in &arrow_files {
-                let file_size = file.metadata().unwrap().len();
-                let file_type = file.extension().unwrap().to_str().unwrap();
-
-                metrics::STORAGE_SIZE
-                    .with_label_values(&["staging", &self.stream_name, file_type])
-                    .add(file_size as i64);
-            }
-
             let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
             if record_reader.readers.is_empty() {
                 continue;
@@ -494,6 +500,7 @@ impl Stream {
                         "Couldn't rename part file: {part_path:?} -> {parquet_path:?}, error = {e}"
                     );
                 }
+
                 for file in arrow_files {
                     // warn!("file-\n{file:?}\n");
                     let file_size = file.metadata().unwrap().len();
