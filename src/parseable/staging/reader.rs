@@ -85,14 +85,17 @@ impl MergedReverseRecordReader {
     pub fn try_new(file_paths: &[PathBuf]) -> Self {
         let mut readers = Vec::with_capacity(file_paths.len());
         for path in file_paths {
-            let Ok(file) = File::open(&path) else {
+            let Ok(file) = File::open(path) else {
                 warn!("Error when trying to read file: {path:?}");
                 continue;
             };
 
-            let Ok(reader) = get_reverse_reader(file) else {
-                error!("Invalid file detected, ignoring it: {path:?}");
-                continue;
+            let reader = match get_reverse_reader(file) {
+                Ok(r) => r,
+                Err(err) => {
+                    error!("Invalid file detected, ignoring it: {path:?}; error = {err}");
+                    continue;
+                }
             };
 
             readers.push(reader);
