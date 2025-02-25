@@ -505,7 +505,7 @@ impl Stream {
                         Ok(meta) => meta.len(),
                         Err(err) => {
                             warn!(
-                                "Looks like the file ({}) was removed; Error = {err}",
+                                "File ({}) not found; Error = {err}",
                                 file.display()
                             );
                             continue;
