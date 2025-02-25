@@ -35,20 +35,24 @@ use crate::{metadata::SchemaVersion, storage::StreamType, utils::arrow::get_fiel
 
 pub struct Event {
     pub json: Value,
-    ingestion_time: DateTime<Utc>,
+    pub p_timestamp: DateTime<Utc>,
 }
 
 impl Event {
     pub fn new(json: Value) -> Self {
         Self {
             json,
-            ingestion_time: Utc::now(),
+            p_timestamp: Utc::now(),
         }
     }
 }
 
 impl EventFormat for Event {
     type Data = Vec<Value>;
+
+    fn get_p_timestamp(&self) -> DateTime<Utc> {
+        self.p_timestamp
+    }
 
     // convert the incoming json to a vector of json values
     // also extract the arrow schema, tags and metadata from the incoming json
@@ -154,7 +158,7 @@ impl EventFormat for Event {
 
         let parsed_timestamp = match time_partition {
             Some(time_partition) => get_parsed_timestamp(&self.json, time_partition)?,
-            _ => self.ingestion_time.naive_utc(),
+            _ => self.p_timestamp.naive_utc(),
         };
 
         let (rb, is_first_event) = self.into_recordbatch(

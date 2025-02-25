@@ -801,8 +801,8 @@ mod tests {
         .unwrap();
 
         let (rb, _) = json::Event::new(flattened_json)
-        .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V1)
-        .unwrap();
+            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V1)
+            .unwrap();
 
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 5);

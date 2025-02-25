@@ -16,6 +16,7 @@
  *
  */
 
+use chrono::Utc;
 use opentelemetry_proto::tonic::{
     logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
 };
@@ -87,6 +88,7 @@ async fn push_logs(
     let static_schema_flag = stream.get_static_schema_flag();
     let custom_partition = stream.get_custom_partition();
     let schema_version = stream.get_schema_version();
+    let p_timestamp = Utc::now();
 
     let data = if time_partition.is_some() || custom_partition.is_some() {
         convert_array_to_object(
@@ -111,7 +113,7 @@ async fn push_logs(
     for json in data {
         let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
         let schema = PARSEABLE.get_stream(stream_name)?.get_schema_raw();
-        json::Event::new(json)
+        json::Event { json, p_timestamp }
             .into_event(
                 stream_name.to_owned(),
                 origin_size,
