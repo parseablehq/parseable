@@ -59,7 +59,7 @@ mod staging;
 mod streams;
 
 /// File extension for arrow files in staging
-const ARROW_FILE_EXTENSION: &str = "data.arrows";
+const ARROW_FILE_EXTENSION: &str = "arrows";
 
 /// Name of a Stream
 /// NOTE: this used to be a struct, flattened out for simplicity

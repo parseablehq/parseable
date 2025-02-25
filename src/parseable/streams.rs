@@ -154,7 +154,7 @@ impl Stream {
             hostname.push_str(id);
         }
         let filename = format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.{ARROW_FILE_EXTENSION}",
+            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.data.{ARROW_FILE_EXTENSION}",
             Utc::now().format("%Y%m%dT%H%M"),
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
@@ -881,7 +881,7 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}.{ARROW_FILE_EXTENSION}",
+            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}.data.{ARROW_FILE_EXTENSION}",
             Utc::now().format("%Y%m%dT%H%M"),
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
@@ -916,7 +916,7 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.{ARROW_FILE_EXTENSION}",
+            "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.data.{ARROW_FILE_EXTENSION}",
             Utc::now().format("%Y%m%dT%H%M"),
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
