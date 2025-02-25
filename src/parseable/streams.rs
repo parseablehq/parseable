@@ -30,7 +30,7 @@ use std::{
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{Field, Fields, Schema};
-use chrono::{NaiveDateTime, Timelike, Utc};
+use chrono::{NaiveDateTime, Timelike};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
 use parquet::{
@@ -165,8 +165,7 @@ impl Stream {
             hostname.push_str(id);
         }
         let filename = format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.{ARROW_FILE_EXTENSION}",
-            Utc::now().format("%Y%m%dT%H%M"),
+            "{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
@@ -767,7 +766,7 @@ mod tests {
 
     use arrow_array::{Int32Array, StringArray, TimestampMillisecondArray};
     use arrow_schema::{DataType, Field, TimeUnit};
-    use chrono::{NaiveDate, TimeDelta};
+    use chrono::{NaiveDate, TimeDelta, Utc};
     use temp_dir::TempDir;
     use tokio::time::sleep;
 
@@ -884,8 +883,7 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.{}.{ARROW_FILE_EXTENSION}",
-            Utc::now().format("%Y%m%dT%H%M"),
+            "{stream_hash}.date={}.hour={:02}.minute={}.{}.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
@@ -919,8 +917,7 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{}{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.{ARROW_FILE_EXTENSION}",
-            Utc::now().format("%Y%m%dT%H%M"),
+            "{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
