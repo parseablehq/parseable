@@ -179,16 +179,6 @@ impl Parseable {
                     .unwrap_or_default())
     }
 
-    /// Writes all streams in staging onto disk, awaiting conversion into parquet.
-    /// Deletes all in memory recordbatches, freeing up rows in mem-writer.
-    pub fn flush_all_streams(&self) {
-        let streams = self.streams.read().unwrap();
-
-        for staging in streams.values() {
-            staging.flush()
-        }
-    }
-
     // validate the storage, if the proper path for staging directory is provided
     // if the proper data directory is provided, or s3 bucket is provided etc
     pub async fn validate_storage(&self) -> Result<Option<Bytes>, ObjectStorageError> {

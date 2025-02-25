@@ -41,6 +41,7 @@ use parquet::{
 };
 use rand::distributions::DistString;
 use relative_path::RelativePathBuf;
+use tokio::task::JoinSet;
 use tracing::{error, info, trace, warn};
 
 use crate::{
@@ -651,6 +652,13 @@ impl Stream {
     pub fn get_stream_type(&self) -> StreamType {
         self.metadata.read().expect(LOCK_EXPECT).stream_type
     }
+
+    /// First flushes arrows onto disk and then converts the arrow into parquet
+    pub fn flush_and_convert(&self, shutdown_signal: bool) -> Result<(), StagingError> {
+        self.flush();
+
+        self.prepare_parquet(shutdown_signal)
+    }
 }
 
 #[derive(Deref, DerefMut, Default)]
@@ -717,8 +725,13 @@ impl Streams {
             .collect()
     }
 
-    /// Convert arrow files into parquet, preparing it for upload
-    pub fn prepare_parquet(&self, shutdown_signal: bool) -> Result<(), StagingError> {
+    /// Asynchronously flushes arrows and compacts into parquet data on all streams in staging,
+    /// so that it is ready to be pushed onto objectstore.
+    pub fn flush_and_convert(
+        &self,
+        joinset: &mut JoinSet<Result<(), StagingError>>,
+        shutdown_signal: bool,
+    ) {
         let streams: Vec<Arc<Stream>> = self
             .read()
             .expect(LOCK_EXPECT)
@@ -726,12 +739,8 @@ impl Streams {
             .map(Arc::clone)
             .collect();
         for stream in streams {
-            stream
-                .prepare_parquet(shutdown_signal)
-                .inspect_err(|err| error!("Failed to run conversion task {err:?}"))?;
+            joinset.spawn(async move { stream.flush_and_convert(shutdown_signal) });
         }
-
-        Ok(())
     }
 }
 

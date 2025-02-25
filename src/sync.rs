@@ -190,11 +190,15 @@ pub fn local_sync() -> (
                 select! {
                     // Spawns a flush+conversion task every `LOCAL_SYNC_INTERVAL` seconds
                     _ = sync_interval.tick() => {
-                        joinset.spawn(flush_and_convert());
+                        PARSEABLE.streams.flush_and_convert(&mut joinset, false)
                     },
                     // Joins and logs errors in spawned tasks
-                    Some(Err(e)) = joinset.join_next(), if !joinset.is_empty() => {
-                        error!("Issue joining flush+conversion: {e}")
+                    Some(res) = joinset.join_next(), if !joinset.is_empty() => {
+                        match res {
+                            Ok(Ok(_)) => info!("Successfully converted arrow files to parquet."),
+                            Ok(Err(err)) => warn!("Failed to convert arrow files to parquet. {err:?}"),
+                            Err(err) => error!("Issue joining flush+conversion task: {err}"),
+                        }
                     }
                     res = &mut inbox_rx => {match res{
                         Ok(_) => break,
@@ -268,19 +272,4 @@ pub fn schedule_alert_task(
         }
     });
     Ok(handle)
-}
-
-/// Asynchronously flushes all streams when called, then compacts them into parquet files ready to be pushed onto objectstore
-async fn flush_and_convert() {
-    trace!("Flushing Arrows to disk...");
-    PARSEABLE.flush_all_streams();
-
-    trace!("Converting Arrow to Parquet... ");
-    if let Err(e) = monitor_task_duration("arrow_conversion", Duration::from_secs(30), || async {
-        PARSEABLE.streams.prepare_parquet(false)
-    })
-    .await
-    {
-        warn!("failed to convert local arrow data to parquet. {e:?}");
-    }
 }
