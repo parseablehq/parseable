@@ -86,7 +86,7 @@ pub async fn handler(mut cancel_rx: oneshot::Receiver<()>) -> anyhow::Result<()>
                 remote_sync_inbox.send(()).unwrap_or(());
                 localsync_inbox.send(()).unwrap_or(());
                 if let Err(e) = localsync_handler.await {
-                    error!("Error joining remote_sync_handler: {e:?}");
+                    error!("Error joining localsync_handler: {e:?}");
                 }
                 if let Err(e) = remote_sync_handler.await {
                     error!("Error joining remote_sync_handler: {e:?}");
