@@ -63,7 +63,7 @@ where
                 if warned_once {
                     warn!(
                         "Task '{task_name}' took longer than expected: {:?} (threshold: {threshold:?})",
-                        start_time.elapsed() - threshold
+                        start_time.elapsed()
                     );
                 }
                 break res.expect("Task handle shouldn't error");
