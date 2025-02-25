@@ -167,7 +167,11 @@ impl Server {
     pub fn get_prism_logstream() -> Scope {
         web::scope("/logstream").service(
             web::scope("/{logstream}").service(
-                web::resource("/info").route(web::get().to(http::prism_logstream::get_info)),
+                web::resource("/info").route(
+                    web::get()
+                        .to(http::prism_logstream::get_info)
+                        .authorize_for_stream(Action::GetStreamInfo),
+                ),
             ),
         )
     }

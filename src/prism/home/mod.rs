@@ -77,14 +77,18 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
 
     // get all stream titles
     let stream_titles: Vec<String> = PARSEABLE
-        .streams
-        .list()
+        .storage
+        .get_object_store()
+        .list_streams()
+        .await
+        .map_err(|e| PrismHomeError::Anyhow(anyhow::Error::new(e)))?
         .into_iter()
         .filter(|logstream| {
             Users.authorize(key.clone(), Action::ListStream, Some(logstream), None)
                 == crate::rbac::Response::Authorized
         })
-        .collect();
+        .sorted()
+        .collect_vec();
 
     // get all alert IDs (TODO: RBAC)
     // do we need to move alerts into the PARSEABLE struct?
@@ -115,7 +119,9 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
         .iter()
         .map(|dashboard| TitleAndId {
             title: dashboard.name.clone(),
-            id: dashboard.dashboard_id.as_ref().unwrap().clone(),
+            id: dashboard.dashboard_id.as_ref()  
+                .expect(&format!("Dashboard ID is null for name- {}",dashboard.name))  
+                .clone(),
         })
         .collect_vec();
 
@@ -125,7 +131,7 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
         .iter()
         .map(|filter| TitleAndId {
             title: filter.filter_name.clone(),
-            id: filter.filter_id.as_ref().unwrap().clone(),
+            id: filter.filter_id.as_ref().expect(&format!("Filter ID is null for name- {}",filter.filter_name)).clone(),
         })
         .collect_vec();
 
@@ -137,7 +143,7 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
         .map(|i| {
             Utc::now()
                 .checked_sub_signed(chrono::Duration::days(i))
-                .unwrap()
+                .expect("Date calculation error")
         })
         .map(|date| date.format("%Y-%m-%d").to_string())
         .collect_vec();
