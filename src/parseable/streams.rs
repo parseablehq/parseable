@@ -24,13 +24,13 @@ use std::{
     path::{Path, PathBuf},
     process,
     sync::{Arc, Mutex, RwLock},
-    time::UNIX_EPOCH,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{Field, Fields, Schema};
-use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
+use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
 use parquet::{
@@ -72,6 +72,14 @@ pub struct StreamNotFound(pub String);
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 
 pub type StreamRef = Arc<Stream>;
+
+/// Gets the unix timestamp for the minute as described by the `SystemTime`
+fn minute_from_system_time(time: SystemTime) -> u128 {
+    time.duration_since(UNIX_EPOCH)
+        .expect("Legitimate time")
+        .as_millis()
+        / 60000
+}
 
 /// All state associated with a single logstream in Parseable.
 pub struct Stream {
@@ -193,7 +201,7 @@ impl Stream {
     /// Only includes ones starting from the previous minute
     pub fn arrow_files_grouped_exclude_time(
         &self,
-        exclude: DateTime<Utc>,
+        exclude: SystemTime,
         shutdown_signal: bool,
     ) -> HashMap<PathBuf, Vec<PathBuf>> {
         let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
@@ -203,14 +211,13 @@ impl Stream {
         // don't keep the ones for the current minute
         if !shutdown_signal {
             arrow_files.retain(|path| {
-                path.metadata()
+                let creation = path
+                    .metadata()
                     .expect("Arrow file should exist on disk")
                     .created()
-                    .expect("Creation time should be accessible")
-                    .duration_since(UNIX_EPOCH)
-                    .expect("Unix Timestamp Duration")
-                    .as_millis()
-                    < exclude.timestamp_millis() as u128
+                    .expect("Creation time should be accessible");
+                // Compare if creation time is actually from previous minute
+                minute_from_system_time(creation) < minute_from_system_time(exclude)
             });
         }
 
@@ -432,7 +439,8 @@ impl Stream {
     ) -> Result<Option<Schema>, StagingError> {
         let mut schemas = Vec::new();
 
-        let staging_files = self.arrow_files_grouped_exclude_time(Utc::now(), shutdown_signal);
+        let now = SystemTime::now();
+        let staging_files = self.arrow_files_grouped_exclude_time(now, shutdown_signal);
         if staging_files.is_empty() {
             metrics::STAGING_FILES
                 .with_label_values(&[&self.stream_name])
