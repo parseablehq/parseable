@@ -90,7 +90,11 @@ impl ParseableServer for Server {
                     .service(Self::get_alerts_webscope())
                     .service(Self::get_metrics_webscope()),
             )
-            .service(web::scope(&prism_base_path()).service(Self::get_prism_home()))
+            .service(
+                web::scope(&prism_base_path())
+                    .service(Server::get_prism_home())
+                    .service(Server::get_prism_logstream()),
+            )
             .service(Self::get_ingest_otel_factory())
             .service(Self::get_generated());
     }
