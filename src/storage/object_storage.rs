@@ -712,7 +712,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     }
 
     async fn upload_files_from_staging(&self) -> Result<(), ObjectStorageError> {
-        if !Path::new(&PARSEABLE.options.staging_dir()).exists() {
+        if !PARSEABLE.options.staging_dir().exists() {
             return Ok(());
         }
 
