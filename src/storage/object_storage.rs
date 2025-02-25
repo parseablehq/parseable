@@ -36,7 +36,8 @@ use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::R
 use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
-use tracing::{debug, error, warn};
+use tracing::info;
+use tracing::{error, warn};
 use ulid::Ulid;
 
 use crate::alerts::AlertConfig;
@@ -718,7 +719,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
         // get all streams
         for stream_name in PARSEABLE.streams.list() {
-            debug!("Starting object_store_sync for stream- {stream_name}");
+            info!("Starting object_store_sync for stream- {stream_name}");
 
             let stream = PARSEABLE.get_or_create_stream(&stream_name);
             let custom_partition = stream.get_custom_partition();
