@@ -68,6 +68,7 @@ impl ParseableSinkProcessor {
 
         let (rb, is_first) = batch_json_event.into_recordbatch(
             &schema,
+            Utc::now(),
             static_schema_flag,
             time_partition.as_ref(),
             schema_version,

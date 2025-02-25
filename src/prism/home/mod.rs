@@ -119,8 +119,11 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
         .iter()
         .map(|dashboard| TitleAndId {
             title: dashboard.name.clone(),
-            id: dashboard.dashboard_id.as_ref()  
-                .expect(&format!("Dashboard ID is null for name- {}",dashboard.name))  
+            id: dashboard
+                .dashboard_id
+                .as_ref()
+                .ok_or_else(|| anyhow::Error::msg("Dashboard ID is null"))
+                .unwrap()
                 .clone(),
         })
         .collect_vec();
@@ -131,7 +134,12 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
         .iter()
         .map(|filter| TitleAndId {
             title: filter.filter_name.clone(),
-            id: filter.filter_id.as_ref().expect(&format!("Filter ID is null for name- {}",filter.filter_name)).clone(),
+            id: filter
+                .filter_id
+                .as_ref()
+                .ok_or_else(|| anyhow::Error::msg("Filter ID is null"))
+                .unwrap()
+                .clone(),
         })
         .collect_vec();
 
@@ -143,7 +151,8 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
         .map(|i| {
             Utc::now()
                 .checked_sub_signed(chrono::Duration::days(i))
-                .expect("Date calculation error")
+                .ok_or_else(|| anyhow::Error::msg("Date conversion faield"))
+                .unwrap()
         })
         .map(|date| date.format("%Y-%m-%d").to_string())
         .collect_vec();
