@@ -74,7 +74,7 @@ where
 
 /// Flushes arrows onto disk every `LOCAL_SYNC_INTERVAL` seconds, packs arrows into parquet every
 /// `STORAGE_CONVERSION_INTERVAL` secondsand uploads them every `STORAGE_UPLOAD_INTERVAL` seconds.
-#[tokio::main(flavor = "current_thread")]
+#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 pub async fn handler(mut cancel_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
     let (localsync_handler, mut localsync_outbox, localsync_inbox) = local_sync();
     let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
@@ -86,10 +86,10 @@ pub async fn handler(mut cancel_rx: oneshot::Receiver<()>) -> anyhow::Result<()>
                 remote_sync_inbox.send(()).unwrap_or(());
                 localsync_inbox.send(()).unwrap_or(());
                 if let Err(e) = localsync_handler.await {
-                    error!("Error joining remote_sync_handler: {:?}", e);
+                    error!("Error joining remote_sync_handler: {e:?}");
                 }
                 if let Err(e) = remote_sync_handler.await {
-                    error!("Error joining remote_sync_handler: {:?}", e);
+                    error!("Error joining remote_sync_handler: {e:?}");
                 }
                 return Ok(());
             },
@@ -101,7 +101,7 @@ pub async fn handler(mut cancel_rx: oneshot::Receiver<()>) -> anyhow::Result<()>
             _ = &mut remote_sync_outbox => {
                 // remote_sync failed, this is recoverable by just starting remote_sync thread again
                 if let Err(e) = remote_sync_handler.await {
-                    error!("Error joining remote_sync_handler: {:?}", e);
+                    error!("Error joining remote_sync_handler: {e:?}");
                 }
                 (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = object_store_sync();
             },
@@ -212,7 +212,7 @@ pub fn local_sync() -> (
                 future.await;
             }
             Err(panic_error) => {
-                error!("Panic in local sync task: {:?}", panic_error);
+                error!("Panic in local sync task: {panic_error:?}");
             }
         }
 
