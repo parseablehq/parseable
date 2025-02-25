@@ -29,7 +29,7 @@ use arrow_ipc::reader::StreamReader;
 use arrow_schema::Schema;
 use tracing::error;
 
-use crate::utils::arrow::adapt_batch;
+use crate::utils::arrow::{adapt_batch, reverse};
 
 #[derive(Debug)]
 pub struct MergedRecordReader {
@@ -73,6 +73,7 @@ impl MergedRecordReader {
         self.readers
             .into_iter()
             .flat_map(|reader| reader.flatten())
+            .map(|batch| reverse(&batch))
             .map(move |batch| adapt_batch(&schema, &batch))
     }
 }
