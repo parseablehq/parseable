@@ -96,6 +96,7 @@ async fn push_logs(
     let static_schema_flag = stream.get_static_schema_flag();
     let custom_partition = stream.get_custom_partition();
     let schema_version = stream.get_schema_version();
+    let p_timestamp = Utc::now();
 
     let data = if time_partition.is_some() || custom_partition.is_some() {
         convert_array_to_object(
@@ -121,7 +122,7 @@ async fn push_logs(
         let origin_size = serde_json::to_vec(&value).unwrap().len() as u64; // string length need not be the same as byte length
         let parsed_timestamp = match time_partition.as_ref() {
             Some(time_partition) => get_parsed_timestamp(&value, time_partition)?,
-            _ => Utc::now().naive_utc(),
+            _ => p_timestamp.naive_utc(),
         };
         let custom_partition_values = match custom_partition.as_ref() {
             Some(custom_partition) => {
@@ -144,6 +145,7 @@ async fn push_logs(
         let (rb, is_first_event) = into_event_batch(
             value,
             schema,
+            p_timestamp,
             static_schema_flag,
             time_partition.as_ref(),
             schema_version,
@@ -168,12 +170,14 @@ async fn push_logs(
 pub fn into_event_batch(
     data: Value,
     schema: HashMap<String, Arc<Field>>,
+    p_timestamp: DateTime<Utc>,
     static_schema_flag: bool,
     time_partition: Option<&String>,
     schema_version: SchemaVersion,
 ) -> Result<(arrow_array::RecordBatch, bool), PostError> {
     let (rb, is_first) = json::Event { data }.into_recordbatch(
         &schema,
+        p_timestamp,
         static_schema_flag,
         time_partition,
         schema_version,

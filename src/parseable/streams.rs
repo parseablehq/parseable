@@ -24,12 +24,13 @@ use std::{
     path::{Path, PathBuf},
     process,
     sync::{Arc, Mutex, RwLock},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{Field, Fields, Schema};
-use chrono::{NaiveDateTime, Utc};
+use chrono::{NaiveDateTime, Timelike};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
 use parquet::{
@@ -41,6 +42,7 @@ use parquet::{
 };
 use rand::distributions::DistString;
 use relative_path::RelativePathBuf;
+use tokio::task::JoinSet;
 use tracing::{error, info, trace, warn};
 
 use crate::{
@@ -49,11 +51,9 @@ use crate::{
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
-    storage::{
-        object_storage::to_bytes, retention::Retention, StreamType, OBJECT_STORE_DATA_GRANULARITY,
-    },
+    storage::{object_storage::to_bytes, retention::Retention, StreamType},
     utils::time::Minute,
-    LOCK_EXPECT,
+    LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
 };
 
 use super::{
@@ -72,6 +72,14 @@ pub struct StreamNotFound(pub String);
 const ARROW_FILE_EXTENSION: &str = "data.arrows";
 
 pub type StreamRef = Arc<Stream>;
+
+/// Gets the unix timestamp for the minute as described by the `SystemTime`
+fn minute_from_system_time(time: SystemTime) -> u128 {
+    time.duration_since(UNIX_EPOCH)
+        .expect("Legitimate time")
+        .as_millis()
+        / 60000
+}
 
 /// All state associated with a single logstream in Parseable.
 pub struct Stream {
@@ -157,9 +165,9 @@ impl Stream {
             hostname.push_str(id);
         }
         let filename = format!(
-            "{}{stream_hash}.{}.minute={}.{}{hostname}.{ARROW_FILE_EXTENSION}",
-            Utc::now().format("%Y%m%dT%H%M"),
-            parsed_timestamp.format("date=%Y-%m-%d.hour=%H"),
+            "{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.{ARROW_FILE_EXTENSION}",
+            parsed_timestamp.date(),
+            parsed_timestamp.hour(),
             Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             custom_partition_values
                 .iter()
@@ -192,7 +200,7 @@ impl Stream {
     /// Only includes ones starting from the previous minute
     pub fn arrow_files_grouped_exclude_time(
         &self,
-        exclude: NaiveDateTime,
+        exclude: SystemTime,
         shutdown_signal: bool,
     ) -> HashMap<PathBuf, Vec<PathBuf>> {
         let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
@@ -202,12 +210,13 @@ impl Stream {
         // don't keep the ones for the current minute
         if !shutdown_signal {
             arrow_files.retain(|path| {
-                !path
-                    .file_name()
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .starts_with(&exclude.format("%Y%m%dT%H%M").to_string())
+                let creation = path
+                    .metadata()
+                    .expect("Arrow file should exist on disk")
+                    .created()
+                    .expect("Creation time should be accessible");
+                // Compare if creation time is actually from previous minute
+                minute_from_system_time(creation) < minute_from_system_time(exclude)
             });
         }
 
@@ -429,8 +438,8 @@ impl Stream {
     ) -> Result<Option<Schema>, StagingError> {
         let mut schemas = Vec::new();
 
-        let time = chrono::Utc::now().naive_utc();
-        let staging_files = self.arrow_files_grouped_exclude_time(time, shutdown_signal);
+        let now = SystemTime::now();
+        let staging_files = self.arrow_files_grouped_exclude_time(now, shutdown_signal);
         if staging_files.is_empty() {
             metrics::STAGING_FILES
                 .with_label_values(&[&self.stream_name])
@@ -443,21 +452,27 @@ impl Stream {
                 .set(0);
         }
 
+        //find sum of arrow files in staging directory for a stream
+        let total_arrow_files = staging_files.values().map(|v| v.len()).sum::<usize>();
+        metrics::STAGING_FILES
+            .with_label_values(&[&self.stream_name])
+            .set(total_arrow_files as i64);
+
+        //find sum of file sizes of all arrow files in staging_files
+        let total_arrow_files_size = staging_files
+            .values()
+            .map(|v| {
+                v.iter()
+                    .map(|file| file.metadata().unwrap().len())
+                    .sum::<u64>()
+            })
+            .sum::<u64>();
+        metrics::STORAGE_SIZE
+            .with_label_values(&["staging", &self.stream_name, "arrows"])
+            .set(total_arrow_files_size as i64);
+
         // warn!("staging files-\n{staging_files:?}\n");
         for (parquet_path, arrow_files) in staging_files {
-            metrics::STAGING_FILES
-                .with_label_values(&[&self.stream_name])
-                .set(arrow_files.len() as i64);
-
-            for file in &arrow_files {
-                let file_size = file.metadata().unwrap().len();
-                let file_type = file.extension().unwrap().to_str().unwrap();
-
-                metrics::STORAGE_SIZE
-                    .with_label_values(&["staging", &self.stream_name, file_type])
-                    .add(file_size as i64);
-            }
-
             let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
             if record_reader.readers.is_empty() {
                 continue;
@@ -493,6 +508,7 @@ impl Stream {
                         "Couldn't rename part file: {part_path:?} -> {parquet_path:?}, error = {e}"
                     );
                 }
+
                 for file in arrow_files {
                     // warn!("file-\n{file:?}\n");
                     let file_size = file.metadata().unwrap().len();
@@ -652,6 +668,13 @@ impl Stream {
     pub fn get_stream_type(&self) -> StreamType {
         self.metadata.read().expect(LOCK_EXPECT).stream_type
     }
+
+    /// First flushes arrows onto disk and then converts the arrow into parquet
+    pub fn flush_and_convert(&self, shutdown_signal: bool) -> Result<(), StagingError> {
+        self.flush();
+
+        self.prepare_parquet(shutdown_signal)
+    }
 }
 
 #[derive(Deref, DerefMut, Default)]
@@ -718,8 +741,13 @@ impl Streams {
             .collect()
     }
 
-    /// Convert arrow files into parquet, preparing it for upload
-    pub fn prepare_parquet(&self, shutdown_signal: bool) -> Result<(), StagingError> {
+    /// Asynchronously flushes arrows and compacts into parquet data on all streams in staging,
+    /// so that it is ready to be pushed onto objectstore.
+    pub fn flush_and_convert(
+        &self,
+        joinset: &mut JoinSet<Result<(), StagingError>>,
+        shutdown_signal: bool,
+    ) {
         let streams: Vec<Arc<Stream>> = self
             .read()
             .expect(LOCK_EXPECT)
@@ -727,12 +755,8 @@ impl Streams {
             .map(Arc::clone)
             .collect();
         for stream in streams {
-            stream
-                .prepare_parquet(shutdown_signal)
-                .inspect_err(|err| error!("Failed to run conversion task {err:?}"))?;
+            joinset.spawn(async move { stream.flush_and_convert(shutdown_signal) });
         }
-
-        Ok(())
     }
 }
 
@@ -742,7 +766,7 @@ mod tests {
 
     use arrow_array::{Int32Array, StringArray, TimestampMillisecondArray};
     use arrow_schema::{DataType, Field, TimeUnit};
-    use chrono::{NaiveDate, TimeDelta};
+    use chrono::{NaiveDate, TimeDelta, Utc};
     use temp_dir::TempDir;
     use tokio::time::sleep;
 
@@ -859,9 +883,9 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{}{stream_hash}.{}.minute={}.{}.{ARROW_FILE_EXTENSION}",
-            Utc::now().format("%Y%m%dT%H%M"),
-            parsed_timestamp.format("date=%Y-%m-%d.hour=%H"),
+            "{stream_hash}.date={}.hour={:02}.minute={}.{}.{ARROW_FILE_EXTENSION}",
+            parsed_timestamp.date(),
+            parsed_timestamp.hour(),
             Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             hostname::get().unwrap().into_string().unwrap()
         ));
@@ -893,9 +917,9 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{}{stream_hash}.{}.minute={}.key1=value1.key2=value2.{}.{ARROW_FILE_EXTENSION}",
-            Utc::now().format("%Y%m%dT%H%M"),
-            parsed_timestamp.format("date=%Y-%m-%d.hour=%H"),
+            "{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.{ARROW_FILE_EXTENSION}",
+            parsed_timestamp.date(),
+            parsed_timestamp.hour(),
             Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             hostname::get().unwrap().into_string().unwrap()
         ));

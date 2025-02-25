@@ -303,7 +303,7 @@ impl From<NaiveDateTime> for Minute {
 impl Minute {
     /// Convert minutes to a slot range
     /// e.g. given minute = 15 and OBJECT_STORE_DATA_GRANULARITY = 10 returns "10-19"
-    /// 
+    ///
     /// ### PANICS
     /// If the provided `data_granularity` value isn't cleanly divisble from 60
     pub fn to_slot(self, data_granularity: u32) -> String {
@@ -489,19 +489,22 @@ mod tests {
 
     #[test]
     fn minute_from_timestamp() {
-        let timestamp = NaiveDateTime::parse_from_str("2025-01-01 02:03", "%Y-%m-%d %H:%M").unwrap();
+        let timestamp =
+            NaiveDateTime::parse_from_str("2025-01-01 02:03", "%Y-%m-%d %H:%M").unwrap();
         assert_eq!(Minute::from(timestamp).to_slot(1), "03");
     }
 
     #[test]
     fn slot_5_min_from_timestamp() {
-        let timestamp = NaiveDateTime::parse_from_str("2025-01-01 02:03", "%Y-%m-%d %H:%M").unwrap();
+        let timestamp =
+            NaiveDateTime::parse_from_str("2025-01-01 02:03", "%Y-%m-%d %H:%M").unwrap();
         assert_eq!(Minute::from(timestamp).to_slot(5), "00-04");
     }
 
     #[test]
     fn slot_30_min_from_timestamp() {
-        let timestamp = NaiveDateTime::parse_from_str("2025-01-01 02:33", "%Y-%m-%d %H:%M").unwrap();
+        let timestamp =
+            NaiveDateTime::parse_from_str("2025-01-01 02:33", "%Y-%m-%d %H:%M").unwrap();
         assert_eq!(Minute::from(timestamp).to_slot(30), "30-59");
     }
 

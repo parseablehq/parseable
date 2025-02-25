@@ -26,7 +26,7 @@ use std::{
 use anyhow::{anyhow, Error as AnyError};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -108,6 +108,7 @@ pub trait EventFormat: Sized {
     fn into_recordbatch(
         self,
         storage_schema: &HashMap<String, Arc<Field>>,
+        p_timestamp: DateTime<Utc>,
         static_schema_flag: bool,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
@@ -145,7 +146,7 @@ pub trait EventFormat: Sized {
             rb.schema(),
             &rb,
             &[0],
-            &[Arc::new(get_timestamp_array(rb.num_rows()))],
+            &[Arc::new(get_timestamp_array(p_timestamp, rb.num_rows()))],
         );
 
         Ok((rb, is_first))
