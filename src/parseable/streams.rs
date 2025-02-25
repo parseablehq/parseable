@@ -57,11 +57,7 @@ use crate::{
 };
 
 use super::{
-    staging::{
-        reader::{MergedRecordReader, MergedReverseRecordReader},
-        writer::Writer,
-        StagingError,
-    },
+    staging::{reader::MergedRecordReader, writer::Writer, StagingError},
     LogStream,
 };
 
@@ -473,7 +469,7 @@ impl Stream {
 
         // warn!("staging files-\n{staging_files:?}\n");
         for (parquet_path, arrow_files) in staging_files {
-            let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
+            let record_reader = MergedRecordReader::try_new(&arrow_files);
             if record_reader.readers.is_empty() {
                 continue;
             }
@@ -490,7 +486,7 @@ impl Stream {
                 .open(&part_path)
                 .map_err(|_| StagingError::Create)?;
             let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props))?;
-            for ref record in record_reader.merged_iter(schema, time_partition.cloned()) {
+            for ref record in record_reader.merged_iter(schema) {
                 writer.write(record)?;
             }
             writer.close()?;
@@ -533,7 +529,7 @@ impl Stream {
 
     pub fn updated_schema(&self, current_schema: Schema) -> Schema {
         let staging_files = self.arrow_files();
-        let record_reader = MergedRecordReader::try_new(&staging_files).unwrap();
+        let record_reader = MergedRecordReader::try_new(&staging_files);
         if record_reader.readers.is_empty() {
             return current_schema;
         }
