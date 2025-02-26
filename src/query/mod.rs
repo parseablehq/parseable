@@ -17,12 +17,18 @@
  */
 
 pub mod catalog;
+pub mod exec;
 mod filter_optimizer;
 pub mod functions;
+pub mod helper;
+pub mod highlighter;
 mod listing_table_builder;
 pub mod object_storage;
 pub mod stream_schema_provider;
 
+pub mod cli_context;
+
+use catalog::DynamicObjectStoreCatalog;
 use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
@@ -36,10 +42,8 @@ use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
     Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
 };
-use datafusion::physical_plan::coalesce_batches::CoalesceBatchesExec;
-use datafusion::physical_plan::repartition::RepartitionExec;
-use datafusion::physical_plan::{collect, ExecutionPlan, Partitioning};
 use datafusion::prelude::*;
+use functions::ParquetMetadataFunc;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
@@ -47,7 +51,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::ops::Bound;
 use std::sync::Arc;
-use std::time::Instant;
 use stream_schema_provider::collect_manifest_files;
 use sysinfo::System;
 
@@ -624,75 +627,41 @@ pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
     }
 }
 
-pub async fn run_benchmark() {
-    const TRIES: usize = 1;
-    let mut query_num = 1;
-    let runtime_config = RuntimeEnvBuilder::new().with_disk_manager(DiskManagerConfig::NewOs);
+pub async fn run_benchmark() -> Result<(), ExecuteError> {
+    let mut session_config = SessionConfig::from_env()?.with_information_schema(true);
 
-    let runtime = runtime_config.build().unwrap();
+    session_config = session_config.with_batch_size(8192);
 
-    // Create session context
-    let mut config = SessionConfig::new()
-        .with_coalesce_batches(true)
-        .with_parquet_page_index_pruning(true)
-        .with_prefer_existing_sort(true)
-        .with_repartition_file_scans(true)
-        .with_round_robin_repartition(true)
-        .with_repartition_sorts(true)
-        .with_batch_size(1000000)
-        .with_target_partitions(1);
-    config.options_mut().execution.parquet.binary_as_string = true;
-    config
-        .options_mut()
-        .execution
-        .use_row_number_estimates_to_optimize_partitioning = true;
-    config.options_mut().execution.parquet.pushdown_filters = true;
-    config.options_mut().execution.parquet.enable_page_index = true;
-    config.options_mut().execution.parquet.reorder_filters = true;
-    config.options_mut().optimizer.enable_topk_aggregation = true;
-    config
-        .options_mut()
-        .execution
-        .parquet
-        .schema_force_view_types = true;
-    let state = SessionStateBuilder::new()
-        .with_default_features()
-        .with_config(config)
-        .with_runtime_env(Arc::new(runtime))
-        .build();
-    let ctx = SessionContext::new_with_state(state.clone());
+    let rt_builder = RuntimeEnvBuilder::new();
+    // set memory pool size
+    let runtime_env = rt_builder.build_arc()?;
+
+    // enable dynamic file query
+    let ctx = SessionContext::new_with_config_rt(session_config, runtime_env).enable_url_table();
+    // install dynamic catalog provider that can register required object stores
+    ctx.register_catalog_list(Arc::new(DynamicObjectStoreCatalog::new(
+        ctx.state().catalog_list().clone(),
+        ctx.state_weak_ref(),
+    )));
+    // register `parquet_metadata` table function to get metadata from parquet files
+    ctx.register_udtf("parquet_metadata", Arc::new(ParquetMetadataFunc {}));
+
     let parquet_file = env::var("PARQUET_LOCATION").unwrap(); //'/home/ubuntu/clickbench/hits.parquet'
+
+    let base_command =
+        format!("CREATE EXTERNAL TABLE hits STORED AS PARQUET LOCATION '{parquet_file}' OPTIONS ('binary_as_string' 'true')",
+            parquet_file = parquet_file);
+
+    let mut commands = Vec::new();
     let queries_file = env::var("QUERIES_FILE").unwrap(); //'/home/ubuntu/queries.sql'
-    let sql = format!("CREATE EXTERNAL TABLE hits STORED AS PARQUET LOCATION '{parquet_file}'");
-    let _ = ctx.sql(&sql).await.unwrap().collect().await.unwrap();
-    // Read queries from file
+    exec::exec_from_commands(&ctx, vec![base_command], true).await?;
     let queries = fs::read_to_string(queries_file).unwrap();
-    let mut total_elapsed = 0.0;
     for query in queries.lines() {
-        fs::write("/tmp/query.sql", &query).unwrap();
-
-        for iteration in 1..=TRIES {
-            // Create the query plan
-            let df = ctx.sql(&query).await.unwrap();
-            let logical_plan = df.logical_plan().clone();
-            let physical_plan = state.create_physical_plan(&logical_plan).await.unwrap();
-
-            // Add coalesce
-            let exec_plan: Arc<dyn ExecutionPlan> =
-                Arc::new(CoalesceBatchesExec::new(physical_plan, 1000000));
-            let task_ctx = ctx.task_ctx();
-            let repartitioned = Arc::new(
-                RepartitionExec::try_new(exec_plan, Partitioning::RoundRobinBatch(1)).unwrap(),
-            );
-            let start = Instant::now();
-            let _ = collect(repartitioned, task_ctx).await.unwrap();
-            let elapsed = start.elapsed().as_secs_f64();
-            total_elapsed += elapsed;
-            println!("Query {query_num} iteration {iteration} took {elapsed} seconds");
-        }
-        query_num += 1;
+        commands.push(query.to_string());
     }
-    println!("Total time: {total_elapsed} seconds");
+    exec::exec_from_commands(&ctx, commands, false).await?;
+
+    Ok(())
 }
 
 pub mod error {
