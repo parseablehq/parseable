@@ -26,6 +26,7 @@ pub mod stream_schema_provider;
 
 pub mod cli_context;
 
+use arrow_schema::DataType;
 use catalog::DynamicObjectStoreCatalog;
 use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
@@ -643,21 +644,34 @@ pub async fn run_benchmark() -> Result<(), ExecuteError> {
     )));
     // register `parquet_metadata` table function to get metadata from parquet files
     ctx.register_udtf("parquet_metadata", Arc::new(ParquetMetadataFunc {}));
-
     let parquet_file = env::var("PARQUET_LOCATION").unwrap(); //'/home/ubuntu/clickbench/hits.parquet'
-
-    let base_command =
-        format!("CREATE EXTERNAL TABLE hits STORED AS PARQUET LOCATION '{parquet_file}'");
-
+    register_hits(&ctx, &parquet_file).await?;
+    
     let mut commands = Vec::new();
     let queries_file = env::var("QUERIES_FILE").unwrap(); //'/home/ubuntu/queries.sql'
-    exec::exec_from_commands(&ctx, vec![base_command], true).await?;
     let queries = fs::read_to_string(queries_file).unwrap();
     for query in queries.lines() {
         commands.push(query.to_string());
     }
     exec::exec_from_commands(&ctx, commands, false).await?;
     Ok(())
+}
+
+async fn register_hits(ctx: &SessionContext, parquet_file: &str) -> Result<()> {
+    let mut options: ParquetReadOptions<'_> = Default::default();
+    options.table_partition_cols = vec![
+        ("date".to_string(), DataType::Utf8),
+        ("hour".to_string(), DataType::Utf8),
+        ("minute".to_string(), DataType::Utf8),
+    ];
+    ctx.register_parquet("hits", parquet_file, options)
+        .await
+        .map_err(|e| {
+            DataFusionError::Context(
+                format!("Registering 'hits' as {parquet_file}"),
+                Box::new(e),
+            )
+        })
 }
 
 pub mod error {
