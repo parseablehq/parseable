@@ -69,7 +69,10 @@ pub struct Query {
 }
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
-    let _ = run_benchmark().await;
+    tokio::task::spawn_blocking(|| {
+        run_benchmark();
+    });
+    
     let session_state = QUERY_SESSION.state();
     let raw_logical_plan = match session_state
         .create_logical_plan(&query_request.query)

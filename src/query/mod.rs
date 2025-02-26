@@ -624,7 +624,7 @@ pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
         objects
     }
 }
-
+#[tokio::main(flavor = "multi_thread", worker_threads = 16)]
 pub async fn run_benchmark() -> Result<(), ExecuteError> {
     let mut session_config = SessionConfig::from_env()?.with_information_schema(true);
 
