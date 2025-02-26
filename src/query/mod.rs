@@ -20,8 +20,6 @@ pub mod catalog;
 pub mod exec;
 mod filter_optimizer;
 pub mod functions;
-pub mod helper;
-pub mod highlighter;
 mod listing_table_builder;
 pub mod object_storage;
 pub mod stream_schema_provider;
@@ -649,8 +647,7 @@ pub async fn run_benchmark() -> Result<(), ExecuteError> {
     let parquet_file = env::var("PARQUET_LOCATION").unwrap(); //'/home/ubuntu/clickbench/hits.parquet'
 
     let base_command =
-        format!("CREATE EXTERNAL TABLE hits STORED AS PARQUET LOCATION '{parquet_file}' OPTIONS ('binary_as_string' 'true')",
-            parquet_file = parquet_file);
+        format!("CREATE EXTERNAL TABLE hits STORED AS PARQUET LOCATION '{parquet_file}'");
 
     let mut commands = Vec::new();
     let queries_file = env::var("QUERIES_FILE").unwrap(); //'/home/ubuntu/queries.sql'
@@ -660,7 +657,6 @@ pub async fn run_benchmark() -> Result<(), ExecuteError> {
         commands.push(query.to_string());
     }
     exec::exec_from_commands(&ctx, commands, false).await?;
-
     Ok(())
 }
 

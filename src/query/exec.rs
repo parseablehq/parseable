@@ -18,10 +18,10 @@
 //! Execution functions
 
 use std::collections::HashMap;
-use std::time::Instant;
-
 use super::cli_context::CliSessionContext;
 use super::object_storage::get_object_store;
+
+use datafusion::common::instant::Instant;
 use datafusion::common::{plan_datafusion_err, plan_err};
 use datafusion::config::ConfigFileType;
 use datafusion::datasource::listing::ListingTableUrl;
@@ -32,6 +32,8 @@ use datafusion::physical_plan::{collect, execute_stream, ExecutionPlanProperties
 use datafusion::sql::parser::{DFParser, Statement};
 use datafusion::sql::sqlparser::dialect::dialect_from_str;
 
+
+/// run and execute SQL statements and commands, against a context with the given print options
 pub async fn exec_from_commands(
     ctx: &dyn CliSessionContext,
     commands: Vec<String>,
@@ -64,7 +66,10 @@ pub async fn exec_from_commands(
     Ok(())
 }
 
-pub(super) async fn exec_and_print(ctx: &dyn CliSessionContext, sql: String) -> Result<()> {
+pub(super) async fn exec_and_print(
+    ctx: &dyn CliSessionContext,
+    sql: String,
+) -> Result<()> {
     let task_ctx = ctx.task_ctx();
     let dialect = &task_ctx.session_config().options().sql_parser.dialect;
     let dialect = dialect_from_str(dialect).ok_or_else(|| {
@@ -77,6 +82,7 @@ pub(super) async fn exec_and_print(ctx: &dyn CliSessionContext, sql: String) -> 
 
     let statements = DFParser::parse_sql_with_dialect(&sql, dialect.as_ref())?;
     for statement in statements {
+        
         let plan = create_plan(ctx, statement).await?;
 
         let df = ctx.execute_logical_plan(plan).await?;
@@ -100,6 +106,7 @@ pub(super) async fn exec_and_print(ctx: &dyn CliSessionContext, sql: String) -> 
 
     Ok(())
 }
+
 
 fn config_file_type_from_str(ext: &str) -> Option<ConfigFileType> {
     match ext.to_lowercase().as_str() {

@@ -17,9 +17,7 @@
 
 //! Functions that are query-able and searchable via the `\h` command
 
-use std::fmt;
 use std::fs::File;
-use std::str::FromStr;
 use std::sync::Arc;
 
 use arrow::array::{Int64Array, StringArray};
@@ -41,47 +39,6 @@ use parquet::file::reader::FileReader;
 use parquet::file::serialized_reader::SerializedFileReader;
 use parquet::file::statistics::Statistics;
 
-#[derive(Debug)]
-pub enum Function {
-    Select,
-    Explain,
-    Show,
-    CreateTable,
-    CreateTableAs,
-    Insert,
-    DropTable,
-}
-
-impl FromStr for Function {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(match s.trim().to_uppercase().as_str() {
-            "SELECT" => Self::Select,
-            "EXPLAIN" => Self::Explain,
-            "SHOW" => Self::Show,
-            "CREATE TABLE" => Self::CreateTable,
-            "CREATE TABLE AS" => Self::CreateTableAs,
-            "INSERT" => Self::Insert,
-            "DROP TABLE" => Self::DropTable,
-            _ => return Err(()),
-        })
-    }
-}
-
-impl fmt::Display for Function {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match *self {
-            Function::Select => write!(f, "SELECT"),
-            Function::Explain => write!(f, "EXPLAIN"),
-            Function::Show => write!(f, "SHOW"),
-            Function::CreateTable => write!(f, "CREATE TABLE"),
-            Function::CreateTableAs => write!(f, "CREATE TABLE AS"),
-            Function::Insert => write!(f, "INSERT"),
-            Function::DropTable => write!(f, "DROP TABLE"),
-        }
-    }
-}
 
 /// PARQUET_META table function
 #[derive(Debug)]
@@ -194,13 +151,14 @@ impl TableFunctionImpl for ParquetMetadataFunc {
             Some(Expr::Literal(ScalarValue::Utf8(Some(s)))) => s, // single quote: parquet_metadata('x.parquet')
             Some(Expr::Column(Column { name, .. })) => name, // double quote: parquet_metadata("x.parquet")
             _ => {
-                return plan_err!("parquet_metadata requires string argument as its input");
+                return plan_err!(
+                    "parquet_metadata requires string argument as its input"
+                );
             }
         };
 
         let file = File::open(filename.clone())?;
-        let reader =
-            SerializedFileReader::new(file).map_err(datafusion::error::DataFusionError::from)?;
+        let reader = SerializedFileReader::new(file)?;
         let metadata = reader.metadata();
 
         let schema = Arc::new(Schema::new(vec![
@@ -268,11 +226,13 @@ impl TableFunctionImpl for ParquetMetadataFunc {
                 let converted_type = column.column_descr().converted_type();
 
                 if let Some(s) = column.statistics() {
-                    let (min_val, max_val) = convert_parquet_statistics(s, converted_type);
+                    let (min_val, max_val) =
+                        convert_parquet_statistics(s, converted_type);
                     stats_min_arr.push(min_val.clone());
                     stats_max_arr.push(max_val.clone());
                     stats_null_count_arr.push(s.null_count_opt().map(|c| c as i64));
-                    stats_distinct_count_arr.push(s.distinct_count_opt().map(|c| c as i64));
+                    stats_distinct_count_arr
+                        .push(s.distinct_count_opt().map(|c| c as i64));
                     stats_min_value_arr.push(min_val);
                     stats_max_value_arr.push(max_val);
                 } else {
