@@ -263,7 +263,7 @@ pub fn get_reverse_reader<T: Read + Seek>(
                 messages.push((header, offset, size));
                 offset += size;
             }
-            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(err) if err.kind() == io::ErrorKind::UnexpectedEof && messages.len() > 0 => break,
             Err(err) => return Err(err),
         }
     }
