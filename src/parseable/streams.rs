@@ -62,14 +62,12 @@ use super::{
         writer::Writer,
         StagingError,
     },
-    LogStream,
+    LogStream, ARROW_FILE_EXTENSION,
 };
 
 #[derive(Debug, thiserror::Error)]
 #[error("Stream not found: {0}")]
 pub struct StreamNotFound(pub String);
-
-const ARROW_FILE_EXTENSION: &str = "data.arrows";
 
 pub type StreamRef = Arc<Stream>;
 
@@ -165,7 +163,7 @@ impl Stream {
             hostname.push_str(id);
         }
         let filename = format!(
-            "{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.{ARROW_FILE_EXTENSION}",
+            "{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
@@ -495,10 +493,12 @@ impl Stream {
             }
             writer.close()?;
 
-            if part_file.metadata().unwrap().len() < parquet::file::FOOTER_SIZE as u64 {
+            if part_file.metadata().expect("File was just created").len()
+                < parquet::file::FOOTER_SIZE as u64
+            {
                 error!(
-                    "Invalid parquet file {:?} detected for stream {}, removing it",
-                    &part_path, &self.stream_name
+                    "Invalid parquet file {part_path:?} detected for stream {}, removing it",
+                    &self.stream_name
                 );
                 remove_file(part_path).unwrap();
             } else {
@@ -510,15 +510,22 @@ impl Stream {
                 }
 
                 for file in arrow_files {
-                    // warn!("file-\n{file:?}\n");
-                    let file_size = file.metadata().unwrap().len();
-                    let file_type = file.extension().unwrap().to_str().unwrap();
-                    if remove_file(file.clone()).is_err() {
+                    let file_size = match file.metadata() {
+                        Ok(meta) => meta.len(),
+                        Err(err) => {
+                            warn!(
+                                "File ({}) not found; Error = {err}",
+                                file.display()
+                            );
+                            continue;
+                        }
+                    };
+                    if remove_file(&file).is_err() {
                         error!("Failed to delete file. Unstable state");
                         process::abort()
                     }
                     metrics::STORAGE_SIZE
-                        .with_label_values(&["staging", &self.stream_name, file_type])
+                        .with_label_values(&["staging", &self.stream_name, ARROW_FILE_EXTENSION])
                         .sub(file_size as i64);
                 }
             }
@@ -883,7 +890,7 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{stream_hash}.date={}.hour={:02}.minute={}.{}.{ARROW_FILE_EXTENSION}",
+            "{stream_hash}.date={}.hour={:02}.minute={}.{}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
@@ -917,7 +924,7 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.{ARROW_FILE_EXTENSION}",
+            "{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
