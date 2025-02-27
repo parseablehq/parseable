@@ -50,6 +50,7 @@ impl Event {
 impl EventFormat for Event {
     type Data = Vec<Value>;
 
+    /// Returns the time at ingestion, i.e. the `p_timestamp` value
     fn get_p_timestamp(&self) -> DateTime<Utc> {
         self.p_timestamp
     }
