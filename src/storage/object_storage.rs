@@ -461,16 +461,12 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     ) -> Result<Option<Manifest>, ObjectStorageError> {
         let path = manifest_path(path.as_str());
         match self.get_object(&path).await {
-            Ok(bytes) => Ok(Some(
-                serde_json::from_slice(&bytes).expect("manifest is valid json"),
-            )),
-            Err(err) => {
-                if matches!(err, ObjectStorageError::NoSuchKey(_)) {
-                    Ok(None)
-                } else {
-                    Err(err)
-                }
+            Ok(bytes) => {
+                let manifest = serde_json::from_slice(&bytes)?;
+                Ok(Some(manifest))
             }
+            Err(ObjectStorageError::NoSuchKey(_)) => Ok(None),
+            Err(err) => Err(err),
         }
     }
 
