@@ -81,6 +81,7 @@ impl ParseableServer for Server {
                     .service(Self::get_about_factory())
                     .service(Self::get_logstream_webscope())
                     .service(Self::get_user_webscope())
+                    .service(Self::get_users_webscope())
                     .service(Self::get_dashboards_webscope())
                     .service(Self::get_filters_webscope())
                     .service(Self::get_llm_webscope())
@@ -170,7 +171,9 @@ impl Server {
                 web::resource("/info").route(
                     web::get()
                         .to(http::prism_logstream::get_info)
-                        .authorize_for_stream(Action::GetStreamInfo),
+                        .authorize_for_stream(Action::GetStreamInfo)
+                        .authorize_for_stream(Action::GetStats)
+                        .authorize_for_stream(Action::GetRetention),
                 ),
             ),
         )
@@ -494,6 +497,27 @@ impl Server {
                     .route(web::put().to(role::put).authorize(Action::PutRole))
                     .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
                     .route(web::get().to(role::get).authorize(Action::GetRole)),
+            )
+    }
+
+    // get the users webscope (for Prism only)
+    pub fn get_users_webscope() -> Scope {
+        web::scope("/users")
+            .service(
+                web::resource("")
+                    // GET /users => List all users
+                    .route(
+                        web::get()
+                            .to(http::rbac::list_users_prism)
+                            .authorize(Action::ListUser),
+                    ),
+            )
+            .service(
+                web::resource("/{username}").route(
+                    web::get()
+                        .to(http::rbac::get_prism_user)
+                        .authorize_for_user(Action::GetUserRoles),
+                ),
             )
     }
 

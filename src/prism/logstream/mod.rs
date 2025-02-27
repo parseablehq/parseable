@@ -20,13 +20,19 @@ use std::sync::Arc;
 
 use actix_web::http::header::ContentType;
 use arrow_schema::Schema;
+use chrono::Utc;
 use http::StatusCode;
 use serde::Serialize;
 
 use crate::{
-    handlers::http::{logstream::error::StreamError, query::update_schema_when_distributed},
+    handlers::http::{
+        cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
+        logstream::error::StreamError,
+        query::update_schema_when_distributed,
+    },
     parseable::{StreamNotFound, PARSEABLE},
-    storage::StreamInfo,
+    stats,
+    storage::{retention::Retention, StreamInfo},
     LOCK_EXPECT,
 };
 
@@ -34,6 +40,8 @@ use crate::{
 pub struct PrismLogstreamInfo {
     info: StreamInfo,
     schema: Arc<Schema>,
+    stats: QueriedStats,
+    retention: Retention,
 }
 
 pub async fn get_prism_logstream_info(
@@ -41,10 +49,25 @@ pub async fn get_prism_logstream_info(
 ) -> Result<PrismLogstreamInfo, PrismLogstreamError> {
     // get StreamInfo
     let info = get_stream_info_helper(stream_name).await?;
+
     // get stream schema
     let schema = get_stream_schema_helper(stream_name).await?;
 
-    Ok(PrismLogstreamInfo { info, schema })
+    // get stream stats
+    let stats = get_stats(stream_name).await?;
+
+    // get retention
+    let retention = PARSEABLE
+        .get_stream(stream_name)?
+        .get_retention()
+        .unwrap_or_default();
+
+    Ok(PrismLogstreamInfo {
+        info,
+        schema,
+        stats,
+        retention,
+    })
 }
 
 async fn get_stream_schema_helper(stream_name: &str) -> Result<Arc<Schema>, StreamError> {
@@ -64,6 +87,73 @@ async fn get_stream_schema_helper(stream_name: &str) -> Result<Arc<Schema>, Stre
             status: StatusCode::EXPECTATION_FAILED,
         }),
     }
+}
+
+async fn get_stats(stream_name: &str) -> Result<QueriedStats, PrismLogstreamError> {
+    let stats = stats::get_current_stats(stream_name, "json")
+        .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?;
+
+    let ingestor_stats: Option<Vec<QueriedStats>> = None;
+
+    let hash_map = PARSEABLE.streams.read().expect("Readable");
+    let stream_meta = &hash_map
+        .get(stream_name)
+        .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?
+        .metadata
+        .read()
+        .expect(LOCK_EXPECT);
+
+    let time = Utc::now();
+
+    let stats = match &stream_meta.first_event_at {
+        Some(_) => {
+            let ingestion_stats = IngestionStats::new(
+                stats.current_stats.events,
+                format!("{} {}", stats.current_stats.ingestion, "Bytes"),
+                stats.lifetime_stats.events,
+                format!("{} {}", stats.lifetime_stats.ingestion, "Bytes"),
+                stats.deleted_stats.events,
+                format!("{} {}", stats.deleted_stats.ingestion, "Bytes"),
+                "json",
+            );
+            let storage_stats = StorageStats::new(
+                format!("{} {}", stats.current_stats.storage, "Bytes"),
+                format!("{} {}", stats.lifetime_stats.storage, "Bytes"),
+                format!("{} {}", stats.deleted_stats.storage, "Bytes"),
+                "parquet",
+            );
+
+            QueriedStats::new(stream_name, time, ingestion_stats, storage_stats)
+        }
+
+        None => {
+            let ingestion_stats = IngestionStats::new(
+                stats.current_stats.events,
+                format!("{} {}", stats.current_stats.ingestion, "Bytes"),
+                stats.lifetime_stats.events,
+                format!("{} {}", stats.lifetime_stats.ingestion, "Bytes"),
+                stats.deleted_stats.events,
+                format!("{} {}", stats.deleted_stats.ingestion, "Bytes"),
+                "json",
+            );
+            let storage_stats = StorageStats::new(
+                format!("{} {}", stats.current_stats.storage, "Bytes"),
+                format!("{} {}", stats.lifetime_stats.storage, "Bytes"),
+                format!("{} {}", stats.deleted_stats.storage, "Bytes"),
+                "parquet",
+            );
+
+            QueriedStats::new(stream_name, time, ingestion_stats, storage_stats)
+        }
+    };
+    let stats = if let Some(mut ingestor_stats) = ingestor_stats {
+        ingestor_stats.push(stats);
+        merge_quried_stats(ingestor_stats)
+    } else {
+        stats
+    };
+
+    Ok(stats)
 }
 
 async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, StreamError> {
@@ -120,6 +210,8 @@ pub enum PrismLogstreamError {
     Anyhow(#[from] anyhow::Error),
     #[error("StreamError: {0}")]
     StreamError(#[from] StreamError),
+    #[error("StreamNotFound: {0}")]
+    StreamNotFound(#[from] StreamNotFound),
 }
 
 impl actix_web::ResponseError for PrismLogstreamError {
@@ -127,6 +219,7 @@ impl actix_web::ResponseError for PrismLogstreamError {
         match self {
             PrismLogstreamError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PrismLogstreamError::StreamError(e) => e.status_code(),
+            PrismLogstreamError::StreamNotFound(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 

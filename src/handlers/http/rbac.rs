@@ -19,12 +19,17 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    rbac::{map::roles, role::model::DefaultPrivilege, user, Users},
+    rbac::{self, map::roles, role::model::DefaultPrivilege, user, Users, UsersPrism},
     storage::ObjectStorageError,
     validator::{self, error::UsernameValidationError},
 };
-use actix_web::{http::header::ContentType, web, Responder};
+use actix_web::{
+    http::header::ContentType,
+    web::{self, Path},
+    Responder,
+};
 use http::StatusCode;
+use itertools::Itertools;
 use tokio::sync::Mutex;
 
 use super::modal::utils::rbac_utils::{get_metadata, put_metadata};
@@ -56,6 +61,88 @@ impl From<&user::User> for User {
 // returns list of all registerd users
 pub async fn list_users() -> impl Responder {
     web::Json(Users.collect_user::<User>())
+}
+
+/// Handler for GET /api/v1/users
+/// returns list of all registerd users along with their roles and other info
+pub async fn list_users_prism() -> impl Responder {
+    // get all users
+    let prism_users = rbac::map::users()
+        .values()
+        .map(|u| {
+            let (id, method, email, picture) = match &u.ty {
+                user::UserType::Native(_) => (u.username(), "native", None, None),
+                user::UserType::OAuth(oauth) => (
+                    u.username(),
+                    "oauth",
+                    oauth.user_info.email.clone(),
+                    oauth.user_info.picture.clone(),
+                ),
+            };
+            let roles: HashMap<String, Vec<DefaultPrivilege>> = Users
+                .get_role(id)
+                .iter()
+                .filter_map(|role_name| {
+                    roles()
+                        .get(role_name)
+                        .map(|role| (role_name.to_owned(), role.clone()))
+                })
+                .collect();
+
+            UsersPrism {
+                id: id.into(),
+                method: method.into(),
+                email,
+                picture,
+                roles,
+            }
+        })
+        .collect_vec();
+
+    web::Json(prism_users)
+}
+
+/// Function for GET /users/{username}
+pub async fn get_prism_user(username: Path<String>) -> Result<impl Responder, RBACError> {
+    let username = username.into_inner();
+    let prism_user = rbac::map::users()
+        .values()
+        .map(|u| {
+            let (id, method, email, picture) = match &u.ty {
+                user::UserType::Native(_) => (u.username(), "native", None, None),
+                user::UserType::OAuth(oauth) => (
+                    u.username(),
+                    "oauth",
+                    oauth.user_info.email.clone(),
+                    oauth.user_info.picture.clone(),
+                ),
+            };
+            let roles: HashMap<String, Vec<DefaultPrivilege>> = Users
+                .get_role(id)
+                .iter()
+                .filter_map(|role_name| {
+                    roles()
+                        .get(role_name)
+                        .map(|role| (role_name.to_owned(), role.clone()))
+                })
+                .collect();
+
+            UsersPrism {
+                id: id.into(),
+                method: method.into(),
+                email,
+                picture,
+                roles,
+            }
+        })
+        .filter(|u| u.id.eq(&username))
+        .collect_vec();
+
+    if prism_user.is_empty() {
+        Err(RBACError::UserDoesNotExist)
+    } else {
+        Ok(web::Json(prism_user[0].clone()))
+    }
 }
 
 // Handler for POST /api/v1/user/{username}

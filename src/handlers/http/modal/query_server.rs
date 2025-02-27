@@ -61,6 +61,7 @@ impl ParseableServer for QueryServer {
                     .service(Server::get_about_factory())
                     .service(Self::get_logstream_webscope())
                     .service(Self::get_user_webscope())
+                    .service(Server::get_users_webscope())
                     .service(Server::get_dashboards_webscope())
                     .service(Server::get_filters_webscope())
                     .service(Server::get_llm_webscope())
