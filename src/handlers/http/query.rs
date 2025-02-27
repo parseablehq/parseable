@@ -70,7 +70,7 @@ pub struct Query {
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
     tokio::task::spawn_blocking(|| {
-        run_benchmark().unwrap();
+        run_benchmark(CONFIG.storage()).unwrap();
     });
     
     let session_state = QUERY_SESSION.state();
