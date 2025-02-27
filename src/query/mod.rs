@@ -21,8 +21,6 @@ mod filter_optimizer;
 mod listing_table_builder;
 pub mod stream_schema_provider;
 
-pub mod cli_context;
-
 use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
@@ -642,7 +640,7 @@ pub async fn run_benchmark(_storage: Arc<dyn ObjectStorageProvider>) -> Result<(
         .catalog(&state.config_options().catalog.default_catalog)
         .expect("default catalog is provided by datafusion");
     // enable dynamic file query
-    let ctx = SessionContext::new_with_state(state).enable_url_table();
+    let ctx = SessionContext::new_with_state(state);
     let mut table_options = HashMap::new();
     table_options.insert("binary_as_string", "true");
     
