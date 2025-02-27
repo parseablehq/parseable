@@ -31,7 +31,7 @@ use datafusion::catalog::Session;
 use datafusion::common::stats::Precision;
 use datafusion::common::Constraints;
 use datafusion::config::TableParquetOptions;
-use datafusion::datasource::listing::file_compression_type::FileCompressionType;
+use datafusion::datasource::file_format::file_compression_type::FileCompressionType;
 use datafusion::datasource::physical_plan::ParquetSource;
 use datafusion::logical_expr::utils::conjunction;
 use datafusion::physical_expr::LexOrdering;
@@ -170,7 +170,7 @@ impl StandardTableProvider {
                     constraints: Constraints::default(),
                     file_compression_type: FileCompressionType::ZSTD,
                     new_lines_in_values: false,
-                    source: Arc::new(ParquetSource::new(TableParquetOptions::default())),
+                    file_source: Arc::new(ParquetSource::new(TableParquetOptions::default())),
                 },
                 filters.as_ref(),
             )

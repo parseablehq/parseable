@@ -16,17 +16,13 @@
  *
  */
 
-pub mod catalog;
 pub mod exec;
 mod filter_optimizer;
-pub mod functions;
 mod listing_table_builder;
-pub mod object_storage;
 pub mod stream_schema_provider;
 
 pub mod cli_context;
 
-use catalog::DynamicObjectStoreCatalog;
 use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
@@ -41,7 +37,6 @@ use datafusion::logical_expr::{
     Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
 };
 use datafusion::prelude::*;
-use functions::ParquetMetadataFunc;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
@@ -626,8 +621,8 @@ pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
     }
 }
 #[tokio::main(flavor = "multi_thread", worker_threads = 16)]
-pub async fn run_benchmark(storage: Arc<dyn ObjectStorageProvider>) -> Result<(), ExecuteError> {
-    let mut session_config = SessionConfig::from_env()?.with_information_schema(true);
+pub async fn run_benchmark(_storage: Arc<dyn ObjectStorageProvider>) -> Result<(), ExecuteError> {
+    let mut session_config = SessionConfig::new().with_information_schema(true);
 
     session_config = session_config.with_batch_size(8192);
 
@@ -639,32 +634,22 @@ pub async fn run_benchmark(storage: Arc<dyn ObjectStorageProvider>) -> Result<()
             .with_config(session_config)
             .with_runtime_env(runtime_env)
             .build();
-    let schema_provider = Arc::new(GlobalSchemaProvider {
-        storage: storage.get_object_store(),
-    });
+    // let schema_provider = Arc::new(GlobalSchemaProvider {
+    //     storage: storage.get_object_store(),
+    // });
     state
         .catalog_list()
         .catalog(&state.config_options().catalog.default_catalog)
-        .expect("default catalog is provided by datafusion")
-        .register_schema(
-            &state.config_options().catalog.default_schema,
-            schema_provider,
-        )
-        .unwrap();
+        .expect("default catalog is provided by datafusion");
     // enable dynamic file query
     let ctx = SessionContext::new_with_state(state).enable_url_table();
-    // install dynamic catalog provider that can register required object stores
-    ctx.register_catalog_list(Arc::new(DynamicObjectStoreCatalog::new(
-        ctx.state().catalog_list().clone(),
-        ctx.state_weak_ref(),
-    )));
     let mut table_options = HashMap::new();
     table_options.insert("binary_as_string", "true");
     
     // register `parquet_metadata` table function to get metadata from parquet files
-    ctx.register_udtf("parquet_metadata", Arc::new(ParquetMetadataFunc {}));
-    // let parquet_file = env::var("PARQUET_LOCATION").unwrap(); //'/home/ubuntu/clickbench/hits.parquet'
-    // register_hits(&ctx, &parquet_file).await?;
+    //ctx.register_udtf("parquet_metadata", Arc::new(ParquetMetadataFunc {}));
+    let parquet_file = env::var("PARQUET_LOCATION").unwrap(); //'/home/ubuntu/clickbench/hits.parquet'
+    register_hits(&ctx, &parquet_file).await?;
     
     let mut commands = Vec::new();
     let queries_file = env::var("QUERIES_FILE").unwrap(); //'/home/ubuntu/queries.sql'
@@ -676,24 +661,19 @@ pub async fn run_benchmark(storage: Arc<dyn ObjectStorageProvider>) -> Result<()
     Ok(())
 }
 
-// async fn register_hits(ctx: &SessionContext, parquet_file: &str) -> Result<()> {
-//     let mut options: ParquetReadOptions<'_> = Default::default();
-//     options.table_partition_cols = vec![
-//         ("date".to_string(), DataType::Utf8),
-//         ("hour".to_string(), DataType::Utf8),
-//         ("minute".to_string(), DataType::Utf8),
-//     ];
+async fn register_hits(ctx: &SessionContext, parquet_file: &str) -> Result<()> {
+    let options: ParquetReadOptions<'_> = Default::default();
     
-//     ctx.register_parquet("hits", parquet_file, options)
-//         .await
-//         .map_err(|e| {
-//             DataFusionError::Context(
-//                 format!("Registering 'hits' as {parquet_file}"),
-//                 Box::new(e),
-//             )
-//         })
+    ctx.register_parquet("hits", parquet_file, options)
+        .await
+        .map_err(|e| {
+            DataFusionError::Context(
+                format!("Registering 'hits' as {parquet_file}"),
+                Box::new(e),
+            )
+        })
         
-// }
+}
 
 pub mod error {
     use crate::{metadata::error::stream_info::MetadataError, storage::ObjectStorageError};
