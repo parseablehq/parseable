@@ -58,8 +58,8 @@ pub struct Fields {
 pub struct Metadata {}
 pub fn convert_static_schema_to_arrow_schema(
     static_schema: StaticSchema,
-    time_partition: &str,
-    custom_partition: Option<&String>,
+    time_partition: &Option<String>,
+    custom_partitions: &[String],
 ) -> Result<Arc<Schema>, AnyError> {
     let mut parsed_schema = ParsedSchema {
         fields: Vec::new(),
@@ -67,28 +67,18 @@ pub fn convert_static_schema_to_arrow_schema(
     };
     let mut time_partition_exists = false;
 
-    if let Some(custom_partition) = custom_partition {
-        let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
-        let mut custom_partition_exists = HashMap::with_capacity(custom_partition_list.len());
-
-        for partition in &custom_partition_list {
-            if static_schema
-                .fields
-                .iter()
-                .any(|field| &field.name == partition)
-            {
-                custom_partition_exists.insert(partition.to_string(), true);
-            }
-        }
-
-        for partition in &custom_partition_list {
-            if !custom_partition_exists.contains_key(*partition) {
-                return Err(anyhow!("custom partition field {partition} does not exist in the schema for the static schema logstream"));
-            }
+    for partition in custom_partitions {
+        if !static_schema
+            .fields
+            .iter()
+            .any(|field| &field.name == partition)
+        {
+            return Err(anyhow!("custom partition field {partition} does not exist in the schema for the static schema logstream"));
         }
     }
+
     for mut field in static_schema.fields {
-        if !time_partition.is_empty() && field.name == time_partition {
+        if time_partition.as_ref().is_some_and(|p| p == &field.name) {
             time_partition_exists = true;
             field.data_type = "datetime".to_string();
         }
@@ -126,12 +116,10 @@ pub fn convert_static_schema_to_arrow_schema(
 
         parsed_schema.fields.push(parsed_field);
     }
-    if !time_partition.is_empty() && !time_partition_exists {
-        return Err(anyhow! {
-            format!(
-                "time partition field {time_partition} does not exist in the schema for the static schema logstream"
-            ),
-        });
+    if let Some(time_partition) = time_partition {
+        if !time_partition_exists {
+            return Err(anyhow!("time partition field {time_partition} does not exist in the schema for the static schema logstream"));
+        }
     }
     add_parseable_fields_to_static_schema(parsed_schema)
 }
