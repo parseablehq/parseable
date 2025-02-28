@@ -18,28 +18,29 @@
 
 use std::sync::Arc;
 
+use chrono::NaiveDate;
 use prometheus::core::Collector;
 use prometheus::proto::MetricFamily;
 use prometheus::IntGaugeVec;
+use serde::{Deserialize, Deserializer, Serialize};
 use tracing::warn;
 
-use crate::metrics::{
+use crate::{metrics::{
     DELETED_EVENTS_STORAGE_SIZE, EVENTS_DELETED, EVENTS_DELETED_SIZE, EVENTS_INGESTED,
     EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
     EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
     LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE,
-};
-use crate::storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat};
+}, storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat}};
 
 /// Helper struct type created by copying stats values from metadata
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub struct Stats {
     pub events: u64,
     pub ingestion: u64,
     pub storage: u64,
 }
 
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub struct FullStats {
     pub lifetime_stats: Stats,
     pub current_stats: Stats,
@@ -219,4 +220,49 @@ pub fn event_labels_date<'a>(
 
 pub fn storage_size_labels_date<'a>(stream_name: &'a str, date: &'a str) -> [&'a str; 4] {
     ["data", stream_name, "parquet", date]
+}
+
+#[derive(Debug, Deserialize)]
+pub struct StatsParams {
+    #[serde(deserialize_with = "deserialize_date")]
+    pub date: Option<NaiveDate>,
+}
+
+impl StatsParams {
+    pub fn get_stats(self, stream_name: &str) -> Option<Stats> {
+        let date = self.date?.to_string();
+        let event_labels = event_labels_date(stream_name, "json", &date);
+        let storage_size_labels = storage_size_labels_date(stream_name, &date);
+        let events_ingested = EVENTS_INGESTED_DATE
+            .get_metric_with_label_values(&event_labels)
+            .unwrap()
+            .get() as u64;
+        let ingestion_size = EVENTS_INGESTED_SIZE_DATE
+            .get_metric_with_label_values(&event_labels)
+            .unwrap()
+            .get() as u64;
+        let storage_size = EVENTS_STORAGE_SIZE_DATE
+            .get_metric_with_label_values(&storage_size_labels)
+            .unwrap()
+            .get() as u64;
+
+        Some(Stats {
+            events: events_ingested,
+            ingestion: ingestion_size,
+            storage: storage_size,
+        })
+    }
+}
+
+pub fn deserialize_date<'de, D>(deserializer: D) -> Result<Option<NaiveDate>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(s) = Option::<String>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+
+    NaiveDate::parse_from_str(&s, "%Y-%m-%d")
+        .map(Some)
+        .map_err(serde::de::Error::custom)
 }
