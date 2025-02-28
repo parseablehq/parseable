@@ -80,7 +80,7 @@ async fn push_logs(
     let custom_partition = stream.get_custom_partition();
     let schema_version = stream.get_schema_version();
     let p_timestamp = Utc::now();
-    
+
     for json in jsons {
         let data = if time_partition.is_some() || custom_partition.is_some() {
             convert_array_to_object(
