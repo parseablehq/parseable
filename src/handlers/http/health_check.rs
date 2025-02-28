@@ -27,15 +27,14 @@ use actix_web::{
     HttpResponse,
 };
 use http::StatusCode;
+use once_cell::sync::Lazy;
 use tokio::{sync::Mutex, task::JoinSet};
 use tracing::{error, info, warn};
 
 use crate::parseable::PARSEABLE;
 
 // Create a global variable to store signal status
-lazy_static::lazy_static! {
-    pub static ref SIGNAL_RECEIVED: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
-}
+static SIGNAL_RECEIVED: Lazy<Arc<Mutex<bool>>> = Lazy::new(|| Arc::new(Mutex::new(false)));
 
 pub async fn liveness() -> HttpResponse {
     HttpResponse::new(StatusCode::OK)
