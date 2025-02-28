@@ -137,11 +137,18 @@ pub trait EventFormat: Sized {
             )),
         );
 
-        // prepare the record batch and new fields to be added
-        let mut new_schema = Arc::new(Schema::new(schema));
-        if !Self::is_schema_matching(new_schema.clone(), storage_schema, static_schema_flag) {
+        if static_schema_flag
+            && schema.iter().any(|field| {
+                storage_schema
+                    .get(field.name())
+                    .is_none_or(|storage_field| storage_field != field)
+            })
+        {
             return Err(anyhow!("Schema mismatch"));
         }
+
+        // prepare the record batch and new fields to be added
+        let mut new_schema = Arc::new(Schema::new(schema));
         new_schema =
             update_field_type_in_schema(new_schema, None, time_partition, None, schema_version);
 
@@ -154,28 +161,6 @@ pub trait EventFormat: Sized {
         );
 
         Ok((rb, is_first))
-    }
-
-    fn is_schema_matching(
-        new_schema: Arc<Schema>,
-        storage_schema: &HashMap<String, Arc<Field>>,
-        static_schema_flag: bool,
-    ) -> bool {
-        if !static_schema_flag {
-            return true;
-        }
-        for field in new_schema.fields() {
-            let Some(storage_field) = storage_schema.get(field.name()) else {
-                return false;
-            };
-            if field.name() != storage_field.name() {
-                return false;
-            }
-            if field.data_type() != storage_field.data_type() {
-                return false;
-            }
-        }
-        true
     }
 
     #[allow(clippy::too_many_arguments)]
