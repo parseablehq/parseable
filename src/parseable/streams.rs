@@ -225,8 +225,10 @@ impl Stream {
             .flatten()
             .map(|file| file.path())
             .filter(|path| {
-                path.file_name()
-                    .is_some_and(|f| f.to_string_lossy().ends_with(ARROW_FILE_EXTENSION))
+                path.file_name().is_some_and(|f| {
+                    let filename = f.to_string_lossy();
+                    filename.ends_with(ARROW_FILE_EXTENSION) && !filename.contains("part")
+                })
             })
             .sorted_by_key(|f| f.metadata().unwrap().modified().unwrap())
             .collect();
