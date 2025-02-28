@@ -167,7 +167,7 @@ pub async fn get_counts(
     }))
 }
 
-pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), QueryError> {
+pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), EventError> {
     if PARSEABLE.options.mode == Mode::Query {
         for table in tables {
             if let Ok(new_schema) = fetch_schema(table).await {
@@ -304,7 +304,7 @@ pub enum QueryError {
     Execute(#[from] ExecuteError),
     #[error("ObjectStorage Error: {0}")]
     ObjectStorage(#[from] ObjectStorageError),
-    #[error("Evern Error: {0}")]
+    #[error("Event Error: {0}")]
     EventError(#[from] EventError),
     #[error("Error: {0}")]
     MalformedQuery(&'static str),

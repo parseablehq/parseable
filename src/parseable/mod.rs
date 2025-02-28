@@ -58,6 +58,9 @@ use crate::{
 mod staging;
 mod streams;
 
+/// File extension for arrow files in staging
+const ARROW_FILE_EXTENSION: &str = "arrows";
+
 /// Name of a Stream
 /// NOTE: this used to be a struct, flattened out for simplicity
 pub type LogStream = String;
@@ -177,16 +180,6 @@ impl Parseable {
                     .create_stream_and_schema_from_storage(stream_name)
                     .await
                     .unwrap_or_default())
-    }
-
-    /// Writes all streams in staging onto disk, awaiting conversion into parquet.
-    /// Deletes all in memory recordbatches, freeing up rows in mem-writer.
-    pub fn flush_all_streams(&self) {
-        let streams = self.streams.read().unwrap();
-
-        for staging in streams.values() {
-            staging.flush()
-        }
     }
 
     // validate the storage, if the proper path for staging directory is provided
@@ -722,16 +715,14 @@ impl Parseable {
             .await
         {
             error!(
-                "Failed to update first_event_at in storage for stream {:?}: {err:?}",
-                stream_name
+                "Failed to update first_event_at in storage for stream {stream_name:?}: {err:?}"
             );
         }
 
         match self.get_stream(stream_name) {
             Ok(stream) => stream.set_first_event_at(first_event_at),
             Err(err) => error!(
-                "Failed to update first_event_at in stream info for stream {:?}: {err:?}",
-                stream_name
+                "Failed to update first_event_at in stream info for stream {stream_name:?}: {err:?}"
             ),
         }
 

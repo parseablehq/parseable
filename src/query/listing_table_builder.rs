@@ -32,9 +32,8 @@ use itertools::Itertools;
 use object_store::{path::Path, ObjectMeta, ObjectStore};
 
 use crate::{
-    event::DEFAULT_TIMESTAMP_KEY,
-    storage::{ObjectStorage, OBJECT_STORE_DATA_GRANULARITY},
-    utils::time::TimeRange,
+    event::DEFAULT_TIMESTAMP_KEY, storage::ObjectStorage, utils::time::TimeRange,
+    OBJECT_STORE_DATA_GRANULARITY,
 };
 
 use super::PartialTimeFilter;
@@ -136,7 +135,6 @@ impl ListingTableBuilder {
                     .list(Some(&object_store::path::Path::from(prefix)))
                     .try_collect::<Vec<_>>()
                     .await
-                    .map_err(Into::into)
             }));
         }
 

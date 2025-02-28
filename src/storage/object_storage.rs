@@ -16,25 +16,16 @@
  *
  */
 
-use super::{
-    retention::Retention, ObjectStorageError, ObjectStoreFormat, StorageMetadata,
-    ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
-    SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
-};
-
-use crate::alerts::AlertConfig;
-use crate::correlation::{CorrelationConfig, CorrelationError};
-use crate::handlers::http::modal::ingest_server::INGESTOR_EXPECT;
-use crate::handlers::http::users::{CORRELATION_DIR, DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
-use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE};
-use crate::option::Mode;
-use crate::parseable::LogStream;
-use crate::{
-    catalog::{self, manifest::Manifest, snapshot::Snapshot},
-    metrics::{storage::StorageMetrics, STORAGE_SIZE},
-    parseable::PARSEABLE,
-    stats::FullStats,
-};
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::fmt::Debug;
+use std::fs::{remove_file, File};
+use std::num::NonZeroU32;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
 
 use actix_web_prometheus::PrometheusMetrics;
 use arrow_schema::Schema;
@@ -45,19 +36,27 @@ use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::R
 use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
-use tracing::{debug, error, warn};
+use tracing::info;
+use tracing::{error, warn};
 use ulid::Ulid;
 
-use std::collections::{BTreeMap, HashSet};
-use std::fmt::Debug;
-use std::fs::File;
-use std::num::NonZeroU32;
-use std::{
-    collections::HashMap,
-    fs,
-    path::Path,
-    sync::Arc,
-    time::{Duration, Instant},
+use crate::alerts::AlertConfig;
+use crate::catalog::{self, manifest::Manifest, snapshot::Snapshot};
+use crate::correlation::{CorrelationConfig, CorrelationError};
+use crate::handlers::http::modal::ingest_server::INGESTOR_EXPECT;
+use crate::handlers::http::users::CORRELATION_DIR;
+use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
+use crate::metrics::storage::StorageMetrics;
+use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE};
+use crate::option::Mode;
+use crate::parseable::LogStream;
+use crate::parseable::PARSEABLE;
+use crate::stats::FullStats;
+
+use super::{
+    retention::Retention, ObjectStorageError, ObjectStoreFormat, StorageMetadata,
+    ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
+    SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync {
@@ -93,15 +92,87 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     async fn list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError>;
     async fn list_old_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError>;
     async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError>;
+    async fn list_dirs_relative(
+        &self,
+        relative_path: &RelativePath,
+    ) -> Result<Vec<String>, ObjectStorageError>;
+
     async fn get_all_saved_filters(
         &self,
-    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError>;
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
+        let mut filters: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
+
+        let users_dir = RelativePathBuf::from(USERS_ROOT_DIR);
+        for user in self.list_dirs_relative(&users_dir).await? {
+            let stream_dir = users_dir.join(&user).join("filters");
+            for stream in self.list_dirs_relative(&stream_dir).await? {
+                let filters_path = stream_dir.join(&stream);
+                let filter_bytes = self
+                    .get_objects(
+                        Some(&filters_path),
+                        Box::new(|file_name| file_name.ends_with(".json")),
+                    )
+                    .await?;
+                filters
+                    .entry(filters_path)
+                    .or_default()
+                    .extend(filter_bytes);
+            }
+        }
+
+        Ok(filters)
+    }
+
     async fn get_all_dashboards(
         &self,
-    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError>;
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
+        let mut dashboards: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
+
+        let users_dir = RelativePathBuf::from(USERS_ROOT_DIR);
+        for user in self.list_dirs_relative(&users_dir).await? {
+            let dashboards_path = users_dir.join(&user).join("dashboards");
+            let dashboard_bytes = self
+                .get_objects(
+                    Some(&dashboards_path),
+                    Box::new(|file_name| file_name.ends_with(".json")),
+                )
+                .await?;
+
+            dashboards
+                .entry(dashboards_path)
+                .or_default()
+                .extend(dashboard_bytes);
+        }
+
+        Ok(dashboards)
+    }
+
+    ///fetch all correlations stored in object store
+    /// return the correlation file path and all correlation json bytes for each file path
     async fn get_all_correlations(
         &self,
-    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError>;
+    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
+        let mut correlations: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
+
+        let users_dir = RelativePathBuf::from(USERS_ROOT_DIR);
+        for user in self.list_dirs_relative(&users_dir).await? {
+            let correlations_path = users_dir.join(&user).join("correlations");
+            let correlation_bytes = self
+                .get_objects(
+                    Some(&correlations_path),
+                    Box::new(|file_name| file_name.ends_with(".json")),
+                )
+                .await?;
+
+            correlations
+                .entry(correlations_path)
+                .or_default()
+                .extend(correlation_bytes);
+        }
+
+        Ok(correlations)
+    }
+
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError>;
     async fn list_manifest_files(
         &self,
@@ -309,7 +380,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     }
 
     async fn get_alerts(&self) -> Result<Vec<AlertConfig>, ObjectStorageError> {
-        let alerts_path = RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY]);
+        let alerts_path = RelativePathBuf::from(ALERTS_ROOT_DIRECTORY);
         let alerts = self
             .get_objects(
                 Some(&alerts_path),
@@ -393,16 +464,12 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     ) -> Result<Option<Manifest>, ObjectStorageError> {
         let path = manifest_path(path.as_str());
         match self.get_object(&path).await {
-            Ok(bytes) => Ok(Some(
-                serde_json::from_slice(&bytes).expect("manifest is valid json"),
-            )),
-            Err(err) => {
-                if matches!(err, ObjectStorageError::NoSuchKey(_)) {
-                    Ok(None)
-                } else {
-                    Err(err)
-                }
+            Ok(bytes) => {
+                let manifest = serde_json::from_slice(&bytes)?;
+                Ok(Some(manifest))
             }
+            Err(ObjectStorageError::NoSuchKey(_)) => Ok(None),
+            Err(err) => Err(err),
         }
     }
 
@@ -633,7 +700,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     }
 
     async fn get_correlations(&self) -> Result<Vec<Bytes>, CorrelationError> {
-        let correlation_path = RelativePathBuf::from_iter([CORRELATION_DIR]);
+        let correlation_path = RelativePathBuf::from(CORRELATION_DIR);
         let correlation_bytes = self
             .get_objects(
                 Some(&correlation_path),
@@ -645,18 +712,18 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     }
 
     async fn upload_files_from_staging(&self) -> Result<(), ObjectStorageError> {
-        if !Path::new(&PARSEABLE.options.staging_dir()).exists() {
+        if !PARSEABLE.options.staging_dir().exists() {
             return Ok(());
         }
 
         // get all streams
         for stream_name in PARSEABLE.streams.list() {
-            debug!("Starting object_store_sync for stream- {stream_name}");
+            info!("Starting object_store_sync for stream- {stream_name}");
 
             let stream = PARSEABLE.get_or_create_stream(&stream_name);
             let custom_partitions = stream.get_custom_partitions();
-            for file in stream.parquet_files() {
-                let filename = file
+            for path in stream.parquet_files() {
+                let filename = path
                     .file_name()
                     .expect("only parquet files are returned by iterator")
                     .to_str()
@@ -664,7 +731,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
                 let mut file_date_part = filename.split('.').collect::<Vec<&str>>()[0];
                 file_date_part = file_date_part.split('=').collect::<Vec<&str>>()[1];
-                let compressed_size = file.metadata().map_or(0, |meta| meta.len());
+                let compressed_size = path.metadata().map_or(0, |meta| meta.len());
                 STORAGE_SIZE
                     .with_label_values(&["data", &stream_name, "parquet"])
                     .add(compressed_size as i64);
@@ -683,8 +750,8 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 let stream_relative_path = format!("{stream_name}/{file_suffix}");
 
                 // Try uploading the file, handle potential errors without breaking the loop
-                if let Err(e) = self.upload_file(&stream_relative_path, &file).await {
-                    error!("Failed to upload file {}: {:?}", filename, e);
+                if let Err(e) = self.upload_file(&stream_relative_path, &path).await {
+                    error!("Failed to upload file {filename:?}: {e}");
                     continue; // Skip to the next file
                 }
 
@@ -693,17 +760,21 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                     .to_string();
                 let store = PARSEABLE.storage().get_object_store();
                 let manifest =
-                    catalog::create_from_parquet_file(absolute_path.clone(), &file).unwrap();
+                    catalog::create_from_parquet_file(absolute_path.clone(), &path).unwrap();
                 catalog::update_snapshot(store, &stream_name, manifest).await?;
 
-                let _ = fs::remove_file(file);
+                if let Err(e) = remove_file(path) {
+                    warn!("Failed to remove staged file: {e}");
+                }
             }
 
             for path in stream.schema_files() {
                 let file = File::open(&path)?;
                 let schema: Schema = serde_json::from_reader(file)?;
                 commit_schema_to_storage(&stream_name, schema).await?;
-                let _ = fs::remove_file(path);
+                if let Err(e) = remove_file(path) {
+                    warn!("Failed to remove staged file: {e}");
+                }
             }
         }
 
