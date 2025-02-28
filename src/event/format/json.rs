@@ -152,13 +152,13 @@ impl EventFormat for Event {
         let custom_partition_values = match custom_partitions.as_ref() {
             Some(custom_partition) => {
                 let custom_partitions = custom_partition.split(',').collect_vec();
-                get_custom_partition_values(&self.json, &custom_partitions)
+                extract_custom_partition_values(&self.json, &custom_partitions)
             }
             None => HashMap::new(),
         };
 
         let parsed_timestamp = match time_partition {
-            Some(time_partition) => get_parsed_timestamp(&self.json, time_partition)?,
+            Some(time_partition) => extract_and_parse_time(&self.json, time_partition)?,
             _ => self.p_timestamp.naive_utc(),
         };
 
@@ -183,7 +183,9 @@ impl EventFormat for Event {
     }
 }
 
-pub fn get_custom_partition_values(
+/// Extracts custom partition values from provided JSON object
+/// e.g. `json: {"status": 400, "msg": "Hello, World!"}, custom_partition_list: ["status"]` returns `{"status" => 400}`
+pub fn extract_custom_partition_values(
     json: &Value,
     custom_partition_list: &[&str],
 ) -> HashMap<String, String> {
@@ -203,7 +205,9 @@ pub fn get_custom_partition_values(
     custom_partition_values
 }
 
-fn get_parsed_timestamp(
+/// Returns the parsed timestamp of deignated time partition from json object
+/// e.g. `json: {"timestamp": "2025-05-15T15:30:00Z"}` returns `2025-05-15T15:30:00`
+fn extract_and_parse_time(
     json: &Value,
     time_partition: &str,
 ) -> Result<NaiveDateTime, anyhow::Error> {
@@ -330,7 +334,7 @@ mod tests {
     #[test]
     fn parse_time_parition_from_value() {
         let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
-        let parsed = get_parsed_timestamp(&json, "timestamp");
+        let parsed = extract_and_parse_time(&json, "timestamp");
 
         let expected = NaiveDateTime::from_str("2025-05-15T15:30:00").unwrap();
         assert_eq!(parsed.unwrap(), expected);
@@ -339,7 +343,7 @@ mod tests {
     #[test]
     fn time_parition_not_in_json() {
         let json = json!({"hello": "world!"});
-        let parsed = get_parsed_timestamp(&json, "timestamp");
+        let parsed = extract_and_parse_time(&json, "timestamp");
 
         assert!(parsed.is_err());
     }
@@ -347,7 +351,7 @@ mod tests {
     #[test]
     fn time_parition_not_parseable_as_datetime() {
         let json = json!({"timestamp": "not time"});
-        let parsed = get_parsed_timestamp(&json, "timestamp");
+        let parsed = extract_and_parse_time(&json, "timestamp");
 
         assert!(parsed.is_err());
     }
