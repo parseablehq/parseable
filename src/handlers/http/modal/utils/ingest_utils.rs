@@ -39,45 +39,36 @@ pub async fn flatten_and_push_logs(
     stream_name: &str,
     log_source: &LogSource,
 ) -> Result<(), PostError> {
-    match log_source {
+    let json = match log_source {
         LogSource::Kinesis => {
             //custom flattening required for Amazon Kinesis
             let message: Message = serde_json::from_value(json)?;
-            for record in flatten_kinesis_logs(message) {
-                push_logs(stream_name, record, &LogSource::default()).await?;
-            }
+            flatten_kinesis_logs(message)
         }
         LogSource::OtelLogs => {
             //custom flattening required for otel logs
             let logs: LogsData = serde_json::from_value(json)?;
-            for record in flatten_otel_logs(&logs) {
-                push_logs(stream_name, record, log_source).await?;
-            }
+            flatten_otel_logs(&logs)
         }
         LogSource::OtelTraces => {
             //custom flattening required for otel traces
             let traces: TracesData = serde_json::from_value(json)?;
-            for record in flatten_otel_traces(&traces) {
-                push_logs(stream_name, record, log_source).await?;
-            }
+            flatten_otel_traces(&traces)
         }
         LogSource::OtelMetrics => {
             //custom flattening required for otel metrics
             let metrics: MetricsData = serde_json::from_value(json)?;
-            for record in flatten_otel_metrics(metrics) {
-                push_logs(stream_name, record, log_source).await?;
-            }
+            flatten_otel_metrics(metrics)
         }
-        _ => {
-            push_logs(stream_name, json, log_source).await?;
-        }
-    }
+        _ => vec![json],
+    };
+    push_logs(stream_name, json, log_source).await?;
     Ok(())
 }
 
 async fn push_logs(
     stream_name: &str,
-    json: Value,
+    jsons: Vec<Value>,
     log_source: &LogSource,
 ) -> Result<(), PostError> {
     let stream = PARSEABLE.get_stream(stream_name)?;
@@ -89,42 +80,44 @@ async fn push_logs(
     let custom_partition = stream.get_custom_partition();
     let schema_version = stream.get_schema_version();
     let p_timestamp = Utc::now();
-
-    let data = if time_partition.is_some() || custom_partition.is_some() {
-        convert_array_to_object(
-            json,
-            time_partition.as_ref(),
-            time_partition_limit,
-            custom_partition.as_ref(),
-            schema_version,
-            log_source,
-        )?
-    } else {
-        vec![convert_to_array(convert_array_to_object(
-            json,
-            None,
-            None,
-            None,
-            schema_version,
-            log_source,
-        )?)?]
-    };
-
-    for json in data {
-        let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
-        let schema = PARSEABLE.get_stream(stream_name)?.get_schema_raw();
-        json::Event { json, p_timestamp }
-            .into_event(
-                stream_name.to_owned(),
-                origin_size,
-                &schema,
-                static_schema_flag,
-                custom_partition.as_ref(),
+    
+    for json in jsons {
+        let data = if time_partition.is_some() || custom_partition.is_some() {
+            convert_array_to_object(
+                json,
                 time_partition.as_ref(),
+                time_partition_limit,
+                custom_partition.as_ref(),
                 schema_version,
-                StreamType::UserDefined,
+                log_source,
             )?
-            .process()?;
+        } else {
+            vec![convert_to_array(convert_array_to_object(
+                json,
+                None,
+                None,
+                None,
+                schema_version,
+                log_source,
+            )?)?]
+        };
+
+        for json in data {
+            let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
+            let schema = PARSEABLE.get_stream(stream_name)?.get_schema_raw();
+            json::Event { json, p_timestamp }
+                .into_event(
+                    stream_name.to_owned(),
+                    origin_size,
+                    &schema,
+                    static_schema_flag,
+                    custom_partition.as_ref(),
+                    time_partition.as_ref(),
+                    schema_version,
+                    StreamType::UserDefined,
+                )?
+                .process()?;
+        }
     }
     Ok(())
 }
