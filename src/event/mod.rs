@@ -81,7 +81,7 @@ impl Event {
             self.origin_format,
             self.origin_size,
             self.rb.num_rows(),
-            self.parsed_timestamp,
+            self.parsed_timestamp.date(),
         );
 
         crate::livetail::LIVETAIL.process(&self.stream_name, &self.rb);

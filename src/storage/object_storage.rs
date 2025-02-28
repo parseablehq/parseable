@@ -36,7 +36,8 @@ use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::R
 use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
-use tracing::{debug, error, warn};
+use tracing::info;
+use tracing::{error, warn};
 use ulid::Ulid;
 
 use crate::alerts::AlertConfig;
@@ -460,16 +461,12 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     ) -> Result<Option<Manifest>, ObjectStorageError> {
         let path = manifest_path(path.as_str());
         match self.get_object(&path).await {
-            Ok(bytes) => Ok(Some(
-                serde_json::from_slice(&bytes).expect("manifest is valid json"),
-            )),
-            Err(err) => {
-                if matches!(err, ObjectStorageError::NoSuchKey(_)) {
-                    Ok(None)
-                } else {
-                    Err(err)
-                }
+            Ok(bytes) => {
+                let manifest = serde_json::from_slice(&bytes)?;
+                Ok(Some(manifest))
             }
+            Err(ObjectStorageError::NoSuchKey(_)) => Ok(None),
+            Err(err) => Err(err),
         }
     }
 
@@ -712,13 +709,13 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     }
 
     async fn upload_files_from_staging(&self) -> Result<(), ObjectStorageError> {
-        if !Path::new(&PARSEABLE.options.staging_dir()).exists() {
+        if !PARSEABLE.options.staging_dir().exists() {
             return Ok(());
         }
 
         // get all streams
         for stream_name in PARSEABLE.streams.list() {
-            debug!("Starting object_store_sync for stream- {stream_name}");
+            info!("Starting object_store_sync for stream- {stream_name}");
 
             let stream = PARSEABLE.get_or_create_stream(&stream_name);
             let custom_partition = stream.get_custom_partition();

@@ -31,7 +31,7 @@ use arrow_select::concat::concat_batches;
 use itertools::Itertools;
 use tracing::trace;
 
-use crate::parseable::{ARROW_FILE_EXTENSION, ARROW_PART_FILE_EXTENSION};
+use crate::parseable::ARROW_FILE_EXTENSION;
 use crate::utils::arrow::adapt_batch;
 
 use super::StagingError;
@@ -46,7 +46,7 @@ pub struct DiskWriter {
 impl DiskWriter {
     pub fn new(path_prefix: String, schema: &Schema) -> Result<Self, StagingError> {
         // Live writes happen into partfile
-        let partfile_path = format!("{path_prefix}.{ARROW_PART_FILE_EXTENSION}");
+        let partfile_path = format!("{path_prefix}.part.{ARROW_FILE_EXTENSION}");
         let file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -70,8 +70,8 @@ impl DiskWriter {
     pub fn finish(&mut self) -> Result<(), StagingError> {
         self.inner.finish()?;
 
-        let partfile_path = format!("{}.{ARROW_PART_FILE_EXTENSION}", self.path_prefix);
-        let arrows_path = format!("{}.{ARROW_FILE_EXTENSION}", self.path_prefix);
+        let partfile_path = format!("{}.part.{ARROW_FILE_EXTENSION}", self.path_prefix);
+        let arrows_path = format!("{}.data.{ARROW_FILE_EXTENSION}", self.path_prefix);
 
         // Rename from part file to finished arrows file
         std::fs::rename(partfile_path, &arrows_path)?;

@@ -23,6 +23,7 @@ use anyhow::anyhow;
 use arrow_array::RecordBatch;
 use arrow_json::reader::{infer_json_schema_from_iterator, ReaderBuilder};
 use arrow_schema::{DataType, Field, Fields, Schema};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use itertools::Itertools;
 use serde_json::Value;
@@ -30,14 +31,29 @@ use std::{collections::HashMap, sync::Arc};
 use tracing::error;
 
 use super::EventFormat;
-use crate::{metadata::SchemaVersion, utils::arrow::get_field};
+use crate::{metadata::SchemaVersion, storage::StreamType, utils::arrow::get_field};
 
 pub struct Event {
-    pub data: Value,
+    pub json: Value,
+    pub p_timestamp: DateTime<Utc>,
+}
+
+impl Event {
+    pub fn new(json: Value) -> Self {
+        Self {
+            json,
+            p_timestamp: Utc::now(),
+        }
+    }
 }
 
 impl EventFormat for Event {
     type Data = Vec<Value>;
+
+    /// Returns the time at ingestion, i.e. the `p_timestamp` value
+    fn get_p_timestamp(&self) -> DateTime<Utc> {
+        self.p_timestamp
+    }
 
     // convert the incoming json to a vector of json values
     // also extract the arrow schema, tags and metadata from the incoming json
@@ -52,7 +68,7 @@ impl EventFormat for Event {
         // incoming event may be a single json or a json array
         // but Data (type defined above) is a vector of json values
         // hence we need to convert the incoming event to a vector of json values
-        let value_arr = match self.data {
+        let value_arr = match self.json {
             Value::Array(arr) => arr,
             value @ Value::Object(_) => vec![value],
             _ => unreachable!("flatten would have failed beforehand"),
@@ -120,6 +136,87 @@ impl EventFormat for Event {
             Ok(None) => unreachable!("all records are added to one rb"),
         }
     }
+
+    /// Converts a JSON event into a Parseable Event
+    fn into_event(
+        self,
+        stream_name: String,
+        origin_size: u64,
+        storage_schema: &HashMap<String, Arc<Field>>,
+        static_schema_flag: bool,
+        custom_partitions: Option<&String>,
+        time_partition: Option<&String>,
+        schema_version: SchemaVersion,
+        stream_type: StreamType,
+    ) -> Result<super::Event, anyhow::Error> {
+        let custom_partition_values = match custom_partitions.as_ref() {
+            Some(custom_partition) => {
+                let custom_partitions = custom_partition.split(',').collect_vec();
+                extract_custom_partition_values(&self.json, &custom_partitions)
+            }
+            None => HashMap::new(),
+        };
+
+        let parsed_timestamp = match time_partition {
+            Some(time_partition) => extract_and_parse_time(&self.json, time_partition)?,
+            _ => self.p_timestamp.naive_utc(),
+        };
+
+        let (rb, is_first_event) = self.into_recordbatch(
+            storage_schema,
+            static_schema_flag,
+            time_partition,
+            schema_version,
+        )?;
+
+        Ok(super::Event {
+            rb,
+            stream_name,
+            origin_format: "json",
+            origin_size,
+            is_first_event,
+            parsed_timestamp,
+            time_partition: None,
+            custom_partition_values,
+            stream_type,
+        })
+    }
+}
+
+/// Extracts custom partition values from provided JSON object
+/// e.g. `json: {"status": 400, "msg": "Hello, World!"}, custom_partition_list: ["status"]` returns `{"status" => 400}`
+pub fn extract_custom_partition_values(
+    json: &Value,
+    custom_partition_list: &[&str],
+) -> HashMap<String, String> {
+    let mut custom_partition_values: HashMap<String, String> = HashMap::new();
+    for custom_partition_field in custom_partition_list {
+        let custom_partition_value = json.get(custom_partition_field.trim()).unwrap().to_owned();
+        let custom_partition_value = match custom_partition_value {
+            e @ Value::Number(_) | e @ Value::Bool(_) => e.to_string(),
+            Value::String(s) => s,
+            _ => "".to_string(),
+        };
+        custom_partition_values.insert(
+            custom_partition_field.trim().to_string(),
+            custom_partition_value,
+        );
+    }
+    custom_partition_values
+}
+
+/// Returns the parsed timestamp of deignated time partition from json object
+/// e.g. `json: {"timestamp": "2025-05-15T15:30:00Z"}` returns `2025-05-15T15:30:00`
+fn extract_and_parse_time(
+    json: &Value,
+    time_partition: &str,
+) -> Result<NaiveDateTime, anyhow::Error> {
+    let current_time = json
+        .get(time_partition)
+        .ok_or_else(|| anyhow!("Missing field for time partition in json: {time_partition}"))?;
+    let parsed_time: DateTime<Utc> = serde_json::from_value(current_time.clone())?;
+
+    Ok(parsed_time.naive_utc())
 }
 
 // Returns arrow schema with the fields that are present in the request body
@@ -223,5 +320,39 @@ fn valid_type(data_type: &DataType, value: &Value, schema_version: SchemaVersion
             error!("Unsupported datatype {:?}, value {:?}", data_type, value);
             unreachable!()
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::str::FromStr;
+
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn parse_time_parition_from_value() {
+        let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
+        let parsed = extract_and_parse_time(&json, "timestamp");
+
+        let expected = NaiveDateTime::from_str("2025-05-15T15:30:00").unwrap();
+        assert_eq!(parsed.unwrap(), expected);
+    }
+
+    #[test]
+    fn time_parition_not_in_json() {
+        let json = json!({"hello": "world!"});
+        let parsed = extract_and_parse_time(&json, "timestamp");
+
+        assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn time_parition_not_parseable_as_datetime() {
+        let json = json!({"timestamp": "not time"});
+        let parsed = extract_and_parse_time(&json, "timestamp");
+
+        assert!(parsed.is_err());
     }
 }
