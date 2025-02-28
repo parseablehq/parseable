@@ -894,7 +894,7 @@ pub fn extract_primary_filter(
         .collect()
 }
 
-trait ManifestExt: ManifestFile {
+pub trait ManifestExt: ManifestFile {
     fn find_matching_column(&self, partial_filter: &Expr) -> Option<&Column> {
         let name = match partial_filter {
             Expr::BinaryExpr(binary_expr) => {

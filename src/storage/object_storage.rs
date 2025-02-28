@@ -33,6 +33,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
+use object_store::buffered::BufReader;
+use object_store::ObjectMeta;
 use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
@@ -74,6 +76,11 @@ pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync 
 
 #[async_trait]
 pub trait ObjectStorage: Debug + Send + Sync + 'static {
+    async fn get_buffered_reader(
+        &self,
+        path: &RelativePath,
+    ) -> Result<BufReader, ObjectStorageError>;
+    async fn head(&self, path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError>;
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError>;
     // TODO: make the filter function optional as we may want to get all objects
     async fn get_objects(
