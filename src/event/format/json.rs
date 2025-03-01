@@ -59,12 +59,10 @@ impl EventFormat for Event {
     // also extract the arrow schema, tags and metadata from the incoming json
     fn to_data(
         self,
-        schema: &HashMap<String, Arc<Field>>,
+        stored_schema: &HashMap<String, Arc<Field>>,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool), anyhow::Error> {
-        let stream_schema = schema;
-
         // incoming event may be a single json or a json array
         // but Data (type defined above) is a vector of json values
         // hence we need to convert the incoming event to a vector of json values
@@ -79,23 +77,23 @@ impl EventFormat for Event {
             collect_keys(value_arr.iter()).expect("fields can be collected from array of objects");
 
         let mut is_first = false;
-        let schema = match derive_arrow_schema(stream_schema, fields) {
-            Ok(schema) => schema,
-            Err(_) => {
+        let schema = match derive_arrow_schema(stored_schema, fields) {
+            Some(schema) => schema,
+            _ => {
                 let mut infer_schema = infer_json_schema_from_iterator(value_arr.iter().map(Ok))
                     .map_err(|err| {
                         anyhow!("Could not infer schema for this event due to err {:?}", err)
                     })?;
                 let new_infer_schema = super::update_field_type_in_schema(
                     Arc::new(infer_schema),
-                    Some(stream_schema),
+                    Some(stored_schema),
                     time_partition,
                     Some(&value_arr),
                     schema_version,
                 );
                 infer_schema = Schema::new(new_infer_schema.fields().clone());
                 Schema::try_merge(vec![
-                    Schema::new(stream_schema.values().cloned().collect::<Fields>()),
+                    Schema::new(stored_schema.values().cloned().collect::<Fields>()),
                     infer_schema.clone(),
                 ]).map_err(|err| anyhow!("Could not merge schema of this event with that of the existing stream. {:?}", err))?;
                 is_first = true;
@@ -221,51 +219,44 @@ fn extract_and_parse_time(
 
 // Returns arrow schema with the fields that are present in the request body
 // This schema is an input to convert the request body to arrow record batch
+// Returns None if even one of the fields in the json is new and not seen before
 fn derive_arrow_schema(
     schema: &HashMap<String, Arc<Field>>,
-    fields: Vec<&str>,
-) -> Result<Vec<Arc<Field>>, ()> {
+    fields: HashSet<&str>,
+) -> Option<Vec<Arc<Field>>> {
     let mut res = Vec::with_capacity(fields.len());
-    let fields = fields.into_iter().map(|field_name| schema.get(field_name));
-    for field in fields {
-        let Some(field) = field else { return Err(()) };
+    for field_name in fields {
+        let field = schema.get(field_name)?;
         res.push(field.clone())
     }
-    Ok(res)
+
+    Some(res)
 }
 
-fn collect_keys<'a>(values: impl Iterator<Item = &'a Value>) -> Result<Vec<&'a str>, ()> {
-    let mut keys = Vec::new();
+// Returns a list of keys that are present in the given iterable of JSON objects
+// Returns None if even one of the value is not an Object
+fn collect_keys<'a>(values: impl Iterator<Item = &'a Value>) -> Option<HashSet<&'a str>> {
+    let mut keys = HashSet::new();
     for value in values {
-        if let Some(obj) = value.as_object() {
-            for key in obj.keys() {
-                match keys.binary_search(&key.as_str()) {
-                    Ok(_) => (),
-                    Err(pos) => {
-                        keys.insert(pos, key.as_str());
-                    }
-                }
-            }
-        } else {
-            return Err(());
+        let obj = value.as_object()?;
+        for key in obj.keys() {
+            keys.insert(key.as_str());
         }
     }
-    Ok(keys)
+
+    Some(keys)
 }
 
+// Returns true when the field doesn't exist in schema or has an invalid type
 fn fields_mismatch(schema: &[Arc<Field>], body: &Value, schema_version: SchemaVersion) -> bool {
-    for (name, val) in body.as_object().expect("body is of object variant") {
-        if val.is_null() {
-            continue;
-        }
-        let Some(field) = get_field(schema, name) else {
-            return true;
-        };
-        if !valid_type(field.data_type(), val, schema_version) {
-            return true;
-        }
-    }
-    false
+    body.as_object()
+        .expect("body is of object variant")
+        .iter()
+        .any(|(key, value)| {
+            !value.is_null()
+                && get_field(schema, key)
+                    .is_none_or(|field| !valid_type(field.data_type(), value, schema_version))
+        })
 }
 
 fn valid_type(data_type: &DataType, value: &Value, schema_version: SchemaVersion) -> bool {
