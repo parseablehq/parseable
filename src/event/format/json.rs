@@ -43,7 +43,7 @@ use crate::{
     kinesis::{flatten_kinesis_logs, Message},
     metadata::SchemaVersion,
     otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
-    storage::StreamType,
+    parseable::Stream,
     utils::{
         arrow::get_field,
         json::{flatten_json_body, Json},
@@ -224,23 +224,24 @@ impl EventFormat for Event {
     /// Converts a JSON event into a Parseable Event
     fn into_event(
         self,
-        stream_name: String,
         origin_size: u64,
-        storage_schema: &HashMap<String, Arc<Field>>,
-        static_schema_flag: bool,
-        custom_partitions: Option<&String>,
-        time_partition: Option<&String>,
-        time_partition_limit: Option<NonZeroU32>,
-        schema_version: SchemaVersion,
+        stream: &Stream,
         log_source: &LogSource,
-        stream_type: StreamType,
     ) -> anyhow::Result<super::Event> {
+        let time_partition = stream.get_time_partition();
+        let time_partition_limit = stream.get_time_partition_limit();
+        let static_schema_flag = stream.get_static_schema_flag();
+        let custom_partitions = stream.get_custom_partition();
+        let schema_version = stream.get_schema_version();
+        let storage_schema = stream.get_schema_raw();
+        let stream_type = stream.get_stream_type();
+
         let p_timestamp = self.p_timestamp;
         let (data, schema, is_first_event) = self.to_data(
-            storage_schema,
-            time_partition,
+            &storage_schema,
+            time_partition.as_ref(),
             time_partition_limit,
-            custom_partitions,
+            custom_partitions.as_ref(),
             schema_version,
             log_source,
         )?;
@@ -255,8 +256,8 @@ impl EventFormat for Event {
                 None => HashMap::new(),
             };
 
-            let parsed_timestamp = match time_partition {
-                Some(time_partition) => extract_and_parse_time(&json, time_partition)?,
+            let parsed_timestamp = match time_partition.as_ref() {
+                Some(time_partition) => extract_and_parse_time(&json, time_partition.as_ref())?,
                 _ => p_timestamp.naive_utc(),
             };
 
@@ -264,9 +265,9 @@ impl EventFormat for Event {
                 p_timestamp,
                 vec![json],
                 schema.clone(),
-                storage_schema,
+                &storage_schema,
                 static_schema_flag,
-                time_partition,
+                time_partition.as_ref(),
                 schema_version,
             )?;
 
@@ -278,7 +279,6 @@ impl EventFormat for Event {
         }
 
         Ok(super::Event {
-            stream_name,
             origin_format: "json",
             origin_size,
             is_first_event,

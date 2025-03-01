@@ -114,30 +114,11 @@ impl Stream {
     }
 
     pub async fn push_logs(&self, json: Value, log_source: &LogSource) -> anyhow::Result<()> {
-        let time_partition = self.get_time_partition();
-        let time_partition_limit = self.get_time_partition_limit();
-        let static_schema_flag = self.get_static_schema_flag();
-        let custom_partition = self.get_custom_partition();
-        let schema_version = self.get_schema_version();
-        let schema = self.get_schema_raw();
-        let stream_type = self.get_stream_type();
-
         let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
 
         json::Event::new(json)
-            .into_event(
-                self.stream_name.to_owned(),
-                origin_size,
-                &schema,
-                static_schema_flag,
-                custom_partition.as_ref(),
-                time_partition.as_ref(),
-                time_partition_limit,
-                schema_version,
-                log_source,
-                stream_type,
-            )?
-            .process()?;
+            .into_event(origin_size, self, log_source)?
+            .process(self)?;
 
         Ok(())
     }

@@ -27,7 +27,7 @@ use std::sync::Arc;
 use self::error::EventError;
 use crate::{
     metadata::update_stats,
-    parseable::{StagingError, PARSEABLE},
+    parseable::{StagingError, Stream, PARSEABLE},
     storage::StreamType,
     LOCK_EXPECT,
 };
@@ -43,7 +43,6 @@ pub struct PartitionEvent {
 }
 
 pub struct Event {
-    pub stream_name: String,
     pub origin_format: &'static str,
     pub origin_size: u64,
     pub is_first_event: bool,
@@ -54,7 +53,7 @@ pub struct Event {
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
-    pub fn process(self) -> Result<(), EventError> {
+    pub fn process(self, stream: &Stream) -> Result<(), EventError> {
         for partition in self.partitions {
             let mut key = get_schema_key(&partition.rb.schema().fields);
             if self.time_partition.is_some() {
@@ -72,10 +71,10 @@ impl Event {
             }
 
             if self.is_first_event {
-                commit_schema(&self.stream_name, partition.rb.schema())?;
+                commit_schema(&stream.stream_name, partition.rb.schema())?;
             }
 
-            PARSEABLE.get_or_create_stream(&self.stream_name).push(
+            stream.push(
                 &key,
                 &partition.rb,
                 partition.parsed_timestamp,
@@ -84,23 +83,23 @@ impl Event {
             )?;
 
             update_stats(
-                &self.stream_name,
+                &stream.stream_name,
                 self.origin_format,
                 self.origin_size,
                 partition.rb.num_rows(),
                 partition.parsed_timestamp.date(),
             );
 
-            crate::livetail::LIVETAIL.process(&self.stream_name, &partition.rb);
+            crate::livetail::LIVETAIL.process(&stream.stream_name, &partition.rb);
         }
         Ok(())
     }
 
-    pub fn process_unchecked(&self) -> Result<(), EventError> {
+    pub fn process_unchecked(&self, stream: &Stream) -> Result<(), EventError> {
         for partition in &self.partitions {
             let key = get_schema_key(&partition.rb.schema().fields);
 
-            PARSEABLE.get_or_create_stream(&self.stream_name).push(
+            stream.push(
                 &key,
                 &partition.rb,
                 partition.parsed_timestamp,

@@ -31,7 +31,7 @@ use crate::event::format::LogSource;
 use crate::event::{self, PartitionEvent};
 use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
 use crate::option::Mode;
-use crate::parseable::{StreamNotFound, PARSEABLE};
+use crate::parseable::{Stream, StreamNotFound, PARSEABLE};
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::flatten::JsonFlattenError;
@@ -240,10 +240,9 @@ pub async fn post_event(
 
 pub async fn push_logs_unchecked(
     batches: RecordBatch,
-    stream_name: &str,
+    stream: &Stream,
 ) -> Result<event::Event, PostError> {
     let unchecked_event = event::Event {
-        stream_name: stream_name.to_string(),
         origin_format: "json",
         origin_size: 0,
         time_partition: None,
@@ -255,7 +254,7 @@ pub async fn push_logs_unchecked(
         }],
         stream_type: StreamType::UserDefined,
     };
-    unchecked_event.process_unchecked()?;
+    unchecked_event.process_unchecked(stream)?;
 
     Ok(unchecked_event)
 }

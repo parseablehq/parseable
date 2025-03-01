@@ -33,7 +33,7 @@ use serde_json::Value;
 
 use crate::{
     metadata::SchemaVersion,
-    storage::StreamType,
+    parseable::Stream,
     utils::{
         arrow::{get_field, get_timestamp_array, replace_columns},
         json::Json,
@@ -165,19 +165,11 @@ pub trait EventFormat: Sized {
         Ok(rb)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn into_event(
         self,
-        stream_name: String,
         origin_size: u64,
-        storage_schema: &HashMap<String, Arc<Field>>,
-        static_schema_flag: bool,
-        custom_partitions: Option<&String>,
-        time_partition: Option<&String>,
-        time_partition_limit: Option<NonZeroU32>,
-        schema_version: SchemaVersion,
+        stream: &Stream,
         log_source: &LogSource,
-        stream_type: StreamType,
     ) -> Result<Event, AnyError>;
 }
 
