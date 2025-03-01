@@ -43,10 +43,7 @@ use crate::{
     metadata::SchemaVersion,
     otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
     storage::StreamType,
-    utils::{
-        arrow::get_field,
-        json::{convert_array_to_object, flatten::convert_to_array},
-    },
+    utils::{arrow::get_field, json::convert_array_to_object},
 };
 
 pub struct Event {
@@ -70,7 +67,7 @@ pub fn flatten_logs(
     custom_partitions: Option<&String>,
     schema_version: SchemaVersion,
     log_source: &LogSource,
-) -> Result<Vec<Value>, anyhow::Error> {
+) -> anyhow::Result<Vec<Value>> {
     let data = match log_source {
         LogSource::Kinesis => {
             //custom flattening required for Amazon Kinesis
@@ -97,25 +94,14 @@ pub fn flatten_logs(
 
     let mut logs = vec![];
     for json in data {
-        if time_partition.is_some() || custom_partitions.is_some() {
-            logs.append(&mut convert_array_to_object(
-                json,
-                time_partition,
-                time_partition_limit,
-                custom_partitions,
-                schema_version,
-                log_source,
-            )?)
-        } else {
-            logs.push(convert_to_array(convert_array_to_object(
-                json,
-                None,
-                None,
-                None,
-                schema_version,
-                log_source,
-            )?)?)
-        }
+        logs.append(&mut convert_array_to_object(
+            json,
+            time_partition,
+            time_partition_limit,
+            custom_partitions,
+            schema_version,
+            log_source,
+        )?)
     }
 
     Ok(logs)
@@ -139,7 +125,7 @@ impl EventFormat for Event {
         custom_partitions: Option<&String>,
         schema_version: SchemaVersion,
         log_source: &LogSource,
-    ) -> Result<(Self::Data, Vec<Arc<Field>>, bool), anyhow::Error> {
+    ) -> anyhow::Result<(Self::Data, Vec<Arc<Field>>, bool)> {
         let flattened = flatten_logs(
             self.json,
             time_partition,
@@ -202,7 +188,7 @@ impl EventFormat for Event {
     }
 
     // Convert the Data type (defined above) to arrow record batch
-    fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, anyhow::Error> {
+    fn decode(data: Self::Data, schema: Arc<Schema>) -> anyhow::Result<RecordBatch> {
         let array_capacity = round_upto_multiple_of_64(data.len());
         let mut reader = ReaderBuilder::new(schema)
             .with_batch_size(array_capacity)
@@ -230,7 +216,7 @@ impl EventFormat for Event {
         schema_version: SchemaVersion,
         log_source: &LogSource,
         stream_type: StreamType,
-    ) -> Result<super::Event, anyhow::Error> {
+    ) -> anyhow::Result<super::Event> {
         let custom_partition_values = match custom_partitions.as_ref() {
             Some(custom_partitions) => {
                 let custom_partitions = custom_partitions.split(',').collect_vec();
@@ -295,7 +281,7 @@ pub fn extract_custom_partition_values(
 fn extract_and_parse_time(
     json: &Value,
     time_partition: &str,
-) -> Result<NaiveDateTime, anyhow::Error> {
+) -> anyhow::Result<NaiveDateTime> {
     let current_time = json
         .get(time_partition)
         .ok_or_else(|| anyhow!("Missing field for time partition in json: {time_partition}"))?;
