@@ -108,10 +108,20 @@ impl ObjectStorage for LocalFS {
         &self,
         _path: &RelativePath,
     ) -> Result<BufReader, ObjectStorageError> {
-        unimplemented!()
+        Err(ObjectStorageError::UnhandledError(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Buffered reader not implemented for LocalFS yet",
+            ),
+        )))
     }
     async fn head(&self, _path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
-        unimplemented!()
+        Err(ObjectStorageError::UnhandledError(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Head operation not implemented for LocalFS yet",
+            ),
+        )))
     }
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         let time = Instant::now();

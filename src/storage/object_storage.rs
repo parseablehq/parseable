@@ -820,7 +820,7 @@ pub fn schema_path(stream_name: &str) -> RelativePathBuf {
 
             RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, &file_name])
         }
-        Mode::All | Mode::Query => {
+        Mode::All | Mode::Query | Mode::Index => {
             RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME])
         }
     }
@@ -838,7 +838,7 @@ pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
             let file_name = format!(".ingestor.{id}{STREAM_METADATA_FILE_NAME}",);
             RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, &file_name])
         }
-        Mode::Query | Mode::All => RelativePathBuf::from_iter([
+        Mode::Query | Mode::All | Mode::Index => RelativePathBuf::from_iter([
             stream_name,
             STREAM_ROOT_DIRECTORY,
             STREAM_METADATA_FILE_NAME,

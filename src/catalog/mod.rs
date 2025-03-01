@@ -340,6 +340,7 @@ pub async fn remove_manifest_from_snapshot(
             Ok(get_first_event(storage.clone(), stream_name, Vec::new()).await?)
         }
         Mode::Query => Ok(get_first_event(storage, stream_name, dates).await?),
+        Mode::Index => unimplemented!(),
     }
 }
 
@@ -350,6 +351,7 @@ pub async fn get_first_event(
 ) -> Result<Option<String>, ObjectStorageError> {
     let mut first_event_at: String = String::default();
     match PARSEABLE.options.mode {
+        Mode::Index => unimplemented!(),
         Mode::All | Mode::Ingest => {
             // get current snapshot
             let stream_first_event = PARSEABLE.get_stream(stream_name)?.get_first_event();

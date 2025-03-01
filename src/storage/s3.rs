@@ -560,14 +560,14 @@ impl ObjectStorage for S3 {
         path: &RelativePath,
     ) -> Result<BufReader, ObjectStorageError> {
         let path = &to_object_store_path(path);
-        let meta = self.client.head(path).await.unwrap();
+        let meta = self.client.head(path).await?;
 
         let store: Arc<dyn ObjectStore> = Arc::new(self.client.clone());
         let buf = object_store::buffered::BufReader::new(store, &meta);
         Ok(buf)
     }
     async fn head(&self, path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
-        Ok(self.client.head(&to_object_store_path(path)).await.unwrap())
+        Ok(self.client.head(&to_object_store_path(path)).await?)
     }
 
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
