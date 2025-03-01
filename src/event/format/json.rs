@@ -154,34 +154,39 @@ impl EventFormat for Event {
             collect_keys(flattened.iter()).expect("fields can be collected from array of objects");
 
         let mut is_first = false;
-        let schema = match derive_arrow_schema(stored_schema, fields) {
-            Some(schema) => schema,
-            _ => {
-                let mut infer_schema = infer_json_schema_from_iterator(flattened.iter().map(Ok))
-                    .map_err(|err| {
-                        anyhow!("Could not infer schema for this event due to err {:?}", err)
-                    })?;
-                let new_infer_schema = super::update_field_type_in_schema(
-                    Arc::new(infer_schema),
-                    Some(stored_schema),
-                    time_partition,
-                    Some(&flattened),
-                    schema_version,
-                );
-                infer_schema = Schema::new(new_infer_schema.fields().clone());
-                Schema::try_merge(vec![
-                    Schema::new(stored_schema.values().cloned().collect::<Fields>()),
-                    infer_schema.clone(),
-                ]).map_err(|err| anyhow!("Could not merge schema of this event with that of the existing stream. {:?}", err))?;
-                is_first = true;
-                infer_schema
-                    .fields
-                    .iter()
-                    .filter(|field| !field.data_type().is_null())
-                    .cloned()
-                    .sorted_by(|a, b| a.name().cmp(b.name()))
-                    .collect()
-            }
+        let schema = if let Some(schema) = derive_arrow_schema(stored_schema, fields) {
+            schema
+        } else {
+            let mut infer_schema = infer_json_schema_from_iterator(flattened.iter().map(Ok))
+                .map_err(|err| {
+                    anyhow!("Could not infer schema for this event due to err {:?}", err)
+                })?;
+            let new_infer_schema = super::update_field_type_in_schema(
+                Arc::new(infer_schema),
+                Some(stored_schema),
+                time_partition,
+                Some(&flattened),
+                schema_version,
+            );
+            infer_schema = Schema::new(new_infer_schema.fields().clone());
+            Schema::try_merge(vec![
+                Schema::new(stored_schema.values().cloned().collect::<Fields>()),
+                infer_schema.clone(),
+            ])
+            .map_err(|err| {
+                anyhow!(
+                    "Could not merge schema of this event with that of the existing stream. {:?}",
+                    err
+                )
+            })?;
+            is_first = true;
+            infer_schema
+                .fields
+                .iter()
+                .filter(|field| !field.data_type().is_null())
+                .cloned()
+                .sorted_by(|a, b| a.name().cmp(b.name()))
+                .collect()
         };
 
         if flattened
