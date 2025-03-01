@@ -156,8 +156,7 @@ pub trait EventFormat: Sized {
         rb = replace_columns(
             rb.schema(),
             &rb,
-            &[0],
-            &[Arc::new(get_timestamp_array(p_timestamp, rb.num_rows()))],
+            &[(0, Arc::new(get_timestamp_array(p_timestamp, rb.num_rows())))],
         );
 
         Ok((rb, is_first))
