@@ -167,7 +167,7 @@ pub trait EventFormat: Sized {
 
     fn into_event(
         self,
-        origin_size: u64,
+        origin_size: usize,
         stream: &Stream,
         log_source: &LogSource,
     ) -> Result<Event, AnyError>;

@@ -113,9 +113,12 @@ impl Stream {
         })
     }
 
-    pub async fn push_logs(&self, json: Value, log_source: &LogSource) -> anyhow::Result<()> {
-        let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
-
+    pub async fn push_logs(
+        &self,
+        json: Value,
+        origin_size: usize,
+        log_source: &LogSource,
+    ) -> anyhow::Result<()> {
         json::Event::new(json)
             .into_event(origin_size, self, log_source)?
             .process(self)?;

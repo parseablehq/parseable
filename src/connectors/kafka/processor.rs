@@ -36,7 +36,7 @@ use super::{config::BufferConfig, ConsumerRecord, StreamConsumer, TopicPartition
 pub struct ParseableSinkProcessor;
 
 impl ParseableSinkProcessor {
-    async fn process_event_from_chunk(&self, records: &[ConsumerRecord]) -> anyhow::Result<u64> {
+    async fn process_event_from_chunk(&self, records: &[ConsumerRecord]) -> anyhow::Result<usize> {
         let stream_name = records
             .first()
             .map(|r| r.topic.as_str())
@@ -47,10 +47,10 @@ impl ParseableSinkProcessor {
             .await?;
 
         let mut json_vec = Vec::with_capacity(records.len());
-        let mut total_payload_size = 0u64;
+        let mut total_payload_size = 0;
 
         for record in records.iter().filter_map(|r| r.payload.as_ref()) {
-            total_payload_size += record.len() as u64;
+            total_payload_size += record.len();
             if let Ok(value) = serde_json::from_slice::<Value>(record) {
                 json_vec.push(value);
             }
@@ -60,6 +60,7 @@ impl ParseableSinkProcessor {
             .get_or_create_stream(stream_name)
             .push_logs(
                 Value::Array(json_vec),
+                total_payload_size,
                 &LogSource::Custom("Kafka".to_owned()),
             )
             .await?;

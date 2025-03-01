@@ -225,7 +225,7 @@ impl EventFormat for Event {
     /// Converts a JSON event into a Parseable Event
     fn into_event(
         self,
-        origin_size: u64,
+        origin_size: usize,
         stream: &Stream,
         log_source: &LogSource,
     ) -> anyhow::Result<super::Event> {

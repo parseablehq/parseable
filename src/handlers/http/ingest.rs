@@ -18,10 +18,9 @@
 
 use std::collections::HashMap;
 
-use actix_web::web::{Json, Path};
+use actix_web::web::Path;
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_array::RecordBatch;
-use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
 use serde_json::Value;
@@ -36,6 +35,7 @@ use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::flatten::JsonFlattenError;
 
+use super::cluster::utils::JsonWithSize;
 use super::logstream::error::{CreateStreamError, StreamError};
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
@@ -43,7 +43,10 @@ use super::users::filters::FiltersError;
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
 // creates if stream does not exist
-pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpResponse, PostError> {
+pub async fn ingest(
+    req: HttpRequest,
+    JsonWithSize { json, byte_size }: JsonWithSize<Value>,
+) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
@@ -72,21 +75,10 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
 
     PARSEABLE
         .get_or_create_stream(&stream_name)
-        .push_logs(json, &log_source)
+        .push_logs(json, byte_size, &log_source)
         .await?;
 
     Ok(HttpResponse::Ok().finish())
-}
-
-pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
-    let json: Value = serde_json::from_slice(&body)?;
-
-    PARSEABLE
-        .get_stream(&stream_name)?
-        .push_logs(json, &LogSource::Pmeta)
-        .await?;
-
-    Ok(())
 }
 
 // Handler for POST /v1/logs to ingest OTEL logs
@@ -94,7 +86,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
 // creates if stream does not exist
 pub async fn handle_otel_logs_ingestion(
     req: HttpRequest,
-    Json(json): Json<Value>,
+    JsonWithSize { json, byte_size }: JsonWithSize<Value>,
 ) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
@@ -115,7 +107,7 @@ pub async fn handle_otel_logs_ingestion(
 
     PARSEABLE
         .get_or_create_stream(&stream_name)
-        .push_logs(json, &log_source)
+        .push_logs(json, byte_size, &log_source)
         .await?;
 
     Ok(HttpResponse::Ok().finish())
@@ -126,7 +118,7 @@ pub async fn handle_otel_logs_ingestion(
 // creates if stream does not exist
 pub async fn handle_otel_metrics_ingestion(
     req: HttpRequest,
-    Json(json): Json<Value>,
+    JsonWithSize { json, byte_size }: JsonWithSize<Value>,
 ) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
@@ -149,7 +141,7 @@ pub async fn handle_otel_metrics_ingestion(
 
     PARSEABLE
         .get_or_create_stream(&stream_name)
-        .push_logs(json, &log_source)
+        .push_logs(json, byte_size, &log_source)
         .await?;
 
     Ok(HttpResponse::Ok().finish())
@@ -160,7 +152,7 @@ pub async fn handle_otel_metrics_ingestion(
 // creates if stream does not exist
 pub async fn handle_otel_traces_ingestion(
     req: HttpRequest,
-    Json(json): Json<Value>,
+    JsonWithSize { json, byte_size }: JsonWithSize<Value>,
 ) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
@@ -180,7 +172,7 @@ pub async fn handle_otel_traces_ingestion(
 
     PARSEABLE
         .get_or_create_stream(&stream_name)
-        .push_logs(json, &log_source)
+        .push_logs(json, byte_size, &log_source)
         .await?;
 
     Ok(HttpResponse::Ok().finish())
@@ -192,7 +184,7 @@ pub async fn handle_otel_traces_ingestion(
 pub async fn post_event(
     req: HttpRequest,
     stream_name: Path<String>,
-    Json(json): Json<Value>,
+    JsonWithSize { json, byte_size }: JsonWithSize<Value>,
 ) -> Result<HttpResponse, PostError> {
     let stream_name = stream_name.into_inner();
 
@@ -232,7 +224,7 @@ pub async fn post_event(
 
     PARSEABLE
         .get_or_create_stream(&stream_name)
-        .push_logs(json, &log_source)
+        .push_logs(json, byte_size, &log_source)
         .await?;
 
     Ok(HttpResponse::Ok().finish())

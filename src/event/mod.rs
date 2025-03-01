@@ -39,7 +39,7 @@ pub struct PartitionEvent {
 
 pub struct Event {
     pub origin_format: &'static str,
-    pub origin_size: u64,
+    pub origin_size: usize,
     pub is_first_event: bool,
     pub time_partition: Option<String>,
     pub partitions: HashMap<String, PartitionEvent>,

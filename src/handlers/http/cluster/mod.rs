@@ -37,7 +37,7 @@ use tracing::{error, info, warn};
 use url::Url;
 use utils::{check_liveness, to_url_string, IngestionStats, QueriedStats, StorageStats};
 
-use crate::handlers::http::ingest::ingest_internal_stream;
+use crate::event::format::LogSource;
 use crate::metrics::prom_utils::Metrics;
 use crate::parseable::PARSEABLE;
 use crate::rbac::role::model::DefaultPrivilege;
@@ -774,29 +774,29 @@ pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
     scheduler
         .every(CLUSTER_METRICS_INTERVAL_SECONDS)
         .run(move || async {
+            let internal_stream = PARSEABLE.get_or_create_stream(INTERNAL_STREAM_NAME);
             let result: Result<(), PostError> = async {
                 let cluster_metrics = fetch_cluster_metrics().await;
-                if let Ok(metrics) = cluster_metrics {
-                    if !metrics.is_empty() {
-                        info!("Cluster metrics fetched successfully from all ingestors");
-                        if let Ok(metrics_bytes) = serde_json::to_vec(&metrics) {
-                            if matches!(
-                                ingest_internal_stream(
-                                    INTERNAL_STREAM_NAME.to_string(),
-                                    bytes::Bytes::from(metrics_bytes),
-                                )
-                                .await,
-                                Ok(())
-                            ) {
-                                info!("Cluster metrics successfully ingested into internal stream");
-                            } else {
-                                error!("Failed to ingest cluster metrics into internal stream");
-                            }
-                        } else {
-                            error!("Failed to serialize cluster metrics");
-                        }
+                let Ok(metrics) = cluster_metrics else {
+                    return Ok(());
+                };
+                if !metrics.is_empty() {
+                    info!("Cluster metrics fetched successfully from all ingestors");
+                    let json = serde_json::to_value(&metrics).expect("should be json serializable");
+                    let byte_size = serde_json::to_vec(&metrics).unwrap().len();
+
+                    if matches!(
+                        internal_stream
+                            .push_logs(json, byte_size, &LogSource::Pmeta)
+                            .await,
+                        Ok(())
+                    ) {
+                        info!("Cluster metrics successfully ingested into internal stream");
+                    } else {
+                        error!("Failed to ingest cluster metrics into internal stream");
                     }
                 }
+
                 Ok(())
             }
             .await;
