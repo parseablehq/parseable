@@ -26,12 +26,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error};
 
 use crate::{
-    connectors::common::processor::Processor,
-    event::{
-        format::{json, EventFormat, LogSource},
-        Event as ParseableEvent,
-    },
-    parseable::PARSEABLE,
+    connectors::common::processor::Processor, event::format::LogSource, parseable::PARSEABLE,
     storage::StreamType,
 };
 
@@ -41,10 +36,7 @@ use super::{config::BufferConfig, ConsumerRecord, StreamConsumer, TopicPartition
 pub struct ParseableSinkProcessor;
 
 impl ParseableSinkProcessor {
-    async fn build_event_from_chunk(
-        &self,
-        records: &[ConsumerRecord],
-    ) -> anyhow::Result<ParseableEvent> {
+    async fn process_event_from_chunk(&self, records: &[ConsumerRecord]) -> anyhow::Result<u64> {
         let stream_name = records
             .first()
             .map(|r| r.topic.as_str())
@@ -53,14 +45,6 @@ impl ParseableSinkProcessor {
         PARSEABLE
             .create_stream_if_not_exists(stream_name, StreamType::UserDefined, LogSource::Json)
             .await?;
-
-        let stream = PARSEABLE.get_stream(stream_name)?;
-        let schema = stream.get_schema_raw();
-        let time_partition = stream.get_time_partition();
-        let time_partition_limit = stream.get_time_partition_limit();
-        let custom_partition = stream.get_custom_partition();
-        let static_schema_flag = stream.get_static_schema_flag();
-        let schema_version = stream.get_schema_version();
 
         let mut json_vec = Vec::with_capacity(records.len());
         let mut total_payload_size = 0u64;
@@ -72,20 +56,15 @@ impl ParseableSinkProcessor {
             }
         }
 
-        let p_event = json::Event::new(Value::Array(json_vec)).into_event(
-            stream_name.to_string(),
-            total_payload_size,
-            &schema,
-            static_schema_flag,
-            custom_partition.as_ref(),
-            time_partition.as_ref(),
-            time_partition_limit,
-            schema_version,
-            &LogSource::Custom("Kafka".to_owned()),
-            StreamType::UserDefined,
-        )?;
+        PARSEABLE
+            .get_or_create_stream(stream_name)
+            .push_logs(
+                Value::Array(json_vec),
+                &LogSource::Custom("Kafka".to_owned()),
+            )
+            .await?;
 
-        Ok(p_event)
+        Ok(total_payload_size)
     }
 }
 
@@ -95,9 +74,9 @@ impl Processor<Vec<ConsumerRecord>, ()> for ParseableSinkProcessor {
         let len = records.len();
         debug!("Processing {len} records");
 
-        self.build_event_from_chunk(&records).await?.process()?;
+        let size = self.process_event_from_chunk(&records).await?;
 
-        debug!("Processed {len} records");
+        debug!("Processed {len} records, size = {size} Bytes");
         Ok(())
     }
 }
