@@ -39,7 +39,7 @@ use tracing::error;
 
 use super::{EventFormat, LogSource};
 use crate::{
-    event::PartitionEvent,
+    event::{get_schema_key, PartitionEvent},
     kinesis::{flatten_kinesis_logs, Message},
     metadata::SchemaVersion,
     otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
@@ -246,7 +246,7 @@ impl EventFormat for Event {
             log_source,
         )?;
 
-        let mut partitions = vec![];
+        let mut partitions = HashMap::new();
         for json in data {
             let custom_partition_values = match custom_partitions.as_ref() {
                 Some(custom_partitions) => {
@@ -271,11 +271,25 @@ impl EventFormat for Event {
                 schema_version,
             )?;
 
-            partitions.push(PartitionEvent {
-                rb,
-                parsed_timestamp,
-                custom_partition_values,
-            });
+            let schema = rb.schema();
+            let mut key = get_schema_key(&schema.fields);
+            if time_partition.is_some() {
+                let parsed_timestamp_to_min = parsed_timestamp.format("%Y%m%dT%H%M").to_string();
+                key.push_str(&parsed_timestamp_to_min);
+            }
+
+            for (k, v) in custom_partition_values.iter().sorted_by_key(|v| v.0) {
+                key.push_str(&format!("&{k}={v}"));
+            }
+
+            partitions.insert(
+                key,
+                PartitionEvent {
+                    rb,
+                    parsed_timestamp,
+                    custom_partition_values,
+                },
+            );
         }
 
         Ok(super::Event {

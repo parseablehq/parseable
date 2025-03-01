@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use crate::event::error::EventError;
 use crate::event::format::LogSource;
-use crate::event::{self, PartitionEvent};
+use crate::event::{self, get_schema_key, PartitionEvent};
 use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
 use crate::option::Mode;
 use crate::parseable::{Stream, StreamNotFound, PARSEABLE};
@@ -239,21 +239,26 @@ pub async fn post_event(
 }
 
 pub async fn push_logs_unchecked(
-    batches: RecordBatch,
+    rb: RecordBatch,
     stream: &Stream,
 ) -> Result<event::Event, PostError> {
-    let unchecked_event = event::Event {
+    let mut unchecked_event = event::Event {
         origin_format: "json",
         origin_size: 0,
         time_partition: None,
         is_first_event: true, // NOTE: Maybe should be false
-        partitions: vec![PartitionEvent {
-            rb: batches,
-            parsed_timestamp: Utc::now().naive_utc(),
-            custom_partition_values: HashMap::new(), // should be an empty map for unchecked push
-        }],
+        partitions: HashMap::new(),
         stream_type: StreamType::UserDefined,
     };
+    unchecked_event.partitions.insert(
+        get_schema_key(&rb.schema().fields),
+        PartitionEvent {
+            rb,
+            parsed_timestamp: Utc::now().naive_utc(),
+            custom_partition_values: HashMap::new(), // should be an empty map for unchecked push
+        },
+    );
+
     unchecked_event.process_unchecked(stream)?;
 
     Ok(unchecked_event)

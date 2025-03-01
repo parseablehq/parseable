@@ -42,29 +42,14 @@ pub struct Event {
     pub origin_size: u64,
     pub is_first_event: bool,
     pub time_partition: Option<String>,
-    pub partitions: Vec<PartitionEvent>,
+    pub partitions: HashMap<String, PartitionEvent>,
     pub stream_type: StreamType,
 }
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
     pub fn process(self, stream: &Stream) -> Result<(), EventError> {
-        for partition in self.partitions {
-            let mut key = get_schema_key(&partition.rb.schema().fields);
-            if self.time_partition.is_some() {
-                let parsed_timestamp_to_min =
-                    partition.parsed_timestamp.format("%Y%m%dT%H%M").to_string();
-                key.push_str(&parsed_timestamp_to_min);
-            }
-
-            for (k, v) in partition
-                .custom_partition_values
-                .iter()
-                .sorted_by_key(|v| v.0)
-            {
-                key.push_str(&format!("&{k}={v}"));
-            }
-
+        for (key, partition) in self.partitions {
             if self.is_first_event {
                 let schema = partition.rb.schema().as_ref().clone();
                 stream.commit_schema(schema)?;
@@ -92,11 +77,9 @@ impl Event {
     }
 
     pub fn process_unchecked(&self, stream: &Stream) -> Result<(), EventError> {
-        for partition in &self.partitions {
-            let key = get_schema_key(&partition.rb.schema().fields);
-
+        for (key, partition) in &self.partitions {
             stream.push(
-                &key,
+                key,
                 &partition.rb,
                 partition.parsed_timestamp,
                 &partition.custom_partition_values,
