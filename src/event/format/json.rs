@@ -29,12 +29,20 @@ use itertools::Itertools;
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
+    num::NonZeroU32,
     sync::Arc,
 };
 use tracing::error;
 
-use super::EventFormat;
-use crate::{metadata::SchemaVersion, storage::StreamType, utils::arrow::get_field};
+use super::{EventFormat, LogSource};
+use crate::{
+    metadata::SchemaVersion,
+    storage::StreamType,
+    utils::{
+        arrow::get_field,
+        json::{convert_array_to_object, flatten::convert_to_array},
+    },
+};
 
 pub struct Event {
     pub json: Value,
@@ -64,26 +72,40 @@ impl EventFormat for Event {
         self,
         stored_schema: &HashMap<String, Arc<Field>>,
         time_partition: Option<&String>,
+        time_partition_limit: Option<NonZeroU32>,
+        custom_partition: Option<&String>,
         schema_version: SchemaVersion,
+        log_source: &LogSource,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool), anyhow::Error> {
-        // incoming event may be a single json or a json array
-        // but Data (type defined above) is a vector of json values
-        // hence we need to convert the incoming event to a vector of json values
-        let value_arr = match self.json {
-            Value::Array(arr) => arr,
-            value @ Value::Object(_) => vec![value],
-            _ => unreachable!("flatten would have failed beforehand"),
+        let flattened = if time_partition.is_some() || custom_partition.is_some() {
+            convert_array_to_object(
+                self.json,
+                time_partition,
+                time_partition_limit,
+                custom_partition,
+                schema_version,
+                log_source,
+            )?
+        } else {
+            vec![convert_to_array(convert_array_to_object(
+                self.json,
+                None,
+                None,
+                None,
+                schema_version,
+                log_source,
+            )?)?]
         };
 
         // collect all the keys from all the json objects in the request body
         let fields =
-            collect_keys(value_arr.iter()).expect("fields can be collected from array of objects");
+            collect_keys(flattened.iter()).expect("fields can be collected from array of objects");
 
         let mut is_first = false;
         let schema = match derive_arrow_schema(stored_schema, fields) {
             Some(schema) => schema,
             _ => {
-                let mut infer_schema = infer_json_schema_from_iterator(value_arr.iter().map(Ok))
+                let mut infer_schema = infer_json_schema_from_iterator(flattened.iter().map(Ok))
                     .map_err(|err| {
                         anyhow!("Could not infer schema for this event due to err {:?}", err)
                     })?;
@@ -91,7 +113,7 @@ impl EventFormat for Event {
                     Arc::new(infer_schema),
                     Some(stored_schema),
                     time_partition,
-                    Some(&value_arr),
+                    Some(&flattened),
                     schema_version,
                 );
                 infer_schema = Schema::new(new_infer_schema.fields().clone());
@@ -110,7 +132,7 @@ impl EventFormat for Event {
             }
         };
 
-        if value_arr
+        if flattened
             .iter()
             .any(|value| fields_mismatch(&schema, value, schema_version))
         {
@@ -119,7 +141,7 @@ impl EventFormat for Event {
             ));
         }
 
-        Ok((value_arr, schema, is_first))
+        Ok((flattened, schema, is_first))
     }
 
     // Convert the Data type (defined above) to arrow record batch
@@ -147,7 +169,9 @@ impl EventFormat for Event {
         static_schema_flag: bool,
         custom_partitions: Option<&String>,
         time_partition: Option<&String>,
+        time_partition_limit: Option<NonZeroU32>,
         schema_version: SchemaVersion,
+        log_source: &LogSource,
         stream_type: StreamType,
     ) -> Result<super::Event, anyhow::Error> {
         let custom_partition_values = match custom_partitions.as_ref() {
@@ -167,7 +191,10 @@ impl EventFormat for Event {
             storage_schema,
             static_schema_flag,
             time_partition,
+            time_partition_limit,
+            custom_partitions,
             schema_version,
+            log_source,
         )?;
 
         Ok(super::Event {
@@ -385,7 +412,15 @@ mod tests {
         });
 
         let (rb, _) = Event::new(json)
-            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
+                None,
+                None,
+                None,
+                SchemaVersion::V0,
+                &LogSource::Json,
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
@@ -413,7 +448,15 @@ mod tests {
         });
 
         let (rb, _) = Event::new(json)
-            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
+                None,
+                None,
+                None,
+                SchemaVersion::V0,
+                &LogSource::Json,
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
@@ -445,7 +488,15 @@ mod tests {
         );
 
         let (rb, _) = Event::new(json)
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0)
+            .into_recordbatch(
+                &schema,
+                false,
+                None,
+                None,
+                None,
+                SchemaVersion::V0,
+                &LogSource::Json,
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
@@ -477,7 +528,15 @@ mod tests {
         );
 
         assert!(Event::new(json)
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0,)
+            .into_recordbatch(
+                &schema,
+                false,
+                None,
+                None,
+                None,
+                SchemaVersion::V0,
+                &LogSource::Json
+            )
             .is_err());
     }
 
@@ -495,7 +554,15 @@ mod tests {
         );
 
         let (rb, _) = Event::new(json)
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0)
+            .into_recordbatch(
+                &schema,
+                false,
+                None,
+                None,
+                None,
+                SchemaVersion::V0,
+                &LogSource::Json,
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
@@ -521,7 +588,15 @@ mod tests {
         ]);
 
         let (rb, _) = Event::new(json)
-            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
+                None,
+                None,
+                None,
+                SchemaVersion::V0,
+                &LogSource::Json,
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
@@ -569,7 +644,15 @@ mod tests {
         ]);
 
         let (rb, _) = Event::new(json)
-            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
+                None,
+                None,
+                None,
+                SchemaVersion::V0,
+                &LogSource::Json,
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
@@ -618,7 +701,15 @@ mod tests {
         );
 
         let (rb, _) = Event::new(json)
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0)
+            .into_recordbatch(
+                &schema,
+                false,
+                None,
+                None,
+                None,
+                SchemaVersion::V0,
+                &LogSource::Json,
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
@@ -667,7 +758,15 @@ mod tests {
         );
 
         assert!(Event::new(json)
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0,)
+            .into_recordbatch(
+                &schema,
+                false,
+                None,
+                None,
+                None,
+                SchemaVersion::V0,
+                &LogSource::Json
+            )
             .is_err());
     }
 
@@ -696,7 +795,15 @@ mod tests {
         ]);
 
         let (rb, _) = Event::new(json)
-            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
+                None,
+                None,
+                None,
+                SchemaVersion::V0,
+                &LogSource::Json,
+            )
             .unwrap();
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 5);
@@ -768,7 +875,15 @@ mod tests {
         ]);
 
         let (rb, _) = Event::new(json)
-            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V1)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
+                None,
+                None,
+                None,
+                SchemaVersion::V1,
+                &LogSource::Json,
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 4);

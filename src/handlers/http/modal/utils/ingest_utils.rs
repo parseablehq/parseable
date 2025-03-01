@@ -31,7 +31,6 @@ use crate::{
     otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
     parseable::PARSEABLE,
     storage::StreamType,
-    utils::json::{convert_array_to_object, flatten::convert_to_array},
 };
 
 pub async fn flatten_and_push_logs(
@@ -82,42 +81,23 @@ async fn push_logs(
     let p_timestamp = Utc::now();
 
     for json in jsons {
-        let data = if time_partition.is_some() || custom_partition.is_some() {
-            convert_array_to_object(
-                json,
+        let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
+        let schema = PARSEABLE.get_stream(stream_name)?.get_schema_raw();
+        json::Event { json, p_timestamp }
+            .into_event(
+                stream_name.to_owned(),
+                origin_size,
+                &schema,
+                static_schema_flag,
+                custom_partition.as_ref(),
                 time_partition.as_ref(),
                 time_partition_limit,
-                custom_partition.as_ref(),
                 schema_version,
                 log_source,
+                StreamType::UserDefined,
             )?
-        } else {
-            vec![convert_to_array(convert_array_to_object(
-                json,
-                None,
-                None,
-                None,
-                schema_version,
-                log_source,
-            )?)?]
-        };
-
-        for json in data {
-            let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
-            let schema = PARSEABLE.get_stream(stream_name)?.get_schema_raw();
-            json::Event { json, p_timestamp }
-                .into_event(
-                    stream_name.to_owned(),
-                    origin_size,
-                    &schema,
-                    static_schema_flag,
-                    custom_partition.as_ref(),
-                    time_partition.as_ref(),
-                    schema_version,
-                    StreamType::UserDefined,
-                )?
-                .process()?;
-        }
+            .process()?;
     }
+
     Ok(())
 }

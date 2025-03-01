@@ -20,6 +20,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
+    num::NonZeroU32,
     sync::Arc,
 };
 
@@ -101,7 +102,10 @@ pub trait EventFormat: Sized {
         self,
         schema: &HashMap<String, Arc<Field>>,
         time_partition: Option<&String>,
+        time_partition_limit: Option<NonZeroU32>,
+        custom_partition: Option<&String>,
         schema_version: SchemaVersion,
+        log_source: &LogSource,
     ) -> Result<(Self::Data, EventSchema, bool), AnyError>;
 
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
@@ -114,11 +118,20 @@ pub trait EventFormat: Sized {
         storage_schema: &HashMap<String, Arc<Field>>,
         static_schema_flag: bool,
         time_partition: Option<&String>,
+        time_partition_limit: Option<NonZeroU32>,
+        custom_partition: Option<&String>,
         schema_version: SchemaVersion,
+        log_source: &LogSource,
     ) -> Result<(RecordBatch, bool), AnyError> {
         let p_timestamp = self.get_p_timestamp();
-        let (data, mut schema, is_first) =
-            self.to_data(storage_schema, time_partition, schema_version)?;
+        let (data, mut schema, is_first) = self.to_data(
+            storage_schema,
+            time_partition,
+            time_partition_limit,
+            custom_partition,
+            schema_version,
+            log_source,
+        )?;
 
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
             return Err(anyhow!(
@@ -171,7 +184,9 @@ pub trait EventFormat: Sized {
         static_schema_flag: bool,
         custom_partitions: Option<&String>,
         time_partition: Option<&String>,
+        time_partition_limit: Option<NonZeroU32>,
         schema_version: SchemaVersion,
+        log_source: &LogSource,
         stream_type: StreamType,
     ) -> Result<Event, AnyError>;
 }

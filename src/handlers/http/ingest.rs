@@ -91,7 +91,9 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             false,
             None,
             None,
+            None,
             SchemaVersion::V0,
+            &LogSource::Pmeta,
             StreamType::Internal,
         )?
         .process()?;
