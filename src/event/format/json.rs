@@ -27,7 +27,10 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use itertools::Itertools;
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use tracing::error;
 
 use super::EventFormat;
