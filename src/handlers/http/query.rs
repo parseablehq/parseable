@@ -29,14 +29,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::time::Instant;
 use tracing::error;
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
 
-use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::Mode;
 use crate::parseable::PARSEABLE;
@@ -174,7 +172,9 @@ pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), 
                 // commit schema merges the schema internally and updates the schema in storage.
                 commit_schema_to_storage(table, new_schema.clone()).await?;
 
-                commit_schema(table, Arc::new(new_schema))?;
+                PARSEABLE
+                    .get_or_create_stream(table)
+                    .commit_schema(new_schema)?;
             }
         }
     }

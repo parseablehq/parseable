@@ -20,17 +20,12 @@
 pub mod format;
 
 use arrow_array::RecordBatch;
-use arrow_schema::{Field, Fields, Schema};
+use arrow_schema::Field;
 use itertools::Itertools;
 use std::sync::Arc;
 
 use self::error::EventError;
-use crate::{
-    metadata::update_stats,
-    parseable::{StagingError, Stream, PARSEABLE},
-    storage::StreamType,
-    LOCK_EXPECT,
-};
+use crate::{metadata::update_stats, parseable::Stream, storage::StreamType};
 use chrono::NaiveDateTime;
 use std::collections::HashMap;
 
@@ -71,7 +66,8 @@ impl Event {
             }
 
             if self.is_first_event {
-                commit_schema(&stream.stream_name, partition.rb.schema())?;
+                let schema = partition.rb.schema().as_ref().clone();
+                stream.commit_schema(schema)?;
             }
 
             stream.push(
@@ -120,23 +116,6 @@ pub fn get_schema_key(fields: &[Arc<Field>]) -> String {
     }
     let hash = hasher.digest();
     format!("{hash:x}")
-}
-
-pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), StagingError> {
-    let mut stream_metadata = PARSEABLE.streams.write().expect("lock poisoned");
-
-    let map = &mut stream_metadata
-        .get_mut(stream_name)
-        .expect("map has entry for this stream name")
-        .metadata
-        .write()
-        .expect(LOCK_EXPECT)
-        .schema;
-    let current_schema = Schema::new(map.values().cloned().collect::<Fields>());
-    let schema = Schema::try_merge(vec![current_schema, schema.as_ref().clone()])?;
-    map.clear();
-    map.extend(schema.fields.iter().map(|f| (f.name().clone(), f.clone())));
-    Ok(())
 }
 
 pub mod error {

@@ -624,6 +624,19 @@ impl Stream {
         Arc::new(Schema::new(fields))
     }
 
+    pub fn commit_schema(&self, schema: Schema) -> Result<(), StagingError> {
+        let current_schema = self.get_schema().as_ref().clone();
+        let updated_schema = Schema::try_merge([current_schema, schema])?
+            .fields
+            .into_iter()
+            .map(|field| (field.name().to_owned(), field.clone()))
+            .collect();
+
+        self.metadata.write().expect(LOCK_EXPECT).schema = updated_schema;
+
+        Ok(())
+    }
+
     pub fn get_schema_raw(&self) -> HashMap<String, Arc<Field>> {
         self.metadata.read().expect(LOCK_EXPECT).schema.clone()
     }
