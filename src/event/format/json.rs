@@ -20,6 +20,7 @@
 #![allow(deprecated)]
 
 use anyhow::anyhow;
+use arrow::compute::concat_batches;
 use arrow_array::RecordBatch;
 use arrow_json::reader::{infer_json_schema_from_iterator, ReaderBuilder};
 use arrow_schema::{DataType, Field, Fields, Schema};
@@ -282,14 +283,13 @@ impl EventFormat for Event {
                 key.push_str(&format!("&{k}={v}"));
             }
 
-            partitions.insert(
-                key,
-                PartitionEvent {
-                    rb,
-                    parsed_timestamp,
-                    custom_partition_values,
-                },
-            );
+            let entry = partitions.entry(key).or_insert(PartitionEvent {
+                rb: RecordBatch::new_empty(schema.clone()),
+                parsed_timestamp,
+                custom_partition_values,
+            });
+
+            entry.rb = concat_batches(&schema, [&entry.rb, &rb])?;
         }
 
         Ok(super::Event {
