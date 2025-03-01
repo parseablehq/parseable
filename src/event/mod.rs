@@ -36,69 +36,78 @@ use std::collections::HashMap;
 
 pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
 
-#[derive(Clone)]
+pub struct PartitionEvent {
+    pub rb: RecordBatch,
+    pub parsed_timestamp: NaiveDateTime,
+    pub custom_partition_values: HashMap<String, String>,
+}
+
 pub struct Event {
     pub stream_name: String,
-    pub rb: RecordBatch,
     pub origin_format: &'static str,
     pub origin_size: u64,
     pub is_first_event: bool,
-    pub parsed_timestamp: NaiveDateTime,
     pub time_partition: Option<String>,
-    pub custom_partition_values: HashMap<String, String>,
+    pub partitions: Vec<PartitionEvent>,
     pub stream_type: StreamType,
 }
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
     pub fn process(self) -> Result<(), EventError> {
-        let mut key = get_schema_key(&self.rb.schema().fields);
-        if self.time_partition.is_some() {
-            let parsed_timestamp_to_min = self.parsed_timestamp.format("%Y%m%dT%H%M").to_string();
-            key.push_str(&parsed_timestamp_to_min);
-        }
+        for partition in self.partitions {
+            let mut key = get_schema_key(&partition.rb.schema().fields);
+            if self.time_partition.is_some() {
+                let parsed_timestamp_to_min =
+                    partition.parsed_timestamp.format("%Y%m%dT%H%M").to_string();
+                key.push_str(&parsed_timestamp_to_min);
+            }
 
-        if !self.custom_partition_values.is_empty() {
-            for (k, v) in self.custom_partition_values.iter().sorted_by_key(|v| v.0) {
+            for (k, v) in partition
+                .custom_partition_values
+                .iter()
+                .sorted_by_key(|v| v.0)
+            {
                 key.push_str(&format!("&{k}={v}"));
             }
+
+            if self.is_first_event {
+                commit_schema(&self.stream_name, partition.rb.schema())?;
+            }
+
+            PARSEABLE.get_or_create_stream(&self.stream_name).push(
+                &key,
+                &partition.rb,
+                partition.parsed_timestamp,
+                &partition.custom_partition_values,
+                self.stream_type,
+            )?;
+
+            update_stats(
+                &self.stream_name,
+                self.origin_format,
+                self.origin_size,
+                partition.rb.num_rows(),
+                partition.parsed_timestamp.date(),
+            );
+
+            crate::livetail::LIVETAIL.process(&self.stream_name, &partition.rb);
         }
-
-        if self.is_first_event {
-            commit_schema(&self.stream_name, self.rb.schema())?;
-        }
-
-        PARSEABLE.get_or_create_stream(&self.stream_name).push(
-            &key,
-            &self.rb,
-            self.parsed_timestamp,
-            &self.custom_partition_values,
-            self.stream_type,
-        )?;
-
-        update_stats(
-            &self.stream_name,
-            self.origin_format,
-            self.origin_size,
-            self.rb.num_rows(),
-            self.parsed_timestamp.date(),
-        );
-
-        crate::livetail::LIVETAIL.process(&self.stream_name, &self.rb);
-
         Ok(())
     }
 
     pub fn process_unchecked(&self) -> Result<(), EventError> {
-        let key = get_schema_key(&self.rb.schema().fields);
+        for partition in &self.partitions {
+            let key = get_schema_key(&partition.rb.schema().fields);
 
-        PARSEABLE.get_or_create_stream(&self.stream_name).push(
-            &key,
-            &self.rb,
-            self.parsed_timestamp,
-            &self.custom_partition_values,
-            self.stream_type,
-        )?;
+            PARSEABLE.get_or_create_stream(&self.stream_name).push(
+                &key,
+                &partition.rb,
+                partition.parsed_timestamp,
+                &partition.custom_partition_values,
+                self.stream_type,
+            )?;
+        }
 
         Ok(())
     }

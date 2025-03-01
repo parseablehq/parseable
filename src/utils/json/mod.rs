@@ -21,13 +21,15 @@ use std::num::NonZeroU32;
 
 use flatten::{convert_to_array, generic_flattening, has_more_than_four_levels};
 use serde::de::Visitor;
-use serde_json;
 use serde_json::Value;
+use serde_json::{self, Map};
 
 use crate::event::format::LogSource;
 use crate::metadata::SchemaVersion;
 
 pub mod flatten;
+
+pub type Json = Map<String, Value>;
 
 /// calls the function `flatten_json` which results Vec<Value> or Error
 /// in case when Vec<Value> is returned, converts the Vec<Value> to Value of Array
@@ -61,32 +63,8 @@ pub fn flatten_json_body(
         custom_partition,
         validation_required,
     )?;
-    Ok(nested_value)
-}
 
-pub fn convert_array_to_object(
-    body: Value,
-    time_partition: Option<&String>,
-    time_partition_limit: Option<NonZeroU32>,
-    custom_partition: Option<&String>,
-    schema_version: SchemaVersion,
-    log_source: &LogSource,
-) -> Result<Vec<Value>, anyhow::Error> {
-    let data = flatten_json_body(
-        body,
-        time_partition,
-        time_partition_limit,
-        custom_partition,
-        schema_version,
-        true,
-        log_source,
-    )?;
-    let value_arr = match data {
-        Value::Array(arr) => arr,
-        value @ Value::Object(_) => vec![value],
-        _ => unreachable!("flatten would have failed beforehand"),
-    };
-    Ok(value_arr)
+    Ok(nested_value)
 }
 
 struct TrueFromStr;
@@ -283,12 +261,13 @@ mod tests {
     fn non_object_arr_is_err() {
         let json = json!([1]);
 
-        assert!(convert_array_to_object(
+        assert!(flatten_json_body(
             json,
             None,
             None,
             None,
             SchemaVersion::V0,
+            false,
             &crate::event::format::LogSource::default()
         )
         .is_err())
@@ -316,16 +295,14 @@ mod tests {
                 "c": [{"a": 1, "b": 2}]
             },
         ]);
-        let flattened_json = convert_to_array(
-            convert_array_to_object(
-                json,
-                None,
-                None,
-                None,
-                SchemaVersion::V0,
-                &crate::event::format::LogSource::default(),
-            )
-            .unwrap(),
+        let flattened_json = flatten_json_body(
+            json,
+            None,
+            None,
+            None,
+            SchemaVersion::V0,
+            false,
+            &crate::event::format::LogSource::default(),
         )
         .unwrap();
 
@@ -377,16 +354,14 @@ mod tests {
                 "c": [{"a": 1, "b": 2}]
             },
         ]);
-        let flattened_json = convert_to_array(
-            convert_array_to_object(
-                json,
-                None,
-                None,
-                None,
-                SchemaVersion::V1,
-                &crate::event::format::LogSource::default(),
-            )
-            .unwrap(),
+        let flattened_json = flatten_json_body(
+            json,
+            None,
+            None,
+            None,
+            SchemaVersion::V1,
+            false,
+            &crate::event::format::LogSource::default(),
         )
         .unwrap();
 

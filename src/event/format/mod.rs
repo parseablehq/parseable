@@ -34,7 +34,10 @@ use serde_json::Value;
 use crate::{
     metadata::SchemaVersion,
     storage::StreamType,
-    utils::arrow::{get_field, get_timestamp_array, replace_columns},
+    utils::{
+        arrow::{get_field, get_timestamp_array, replace_columns},
+        json::Json,
+    },
 };
 
 use super::{Event, DEFAULT_TIMESTAMP_KEY};
@@ -110,30 +113,16 @@ pub trait EventFormat: Sized {
 
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
 
-    /// Returns the UTC time at ingestion
-    fn get_p_timestamp(&self) -> DateTime<Utc>;
-
     #[allow(clippy::too_many_arguments)]
     fn into_recordbatch(
-        self,
+        p_timestamp: DateTime<Utc>,
+        data: Self::Data,
+        mut schema: EventSchema,
         storage_schema: &HashMap<String, Arc<Field>>,
         static_schema_flag: bool,
         time_partition: Option<&String>,
-        time_partition_limit: Option<NonZeroU32>,
-        custom_partition: Option<&String>,
         schema_version: SchemaVersion,
-        log_source: &LogSource,
-    ) -> Result<(RecordBatch, bool), AnyError> {
-        let p_timestamp = self.get_p_timestamp();
-        let (data, mut schema, is_first) = self.to_data(
-            storage_schema,
-            time_partition,
-            time_partition_limit,
-            custom_partition,
-            schema_version,
-            log_source,
-        )?;
-
+    ) -> Result<RecordBatch, AnyError> {
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
             return Err(anyhow!(
                 "field {} is a reserved field",
@@ -162,7 +151,7 @@ pub trait EventFormat: Sized {
         }
 
         // prepare the record batch and new fields to be added
-        let mut new_schema = Arc::new(Schema::new(schema));
+        let mut new_schema = Arc::new(Schema::new(schema.clone()));
         new_schema =
             update_field_type_in_schema(new_schema, None, time_partition, None, schema_version);
 
@@ -173,7 +162,7 @@ pub trait EventFormat: Sized {
             &[(0, Arc::new(get_timestamp_array(p_timestamp, rb.num_rows())))],
         );
 
-        Ok((rb, is_first))
+        Ok(rb)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -247,7 +236,7 @@ pub fn update_field_type_in_schema(
     inferred_schema: Arc<Schema>,
     existing_schema: Option<&HashMap<String, Arc<Field>>>,
     time_partition: Option<&String>,
-    log_records: Option<&Vec<Value>>,
+    log_records: Option<&[Json]>,
     schema_version: SchemaVersion,
 ) -> Arc<Schema> {
     let mut updated_schema = inferred_schema.clone();
@@ -292,18 +281,15 @@ pub fn update_field_type_in_schema(
 // a string value parseable into timestamp as timestamp type and all numbers as float64.
 pub fn override_data_type(
     inferred_schema: Arc<Schema>,
-    log_record: Value,
+    log_record: Json,
     schema_version: SchemaVersion,
 ) -> Arc<Schema> {
-    let Value::Object(map) = log_record else {
-        return inferred_schema;
-    };
     let updated_schema: Vec<Field> = inferred_schema
         .fields()
         .iter()
         .map(|field| {
             let field_name = field.name().as_str();
-            match (schema_version, map.get(field.name())) {
+            match (schema_version, log_record.get(field.name())) {
                 // in V1 for new fields in json named "time"/"date" or such and having inferred
                 // type string, that can be parsed as timestamp, use the timestamp type.
                 // NOTE: support even more datetime string formats

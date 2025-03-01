@@ -26,9 +26,9 @@ use chrono::Utc;
 use http::StatusCode;
 use serde_json::Value;
 
-use crate::event;
 use crate::event::error::EventError;
 use crate::event::format::LogSource;
+use crate::event::{self, PartitionEvent};
 use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
 use crate::option::Mode;
 use crate::parseable::{StreamNotFound, PARSEABLE};
@@ -243,14 +243,16 @@ pub async fn push_logs_unchecked(
     stream_name: &str,
 ) -> Result<event::Event, PostError> {
     let unchecked_event = event::Event {
-        rb: batches,
         stream_name: stream_name.to_string(),
         origin_format: "json",
         origin_size: 0,
-        parsed_timestamp: Utc::now().naive_utc(),
         time_partition: None,
-        is_first_event: true,                    // NOTE: Maybe should be false
-        custom_partition_values: HashMap::new(), // should be an empty map for unchecked push
+        is_first_event: true, // NOTE: Maybe should be false
+        partitions: vec![PartitionEvent {
+            rb: batches,
+            parsed_timestamp: Utc::now().naive_utc(),
+            custom_partition_values: HashMap::new(), // should be an empty map for unchecked push
+        }],
         stream_type: StreamType::UserDefined,
     };
     unchecked_event.process_unchecked()?;
