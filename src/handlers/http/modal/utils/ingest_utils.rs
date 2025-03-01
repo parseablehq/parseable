@@ -17,57 +17,18 @@
  */
 
 use chrono::Utc;
-use opentelemetry_proto::tonic::{
-    logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
-};
 use serde_json::Value;
 
 use crate::{
     event::format::{json, EventFormat, LogSource},
-    handlers::http::{
-        ingest::PostError,
-        kinesis::{flatten_kinesis_logs, Message},
-    },
-    otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
+    handlers::http::ingest::PostError,
     parseable::PARSEABLE,
     storage::StreamType,
 };
 
-pub async fn flatten_and_push_logs(
+pub async fn push_logs(
+    stream_name: &str,
     json: Value,
-    stream_name: &str,
-    log_source: &LogSource,
-) -> Result<(), PostError> {
-    let json = match log_source {
-        LogSource::Kinesis => {
-            //custom flattening required for Amazon Kinesis
-            let message: Message = serde_json::from_value(json)?;
-            flatten_kinesis_logs(message)
-        }
-        LogSource::OtelLogs => {
-            //custom flattening required for otel logs
-            let logs: LogsData = serde_json::from_value(json)?;
-            flatten_otel_logs(&logs)
-        }
-        LogSource::OtelTraces => {
-            //custom flattening required for otel traces
-            let traces: TracesData = serde_json::from_value(json)?;
-            flatten_otel_traces(&traces)
-        }
-        LogSource::OtelMetrics => {
-            //custom flattening required for otel metrics
-            let metrics: MetricsData = serde_json::from_value(json)?;
-            flatten_otel_metrics(metrics)
-        }
-        _ => vec![json],
-    };
-    push_logs(stream_name, json, log_source).await?;
-    Ok(())
-}
-
-async fn push_logs(
-    stream_name: &str,
-    jsons: Vec<Value>,
     log_source: &LogSource,
 ) -> Result<(), PostError> {
     let stream = PARSEABLE.get_stream(stream_name)?;
@@ -80,7 +41,6 @@ async fn push_logs(
     let schema_version = stream.get_schema_version();
     let p_timestamp = Utc::now();
 
-    for json in jsons {
         let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
         let schema = PARSEABLE.get_stream(stream_name)?.get_schema_raw();
         json::Event { json, p_timestamp }
@@ -97,7 +57,7 @@ async fn push_logs(
                 StreamType::UserDefined,
             )?
             .process()?;
-    }
+    
 
     Ok(())
 }

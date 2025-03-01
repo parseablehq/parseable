@@ -38,7 +38,7 @@ use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::flatten::JsonFlattenError;
 
 use super::logstream::error::{CreateStreamError, StreamError};
-use super::modal::utils::ingest_utils::flatten_and_push_logs;
+use super::modal::utils::ingest_utils::push_logs;
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
 
@@ -72,7 +72,7 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
         return Err(PostError::OtelNotSupported);
     }
 
-    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+    push_logs(&stream_name, json, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -125,7 +125,7 @@ pub async fn handle_otel_logs_ingestion(
         .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelLogs)
         .await?;
 
-    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+    push_logs(&stream_name, json, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -156,7 +156,7 @@ pub async fn handle_otel_metrics_ingestion(
         )
         .await?;
 
-    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+    push_logs(&stream_name, json, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -184,7 +184,7 @@ pub async fn handle_otel_traces_ingestion(
         .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelTraces)
         .await?;
 
-    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+    push_logs(&stream_name, json, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -233,7 +233,7 @@ pub async fn post_event(
         return Err(PostError::OtelNotSupported);
     }
 
-    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+    push_logs(&stream_name, json, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }

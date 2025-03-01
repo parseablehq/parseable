@@ -19,7 +19,7 @@
 use actix_web::{HttpRequest, HttpResponse};
 use bytes::Bytes;
 
-use crate::{handlers::http::{ingest::PostError, modal::utils::ingest_utils::flatten_and_push_logs}, metadata::PARSEABLE.streams};
+use crate::{handlers::http::{ingest::PostError, modal::utils::ingest_utils::push_logs}, metadata::PARSEABLE.streams};
 
 
 // Handler for POST /api/v1/logstream/{logstream}
@@ -38,6 +38,6 @@ pub async fn post_event(req: HttpRequest, body: Bytes) -> Result<HttpResponse, P
         return Err(PostError::StreamNotFound(stream_name));
     }
 
-    flatten_and_push_logs(req, body, stream_name).await?;
+    push_logs(req, body, stream_name).await?;
     Ok(HttpResponse::Ok().finish())
 }

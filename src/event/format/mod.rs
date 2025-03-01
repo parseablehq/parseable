@@ -113,6 +113,7 @@ pub trait EventFormat: Sized {
     /// Returns the UTC time at ingestion
     fn get_p_timestamp(&self) -> DateTime<Utc>;
 
+    #[allow(clippy::too_many_arguments)]
     fn into_recordbatch(
         self,
         storage_schema: &HashMap<String, Arc<Field>>,

@@ -26,6 +26,9 @@ use arrow_schema::{DataType, Field, Fields, Schema};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use itertools::Itertools;
+use opentelemetry_proto::tonic::{
+    logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
+};
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
@@ -36,7 +39,9 @@ use tracing::error;
 
 use super::{EventFormat, LogSource};
 use crate::{
+    kinesis::{flatten_kinesis_logs, Message},
     metadata::SchemaVersion,
+    otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
     storage::StreamType,
     utils::{
         arrow::get_field,
@@ -58,6 +63,64 @@ impl Event {
     }
 }
 
+pub fn flatten_logs(
+    json: Value,
+    time_partition: Option<&String>,
+    time_partition_limit: Option<NonZeroU32>,
+    custom_partitions: Option<&String>,
+    schema_version: SchemaVersion,
+    log_source: &LogSource,
+) -> Result<Vec<Value>, anyhow::Error> {
+    let data = match log_source {
+        LogSource::Kinesis => {
+            //custom flattening required for Amazon Kinesis
+            let message: Message = serde_json::from_value(json)?;
+            flatten_kinesis_logs(message)
+        }
+        LogSource::OtelLogs => {
+            //custom flattening required for otel logs
+            let logs: LogsData = serde_json::from_value(json)?;
+            flatten_otel_logs(&logs)
+        }
+        LogSource::OtelTraces => {
+            //custom flattening required for otel traces
+            let traces: TracesData = serde_json::from_value(json)?;
+            flatten_otel_traces(&traces)
+        }
+        LogSource::OtelMetrics => {
+            //custom flattening required for otel metrics
+            let metrics: MetricsData = serde_json::from_value(json)?;
+            flatten_otel_metrics(metrics)
+        }
+        _ => vec![json],
+    };
+
+    let mut logs = vec![];
+    for json in data {
+        if time_partition.is_some() || custom_partitions.is_some() {
+            logs.append(&mut convert_array_to_object(
+                json,
+                time_partition,
+                time_partition_limit,
+                custom_partitions,
+                schema_version,
+                log_source,
+            )?)
+        } else {
+            logs.push(convert_to_array(convert_array_to_object(
+                json,
+                None,
+                None,
+                None,
+                schema_version,
+                log_source,
+            )?)?)
+        }
+    }
+
+    Ok(logs)
+}
+
 impl EventFormat for Event {
     type Data = Vec<Value>;
 
@@ -73,29 +136,18 @@ impl EventFormat for Event {
         stored_schema: &HashMap<String, Arc<Field>>,
         time_partition: Option<&String>,
         time_partition_limit: Option<NonZeroU32>,
-        custom_partition: Option<&String>,
+        custom_partitions: Option<&String>,
         schema_version: SchemaVersion,
         log_source: &LogSource,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool), anyhow::Error> {
-        let flattened = if time_partition.is_some() || custom_partition.is_some() {
-            convert_array_to_object(
-                self.json,
-                time_partition,
-                time_partition_limit,
-                custom_partition,
-                schema_version,
-                log_source,
-            )?
-        } else {
-            vec![convert_to_array(convert_array_to_object(
-                self.json,
-                None,
-                None,
-                None,
-                schema_version,
-                log_source,
-            )?)?]
-        };
+        let flattened = flatten_logs(
+            self.json,
+            time_partition,
+            time_partition_limit,
+            custom_partitions,
+            schema_version,
+            log_source,
+        )?;
 
         // collect all the keys from all the json objects in the request body
         let fields =
@@ -175,8 +227,8 @@ impl EventFormat for Event {
         stream_type: StreamType,
     ) -> Result<super::Event, anyhow::Error> {
         let custom_partition_values = match custom_partitions.as_ref() {
-            Some(custom_partition) => {
-                let custom_partitions = custom_partition.split(',').collect_vec();
+            Some(custom_partitions) => {
+                let custom_partitions = custom_partitions.split(',').collect_vec();
                 extract_custom_partition_values(&self.json, &custom_partitions)
             }
             None => HashMap::new(),
