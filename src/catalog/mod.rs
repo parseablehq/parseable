@@ -340,7 +340,12 @@ pub async fn remove_manifest_from_snapshot(
             Ok(get_first_event(storage.clone(), stream_name, Vec::new()).await?)
         }
         Mode::Query => Ok(get_first_event(storage, stream_name, dates).await?),
-        Mode::Index => unimplemented!(),
+        Mode::Index => Err(ObjectStorageError::UnhandledError(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Can't remove manifest from within Index server",
+            ),
+        ))),
     }
 }
 

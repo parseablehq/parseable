@@ -66,7 +66,7 @@ pub async fn fetch_parquet_file_paths(
 ) -> Result<HashMap<RelativePathBuf, Vec<File>>, ObjectStorageError> {
     let glob_storage = PARSEABLE.storage.get_object_store();
 
-    let object_store_format = glob_storage.get_object_store_format(stream).await.unwrap();
+    let object_store_format = glob_storage.get_object_store_format(stream).await?;
 
     let time_partition = object_store_format.time_partition;
 
@@ -103,8 +103,7 @@ pub async fn fetch_parquet_file_paths(
             .map(|item| item.manifest_path)
             .collect(),
     )
-    .await
-    .unwrap();
+    .await?;
 
     let mut parquet_files: HashMap<RelativePathBuf, Vec<File>> = HashMap::new();
 
@@ -137,24 +136,24 @@ pub async fn fetch_parquet_file_paths(
 async fn collect_manifest_files(
     storage: Arc<dyn ObjectStorage>,
     manifest_urls: Vec<String>,
-) -> Result<Vec<Manifest>, object_store::Error> {
+) -> Result<Vec<Manifest>, ObjectStorageError> {
     let mut tasks = Vec::new();
     manifest_urls.into_iter().for_each(|path| {
-        let path = RelativePathBuf::from_path(PathBuf::from(path)).unwrap();
+        let path = RelativePathBuf::from_path(PathBuf::from(path)).expect("Invalid path");
         let storage = Arc::clone(&storage);
         tasks.push(tokio::task::spawn(async move {
-            storage.get_object(&path).await.unwrap()
+            storage.get_object(&path).await
         }));
     });
 
     let mut op = Vec::new();
     for task in tasks {
-        let file = task.await.unwrap();
+        let file = task.await??;
         op.push(file);
     }
 
     Ok(op
         .into_iter()
-        .map(|res| serde_json::from_slice(&res).unwrap())
+        .map(|res| serde_json::from_slice(&res).expect("Data is invalid for Manifest"))
         .collect())
 }
