@@ -242,22 +242,23 @@ pub async fn push_logs_unchecked(
     rb: RecordBatch,
     stream: &Stream,
 ) -> Result<event::Event, PostError> {
-    let mut unchecked_event = event::Event {
+    let unchecked_event = event::Event {
         origin_format: "json",
         origin_size: 0,
         time_partition: None,
         is_first_event: true, // NOTE: Maybe should be false
-        partitions: HashMap::new(),
+        partitions: [(
+            get_schema_key(&rb.schema().fields),
+            PartitionEvent {
+                rb,
+                parsed_timestamp: Utc::now().naive_utc(),
+                custom_partition_values: HashMap::new(), // should be an empty map for unchecked push
+            },
+        )]
+        .into_iter()
+        .collect(),
         stream_type: StreamType::UserDefined,
     };
-    unchecked_event.partitions.insert(
-        get_schema_key(&rb.schema().fields),
-        PartitionEvent {
-            rb,
-            parsed_timestamp: Utc::now().naive_utc(),
-            custom_partition_values: HashMap::new(), // should be an empty map for unchecked push
-        },
-    );
 
     unchecked_event.process_unchecked(stream)?;
 
