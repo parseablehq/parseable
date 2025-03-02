@@ -262,7 +262,7 @@ impl EventFormat for Event {
                 _ => p_timestamp.naive_utc(),
             };
 
-            let rb = Self::into_recordbatch(
+            let batch = Self::into_recordbatch(
                 p_timestamp,
                 vec![json],
                 schema.clone(),
@@ -272,7 +272,7 @@ impl EventFormat for Event {
                 schema_version,
             )?;
 
-            let schema = rb.schema();
+            let schema = batch.schema();
             let mut key = get_schema_key(&schema.fields);
             if time_partition.is_some() {
                 let parsed_timestamp_to_min = parsed_timestamp.format("%Y%m%dT%H%M").to_string();
@@ -283,13 +283,21 @@ impl EventFormat for Event {
                 key.push_str(&format!("&{k}={v}"));
             }
 
-            let entry = partitions.entry(key).or_insert(PartitionEvent {
-                rb: RecordBatch::new_empty(schema.clone()),
-                parsed_timestamp,
-                custom_partition_values,
-            });
-
-            entry.rb = concat_batches(&schema, [&entry.rb, &rb])?;
+            match partitions.get_mut(&key) {
+                Some(PartitionEvent { rb, .. }) => {
+                    *rb = concat_batches(&schema, [&rb, &batch])?;
+                }
+                _ => {
+                    partitions.insert(
+                        key,
+                        PartitionEvent {
+                            rb: batch,
+                            parsed_timestamp,
+                            custom_partition_values,
+                        },
+                    );
+                }
+            }
         }
 
         Ok(super::Event {
