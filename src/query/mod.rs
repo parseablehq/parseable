@@ -16,7 +16,6 @@
  *
  */
 
-pub mod exec;
 mod filter_optimizer;
 mod listing_table_builder;
 pub mod stream_schema_provider;
@@ -27,7 +26,6 @@ use datafusion::arrow::record_batch::RecordBatch;
 
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::error::{DataFusionError, Result};
-use datafusion::execution::disk_manager::DiskManagerConfig;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
@@ -39,13 +37,10 @@ use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
 use std::ops::Bound;
 use std::sync::Arc;
 use stream_schema_provider::collect_manifest_files;
-use sysinfo::{MemoryRefreshKind, System};
-
-use std::{env, fs};
+use sysinfo::System;
 
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
@@ -55,7 +50,7 @@ use crate::catalog::manifest::Manifest;
 use crate::catalog::snapshot::Snapshot;
 use crate::catalog::Snapshot as CatalogSnapshot;
 use crate::event;
-use crate::handlers::http::query::QueryError;
+use crate::handlers::http::query::{drop_system_caches, QueryError};
 use crate::metadata::STREAM_INFO;
 use crate::option::{Mode, CONFIG};
 use crate::storage::{ObjectStorageProvider, ObjectStoreFormat, STREAM_ROOT_DIRECTORY};
@@ -74,6 +69,8 @@ pub struct Query {
 impl Query {
     // create session context for this query
     pub fn create_session_context(storage: Arc<dyn ObjectStorageProvider>) -> SessionContext {
+        drop_system_caches().unwrap();
+        
         let runtime_config = storage
             .get_datafusion_runtime();
 
@@ -109,11 +106,11 @@ impl Query {
 
         // Enable StringViewArray
         // https://www.influxdata.com/blog/faster-queries-with-stringview-part-one-influxdb/
-        // config
-        //     .options_mut()
-        //     .execution
-        //     .parquet
-        //     .schema_force_view_types = true;
+        config
+            .options_mut()
+            .execution
+            .parquet
+            .schema_force_view_types = true;
         config.options_mut().execution.parquet.binary_as_string = true;
 
         let state = SessionStateBuilder::new()
@@ -616,66 +613,6 @@ pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
     } else {
         objects
     }
-}
-#[tokio::main(flavor = "multi_thread", worker_threads = 16)]
-pub async fn run_benchmark(storage: Arc<dyn ObjectStorageProvider>) -> Result<(), ExecuteError> {
-    let mut session_config = SessionConfig::new().with_information_schema(true);
-
-    session_config = session_config.with_batch_size(8192);
-    let runtime_config = storage
-            .get_datafusion_runtime()
-            .with_disk_manager(DiskManagerConfig::NewOs);
-    // set memory pool size
-    let runtime_env = runtime_config.build_arc()?;
-    let state = SessionStateBuilder::new()
-            .with_default_features()
-            .with_config(session_config)
-            .with_runtime_env(runtime_env)
-            .build();
-    let schema_provider = Arc::new(GlobalSchemaProvider {
-        storage: storage.get_object_store(),
-    });
-    state
-        .catalog_list()
-        .catalog(&state.config_options().catalog.default_catalog)
-        .expect("default catalog is provided by datafusion")
-        .register_schema(
-            &state.config_options().catalog.default_schema,
-            schema_provider,
-        )
-        .unwrap();
-    // enable dynamic file query
-    let ctx = SessionContext::new_with_state(state);
-    let mut table_options = HashMap::new();
-    table_options.insert("binary_as_string", "true");
-    
-    // register `parquet_metadata` table function to get metadata from parquet files
-    //ctx.register_udtf("parquet_metadata", Arc::new(ParquetMetadataFunc {}));
-    let parquet_file = env::var("PARQUET_LOCATION").unwrap(); //'/home/ubuntu/clickbench/hits.parquet'
-    register_hits(&ctx, &parquet_file).await?;
-    
-    let mut commands = Vec::new();
-    let queries_file = env::var("QUERIES_FILE").unwrap(); //'/home/ubuntu/queries.sql'
-    let queries = fs::read_to_string(queries_file).unwrap();
-    for query in queries.lines() {
-        commands.push(query.to_string());
-    }
-    exec::exec_from_commands(&ctx, commands, false).await?;
-    Ok(())
-}
-
-async fn register_hits(ctx: &SessionContext, parquet_file: &str) -> Result<()> {
-    let options: ParquetReadOptions<'_> = Default::default();
-    
-    ctx.register_parquet("hits", parquet_file, options)
-        .await
-        .map_err(|e| {
-            DataFusionError::Context(
-                format!("Registering 'hits' as {parquet_file}"),
-                Box::new(e),
-            )
-        })
-        
 }
 
 pub mod error {

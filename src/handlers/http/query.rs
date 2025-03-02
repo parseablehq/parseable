@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::pin::Pin;
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::error;
@@ -41,7 +42,7 @@ use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::{Mode, CONFIG};
 use crate::query::error::ExecuteError;
-use crate::query::{run_benchmark, CountsRequest, CountsResponse, Query as LogicalQuery};
+use crate::query::{CountsRequest, CountsResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
@@ -157,7 +158,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     }
     .to_http()?;
 
-    let time = time.elapsed().as_secs_f64();
+    let _ = time.elapsed().as_secs_f64();
 
     Ok(response)
 }
@@ -295,6 +296,19 @@ fn transform_query_for_ingestor(query: &Query) -> Option<Query> {
     };
 
     Some(q)
+}
+
+pub fn drop_system_caches() -> Result<(), QueryError> {
+    // Sync to flush file system buffers
+    Command::new("sync")
+        .status()
+        .expect("Failed to execute sync command");
+    let _ = Command::new("sudo")
+        .args(["sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"])
+        .output()
+        .map_err(|e| QueryError::Anyhow(anyhow::Error::msg(e.to_string())))?;
+    
+    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
