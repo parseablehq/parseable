@@ -20,6 +20,7 @@
 use std::{
     collections::HashMap,
     fs::{remove_file, write, File, OpenOptions},
+    io::BufReader,
     num::NonZeroU32,
     path::{Path, PathBuf},
     process,
@@ -273,23 +274,13 @@ impl Stream {
     }
 
     pub fn get_schemas_if_present(&self) -> Option<Vec<Schema>> {
-        let Ok(dir) = self.data_path.read_dir() else {
-            return None;
-        };
-
         let mut schemas: Vec<Schema> = Vec::new();
 
-        for file in dir.flatten() {
-            if let Some(ext) = file.path().extension() {
-                if ext.eq("schema") {
-                    let file = File::open(file.path()).expect("Schema File should exist");
+        for path in self.schema_files() {
+            let file = File::open(path).expect("Schema File should exist");
 
-                    let schema = match serde_json::from_reader(file) {
-                        Ok(schema) => schema,
-                        Err(_) => continue,
-                    };
-                    schemas.push(schema);
-                }
+            if let Ok(schema) = serde_json::from_reader(BufReader::new(file)) {
+                schemas.push(schema);
             }
         }
 
