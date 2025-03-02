@@ -909,7 +909,7 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{stream_hash}.date={}.hour={:02}.minute={}.{}.data.{ARROW_FILE_EXTENSION}",
+            "{stream_hash}.date={}.hour={:02}.minute={}.{}.data.part",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
@@ -943,7 +943,7 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.data.{ARROW_FILE_EXTENSION}",
+            "{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.data.part",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
