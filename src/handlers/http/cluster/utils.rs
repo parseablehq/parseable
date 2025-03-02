@@ -288,7 +288,7 @@ impl<T: DeserializeOwned + 'static> FromRequest for JsonWithSize<T> {
 
                 // Check the size limit
                 if byte_size > limit {
-                    return Err(ErrorPayloadTooLarge(byte_size).into());
+                    return Err(ErrorPayloadTooLarge(byte_size));
                 }
 
                 // Extend our buffer with the chunk
@@ -299,8 +299,8 @@ impl<T: DeserializeOwned + 'static> FromRequest for JsonWithSize<T> {
             let bytes = body.freeze();
 
             // Deserialize the JSON payload
-            let json = serde_json::from_slice::<T>(&bytes)
-                .map_err(|e| JsonPayloadError::Deserialize(e))?;
+            let json =
+                serde_json::from_slice::<T>(&bytes).map_err(JsonPayloadError::Deserialize)?;
 
             Ok(JsonWithSize { json, byte_size })
         })
