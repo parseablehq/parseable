@@ -136,26 +136,6 @@ pub trait ParseableServer {
 
             health_check::shutdown().await;
 
-            // Perform S3 sync and wait for completion
-            info!("Starting data sync to S3...");
-
-            if let Err(e) = PARSEABLE.streams.prepare_parquet(true) {
-                warn!("Failed to convert arrow files to parquet. {:?}", e);
-            } else {
-                info!("Successfully converted arrow files to parquet.");
-            }
-
-            if let Err(e) = PARSEABLE
-                .storage
-                .get_object_store()
-                .upload_files_from_staging()
-                .await
-            {
-                warn!("Failed to sync local data with object store. {:?}", e);
-            } else {
-                info!("Successfully synced all data to S3.");
-            }
-
             // Initiate graceful shutdown
             info!("Graceful shutdown of HTTP server triggered");
             srv_handle.stop(true).await;
