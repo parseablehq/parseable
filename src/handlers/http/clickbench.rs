@@ -16,7 +16,7 @@
  *
  */
 
-use std::{collections::HashMap, env, fs, time::Instant};
+use std::{collections::HashMap, env, fs, process::Command, time::Instant};
 
 use actix_web::{web::Json, Responder};
 use datafusion::{
@@ -28,13 +28,32 @@ use datafusion::{
     sql::{parser::DFParser, sqlparser::dialect::dialect_from_str},
 };
 use serde_json::{json, Value};
+use tracing::warn;
+static PARQUET_FILE: &str = "PARQUET_FILE";
+static QUERIES_FILE: &str = "QUERIES_FILE";
 
 pub async fn clickbench_benchmark() -> Result<impl Responder, actix_web::Error> {
+    drop_system_caches()
+        .await
+        .map_err(actix_web::error::ErrorInternalServerError)?;
     let results = tokio::task::spawn_blocking(run_benchmark)
         .await
         .map_err(actix_web::error::ErrorInternalServerError)?
         .map_err(actix_web::error::ErrorInternalServerError)?;
     Ok(results)
+}
+
+pub async fn drop_system_caches() -> Result<(), anyhow::Error> {
+    // Sync to flush file system buffers
+    Command::new("sync")
+        .status()
+        .expect("Failed to execute sync command");
+    let _ = Command::new("sudo")
+        .args(["sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"])
+        .output()
+        .map_err(|e| anyhow::Error::msg(e.to_string()))?;
+
+    Ok(())
 }
 
 #[tokio::main(flavor = "multi_thread")]
@@ -61,10 +80,13 @@ pub async fn run_benchmark() -> Result<Json<Value>, anyhow::Error> {
     let mut table_options = HashMap::new();
     table_options.insert("binary_as_string", "true");
 
-    let parquet_file = env::var("PARQUET_FILE")?;
+    let parquet_file = env::var(PARQUET_FILE)
+        .map_err(|_| anyhow::anyhow!("PARQUET_FILE environment variable not set. Please set it to the path of the hits.parquet file."))?;
     register_hits(&ctx, &parquet_file).await?;
+    println!("hits registered");
     let mut query_list = Vec::new();
-    let queries_file = env::var("QUERIES_FILE")?;
+    let queries_file = env::var(QUERIES_FILE)
+     .map_err(|_| anyhow::anyhow!("QUERIES_FILE environment variable not set. Please set it to the path of the queries file."))?;
     let queries = fs::read_to_string(queries_file)?;
     for query in queries.lines() {
         query_list.push(query.to_string());
@@ -73,7 +95,7 @@ pub async fn run_benchmark() -> Result<Json<Value>, anyhow::Error> {
 }
 
 async fn register_hits(ctx: &SessionContext, parquet_file: &str) -> Result<(), anyhow::Error> {
-    let options: ParquetReadOptions<'_> = Default::default();
+    let options: ParquetReadOptions<'_> = ParquetReadOptions::default();
     ctx.register_parquet("hits", parquet_file, options)
         .await
         .map_err(|e| {
@@ -87,24 +109,28 @@ pub async fn execute_queries(
     query_list: Vec<String>,
 ) -> Result<Json<Value>, anyhow::Error> {
     const TRIES: usize = 3;
-    let mut results = Vec::new();
+    let mut results = Vec::with_capacity(query_list.len());
+    let mut query_count = 1;
+    let mut total_elapsed_per_iteration = [0.0; TRIES];
 
-    for sql in query_list.iter() {
-        let mut elapsed_times = Vec::new();
-        for _iteration in 1..=TRIES {
+    for (query_index, sql) in query_list.iter().enumerate() {
+        let mut elapsed_times = Vec::with_capacity(TRIES);
+        for iteration in 1..=TRIES {
             let start = Instant::now();
             let task_ctx = ctx.task_ctx();
             let dialect = &task_ctx.session_config().options().sql_parser.dialect;
             let dialect = dialect_from_str(dialect).ok_or_else(|| {
                 plan_datafusion_err!(
                     "Unsupported SQL dialect: {dialect}. Available dialects: \
-                     Generic, MySQL, PostgreSQL, Hive, SQLite, Snowflake, Redshift, \
-                     MsSQL, ClickHouse, BigQuery, Ansi."
+                      Generic, MySQL, PostgreSQL, Hive, SQLite, Snowflake, Redshift, \
+                      MsSQL, ClickHouse, BigQuery, Ansi."
                 )
             })?;
 
             let statements = DFParser::parse_sql_with_dialect(sql, dialect.as_ref())?;
-            let statement = statements.front().unwrap();
+            let statement = statements
+                .front()
+                .ok_or_else(|| anyhow::anyhow!("No SQL statement found in query: {}", sql))?;
             let plan = ctx.state().statement_to_plan(statement.clone()).await?;
 
             let df = ctx.execute_logical_plan(plan).await?;
@@ -112,9 +138,24 @@ pub async fn execute_queries(
 
             let _ = collect(physical_plan, task_ctx.clone()).await?;
             let elapsed = start.elapsed().as_secs_f64();
+            total_elapsed_per_iteration[iteration - 1] += elapsed;
+
+            warn!("query {query_count} iteration {iteration} completed in {elapsed} secs");
             elapsed_times.push(elapsed);
         }
-        results.push(elapsed_times);
+        query_count += 1;
+        results.push(json!({
+         "query_index": query_index,
+         "query": sql,
+         "elapsed_times": elapsed_times
+        }));
+    }
+    for (iteration, total_elapsed) in total_elapsed_per_iteration.iter().enumerate() {
+        warn!(
+            "Total time for iteration {}: {} seconds",
+            iteration + 1,
+            total_elapsed
+        );
     }
 
     let result_json = json!(results);
