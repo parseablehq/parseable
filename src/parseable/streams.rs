@@ -28,7 +28,6 @@ use std::{
 };
 
 use arrow_array::RecordBatch;
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike};
 use derive_more::{Deref, DerefMut};
@@ -63,7 +62,7 @@ use crate::{
 use super::{
     staging::{
         reader::{MergedRecordReader, MergedReverseRecordReader},
-        writer::Writer,
+        writer::{DiskWriter, Writer},
         StagingError,
     },
     LogStream, ARROW_FILE_EXTENSION,
@@ -143,21 +142,14 @@ impl Stream {
                 }
                 None => {
                     // entry is not present thus we create it
-                    let file_path = self.path_by_current_time(
+                    let path = self.path_by_current_time(
                         schema_key,
                         parsed_timestamp,
                         custom_partition_values,
                     );
                     std::fs::create_dir_all(&self.data_path)?;
 
-                    let file = OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&file_path)?;
-
-                    let mut writer = StreamWriter::try_new(file, &record.schema())
-                        .expect("File and RecordBatch both are checked");
-
+                    let mut writer = DiskWriter::new(path, &record.schema())?;
                     writer.write(record)?;
                     guard.disk.insert(schema_key.to_owned(), writer);
                 }
@@ -180,7 +172,7 @@ impl Stream {
             hostname.push_str(id);
         }
         let filename = format!(
-            "{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.data.{ARROW_FILE_EXTENSION}",
+            "{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.data.part",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
@@ -391,7 +383,7 @@ impl Stream {
 
         // Flush disk
         for writer in disk_writers.values_mut() {
-            _ = writer.finish();
+            writer.finish();
         }
     }
 
