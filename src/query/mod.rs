@@ -28,7 +28,6 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::execution::disk_manager::DiskManagerConfig;
-use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::execution::SessionStateBuilder;
 use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
@@ -44,7 +43,7 @@ use std::collections::HashMap;
 use std::ops::Bound;
 use std::sync::Arc;
 use stream_schema_provider::collect_manifest_files;
-use sysinfo::System;
+use sysinfo::{MemoryRefreshKind, System};
 
 use std::{env, fs};
 
@@ -76,8 +75,7 @@ impl Query {
     // create session context for this query
     pub fn create_session_context(storage: Arc<dyn ObjectStorageProvider>) -> SessionContext {
         let runtime_config = storage
-            .get_datafusion_runtime()
-            .with_disk_manager(DiskManagerConfig::NewOs);
+            .get_datafusion_runtime();
 
         let (pool_size, fraction) = match CONFIG.options.query_memory_pool_size {
             Some(size) => (size, 1.),
@@ -140,6 +138,7 @@ impl Query {
         SessionContext::new_with_state(state)
     }
 
+    #[tokio::main(flavor = "multi_thread")]
     pub async fn execute(
         &self,
         stream_name: String,
@@ -619,26 +618,32 @@ pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
     }
 }
 #[tokio::main(flavor = "multi_thread", worker_threads = 16)]
-pub async fn run_benchmark(_storage: Arc<dyn ObjectStorageProvider>) -> Result<(), ExecuteError> {
+pub async fn run_benchmark(storage: Arc<dyn ObjectStorageProvider>) -> Result<(), ExecuteError> {
     let mut session_config = SessionConfig::new().with_information_schema(true);
 
     session_config = session_config.with_batch_size(8192);
-
-    let rt_builder = RuntimeEnvBuilder::new();
+    let runtime_config = storage
+            .get_datafusion_runtime()
+            .with_disk_manager(DiskManagerConfig::NewOs);
     // set memory pool size
-    let runtime_env = rt_builder.build_arc()?;
+    let runtime_env = runtime_config.build_arc()?;
     let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(session_config)
             .with_runtime_env(runtime_env)
             .build();
-    // let schema_provider = Arc::new(GlobalSchemaProvider {
-    //     storage: storage.get_object_store(),
-    // });
+    let schema_provider = Arc::new(GlobalSchemaProvider {
+        storage: storage.get_object_store(),
+    });
     state
         .catalog_list()
         .catalog(&state.config_options().catalog.default_catalog)
-        .expect("default catalog is provided by datafusion");
+        .expect("default catalog is provided by datafusion")
+        .register_schema(
+            &state.config_options().catalog.default_schema,
+            schema_provider,
+        )
+        .unwrap();
     // enable dynamic file query
     let ctx = SessionContext::new_with_state(state);
     let mut table_options = HashMap::new();

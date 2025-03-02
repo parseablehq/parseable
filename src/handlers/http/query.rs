@@ -69,9 +69,9 @@ pub struct Query {
 }
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
-    tokio::task::spawn_blocking(|| {
-        run_benchmark(CONFIG.storage()).unwrap();
-    });
+    // tokio::task::spawn_blocking(|| {
+    //     run_benchmark(CONFIG.storage()).unwrap();
+    // });
     
     let session_state = QUERY_SESSION.state();
     let raw_logical_plan = match session_state
@@ -141,7 +141,10 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
 
         return Ok(HttpResponse::Ok().json(response));
     }
-    let (records, fields) = query.execute(table_name.clone()).await?;
+    let (records, fields) = tokio::task::spawn_blocking(move || query.execute(table_name.clone()))
+        .await
+        .map_err(|e| QueryError::Anyhow(anyhow::Error::msg(e.to_string())))??
+        ;
     error!(
         "Query executed successfully, record batches received in {:?}",
         time.elapsed().as_secs_f64()
@@ -155,10 +158,6 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     .to_http()?;
 
     let time = time.elapsed().as_secs_f64();
-
-    QUERY_EXECUTE_TIME
-        .with_label_values(&[&table_name])
-        .observe(time);
 
     Ok(response)
 }
