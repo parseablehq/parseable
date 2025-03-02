@@ -67,6 +67,7 @@ pub enum Action {
     CreateCorrelation,
     DeleteCorrelation,
     PutCorrelation,
+    Benchmark,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -108,6 +109,7 @@ impl RoleBuilder {
                 ),
                 Action::Login
                 | Action::Metrics
+                | Action::Benchmark
                 | Action::PutUser
                 | Action::ListUser
                 | Action::PutUserRoles
