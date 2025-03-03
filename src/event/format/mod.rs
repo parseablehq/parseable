@@ -109,7 +109,7 @@ pub trait EventFormat: Sized {
         time_partition_limit: Option<NonZeroU32>,
         custom_partitions: Option<&String>,
         schema_version: SchemaVersion,
-    ) -> anyhow::Result<Self::Data>;
+    ) -> anyhow::Result<Vec<Self::Data>>;
 
     fn infer_schema(
         data: &Self::Data,
@@ -119,7 +119,7 @@ pub trait EventFormat: Sized {
         schema_version: SchemaVersion,
     ) -> anyhow::Result<(EventSchema, IsFirstEvent)>;
 
-    fn decode(data: Self::Data, schema: Arc<Schema>) -> anyhow::Result<RecordBatch>;
+    fn decode(data: &[Self::Data], schema: Arc<Schema>) -> anyhow::Result<RecordBatch>;
 
     /// Updates inferred schema with `p_timestamp` field and ensures it adheres to expectations
     fn prepare_and_validate_schema(
@@ -156,7 +156,7 @@ pub trait EventFormat: Sized {
 
     fn into_recordbatch(
         p_timestamp: DateTime<Utc>,
-        data: Self::Data,
+        data: &[Self::Data],
         schema: &EventSchema,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
@@ -234,7 +234,7 @@ pub fn update_field_type_in_schema(
     inferred_schema: Arc<Schema>,
     existing_schema: Option<&HashMap<String, Arc<Field>>>,
     time_partition: Option<&String>,
-    log_records: Option<&[Json]>,
+    log_records: Option<&Json>,
     schema_version: SchemaVersion,
 ) -> Arc<Schema> {
     let mut updated_schema = inferred_schema.clone();
@@ -245,11 +245,9 @@ pub fn update_field_type_in_schema(
         updated_schema = override_existing_timestamp_fields(existing_schema, updated_schema);
     }
 
-    if let Some(log_records) = log_records {
-        for log_record in log_records {
-            updated_schema =
-                override_data_type(updated_schema.clone(), log_record.clone(), schema_version);
-        }
+    if let Some(log_record) = log_records {
+        updated_schema =
+            override_data_type(updated_schema.clone(), log_record.clone(), schema_version);
     }
 
     let Some(time_partition) = time_partition else {
