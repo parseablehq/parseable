@@ -143,12 +143,10 @@ pub async fn execute_queries(
             elapsed_times.push(elapsed);
 
             results.push(json!({
-             "query_index": query_index,
-             "query": sql,
-             "elapsed_times": {
-               "iteration": iteration + 1,
-               "elapsed_time": elapsed_times
-             }
+                "query_index": query_index,
+                "query": sql,
+                "iteration": iteration,
+                "elapsed_time": elapsed
             }));
         }
     }
