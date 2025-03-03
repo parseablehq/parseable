@@ -114,6 +114,8 @@ impl Query {
             .parquet
             .schema_force_view_types = true;
 
+        config.options_mut().execution.parquet.binary_as_string = true;
+
         let state = SessionStateBuilder::new()
             .with_default_features()
             .with_config(config)
