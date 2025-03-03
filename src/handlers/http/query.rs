@@ -19,6 +19,7 @@
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, HttpResponse, Responder};
+use arrow_array::RecordBatch;
 use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
@@ -130,13 +131,8 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
 
         return Ok(HttpResponse::Ok().json(response));
     }
-    let table_name_clone = table_name.clone();
-    let (records, fields) =
-        match tokio::task::spawn_blocking(move || query.execute(table_name_clone)).await {
-            Ok(Ok((records, fields))) => (records, fields),
-            Ok(Err(e)) => return Err(QueryError::Execute(e)),
-            Err(e) => return Err(QueryError::Anyhow(anyhow::Error::msg(e.to_string()))),
-        };
+    let (records, fields) = execute_query(query, table_name.clone()).await?;
+
     let response = QueryResponse {
         records,
         fields,
@@ -152,6 +148,17 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         .observe(time);
 
     Ok(response)
+}
+
+async fn execute_query(
+    query: LogicalQuery,
+    stream_name: String,
+) -> Result<(Vec<RecordBatch>, Vec<String>), QueryError> {
+    match tokio::task::spawn_blocking(move || query.execute(stream_name)).await {
+        Ok(Ok(result)) => Ok(result),
+        Ok(Err(e)) => Err(QueryError::Execute(e)),
+        Err(e) => Err(QueryError::Anyhow(anyhow::Error::msg(e.to_string()))),
+    }
 }
 
 pub async fn get_counts(
