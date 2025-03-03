@@ -91,7 +91,8 @@ impl Query {
         let mut config = SessionConfig::default()
             .with_parquet_pruning(true)
             .with_prefer_existing_sort(true)
-            .with_round_robin_repartition(true);
+            .with_round_robin_repartition(true)
+            .with_batch_size(8192);
 
         // For more details refer https://datafusion.apache.org/user-guide/configs.html
 
@@ -112,6 +113,8 @@ impl Query {
             .execution
             .parquet
             .schema_force_view_types = true;
+
+        config.options_mut().execution.parquet.binary_as_string = true;
 
         let state = SessionStateBuilder::new()
             .with_default_features()
@@ -135,6 +138,7 @@ impl Query {
         SessionContext::new_with_state(state)
     }
 
+    #[tokio::main(flavor = "multi_thread")]
     pub async fn execute(
         &self,
         stream_name: String,
