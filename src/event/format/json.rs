@@ -138,6 +138,7 @@ impl EventFormat for Event {
     // also extract the arrow schema, tags and metadata from the incoming json
     fn to_data(
         self,
+        static_schema_flag: bool,
         stored_schema: &HashMap<String, Arc<Field>>,
         time_partition: Option<&String>,
         time_partition_limit: Option<NonZeroU32>,
@@ -203,6 +204,8 @@ impl EventFormat for Event {
             ));
         }
 
+        let schema = Self::prepare_and_validate_schema(schema, &stored_schema, static_schema_flag)?;
+
         Ok((flattened, schema, is_first))
     }
 
@@ -239,6 +242,7 @@ impl EventFormat for Event {
 
         let p_timestamp = self.p_timestamp;
         let (data, schema, is_first_event) = self.to_data(
+            static_schema_flag,
             &storage_schema,
             time_partition.as_ref(),
             time_partition_limit,
@@ -265,9 +269,7 @@ impl EventFormat for Event {
             let batch = Self::into_recordbatch(
                 p_timestamp,
                 vec![json],
-                schema.clone(),
-                &storage_schema,
-                static_schema_flag,
+                &schema,
                 time_partition.as_ref(),
                 schema_version,
             )?;
@@ -507,6 +509,7 @@ mod tests {
         let store_schema = HashMap::default();
         let (data, schema, _) = Event::new(json)
             .to_data(
+                false,
                 &store_schema,
                 None,
                 None,
@@ -515,16 +518,8 @@ mod tests {
                 &LogSource::Json,
             )
             .unwrap();
-        let rb = Event::into_recordbatch(
-            Utc::now(),
-            data,
-            schema,
-            &store_schema,
-            false,
-            None,
-            SchemaVersion::V0,
-        )
-        .unwrap();
+        let rb =
+            Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 4);
@@ -553,6 +548,7 @@ mod tests {
         let store_schema = HashMap::default();
         let (data, schema, _) = Event::new(json)
             .to_data(
+                false,
                 &store_schema,
                 None,
                 None,
@@ -561,16 +557,8 @@ mod tests {
                 &LogSource::Json,
             )
             .unwrap();
-        let rb = Event::into_recordbatch(
-            Utc::now(),
-            data,
-            schema,
-            &store_schema,
-            false,
-            None,
-            SchemaVersion::V0,
-        )
-        .unwrap();
+        let rb =
+            Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -601,6 +589,7 @@ mod tests {
         );
         let (data, schema, _) = Event::new(json)
             .to_data(
+                false,
                 &store_schema,
                 None,
                 None,
@@ -609,16 +598,8 @@ mod tests {
                 &LogSource::Json,
             )
             .unwrap();
-        let rb = Event::into_recordbatch(
-            Utc::now(),
-            data,
-            schema,
-            &store_schema,
-            false,
-            None,
-            SchemaVersion::V0,
-        )
-        .unwrap();
+        let rb =
+            Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -650,6 +631,7 @@ mod tests {
 
         assert!(Event::new(json)
             .to_data(
+                false,
                 &store_schema,
                 None,
                 None,
@@ -675,6 +657,7 @@ mod tests {
 
         let (data, schema, _) = Event::new(json)
             .to_data(
+                false,
                 &store_schema,
                 None,
                 None,
@@ -683,16 +666,8 @@ mod tests {
                 &LogSource::Json,
             )
             .unwrap();
-        let rb = Event::into_recordbatch(
-            Utc::now(),
-            data,
-            schema,
-            &store_schema,
-            false,
-            None,
-            SchemaVersion::V0,
-        )
-        .unwrap();
+        let rb =
+            Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 1);
@@ -719,6 +694,7 @@ mod tests {
         let store_schema = HashMap::new();
         let (data, schema, _) = Event::new(json)
             .to_data(
+                false,
                 &store_schema,
                 None,
                 None,
@@ -727,16 +703,8 @@ mod tests {
                 &LogSource::Json,
             )
             .unwrap();
-        let rb = Event::into_recordbatch(
-            Utc::now(),
-            data,
-            schema,
-            &store_schema,
-            false,
-            None,
-            SchemaVersion::V0,
-        )
-        .unwrap();
+        let rb =
+            Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -785,6 +753,7 @@ mod tests {
         let store_schema = HashMap::new();
         let (data, schema, _) = Event::new(json)
             .to_data(
+                false,
                 &store_schema,
                 None,
                 None,
@@ -793,16 +762,8 @@ mod tests {
                 &LogSource::Json,
             )
             .unwrap();
-        let rb = Event::into_recordbatch(
-            Utc::now(),
-            data,
-            schema,
-            &store_schema,
-            false,
-            None,
-            SchemaVersion::V0,
-        )
-        .unwrap();
+        let rb =
+            Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -850,6 +811,7 @@ mod tests {
         );
         let (data, schema, _) = Event::new(json)
             .to_data(
+                false,
                 &store_schema,
                 None,
                 None,
@@ -858,16 +820,8 @@ mod tests {
                 &LogSource::Json,
             )
             .unwrap();
-        let rb = Event::into_recordbatch(
-            Utc::now(),
-            data,
-            schema,
-            &store_schema,
-            false,
-            None,
-            SchemaVersion::V0,
-        )
-        .unwrap();
+        let rb =
+            Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -916,6 +870,7 @@ mod tests {
 
         assert!(Event::new(json)
             .to_data(
+                false,
                 &store_schema,
                 None,
                 None,
@@ -953,6 +908,7 @@ mod tests {
         let store_schema = HashMap::new();
         let (data, schema, _) = Event::new(json)
             .to_data(
+                false,
                 &store_schema,
                 None,
                 None,
@@ -961,16 +917,8 @@ mod tests {
                 &LogSource::Json,
             )
             .unwrap();
-        let rb = Event::into_recordbatch(
-            Utc::now(),
-            data,
-            schema,
-            &store_schema,
-            false,
-            None,
-            SchemaVersion::V0,
-        )
-        .unwrap();
+        let rb =
+            Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
 
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 5);
@@ -1044,6 +992,7 @@ mod tests {
         let store_schema = HashMap::new();
         let (data, schema, _) = Event::new(json)
             .to_data(
+                false,
                 &store_schema,
                 None,
                 None,
@@ -1052,16 +1001,8 @@ mod tests {
                 &LogSource::Json,
             )
             .unwrap();
-        let rb = Event::into_recordbatch(
-            Utc::now(),
-            data,
-            schema,
-            &store_schema,
-            false,
-            None,
-            SchemaVersion::V1,
-        )
-        .unwrap();
+        let rb =
+            Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V1).unwrap();
 
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 5);

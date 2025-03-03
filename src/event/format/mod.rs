@@ -103,32 +103,26 @@ pub trait EventFormat: Sized {
 
     fn to_data(
         self,
-        schema: &HashMap<String, Arc<Field>>,
+        static_schema_flag: bool,
+        stored_schema: &HashMap<String, Arc<Field>>,
         time_partition: Option<&String>,
         time_partition_limit: Option<NonZeroU32>,
-        custom_partition: Option<&String>,
+        custom_partitions: Option<&String>,
         schema_version: SchemaVersion,
         log_source: &LogSource,
     ) -> Result<(Self::Data, EventSchema, bool), AnyError>;
 
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
 
-    #[allow(clippy::too_many_arguments)]
-    fn into_recordbatch(
-        p_timestamp: DateTime<Utc>,
-        data: Self::Data,
+    /// Updates inferred schema with `p_timestamp` field and ensures it adheres to expectations
+    fn prepare_and_validate_schema(
         mut schema: EventSchema,
         storage_schema: &HashMap<String, Arc<Field>>,
         static_schema_flag: bool,
-        time_partition: Option<&String>,
-        schema_version: SchemaVersion,
-    ) -> Result<RecordBatch, AnyError> {
+    ) -> Result<EventSchema, AnyError> {
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
-            return Err(anyhow!(
-                "field {} is a reserved field",
-                DEFAULT_TIMESTAMP_KEY
-            ));
-        };
+            return Err(anyhow!("field {DEFAULT_TIMESTAMP_KEY} is a reserved field",));
+        }
 
         // add the p_timestamp field to the event schema to the 0th index
         schema.insert(
@@ -150,6 +144,17 @@ pub trait EventFormat: Sized {
             return Err(anyhow!("Schema mismatch"));
         }
 
+        Ok(schema)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn into_recordbatch(
+        p_timestamp: DateTime<Utc>,
+        data: Self::Data,
+        schema: &EventSchema,
+        time_partition: Option<&String>,
+        schema_version: SchemaVersion,
+    ) -> Result<RecordBatch, AnyError> {
         // prepare the record batch and new fields to be added
         let mut new_schema = Arc::new(Schema::new(schema.clone()));
         new_schema =
