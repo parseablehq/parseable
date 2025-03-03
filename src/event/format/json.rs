@@ -53,82 +53,85 @@ use crate::{
 
 pub struct Event {
     pub json: Value,
+    pub origin_size: usize,
     pub p_timestamp: DateTime<Utc>,
+    pub log_source: LogSource,
 }
 
 impl Event {
-    pub fn new(json: Value) -> Self {
+    pub fn new(json: Value, origin_size: usize, log_source: LogSource) -> Self {
         Self {
             json,
+            origin_size,
             p_timestamp: Utc::now(),
-        }
-    }
-}
-
-pub fn flatten_logs(
-    json: Value,
-    time_partition: Option<&String>,
-    time_partition_limit: Option<NonZeroU32>,
-    custom_partitions: Option<&String>,
-    schema_version: SchemaVersion,
-    log_source: &LogSource,
-) -> anyhow::Result<Vec<Json>> {
-    let data = match log_source {
-        LogSource::Kinesis => {
-            //custom flattening required for Amazon Kinesis
-            let message: Message = serde_json::from_value(json)?;
-            flatten_kinesis_logs(message)
-        }
-        LogSource::OtelLogs => {
-            //custom flattening required for otel logs
-            let logs: LogsData = serde_json::from_value(json)?;
-            flatten_otel_logs(&logs)
-        }
-        LogSource::OtelTraces => {
-            //custom flattening required for otel traces
-            let traces: TracesData = serde_json::from_value(json)?;
-            flatten_otel_traces(&traces)
-        }
-        LogSource::OtelMetrics => {
-            //custom flattening required for otel metrics
-            let metrics: MetricsData = serde_json::from_value(json)?;
-            flatten_otel_metrics(metrics)
-        }
-        _ => vec![json],
-    };
-
-    let mut logs = vec![];
-    for json in data {
-        let json = flatten_json_body(
-            json,
-            time_partition,
-            time_partition_limit,
-            custom_partitions,
-            schema_version,
-            true,
             log_source,
-        )?;
-
-        // incoming event may be a single json or a json array
-        // but Data (type defined above) is a vector of json values
-        // hence we need to convert the incoming event to a vector of json values
-        match json {
-            Value::Array(arr) => {
-                for log in arr {
-                    let Value::Object(json) = log else {
-                        return Err(anyhow!(
-                            "Expected an object or a list of objects, received: {log:?}"
-                        ));
-                    };
-                    logs.push(json);
-                }
-            }
-            Value::Object(obj) => logs.push(obj),
-            _ => unreachable!("flatten would have failed beforehand"),
         }
     }
 
-    Ok(logs)
+    pub fn flatten_logs(
+        self,
+        time_partition: Option<&String>,
+        time_partition_limit: Option<NonZeroU32>,
+        custom_partitions: Option<&String>,
+        schema_version: SchemaVersion,
+    ) -> anyhow::Result<Vec<Json>> {
+        let data = match self.log_source {
+            LogSource::Kinesis => {
+                //custom flattening required for Amazon Kinesis
+                let message: Message = serde_json::from_value(self.json)?;
+                flatten_kinesis_logs(message)
+            }
+            LogSource::OtelLogs => {
+                //custom flattening required for otel logs
+                let logs: LogsData = serde_json::from_value(self.json)?;
+                flatten_otel_logs(&logs)
+            }
+            LogSource::OtelTraces => {
+                //custom flattening required for otel traces
+                let traces: TracesData = serde_json::from_value(self.json)?;
+                flatten_otel_traces(&traces)
+            }
+            LogSource::OtelMetrics => {
+                //custom flattening required for otel metrics
+                let metrics: MetricsData = serde_json::from_value(self.json)?;
+                flatten_otel_metrics(metrics)
+            }
+            _ => vec![self.json],
+        };
+
+        let mut logs = vec![];
+        for json in data {
+            let json = flatten_json_body(
+                json,
+                time_partition,
+                time_partition_limit,
+                custom_partitions,
+                schema_version,
+                true,
+                &self.log_source,
+            )?;
+
+            // incoming event may be a single json or a json array
+            // but Data (type defined above) is a vector of json values
+            // hence we need to convert the incoming event to a vector of json values
+            match json {
+                Value::Array(arr) => {
+                    for log in arr {
+                        let Value::Object(json) = log else {
+                            return Err(anyhow!(
+                                "Expected an object or a list of objects, received: {log:?}"
+                            ));
+                        };
+                        logs.push(json);
+                    }
+                }
+                Value::Object(obj) => logs.push(obj),
+                _ => unreachable!("flatten would have failed beforehand"),
+            }
+        }
+
+        Ok(logs)
+    }
 }
 
 impl EventFormat for Event {
@@ -144,15 +147,12 @@ impl EventFormat for Event {
         time_partition_limit: Option<NonZeroU32>,
         custom_partitions: Option<&String>,
         schema_version: SchemaVersion,
-        log_source: &LogSource,
     ) -> anyhow::Result<(Self::Data, Vec<Arc<Field>>, bool)> {
-        let flattened = flatten_logs(
-            self.json,
+        let flattened = self.flatten_logs(
             time_partition,
             time_partition_limit,
             custom_partitions,
             schema_version,
-            log_source,
         )?;
 
         // collect all the keys from all the json objects in the request body
@@ -204,7 +204,7 @@ impl EventFormat for Event {
             ));
         }
 
-        let schema = Self::prepare_and_validate_schema(schema, &stored_schema, static_schema_flag)?;
+        let schema = Self::prepare_and_validate_schema(schema, stored_schema, static_schema_flag)?;
 
         Ok((flattened, schema, is_first))
     }
@@ -226,12 +226,7 @@ impl EventFormat for Event {
     }
 
     /// Converts a JSON event into a Parseable Event
-    fn into_event(
-        self,
-        origin_size: usize,
-        stream: &Stream,
-        log_source: &LogSource,
-    ) -> anyhow::Result<super::Event> {
+    fn into_event(self, stream: &Stream) -> anyhow::Result<super::Event> {
         let time_partition = stream.get_time_partition();
         let time_partition_limit = stream.get_time_partition_limit();
         let static_schema_flag = stream.get_static_schema_flag();
@@ -241,6 +236,7 @@ impl EventFormat for Event {
         let stream_type = stream.get_stream_type();
 
         let p_timestamp = self.p_timestamp;
+        let origin_size = self.origin_size;
         let (data, schema, is_first_event) = self.to_data(
             static_schema_flag,
             &storage_schema,
@@ -248,7 +244,6 @@ impl EventFormat for Event {
             time_partition_limit,
             custom_partitions.as_ref(),
             schema_version,
-            log_source,
         )?;
 
         let mut partitions = HashMap::new();
@@ -287,7 +282,7 @@ impl EventFormat for Event {
 
             match partitions.get_mut(&key) {
                 Some(PartitionEvent { rb, .. }) => {
-                    *rb = concat_batches(&schema, [&rb, &batch])?;
+                    *rb = concat_batches(&schema, [rb, &batch])?;
                 }
                 _ => {
                     partitions.insert(
@@ -507,16 +502,8 @@ mod tests {
         });
 
         let store_schema = HashMap::default();
-        let (data, schema, _) = Event::new(json)
-            .to_data(
-                false,
-                &store_schema,
-                None,
-                None,
-                None,
-                SchemaVersion::V0,
-                &LogSource::Json,
-            )
+        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0)
             .unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
@@ -546,16 +533,8 @@ mod tests {
         });
 
         let store_schema = HashMap::default();
-        let (data, schema, _) = Event::new(json)
-            .to_data(
-                false,
-                &store_schema,
-                None,
-                None,
-                None,
-                SchemaVersion::V0,
-                &LogSource::Json,
-            )
+        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0)
             .unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
@@ -587,16 +566,8 @@ mod tests {
             ]
             .into_iter(),
         );
-        let (data, schema, _) = Event::new(json)
-            .to_data(
-                false,
-                &store_schema,
-                None,
-                None,
-                None,
-                SchemaVersion::V0,
-                &LogSource::Json,
-            )
+        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0)
             .unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
@@ -629,16 +600,8 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(Event::new(json)
-            .to_data(
-                false,
-                &store_schema,
-                None,
-                None,
-                None,
-                SchemaVersion::V0,
-                &LogSource::Json,
-            )
+        assert!(Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0,)
             .is_err());
     }
 
@@ -655,16 +618,8 @@ mod tests {
             .into_iter(),
         );
 
-        let (data, schema, _) = Event::new(json)
-            .to_data(
-                false,
-                &store_schema,
-                None,
-                None,
-                None,
-                SchemaVersion::V0,
-                &LogSource::Json,
-            )
+        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0)
             .unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
@@ -692,16 +647,8 @@ mod tests {
         ]);
 
         let store_schema = HashMap::new();
-        let (data, schema, _) = Event::new(json)
-            .to_data(
-                false,
-                &store_schema,
-                None,
-                None,
-                None,
-                SchemaVersion::V0,
-                &LogSource::Json,
-            )
+        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0)
             .unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
@@ -751,16 +698,8 @@ mod tests {
         ]);
 
         let store_schema = HashMap::new();
-        let (data, schema, _) = Event::new(json)
-            .to_data(
-                false,
-                &store_schema,
-                None,
-                None,
-                None,
-                SchemaVersion::V0,
-                &LogSource::Json,
-            )
+        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0)
             .unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
@@ -809,16 +748,8 @@ mod tests {
             ]
             .into_iter(),
         );
-        let (data, schema, _) = Event::new(json)
-            .to_data(
-                false,
-                &store_schema,
-                None,
-                None,
-                None,
-                SchemaVersion::V0,
-                &LogSource::Json,
-            )
+        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0)
             .unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
@@ -868,16 +799,8 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(Event::new(json)
-            .to_data(
-                false,
-                &store_schema,
-                None,
-                None,
-                None,
-                SchemaVersion::V0,
-                &LogSource::Json,
-            )
+        assert!(Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0,)
             .is_err());
     }
 
@@ -906,16 +829,8 @@ mod tests {
         ]);
 
         let store_schema = HashMap::new();
-        let (data, schema, _) = Event::new(json)
-            .to_data(
-                false,
-                &store_schema,
-                None,
-                None,
-                None,
-                SchemaVersion::V0,
-                &LogSource::Json,
-            )
+        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0)
             .unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
@@ -990,16 +905,8 @@ mod tests {
         ]);
 
         let store_schema = HashMap::new();
-        let (data, schema, _) = Event::new(json)
-            .to_data(
-                false,
-                &store_schema,
-                None,
-                None,
-                None,
-                SchemaVersion::V1,
-                &LogSource::Json,
-            )
+        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(false, &store_schema, None, None, None, SchemaVersion::V1)
             .unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V1).unwrap();

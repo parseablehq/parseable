@@ -42,16 +42,12 @@ use parquet::{
 };
 use rand::distributions::DistString;
 use relative_path::RelativePathBuf;
-use serde_json::Value;
 use tokio::task::JoinSet;
 use tracing::{error, info, trace, warn};
 
 use crate::{
     cli::Options,
-    event::{
-        format::{json, EventFormat, LogSource},
-        DEFAULT_TIMESTAMP_KEY,
-    },
+    event::DEFAULT_TIMESTAMP_KEY,
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
@@ -111,19 +107,6 @@ impl Stream {
             writer: Mutex::new(Writer::default()),
             ingestor_id,
         })
-    }
-
-    pub async fn push_logs(
-        &self,
-        json: Value,
-        origin_size: usize,
-        log_source: &LogSource,
-    ) -> anyhow::Result<()> {
-        json::Event::new(json)
-            .into_event(origin_size, self, log_source)?
-            .process(self)?;
-
-        Ok(())
     }
 
     // Concatenates record batches and puts them in memory store for each event.

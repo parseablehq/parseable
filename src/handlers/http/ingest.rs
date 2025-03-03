@@ -26,7 +26,7 @@ use http::StatusCode;
 use serde_json::Value;
 
 use crate::event::error::EventError;
-use crate::event::format::LogSource;
+use crate::event::format::{json, EventFormat, LogSource};
 use crate::event::{self, get_schema_key, PartitionEvent};
 use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
 use crate::option::Mode;
@@ -73,10 +73,11 @@ pub async fn ingest(
         return Err(PostError::OtelNotSupported);
     }
 
-    PARSEABLE
-        .get_or_create_stream(&stream_name)
-        .push_logs(json, byte_size, &log_source)
-        .await?;
+    let stream = PARSEABLE.get_or_create_stream(&stream_name);
+
+    json::Event::new(json, byte_size, log_source)
+        .into_event(&stream)?
+        .process(&stream)?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -105,10 +106,11 @@ pub async fn handle_otel_logs_ingestion(
         .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelLogs)
         .await?;
 
-    PARSEABLE
-        .get_or_create_stream(&stream_name)
-        .push_logs(json, byte_size, &log_source)
-        .await?;
+    let stream = PARSEABLE.get_or_create_stream(&stream_name);
+
+    json::Event::new(json, byte_size, log_source)
+        .into_event(&stream)?
+        .process(&stream)?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -139,10 +141,11 @@ pub async fn handle_otel_metrics_ingestion(
         )
         .await?;
 
-    PARSEABLE
-        .get_or_create_stream(&stream_name)
-        .push_logs(json, byte_size, &log_source)
-        .await?;
+    let stream = PARSEABLE.get_or_create_stream(&stream_name);
+
+    json::Event::new(json, byte_size, log_source)
+        .into_event(&stream)?
+        .process(&stream)?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -170,10 +173,11 @@ pub async fn handle_otel_traces_ingestion(
         .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelTraces)
         .await?;
 
-    PARSEABLE
-        .get_or_create_stream(&stream_name)
-        .push_logs(json, byte_size, &log_source)
-        .await?;
+    let stream = PARSEABLE.get_or_create_stream(&stream_name);
+
+    json::Event::new(json, byte_size, log_source)
+        .into_event(&stream)?
+        .process(&stream)?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -222,10 +226,11 @@ pub async fn post_event(
         return Err(PostError::OtelNotSupported);
     }
 
-    PARSEABLE
-        .get_or_create_stream(&stream_name)
-        .push_logs(json, byte_size, &log_source)
-        .await?;
+    let stream = PARSEABLE.get_or_create_stream(&stream_name);
+
+    json::Event::new(json, byte_size, log_source)
+        .into_event(&stream)?
+        .process(&stream)?;
 
     Ok(HttpResponse::Ok().finish())
 }

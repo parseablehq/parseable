@@ -26,7 +26,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error};
 
 use crate::{
-    connectors::common::processor::Processor, event::format::LogSource, parseable::PARSEABLE,
+    connectors::common::processor::Processor,
+    event::format::{json, EventFormat, LogSource},
+    parseable::PARSEABLE,
     storage::StreamType,
 };
 
@@ -56,14 +58,15 @@ impl ParseableSinkProcessor {
             }
         }
 
-        PARSEABLE
-            .get_or_create_stream(stream_name)
-            .push_logs(
-                Value::Array(json_vec),
-                total_payload_size,
-                &LogSource::Custom("Kafka".to_owned()),
-            )
-            .await?;
+        let stream = PARSEABLE.get_or_create_stream(stream_name);
+
+        json::Event::new(
+            Value::Array(json_vec),
+            total_payload_size,
+            LogSource::Custom("Kafka".to_owned()),
+        )
+        .into_event(&stream)?
+        .process(&stream)?;
 
         Ok(total_payload_size)
     }

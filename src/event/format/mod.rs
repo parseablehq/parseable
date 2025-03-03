@@ -109,7 +109,6 @@ pub trait EventFormat: Sized {
         time_partition_limit: Option<NonZeroU32>,
         custom_partitions: Option<&String>,
         schema_version: SchemaVersion,
-        log_source: &LogSource,
     ) -> Result<(Self::Data, EventSchema, bool), AnyError>;
 
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
@@ -147,7 +146,6 @@ pub trait EventFormat: Sized {
         Ok(schema)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn into_recordbatch(
         p_timestamp: DateTime<Utc>,
         data: Self::Data,
@@ -170,12 +168,7 @@ pub trait EventFormat: Sized {
         Ok(rb)
     }
 
-    fn into_event(
-        self,
-        origin_size: usize,
-        stream: &Stream,
-        log_source: &LogSource,
-    ) -> Result<Event, AnyError>;
+    fn into_event(self, stream: &Stream) -> Result<Event, AnyError>;
 }
 
 pub fn get_existing_field_names(

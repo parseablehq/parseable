@@ -24,6 +24,7 @@ use std::time::Duration;
 use actix_web::http::header::{self, HeaderMap};
 use actix_web::web::Path;
 use actix_web::Responder;
+use anyhow::anyhow;
 use bytes::Bytes;
 use chrono::Utc;
 use clokwerk::{AsyncScheduler, Interval};
@@ -37,7 +38,7 @@ use tracing::{error, info, warn};
 use url::Url;
 use utils::{check_liveness, to_url_string, IngestionStats, QueriedStats, StorageStats};
 
-use crate::event::format::LogSource;
+use crate::event::format::{json, EventFormat, LogSource};
 use crate::metrics::prom_utils::Metrics;
 use crate::parseable::PARSEABLE;
 use crate::rbac::role::model::DefaultPrivilege;
@@ -786,9 +787,11 @@ pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
                     let byte_size = serde_json::to_vec(&metrics).unwrap().len();
 
                     if matches!(
-                        internal_stream
-                            .push_logs(json, byte_size, &LogSource::Pmeta)
-                            .await,
+                        json::Event::new(json, byte_size, LogSource::Pmeta)
+                            .into_event(&internal_stream)
+                            .and_then(|event| event
+                                .process(&internal_stream)
+                                .map_err(|e| anyhow!(e))),
                         Ok(())
                     ) {
                         info!("Cluster metrics successfully ingested into internal stream");
