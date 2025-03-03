@@ -37,13 +37,25 @@ jobs:
         with:
           images: parseable/parseable
 
-      - name: Build and push
+
+      - name: Build and push x86_64
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
+          file: ./Dockerfile.debug
           push: true
-          tags: parseable/parseable:edge
-          platforms: linux/amd64,linux/arm64
+          tags: parseable/parseable:edge-debug
+          platforms: linux/amd64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push aarch64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.debug
+          push: true
+          tags: parseable/parseable:edge-debug
+          platforms: linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
