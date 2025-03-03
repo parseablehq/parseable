@@ -16,7 +16,7 @@
  *
  */
 
-use std::{collections::HashMap, env, fs, process::Command, time::Instant};
+use std::{env, fs, process::Command, time::Instant};
 
 use actix_web::{web::Json, Responder};
 use datafusion::{
@@ -35,9 +35,8 @@ pub async fn clickbench_benchmark() -> Result<impl Responder, actix_web::Error> 
     drop_system_caches()
         .await
         .map_err(actix_web::error::ErrorInternalServerError)?;
-    let results = tokio::task::spawn_blocking(run_benchmark)
+    let results = run_benchmark()
         .await
-        .map_err(actix_web::error::ErrorInternalServerError)?
         .map_err(actix_web::error::ErrorInternalServerError)?;
     Ok(results)
 }
@@ -59,7 +58,6 @@ pub async fn drop_system_caches() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-#[tokio::main(flavor = "multi_thread")]
 pub async fn run_benchmark() -> Result<Json<Value>, anyhow::Error> {
     let mut session_config = SessionConfig::new().with_information_schema(true);
 
@@ -80,9 +78,6 @@ pub async fn run_benchmark() -> Result<Json<Value>, anyhow::Error> {
 
     let ctx = SessionContext::new_with_state(state);
 
-    let mut table_options = HashMap::new();
-    table_options.insert("binary_as_string", "true");
-
     let parquet_file = env::var(PARQUET_FILE)
          .map_err(|_| anyhow::anyhow!("PARQUET_FILE environment variable not set. Please set it to the path of the hits.parquet file."))?;
     register_hits(&ctx, &parquet_file).await?;
@@ -94,7 +89,12 @@ pub async fn run_benchmark() -> Result<Json<Value>, anyhow::Error> {
     for query in queries.lines() {
         query_list.push(query.to_string());
     }
-    execute_queries(&ctx, query_list).await
+    let results = tokio::task::spawn_blocking(move || execute_queries(&ctx, query_list))
+        .await
+        .map_err(|e| anyhow::anyhow!(e))?
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    Ok(results)
 }
 
 async fn register_hits(ctx: &SessionContext, parquet_file: &str) -> Result<(), anyhow::Error> {
@@ -107,12 +107,13 @@ async fn register_hits(ctx: &SessionContext, parquet_file: &str) -> Result<(), a
     Ok(())
 }
 
+#[tokio::main(flavor = "multi_thread")]
 pub async fn execute_queries(
     ctx: &SessionContext,
     query_list: Vec<String>,
 ) -> Result<Json<Value>, anyhow::Error> {
     const TRIES: usize = 3;
-    let mut results = Vec::with_capacity(query_list.len());
+    let mut results = Vec::with_capacity(query_list.len() * TRIES);
     let mut total_elapsed_per_iteration = [0.0; TRIES];
     for (query_index, sql) in query_list.iter().enumerate() {
         let mut elapsed_times = Vec::with_capacity(TRIES);
@@ -141,14 +142,27 @@ pub async fn execute_queries(
             total_elapsed_per_iteration[iteration - 1] += elapsed;
             info!("query {query_index} iteration {iteration} completed in {elapsed} secs");
             elapsed_times.push(elapsed);
-
-            results.push(json!({
-                "query_index": query_index,
-                "query": sql,
-                "iteration": iteration,
-                "elapsed_time": elapsed
-            }));
         }
+        let iterations: Vec<Value> = elapsed_times
+            .iter()
+            .enumerate()
+            .map(|(iteration, &elapsed_time)| {
+                json!({
+                    "iteration": iteration + 1,
+                    "elapsed_time": elapsed_time
+                })
+            })
+            .collect();
+
+        let query_result = json!({
+            "query_details": {
+                "query_index": query_index + 1,
+                "query": sql
+            },
+            "iterations": iterations
+        });
+
+        results.push(query_result);
     }
 
     let summary: Vec<Value> = total_elapsed_per_iteration
@@ -161,8 +175,6 @@ pub async fn execute_queries(
             })
         })
         .collect();
-
-    info!("summary: {:?}", summary);
 
     let result_json = json!({
        "summary": summary,
