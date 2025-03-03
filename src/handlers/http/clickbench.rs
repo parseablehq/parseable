@@ -23,12 +23,11 @@ use datafusion::{
     common::plan_datafusion_err,
     error::DataFusionError,
     execution::{runtime_env::RuntimeEnvBuilder, SessionStateBuilder},
-    physical_plan::collect,
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
     sql::{parser::DFParser, sqlparser::dialect::dialect_from_str},
 };
 use serde_json::{json, Value};
-use tracing::warn;
+use tracing::{info, warn};
 static PARQUET_FILE: &str = "PARQUET_FILE";
 static QUERIES_FILE: &str = "QUERIES_FILE";
 
@@ -45,20 +44,24 @@ pub async fn clickbench_benchmark() -> Result<impl Responder, actix_web::Error> 
 
 pub async fn drop_system_caches() -> Result<(), anyhow::Error> {
     // Sync to flush file system buffers
-    Command::new("sync")
-        .status()
-        .expect("Failed to execute sync command");
+    match Command::new("sync").status() {
+        Ok(_) => {}
+        Err(e) => warn!("Failed to execute sync command: {}", e),
+    }
     let _ = Command::new("sudo")
-        .args(["sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"])
-        .output()
-        .map_err(|e| anyhow::Error::msg(e.to_string()))?;
+         .args(["sh", "-c", "echo 3 > /proc/sys/vm/drop_caches"])
+         .output()
+         .map_err(|e| {
+                   warn!("Failed to drop system caches: {}", e);
+                       anyhow::Error::msg("Failed to drop system caches. This might be expected if not running on Linux or without sudo privileges.")
+                   })?;
 
     Ok(())
 }
 
 #[tokio::main(flavor = "multi_thread")]
 pub async fn run_benchmark() -> Result<Json<Value>, anyhow::Error> {
-    let mut session_config = SessionConfig::from_env()?.with_information_schema(true);
+    let mut session_config = SessionConfig::new().with_information_schema(true);
 
     session_config = session_config.with_batch_size(8192);
 
@@ -81,12 +84,12 @@ pub async fn run_benchmark() -> Result<Json<Value>, anyhow::Error> {
     table_options.insert("binary_as_string", "true");
 
     let parquet_file = env::var(PARQUET_FILE)
-        .map_err(|_| anyhow::anyhow!("PARQUET_FILE environment variable not set. Please set it to the path of the hits.parquet file."))?;
+         .map_err(|_| anyhow::anyhow!("PARQUET_FILE environment variable not set. Please set it to the path of the hits.parquet file."))?;
     register_hits(&ctx, &parquet_file).await?;
-    println!("hits registered");
+    info!("hits.parquet registered");
     let mut query_list = Vec::new();
     let queries_file = env::var(QUERIES_FILE)
-     .map_err(|_| anyhow::anyhow!("QUERIES_FILE environment variable not set. Please set it to the path of the queries file."))?;
+      .map_err(|_| anyhow::anyhow!("QUERIES_FILE environment variable not set. Please set it to the path of the queries file."))?;
     let queries = fs::read_to_string(queries_file)?;
     for query in queries.lines() {
         query_list.push(query.to_string());
@@ -110,9 +113,7 @@ pub async fn execute_queries(
 ) -> Result<Json<Value>, anyhow::Error> {
     const TRIES: usize = 3;
     let mut results = Vec::with_capacity(query_list.len());
-    let mut query_count = 1;
     let mut total_elapsed_per_iteration = [0.0; TRIES];
-
     for (query_index, sql) in query_list.iter().enumerate() {
         let mut elapsed_times = Vec::with_capacity(TRIES);
         for iteration in 1..=TRIES {
@@ -122,8 +123,8 @@ pub async fn execute_queries(
             let dialect = dialect_from_str(dialect).ok_or_else(|| {
                 plan_datafusion_err!(
                     "Unsupported SQL dialect: {dialect}. Available dialects: \
-                      Generic, MySQL, PostgreSQL, Hive, SQLite, Snowflake, Redshift, \
-                      MsSQL, ClickHouse, BigQuery, Ansi."
+                       Generic, MySQL, PostgreSQL, Hive, SQLite, Snowflake, Redshift, \
+                       MsSQL, ClickHouse, BigQuery, Ansi."
                 )
             })?;
 
@@ -134,31 +135,41 @@ pub async fn execute_queries(
             let plan = ctx.state().statement_to_plan(statement.clone()).await?;
 
             let df = ctx.execute_logical_plan(plan).await?;
-            let physical_plan = df.create_physical_plan().await?;
 
-            let _ = collect(physical_plan, task_ctx.clone()).await?;
+            let _ = df.collect().await?;
             let elapsed = start.elapsed().as_secs_f64();
             total_elapsed_per_iteration[iteration - 1] += elapsed;
-
-            warn!("query {query_count} iteration {iteration} completed in {elapsed} secs");
+            info!("query {query_index} iteration {iteration} completed in {elapsed} secs");
             elapsed_times.push(elapsed);
+
+            results.push(json!({
+             "query_index": query_index,
+             "query": sql,
+             "elapsed_times": {
+               "iteration": iteration + 1,
+               "elapsed_time": elapsed_times
+             }
+            }));
         }
-        query_count += 1;
-        results.push(json!({
-         "query_index": query_index,
-         "query": sql,
-         "elapsed_times": elapsed_times
-        }));
-    }
-    for (iteration, total_elapsed) in total_elapsed_per_iteration.iter().enumerate() {
-        warn!(
-            "Total time for iteration {}: {} seconds",
-            iteration + 1,
-            total_elapsed
-        );
     }
 
-    let result_json = json!(results);
+    let summary: Vec<Value> = total_elapsed_per_iteration
+        .iter()
+        .enumerate()
+        .map(|(iteration, &total_elapsed)| {
+            json!({
+                "iteration": iteration + 1,
+                "total_elapsed": total_elapsed
+            })
+        })
+        .collect();
+
+    info!("summary: {:?}", summary);
+
+    let result_json = json!({
+       "summary": summary,
+        "results": results
+    });
 
     Ok(Json(result_json))
 }
