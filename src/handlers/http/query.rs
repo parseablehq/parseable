@@ -130,8 +130,13 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
 
         return Ok(HttpResponse::Ok().json(response));
     }
-    let (records, fields) = query.execute(table_name.clone()).await?;
-
+    let table_name_clone = table_name.clone();
+    let (records, fields) =
+        match tokio::task::spawn_blocking(move || query.execute(table_name_clone)).await {
+            Ok(Ok((records, fields))) => (records, fields),
+            Ok(Err(e)) => return Err(QueryError::Execute(e)),
+            Err(e) => return Err(QueryError::Anyhow(anyhow::Error::msg(e.to_string()))),
+        };
     let response = QueryResponse {
         records,
         fields,

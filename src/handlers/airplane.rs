@@ -215,10 +215,14 @@ impl FlightService for AirServiceImpl {
             Status::permission_denied("User Does not have permission to access this")
         })?;
         let time = Instant::now();
-        let (records, _) = query
-            .execute(stream_name.clone())
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
+
+        let stream_name_clone = stream_name.clone();
+        let (records, _) =
+            match tokio::task::spawn_blocking(move || query.execute(stream_name_clone)).await {
+                Ok(Ok((records, fields))) => (records, fields),
+                Ok(Err(e)) => return Err(Status::internal(e.to_string())),
+                Err(err) => return Err(Status::internal(err.to_string())),
+            };
 
         /*
         * INFO: No returning the schema with the data.
