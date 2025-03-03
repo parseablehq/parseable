@@ -96,6 +96,8 @@ impl Display for LogSource {
     }
 }
 
+pub type IsFirstEvent = bool;
+
 // Global Trait for event format
 // This trait is implemented by all the event formats
 pub trait EventFormat: Sized {
@@ -103,13 +105,19 @@ pub trait EventFormat: Sized {
 
     fn to_data(
         self,
-        static_schema_flag: bool,
-        stored_schema: &HashMap<String, Arc<Field>>,
         time_partition: Option<&String>,
         time_partition_limit: Option<NonZeroU32>,
         custom_partitions: Option<&String>,
         schema_version: SchemaVersion,
-    ) -> Result<(Self::Data, EventSchema, bool), AnyError>;
+    ) -> anyhow::Result<Self::Data>;
+
+    fn infer_schema(
+        data: &Self::Data,
+        stored_schema: &HashMap<String, Arc<Field>>,
+        time_partition: Option<&String>,
+        static_schema_flag: bool,
+        schema_version: SchemaVersion,
+    ) -> anyhow::Result<(EventSchema, IsFirstEvent)>;
 
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
 

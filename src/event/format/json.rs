@@ -140,22 +140,28 @@ impl EventFormat for Event {
     // also extract the arrow schema, tags and metadata from the incoming json
     fn to_data(
         self,
-        static_schema_flag: bool,
-        stored_schema: &HashMap<String, Arc<Field>>,
         time_partition: Option<&String>,
         time_partition_limit: Option<NonZeroU32>,
         custom_partitions: Option<&String>,
         schema_version: SchemaVersion,
-    ) -> anyhow::Result<(Self::Data, Vec<Arc<Field>>, bool)> {
-        let flattened = self.flatten_logs(
+    ) -> anyhow::Result<Self::Data> {
+        self.flatten_logs(
             time_partition,
             time_partition_limit,
             custom_partitions,
             schema_version,
-        )?;
+        )
+    }
 
+    fn infer_schema(
+        data: &Self::Data,
+        stored_schema: &HashMap<String, Arc<Field>>,
+        time_partition: Option<&String>,
+        static_schema_flag: bool,
+        schema_version: SchemaVersion,
+    ) -> anyhow::Result<(super::EventSchema, bool)> {
         // collect all the keys from all the json objects in the request body
-        let fields = collect_keys(flattened.iter());
+        let fields = collect_keys(data.iter());
 
         let mut is_first = false;
         let schema = if let Some(schema) = derive_arrow_schema(stored_schema, fields) {
@@ -163,14 +169,14 @@ impl EventFormat for Event {
         } else {
             // TODO:
             let mut infer_schema = infer_json_schema_from_iterator(
-                flattened.iter().map(|obj| Ok(Value::Object(obj.clone()))),
+                data.iter().map(|obj| Ok(Value::Object(obj.clone()))),
             )
             .map_err(|err| anyhow!("Could not infer schema for this event due to err {:?}", err))?;
             let new_infer_schema = super::update_field_type_in_schema(
                 Arc::new(infer_schema),
                 Some(stored_schema),
                 time_partition,
-                Some(&flattened),
+                Some(data),
                 schema_version,
             );
             infer_schema = Schema::new(new_infer_schema.fields().clone());
@@ -194,7 +200,7 @@ impl EventFormat for Event {
                 .collect()
         };
 
-        if flattened
+        if data
             .iter()
             .any(|value| fields_mismatch(&schema, value, schema_version))
         {
@@ -205,7 +211,7 @@ impl EventFormat for Event {
 
         let schema = Self::prepare_and_validate_schema(schema, stored_schema, static_schema_flag)?;
 
-        Ok((flattened, schema, is_first))
+        Ok((schema, is_first))
     }
 
     // Convert the Data type (defined above) to arrow record batch
@@ -231,17 +237,22 @@ impl EventFormat for Event {
         let static_schema_flag = stream.get_static_schema_flag();
         let custom_partitions = stream.get_custom_partition();
         let schema_version = stream.get_schema_version();
-        let storage_schema = stream.get_schema_raw();
+        let stored_schema = stream.get_schema_raw();
         let stream_type = stream.get_stream_type();
 
         let p_timestamp = self.p_timestamp;
         let origin_size = self.origin_size;
-        let (data, schema, is_first_event) = self.to_data(
-            static_schema_flag,
-            &storage_schema,
+        let data = self.to_data(
             time_partition.as_ref(),
             time_partition_limit,
             custom_partitions.as_ref(),
+            schema_version,
+        )?;
+        let (schema, is_first_event) = Self::infer_schema(
+            &data,
+            &stored_schema,
+            time_partition.as_ref(),
+            static_schema_flag,
             schema_version,
         )?;
 
@@ -500,9 +511,11 @@ mod tests {
         });
 
         let store_schema = HashMap::default();
-        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
-            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0)
+        let data = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(None, None, None, SchemaVersion::V0)
             .unwrap();
+        let (schema, _) =
+            Event::infer_schema(&data, &store_schema, None, false, SchemaVersion::V0).unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
 
@@ -531,9 +544,11 @@ mod tests {
         });
 
         let store_schema = HashMap::default();
-        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
-            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0)
+        let data = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(None, None, None, SchemaVersion::V0)
             .unwrap();
+        let (schema, _) =
+            Event::infer_schema(&data, &store_schema, None, false, SchemaVersion::V0).unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
 
@@ -564,9 +579,11 @@ mod tests {
             ]
             .into_iter(),
         );
-        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
-            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0)
+        let data = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(None, None, None, SchemaVersion::V0)
             .unwrap();
+        let (schema, _) =
+            Event::infer_schema(&data, &store_schema, None, false, SchemaVersion::V0).unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
 
@@ -598,9 +615,11 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(Event::new(json, 0 /* doesn't matter */, LogSource::Json)
-            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0,)
-            .is_err());
+        let data = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(None, None, None, SchemaVersion::V0)
+            .unwrap();
+
+        assert!(Event::infer_schema(&data, &store_schema, None, false, SchemaVersion::V0).is_err());
     }
 
     #[test]
@@ -616,9 +635,11 @@ mod tests {
             .into_iter(),
         );
 
-        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
-            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0)
+        let data = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(None, None, None, SchemaVersion::V0)
             .unwrap();
+        let (schema, _) =
+            Event::infer_schema(&data, &store_schema, None, false, SchemaVersion::V0).unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
 
@@ -645,9 +666,11 @@ mod tests {
         ]);
 
         let store_schema = HashMap::new();
-        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
-            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0)
+        let data = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(None, None, None, SchemaVersion::V0)
             .unwrap();
+        let (schema, _) =
+            Event::infer_schema(&data, &store_schema, None, false, SchemaVersion::V0).unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
 
@@ -696,9 +719,11 @@ mod tests {
         ]);
 
         let store_schema = HashMap::new();
-        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
-            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0)
+        let data = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(None, None, None, SchemaVersion::V0)
             .unwrap();
+        let (schema, _) =
+            Event::infer_schema(&data, &store_schema, None, false, SchemaVersion::V0).unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
 
@@ -746,9 +771,11 @@ mod tests {
             ]
             .into_iter(),
         );
-        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
-            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0)
+        let data = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(None, None, None, SchemaVersion::V0)
             .unwrap();
+        let (schema, _) =
+            Event::infer_schema(&data, &store_schema, None, false, SchemaVersion::V0).unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
 
@@ -797,9 +824,11 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(Event::new(json, 0 /* doesn't matter */, LogSource::Json)
-            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0,)
-            .is_err());
+        let data = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(None, None, None, SchemaVersion::V0)
+            .unwrap();
+
+        assert!(Event::infer_schema(&data, &store_schema, None, false, SchemaVersion::V0).is_err());
     }
 
     #[test]
@@ -827,9 +856,11 @@ mod tests {
         ]);
 
         let store_schema = HashMap::new();
-        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
-            .to_data(false, &store_schema, None, None, None, SchemaVersion::V0)
+        let data = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(None, None, None, SchemaVersion::V0)
             .unwrap();
+        let (schema, _) =
+            Event::infer_schema(&data, &store_schema, None, false, SchemaVersion::V0).unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V0).unwrap();
 
@@ -903,9 +934,11 @@ mod tests {
         ]);
 
         let store_schema = HashMap::new();
-        let (data, schema, _) = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
-            .to_data(false, &store_schema, None, None, None, SchemaVersion::V1)
+        let data = Event::new(json, 0 /* doesn't matter */, LogSource::Json)
+            .to_data(None, None, None, SchemaVersion::V1)
             .unwrap();
+        let (schema, _) =
+            Event::infer_schema(&data, &store_schema, None, false, SchemaVersion::V1).unwrap();
         let rb =
             Event::into_recordbatch(Utc::now(), data, &schema, None, SchemaVersion::V1).unwrap();
 
