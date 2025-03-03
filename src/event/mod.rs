@@ -19,20 +19,26 @@
 
 pub mod format;
 
+use arrow::compute::concat_batches;
 use arrow_array::RecordBatch;
-use arrow_schema::Field;
+use arrow_schema::{Field, Schema};
 use itertools::Itertools;
 use std::sync::Arc;
 
 use self::error::EventError;
-use crate::{metadata::update_stats, parseable::Stream, storage::StreamType};
+use crate::{
+    metadata::update_stats,
+    parseable::{StagingError, Stream},
+    storage::StreamType,
+};
 use chrono::NaiveDateTime;
 use std::collections::HashMap;
 
 pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
 
 pub struct PartitionEvent {
-    pub rb: RecordBatch,
+    pub rbs: Vec<RecordBatch>,
+    pub schema: Arc<Schema>,
     pub parsed_timestamp: NaiveDateTime,
     pub custom_partition_values: HashMap<String, String>,
 }
@@ -50,14 +56,15 @@ pub struct Event {
 impl Event {
     pub fn process(self, stream: &Stream) -> Result<(), EventError> {
         for (key, partition) in self.partitions {
+            let rb =
+                concat_batches(&partition.schema, &partition.rbs).map_err(StagingError::Arrow)?;
             if self.is_first_event {
-                let schema = partition.rb.schema().as_ref().clone();
-                stream.commit_schema(schema)?;
+                stream.commit_schema(partition.schema.as_ref().clone())?;
             }
 
             stream.push(
                 &key,
-                &partition.rb,
+                &rb,
                 partition.parsed_timestamp,
                 &partition.custom_partition_values,
                 self.stream_type,
@@ -67,20 +74,22 @@ impl Event {
                 &stream.stream_name,
                 self.origin_format,
                 self.origin_size,
-                partition.rb.num_rows(),
+                rb.num_rows(),
                 partition.parsed_timestamp.date(),
             );
 
-            crate::livetail::LIVETAIL.process(&stream.stream_name, &partition.rb);
+            crate::livetail::LIVETAIL.process(&stream.stream_name, &rb);
         }
         Ok(())
     }
 
     pub fn process_unchecked(&self, stream: &Stream) -> Result<(), EventError> {
         for (key, partition) in &self.partitions {
+            let rb =
+                concat_batches(&partition.schema, &partition.rbs).map_err(StagingError::Arrow)?;
             stream.push(
                 key,
-                &partition.rb,
+                &rb,
                 partition.parsed_timestamp,
                 &partition.custom_partition_values,
                 self.stream_type,

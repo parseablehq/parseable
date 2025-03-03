@@ -20,7 +20,6 @@
 #![allow(deprecated)]
 
 use anyhow::anyhow;
-use arrow::compute::concat_batches;
 use arrow_array::RecordBatch;
 use arrow_json::reader::{infer_json_schema_from_iterator, ReaderBuilder};
 use arrow_schema::{DataType, Field, Fields, Schema};
@@ -281,14 +280,13 @@ impl EventFormat for Event {
             }
 
             match partitions.get_mut(&key) {
-                Some(PartitionEvent { rb, .. }) => {
-                    *rb = concat_batches(&schema, [rb, &batch])?;
-                }
+                Some(PartitionEvent { rbs, .. }) => rbs.push(batch),
                 _ => {
                     partitions.insert(
                         key,
                         PartitionEvent {
-                            rb: batch,
+                            rbs: vec![batch],
+                            schema,
                             parsed_timestamp,
                             custom_partition_values,
                         },

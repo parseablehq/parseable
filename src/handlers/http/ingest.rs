@@ -236,18 +236,20 @@ pub async fn post_event(
 }
 
 pub async fn push_logs_unchecked(
-    rb: RecordBatch,
+    batch: RecordBatch,
     stream: &Stream,
 ) -> Result<event::Event, PostError> {
+    let schema = batch.schema();
     let unchecked_event = event::Event {
         origin_format: "json",
         origin_size: 0,
         time_partition: None,
         is_first_event: true, // NOTE: Maybe should be false
         partitions: [(
-            get_schema_key(&rb.schema().fields),
+            get_schema_key(&schema.fields),
             PartitionEvent {
-                rb,
+                rbs: vec![batch],
+                schema,
                 parsed_timestamp: Utc::now().naive_utc(),
                 custom_partition_values: HashMap::new(), // should be an empty map for unchecked push
             },
