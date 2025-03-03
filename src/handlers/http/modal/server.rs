@@ -25,6 +25,7 @@ use crate::handlers;
 use crate::handlers::http::about;
 use crate::handlers::http::alerts;
 use crate::handlers::http::base_path;
+use crate::handlers::http::clickbench;
 use crate::handlers::http::health_check;
 use crate::handlers::http::query;
 use crate::handlers::http::users::dashboards;
@@ -87,7 +88,8 @@ impl ParseableServer for Server {
                     .service(Self::get_user_role_webscope())
                     .service(Self::get_counts_webscope())
                     .service(Self::get_alerts_webscope())
-                    .service(Self::get_metrics_webscope()),
+                    .service(Self::get_metrics_webscope())
+                    .service(Self::get_benchmark_webscope()),
             )
             .service(Self::get_ingest_otel_factory())
             .service(Self::get_generated());
@@ -157,6 +159,16 @@ impl Server {
     pub fn get_metrics_webscope() -> Scope {
         web::scope("/metrics").service(
             web::resource("").route(web::get().to(metrics::get).authorize(Action::Metrics)),
+        )
+    }
+
+    pub fn get_benchmark_webscope() -> Scope {
+        web::scope("/benchmark/clickbench").service(
+            web::resource("").route(
+                web::get()
+                    .to(clickbench::clickbench_benchmark)
+                    .authorize(Action::Benchmark),
+            ),
         )
     }
 

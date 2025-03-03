@@ -30,6 +30,7 @@ use self::{cluster::get_ingestor_info, query::Query};
 pub mod about;
 pub mod alerts;
 mod audit;
+pub mod clickbench;
 pub mod cluster;
 pub mod correlation;
 pub mod health_check;
