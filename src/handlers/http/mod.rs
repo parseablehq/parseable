@@ -39,6 +39,8 @@ pub mod logstream;
 pub mod middleware;
 pub mod modal;
 pub mod oidc;
+pub mod prism_home;
+pub mod prism_logstream;
 pub mod query;
 pub mod rbac;
 pub mod role;
@@ -46,9 +48,14 @@ pub mod users;
 pub const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
 pub const API_BASE_PATH: &str = "api";
 pub const API_VERSION: &str = "v1";
+pub const PRISM_BASE_PATH: &str = "prism";
 
 pub fn base_path() -> String {
     format!("/{API_BASE_PATH}/{API_VERSION}")
+}
+
+pub fn prism_base_path() -> String {
+    format!("/{API_BASE_PATH}/{PRISM_BASE_PATH}/{API_VERSION}")
 }
 
 pub fn metrics_path() -> String {

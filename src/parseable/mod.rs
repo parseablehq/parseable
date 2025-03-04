@@ -22,7 +22,7 @@ use std::{collections::HashMap, num::NonZeroU32, path::PathBuf, str::FromStr, sy
 use actix_web::http::header::HeaderMap;
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
-use chrono::Local;
+use chrono::Utc;
 use clap::{error::ErrorKind, Parser};
 use http::{header::CONTENT_TYPE, HeaderName, HeaderValue, StatusCode};
 use once_cell::sync::Lazy;
@@ -243,6 +243,7 @@ impl Parseable {
         match self.options.mode {
             Mode::Query => "Distributed (Query)",
             Mode::Ingest => "Distributed (Ingest)",
+            Mode::Index => "Distributed (Index)",
             Mode::All => "Standalone",
         }
     }
@@ -549,7 +550,7 @@ impl Parseable {
         let storage = self.storage.get_object_store();
 
         let meta = ObjectStoreFormat {
-            created_at: Local::now().to_rfc3339(),
+            created_at: Utc::now().to_rfc3339(),
             permissions: vec![Permisssion::new(PARSEABLE.options.username.clone())],
             stream_type,
             time_partition: (!time_partition.is_empty()).then(|| time_partition.to_string()),
