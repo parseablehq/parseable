@@ -17,7 +17,7 @@
  */
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use chrono::{Local, NaiveDateTime};
+use chrono::{Local, NaiveDate};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::num::NonZeroU32;
@@ -37,20 +37,20 @@ pub fn update_stats(
     origin: &'static str,
     size: u64,
     num_rows: usize,
-    parsed_timestamp: NaiveDateTime,
+    parsed_date: NaiveDate,
 ) {
-    let parsed_date = parsed_timestamp.date().to_string();
+    let parsed_date = parsed_date.to_string();
     EVENTS_INGESTED
         .with_label_values(&[stream_name, origin])
         .add(num_rows as i64);
     EVENTS_INGESTED_DATE
-        .with_label_values(&[stream_name, origin, parsed_date.as_str()])
+        .with_label_values(&[stream_name, origin, &parsed_date])
         .add(num_rows as i64);
     EVENTS_INGESTED_SIZE
         .with_label_values(&[stream_name, origin])
         .add(size as i64);
     EVENTS_INGESTED_SIZE_DATE
-        .with_label_values(&[stream_name, origin, parsed_date.as_str()])
+        .with_label_values(&[stream_name, origin, &parsed_date])
         .add(size as i64);
     LIFETIME_EVENTS_INGESTED
         .with_label_values(&[stream_name, origin])

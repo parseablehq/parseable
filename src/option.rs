@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 pub enum Mode {
     Query,
     Ingest,
+    Index,
     #[default]
     All,
 }
@@ -128,6 +129,7 @@ pub mod validation {
             "query" => Ok(Mode::Query),
             "ingest" => Ok(Mode::Ingest),
             "all" => Ok(Mode::All),
+            "index" => Ok(Mode::Index),
             _ => Err("Invalid MODE provided".to_string()),
         }
     }

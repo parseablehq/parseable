@@ -33,13 +33,21 @@ pub enum StaticSchemaError {
     #[error(
         "custom partition field {0} does not exist in the schema for the static schema logstream"
     )]
-    MissingCustom(String),
+    MissingCustomPartition(String),
+
     #[error(
         "time partition field {0} does not exist in the schema for the static schema logstream"
     )]
-    MissingTime(String),
-    #[error("field {DEFAULT_TIMESTAMP_KEY:?} is a reserved field")]
-    DefaultTime,
+    MissingTimePartition(String),
+
+    #[error("field {0:?} is a reserved field")]
+    ReservedKey(&'static str),
+
+    #[error("field name cannot be empty")]
+    EmptyFieldName,
+
+    #[error("field {0:?} is duplicated")]
+    DuplicateField(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -62,30 +70,42 @@ impl StaticSchema {
         let mut schema: Vec<Arc<Field>> = Vec::new();
 
         // Convert to hashmap for easy access and operation
-        let mut fields: HashMap<FieldName, FieldType> = self
-            .fields
-            .into_iter()
-            .map(|field| (field.name, field.data_type))
-            .collect();
+        let mut fields: HashMap<FieldName, FieldType> = HashMap::new();
+
+        for field in self.fields {
+            if field.name.is_empty() {
+                return Err(StaticSchemaError::EmptyFieldName);
+            }
+
+            if fields.contains_key(&field.name) {
+                return Err(StaticSchemaError::DuplicateField(field.name.to_owned()));
+            }
+
+            fields.insert(field.name, field.data_type);
+        }
 
         // Ensures all custom partitions are present in schema
         if let Some(custom_partition) = custom_partition {
             for partition in custom_partition.split(',') {
                 if !fields.contains_key(partition) {
-                    return Err(StaticSchemaError::MissingCustom(partition.to_owned()));
+                    return Err(StaticSchemaError::MissingCustomPartition(
+                        partition.to_owned(),
+                    ));
                 }
             }
         }
 
         // Ensures default timestamp is not mentioned(as it is only inserted by parseable)
         if fields.contains_key(DEFAULT_TIMESTAMP_KEY) {
-            return Err(StaticSchemaError::DefaultTime);
+            return Err(StaticSchemaError::ReservedKey(DEFAULT_TIMESTAMP_KEY));
         }
 
         // If time partitioning is enabled, mutate the datatype to be datetime
         if !time_partition.is_empty() {
             let Some(field_type) = fields.get_mut(time_partition) else {
-                return Err(StaticSchemaError::MissingTime(time_partition.to_owned()));
+                return Err(StaticSchemaError::MissingTimePartition(
+                    time_partition.to_owned(),
+                ));
             };
             *field_type = "datetime".to_string();
         }
