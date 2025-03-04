@@ -292,20 +292,17 @@ impl EventFormat for Event {
                     .join("")
             );
 
-            match json_partitions.get_mut(&prefix) {
-                Some(JsonPartition { batch, .. }) => batch.push(json),
-                _ => {
-                    let date = parsed_timestamp.date();
-                    let batch = vec![json];
-                    json_partitions.insert(
-                        prefix,
-                        JsonPartition {
-                            batch,
-                            schema,
-                            date,
-                        },
-                    );
-                }
+            if let Some(JsonPartition { batch, .. }) = json_partitions.get_mut(&prefix) {
+                batch.push(json)
+            } else {
+                json_partitions.insert(
+                    prefix,
+                    JsonPartition {
+                        batch: vec![json],
+                        schema,
+                        date: parsed_timestamp.date(),
+                    },
+                );
             }
         }
 
