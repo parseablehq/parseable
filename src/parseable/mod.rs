@@ -364,7 +364,7 @@ impl Parseable {
             HeaderValue::from_str(&StreamType::Internal.to_string()).unwrap(),
         );
         header_map.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        sync_streams_with_ingestors(header_map, Bytes::new(), INTERNAL_STREAM_NAME).await?;
+        sync_streams_with_ingestors(header_map, None, INTERNAL_STREAM_NAME).await?;
 
         Ok(())
     }
@@ -409,7 +409,7 @@ impl Parseable {
     pub async fn create_update_stream(
         &self,
         headers: &HeaderMap,
-        body: &Bytes,
+        static_schema: Option<&StaticSchema>,
         stream_name: &str,
     ) -> Result<HeaderMap, StreamError> {
         let PutStreamHeaders {
@@ -469,7 +469,7 @@ impl Parseable {
         }
 
         let schema = validate_static_schema(
-            body,
+            static_schema,
             stream_name,
             &time_partition,
             custom_partition.as_ref(),
@@ -768,7 +768,7 @@ impl Parseable {
 }
 
 pub fn validate_static_schema(
-    body: &Bytes,
+    static_schema: Option<&StaticSchema>,
     stream_name: &str,
     time_partition: &str,
     custom_partition: Option<&String>,
@@ -778,22 +778,21 @@ pub fn validate_static_schema(
         return Ok(Arc::new(Schema::empty()));
     }
 
-    if body.is_empty() {
-        return Err(CreateStreamError::Custom {
-                 msg: format!(
-                     "Please provide schema in the request body for static schema logstream {stream_name}"
-                 ),
-                 status: StatusCode::BAD_REQUEST,
-             });
-    }
-
-    let static_schema: StaticSchema = serde_json::from_slice(body)?;
-    let parsed_schema =
-        convert_static_schema_to_arrow_schema(static_schema, time_partition, custom_partition)
-            .map_err(|_| CreateStreamError::Custom {
-                msg: format!("Unable to commit static schema, logstream {stream_name} not created"),
-                status: StatusCode::BAD_REQUEST,
-            })?;
+    let static_schema = static_schema.ok_or_else(|| CreateStreamError::Custom {
+        msg: format!(
+            "Please provide schema in the request body for static schema logstream {stream_name}"
+        ),
+        status: StatusCode::BAD_REQUEST,
+    })?;
+    let parsed_schema = convert_static_schema_to_arrow_schema(
+        static_schema.clone(),
+        time_partition,
+        custom_partition,
+    )
+    .map_err(|_| CreateStreamError::Custom {
+        msg: format!("Unable to commit static schema, logstream {stream_name} not created"),
+        status: StatusCode::BAD_REQUEST,
+    })?;
 
     Ok(parsed_schema)
 }
