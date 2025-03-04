@@ -19,6 +19,7 @@
 pub mod map;
 pub mod role;
 pub mod user;
+pub mod utils;
 
 use std::collections::{HashMap, HashSet};
 

@@ -95,57 +95,28 @@ async fn get_stats(stream_name: &str) -> Result<QueriedStats, PrismLogstreamErro
 
     let ingestor_stats: Option<Vec<QueriedStats>> = None;
 
-    let hash_map = PARSEABLE.streams.read().expect("Readable");
-    let stream_meta = &hash_map
-        .get(stream_name)
-        .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?
-        .metadata
-        .read()
-        .expect(LOCK_EXPECT);
-
     let time = Utc::now();
 
-    let stats = match &stream_meta.first_event_at {
-        Some(_) => {
-            let ingestion_stats = IngestionStats::new(
-                stats.current_stats.events,
-                format!("{} {}", stats.current_stats.ingestion, "Bytes"),
-                stats.lifetime_stats.events,
-                format!("{} {}", stats.lifetime_stats.ingestion, "Bytes"),
-                stats.deleted_stats.events,
-                format!("{} {}", stats.deleted_stats.ingestion, "Bytes"),
-                "json",
-            );
-            let storage_stats = StorageStats::new(
-                format!("{} {}", stats.current_stats.storage, "Bytes"),
-                format!("{} {}", stats.lifetime_stats.storage, "Bytes"),
-                format!("{} {}", stats.deleted_stats.storage, "Bytes"),
-                "parquet",
-            );
+    let stats = {
+        let ingestion_stats = IngestionStats::new(
+            stats.current_stats.events,
+            format!("{} {}", stats.current_stats.ingestion, "Bytes"),
+            stats.lifetime_stats.events,
+            format!("{} {}", stats.lifetime_stats.ingestion, "Bytes"),
+            stats.deleted_stats.events,
+            format!("{} {}", stats.deleted_stats.ingestion, "Bytes"),
+            "json",
+        );
+        let storage_stats = StorageStats::new(
+            format!("{} {}", stats.current_stats.storage, "Bytes"),
+            format!("{} {}", stats.lifetime_stats.storage, "Bytes"),
+            format!("{} {}", stats.deleted_stats.storage, "Bytes"),
+            "parquet",
+        );
 
-            QueriedStats::new(stream_name, time, ingestion_stats, storage_stats)
-        }
-
-        None => {
-            let ingestion_stats = IngestionStats::new(
-                stats.current_stats.events,
-                format!("{} {}", stats.current_stats.ingestion, "Bytes"),
-                stats.lifetime_stats.events,
-                format!("{} {}", stats.lifetime_stats.ingestion, "Bytes"),
-                stats.deleted_stats.events,
-                format!("{} {}", stats.deleted_stats.ingestion, "Bytes"),
-                "json",
-            );
-            let storage_stats = StorageStats::new(
-                format!("{} {}", stats.current_stats.storage, "Bytes"),
-                format!("{} {}", stats.lifetime_stats.storage, "Bytes"),
-                format!("{} {}", stats.deleted_stats.storage, "Bytes"),
-                "parquet",
-            );
-
-            QueriedStats::new(stream_name, time, ingestion_stats, storage_stats)
-        }
+        QueriedStats::new(stream_name, time, ingestion_stats, storage_stats)
     };
+
     let stats = if let Some(mut ingestor_stats) = ingestor_stats {
         ingestor_stats.push(stats);
         merge_quried_stats(ingestor_stats)
@@ -219,7 +190,7 @@ impl actix_web::ResponseError for PrismLogstreamError {
         match self {
             PrismLogstreamError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PrismLogstreamError::StreamError(e) => e.status_code(),
-            PrismLogstreamError::StreamNotFound(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PrismLogstreamError::StreamNotFound(_) => StatusCode::NOT_FOUND,
         }
     }
 

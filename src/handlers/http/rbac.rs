@@ -19,7 +19,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    rbac::{self, map::roles, role::model::DefaultPrivilege, user, Users, UsersPrism},
+    rbac::{self, map::roles, role::model::DefaultPrivilege, user, utils::to_prism_user, Users},
     storage::ObjectStorageError,
     validator::{self, error::UsernameValidationError},
 };
@@ -67,37 +67,7 @@ pub async fn list_users() -> impl Responder {
 /// returns list of all registerd users along with their roles and other info
 pub async fn list_users_prism() -> impl Responder {
     // get all users
-    let prism_users = rbac::map::users()
-        .values()
-        .map(|u| {
-            let (id, method, email, picture) = match &u.ty {
-                user::UserType::Native(_) => (u.username(), "native", None, None),
-                user::UserType::OAuth(oauth) => (
-                    u.username(),
-                    "oauth",
-                    oauth.user_info.email.clone(),
-                    oauth.user_info.picture.clone(),
-                ),
-            };
-            let roles: HashMap<String, Vec<DefaultPrivilege>> = Users
-                .get_role(id)
-                .iter()
-                .filter_map(|role_name| {
-                    roles()
-                        .get(role_name)
-                        .map(|role| (role_name.to_owned(), role.clone()))
-                })
-                .collect();
-
-            UsersPrism {
-                id: id.into(),
-                method: method.into(),
-                email,
-                picture,
-                roles,
-            }
-        })
-        .collect_vec();
+    let prism_users = rbac::map::users().values().map(to_prism_user).collect_vec();
 
     web::Json(prism_users)
 }
@@ -105,43 +75,14 @@ pub async fn list_users_prism() -> impl Responder {
 /// Function for GET /users/{username}
 pub async fn get_prism_user(username: Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
-    let prism_user = rbac::map::users()
-        .values()
-        .map(|u| {
-            let (id, method, email, picture) = match &u.ty {
-                user::UserType::Native(_) => (u.username(), "native", None, None),
-                user::UserType::OAuth(oauth) => (
-                    u.username(),
-                    "oauth",
-                    oauth.user_info.email.clone(),
-                    oauth.user_info.picture.clone(),
-                ),
-            };
-            let roles: HashMap<String, Vec<DefaultPrivilege>> = Users
-                .get_role(id)
-                .iter()
-                .filter_map(|role_name| {
-                    roles()
-                        .get(role_name)
-                        .map(|role| (role_name.to_owned(), role.clone()))
-                })
-                .collect();
-
-            UsersPrism {
-                id: id.into(),
-                method: method.into(),
-                email,
-                picture,
-                roles,
-            }
-        })
-        .filter(|u| u.id.eq(&username))
-        .collect_vec();
-
-    if prism_user.is_empty() {
-        Err(RBACError::UserDoesNotExist)
+    // First check if the user exists
+    let users = rbac::map::users();
+    if let Some(user) = users.get(&username) {
+        // Create UsersPrism for the found user only
+        let prism_user = to_prism_user(user);
+        Ok(web::Json(prism_user))
     } else {
-        Ok(web::Json(prism_user[0].clone()))
+        Err(RBACError::UserDoesNotExist)
     }
 }
 
