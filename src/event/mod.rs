@@ -20,85 +20,77 @@
 pub mod format;
 
 use arrow_array::RecordBatch;
-use arrow_schema::{Field, Fields, Schema};
+use arrow_schema::{Field, Schema};
 use itertools::Itertools;
 use std::sync::Arc;
 
 use self::error::EventError;
-use crate::{
-    metadata::update_stats,
-    parseable::{StagingError, PARSEABLE},
-    storage::StreamType,
-    LOCK_EXPECT,
-};
+use crate::{metadata::update_stats, parseable::Stream, storage::StreamType};
 use chrono::NaiveDateTime;
 use std::collections::HashMap;
 
 pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
 
-#[derive(Clone)]
-pub struct Event {
-    pub stream_name: String,
-    pub rb: RecordBatch,
-    pub origin_format: &'static str,
-    pub origin_size: u64,
-    pub is_first_event: bool,
+#[derive(Debug)]
+pub struct PartitionEvent {
+    pub rbs: Vec<RecordBatch>,
+    pub schema: Arc<Schema>,
     pub parsed_timestamp: NaiveDateTime,
-    pub time_partition: Option<String>,
     pub custom_partition_values: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+pub struct Event {
+    pub origin_format: &'static str,
+    pub origin_size: usize,
+    pub is_first_event: bool,
+    pub time_partition: Option<String>,
+    pub partitions: HashMap<String, PartitionEvent>,
     pub stream_type: StreamType,
 }
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
-    pub fn process(self) -> Result<(), EventError> {
-        let mut key = get_schema_key(&self.rb.schema().fields);
-        if self.time_partition.is_some() {
-            let parsed_timestamp_to_min = self.parsed_timestamp.format("%Y%m%dT%H%M").to_string();
-            key.push_str(&parsed_timestamp_to_min);
-        }
+    pub fn process(self, stream: &Stream) -> Result<(), EventError> {
+        for (key, partition) in self.partitions {
+            if self.is_first_event {
+                stream.commit_schema(partition.schema.as_ref().clone())?;
+            }
+            for rb in partition.rbs {
+                stream.push(
+                    &key,
+                    &rb,
+                    partition.parsed_timestamp,
+                    &partition.custom_partition_values,
+                    self.stream_type,
+                )?;
 
-        if !self.custom_partition_values.is_empty() {
-            for (k, v) in self.custom_partition_values.iter().sorted_by_key(|v| v.0) {
-                key.push_str(&format!("&{k}={v}"));
+                update_stats(
+                    &stream.stream_name,
+                    self.origin_format,
+                    self.origin_size,
+                    rb.num_rows(),
+                    partition.parsed_timestamp.date(),
+                );
+
+                crate::livetail::LIVETAIL.process(&stream.stream_name, &rb);
             }
         }
-
-        if self.is_first_event {
-            commit_schema(&self.stream_name, self.rb.schema())?;
-        }
-
-        PARSEABLE.get_or_create_stream(&self.stream_name).push(
-            &key,
-            &self.rb,
-            self.parsed_timestamp,
-            &self.custom_partition_values,
-            self.stream_type,
-        )?;
-
-        update_stats(
-            &self.stream_name,
-            self.origin_format,
-            self.origin_size,
-            self.rb.num_rows(),
-            self.parsed_timestamp.date(),
-        );
-
-        crate::livetail::LIVETAIL.process(&self.stream_name, &self.rb);
-
         Ok(())
     }
 
-    pub fn process_unchecked(&self) -> Result<(), EventError> {
-        let key = get_schema_key(&self.rb.schema().fields);
-
-        PARSEABLE.get_or_create_stream(&self.stream_name).push(
-            &key,
-            &self.rb,
-            self.parsed_timestamp,
-            &self.custom_partition_values,
-            self.stream_type,
-        )?;
+    pub fn process_unchecked(&self, stream: &Stream) -> Result<(), EventError> {
+        for (key, partition) in &self.partitions {
+            for rb in &partition.rbs {
+                stream.push(
+                    key,
+                    rb,
+                    partition.parsed_timestamp,
+                    &partition.custom_partition_values,
+                    self.stream_type,
+                )?;
+            }
+        }
 
         Ok(())
     }
@@ -112,23 +104,6 @@ pub fn get_schema_key(fields: &[Arc<Field>]) -> String {
     }
     let hash = hasher.digest();
     format!("{hash:x}")
-}
-
-pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), StagingError> {
-    let mut stream_metadata = PARSEABLE.streams.write().expect("lock poisoned");
-
-    let map = &mut stream_metadata
-        .get_mut(stream_name)
-        .expect("map has entry for this stream name")
-        .metadata
-        .write()
-        .expect(LOCK_EXPECT)
-        .schema;
-    let current_schema = Schema::new(map.values().cloned().collect::<Fields>());
-    let schema = Schema::try_merge(vec![current_schema, schema.as_ref().clone()])?;
-    map.clear();
-    map.extend(schema.fields.iter().map(|f| (f.name().clone(), f.clone())));
-    Ok(())
 }
 
 pub mod error {

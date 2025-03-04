@@ -20,6 +20,7 @@
 use std::{
     collections::HashMap,
     fs::{remove_file, write, File, OpenOptions},
+    io::BufReader,
     num::NonZeroU32,
     path::{Path, PathBuf},
     process,
@@ -28,7 +29,6 @@ use std::{
 };
 
 use arrow_array::RecordBatch;
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike};
 use derive_more::{Deref, DerefMut};
@@ -59,7 +59,7 @@ use crate::{
 use super::{
     staging::{
         reader::{MergedRecordReader, MergedReverseRecordReader},
-        writer::Writer,
+        writer::{DiskWriter, Writer},
         StagingError,
     },
     LogStream, ARROW_FILE_EXTENSION,
@@ -126,21 +126,14 @@ impl Stream {
                 }
                 None => {
                     // entry is not present thus we create it
-                    let file_path = self.path_by_current_time(
+                    let path = self.path_by_current_time(
                         schema_key,
                         parsed_timestamp,
                         custom_partition_values,
                     );
                     std::fs::create_dir_all(&self.data_path)?;
 
-                    let file = OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&file_path)?;
-
-                    let mut writer = StreamWriter::try_new(file, &record.schema())
-                        .expect("File and RecordBatch both are checked");
-
+                    let mut writer = DiskWriter::new(path, &record.schema())?;
                     writer.write(record)?;
                     guard.disk.insert(schema_key.to_owned(), writer);
                 }
@@ -163,7 +156,7 @@ impl Stream {
             hostname.push_str(id);
         }
         let filename = format!(
-            "{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.data.{ARROW_FILE_EXTENSION}",
+            "{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.data.part",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
@@ -264,23 +257,13 @@ impl Stream {
     }
 
     pub fn get_schemas_if_present(&self) -> Option<Vec<Schema>> {
-        let Ok(dir) = self.data_path.read_dir() else {
-            return None;
-        };
-
         let mut schemas: Vec<Schema> = Vec::new();
 
-        for file in dir.flatten() {
-            if let Some(ext) = file.path().extension() {
-                if ext.eq("schema") {
-                    let file = File::open(file.path()).expect("Schema File should exist");
+        for path in self.schema_files() {
+            let file = File::open(path).expect("Schema File should exist");
 
-                    let schema = match serde_json::from_reader(file) {
-                        Ok(schema) => schema,
-                        Err(_) => continue,
-                    };
-                    schemas.push(schema);
-                }
+            if let Ok(schema) = serde_json::from_reader(BufReader::new(file)) {
+                schemas.push(schema);
             }
         }
 
@@ -374,7 +357,7 @@ impl Stream {
 
         // Flush disk
         for writer in disk_writers.values_mut() {
-            _ = writer.finish();
+            writer.finish();
         }
     }
 
@@ -608,6 +591,19 @@ impl Stream {
             .collect();
 
         Arc::new(Schema::new(fields))
+    }
+
+    pub fn commit_schema(&self, schema: Schema) -> Result<(), StagingError> {
+        let current_schema = self.get_schema().as_ref().clone();
+        let updated_schema = Schema::try_merge([current_schema, schema])?
+            .fields
+            .into_iter()
+            .map(|field| (field.name().to_owned(), field.clone()))
+            .collect();
+
+        self.metadata.write().expect(LOCK_EXPECT).schema = updated_schema;
+
+        Ok(())
     }
 
     pub fn get_schema_raw(&self) -> HashMap<String, Arc<Field>> {
@@ -887,7 +883,7 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{stream_hash}.date={}.hour={:02}.minute={}.{}.data.{ARROW_FILE_EXTENSION}",
+            "{stream_hash}.date={}.hour={:02}.minute={}.{}.data.part",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
@@ -921,7 +917,7 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.data.{ARROW_FILE_EXTENSION}",
+            "{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.data.part",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
