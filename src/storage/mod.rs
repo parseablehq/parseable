@@ -20,6 +20,7 @@ use chrono::Local;
 use object_store::path::Path;
 use relative_path::RelativePath;
 use serde::{Deserialize, Serialize};
+use tokio::task::JoinError;
 
 use crate::{
     catalog::snapshot::Snapshot,
@@ -263,6 +264,9 @@ pub enum ObjectStorageError {
 
     #[error("{0}")]
     StandaloneWithDistributed(#[from] StandaloneWithDistributed),
+
+    #[error("JoinError: {0}")]
+    JoinError(#[from] JoinError),
 }
 
 pub fn to_object_store_path(path: &RelativePath) -> Path {

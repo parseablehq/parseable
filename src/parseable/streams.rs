@@ -512,10 +512,7 @@ impl Stream {
                     let file_size = match file.metadata() {
                         Ok(meta) => meta.len(),
                         Err(err) => {
-                            warn!(
-                                "File ({}) not found; Error = {err}",
-                                file.display()
-                            );
+                            warn!("File ({}) not found; Error = {err}", file.display());
                             continue;
                         }
                     };
