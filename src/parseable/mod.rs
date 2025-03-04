@@ -58,6 +58,9 @@ use crate::{
 mod staging;
 mod streams;
 
+/// File extension for arrow files in staging
+const ARROW_FILE_EXTENSION: &str = "arrows";
+
 /// Name of a Stream
 /// NOTE: this used to be a struct, flattened out for simplicity
 pub type LogStream = String;
@@ -240,6 +243,7 @@ impl Parseable {
         match self.options.mode {
             Mode::Query => "Distributed (Query)",
             Mode::Ingest => "Distributed (Ingest)",
+            Mode::Index => "Distributed (Index)",
             Mode::All => "Standalone",
         }
     }

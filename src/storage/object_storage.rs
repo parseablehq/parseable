@@ -33,6 +33,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
+use object_store::buffered::BufReader;
+use object_store::ObjectMeta;
 use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
@@ -74,6 +76,11 @@ pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync 
 
 #[async_trait]
 pub trait ObjectStorage: Debug + Send + Sync + 'static {
+    async fn get_buffered_reader(
+        &self,
+        path: &RelativePath,
+    ) -> Result<BufReader, ObjectStorageError>;
+    async fn head(&self, path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError>;
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError>;
     // TODO: make the filter function optional as we may want to get all objects
     async fn get_objects(
@@ -461,16 +468,12 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     ) -> Result<Option<Manifest>, ObjectStorageError> {
         let path = manifest_path(path.as_str());
         match self.get_object(&path).await {
-            Ok(bytes) => Ok(Some(
-                serde_json::from_slice(&bytes).expect("manifest is valid json"),
-            )),
-            Err(err) => {
-                if matches!(err, ObjectStorageError::NoSuchKey(_)) {
-                    Ok(None)
-                } else {
-                    Err(err)
-                }
+            Ok(bytes) => {
+                let manifest = serde_json::from_slice(&bytes)?;
+                Ok(Some(manifest))
             }
+            Err(ObjectStorageError::NoSuchKey(_)) => Ok(None),
+            Err(err) => Err(err),
         }
     }
 
@@ -817,7 +820,7 @@ pub fn schema_path(stream_name: &str) -> RelativePathBuf {
 
             RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, &file_name])
         }
-        Mode::All | Mode::Query => {
+        Mode::All | Mode::Query | Mode::Index => {
             RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME])
         }
     }
@@ -835,7 +838,7 @@ pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
             let file_name = format!(".ingestor.{id}{STREAM_METADATA_FILE_NAME}",);
             RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, &file_name])
         }
-        Mode::Query | Mode::All => RelativePathBuf::from_iter([
+        Mode::Query | Mode::All | Mode::Index => RelativePathBuf::from_iter([
             stream_name,
             STREAM_ROOT_DIRECTORY,
             STREAM_METADATA_FILE_NAME,

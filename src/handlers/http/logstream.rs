@@ -17,7 +17,7 @@
  */
 
 use self::error::StreamError;
-use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
+use super::cluster::utils::{IngestionStats, QueriedStats, StorageStats};
 use super::query::update_schema_when_distributed;
 use crate::event::format::override_data_type;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
@@ -257,8 +257,6 @@ pub async fn get_stats(
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or_else(|| StreamNotFound(stream_name.clone()))?;
 
-    let ingestor_stats: Option<Vec<QueriedStats>> = None;
-
     let time = Utc::now();
 
     let stats = {
@@ -279,13 +277,6 @@ pub async fn get_stats(
         );
 
         QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
-    };
-
-    let stats = if let Some(mut ingestor_stats) = ingestor_stats {
-        ingestor_stats.push(stats);
-        merge_quried_stats(ingestor_stats)
-    } else {
-        stats
     };
 
     let stats = serde_json::to_value(stats)?;
