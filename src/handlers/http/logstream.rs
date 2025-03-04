@@ -17,7 +17,7 @@
  */
 
 use self::error::StreamError;
-use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
+use super::cluster::utils::{IngestionStats, QueriedStats, StorageStats};
 use super::query::update_schema_when_distributed;
 use crate::event::format::override_data_type;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
@@ -257,64 +257,26 @@ pub async fn get_stats(
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or_else(|| StreamNotFound(stream_name.clone()))?;
 
-    let ingestor_stats: Option<Vec<QueriedStats>> = None;
-
-    let hash_map = PARSEABLE.streams.read().expect("Readable");
-    let stream_meta = &hash_map
-        .get(&stream_name)
-        .ok_or_else(|| StreamNotFound(stream_name.clone()))?
-        .metadata
-        .read()
-        .expect(LOCK_EXPECT);
-
     let time = Utc::now();
 
-    let stats = match &stream_meta.first_event_at {
-        Some(_) => {
-            let ingestion_stats = IngestionStats::new(
-                stats.current_stats.events,
-                format!("{} {}", stats.current_stats.ingestion, "Bytes"),
-                stats.lifetime_stats.events,
-                format!("{} {}", stats.lifetime_stats.ingestion, "Bytes"),
-                stats.deleted_stats.events,
-                format!("{} {}", stats.deleted_stats.ingestion, "Bytes"),
-                "json",
-            );
-            let storage_stats = StorageStats::new(
-                format!("{} {}", stats.current_stats.storage, "Bytes"),
-                format!("{} {}", stats.lifetime_stats.storage, "Bytes"),
-                format!("{} {}", stats.deleted_stats.storage, "Bytes"),
-                "parquet",
-            );
+    let stats = {
+        let ingestion_stats = IngestionStats::new(
+            stats.current_stats.events,
+            format!("{} Bytes", stats.current_stats.ingestion),
+            stats.lifetime_stats.events,
+            format!("{} Bytes", stats.lifetime_stats.ingestion),
+            stats.deleted_stats.events,
+            format!("{} Bytes", stats.deleted_stats.ingestion),
+            "json",
+        );
+        let storage_stats = StorageStats::new(
+            format!("{} Bytes", stats.current_stats.storage),
+            format!("{} Bytes", stats.lifetime_stats.storage),
+            format!("{} Bytes", stats.deleted_stats.storage),
+            "parquet",
+        );
 
-            QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
-        }
-
-        None => {
-            let ingestion_stats = IngestionStats::new(
-                stats.current_stats.events,
-                format!("{} {}", stats.current_stats.ingestion, "Bytes"),
-                stats.lifetime_stats.events,
-                format!("{} {}", stats.lifetime_stats.ingestion, "Bytes"),
-                stats.deleted_stats.events,
-                format!("{} {}", stats.deleted_stats.ingestion, "Bytes"),
-                "json",
-            );
-            let storage_stats = StorageStats::new(
-                format!("{} {}", stats.current_stats.storage, "Bytes"),
-                format!("{} {}", stats.lifetime_stats.storage, "Bytes"),
-                format!("{} {}", stats.deleted_stats.storage, "Bytes"),
-                "parquet",
-            );
-
-            QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
-        }
-    };
-    let stats = if let Some(mut ingestor_stats) = ingestor_stats {
-        ingestor_stats.push(stats);
-        merge_quried_stats(ingestor_stats)
-    } else {
-        stats
+        QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
     };
 
     let stats = serde_json::to_value(stats)?;
