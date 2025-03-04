@@ -61,8 +61,7 @@ use serde_json::{Map, Value};
 ///
 /// * `schema` - The schema of the record batch.
 /// * `batch` - The record batch to modify.
-/// * `indexes` - The indexes of the columns to replace.
-/// * `arrays` - The new arrays to replace the columns with.
+/// * `indexed_arrays` - A list of indexes and arrays to replace the columns indexed with.
 ///
 /// # Returns
 ///
@@ -70,12 +69,11 @@ use serde_json::{Map, Value};
 pub fn replace_columns(
     schema: Arc<Schema>,
     batch: &RecordBatch,
-    indexes: &[usize],
-    arrays: &[Arc<dyn Array + 'static>],
+    indexed_arrays: &[(usize, Arc<dyn Array + 'static>)],
 ) -> RecordBatch {
     let mut batch_arrays = batch.columns().iter().map(Arc::clone).collect_vec();
-    for (&index, arr) in indexes.iter().zip(arrays.iter()) {
-        batch_arrays[index] = Arc::clone(arr);
+    for (index, arr) in indexed_arrays {
+        batch_arrays[*index] = Arc::clone(arr);
     }
     RecordBatch::try_new(schema, batch_arrays).unwrap()
 }
@@ -178,7 +176,7 @@ mod tests {
 
         let arr: Arc<dyn Array + 'static> = Arc::new(Int32Array::from_value(0, 3));
 
-        let new_rb = replace_columns(schema_ref.clone(), &rb, &[2], &[arr]);
+        let new_rb = replace_columns(schema_ref.clone(), &rb, &[(2, arr)]);
 
         assert_eq!(new_rb.schema(), schema_ref);
         assert_eq!(new_rb.num_columns(), 3);

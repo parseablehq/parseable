@@ -20,10 +20,11 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt::Display,
+    num::NonZeroU32,
     sync::Arc,
 };
 
-use anyhow::{anyhow, Error as AnyError};
+use anyhow::anyhow;
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::{DateTime, Utc};
@@ -32,8 +33,11 @@ use serde_json::Value;
 
 use crate::{
     metadata::SchemaVersion,
-    storage::StreamType,
-    utils::arrow::{get_field, get_timestamp_array, replace_columns},
+    parseable::Stream,
+    utils::{
+        arrow::{get_field, get_timestamp_array, replace_columns},
+        json::Json,
+    },
 };
 
 use super::{Event, DEFAULT_TIMESTAMP_KEY};
@@ -92,6 +96,8 @@ impl Display for LogSource {
     }
 }
 
+pub type IsFirstEvent = bool;
+
 // Global Trait for event format
 // This trait is implemented by all the event formats
 pub trait EventFormat: Sized {
@@ -99,33 +105,31 @@ pub trait EventFormat: Sized {
 
     fn to_data(
         self,
-        schema: &HashMap<String, Arc<Field>>,
         time_partition: Option<&String>,
+        time_partition_limit: Option<NonZeroU32>,
+        custom_partitions: Option<&String>,
         schema_version: SchemaVersion,
-    ) -> Result<(Self::Data, EventSchema, bool), AnyError>;
+    ) -> anyhow::Result<Vec<Self::Data>>;
 
-    fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
+    fn infer_schema(
+        data: &Self::Data,
+        stored_schema: &HashMap<String, Arc<Field>>,
+        time_partition: Option<&String>,
+        static_schema_flag: bool,
+        schema_version: SchemaVersion,
+    ) -> anyhow::Result<(EventSchema, IsFirstEvent)>;
 
-    /// Returns the UTC time at ingestion
-    fn get_p_timestamp(&self) -> DateTime<Utc>;
+    fn decode(data: &[Self::Data], schema: Arc<Schema>) -> anyhow::Result<RecordBatch>;
 
-    fn into_recordbatch(
-        self,
+    /// Updates inferred schema with `p_timestamp` field and ensures it adheres to expectations
+    fn prepare_and_validate_schema(
+        mut schema: EventSchema,
         storage_schema: &HashMap<String, Arc<Field>>,
         static_schema_flag: bool,
-        time_partition: Option<&String>,
-        schema_version: SchemaVersion,
-    ) -> Result<(RecordBatch, bool), AnyError> {
-        let p_timestamp = self.get_p_timestamp();
-        let (data, mut schema, is_first) =
-            self.to_data(storage_schema, time_partition, schema_version)?;
-
+    ) -> anyhow::Result<EventSchema> {
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
-            return Err(anyhow!(
-                "field {} is a reserved field",
-                DEFAULT_TIMESTAMP_KEY
-            ));
-        };
+            return Err(anyhow!("field {DEFAULT_TIMESTAMP_KEY} is a reserved field",));
+        }
 
         // add the p_timestamp field to the event schema to the 0th index
         schema.insert(
@@ -137,11 +141,28 @@ pub trait EventFormat: Sized {
             )),
         );
 
-        // prepare the record batch and new fields to be added
-        let mut new_schema = Arc::new(Schema::new(schema));
-        if !Self::is_schema_matching(new_schema.clone(), storage_schema, static_schema_flag) {
+        if static_schema_flag
+            && schema.iter().any(|field| {
+                storage_schema
+                    .get(field.name())
+                    .is_none_or(|storage_field| storage_field != field)
+            })
+        {
             return Err(anyhow!("Schema mismatch"));
         }
+
+        Ok(schema)
+    }
+
+    fn into_recordbatch(
+        p_timestamp: DateTime<Utc>,
+        data: &[Self::Data],
+        schema: &EventSchema,
+        time_partition: Option<&String>,
+        schema_version: SchemaVersion,
+    ) -> anyhow::Result<RecordBatch> {
+        // prepare the record batch and new fields to be added
+        let mut new_schema = Arc::new(Schema::new(schema.clone()));
         new_schema =
             update_field_type_in_schema(new_schema, None, time_partition, None, schema_version);
 
@@ -149,47 +170,13 @@ pub trait EventFormat: Sized {
         rb = replace_columns(
             rb.schema(),
             &rb,
-            &[0],
-            &[Arc::new(get_timestamp_array(p_timestamp, rb.num_rows()))],
+            &[(0, Arc::new(get_timestamp_array(p_timestamp, rb.num_rows())))],
         );
 
-        Ok((rb, is_first))
+        Ok(rb)
     }
 
-    fn is_schema_matching(
-        new_schema: Arc<Schema>,
-        storage_schema: &HashMap<String, Arc<Field>>,
-        static_schema_flag: bool,
-    ) -> bool {
-        if !static_schema_flag {
-            return true;
-        }
-        for field in new_schema.fields() {
-            let Some(storage_field) = storage_schema.get(field.name()) else {
-                return false;
-            };
-            if field.name() != storage_field.name() {
-                return false;
-            }
-            if field.data_type() != storage_field.data_type() {
-                return false;
-            }
-        }
-        true
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn into_event(
-        self,
-        stream_name: String,
-        origin_size: u64,
-        storage_schema: &HashMap<String, Arc<Field>>,
-        static_schema_flag: bool,
-        custom_partitions: Option<&String>,
-        time_partition: Option<&String>,
-        schema_version: SchemaVersion,
-        stream_type: StreamType,
-    ) -> Result<Event, AnyError>;
+    fn into_event(self, stream: &Stream) -> anyhow::Result<Event>;
 }
 
 pub fn get_existing_field_names(
@@ -247,7 +234,7 @@ pub fn update_field_type_in_schema(
     inferred_schema: Arc<Schema>,
     existing_schema: Option<&HashMap<String, Arc<Field>>>,
     time_partition: Option<&String>,
-    log_records: Option<&Vec<Value>>,
+    log_records: Option<&Json>,
     schema_version: SchemaVersion,
 ) -> Arc<Schema> {
     let mut updated_schema = inferred_schema.clone();
@@ -258,11 +245,9 @@ pub fn update_field_type_in_schema(
         updated_schema = override_existing_timestamp_fields(existing_schema, updated_schema);
     }
 
-    if let Some(log_records) = log_records {
-        for log_record in log_records {
-            updated_schema =
-                override_data_type(updated_schema.clone(), log_record.clone(), schema_version);
-        }
+    if let Some(log_record) = log_records {
+        updated_schema =
+            override_data_type(updated_schema.clone(), log_record.clone(), schema_version);
     }
 
     let Some(time_partition) = time_partition else {
@@ -292,18 +277,15 @@ pub fn update_field_type_in_schema(
 // a string value parseable into timestamp as timestamp type and all numbers as float64.
 pub fn override_data_type(
     inferred_schema: Arc<Schema>,
-    log_record: Value,
+    log_record: Json,
     schema_version: SchemaVersion,
 ) -> Arc<Schema> {
-    let Value::Object(map) = log_record else {
-        return inferred_schema;
-    };
     let updated_schema: Vec<Field> = inferred_schema
         .fields()
         .iter()
         .map(|field| {
             let field_name = field.name().as_str();
-            match (schema_version, map.get(field.name())) {
+            match (schema_version, log_record.get(field.name())) {
                 // in V1 for new fields in json named "time"/"date" or such and having inferred
                 // type string, that can be parsed as timestamp, use the timestamp type.
                 // NOTE: support even more datetime string formats
