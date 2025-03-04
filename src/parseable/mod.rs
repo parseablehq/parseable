@@ -243,6 +243,7 @@ impl Parseable {
         match self.options.mode {
             Mode::Query => "Distributed (Query)",
             Mode::Ingest => "Distributed (Ingest)",
+            Mode::Index => "Distributed (Index)",
             Mode::All => "Standalone",
         }
     }
