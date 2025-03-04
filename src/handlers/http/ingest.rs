@@ -89,7 +89,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             size as u64,
             &schema,
             false,
-            None,
+            &[],
             None,
             SchemaVersion::V0,
             StreamType::Internal,
@@ -506,7 +506,7 @@ mod tests {
             json,
             None,
             None,
-            None,
+            &[],
             SchemaVersion::V0,
             &crate::event::format::LogSource::default()
         )
@@ -709,7 +709,7 @@ mod tests {
                 json,
                 None,
                 None,
-                None,
+                &[],
                 SchemaVersion::V0,
                 &crate::event::format::LogSource::default(),
             )
@@ -792,7 +792,7 @@ mod tests {
                 json,
                 None,
                 None,
-                None,
+                &[],
                 SchemaVersion::V1,
                 &crate::event::format::LogSource::default(),
             )

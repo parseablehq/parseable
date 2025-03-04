@@ -144,18 +144,13 @@ impl EventFormat for Event {
         origin_size: u64,
         storage_schema: &HashMap<String, Arc<Field>>,
         static_schema_flag: bool,
-        custom_partitions: Option<&String>,
+        custom_partitions: &[String],
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
         stream_type: StreamType,
     ) -> Result<super::Event, anyhow::Error> {
-        let custom_partition_values = match custom_partitions.as_ref() {
-            Some(custom_partition) => {
-                let custom_partitions = custom_partition.split(',').collect_vec();
-                extract_custom_partition_values(&self.json, &custom_partitions)
-            }
-            None => HashMap::new(),
-        };
+        let custom_partition_values =
+            extract_custom_partition_values(&self.json, custom_partitions);
 
         let parsed_timestamp = match time_partition {
             Some(time_partition) => extract_and_parse_time(&self.json, time_partition)?,
@@ -187,7 +182,7 @@ impl EventFormat for Event {
 /// e.g. `json: {"status": 400, "msg": "Hello, World!"}, custom_partition_list: ["status"]` returns `{"status" => 400}`
 pub fn extract_custom_partition_values(
     json: &Value,
-    custom_partition_list: &[&str],
+    custom_partition_list: &[String],
 ) -> HashMap<String, String> {
     let mut custom_partition_values: HashMap<String, String> = HashMap::new();
     for custom_partition_field in custom_partition_list {

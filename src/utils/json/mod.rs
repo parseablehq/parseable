@@ -25,6 +25,9 @@ use serde_json;
 use serde_json::Value;
 
 use crate::event::format::LogSource;
+use crate::handlers::http::modal::utils::logstream_utils::{
+    parse_custom_partition, CustomPartition,
+};
 use crate::metadata::SchemaVersion;
 
 pub mod flatten;
@@ -36,7 +39,7 @@ pub fn flatten_json_body(
     body: Value,
     time_partition: Option<&String>,
     time_partition_limit: Option<NonZeroU32>,
-    custom_partition: Option<&String>,
+    custom_partitions: &[String],
     schema_version: SchemaVersion,
     validation_required: bool,
     log_source: &LogSource,
@@ -58,7 +61,7 @@ pub fn flatten_json_body(
         "_",
         time_partition,
         time_partition_limit,
-        custom_partition,
+        custom_partitions,
         validation_required,
     )?;
     Ok(nested_value)
@@ -68,7 +71,7 @@ pub fn convert_array_to_object(
     body: Value,
     time_partition: Option<&String>,
     time_partition_limit: Option<NonZeroU32>,
-    custom_partition: Option<&String>,
+    custom_partitions: &[String],
     schema_version: SchemaVersion,
     log_source: &LogSource,
 ) -> Result<Vec<Value>, anyhow::Error> {
@@ -76,7 +79,7 @@ pub fn convert_array_to_object(
         body,
         time_partition,
         time_partition_limit,
-        custom_partition,
+        custom_partitions,
         schema_version,
         true,
         log_source,
@@ -142,6 +145,54 @@ where
     }
 }
 
+struct PartitionsFromStr;
+
+impl Visitor<'_> for PartitionsFromStr {
+    type Value = Vec<CustomPartition>;
+
+    fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+        formatter.write_str("a comma-separated list of custom partitions (e.g., \"a,b,c\")")
+    }
+
+    fn visit_borrowed_str<E>(self, v: &'_ str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        self.visit_str(v)
+    }
+
+    fn visit_str<E>(self, s: &str) -> Result<Self::Value, E>
+    where
+        E: serde::de::Error,
+    {
+        parse_custom_partition(s)
+            .map_err(|e| E::custom(format!("Expected list: \"a, b, c\", got: {s}; error: {e}",)))
+    }
+}
+
+/// Used to convert "a,b,c" to ["a", "b", "c"], to support backward compatibility.
+pub fn deserialize_custom_partitions<'de, D>(
+    deserializer: D,
+) -> Result<Vec<CustomPartition>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    deserializer.deserialize_str(PartitionsFromStr)
+}
+
+/// Used to convert ["a", "b", "c"] to "a,b,c" for backward compatibility.
+pub fn serialize_custom_partitions<S>(value: &[String], serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    if value.is_empty() {
+        // Skip serializing this field
+        serializer.serialize_none()
+    } else {
+        serializer.serialize_str(&value.join(","))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::event::format::LogSource;
@@ -159,7 +210,7 @@ mod tests {
                 value,
                 None,
                 None,
-                None,
+                &[],
                 crate::metadata::SchemaVersion::V1,
                 false,
                 &LogSource::default()
@@ -178,7 +229,7 @@ mod tests {
                 value,
                 None,
                 None,
-                None,
+                &[],
                 crate::metadata::SchemaVersion::V1,
                 false,
                 &LogSource::default()

@@ -16,16 +16,15 @@
  *
  */
 
-use crate::event::DEFAULT_TIMESTAMP_KEY;
-use crate::utils::arrow::get_field;
-use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 use std::str;
+use std::sync::Arc;
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use serde::{Deserialize, Serialize};
+
+use crate::event::DEFAULT_TIMESTAMP_KEY;
+use crate::utils::arrow::get_field;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct StaticSchema {
@@ -58,10 +57,11 @@ pub struct Fields {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Metadata {}
+
 pub fn convert_static_schema_to_arrow_schema(
     static_schema: StaticSchema,
-    time_partition: &str,
-    custom_partition: Option<&String>,
+    time_partition: &Option<String>,
+    custom_partitions: &[String],
 ) -> Result<Arc<Schema>, StaticSchemaError> {
     let mut parsed_schema = ParsedSchema {
         fields: Vec::new(),
@@ -69,34 +69,22 @@ pub fn convert_static_schema_to_arrow_schema(
     };
     let mut time_partition_exists = false;
 
-    if let Some(custom_partition) = custom_partition {
-        let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
-        let mut custom_partition_exists = HashMap::with_capacity(custom_partition_list.len());
-
-        for partition in &custom_partition_list {
-            if static_schema
-                .fields
-                .iter()
-                .any(|field| &field.name == partition)
-            {
-                custom_partition_exists.insert(partition.to_string(), true);
-            }
-        }
-
-        for partition in &custom_partition_list {
-            if !custom_partition_exists.contains_key(*partition) {
-                return Err(StaticSchemaError::MissingCustomPartition(
-                    partition.to_string(),
-                ));
-            }
+    for partition in custom_partitions {
+        if !static_schema
+            .fields
+            .iter()
+            .any(|field| &field.name == partition)
+        {
+            return Err(StaticSchemaError::MissingCustomPartition(
+                partition.to_owned(),
+            ));
         }
     }
 
     let mut existing_field_names: HashSet<String> = HashSet::new();
-
     for mut field in static_schema.fields {
         validate_field_names(&field.name, &mut existing_field_names)?;
-        if !time_partition.is_empty() && field.name == time_partition {
+        if time_partition.as_ref().is_some_and(|p| p == &field.name) {
             time_partition_exists = true;
             field.data_type = "datetime".to_string();
         }
@@ -134,11 +122,14 @@ pub fn convert_static_schema_to_arrow_schema(
 
         parsed_schema.fields.push(parsed_field);
     }
-    if !time_partition.is_empty() && !time_partition_exists {
-        return Err(StaticSchemaError::MissingTimePartition(
-            time_partition.to_string(),
-        ));
+    if let Some(time_partition) = time_partition {
+        if !time_partition_exists {
+            return Err(StaticSchemaError::MissingTimePartition(
+                time_partition.to_owned(),
+            ));
+        }
     }
+
     add_parseable_fields_to_static_schema(parsed_schema)
 }
 
