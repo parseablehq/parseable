@@ -262,17 +262,17 @@ pub async fn get_stats(
     let stats = {
         let ingestion_stats = IngestionStats::new(
             stats.current_stats.events,
-            format!("{} {}", stats.current_stats.ingestion, "Bytes"),
+            format!("{} Bytes", stats.current_stats.ingestion),
             stats.lifetime_stats.events,
-            format!("{} {}", stats.lifetime_stats.ingestion, "Bytes"),
+            format!("{} Bytes", stats.lifetime_stats.ingestion),
             stats.deleted_stats.events,
-            format!("{} {}", stats.deleted_stats.ingestion, "Bytes"),
+            format!("{} Bytes", stats.deleted_stats.ingestion),
             "json",
         );
         let storage_stats = StorageStats::new(
-            format!("{} {}", stats.current_stats.storage, "Bytes"),
-            format!("{} {}", stats.lifetime_stats.storage, "Bytes"),
-            format!("{} {}", stats.deleted_stats.storage, "Bytes"),
+            format!("{} Bytes", stats.current_stats.storage),
+            format!("{} Bytes", stats.lifetime_stats.storage),
+            format!("{} Bytes", stats.deleted_stats.storage),
             "parquet",
         );
 
