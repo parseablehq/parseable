@@ -23,7 +23,7 @@ use anyhow::anyhow;
 use arrow_array::RecordBatch;
 use arrow_json::reader::{infer_json_schema_from_iterator, ReaderBuilder};
 use arrow_schema::{DataType, Field, Fields, Schema};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use itertools::Itertools;
 use opentelemetry_proto::tonic::{
@@ -47,8 +47,16 @@ use crate::{
     utils::{
         arrow::get_field,
         json::{flatten_json_body, Json},
+        time::Minute,
     },
+    OBJECT_STORE_DATA_GRANULARITY,
 };
+
+struct JsonPartition {
+    batch: Vec<Json>,
+    schema: Vec<Arc<Field>>,
+    date: NaiveDate,
+}
 
 pub struct Event {
     pub json: Value,
@@ -248,7 +256,7 @@ impl EventFormat for Event {
         )?;
 
         let mut is_first_event = false;
-        let mut partitions = HashMap::new();
+        let mut json_partitions = HashMap::new();
         for json in data {
             let (schema, is_first) = Self::infer_schema(
                 &json,
@@ -257,6 +265,7 @@ impl EventFormat for Event {
                 static_schema_flag,
                 schema_version,
             )?;
+
             is_first_event = is_first_event || is_first;
             let custom_partition_values = match custom_partitions.as_ref() {
                 Some(custom_partitions) => {
@@ -267,43 +276,58 @@ impl EventFormat for Event {
             };
 
             let parsed_timestamp = match time_partition.as_ref() {
-                Some(time_partition) => extract_and_parse_time(&json, time_partition.as_ref())?,
+                Some(time_partition) => extract_and_parse_time(&json, time_partition)?,
                 _ => p_timestamp.naive_utc(),
             };
 
+            let prefix = format!(
+                "{}.{}.minute={}.{}",
+                get_schema_key(&schema),
+                parsed_timestamp.format("date=%Y-%m-%d.hour=%H"),
+                Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
+                custom_partition_values
+                    .iter()
+                    .sorted_by_key(|v| v.0)
+                    .map(|(key, value)| format!("{key}={value}."))
+                    .join("")
+            );
+
+            match json_partitions.get_mut(&prefix) {
+                Some(JsonPartition { batch, .. }) => batch.push(json),
+                _ => {
+                    let date = parsed_timestamp.date();
+                    let batch = vec![json];
+                    json_partitions.insert(
+                        prefix,
+                        JsonPartition {
+                            batch,
+                            schema,
+                            date,
+                        },
+                    );
+                }
+            }
+        }
+
+        let mut partitions = HashMap::new();
+        for (
+            prefix,
+            JsonPartition {
+                batch,
+                schema,
+                date,
+            },
+        ) in json_partitions
+        {
             let batch = Self::into_recordbatch(
                 p_timestamp,
-                &[json],
+                &batch,
                 &schema,
                 time_partition.as_ref(),
                 schema_version,
             )?;
 
-            let schema = batch.schema();
-            let mut key = get_schema_key(&schema.fields);
-            if time_partition.is_some() {
-                let parsed_timestamp_to_min = parsed_timestamp.format("%Y%m%dT%H%M").to_string();
-                key.push_str(&parsed_timestamp_to_min);
-            }
-
-            for (k, v) in custom_partition_values.iter().sorted_by_key(|v| v.0) {
-                key.push_str(&format!("&{k}={v}"));
-            }
-
-            match partitions.get_mut(&key) {
-                Some(PartitionEvent { rbs, .. }) => rbs.push(batch),
-                _ => {
-                    partitions.insert(
-                        key,
-                        PartitionEvent {
-                            rbs: vec![batch],
-                            schema,
-                            parsed_timestamp,
-                            custom_partition_values,
-                        },
-                    );
-                }
-            }
+            partitions.insert(prefix, PartitionEvent { rb: batch, date });
         }
 
         Ok(super::Event {

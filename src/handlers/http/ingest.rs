@@ -16,8 +16,6 @@
  *
  */
 
-use std::collections::HashMap;
-
 use actix_web::web::Path;
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_array::RecordBatch;
@@ -236,22 +234,19 @@ pub async fn post_event(
 }
 
 pub async fn push_logs_unchecked(
-    batch: RecordBatch,
+    rb: RecordBatch,
     stream: &Stream,
 ) -> Result<event::Event, PostError> {
-    let schema = batch.schema();
     let unchecked_event = event::Event {
         origin_format: "json",
         origin_size: 0,
         time_partition: None,
         is_first_event: true, // NOTE: Maybe should be false
         partitions: [(
-            get_schema_key(&schema.fields),
+            get_schema_key(&rb.schema().fields),
             PartitionEvent {
-                rbs: vec![batch],
-                schema,
-                parsed_timestamp: Utc::now().naive_utc(),
-                custom_partition_values: HashMap::new(), // should be an empty map for unchecked push
+                rb,
+                date: Utc::now().date_naive(),
             },
         )]
         .into_iter()
