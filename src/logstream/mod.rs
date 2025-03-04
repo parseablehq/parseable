@@ -68,10 +68,7 @@ pub async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, Str
             None
         };
 
-    let hash_map = PARSEABLE.streams.read().unwrap();
-    let stream_meta = hash_map
-        .get(stream_name)
-        .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?
+    let stream_meta = PARSEABLE.get_stream(stream_name)?
         .metadata
         .read()
         .expect(LOCK_EXPECT);
