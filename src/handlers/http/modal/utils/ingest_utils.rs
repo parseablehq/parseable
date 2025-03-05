@@ -30,7 +30,6 @@ use crate::{
     },
     otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
     parseable::PARSEABLE,
-    storage::StreamType,
     utils::json::{convert_array_to_object, flatten::convert_to_array},
 };
 
@@ -85,7 +84,6 @@ async fn push_logs(
     let time_partition_limit = PARSEABLE
         .get_stream(stream_name)?
         .get_time_partition_limit();
-    let static_schema_flag = stream.get_static_schema_flag();
     let custom_partition = stream.get_custom_partition();
     let schema_version = stream.get_schema_version();
     let p_timestamp = Utc::now();
@@ -112,19 +110,9 @@ async fn push_logs(
 
     for json in data {
         let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
-        let schema = PARSEABLE.get_stream(stream_name)?.get_schema_raw();
         json::Event { json, p_timestamp }
-            .into_event(
-                stream_name.to_owned(),
-                origin_size,
-                &schema,
-                static_schema_flag,
-                custom_partition.as_ref(),
-                time_partition.as_ref(),
-                schema_version,
-                StreamType::UserDefined,
-            )?
-            .process()?;
+            .to_event(&stream, origin_size)?
+            .process(&stream)?;
     }
     Ok(())
 }

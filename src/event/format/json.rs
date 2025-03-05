@@ -30,8 +30,8 @@ use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 use tracing::error;
 
-use super::EventFormat;
-use crate::{metadata::SchemaVersion, storage::StreamType, utils::arrow::get_field};
+use super::{EventFormat, EventSchema};
+use crate::{metadata::SchemaVersion, utils::arrow::get_field};
 
 pub struct Event {
     pub json: Value,
@@ -55,6 +55,27 @@ impl EventFormat for Event {
         self.p_timestamp
     }
 
+    fn get_partitions(
+        &self,
+        time_partition: Option<&String>,
+        custom_partitions: Option<&String>,
+    ) -> anyhow::Result<(NaiveDateTime, HashMap<String, String>)> {
+        let custom_partition_values = match custom_partitions.as_ref() {
+            Some(custom_partition) => {
+                let custom_partitions = custom_partition.split(',').collect_vec();
+                extract_custom_partition_values(&self.json, &custom_partitions)
+            }
+            None => HashMap::new(),
+        };
+
+        let parsed_timestamp = match time_partition {
+            Some(time_partition) => extract_and_parse_time(&self.json, time_partition)?,
+            _ => self.p_timestamp.naive_utc(),
+        };
+
+        Ok((parsed_timestamp, custom_partition_values))
+    }
+
     // convert the incoming json to a vector of json values
     // also extract the arrow schema, tags and metadata from the incoming json
     fn to_data(
@@ -62,9 +83,8 @@ impl EventFormat for Event {
         schema: &HashMap<String, Arc<Field>>,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
-    ) -> Result<(Self::Data, Vec<Arc<Field>>, bool), anyhow::Error> {
+    ) -> anyhow::Result<(Self::Data, EventSchema, bool)> {
         let stream_schema = schema;
-
         // incoming event may be a single json or a json array
         // but Data (type defined above) is a vector of json values
         // hence we need to convert the incoming event to a vector of json values
@@ -135,51 +155,6 @@ impl EventFormat for Event {
             Err(err) => Err(anyhow!("Failed to create recordbatch due to {:?}", err)),
             Ok(None) => unreachable!("all records are added to one rb"),
         }
-    }
-
-    /// Converts a JSON event into a Parseable Event
-    fn into_event(
-        self,
-        stream_name: String,
-        origin_size: u64,
-        storage_schema: &HashMap<String, Arc<Field>>,
-        static_schema_flag: bool,
-        custom_partitions: Option<&String>,
-        time_partition: Option<&String>,
-        schema_version: SchemaVersion,
-        stream_type: StreamType,
-    ) -> Result<super::Event, anyhow::Error> {
-        let custom_partition_values = match custom_partitions.as_ref() {
-            Some(custom_partition) => {
-                let custom_partitions = custom_partition.split(',').collect_vec();
-                extract_custom_partition_values(&self.json, &custom_partitions)
-            }
-            None => HashMap::new(),
-        };
-
-        let parsed_timestamp = match time_partition {
-            Some(time_partition) => extract_and_parse_time(&self.json, time_partition)?,
-            _ => self.p_timestamp.naive_utc(),
-        };
-
-        let (rb, is_first_event) = self.into_recordbatch(
-            storage_schema,
-            static_schema_flag,
-            time_partition,
-            schema_version,
-        )?;
-
-        Ok(super::Event {
-            rb,
-            stream_name,
-            origin_format: "json",
-            origin_size,
-            is_first_event,
-            parsed_timestamp,
-            time_partition: None,
-            custom_partition_values,
-            stream_type,
-        })
     }
 }
 

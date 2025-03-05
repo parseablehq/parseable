@@ -23,20 +23,20 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{anyhow, Error as AnyError};
+use anyhow::anyhow;
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
     metadata::SchemaVersion,
-    storage::StreamType,
+    parseable::Stream,
     utils::arrow::{get_field, get_timestamp_array, replace_columns},
 };
 
-use super::{Event, DEFAULT_TIMESTAMP_KEY};
+use super::DEFAULT_TIMESTAMP_KEY;
 
 pub mod json;
 
@@ -97,28 +97,36 @@ impl Display for LogSource {
 pub trait EventFormat: Sized {
     type Data;
 
+    fn get_partitions(
+        &self,
+        time_partition: Option<&String>,
+        custom_partitions: Option<&String>,
+    ) -> anyhow::Result<(NaiveDateTime, HashMap<String, String>)>;
+
     fn to_data(
         self,
         schema: &HashMap<String, Arc<Field>>,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
-    ) -> Result<(Self::Data, EventSchema, bool), AnyError>;
+    ) -> anyhow::Result<(Self::Data, EventSchema, bool)>;
 
-    fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
+    fn decode(data: Self::Data, schema: Arc<Schema>) -> anyhow::Result<RecordBatch>;
 
     /// Returns the UTC time at ingestion
     fn get_p_timestamp(&self) -> DateTime<Utc>;
 
-    fn into_recordbatch(
-        self,
-        storage_schema: &HashMap<String, Arc<Field>>,
-        static_schema_flag: bool,
-        time_partition: Option<&String>,
-        schema_version: SchemaVersion,
-    ) -> Result<(RecordBatch, bool), AnyError> {
+    fn to_event(self, stream: &Stream, origin_size: u64) -> anyhow::Result<super::Event> {
+        let storage_schema = stream.get_schema_raw();
+        let static_schema_flag = stream.get_static_schema_flag();
+        let time_partition = stream.get_time_partition();
+        let custom_partition = stream.get_custom_partition();
+        let schema_version = stream.get_schema_version();
+        let stream_type = stream.get_stream_type();
         let p_timestamp = self.get_p_timestamp();
-        let (data, mut schema, is_first) =
-            self.to_data(storage_schema, time_partition, schema_version)?;
+        let (parsed_timestamp, custom_partition_values) =
+            self.get_partitions(time_partition.as_ref(), custom_partition.as_ref())?;
+        let (data, mut schema, is_first_event) =
+            self.to_data(&storage_schema, time_partition.as_ref(), schema_version)?;
 
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
             return Err(anyhow!(
@@ -139,11 +147,16 @@ pub trait EventFormat: Sized {
 
         // prepare the record batch and new fields to be added
         let mut new_schema = Arc::new(Schema::new(schema));
-        if !Self::is_schema_matching(new_schema.clone(), storage_schema, static_schema_flag) {
+        if !Self::is_schema_matching(new_schema.clone(), &storage_schema, static_schema_flag) {
             return Err(anyhow!("Schema mismatch"));
         }
-        new_schema =
-            update_field_type_in_schema(new_schema, None, time_partition, None, schema_version);
+        new_schema = update_field_type_in_schema(
+            new_schema,
+            None,
+            time_partition.as_ref(),
+            None,
+            schema_version,
+        );
 
         let mut rb = Self::decode(data, new_schema.clone())?;
         rb = replace_columns(
@@ -153,7 +166,16 @@ pub trait EventFormat: Sized {
             &[Arc::new(get_timestamp_array(p_timestamp, rb.num_rows()))],
         );
 
-        Ok((rb, is_first))
+        Ok(super::Event {
+            rb,
+            origin_format: "json",
+            origin_size,
+            is_first_event,
+            time_partition,
+            parsed_timestamp,
+            custom_partition_values,
+            stream_type,
+        })
     }
 
     fn is_schema_matching(
@@ -177,19 +199,6 @@ pub trait EventFormat: Sized {
         }
         true
     }
-
-    #[allow(clippy::too_many_arguments)]
-    fn into_event(
-        self,
-        stream_name: String,
-        origin_size: u64,
-        storage_schema: &HashMap<String, Arc<Field>>,
-        static_schema_flag: bool,
-        custom_partitions: Option<&String>,
-        time_partition: Option<&String>,
-        schema_version: SchemaVersion,
-        stream_type: StreamType,
-    ) -> Result<Event, AnyError>;
 }
 
 pub fn get_existing_field_names(
