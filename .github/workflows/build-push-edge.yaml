@@ -42,9 +42,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile.debug
+          file: ./Dockerfile
           push: true
-          tags: parseable/parseable:edge-debug
+          tags: parseable/parseable:edge
           platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -53,9 +53,9 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile.debug
+          file: ./Dockerfile
           push: true
-          tags: parseable/parseable:edge-debug
+          tags: parseable/parseable
           platforms: linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
