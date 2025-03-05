@@ -780,7 +780,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             for path in stream.schema_files() {
                 let file = File::open(&path)?;
                 let schema: Schema = serde_json::from_reader(file)?;
-                commit_schema_to_storage(&stream_name, schema).await?;
+                self.commit_schema(&stream_name, schema).await?;
                 if let Err(e) = remove_file(path) {
                     warn!("Failed to remove staged file: {e}");
                 }
@@ -789,16 +789,16 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
         Ok(())
     }
-}
 
-pub async fn commit_schema_to_storage(
-    stream_name: &str,
-    schema: Schema,
-) -> Result<(), ObjectStorageError> {
-    let storage = PARSEABLE.storage().get_object_store();
-    let stream_schema = storage.get_schema(stream_name).await?;
-    let new_schema = Schema::try_merge(vec![schema, stream_schema]).unwrap();
-    storage.put_schema(stream_name, &new_schema).await
+    async fn commit_schema(
+        &self,
+        stream_name: &str,
+        schema: Schema,
+    ) -> Result<(), ObjectStorageError> {
+        let stream_schema = self.get_schema(stream_name).await?;
+        let new_schema = Schema::try_merge(vec![schema, stream_schema]).unwrap();
+        self.put_schema(stream_name, &new_schema).await
+    }
 }
 
 #[inline(always)]

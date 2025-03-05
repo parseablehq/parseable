@@ -28,7 +28,6 @@ use crate::{
     handlers::http::{
         cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
         logstream::error::StreamError,
-        query::update_schema_when_distributed,
     },
     parseable::{StreamNotFound, PARSEABLE},
     stats,
@@ -77,7 +76,10 @@ async fn get_stream_schema_helper(stream_name: &str) -> Result<Arc<Schema>, Stre
     }
 
     let stream = PARSEABLE.get_stream(stream_name)?;
-    match update_schema_when_distributed(&vec![stream_name.to_owned()]).await {
+    match PARSEABLE
+        .update_schema_when_distributed(&vec![stream_name.to_owned()])
+        .await
+    {
         Ok(_) => {
             let schema = stream.get_schema();
             Ok(schema)
