@@ -18,30 +18,31 @@
 
 use std::{io::ErrorKind, sync::Arc};
 
-use self::{column::Column, snapshot::ManifestItem};
-use crate::handlers;
-use crate::handlers::http::base_path_without_preceding_slash;
-use crate::metadata::STREAM_INFO;
-use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
-use crate::option::{Mode, CONFIG};
-use crate::stats::{
-    event_labels_date, get_current_stats, storage_size_labels_date, update_deleted_stats,
-};
-use crate::{
-    catalog::manifest::Manifest,
-    event::DEFAULT_TIMESTAMP_KEY,
-    query::PartialTimeFilter,
-    storage::{object_storage::manifest_path, ObjectStorage, ObjectStorageError},
-};
 use chrono::{DateTime, Local, NaiveTime, Utc};
+use column::Column;
+use manifest::Manifest;
 use relative_path::RelativePathBuf;
+use snapshot::ManifestItem;
 use std::io::Error as IOError;
 use tracing::{error, info};
+
+use crate::{
+    event::DEFAULT_TIMESTAMP_KEY,
+    handlers::{self, http::base_path_without_preceding_slash},
+    metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE},
+    option::Mode,
+    parseable::PARSEABLE,
+    query::PartialTimeFilter,
+    stats::{event_labels_date, get_current_stats, storage_size_labels_date, update_deleted_stats},
+    storage::{
+        object_storage::manifest_path, ObjectStorage, ObjectStorageError, ObjectStoreFormat,
+    },
+};
+pub use manifest::create_from_parquet_file;
+
 pub mod column;
 pub mod manifest;
 pub mod snapshot;
-use crate::storage::ObjectStoreFormat;
-pub use manifest::create_from_parquet_file;
 pub trait Snapshot {
     fn manifests(&self, time_predicates: &[PartialTimeFilter]) -> Vec<ManifestItem>;
 }
@@ -263,7 +264,7 @@ async fn create_manifest(
         files: vec![change],
         ..Manifest::default()
     };
-    let mut first_event_at = STREAM_INFO.get_first_event(stream_name)?;
+    let mut first_event_at = PARSEABLE.get_stream(stream_name)?.get_first_event();
     if first_event_at.is_none() {
         if let Some(first_event) = manifest.files.first() {
             let time_partition = &meta.time_partition;
@@ -279,13 +280,11 @@ async fn create_manifest(
                 }
             };
             first_event_at = Some(lower_bound.with_timezone(&Local).to_rfc3339());
-            if let Err(err) =
-                STREAM_INFO.set_first_event_at(stream_name, first_event_at.as_ref().unwrap())
-            {
-                error!(
-                    "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
-                    stream_name
-                );
+            match PARSEABLE.get_stream(stream_name) {
+                Ok(stream) => stream.set_first_event_at(first_event_at.as_ref().unwrap()),
+                Err(err) => error!(
+                    "Failed to update first_event_at in streaminfo for stream {stream_name:?}, error = {err:?}"
+                ),
             }
         }
     }
@@ -332,15 +331,21 @@ pub async fn remove_manifest_from_snapshot(
         let manifests = &mut meta.snapshot.manifest_list;
         // Filter out items whose manifest_path contains any of the dates_to_delete
         manifests.retain(|item| !dates.iter().any(|date| item.manifest_path.contains(date)));
-        STREAM_INFO.reset_first_event_at(stream_name)?;
+        PARSEABLE.get_stream(stream_name)?.reset_first_event_at();
         meta.first_event_at = None;
         storage.put_snapshot(stream_name, meta.snapshot).await?;
     }
-    match CONFIG.options.mode {
+    match PARSEABLE.options.mode {
         Mode::All | Mode::Ingest => {
             Ok(get_first_event(storage.clone(), stream_name, Vec::new()).await?)
         }
         Mode::Query => Ok(get_first_event(storage, stream_name, dates).await?),
+        Mode::Index => Err(ObjectStorageError::UnhandledError(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Can't remove manifest from within Index server",
+            ),
+        ))),
     }
 }
 
@@ -350,10 +355,11 @@ pub async fn get_first_event(
     dates: Vec<String>,
 ) -> Result<Option<String>, ObjectStorageError> {
     let mut first_event_at: String = String::default();
-    match CONFIG.options.mode {
+    match PARSEABLE.options.mode {
+        Mode::Index => unimplemented!(),
         Mode::All | Mode::Ingest => {
             // get current snapshot
-            let stream_first_event = STREAM_INFO.get_first_event(stream_name)?;
+            let stream_first_event = PARSEABLE.get_stream(stream_name)?.get_first_event();
             if stream_first_event.is_some() {
                 first_event_at = stream_first_event.unwrap();
             } else {
@@ -393,7 +399,9 @@ pub async fn get_first_event(
                     first_event_at = lower_bound.with_timezone(&Local).to_rfc3339();
                     meta.first_event_at = Some(first_event_at.clone());
                     storage.put_stream_manifest(stream_name, &meta).await?;
-                    STREAM_INFO.set_first_event_at(stream_name, &first_event_at)?;
+                    PARSEABLE
+                        .get_stream(stream_name)?
+                        .set_first_event_at(&first_event_at);
                 }
             }
         }

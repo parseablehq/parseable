@@ -1,3 +1,5 @@
+use std::process::exit;
+
 /*
  * Parseable Server (C) 2022 - 2024 Parseable, Inc.
  *
@@ -18,9 +20,8 @@
 #[cfg(feature = "kafka")]
 use parseable::connectors;
 use parseable::{
-    banner, metrics,
-    option::{Mode, CONFIG},
-    rbac, storage, IngestServer, ParseableServer, QueryServer, Server,
+    banner, metrics, option::Mode, parseable::PARSEABLE, rbac, storage, IngestServer,
+    ParseableServer, QueryServer, Server,
 };
 use tokio::signal::ctrl_c;
 use tokio::sync::oneshot;
@@ -35,16 +36,20 @@ async fn main() -> anyhow::Result<()> {
     init_logger();
 
     // these are empty ptrs so mem footprint should be minimal
-    let server: Box<dyn ParseableServer> = match CONFIG.options.mode {
+    let server: Box<dyn ParseableServer> = match &PARSEABLE.options.mode {
         Mode::Query => Box::new(QueryServer),
         Mode::Ingest => Box::new(IngestServer),
+        Mode::Index => {
+            println!("Indexing is an enterprise feature. Check out https://www.parseable.com/pricing to know more!");
+            exit(0)
+        }
         Mode::All => Box::new(Server),
     };
 
     // load metadata from persistence
     let parseable_json = server.load_metadata().await?;
     let metadata = storage::resolve_parseable_metadata(&parseable_json).await?;
-    banner::print(&CONFIG, &metadata).await;
+    banner::print(&PARSEABLE, &metadata).await;
     // initialize the rbac map
     rbac::map::init(&metadata);
     // keep metadata info in mem

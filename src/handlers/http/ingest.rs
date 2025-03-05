@@ -16,40 +16,30 @@
  *
  */
 
-use super::logstream::error::{CreateStreamError, StreamError};
-use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
-use super::users::dashboards::DashboardError;
-use super::users::filters::FiltersError;
-use crate::event::format::LogSource;
-use crate::event::{
-    self,
-    error::EventError,
-    format::{self, EventFormat},
-};
-use crate::handlers::http::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
-use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
-use crate::metadata::error::stream_info::MetadataError;
-use crate::metadata::{SchemaVersion, STREAM_INFO};
-use crate::option::{Mode, CONFIG};
-use crate::otel::logs::flatten_otel_logs;
-use crate::otel::metrics::flatten_otel_metrics;
-use crate::otel::traces::flatten_otel_traces;
-use crate::storage::{ObjectStorageError, StreamType};
-use crate::utils::header_parsing::ParseHeaderError;
-use crate::utils::json::flatten::JsonFlattenError;
+use std::collections::HashMap;
+
 use actix_web::web::{Json, Path};
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_array::RecordBatch;
-use arrow_schema::Schema;
 use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
-use opentelemetry_proto::tonic::logs::v1::LogsData;
-use opentelemetry_proto::tonic::metrics::v1::MetricsData;
-use opentelemetry_proto::tonic::trace::v1::TracesData;
 use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::Arc;
+
+use crate::event;
+use crate::event::error::EventError;
+use crate::event::format::{self, EventFormat, LogSource};
+use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
+use crate::option::Mode;
+use crate::parseable::{StreamNotFound, PARSEABLE};
+use crate::storage::{ObjectStorageError, StreamType};
+use crate::utils::header_parsing::ParseHeaderError;
+use crate::utils::json::flatten::JsonFlattenError;
+
+use super::logstream::error::{CreateStreamError, StreamError};
+use super::modal::utils::ingest_utils::flatten_and_push_logs;
+use super::users::dashboards::DashboardError;
+use super::users::filters::FiltersError;
 
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
@@ -60,11 +50,12 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
     };
 
     let stream_name = stream_name.to_str().unwrap().to_owned();
-    let internal_stream_names = STREAM_INFO.list_internal_streams();
+    let internal_stream_names = PARSEABLE.streams.list_internal_streams();
     if internal_stream_names.contains(&stream_name) {
         return Err(PostError::InternalStream(stream_name));
     }
-    create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::default())
+    PARSEABLE
+        .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::default())
         .await?;
 
     let log_source = req
@@ -72,6 +63,14 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
         .get(LOG_SOURCE_KEY)
         .and_then(|h| h.to_str().ok())
         .map_or(LogSource::default(), LogSource::from);
+
+    if matches!(
+        log_source,
+        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces
+    ) {
+        return Err(PostError::OtelNotSupported);
+    }
+
     flatten_and_push_logs(json, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
@@ -79,28 +78,13 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
 
 pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
     let size: usize = body.len();
-    let parsed_timestamp = Utc::now().naive_utc();
-    let body_val: Value = serde_json::from_slice(&body)?;
-    let hash_map = STREAM_INFO.read().unwrap();
-    let schema = hash_map
-        .get(&stream_name)
-        .ok_or(PostError::StreamNotFound(stream_name.clone()))?
-        .schema
-        .clone();
+    let json: Value = serde_json::from_slice(&body)?;
+    let stream = PARSEABLE.get_stream(&stream_name)?;
+
     // For internal streams, use old schema
-    format::json::Event { data: body_val }
-        .to_event(
-            &stream_name,
-            size as u64,
-            &schema,
-            false,
-            parsed_timestamp,
-            None,
-            HashMap::new(),
-            SchemaVersion::V0,
-            StreamType::Internal,
-        )?
-        .process()?;
+    format::json::Event::new(json)
+        .to_event(&stream, size as u64)?
+        .process(&stream)?;
 
     Ok(())
 }
@@ -125,13 +109,11 @@ pub async fn handle_otel_logs_ingestion(
     }
 
     let stream_name = stream_name.to_str().unwrap().to_owned();
-    create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelLogs).await?;
+    PARSEABLE
+        .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelLogs)
+        .await?;
 
-    //custom flattening required for otel logs
-    let logs: LogsData = serde_json::from_value(json)?;
-    for record in flatten_otel_logs(&logs) {
-        push_logs(&stream_name, record, &log_source).await?;
-    }
+    flatten_and_push_logs(json, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -154,18 +136,15 @@ pub async fn handle_otel_metrics_ingestion(
         return Err(PostError::IncorrectLogSource(LogSource::OtelMetrics));
     }
     let stream_name = stream_name.to_str().unwrap().to_owned();
-    create_stream_if_not_exists(
-        &stream_name,
-        StreamType::UserDefined,
-        LogSource::OtelMetrics,
-    )
-    .await?;
+    PARSEABLE
+        .create_stream_if_not_exists(
+            &stream_name,
+            StreamType::UserDefined,
+            LogSource::OtelMetrics,
+        )
+        .await?;
 
-    //custom flattening required for otel metrics
-    let metrics: MetricsData = serde_json::from_value(json)?;
-    for record in flatten_otel_metrics(metrics) {
-        push_logs(&stream_name, record, &log_source).await?;
-    }
+    flatten_and_push_logs(json, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -189,14 +168,11 @@ pub async fn handle_otel_traces_ingestion(
         return Err(PostError::IncorrectLogSource(LogSource::OtelTraces));
     }
     let stream_name = stream_name.to_str().unwrap().to_owned();
-    create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelTraces)
+    PARSEABLE
+        .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelTraces)
         .await?;
 
-    //custom flattening required for otel traces
-    let traces: TracesData = serde_json::from_value(json)?;
-    for record in flatten_otel_traces(&traces) {
-        push_logs(&stream_name, record, &log_source).await?;
-    }
+    flatten_and_push_logs(json, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -210,21 +186,25 @@ pub async fn post_event(
     Json(json): Json<Value>,
 ) -> Result<HttpResponse, PostError> {
     let stream_name = stream_name.into_inner();
-    let internal_stream_names = STREAM_INFO.list_internal_streams();
+
+    let internal_stream_names = PARSEABLE.streams.list_internal_streams();
     if internal_stream_names.contains(&stream_name) {
         return Err(PostError::InternalStream(stream_name));
     }
-    if !STREAM_INFO.stream_exists(&stream_name) {
+    if !PARSEABLE.streams.contains(&stream_name) {
         // For distributed deployments, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage
-        if CONFIG.options.mode != Mode::All {
-            match create_stream_and_schema_from_storage(&stream_name).await {
+        if PARSEABLE.options.mode != Mode::All {
+            match PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await
+            {
                 Ok(true) => {}
-                Ok(false) | Err(_) => return Err(PostError::StreamNotFound(stream_name.clone())),
+                Ok(false) | Err(_) => return Err(StreamNotFound(stream_name.clone()).into()),
             }
         } else {
-            return Err(PostError::StreamNotFound(stream_name.clone()));
+            return Err(StreamNotFound(stream_name.clone()).into());
         }
     }
 
@@ -233,6 +213,14 @@ pub async fn post_event(
         .get(LOG_SOURCE_KEY)
         .and_then(|h| h.to_str().ok())
         .map_or(LogSource::default(), LogSource::from);
+
+    if matches!(
+        log_source,
+        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces
+    ) {
+        return Err(PostError::OtelNotSupported);
+    }
+
     flatten_and_push_logs(json, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
@@ -242,9 +230,9 @@ pub async fn push_logs_unchecked(
     batches: RecordBatch,
     stream_name: &str,
 ) -> Result<event::Event, PostError> {
+    let stream = PARSEABLE.get_stream(stream_name)?;
     let unchecked_event = event::Event {
         rb: batches,
-        stream_name: stream_name.to_string(),
         origin_format: "json",
         origin_size: 0,
         parsed_timestamp: Utc::now().naive_utc(),
@@ -253,51 +241,15 @@ pub async fn push_logs_unchecked(
         custom_partition_values: HashMap::new(), // should be an empty map for unchecked push
         stream_type: StreamType::UserDefined,
     };
-    unchecked_event.process_unchecked()?;
+    unchecked_event.process_unchecked(&stream)?;
 
     Ok(unchecked_event)
 }
 
-// Check if the stream exists and create a new stream if doesn't exist
-pub async fn create_stream_if_not_exists(
-    stream_name: &str,
-    stream_type: StreamType,
-    log_source: LogSource,
-) -> Result<bool, PostError> {
-    let mut stream_exists = false;
-    if STREAM_INFO.stream_exists(stream_name) {
-        stream_exists = true;
-        return Ok(stream_exists);
-    }
-
-    // For distributed deployments, if the stream not found in memory map,
-    //check if it exists in the storage
-    //create stream and schema from storage
-    if CONFIG.options.mode != Mode::All
-        && create_stream_and_schema_from_storage(stream_name).await?
-    {
-        return Ok(stream_exists);
-    }
-
-    super::logstream::create_stream(
-        stream_name.to_string(),
-        "",
-        None,
-        "",
-        false,
-        Arc::new(Schema::empty()),
-        stream_type,
-        log_source,
-    )
-    .await?;
-
-    Ok(stream_exists)
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum PostError {
-    #[error("Stream {0} not found")]
-    StreamNotFound(String),
+    #[error("{0}")]
+    StreamNotFound(#[from] StreamNotFound),
     #[error("Could not deserialize into JSON object, {0}")]
     SerdeError(#[from] serde_json::Error),
     #[error("Header Error: {0}")]
@@ -308,8 +260,6 @@ pub enum PostError {
     Invalid(#[from] anyhow::Error),
     #[error("{0}")]
     CreateStream(#[from] CreateStreamError),
-    #[error("Error: {0}")]
-    MetadataStreamError(#[from] MetadataError),
     #[allow(unused)]
     #[error("Error: {0}")]
     CustomError(String),
@@ -350,7 +300,6 @@ impl actix_web::ResponseError for PostError {
                 StatusCode::BAD_REQUEST
             }
             PostError::CreateStream(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::MetadataStreamError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::StreamNotFound(_) => StatusCode::NOT_FOUND,
             PostError::CustomError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PostError::NetworkError(_) => StatusCode::INTERNAL_SERVER_ERROR,

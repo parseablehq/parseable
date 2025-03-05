@@ -16,10 +16,11 @@
  *
  */
 
-use chrono::{DateTime, NaiveDateTime, Utc};
-use itertools::Itertools;
+use chrono::Utc;
+use opentelemetry_proto::tonic::{
+    logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
+};
 use serde_json::Value;
-use std::collections::HashMap;
 
 use crate::{
     event::format::{json, EventFormat, LogSource},
@@ -27,8 +28,8 @@ use crate::{
         ingest::PostError,
         kinesis::{flatten_kinesis_logs, Message},
     },
-    metadata::STREAM_INFO,
-    storage::StreamType,
+    otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
+    parseable::PARSEABLE,
     utils::json::{convert_array_to_object, flatten::convert_to_array},
 };
 
@@ -39,14 +40,32 @@ pub async fn flatten_and_push_logs(
 ) -> Result<(), PostError> {
     match log_source {
         LogSource::Kinesis => {
+            //custom flattening required for Amazon Kinesis
             let message: Message = serde_json::from_value(json)?;
-            let json = flatten_kinesis_logs(message);
-            for record in json {
+            for record in flatten_kinesis_logs(message) {
                 push_logs(stream_name, record, &LogSource::default()).await?;
             }
         }
-        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
-            return Err(PostError::OtelNotSupported);
+        LogSource::OtelLogs => {
+            //custom flattening required for otel logs
+            let logs: LogsData = serde_json::from_value(json)?;
+            for record in flatten_otel_logs(&logs) {
+                push_logs(stream_name, record, log_source).await?;
+            }
+        }
+        LogSource::OtelTraces => {
+            //custom flattening required for otel traces
+            let traces: TracesData = serde_json::from_value(json)?;
+            for record in flatten_otel_traces(&traces) {
+                push_logs(stream_name, record, log_source).await?;
+            }
+        }
+        LogSource::OtelMetrics => {
+            //custom flattening required for otel metrics
+            let metrics: MetricsData = serde_json::from_value(json)?;
+            for record in flatten_otel_metrics(metrics) {
+                push_logs(stream_name, record, log_source).await?;
+            }
         }
         _ => {
             push_logs(stream_name, json, log_source).await?;
@@ -55,16 +74,19 @@ pub async fn flatten_and_push_logs(
     Ok(())
 }
 
-pub async fn push_logs(
+async fn push_logs(
     stream_name: &str,
     json: Value,
     log_source: &LogSource,
 ) -> Result<(), PostError> {
-    let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
-    let time_partition_limit = STREAM_INFO.get_time_partition_limit(stream_name)?;
-    let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
-    let custom_partition = STREAM_INFO.get_custom_partition(stream_name)?;
-    let schema_version = STREAM_INFO.get_schema_version(stream_name)?;
+    let stream = PARSEABLE.get_stream(stream_name)?;
+    let time_partition = stream.get_time_partition();
+    let time_partition_limit = PARSEABLE
+        .get_stream(stream_name)?
+        .get_time_partition_limit();
+    let custom_partition = stream.get_custom_partition();
+    let schema_version = stream.get_schema_version();
+    let p_timestamp = Utc::now();
 
     let data = if time_partition.is_some() || custom_partition.is_some() {
         convert_array_to_object(
@@ -86,103 +108,11 @@ pub async fn push_logs(
         )?)?]
     };
 
-    for value in data {
-        let origin_size = serde_json::to_vec(&value).unwrap().len() as u64; // string length need not be the same as byte length
-        let parsed_timestamp = match time_partition.as_ref() {
-            Some(time_partition) => get_parsed_timestamp(&value, time_partition)?,
-            _ => Utc::now().naive_utc(),
-        };
-        let custom_partition_values = match custom_partition.as_ref() {
-            Some(custom_partition) => {
-                let custom_partitions = custom_partition.split(',').collect_vec();
-                get_custom_partition_values(&value, &custom_partitions)
-            }
-            None => HashMap::new(),
-        };
-        let schema = STREAM_INFO
-            .read()
-            .unwrap()
-            .get(stream_name)
-            .ok_or(PostError::StreamNotFound(stream_name.to_owned()))?
-            .schema
-            .clone();
-
-        json::Event { data: value }
-            .to_event(
-                stream_name,
-                origin_size,
-                &schema,
-                static_schema_flag,
-                parsed_timestamp,
-                time_partition.clone(),
-                custom_partition_values,
-                schema_version,
-                StreamType::UserDefined,
-            )?
-        .process()?;
+    for json in data {
+        let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
+        json::Event { json, p_timestamp }
+            .to_event(&stream, origin_size)?
+            .process(&stream)?;
     }
     Ok(())
-}
-
-pub fn get_custom_partition_values(
-    json: &Value,
-    custom_partition_list: &[&str],
-) -> HashMap<String, String> {
-    let mut custom_partition_values: HashMap<String, String> = HashMap::new();
-    for custom_partition_field in custom_partition_list {
-        let custom_partition_value = json.get(custom_partition_field.trim()).unwrap().to_owned();
-        let custom_partition_value = match custom_partition_value {
-            e @ Value::Number(_) | e @ Value::Bool(_) => e.to_string(),
-            Value::String(s) => s,
-            _ => "".to_string(),
-        };
-        custom_partition_values.insert(
-            custom_partition_field.trim().to_string(),
-            custom_partition_value,
-        );
-    }
-    custom_partition_values
-}
-
-fn get_parsed_timestamp(json: &Value, time_partition: &str) -> Result<NaiveDateTime, PostError> {
-    let current_time = json
-        .get(time_partition)
-        .ok_or_else(|| PostError::MissingTimePartition(time_partition.to_string()))?;
-    let parsed_time: DateTime<Utc> = serde_json::from_value(current_time.clone())?;
-
-    Ok(parsed_time.naive_utc())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::str::FromStr;
-
-    use serde_json::json;
-
-    use super::*;
-
-    #[test]
-    fn parse_time_parition_from_value() {
-        let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
-        let parsed = get_parsed_timestamp(&json, "timestamp");
-
-        let expected = NaiveDateTime::from_str("2025-05-15T15:30:00").unwrap();
-        assert_eq!(parsed.unwrap(), expected);
-    }
-
-    #[test]
-    fn time_parition_not_in_json() {
-        let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
-        let parsed = get_parsed_timestamp(&json, "timestamp");
-
-        matches!(parsed, Err(PostError::MissingTimePartition(_)));
-    }
-
-    #[test]
-    fn time_parition_not_parseable_as_datetime() {
-        let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
-        let parsed = get_parsed_timestamp(&json, "timestamp");
-
-        matches!(parsed, Err(PostError::SerdeError(_)));
-    }
 }

@@ -16,6 +16,8 @@
  *
  */
 
+use std::thread;
+
 use crate::alerts::ALERTS;
 use crate::analytics;
 use crate::correlation::CORRELATIONS;
@@ -24,6 +26,7 @@ use crate::handlers::http::about;
 use crate::handlers::http::alerts;
 use crate::handlers::http::base_path;
 use crate::handlers::http::health_check;
+use crate::handlers::http::prism_base_path;
 use crate::handlers::http::query;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
@@ -52,7 +55,7 @@ use crate::{
         middleware::{DisAllowRootUser, RouteExt},
         oidc, role, MAX_EVENT_PAYLOAD_SIZE,
     },
-    option::CONFIG,
+    parseable::PARSEABLE,
     rbac::role::Action,
 };
 
@@ -78,23 +81,30 @@ impl ParseableServer for Server {
                     .service(Self::get_about_factory())
                     .service(Self::get_logstream_webscope())
                     .service(Self::get_user_webscope())
+                    .service(Self::get_users_webscope())
                     .service(Self::get_dashboards_webscope())
                     .service(Self::get_filters_webscope())
                     .service(Self::get_llm_webscope())
                     .service(Self::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope())
+                    .service(Self::get_roles_webscope())
                     .service(Self::get_counts_webscope())
                     .service(Self::get_alerts_webscope())
                     .service(Self::get_metrics_webscope()),
+            )
+            .service(
+                web::scope(&prism_base_path())
+                    .service(Server::get_prism_home())
+                    .service(Server::get_prism_logstream()),
             )
             .service(Self::get_ingest_otel_factory())
             .service(Self::get_generated());
     }
 
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>> {
-        migration::run_file_migration(&CONFIG).await?;
-        let parseable_json = CONFIG.validate_storage().await?;
-        migration::run_metadata_migration(&CONFIG, &parseable_json).await?;
+        migration::run_file_migration(&PARSEABLE).await?;
+        let parseable_json = PARSEABLE.validate_storage().await?;
+        migration::run_metadata_migration(&PARSEABLE, &parseable_json).await?;
 
         Ok(parseable_json)
     }
@@ -105,9 +115,9 @@ impl ParseableServer for Server {
         prometheus: &PrometheusMetrics,
         shutdown_rx: oneshot::Receiver<()>,
     ) -> anyhow::Result<()> {
-        CONFIG.storage().register_store_metrics(prometheus);
+        PARSEABLE.storage.register_store_metrics(prometheus);
 
-        migration::run_migration(&CONFIG).await?;
+        migration::run_migration(&PARSEABLE).await?;
 
         if let Err(e) = CORRELATIONS.load().await {
             error!("{e}");
@@ -130,70 +140,46 @@ impl ParseableServer for Server {
             hot_tier_manager.download_from_s3()?;
         };
 
-        let (localsync_handler, mut localsync_outbox, localsync_inbox) =
-            sync::run_local_sync().await;
-        let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
-            sync::object_store_sync().await;
-        let (
-            mut remote_conversion_handler,
-            mut remote_conversion_outbox,
-            mut remote_conversion_inbox,
-        ) = sync::arrow_conversion().await;
-        if CONFIG.options.send_analytics {
+        // Run sync on a background thread
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        thread::spawn(|| sync::handler(cancel_rx));
+
+        if PARSEABLE.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
 
         tokio::spawn(handlers::livetail::server());
         tokio::spawn(handlers::airplane::server());
 
-        let app = self.start(shutdown_rx, prometheus.clone(), CONFIG.options.openid());
+        let result = self
+            .start(shutdown_rx, prometheus.clone(), PARSEABLE.options.openid())
+            .await;
+        // Cancel sync jobs
+        cancel_tx.send(()).expect("Cancellation should not fail");
 
-        tokio::pin!(app);
-
-        loop {
-            tokio::select! {
-                e = &mut app => {
-                    // actix server finished .. stop other threads and stop the server
-                    remote_sync_inbox.send(()).unwrap_or(());
-                    localsync_inbox.send(()).unwrap_or(());
-                    remote_conversion_inbox.send(()).unwrap_or(());
-                    if let Err(e) = localsync_handler.await {
-                        error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    if let Err(e) = remote_sync_handler.await {
-                        error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    if let Err(e) = remote_conversion_handler.await {
-                        error!("Error joining remote_conversion_handler: {:?}", e);
-                    }
-                    return e
-                },
-                _ = &mut localsync_outbox => {
-                    // crash the server if localsync fails for any reason
-                    // panic!("Local Sync thread died. Server will fail now!")
-                    return Err(anyhow::Error::msg("Failed to sync local data to drive. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
-                },
-                _ = &mut remote_sync_outbox => {
-                    // remote_sync failed, this is recoverable by just starting remote_sync thread again
-                    if let Err(e) = remote_sync_handler.await {
-                        error!("Error joining remote_sync_handler: {:?}", e);
-                    }
-                    (remote_sync_handler, remote_sync_outbox, remote_sync_inbox) = sync::object_store_sync().await;
-                },
-                _ = &mut remote_conversion_outbox => {
-                    // remote_conversion failed, this is recoverable by just starting remote_conversion thread again
-                    if let Err(e) = remote_conversion_handler.await {
-                        error!("Error joining remote_conversion_handler: {:?}", e);
-                    }
-                    (remote_conversion_handler, remote_conversion_outbox, remote_conversion_inbox) = sync::arrow_conversion().await;
-                }
-
-            };
-        }
+        return result;
     }
 }
 
 impl Server {
+    pub fn get_prism_home() -> Resource {
+        web::resource("/home").route(web::get().to(http::prism_home::home_api))
+    }
+
+    pub fn get_prism_logstream() -> Scope {
+        web::scope("/logstream").service(
+            web::scope("/{logstream}").service(
+                web::resource("/info").route(
+                    web::get()
+                        .to(http::prism_logstream::get_info)
+                        .authorize_for_stream(Action::GetStreamInfo)
+                        .authorize_for_stream(Action::GetStats)
+                        .authorize_for_stream(Action::GetRetention),
+                ),
+            ),
+        )
+    }
+
     pub fn get_metrics_webscope() -> Scope {
         web::scope("/metrics").service(
             web::resource("").route(web::get().to(metrics::get).authorize(Action::Metrics)),
@@ -389,7 +375,7 @@ impl Server {
                         // GET "/logstream/{logstream}/schema" ==> Get schema for given log stream
                         web::resource("/schema").route(
                             web::get()
-                                .to(logstream::schema)
+                                .to(logstream::get_schema)
                                 .authorize_for_stream(Action::GetSchema),
                         ),
                     )
@@ -495,6 +481,13 @@ impl Server {
         }
     }
 
+    // get list of roles
+    pub fn get_roles_webscope() -> Scope {
+        web::scope("/roles").service(
+            web::resource("").route(web::get().to(role::list_roles).authorize(Action::ListRole)),
+        )
+    }
+
     // get the role webscope
     pub fn get_user_role_webscope() -> Scope {
         web::scope("/role")
@@ -512,6 +505,27 @@ impl Server {
                     .route(web::put().to(role::put).authorize(Action::PutRole))
                     .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
                     .route(web::get().to(role::get).authorize(Action::GetRole)),
+            )
+    }
+
+    // get the users webscope (for Prism only)
+    pub fn get_users_webscope() -> Scope {
+        web::scope("/users")
+            .service(
+                web::resource("")
+                    // GET /users => List all users
+                    .route(
+                        web::get()
+                            .to(http::rbac::list_users_prism)
+                            .authorize(Action::ListUser),
+                    ),
+            )
+            .service(
+                web::resource("/{username}").route(
+                    web::get()
+                        .to(http::rbac::get_prism_user)
+                        .authorize_for_user(Action::GetUserRoles),
+                ),
             )
     }
 

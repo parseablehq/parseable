@@ -23,8 +23,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    metadata::LOCK_EXPECT, migration::to_bytes, option::CONFIG,
-    storage::object_storage::dashboard_path, utils::get_hash,
+    migration::to_bytes, parseable::PARSEABLE, storage::object_storage::dashboard_path,
+    utils::get_hash, LOCK_EXPECT,
 };
 
 use super::TimeFilter;
@@ -98,7 +98,7 @@ pub struct TickConfig {
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Dashboard {
     pub version: Option<String>,
-    name: String,
+    pub name: String,
     description: String,
     pub dashboard_id: Option<String>,
     pub user_id: Option<String>,
@@ -113,7 +113,7 @@ pub struct Dashboards(RwLock<Vec<Dashboard>>);
 impl Dashboards {
     pub async fn load(&self) -> anyhow::Result<()> {
         let mut this = vec![];
-        let store = CONFIG.storage().get_object_store();
+        let store = PARSEABLE.storage.get_object_store();
         let all_dashboards = store.get_all_dashboards().await.unwrap_or_default();
         for (dashboard_relative_path, dashboards) in all_dashboards {
             for dashboard in dashboards {
