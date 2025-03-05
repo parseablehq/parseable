@@ -1,3 +1,5 @@
+use std::process::exit;
+
 /*
  * Parseable Server (C) 2022 - 2024 Parseable, Inc.
  *
@@ -37,6 +39,10 @@ async fn main() -> anyhow::Result<()> {
     let server: Box<dyn ParseableServer> = match &PARSEABLE.options.mode {
         Mode::Query => Box::new(QueryServer),
         Mode::Ingest => Box::new(IngestServer),
+        Mode::Index => {
+            println!("Indexing is an enterprise feature. Check out https://www.parseable.com/pricing to know more!");
+            exit(0)
+        }
         Mode::All => Box::new(Server),
     };
 

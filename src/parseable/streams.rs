@@ -52,7 +52,7 @@ use crate::{
     metrics,
     option::Mode,
     storage::{object_storage::to_bytes, retention::Retention, StreamType},
-    utils::minute_to_slot,
+    utils::time::Minute,
     LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
 };
 
@@ -166,7 +166,7 @@ impl Stream {
             "{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
-            minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
+            Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             custom_partition_values
                 .iter()
                 .sorted_by_key(|v| v.0)
@@ -513,10 +513,7 @@ impl Stream {
                     let file_size = match file.metadata() {
                         Ok(meta) => meta.len(),
                         Err(err) => {
-                            warn!(
-                                "File ({}) not found; Error = {err}",
-                                file.display()
-                            );
+                            warn!("File ({}) not found; Error = {err}", file.display());
                             continue;
                         }
                     };
@@ -893,7 +890,7 @@ mod tests {
             "{stream_hash}.date={}.hour={:02}.minute={}.{}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
-            minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
+            Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             hostname::get().unwrap().into_string().unwrap()
         ));
 
@@ -927,7 +924,7 @@ mod tests {
             "{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
-            minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
+            Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             hostname::get().unwrap().into_string().unwrap()
         ));
 
