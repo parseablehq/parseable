@@ -16,15 +16,14 @@
  *
  */
 
-use std::sync::RwLock;
-
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tokio::sync::RwLock;
 
 use crate::{
-    migration::to_bytes, parseable::PARSEABLE, storage::object_storage::dashboard_path,
-    utils::get_hash, LOCK_EXPECT,
+    alerts::alerts_utils::user_auth_for_query, migration::to_bytes, parseable::PARSEABLE,
+    rbac::map::SessionKey, storage::object_storage::dashboard_path, utils::get_hash,
 };
 
 use super::TimeFilter;
@@ -172,27 +171,27 @@ impl Dashboards {
             }
         }
 
-        let mut s = self.0.write().expect(LOCK_EXPECT);
+        let mut s = self.0.write().await;
         s.append(&mut this);
 
         Ok(())
     }
 
-    pub fn update(&self, dashboard: &Dashboard) {
-        let mut s = self.0.write().expect(LOCK_EXPECT);
+    pub async fn update(&self, dashboard: &Dashboard) {
+        let mut s = self.0.write().await;
         s.retain(|d| d.dashboard_id != dashboard.dashboard_id);
         s.push(dashboard.clone());
     }
 
-    pub fn delete_dashboard(&self, dashboard_id: &str) {
-        let mut s = self.0.write().expect(LOCK_EXPECT);
+    pub async fn delete_dashboard(&self, dashboard_id: &str) {
+        let mut s = self.0.write().await;
         s.retain(|d| d.dashboard_id != Some(dashboard_id.to_string()));
     }
 
-    pub fn get_dashboard(&self, dashboard_id: &str, user_id: &str) -> Option<Dashboard> {
+    pub async fn get_dashboard(&self, dashboard_id: &str, user_id: &str) -> Option<Dashboard> {
         self.0
             .read()
-            .expect(LOCK_EXPECT)
+            .await
             .iter()
             .find(|d| {
                 d.dashboard_id == Some(dashboard_id.to_string())
@@ -201,14 +200,28 @@ impl Dashboards {
             .cloned()
     }
 
-    pub fn list_dashboards_by_user(&self, user_id: &str) -> Vec<Dashboard> {
-        self.0
-            .read()
-            .expect(LOCK_EXPECT)
-            .iter()
-            .filter(|d| d.user_id == Some(user_id.to_string()))
-            .cloned()
-            .collect()
+    pub async fn list_dashboards(&self, key: &SessionKey) -> Vec<Dashboard> {
+        let read = self.0.read().await;
+
+        let mut dashboards = Vec::new();
+
+        for d in read.iter() {
+            let mut skip_dashboard = false;
+            for tile in d.tiles.iter() {
+                let query = &tile.query;
+                match user_auth_for_query(key, query).await {
+                    Ok(_) => {}
+                    Err(_) => {
+                        skip_dashboard = true;
+                        break;
+                    }
+                }
+            }
+            if !skip_dashboard {
+                dashboards.push(d.clone());
+            }
+        }
+        dashboards
     }
 }
 
