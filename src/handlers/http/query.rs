@@ -45,7 +45,6 @@ use crate::query::{execute, CountsRequest, CountsResponse, Query as LogicalQuery
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
-use crate::storage::object_storage::commit_schema_to_storage;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::time::{TimeParseError, TimeRange};
@@ -173,7 +172,11 @@ pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), 
         for table in tables {
             if let Ok(new_schema) = fetch_schema(table).await {
                 // commit schema merges the schema internally and updates the schema in storage.
-                commit_schema_to_storage(table, new_schema.clone()).await?;
+                PARSEABLE
+                    .storage
+                    .get_object_store()
+                    .commit_schema(table, new_schema.clone())
+                    .await?;
 
                 commit_schema(table, Arc::new(new_schema))?;
             }
