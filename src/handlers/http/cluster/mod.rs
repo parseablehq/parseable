@@ -16,15 +16,12 @@
  *
  */
 
-pub mod utils;
-
 use std::collections::HashSet;
 use std::time::Duration;
 
 use actix_web::http::header::{self, HeaderMap};
 use actix_web::web::Path;
 use actix_web::Responder;
-use bytes::Bytes;
 use chrono::Utc;
 use clokwerk::{AsyncScheduler, Interval};
 use http::{header as http_header, StatusCode};
@@ -42,6 +39,7 @@ use crate::metrics::prom_utils::Metrics;
 use crate::parseable::PARSEABLE;
 use crate::rbac::role::model::DefaultPrivilege;
 use crate::rbac::user::User;
+use crate::static_schema::StaticSchema;
 use crate::stats::Stats;
 use crate::storage::{
     ObjectStorageError, ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY, STREAM_ROOT_DIRECTORY,
@@ -55,6 +53,8 @@ use super::modal::IngestorMetadata;
 use super::rbac::RBACError;
 use super::role::RoleError;
 
+pub mod utils;
+
 type IngestorMetadataArr = Vec<IngestorMetadata>;
 
 pub const INTERNAL_STREAM_NAME: &str = "pmeta";
@@ -64,7 +64,7 @@ const CLUSTER_METRICS_INTERVAL_SECONDS: Interval = clokwerk::Interval::Minutes(1
 // forward the create/update stream request to all ingestors to keep them in sync
 pub async fn sync_streams_with_ingestors(
     headers: HeaderMap,
-    body: Bytes,
+    static_schema: Option<StaticSchema>,
     stream_name: &str,
 ) -> Result<(), StreamError> {
     let mut reqwest_headers = http_header::HeaderMap::new();
@@ -88,21 +88,23 @@ pub async fn sync_streams_with_ingestors(
             base_path_without_preceding_slash(),
             stream_name
         );
-        let res = HTTP_CLIENT
+        let mut req = HTTP_CLIENT
             .put(url)
             .headers(reqwest_headers.clone())
-            .header(header::AUTHORIZATION, &ingestor.token)
-            .body(body.clone())
-            .send()
-            .await
-            .map_err(|err| {
-                error!(
-                    "Fatal: failed to forward upsert stream request to ingestor: {}\n Error: {:?}",
-                    ingestor.domain_name, err
-                );
-                StreamError::Network(err)
-            })?;
+            .header(header::AUTHORIZATION, &ingestor.token);
 
+        if let Some(schema) = static_schema.as_ref() {
+            req = req.json(schema);
+        }
+
+        let res = req.send().await.inspect_err(|err| {
+            error!(
+                "Fatal: failed to forward upsert stream request to ingestor: {}\n Error: {:?}",
+                ingestor.domain_name, err
+            );
+        })?;
+
+        // TODO: review the following code
         if !res.status().is_success() {
             error!(
                 "failed to forward upsert stream request to ingestor: {}\nResponse Returned: {:?}",
