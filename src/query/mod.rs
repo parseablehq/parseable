@@ -88,11 +88,12 @@ impl Query {
         let runtime_config = runtime_config.with_memory_limit(pool_size, fraction);
         let runtime = Arc::new(runtime_config.build().unwrap());
 
+        // All the config options are explained here -
+        // https://datafusion.apache.org/user-guide/configs.html
         let mut config = SessionConfig::default()
             .with_parquet_pruning(true)
             .with_prefer_existing_sort(true)
             .with_batch_size(1000000);
-        // For more details refer https://datafusion.apache.org/user-guide/configs.html
 
         // Pushdown filters allows DF to push the filters as far down in the plan as possible
         // and thus, reducing the number of rows decoded
