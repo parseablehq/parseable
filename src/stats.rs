@@ -16,7 +16,7 @@
  *
  */
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use chrono::NaiveDate;
 use prometheus::core::Collector;
@@ -32,6 +32,7 @@ use crate::{
         EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
         LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE,
     },
+    prism::home::PrismHomeError,
     storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat},
 };
 
@@ -43,6 +44,91 @@ pub struct Stats {
     pub storage: u64,
 }
 
+impl Stats {
+    pub fn for_stream_on_date(date: NaiveDate, stream_name: &str) -> Stats {
+        let date = date.to_string();
+        let event_labels = event_labels_date(stream_name, "json", &date);
+        let storage_size_labels = storage_size_labels_date(stream_name, &date);
+        let events_ingested = EVENTS_INGESTED_DATE
+            .get_metric_with_label_values(&event_labels)
+            .unwrap()
+            .get() as u64;
+        let ingestion_size = EVENTS_INGESTED_SIZE_DATE
+            .get_metric_with_label_values(&event_labels)
+            .unwrap()
+            .get() as u64;
+        let storage_size = EVENTS_STORAGE_SIZE_DATE
+            .get_metric_with_label_values(&storage_size_labels)
+            .unwrap()
+            .get() as u64;
+
+        Stats {
+            events: events_ingested,
+            ingestion: ingestion_size,
+            storage: storage_size,
+        }
+    }
+
+    pub fn fetch_from_ingestors(
+        date: NaiveDate,
+        stream_meta_list: &[ObjectStoreFormat],
+    ) -> Result<Stats, PrismHomeError> {
+        // for the given date, get the stats from the ingestors
+        let mut events_ingested = 0;
+        let mut ingestion_size = 0;
+        let mut storage_size = 0;
+
+        for meta in stream_meta_list.iter() {
+            for manifest in meta.snapshot.manifest_list.iter() {
+                if manifest.time_lower_bound.date_naive() == date {
+                    events_ingested += manifest.events_ingested;
+                    ingestion_size += manifest.ingestion_size;
+                    storage_size += manifest.storage_size;
+                }
+            }
+        }
+
+        let stats = Stats {
+            events: events_ingested,
+            ingestion: ingestion_size,
+            storage: storage_size,
+        };
+        Ok(stats)
+    }
+}
+
+#[derive(Debug, Serialize, Default)]
+pub struct DatedStats {
+    pub date: NaiveDate,
+    pub events: u64,
+    pub ingestion_size: u64,
+    pub storage_size: u64,
+}
+
+impl DatedStats {
+    pub fn for_all_streams(
+        date: NaiveDate,
+        stream_wise_meta: &HashMap<String, Vec<ObjectStoreFormat>>,
+    ) -> Result<Option<DatedStats>, PrismHomeError> {
+        // collect stats for all the streams for the given date
+        let mut details = DatedStats {
+            date,
+            ..Default::default()
+        };
+
+        for (stream, meta) in stream_wise_meta {
+            let querier_stats = Stats::for_stream_on_date(date, stream);
+            let ingestor_stats = Stats::fetch_from_ingestors(date, meta)?;
+            // collect date-wise stats for all streams
+            details.events += querier_stats.events + ingestor_stats.events;
+            details.ingestion_size += querier_stats.ingestion + ingestor_stats.ingestion;
+            details.storage_size += querier_stats.storage + ingestor_stats.storage;
+        }
+
+        Ok(Some(details))
+    }
+}
+
 #[derive(Debug, Default, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 pub struct FullStats {
     pub lifetime_stats: Stats,
@@ -50,64 +136,66 @@ pub struct FullStats {
     pub deleted_stats: Stats,
 }
 
-pub fn get_current_stats(stream_name: &str, format: &'static str) -> Option<FullStats> {
-    let event_labels = event_labels(stream_name, format);
-    let storage_size_labels = storage_size_labels(stream_name);
+impl FullStats {
+    pub fn get_current(stream_name: &str, format: &'static str) -> Option<FullStats> {
+        let event_labels = event_labels(stream_name, format);
+        let storage_size_labels = storage_size_labels(stream_name);
 
-    let events_ingested = EVENTS_INGESTED
-        .get_metric_with_label_values(&event_labels)
-        .ok()?
-        .get() as u64;
-    let ingestion_size = EVENTS_INGESTED_SIZE
-        .get_metric_with_label_values(&event_labels)
-        .ok()?
-        .get() as u64;
-    let storage_size = STORAGE_SIZE
-        .get_metric_with_label_values(&storage_size_labels)
-        .ok()?
-        .get() as u64;
-    let events_deleted = EVENTS_DELETED
-        .get_metric_with_label_values(&event_labels)
-        .ok()?
-        .get() as u64;
-    let events_deleted_size = EVENTS_DELETED_SIZE
-        .get_metric_with_label_values(&event_labels)
-        .ok()?
-        .get() as u64;
-    let deleted_events_storage_size = DELETED_EVENTS_STORAGE_SIZE
-        .get_metric_with_label_values(&storage_size_labels)
-        .ok()?
-        .get() as u64;
-    let lifetime_events_ingested = LIFETIME_EVENTS_INGESTED
-        .get_metric_with_label_values(&event_labels)
-        .ok()?
-        .get() as u64;
-    let lifetime_ingestion_size = LIFETIME_EVENTS_INGESTED_SIZE
-        .get_metric_with_label_values(&event_labels)
-        .ok()?
-        .get() as u64;
-    let lifetime_events_storage_size = LIFETIME_EVENTS_STORAGE_SIZE
-        .get_metric_with_label_values(&storage_size_labels)
-        .ok()?
-        .get() as u64;
+        let events_ingested = EVENTS_INGESTED
+            .get_metric_with_label_values(&event_labels)
+            .ok()?
+            .get() as u64;
+        let ingestion_size = EVENTS_INGESTED_SIZE
+            .get_metric_with_label_values(&event_labels)
+            .ok()?
+            .get() as u64;
+        let storage_size = STORAGE_SIZE
+            .get_metric_with_label_values(&storage_size_labels)
+            .ok()?
+            .get() as u64;
+        let events_deleted = EVENTS_DELETED
+            .get_metric_with_label_values(&event_labels)
+            .ok()?
+            .get() as u64;
+        let events_deleted_size = EVENTS_DELETED_SIZE
+            .get_metric_with_label_values(&event_labels)
+            .ok()?
+            .get() as u64;
+        let deleted_events_storage_size = DELETED_EVENTS_STORAGE_SIZE
+            .get_metric_with_label_values(&storage_size_labels)
+            .ok()?
+            .get() as u64;
+        let lifetime_events_ingested = LIFETIME_EVENTS_INGESTED
+            .get_metric_with_label_values(&event_labels)
+            .ok()?
+            .get() as u64;
+        let lifetime_ingestion_size = LIFETIME_EVENTS_INGESTED_SIZE
+            .get_metric_with_label_values(&event_labels)
+            .ok()?
+            .get() as u64;
+        let lifetime_events_storage_size = LIFETIME_EVENTS_STORAGE_SIZE
+            .get_metric_with_label_values(&storage_size_labels)
+            .ok()?
+            .get() as u64;
 
-    Some(FullStats {
-        lifetime_stats: Stats {
-            events: lifetime_events_ingested,
-            ingestion: lifetime_ingestion_size,
-            storage: lifetime_events_storage_size,
-        },
-        current_stats: Stats {
-            events: events_ingested,
-            ingestion: ingestion_size,
-            storage: storage_size,
-        },
-        deleted_stats: Stats {
-            events: events_deleted,
-            ingestion: events_deleted_size,
-            storage: deleted_events_storage_size,
-        },
-    })
+        Some(FullStats {
+            lifetime_stats: Stats {
+                events: lifetime_events_ingested,
+                ingestion: lifetime_ingestion_size,
+                storage: lifetime_events_storage_size,
+            },
+            current_stats: Stats {
+                events: events_ingested,
+                ingestion: ingestion_size,
+                storage: storage_size,
+            },
+            deleted_stats: Stats {
+                events: events_deleted,
+                ingestion: events_deleted_size,
+                storage: deleted_events_storage_size,
+            },
+        })
+    }
 }
 
 pub async fn update_deleted_stats(
@@ -161,7 +249,7 @@ pub async fn update_deleted_stats(
     STORAGE_SIZE
         .with_label_values(&["data", stream_name, "parquet"])
         .sub(storage_size);
-    let stats = get_current_stats(stream_name, "json");
+    let stats = FullStats::get_current(stream_name, "json");
     if let Some(stats) = stats {
         if let Err(e) = storage.put_stats(stream_name, &stats).await {
             warn!("Error updating stats to objectstore due to error [{}]", e);
@@ -229,32 +317,6 @@ pub fn storage_size_labels_date<'a>(stream_name: &'a str, date: &'a str) -> [&'a
 pub struct StatsParams {
     #[serde(deserialize_with = "deserialize_date")]
     pub date: Option<NaiveDate>,
-}
-
-impl StatsParams {
-    pub fn get_stats(self, stream_name: &str) -> Option<Stats> {
-        let date = self.date?.to_string();
-        let event_labels = event_labels_date(stream_name, "json", &date);
-        let storage_size_labels = storage_size_labels_date(stream_name, &date);
-        let events_ingested = EVENTS_INGESTED_DATE
-            .get_metric_with_label_values(&event_labels)
-            .unwrap()
-            .get() as u64;
-        let ingestion_size = EVENTS_INGESTED_SIZE_DATE
-            .get_metric_with_label_values(&event_labels)
-            .unwrap()
-            .get() as u64;
-        let storage_size = EVENTS_STORAGE_SIZE_DATE
-            .get_metric_with_label_values(&storage_size_labels)
-            .unwrap()
-            .get() as u64;
-
-        Some(Stats {
-            events: events_ingested,
-            ingestion: ingestion_size,
-            storage: storage_size,
-        })
-    }
 }
 
 pub fn deserialize_date<'de, D>(deserializer: D) -> Result<Option<NaiveDate>, D::Error>

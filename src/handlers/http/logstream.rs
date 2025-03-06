@@ -35,7 +35,7 @@ use crate::metadata::SchemaVersion;
 use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::rbac::role::Action;
 use crate::rbac::Users;
-use crate::stats::StatsParams;
+use crate::stats::{FullStats, Stats, StatsParams};
 use crate::storage::retention::Retention;
 use crate::storage::{StreamInfo, StreamType};
 use crate::utils::actix::extract_session_key_from_req;
@@ -211,11 +211,12 @@ pub async fn get_stats(
         return Err(StreamNotFound(stream_name.clone()).into());
     }
 
-    if let Some(stats) = params.get_stats(&stream_name) {
+    if let Some(date) = params.date {
+        let stats = Stats::for_stream_on_date(date, &stream_name);
         return Ok(HttpResponse::build(StatusCode::OK).json(stats));
     }
 
-    let stats = stats::get_current_stats(&stream_name, "json")
+    let stats = FullStats::get_current(&stream_name, "json")
         .ok_or_else(|| StreamNotFound(stream_name.clone()))?;
     let time = Utc::now();
     let stats = {

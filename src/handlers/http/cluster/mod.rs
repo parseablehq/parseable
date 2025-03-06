@@ -42,7 +42,6 @@ use crate::metrics::prom_utils::Metrics;
 use crate::parseable::PARSEABLE;
 use crate::rbac::role::model::DefaultPrivilege;
 use crate::rbac::user::User;
-use crate::stats::Stats;
 use crate::storage::{
     ObjectStorageError, ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY, STREAM_ROOT_DIRECTORY,
 };
@@ -365,33 +364,6 @@ pub async fn sync_role_update_with_ingestors(
     }
 
     Ok(())
-}
-
-pub fn fetch_daily_stats_from_ingestors(
-    date: &str,
-    stream_meta_list: &[ObjectStoreFormat],
-) -> Result<Stats, StreamError> {
-    // for the given date, get the stats from the ingestors
-    let mut events_ingested = 0;
-    let mut ingestion_size = 0;
-    let mut storage_size = 0;
-
-    for meta in stream_meta_list.iter() {
-        for manifest in meta.snapshot.manifest_list.iter() {
-            if manifest.time_lower_bound.date_naive().to_string() == date {
-                events_ingested += manifest.events_ingested;
-                ingestion_size += manifest.ingestion_size;
-                storage_size += manifest.storage_size;
-            }
-        }
-    }
-
-    let stats = Stats {
-        events: events_ingested,
-        ingestion: ingestion_size,
-        storage: storage_size,
-    };
-    Ok(stats)
 }
 
 /// get the cumulative stats from all ingestors
