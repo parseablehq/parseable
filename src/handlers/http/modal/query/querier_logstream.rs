@@ -25,6 +25,7 @@ use actix_web::{
 };
 use chrono::Utc;
 use http::StatusCode;
+use relative_path::RelativePathBuf;
 use tokio::sync::Mutex;
 use tracing::{error, warn};
 
@@ -44,8 +45,7 @@ use crate::{
     parseable::{StreamNotFound, PARSEABLE},
     static_schema::StaticSchema,
     stats::{self, Stats},
-    storage::StreamType,
-    LOCK_EXPECT,
+    storage::{ObjectStoreFormat, StreamType, STREAM_ROOT_DIRECTORY},
 };
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
@@ -153,7 +153,35 @@ pub async fn get_stats(
 
         if !date_value.is_empty() {
             let querier_stats = get_stats_date(&stream_name, date_value).await?;
-            let ingestor_stats = fetch_daily_stats_from_ingestors(&stream_name, date_value).await?;
+
+            // this function requires all the ingestor stream jsons
+            let path = RelativePathBuf::from_iter([&stream_name, STREAM_ROOT_DIRECTORY]);
+            let obs = PARSEABLE
+                .storage
+                .get_object_store()
+                .get_objects(
+                    Some(&path),
+                    Box::new(|file_name| {
+                        file_name.starts_with(".ingestor") && file_name.ends_with("stream.json")
+                    }),
+                )
+                .await?;
+
+            let mut ingestor_stream_jsons = Vec::new();
+            for ob in obs {
+                let stream_metadata: ObjectStoreFormat = match serde_json::from_slice(&ob) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        error!("Failed to parse stream metadata: {:?}", e);
+                        continue;
+                    }
+                };
+                ingestor_stream_jsons.push(stream_metadata);
+            }
+
+            let ingestor_stats =
+                fetch_daily_stats_from_ingestors(date_value, &ingestor_stream_jsons)?;
+
             let total_stats = Stats {
                 events: querier_stats.events + ingestor_stats.events,
                 ingestion: querier_stats.ingestion + ingestor_stats.ingestion,
@@ -177,57 +205,28 @@ pub async fn get_stats(
         None
     };
 
-    let hash_map = PARSEABLE.streams.read().expect(LOCK_EXPECT);
-    let stream_meta = hash_map
-        .get(&stream_name)
-        .ok_or_else(|| StreamNotFound(stream_name.clone()))?
-        .metadata
-        .read()
-        .expect(LOCK_EXPECT);
-
     let time = Utc::now();
 
-    let stats = match &stream_meta.first_event_at {
-        Some(_) => {
-            let ingestion_stats = IngestionStats::new(
-                stats.current_stats.events,
-                format!("{} {}", stats.current_stats.ingestion, "Bytes"),
-                stats.lifetime_stats.events,
-                format!("{} {}", stats.lifetime_stats.ingestion, "Bytes"),
-                stats.deleted_stats.events,
-                format!("{} {}", stats.deleted_stats.ingestion, "Bytes"),
-                "json",
-            );
-            let storage_stats = StorageStats::new(
-                format!("{} {}", stats.current_stats.storage, "Bytes"),
-                format!("{} {}", stats.lifetime_stats.storage, "Bytes"),
-                format!("{} {}", stats.deleted_stats.storage, "Bytes"),
-                "parquet",
-            );
+    let stats = {
+        let ingestion_stats = IngestionStats::new(
+            stats.current_stats.events,
+            stats.current_stats.ingestion,
+            stats.lifetime_stats.events,
+            stats.lifetime_stats.ingestion,
+            stats.deleted_stats.events,
+            stats.deleted_stats.ingestion,
+            "json",
+        );
+        let storage_stats = StorageStats::new(
+            stats.current_stats.storage,
+            stats.lifetime_stats.storage,
+            stats.deleted_stats.storage,
+            "parquet",
+        );
 
-            QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
-        }
-
-        None => {
-            let ingestion_stats = IngestionStats::new(
-                stats.current_stats.events,
-                format!("{} {}", stats.current_stats.ingestion, "Bytes"),
-                stats.lifetime_stats.events,
-                format!("{} {}", stats.lifetime_stats.ingestion, "Bytes"),
-                stats.deleted_stats.events,
-                format!("{} {}", stats.deleted_stats.ingestion, "Bytes"),
-                "json",
-            );
-            let storage_stats = StorageStats::new(
-                format!("{} {}", stats.current_stats.storage, "Bytes"),
-                format!("{} {}", stats.lifetime_stats.storage, "Bytes"),
-                format!("{} {}", stats.deleted_stats.storage, "Bytes"),
-                "parquet",
-            );
-
-            QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
-        }
+        QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
     };
+
     let stats = if let Some(mut ingestor_stats) = ingestor_stats {
         ingestor_stats.push(stats);
         merge_quried_stats(ingestor_stats)

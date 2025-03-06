@@ -22,7 +22,7 @@ use std::{collections::HashMap, num::NonZeroU32, path::PathBuf, str::FromStr, sy
 use actix_web::http::header::HeaderMap;
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
-use chrono::Local;
+use chrono::Utc;
 use clap::{error::ErrorKind, Parser};
 use http::{header::CONTENT_TYPE, HeaderName, HeaderValue, StatusCode};
 use once_cell::sync::Lazy;
@@ -57,6 +57,9 @@ use crate::{
 
 mod staging;
 mod streams;
+
+/// File extension for arrow files in staging
+const ARROW_FILE_EXTENSION: &str = "arrows";
 
 /// Name of a Stream
 /// NOTE: this used to be a struct, flattened out for simplicity
@@ -179,16 +182,6 @@ impl Parseable {
                     .unwrap_or_default())
     }
 
-    /// Writes all streams in staging onto disk, awaiting conversion into parquet.
-    /// Deletes all in memory recordbatches, freeing up rows in mem-writer.
-    pub fn flush_all_streams(&self) {
-        let streams = self.streams.read().unwrap();
-
-        for staging in streams.values() {
-            staging.flush()
-        }
-    }
-
     // validate the storage, if the proper path for staging directory is provided
     // if the proper data directory is provided, or s3 bucket is provided etc
     pub async fn validate_storage(&self) -> Result<Option<Bytes>, ObjectStorageError> {
@@ -250,6 +243,7 @@ impl Parseable {
         match self.options.mode {
             Mode::Query => "Distributed (Query)",
             Mode::Ingest => "Distributed (Ingest)",
+            Mode::Index => "Distributed (Index)",
             Mode::All => "Standalone",
         }
     }
@@ -468,21 +462,10 @@ impl Parseable {
         }
 
         if !time_partition.is_empty() && custom_partition.is_some() {
-            let custom_partition_list = custom_partition
-                .as_ref()
-                .unwrap()
-                .split(',')
-                .collect::<Vec<&str>>();
-            if custom_partition_list.contains(&time_partition.as_str()) {
-                return Err(CreateStreamError::Custom {
-                    msg: format!(
-                        "time partition {} cannot be set as custom partition",
-                        time_partition
-                    ),
-                    status: StatusCode::BAD_REQUEST,
-                }
-                .into());
-            }
+            return Err(StreamError::Custom {
+                msg: "Cannot set both time partition and custom partition".to_string(),
+                status: StatusCode::BAD_REQUEST,
+            });
         }
 
         let schema = validate_static_schema(
@@ -567,7 +550,7 @@ impl Parseable {
         let storage = self.storage.get_object_store();
 
         let meta = ObjectStoreFormat {
-            created_at: Local::now().to_rfc3339(),
+            created_at: Utc::now().to_rfc3339(),
             permissions: vec![Permisssion::new(PARSEABLE.options.username.clone())],
             stream_type,
             time_partition: (!time_partition.is_empty()).then(|| time_partition.to_string()),
@@ -630,9 +613,17 @@ impl Parseable {
         stream_name: &str,
         custom_partition: Option<&String>,
     ) -> Result<(), StreamError> {
+        let stream = self.get_stream(stream_name).expect(STREAM_EXISTS);
+        if stream.get_time_partition().is_some() {
+            return Err(StreamError::Custom {
+                msg: "Cannot set both time partition and custom partition".to_string(),
+                status: StatusCode::BAD_REQUEST,
+            });
+        }
         if let Some(custom_partition) = custom_partition {
             validate_custom_partition(custom_partition)?;
         }
+
         self.update_custom_partition_in_stream(stream_name.to_string(), custom_partition)
             .await?;
 
@@ -761,16 +752,14 @@ impl Parseable {
             .await
         {
             error!(
-                "Failed to update first_event_at in storage for stream {:?}: {err:?}",
-                stream_name
+                "Failed to update first_event_at in storage for stream {stream_name:?}: {err:?}"
             );
         }
 
         match self.get_stream(stream_name) {
             Ok(stream) => stream.set_first_event_at(first_event_at),
             Err(err) => error!(
-                "Failed to update first_event_at in stream info for stream {:?}: {err:?}",
-                stream_name
+                "Failed to update first_event_at in stream info for stream {stream_name:?}: {err:?}"
             ),
         }
 
@@ -830,9 +819,9 @@ pub fn validate_time_partition_limit(
 
 pub fn validate_custom_partition(custom_partition: &str) -> Result<(), CreateStreamError> {
     let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
-    if custom_partition_list.len() > 3 {
+    if custom_partition_list.len() > 1 {
         return Err(CreateStreamError::Custom {
-            msg: "Maximum 3 custom partition keys are supported".to_string(),
+            msg: "Maximum 1 custom partition key is supported".to_string(),
             status: StatusCode::BAD_REQUEST,
         });
     }
