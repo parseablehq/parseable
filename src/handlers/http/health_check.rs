@@ -27,14 +27,14 @@ use actix_web::{
     HttpResponse,
 };
 use http::StatusCode;
-use tokio::sync::Mutex;
+use once_cell::sync::Lazy;
+use tokio::{sync::Mutex, task::JoinSet};
+use tracing::{error, info, warn};
 
 use crate::parseable::PARSEABLE;
 
 // Create a global variable to store signal status
-lazy_static::lazy_static! {
-    pub static ref SIGNAL_RECEIVED: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
-}
+static SIGNAL_RECEIVED: Lazy<Arc<Mutex<bool>>> = Lazy::new(|| Arc::new(Mutex::new(false)));
 
 pub async fn liveness() -> HttpResponse {
     HttpResponse::new(StatusCode::OK)
@@ -60,8 +60,29 @@ pub async fn shutdown() {
     let mut shutdown_flag = SIGNAL_RECEIVED.lock().await;
     *shutdown_flag = true;
 
+    let mut joinset = JoinSet::new();
+
     // Sync staging
-    PARSEABLE.flush_all_streams();
+    PARSEABLE.streams.flush_and_convert(&mut joinset, true);
+
+    while let Some(res) = joinset.join_next().await {
+        match res {
+            Ok(Ok(_)) => info!("Successfully converted arrow files to parquet."),
+            Ok(Err(err)) => warn!("Failed to convert arrow files to parquet. {err:?}"),
+            Err(err) => error!("Failed to join async task: {err}"),
+        }
+    }
+
+    if let Err(e) = PARSEABLE
+        .storage
+        .get_object_store()
+        .upload_files_from_staging()
+        .await
+    {
+        warn!("Failed to sync local data with object store. {:?}", e);
+    } else {
+        info!("Successfully synced all data to S3.");
+    }
 }
 
 pub async fn readiness() -> HttpResponse {

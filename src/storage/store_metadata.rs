@@ -159,6 +159,12 @@ pub async fn resolve_parseable_metadata(
                         metadata.server_mode = PARSEABLE.options.mode;
                         metadata.staging = PARSEABLE.options.staging_dir().to_path_buf();
                       },
+                    Mode::Index => {
+                        // if index server is started fetch the metadata from remote
+                        // update the server mode for local metadata
+                        metadata.server_mode = PARSEABLE.options.mode;
+                        metadata.staging = PARSEABLE.options.staging_dir().to_path_buf();
+                    }
                 }
                 Ok(metadata)
             }

@@ -32,7 +32,6 @@ use tracing::warn;
 use crate::event::format::override_data_type;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
 use crate::metadata::SchemaVersion;
-use crate::option::Mode;
 use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::rbac::role::Action;
 use crate::rbac::Users;
@@ -42,7 +41,6 @@ use crate::storage::{StreamInfo, StreamType};
 use crate::utils::actix::extract_session_key_from_req;
 use crate::{stats, validator, LOCK_EXPECT};
 
-use super::cluster::fetch_stats_from_ingestors;
 use super::cluster::utils::{IngestionStats, QueriedStats, StorageStats};
 use super::query::update_schema_when_distributed;
 
@@ -219,73 +217,25 @@ pub async fn get_stats(
 
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or_else(|| StreamNotFound(stream_name.clone()))?;
-
-    let ingestor_stats = if PARSEABLE.options.mode == Mode::Query
-        && PARSEABLE
-            .get_stream(&stream_name)
-            .is_ok_and(|s| s.get_stream_type() == StreamType::Internal)
-    {
-        Some(fetch_stats_from_ingestors(&stream_name).await?)
-    } else {
-        None
-    };
-
-    let hash_map = PARSEABLE.streams.read().expect("Readable");
-    let stream_meta = &hash_map
-        .get(&stream_name)
-        .ok_or_else(|| StreamNotFound(stream_name.clone()))?
-        .metadata
-        .read()
-        .expect(LOCK_EXPECT);
-
     let time = Utc::now();
+    let stats = {
+        let ingestion_stats = IngestionStats::new(
+            stats.current_stats.events,
+            stats.current_stats.ingestion,
+            stats.lifetime_stats.events,
+            stats.lifetime_stats.ingestion,
+            stats.deleted_stats.events,
+            stats.deleted_stats.ingestion,
+            "json",
+        );
+        let storage_stats = StorageStats::new(
+            stats.current_stats.storage,
+            stats.lifetime_stats.storage,
+            stats.deleted_stats.storage,
+            "parquet",
+        );
 
-    let stats = match &stream_meta.first_event_at {
-        Some(_) => {
-            let ingestion_stats = IngestionStats::new(
-                stats.current_stats.events,
-                format!("{} Bytes", stats.current_stats.ingestion),
-                stats.lifetime_stats.events,
-                format!("{} Bytes", stats.lifetime_stats.ingestion),
-                stats.deleted_stats.events,
-                format!("{} Bytes", stats.deleted_stats.ingestion),
-                "json",
-            );
-            let storage_stats = StorageStats::new(
-                format!("{} Bytes", stats.current_stats.storage),
-                format!("{} Bytes", stats.lifetime_stats.storage),
-                format!("{} Bytes", stats.deleted_stats.storage),
-                "parquet",
-            );
-
-            QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
-        }
-
-        None => {
-            let ingestion_stats = IngestionStats::new(
-                stats.current_stats.events,
-                format!("{} Bytes", stats.current_stats.ingestion),
-                stats.lifetime_stats.events,
-                format!("{} Bytes", stats.lifetime_stats.ingestion),
-                stats.deleted_stats.events,
-                format!("{} Bytes", stats.deleted_stats.ingestion),
-                "json",
-            );
-            let storage_stats = StorageStats::new(
-                format!("{} Bytes", stats.current_stats.storage),
-                format!("{} Bytes", stats.lifetime_stats.storage),
-                format!("{} Bytes", stats.deleted_stats.storage),
-                "parquet",
-            );
-
-            QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
-        }
-    };
-    let stats = if let Some(mut ingestor_stats) = ingestor_stats {
-        ingestor_stats.push(stats);
-        QueriedStats::merge(ingestor_stats)
-    } else {
-        stats
+        QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
     };
 
     Ok(HttpResponse::build(StatusCode::OK).json(stats))
