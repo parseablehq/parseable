@@ -53,7 +53,7 @@ use crate::catalog::Snapshot as CatalogSnapshot;
 use crate::event;
 use crate::handlers::http::query::QueryError;
 use crate::option::Mode;
-use crate::parseable::PARSEABLE;
+use crate::parseable::{Stream, PARSEABLE};
 use crate::storage::{ObjectStorageProvider, ObjectStoreFormat, STREAM_ROOT_DIRECTORY};
 use crate::utils::time::TimeRange;
 
@@ -129,12 +129,11 @@ impl Query {
         SessionContext::new_with_state(state)
     }
 
-    #[tokio::main(flavor = "multi_thread")]
     pub async fn execute(
         &self,
-        stream_name: String,
+        stream: &Stream,
     ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
-        let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
+        let time_partition = stream.get_time_partition();
 
         let df = QUERY_SESSION
             .execute_logical_plan(self.final_logical_plan(&time_partition))

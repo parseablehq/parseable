@@ -216,13 +216,13 @@ impl FlightService for AirServiceImpl {
         })?;
         let time = Instant::now();
 
-        let stream_name_clone = stream_name.clone();
-        let (records, _) =
-            match tokio::task::spawn_blocking(move || query.execute(stream_name_clone)).await {
-                Ok(Ok((records, fields))) => (records, fields),
-                Ok(Err(e)) => return Err(Status::internal(e.to_string())),
-                Err(err) => return Err(Status::internal(err.to_string())),
-            };
+        let stream = PARSEABLE
+            .get_stream(&stream_name)
+            .map_err(|err| Status::internal(err.to_string()))?;
+        let (records, _) = query
+            .execute(&stream)
+            .await
+            .map_err(|err| Status::internal(err.to_string()))?;
 
         /*
         * INFO: No returning the schema with the data.
