@@ -91,7 +91,6 @@ impl Query {
         let mut config = SessionConfig::default()
             .with_parquet_pruning(true)
             .with_prefer_existing_sort(true)
-            .with_information_schema(true)
             .with_batch_size(1000000)
             .with_coalesce_batches(true);
 
@@ -142,9 +141,7 @@ impl Query {
             .execute_logical_plan(self.final_logical_plan(&time_partition))
             .await?;
 
-        let optimised_df = df.repartition(Partitioning::RoundRobinBatch(16))?;
-
-        let fields = optimised_df
+        let fields = df
             .schema()
             .fields()
             .iter()
@@ -156,7 +153,7 @@ impl Query {
             return Ok((vec![], fields));
         }
 
-        let results = optimised_df.collect().await?;
+        let results = df.collect().await?;
         Ok((results, fields))
     }
 
