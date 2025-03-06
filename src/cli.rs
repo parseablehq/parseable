@@ -260,11 +260,12 @@ pub struct Options {
         help = "Set a fixed memory limit for query in GiB"
     )]
     pub query_memory_pool_size: Option<usize>,
-
+    // reduced the max row group size from 1048576
+    // smaller row groups help in faster query performance in multi threaded query
     #[arg(
         long,
         env = "P_PARQUET_ROW_GROUP_SIZE",
-        default_value = "1048576",
+        default_value = "262144",
         help = "Number of rows in a row group"
     )]
     pub row_group_size: usize,
