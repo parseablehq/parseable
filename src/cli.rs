@@ -264,7 +264,7 @@ pub struct Options {
     #[arg(
         long,
         env = "P_PARQUET_ROW_GROUP_SIZE",
-        default_value = "1048576",
+        default_value = "262144",
         help = "Number of rows in a row group"
     )]
     pub row_group_size: usize,
