@@ -41,7 +41,7 @@ use crate::{
     },
     option::Mode,
     parseable::PARSEABLE,
-    stats::{self, Stats},
+    stats::{FullStats, Stats},
     storage, HTTP_CLIENT,
 };
 
@@ -170,7 +170,7 @@ fn total_event_stats() -> (Stats, Stats, Stats) {
     let mut deleted_json_bytes: u64 = 0;
 
     for stream in PARSEABLE.streams.list() {
-        let Some(stats) = stats::get_current_stats(&stream, "json") else {
+        let Some(stats) = FullStats::get_current(&stream, "json") else {
             continue;
         };
         total_events += stats.lifetime_stats.events;

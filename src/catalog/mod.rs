@@ -33,7 +33,7 @@ use crate::{
     option::Mode,
     parseable::PARSEABLE,
     query::PartialTimeFilter,
-    stats::{event_labels_date, get_current_stats, storage_size_labels_date, update_deleted_stats},
+    stats::{event_labels_date, storage_size_labels_date, update_deleted_stats, FullStats},
     storage::{
         object_storage::manifest_path, ObjectStorage, ObjectStorageError, ObjectStoreFormat,
     },
@@ -181,7 +181,7 @@ pub async fn update_snapshot(
             if let Some(mut manifest) = storage.get_manifest(&path).await? {
                 manifest.apply_change(change);
                 storage.put_manifest(&path, manifest).await?;
-                let stats = get_current_stats(stream_name, "json");
+                let stats = FullStats::get_current(stream_name, "json");
                 if let Some(stats) = stats {
                     meta.stats = stats;
                 }
@@ -307,7 +307,7 @@ async fn create_manifest(
         };
         manifests.push(new_snapshot_entry);
         meta.snapshot.manifest_list = manifests;
-        let stats = get_current_stats(stream_name, "json");
+        let stats = FullStats::get_current(stream_name, "json");
         if let Some(stats) = stats {
             meta.stats = stats;
         }
