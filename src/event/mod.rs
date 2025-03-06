@@ -27,7 +27,7 @@ use std::sync::Arc;
 use self::error::EventError;
 use crate::{
     metadata::update_stats,
-    parseable::{StagingError, PARSEABLE},
+    parseable::{StagingError, Stream, PARSEABLE},
     storage::StreamType,
     LOCK_EXPECT,
 };
@@ -38,7 +38,6 @@ pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
 
 #[derive(Clone)]
 pub struct Event {
-    pub stream_name: String,
     pub rb: RecordBatch,
     pub origin_format: &'static str,
     pub origin_size: u64,
@@ -51,7 +50,7 @@ pub struct Event {
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
-    pub fn process(self) -> Result<(), EventError> {
+    pub fn process(self, stream: &Stream) -> Result<(), EventError> {
         let mut key = get_schema_key(&self.rb.schema().fields);
         if self.time_partition.is_some() {
             let parsed_timestamp_to_min = self.parsed_timestamp.format("%Y%m%dT%H%M").to_string();
@@ -65,10 +64,10 @@ impl Event {
         }
 
         if self.is_first_event {
-            commit_schema(&self.stream_name, self.rb.schema())?;
+            commit_schema(&stream.stream_name, self.rb.schema())?;
         }
 
-        PARSEABLE.get_or_create_stream(&self.stream_name).push(
+        PARSEABLE.get_or_create_stream(&stream.stream_name).push(
             &key,
             &self.rb,
             self.parsed_timestamp,
@@ -77,22 +76,22 @@ impl Event {
         )?;
 
         update_stats(
-            &self.stream_name,
+            &stream.stream_name,
             self.origin_format,
             self.origin_size,
             self.rb.num_rows(),
             self.parsed_timestamp.date(),
         );
 
-        crate::livetail::LIVETAIL.process(&self.stream_name, &self.rb);
+        crate::livetail::LIVETAIL.process(&stream.stream_name, &self.rb);
 
         Ok(())
     }
 
-    pub fn process_unchecked(&self) -> Result<(), EventError> {
+    pub fn process_unchecked(&self, stream: &Stream) -> Result<(), EventError> {
         let key = get_schema_key(&self.rb.schema().fields);
 
-        PARSEABLE.get_or_create_stream(&self.stream_name).push(
+        PARSEABLE.get_or_create_stream(&stream.stream_name).push(
             &key,
             &self.rb,
             self.parsed_timestamp,
