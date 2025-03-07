@@ -149,6 +149,7 @@ impl EventFormat for Event {
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
         stream_type: StreamType,
+        p_custom_fields: &HashMap<String, String>,
     ) -> Result<super::Event, anyhow::Error> {
         let custom_partition_values = match custom_partitions.as_ref() {
             Some(custom_partition) => {
@@ -168,6 +169,7 @@ impl EventFormat for Event {
             static_schema_flag,
             time_partition,
             schema_version,
+            p_custom_fields,
         )?;
 
         Ok(super::Event {

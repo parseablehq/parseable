@@ -35,6 +35,8 @@ use chrono::NaiveDateTime;
 use std::collections::HashMap;
 
 pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
+pub const USER_AGENT_KEY: &str = "p_user_agent";
+pub const SOURCE_IP_KEY: &str = "p_src_ip";
 
 #[derive(Clone)]
 pub struct Event {

@@ -40,10 +40,12 @@
 //! }
 //! ```
 
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
-use arrow_array::{Array, RecordBatch, TimestampMillisecondArray, UInt64Array};
-use arrow_schema::Schema;
+use arrow_array::{
+    Array, ArrayRef, RecordBatch, StringArray, TimestampMillisecondArray, UInt64Array,
+};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use arrow_select::take::take;
 use chrono::{DateTime, Utc};
 use itertools::Itertools;
@@ -54,6 +56,8 @@ pub mod flight;
 use anyhow::Result;
 pub use batch_adapter::adapt_batch;
 use serde_json::{Map, Value};
+
+use crate::event::DEFAULT_TIMESTAMP_KEY;
 
 /// Replaces columns in a record batch with new arrays.
 ///
@@ -137,6 +141,47 @@ pub fn get_field<'a>(
 /// A column in arrow, containing the current timestamp in millis.
 pub fn get_timestamp_array(p_timestamp: DateTime<Utc>, size: usize) -> TimestampMillisecondArray {
     TimestampMillisecondArray::from_value(p_timestamp.timestamp_millis(), size)
+}
+
+pub fn add_parseable_fields(
+    rb: RecordBatch,
+    p_timestamp: DateTime<Utc>,
+    p_custom_fields: &HashMap<String, String>,
+) -> RecordBatch {
+    let schema = rb.schema();
+    let row_count = rb.num_rows();
+
+    let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
+    let mut columns: Vec<ArrayRef> = rb.columns().to_vec();
+
+    // Create and insert the p_timestamp field and array at index 0
+    let p_timestamp_array = Arc::new(TimestampMillisecondArray::from_iter_values(
+        std::iter::repeat(p_timestamp.timestamp_millis()).take(row_count),
+    ));
+    let p_timestamp_field = Field::new(
+        DEFAULT_TIMESTAMP_KEY.to_string(),
+        DataType::Timestamp(TimeUnit::Millisecond, None),
+        false,
+    );
+    fields.insert(0, p_timestamp_field);
+    columns.insert(0, p_timestamp_array);
+
+    // Sort p_custom_fields by key and insert custom fields at the beginning, after the p_timestamp field
+    let mut sorted_keys: Vec<&String> = p_custom_fields.keys().collect();
+    sorted_keys.sort();
+    for key in sorted_keys.iter().rev() {
+        let value = p_custom_fields.get(*key).unwrap();
+        let string_array: ArrayRef = Arc::new(StringArray::from_iter_values(
+            std::iter::repeat(value).take(row_count),
+        ));
+        columns.insert(1, string_array);
+
+        let new_field = Field::new((*key).clone(), DataType::Utf8, true);
+        fields.insert(1, new_field);
+    }
+
+    let new_schema = Arc::new(Schema::new(fields));
+    RecordBatch::try_new(new_schema, columns).unwrap()
 }
 
 pub fn reverse(rb: &RecordBatch) -> RecordBatch {

@@ -16,6 +16,9 @@
  *
  */
 
+use std::collections::HashMap;
+
+use actix_web::HttpRequest;
 use chrono::Utc;
 use opentelemetry_proto::tonic::{
     logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
@@ -23,10 +26,16 @@ use opentelemetry_proto::tonic::{
 use serde_json::Value;
 
 use crate::{
-    event::format::{json, EventFormat, LogSource},
-    handlers::http::{
-        ingest::PostError,
-        kinesis::{flatten_kinesis_logs, Message},
+    event::{
+        format::{json, EventFormat, LogSource},
+        SOURCE_IP_KEY, USER_AGENT_KEY,
+    },
+    handlers::{
+        http::{
+            ingest::PostError,
+            kinesis::{flatten_kinesis_logs, Message},
+        },
+        LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY,
     },
     otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
     parseable::PARSEABLE,
@@ -34,42 +43,45 @@ use crate::{
     utils::json::{convert_array_to_object, flatten::convert_to_array},
 };
 
+const IGNORE_HEADERS: [&str; 2] = [STREAM_NAME_HEADER_KEY, LOG_SOURCE_KEY];
+
 pub async fn flatten_and_push_logs(
     json: Value,
     stream_name: &str,
     log_source: &LogSource,
+    p_custom_fields: &HashMap<String, String>,
 ) -> Result<(), PostError> {
     match log_source {
         LogSource::Kinesis => {
             //custom flattening required for Amazon Kinesis
             let message: Message = serde_json::from_value(json)?;
             for record in flatten_kinesis_logs(message) {
-                push_logs(stream_name, record, &LogSource::default()).await?;
+                push_logs(stream_name, record, &LogSource::default(), p_custom_fields).await?;
             }
         }
         LogSource::OtelLogs => {
             //custom flattening required for otel logs
             let logs: LogsData = serde_json::from_value(json)?;
             for record in flatten_otel_logs(&logs) {
-                push_logs(stream_name, record, log_source).await?;
+                push_logs(stream_name, record, log_source, p_custom_fields).await?;
             }
         }
         LogSource::OtelTraces => {
             //custom flattening required for otel traces
             let traces: TracesData = serde_json::from_value(json)?;
             for record in flatten_otel_traces(&traces) {
-                push_logs(stream_name, record, log_source).await?;
+                push_logs(stream_name, record, log_source, p_custom_fields).await?;
             }
         }
         LogSource::OtelMetrics => {
             //custom flattening required for otel metrics
             let metrics: MetricsData = serde_json::from_value(json)?;
             for record in flatten_otel_metrics(metrics) {
-                push_logs(stream_name, record, log_source).await?;
+                push_logs(stream_name, record, log_source, p_custom_fields).await?;
             }
         }
         _ => {
-            push_logs(stream_name, json, log_source).await?;
+            push_logs(stream_name, json, log_source, p_custom_fields).await?;
         }
     }
     Ok(())
@@ -79,6 +91,7 @@ async fn push_logs(
     stream_name: &str,
     json: Value,
     log_source: &LogSource,
+    p_custom_fields: &HashMap<String, String>,
 ) -> Result<(), PostError> {
     let stream = PARSEABLE.get_stream(stream_name)?;
     let time_partition = stream.get_time_partition();
@@ -123,8 +136,36 @@ async fn push_logs(
                 time_partition.as_ref(),
                 schema_version,
                 StreamType::UserDefined,
+                p_custom_fields,
             )?
             .process()?;
     }
     Ok(())
+}
+
+pub fn get_custom_fields_from_header(req: HttpRequest) -> HashMap<String, String> {
+    let user_agent = req
+        .headers()
+        .get("User-Agent")
+        .and_then(|a| a.to_str().ok())
+        .unwrap_or_default();
+
+    let conn = req.connection_info().clone();
+
+    let source_ip = conn.realip_remote_addr().unwrap_or_default();
+    let mut p_custom_fields = HashMap::new();
+    p_custom_fields.insert(USER_AGENT_KEY.to_string(), user_agent.to_string());
+    p_custom_fields.insert(SOURCE_IP_KEY.to_string(), source_ip.to_string());
+
+    // Iterate through headers and add custom fields
+    for (header_name, header_value) in req.headers().iter() {
+        let header_name = header_name.as_str();
+        if header_name.starts_with("x-p-") && !IGNORE_HEADERS.contains(&header_name) {
+            if let Ok(value) = header_value.to_str() {
+                let key = header_name.trim_start_matches("x-p-");
+                p_custom_fields.insert(key.to_string(), value.to_string());
+            }
+        }
+    }
+    p_custom_fields
 }

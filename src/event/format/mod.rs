@@ -33,7 +33,7 @@ use serde_json::Value;
 use crate::{
     metadata::SchemaVersion,
     storage::StreamType,
-    utils::arrow::{get_field, get_timestamp_array, replace_columns},
+    utils::arrow::{add_parseable_fields, get_field},
 };
 
 use super::{Event, DEFAULT_TIMESTAMP_KEY};
@@ -145,6 +145,7 @@ pub trait EventFormat: Sized {
         static_schema_flag: bool,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
+        p_custom_fields: &HashMap<String, String>,
     ) -> Result<(RecordBatch, bool), AnyError> {
         let p_timestamp = self.get_p_timestamp();
         let (data, mut schema, is_first) = self.to_data(
@@ -161,16 +162,6 @@ pub trait EventFormat: Sized {
             ));
         };
 
-        // add the p_timestamp field to the event schema to the 0th index
-        schema.insert(
-            0,
-            Arc::new(Field::new(
-                DEFAULT_TIMESTAMP_KEY,
-                DataType::Timestamp(TimeUnit::Millisecond, None),
-                true,
-            )),
-        );
-
         // prepare the record batch and new fields to be added
         let mut new_schema = Arc::new(Schema::new(schema));
         if !Self::is_schema_matching(new_schema.clone(), storage_schema, static_schema_flag) {
@@ -179,13 +170,9 @@ pub trait EventFormat: Sized {
         new_schema =
             update_field_type_in_schema(new_schema, None, time_partition, None, schema_version);
 
-        let mut rb = Self::decode(data, new_schema.clone())?;
-        rb = replace_columns(
-            rb.schema(),
-            &rb,
-            &[0],
-            &[Arc::new(get_timestamp_array(p_timestamp, rb.num_rows()))],
-        );
+        let rb = Self::decode(data, new_schema.clone())?;
+
+        let rb = add_parseable_fields(rb, p_timestamp, p_custom_fields);
 
         Ok((rb, is_first))
     }
@@ -223,6 +210,7 @@ pub trait EventFormat: Sized {
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
         stream_type: StreamType,
+        p_custom_fields: &HashMap<String, String>,
     ) -> Result<Event, AnyError>;
 }
 
