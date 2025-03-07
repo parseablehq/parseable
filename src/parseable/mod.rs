@@ -462,13 +462,6 @@ impl Parseable {
             validate_custom_partition(custom_partition)?;
         }
 
-        if !time_partition.is_empty() && custom_partition.is_some() {
-            return Err(StreamError::Custom {
-                msg: "Cannot set both time partition and custom partition".to_string(),
-                status: StatusCode::BAD_REQUEST,
-            });
-        }
-
         let schema = validate_static_schema(
             body,
             stream_name,
