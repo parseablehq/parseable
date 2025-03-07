@@ -53,7 +53,7 @@ use crate::catalog::Snapshot as CatalogSnapshot;
 use crate::event;
 use crate::handlers::http::query::QueryError;
 use crate::option::Mode;
-use crate::parseable::{Stream, PARSEABLE};
+use crate::parseable::PARSEABLE;
 use crate::storage::{ObjectStorageProvider, ObjectStoreFormat, STREAM_ROOT_DIRECTORY};
 use crate::utils::time::TimeRange;
 
@@ -131,12 +131,10 @@ impl Query {
 
     pub async fn execute(
         &self,
-        stream: &Stream,
+        time_partition: Option<&String>,
     ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
-        let time_partition = stream.get_time_partition();
-
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan(&time_partition))
+            .execute_logical_plan(self.final_logical_plan(time_partition))
             .await?;
 
         let fields = df
@@ -155,18 +153,19 @@ impl Query {
         Ok((results, fields))
     }
 
-    pub async fn get_dataframe(&self, stream_name: String) -> Result<DataFrame, ExecuteError> {
-        let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
-
+    pub async fn get_dataframe(
+        &self,
+        time_partition: Option<&String>,
+    ) -> Result<DataFrame, ExecuteError> {
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan(&time_partition))
+            .execute_logical_plan(self.final_logical_plan(time_partition))
             .await?;
 
         Ok(df)
     }
 
     /// return logical plan with all time filters applied through
-    fn final_logical_plan(&self, time_partition: &Option<String>) -> LogicalPlan {
+    fn final_logical_plan(&self, time_partition: Option<&String>) -> LogicalPlan {
         // see https://github.com/apache/arrow-datafusion/pull/8400
         // this can be eliminated in later version of datafusion but with slight caveat
         // transform cannot modify stringified plans by itself
@@ -486,7 +485,7 @@ fn transform(
     plan: LogicalPlan,
     start_time: NaiveDateTime,
     end_time: NaiveDateTime,
-    time_partition: &Option<String>,
+    time_partition: Option<&String>,
 ) -> Transformed<LogicalPlan> {
     plan.transform(&|plan| match plan {
         LogicalPlan::TableScan(table) => {
@@ -544,7 +543,7 @@ fn transform(
 
 fn table_contains_any_time_filters(
     table: &datafusion::logical_expr::TableScan,
-    time_partition: &Option<String>,
+    time_partition: Option<&String>,
 ) -> bool {
     table
         .filters
@@ -558,8 +557,8 @@ fn table_contains_any_time_filters(
         })
         .any(|expr| {
             matches!(&*expr.left, Expr::Column(Column { name, .. })
-            if ((time_partition.is_some() && name == time_partition.as_ref().unwrap()) ||
-            (!time_partition.is_some() && name == event::DEFAULT_TIMESTAMP_KEY)))
+            if (time_partition.is_some_and(|field| field == name) ||
+            (time_partition.is_none() && name == event::DEFAULT_TIMESTAMP_KEY)))
         })
 }
 

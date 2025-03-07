@@ -216,11 +216,12 @@ impl FlightService for AirServiceImpl {
         })?;
         let time = Instant::now();
 
-        let stream = PARSEABLE
+        let time_partition = PARSEABLE
             .get_stream(&stream_name)
-            .map_err(|err| Status::internal(err.to_string()))?;
+            .map_err(|err| Status::internal(err.to_string()))?
+            .get_time_partition();
         let (records, _) = query
-            .execute(&stream)
+            .execute(time_partition.as_ref())
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
 

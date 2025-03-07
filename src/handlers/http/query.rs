@@ -131,8 +131,8 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         return Ok(HttpResponse::Ok().json(response));
     }
 
-    let stream = PARSEABLE.get_stream(&table_name)?;
-    let (records, fields) = query.execute(&stream).await?;
+    let time_partition = PARSEABLE.get_stream(&table_name)?.get_time_partition();
+    let (records, fields) = query.execute(time_partition.as_ref()).await?;
 
     let response = QueryResponse {
         records,
@@ -321,7 +321,7 @@ Description: {0}"#
     #[error("Error: {0}")]
     Anyhow(#[from] anyhow::Error),
     #[error("Error: {0}")]
-    StreamNotFound(#[from] StreamNotFound)
+    StreamNotFound(#[from] StreamNotFound),
 }
 
 impl actix_web::ResponseError for QueryError {
