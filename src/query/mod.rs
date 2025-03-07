@@ -61,10 +61,13 @@ use crate::utils::time::TimeRange;
 pub static QUERY_SESSION: Lazy<SessionContext> =
     Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
 
-/// Dedicated multi-threaded runtime to run
+/// Dedicated multi-threaded runtime to run all queries on
 pub static QUERY_RUNTIME: Lazy<Runtime> =
     Lazy::new(|| Runtime::new().expect("Runtime should be constructible"));
 
+
+/// This function executes a query on the dedicated runtime, ensuring that the query is not isolated to a single CPU
+/// at a time and has access to the entire thread, enabling better concurrent processing, and thus quicker results.
 pub async fn execute(
     query: Query,
     stream_name: &str,
