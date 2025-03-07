@@ -38,7 +38,7 @@ use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::flatten::JsonFlattenError;
 
 use super::logstream::error::{CreateStreamError, StreamError};
-use super::modal::utils::ingest_utils::flatten_and_push_logs;
+use super::modal::utils::ingest_utils::{flatten_and_push_logs, get_custom_fields_from_header};
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
 
@@ -72,7 +72,9 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
         return Err(PostError::OtelNotSupported);
     }
 
-    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+    let p_custom_fields = get_custom_fields_from_header(req);
+
+    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -93,6 +95,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             None,
             SchemaVersion::V0,
             StreamType::Internal,
+            &HashMap::new(),
         )?
         .process()?;
 
@@ -122,8 +125,9 @@ pub async fn handle_otel_logs_ingestion(
     PARSEABLE
         .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelLogs)
         .await?;
+    let p_custom_fields = get_custom_fields_from_header(req);
 
-    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -145,6 +149,7 @@ pub async fn handle_otel_metrics_ingestion(
     if log_source != LogSource::OtelMetrics {
         return Err(PostError::IncorrectLogSource(LogSource::OtelMetrics));
     }
+
     let stream_name = stream_name.to_str().unwrap().to_owned();
     PARSEABLE
         .create_stream_if_not_exists(
@@ -154,7 +159,9 @@ pub async fn handle_otel_metrics_ingestion(
         )
         .await?;
 
-    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+    let p_custom_fields = get_custom_fields_from_header(req);
+
+    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -182,7 +189,9 @@ pub async fn handle_otel_traces_ingestion(
         .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelTraces)
         .await?;
 
-    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+    let p_custom_fields = get_custom_fields_from_header(req);
+
+    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -231,7 +240,8 @@ pub async fn post_event(
         return Err(PostError::OtelNotSupported);
     }
 
-    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+    let p_custom_fields = get_custom_fields_from_header(req);
+    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -381,7 +391,13 @@ mod tests {
         });
 
         let (rb, _) = json::Event::new(json)
-            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
+                None,
+                SchemaVersion::V0,
+                &HashMap::new(),
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
@@ -409,7 +425,13 @@ mod tests {
         });
 
         let (rb, _) = json::Event::new(json)
-            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
+                None,
+                SchemaVersion::V0,
+                &HashMap::new(),
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
@@ -441,7 +463,7 @@ mod tests {
         );
 
         let (rb, _) = json::Event::new(json)
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0)
+            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
             .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
@@ -473,7 +495,7 @@ mod tests {
         );
 
         assert!(json::Event::new(json)
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0,)
+            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
             .is_err());
     }
 
@@ -491,7 +513,7 @@ mod tests {
         );
 
         let (rb, _) = json::Event::new(json)
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0)
+            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
             .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
@@ -532,7 +554,13 @@ mod tests {
         ]);
 
         let (rb, _) = json::Event::new(json)
-            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
+                None,
+                SchemaVersion::V0,
+                &HashMap::new(),
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
@@ -580,7 +608,13 @@ mod tests {
         ]);
 
         let (rb, _) = json::Event::new(json)
-            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
+                None,
+                SchemaVersion::V0,
+                &HashMap::new(),
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
@@ -629,7 +663,7 @@ mod tests {
         );
 
         let (rb, _) = json::Event::new(json)
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0)
+            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
             .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
@@ -678,7 +712,7 @@ mod tests {
         );
 
         assert!(json::Event::new(json)
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0,)
+            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
             .is_err());
     }
 
@@ -718,7 +752,13 @@ mod tests {
         .unwrap();
 
         let (rb, _) = json::Event::new(flattened_json)
-            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V0)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
+                None,
+                SchemaVersion::V0,
+                &HashMap::new(),
+            )
             .unwrap();
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 5);
@@ -801,7 +841,13 @@ mod tests {
         .unwrap();
 
         let (rb, _) = json::Event::new(flattened_json)
-            .into_recordbatch(&HashMap::default(), false, None, SchemaVersion::V1)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
+                None,
+                SchemaVersion::V1,
+                &HashMap::new(),
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 4);

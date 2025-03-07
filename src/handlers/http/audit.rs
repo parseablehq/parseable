@@ -23,6 +23,7 @@ use actix_web::{
     middleware::Next,
 };
 use actix_web_httpauth::extractors::basic::BasicAuth;
+use http::header::USER_AGENT;
 use ulid::Ulid;
 
 use crate::{
@@ -85,7 +86,7 @@ pub async fn audit_log_middleware(
         )
         .with_user_agent(
             req.headers()
-                .get("User-Agent")
+                .get(USER_AGENT)
                 .and_then(|a| a.to_str().ok())
                 .unwrap_or_default(),
         )
