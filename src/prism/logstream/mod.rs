@@ -26,13 +26,16 @@ use serde::Serialize;
 
 use crate::{
     handlers::http::{
-        cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
+        cluster::{
+            fetch_stats_from_ingestors,
+            utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
+        },
         logstream::error::StreamError,
         query::update_schema_when_distributed,
     },
     parseable::{StreamNotFound, PARSEABLE},
     stats,
-    storage::{retention::Retention, StreamInfo},
+    storage::{retention::Retention, StreamInfo, StreamType},
     LOCK_EXPECT,
 };
 
@@ -93,24 +96,31 @@ async fn get_stats(stream_name: &str) -> Result<QueriedStats, PrismLogstreamErro
     let stats = stats::get_current_stats(stream_name, "json")
         .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?;
 
-    let ingestor_stats: Option<Vec<QueriedStats>> = None;
+    let ingestor_stats = if PARSEABLE
+        .get_stream(stream_name)
+        .is_ok_and(|stream| stream.get_stream_type() == StreamType::UserDefined)
+    {
+        Some(fetch_stats_from_ingestors(stream_name).await?)
+    } else {
+        None
+    };
 
     let time = Utc::now();
 
     let stats = {
         let ingestion_stats = IngestionStats::new(
             stats.current_stats.events,
-            format!("{} {}", stats.current_stats.ingestion, "Bytes"),
+            stats.current_stats.ingestion,
             stats.lifetime_stats.events,
-            format!("{} {}", stats.lifetime_stats.ingestion, "Bytes"),
+            stats.lifetime_stats.ingestion,
             stats.deleted_stats.events,
-            format!("{} {}", stats.deleted_stats.ingestion, "Bytes"),
+            stats.deleted_stats.ingestion,
             "json",
         );
         let storage_stats = StorageStats::new(
-            format!("{} {}", stats.current_stats.storage, "Bytes"),
-            format!("{} {}", stats.lifetime_stats.storage, "Bytes"),
-            format!("{} {}", stats.deleted_stats.storage, "Bytes"),
+            stats.current_stats.storage,
+            stats.lifetime_stats.storage,
+            stats.deleted_stats.storage,
             "parquet",
         );
 

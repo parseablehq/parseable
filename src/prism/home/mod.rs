@@ -16,19 +16,27 @@
  *
  */
 
+use std::collections::HashMap;
+
 use actix_web::http::header::ContentType;
 use chrono::Utc;
 use http::StatusCode;
 use itertools::Itertools;
+use relative_path::RelativePathBuf;
 use serde::Serialize;
+use tracing::error;
 
 use crate::{
     alerts::{get_alerts_info, AlertError, AlertsInfo, ALERTS},
     correlation::{CorrelationError, CORRELATIONS},
-    handlers::http::logstream::{error::StreamError, get_stats_date},
+    handlers::http::{
+        cluster::fetch_daily_stats_from_ingestors,
+        logstream::{error::StreamError, get_stats_date},
+    },
     parseable::PARSEABLE,
     rbac::{map::SessionKey, role::Action, Users},
     stats::Stats,
+    storage::{ObjectStorageError, ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
     users::{dashboards::DASHBOARDS, filters::FILTERS},
 };
 
@@ -67,14 +75,6 @@ pub struct HomeResponse {
 }
 
 pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, PrismHomeError> {
-    let user_id = if let Some(user_id) = Users.get_username_from_session(key) {
-        user_id
-    } else {
-        return Err(PrismHomeError::Anyhow(anyhow::Error::msg(
-            "User does not exist",
-        )));
-    };
-
     // get all stream titles
     let stream_titles: Vec<String> = PARSEABLE
         .storage
@@ -115,7 +115,8 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
 
     // get dashboard IDs
     let dashboard_titles = DASHBOARDS
-        .list_dashboards_by_user(&user_id)
+        .list_dashboards(key)
+        .await
         .iter()
         .map(|dashboard| TitleAndId {
             title: dashboard.name.clone(),
@@ -130,7 +131,8 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
 
     // get filter IDs
     let filter_titles = FILTERS
-        .list_filters_by_user(&user_id)
+        .list_filters(key)
+        .await
         .iter()
         .map(|filter| TitleAndId {
             title: filter.filter_name.clone(),
@@ -159,41 +161,78 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
 
     let mut stream_details = Vec::new();
 
+    // this will hold the summary of all streams for the last 7 days
     let mut summary = StreamInfo::default();
 
-    for date in dates.iter() {
-        let mut details = DatedStats {
-            date: date.clone(),
-            ..Default::default()
-        };
+    let mut stream_wise_ingestor_stream_json = HashMap::new();
+    for stream in stream_titles.clone() {
+        let path = RelativePathBuf::from_iter([&stream, STREAM_ROOT_DIRECTORY]);
+        let obs = PARSEABLE
+            .storage
+            .get_object_store()
+            .get_objects(
+                Some(&path),
+                Box::new(|file_name| {
+                    file_name.starts_with(".ingestor") && file_name.ends_with("stream.json")
+                }),
+            )
+            .await?;
 
-        for stream in stream_titles.iter() {
-            let stats = get_stats_date(stream, date).await?;
-
-            // collect date-wise stats for all streams
-            details.events += stats.events;
-            details.ingestion_size += stats.ingestion;
-            details.storage_size += stats.storage;
-
-            // collect all 7-day stats for all streams
-            summary.stats_summary.events += stats.events;
-            summary.stats_summary.ingestion += stats.ingestion;
-            summary.stats_summary.storage += stats.storage;
+        let mut ingestor_stream_jsons = Vec::new();
+        for ob in obs {
+            let stream_metadata: ObjectStoreFormat = match serde_json::from_slice(&ob) {
+                Ok(d) => d,
+                Err(e) => {
+                    error!("Failed to parse stream metadata: {:?}", e);
+                    continue;
+                }
+            };
+            ingestor_stream_jsons.push(stream_metadata);
         }
+        stream_wise_ingestor_stream_json.insert(stream, ingestor_stream_jsons);
+    }
 
-        stream_details.push(details);
+    for date in dates.into_iter() {
+        let dated_stats = stats_for_date(date, stream_wise_ingestor_stream_json.clone()).await?;
+        summary.stats_summary.events += dated_stats.events;
+        summary.stats_summary.ingestion += dated_stats.ingestion_size;
+        summary.stats_summary.storage += dated_stats.storage_size;
+
+        stream_details.push(dated_stats);
     }
 
     Ok(HomeResponse {
         stream_info: summary,
         stats_details: stream_details,
-        stream_titles,
+        stream_titles: stream_titles.clone(),
         alert_titles,
         correlation_titles,
         dashboard_titles,
         filter_titles,
         alerts_info,
     })
+}
+
+async fn stats_for_date(
+    date: String,
+    stream_wise_meta: HashMap<String, Vec<ObjectStoreFormat>>,
+) -> Result<DatedStats, PrismHomeError> {
+    // collect stats for all the streams for the given date
+    let mut details = DatedStats {
+        date: date.clone(),
+        ..Default::default()
+    };
+
+    for (stream, meta) in stream_wise_meta {
+        let querier_stats = get_stats_date(&stream, &date).await?;
+        let ingestor_stats = fetch_daily_stats_from_ingestors(&date, &meta)?;
+        // collect date-wise stats for all streams
+        details.events += querier_stats.events + ingestor_stats.events;
+        details.ingestion_size += querier_stats.ingestion + ingestor_stats.ingestion;
+        details.storage_size += querier_stats.storage + ingestor_stats.storage;
+    }
+
+    Ok(details)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -206,6 +245,8 @@ pub enum PrismHomeError {
     CorrelationError(#[from] CorrelationError),
     #[error("StreamError: {0}")]
     StreamError(#[from] StreamError),
+    #[error("ObjectStorageError: {0}")]
+    ObjectStorageError(#[from] ObjectStorageError),
 }
 
 impl actix_web::ResponseError for PrismHomeError {
@@ -215,6 +256,7 @@ impl actix_web::ResponseError for PrismHomeError {
             PrismHomeError::AlertError(e) => e.status_code(),
             PrismHomeError::CorrelationError(e) => e.status_code(),
             PrismHomeError::StreamError(e) => e.status_code(),
+            PrismHomeError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 

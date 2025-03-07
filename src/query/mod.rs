@@ -88,15 +88,12 @@ impl Query {
         let runtime_config = runtime_config.with_memory_limit(pool_size, fraction);
         let runtime = Arc::new(runtime_config.build().unwrap());
 
+        // All the config options are explained here -
+        // https://datafusion.apache.org/user-guide/configs.html
         let mut config = SessionConfig::default()
             .with_parquet_pruning(true)
             .with_prefer_existing_sort(true)
-            .with_round_robin_repartition(true);
-
-        // For more details refer https://datafusion.apache.org/user-guide/configs.html
-
-        // Reduce the number of rows read (if possible)
-        config.options_mut().execution.parquet.enable_page_index = true;
+            .with_batch_size(1000000);
 
         // Pushdown filters allows DF to push the filters as far down in the plan as possible
         // and thus, reducing the number of rows decoded
@@ -104,14 +101,11 @@ impl Query {
 
         // Reorder filters allows DF to decide the order of filters minimizing the cost of filter evaluation
         config.options_mut().execution.parquet.reorder_filters = true;
-
-        // Enable StringViewArray
-        // https://www.influxdata.com/blog/faster-queries-with-stringview-part-one-influxdb/
+        config.options_mut().execution.parquet.binary_as_string = true;
         config
             .options_mut()
             .execution
-            .parquet
-            .schema_force_view_types = true;
+            .use_row_number_estimates_to_optimize_partitioning = true;
 
         let state = SessionStateBuilder::new()
             .with_default_features()
@@ -135,6 +129,7 @@ impl Query {
         SessionContext::new_with_state(state)
     }
 
+    #[tokio::main(flavor = "multi_thread")]
     pub async fn execute(
         &self,
         stream_name: String,
