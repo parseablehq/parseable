@@ -18,7 +18,6 @@
 
 use self::error::StreamError;
 use super::cluster::utils::{IngestionStats, QueriedStats, StorageStats};
-use super::query::update_schema_when_distributed;
 use crate::event::format::override_data_type;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
 use crate::metadata::SchemaVersion;
@@ -129,7 +128,10 @@ pub async fn get_schema(stream_name: Path<String>) -> Result<impl Responder, Str
     }
 
     let stream = PARSEABLE.get_stream(&stream_name)?;
-    match update_schema_when_distributed(&vec![stream_name.clone()]).await {
+    match PARSEABLE
+        .update_schema_when_distributed(&vec![stream_name.clone()])
+        .await
+    {
         Ok(_) => {
             let schema = stream.get_schema();
             Ok((web::Json(schema), StatusCode::OK))

@@ -20,17 +20,12 @@
 pub mod format;
 
 use arrow_array::RecordBatch;
-use arrow_schema::{Field, Fields, Schema};
+use arrow_schema::Field;
 use itertools::Itertools;
 use std::sync::Arc;
 
 use self::error::EventError;
-use crate::{
-    metadata::update_stats,
-    parseable::{StagingError, PARSEABLE},
-    storage::StreamType,
-    LOCK_EXPECT,
-};
+use crate::{metadata::update_stats, parseable::PARSEABLE, storage::StreamType};
 use chrono::NaiveDateTime;
 use std::collections::HashMap;
 
@@ -64,11 +59,13 @@ impl Event {
             }
         }
 
+        let stream = PARSEABLE.get_stream(&self.stream_name)?;
         if self.is_first_event {
-            commit_schema(&self.stream_name, self.rb.schema())?;
+            let schema = self.rb.schema().as_ref().clone();
+            stream.commit_schema(schema)?;
         }
 
-        PARSEABLE.get_or_create_stream(&self.stream_name).push(
+        stream.push(
             &key,
             &self.rb,
             self.parsed_timestamp,
@@ -114,31 +111,20 @@ pub fn get_schema_key(fields: &[Arc<Field>]) -> String {
     format!("{hash:x}")
 }
 
-pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), StagingError> {
-    let mut stream_metadata = PARSEABLE.streams.write().expect("lock poisoned");
-
-    let map = &mut stream_metadata
-        .get_mut(stream_name)
-        .expect("map has entry for this stream name")
-        .metadata
-        .write()
-        .expect(LOCK_EXPECT)
-        .schema;
-    let current_schema = Schema::new(map.values().cloned().collect::<Fields>());
-    let schema = Schema::try_merge(vec![current_schema, schema.as_ref().clone()])?;
-    map.clear();
-    map.extend(schema.fields.iter().map(|f| (f.name().clone(), f.clone())));
-    Ok(())
-}
-
 pub mod error {
-
-    use crate::{parseable::StagingError, storage::ObjectStorageError};
+    use crate::{
+        parseable::{StagingError, StreamNotFound},
+        storage::ObjectStorageError,
+    };
 
     #[derive(Debug, thiserror::Error)]
     pub enum EventError {
         #[error("Staging Failed: {0}")]
         Staging(#[from] StagingError),
+        #[error("{0}")]
+        Stream(#[from] StreamNotFound),
+        #[error("Arrow Error: {0}")]
+        Arrow(#[from] arrow_schema::ArrowError),
         #[error("ObjectStorage Error: {0}")]
         ObjectStorage(#[from] ObjectStorageError),
     }

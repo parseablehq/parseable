@@ -547,6 +547,17 @@ impl Stream {
         Schema::try_merge(vec![schema, current_schema]).unwrap()
     }
 
+    pub fn commit_schema(&self, schema: Schema) -> Result<(), StagingError> {
+        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        let current_schema = Schema::new(metadata.schema.values().cloned().collect::<Fields>());
+        let schema = Schema::try_merge(vec![current_schema, schema])?;
+        metadata.schema.clear();
+        metadata
+            .schema
+            .extend(schema.fields.iter().map(|f| (f.name().clone(), f.clone())));
+        Ok(())
+    }
+
     /// Stores the provided stream metadata in memory mapping
     pub async fn set_metadata(&self, updated_metadata: LogStreamMetadata) {
         *self.metadata.write().expect(LOCK_EXPECT) = updated_metadata;

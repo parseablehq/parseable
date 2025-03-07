@@ -35,7 +35,7 @@ use tracing::error;
 use crate::connectors::kafka::config::KafkaConfig;
 use crate::{
     cli::{Cli, Options, StorageOptions},
-    event::format::LogSource,
+    event::{error::EventError, format::LogSource},
     handlers::{
         http::{
             cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME},
@@ -758,6 +758,28 @@ impl Parseable {
         }
 
         Some(first_event_at.to_string())
+    }
+
+    pub async fn update_schema_when_distributed(
+        &self,
+        tables: &Vec<String>,
+    ) -> Result<(), EventError> {
+        if self.options.mode == Mode::Query {
+            for table in tables {
+                if let Ok(schemas) = self.storage.get_object_store().fetch_schemas(table).await {
+                    let new_schema = Schema::try_merge(schemas)?;
+                    // commit schema merges the schema internally and updates the schema in storage.
+                    self.storage
+                        .get_object_store()
+                        .commit_schema(table, new_schema.clone())
+                        .await?;
+
+                    self.get_stream(table)?.commit_schema(new_schema)?;
+                }
+            }
+        }
+
+        Ok(())
     }
 }
 
