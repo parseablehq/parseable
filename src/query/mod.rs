@@ -42,6 +42,7 @@ use std::ops::Bound;
 use std::sync::Arc;
 use stream_schema_provider::collect_manifest_files;
 use sysinfo::System;
+use tokio::runtime::Runtime;
 
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
@@ -59,6 +60,21 @@ use crate::utils::time::TimeRange;
 
 pub static QUERY_SESSION: Lazy<SessionContext> =
     Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
+
+/// Dedicated multi-threaded runtime to run
+pub static QUERY_RUNTIME: Lazy<Runtime> =
+    Lazy::new(|| Runtime::new().expect("Runtime should be constructible"));
+
+pub async fn execute(
+    query: Query,
+    stream_name: &str,
+) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
+    let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
+    QUERY_RUNTIME
+        .spawn(async move { query.execute(time_partition.as_ref()).await })
+        .await
+        .expect("The Join should have been successful")
+}
 
 // A query request by client
 #[derive(Debug)]
@@ -150,6 +166,7 @@ impl Query {
         }
 
         let results = df.collect().await?;
+
         Ok((results, fields))
     }
 

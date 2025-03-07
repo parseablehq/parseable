@@ -41,7 +41,7 @@ use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::Mode;
 use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::query::error::ExecuteError;
-use crate::query::{CountsRequest, CountsResponse, Query as LogicalQuery};
+use crate::query::{execute, CountsRequest, CountsResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
@@ -131,8 +131,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         return Ok(HttpResponse::Ok().json(response));
     }
 
-    let time_partition = PARSEABLE.get_stream(&table_name)?.get_time_partition();
-    let (records, fields) = query.execute(time_partition.as_ref()).await?;
+    let (records, fields) = execute(query, &table_name).await?;
 
     let response = QueryResponse {
         records,
