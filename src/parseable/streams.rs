@@ -20,6 +20,7 @@
 use std::{
     collections::HashMap,
     fs::{remove_file, write, File, OpenOptions},
+    io::BufReader,
     num::NonZeroU32,
     path::{Path, PathBuf},
     process,
@@ -28,9 +29,7 @@ use std::{
 };
 
 use arrow_array::RecordBatch;
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{Field, Fields, Schema};
-use chrono::{NaiveDateTime, Timelike};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
 use parquet::{
@@ -52,14 +51,13 @@ use crate::{
     metrics,
     option::Mode,
     storage::{object_storage::to_bytes, retention::Retention, StreamType},
-    utils::time::Minute,
-    LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
+    LOCK_EXPECT,
 };
 
 use super::{
     staging::{
         reader::{MergedRecordReader, MergedReverseRecordReader},
-        writer::Writer,
+        writer::{DiskWriter, Writer},
         StagingError,
     },
     LogStream, ARROW_FILE_EXTENSION,
@@ -112,67 +110,40 @@ impl Stream {
     // Concatenates record batches and puts them in memory store for each event.
     pub fn push(
         &self,
-        schema_key: &str,
+        prefix: &str,
         record: &RecordBatch,
-        parsed_timestamp: NaiveDateTime,
-        custom_partition_values: &HashMap<String, String>,
         stream_type: StreamType,
     ) -> Result<(), StagingError> {
         let mut guard = self.writer.lock().unwrap();
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
-            match guard.disk.get_mut(schema_key) {
+            match guard.disk.get_mut(prefix) {
                 Some(writer) => {
                     writer.write(record)?;
                 }
                 None => {
                     // entry is not present thus we create it
-                    let file_path = self.path_by_current_time(
-                        schema_key,
-                        parsed_timestamp,
-                        custom_partition_values,
-                    );
+                    let path = self.path_by_current_time(prefix);
                     std::fs::create_dir_all(&self.data_path)?;
 
-                    let file = OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&file_path)?;
-
-                    let mut writer = StreamWriter::try_new(file, &record.schema())
-                        .expect("File and RecordBatch both are checked");
-
+                    let mut writer = DiskWriter::new(path, &record.schema())?;
                     writer.write(record)?;
-                    guard.disk.insert(schema_key.to_owned(), writer);
+                    guard.disk.insert(prefix.to_owned(), writer);
                 }
             };
         }
 
-        guard.mem.push(schema_key, record);
+        guard.mem.push(prefix, record);
 
         Ok(())
     }
 
-    pub fn path_by_current_time(
-        &self,
-        stream_hash: &str,
-        parsed_timestamp: NaiveDateTime,
-        custom_partition_values: &HashMap<String, String>,
-    ) -> PathBuf {
+    pub fn path_by_current_time(&self, prefix: &str) -> PathBuf {
         let mut hostname = hostname::get().unwrap().into_string().unwrap();
         if let Some(id) = &self.ingestor_id {
             hostname.push_str(id);
         }
-        let filename = format!(
-            "{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.data.{ARROW_FILE_EXTENSION}",
-            parsed_timestamp.date(),
-            parsed_timestamp.hour(),
-            Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
-            custom_partition_values
-                .iter()
-                .sorted_by_key(|v| v.0)
-                .map(|(key, value)| format!("{key}={value}."))
-                .join("")
-        );
+
+        let filename = format!("{prefix}.{hostname}.data.part",);
         self.data_path.join(filename)
     }
 
@@ -264,23 +235,13 @@ impl Stream {
     }
 
     pub fn get_schemas_if_present(&self) -> Option<Vec<Schema>> {
-        let Ok(dir) = self.data_path.read_dir() else {
-            return None;
-        };
-
         let mut schemas: Vec<Schema> = Vec::new();
 
-        for file in dir.flatten() {
-            if let Some(ext) = file.path().extension() {
-                if ext.eq("schema") {
-                    let file = File::open(file.path()).expect("Schema File should exist");
+        for path in self.schema_files() {
+            let file = File::open(path).expect("Schema File should exist");
 
-                    let schema = match serde_json::from_reader(file) {
-                        Ok(schema) => schema,
-                        Err(_) => continue,
-                    };
-                    schemas.push(schema);
-                }
+            if let Ok(schema) = serde_json::from_reader(BufReader::new(file)) {
+                schemas.push(schema);
             }
         }
 
@@ -374,7 +335,7 @@ impl Stream {
 
         // Flush disk
         for writer in disk_writers.values_mut() {
-            _ = writer.finish();
+            writer.finish();
         }
     }
 
@@ -610,6 +571,19 @@ impl Stream {
         Arc::new(Schema::new(fields))
     }
 
+    pub fn commit_schema(&self, schema: Schema) -> Result<(), StagingError> {
+        let current_schema = self.get_schema().as_ref().clone();
+        let updated_schema = Schema::try_merge([current_schema, schema])?
+            .fields
+            .into_iter()
+            .map(|field| (field.name().to_owned(), field.clone()))
+            .collect();
+
+        self.metadata.write().expect(LOCK_EXPECT).schema = updated_schema;
+
+        Ok(())
+    }
+
     pub fn get_schema_raw(&self) -> HashMap<String, Arc<Field>> {
         self.metadata.read().expect(LOCK_EXPECT).schema.clone()
     }
@@ -770,9 +744,11 @@ mod tests {
 
     use arrow_array::{Int32Array, StringArray, TimestampMillisecondArray};
     use arrow_schema::{DataType, Field, TimeUnit};
-    use chrono::{NaiveDate, TimeDelta, Utc};
+    use chrono::{NaiveDate, NaiveDateTime, TimeDelta, Utc};
     use temp_dir::TempDir;
     use tokio::time::sleep;
+
+    use crate::{utils::time::Minute, OBJECT_STORE_DATA_GRANULARITY};
 
     use super::*;
 
@@ -869,41 +845,8 @@ mod tests {
     }
 
     #[test]
-    fn generate_correct_path_with_current_time_and_no_custom_partitioning() {
+    fn generate_correct_path() {
         let stream_name = "test_stream";
-        let stream_hash = "abc123";
-        let parsed_timestamp = NaiveDate::from_ymd_opt(2023, 10, 1)
-            .unwrap()
-            .and_hms_opt(12, 30, 0)
-            .unwrap();
-        let custom_partition_values = HashMap::new();
-
-        let options = Options::default();
-        let staging = Stream::new(
-            Arc::new(options),
-            stream_name,
-            LogStreamMetadata::default(),
-            None,
-        );
-
-        let expected_path = staging.data_path.join(format!(
-            "{stream_hash}.date={}.hour={:02}.minute={}.{}.data.{ARROW_FILE_EXTENSION}",
-            parsed_timestamp.date(),
-            parsed_timestamp.hour(),
-            Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
-            hostname::get().unwrap().into_string().unwrap()
-        ));
-
-        let generated_path =
-            staging.path_by_current_time(stream_hash, parsed_timestamp, &custom_partition_values);
-
-        assert_eq!(generated_path, expected_path);
-    }
-
-    #[test]
-    fn generate_correct_path_with_current_time_and_custom_partitioning() {
-        let stream_name = "test_stream";
-        let stream_hash = "abc123";
         let parsed_timestamp = NaiveDate::from_ymd_opt(2023, 10, 1)
             .unwrap()
             .and_hms_opt(12, 30, 0)
@@ -912,6 +855,12 @@ mod tests {
         custom_partition_values.insert("key1".to_string(), "value1".to_string());
         custom_partition_values.insert("key2".to_string(), "value2".to_string());
 
+        let prefix = format!(
+            "abc123.{}.minute={}.key1=value1.key2=value2",
+            parsed_timestamp.format("date={%Y-%m-%d}.hour={%H}"),
+            Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
+        );
+
         let options = Options::default();
         let staging = Stream::new(
             Arc::new(options),
@@ -921,15 +870,11 @@ mod tests {
         );
 
         let expected_path = staging.data_path.join(format!(
-            "{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.data.{ARROW_FILE_EXTENSION}",
-            parsed_timestamp.date(),
-            parsed_timestamp.hour(),
-            Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
+            "{prefix}.{}.data.part",
             hostname::get().unwrap().into_string().unwrap()
         ));
 
-        let generated_path =
-            staging.path_by_current_time(stream_hash, parsed_timestamp, &custom_partition_values);
+        let generated_path = staging.path_by_current_time(&prefix);
 
         assert_eq!(generated_path, expected_path);
     }
@@ -969,6 +914,10 @@ mod tests {
             .checked_sub_signed(TimeDelta::minutes(mins))
             .unwrap()
             .naive_utc();
+        let prefix = format!(
+            "abc.{}.key1=value1.key2=value2",
+            time.format("date=%Y-%m-%d.hour=%H.minute=%M")
+        );
         let batch = RecordBatch::try_new(
             Arc::new(schema.clone()),
             vec![
@@ -979,13 +928,7 @@ mod tests {
         )
         .unwrap();
         staging
-            .push(
-                "abc",
-                &batch,
-                time,
-                &HashMap::new(),
-                StreamType::UserDefined,
-            )
+            .push(&prefix, &batch, StreamType::UserDefined)
             .unwrap();
         staging.flush();
     }

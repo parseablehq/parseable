@@ -9,7 +9,8 @@ build = "build.rs"
 
 [dependencies]
 # Arrow and DataFusion ecosystem
-arrow-array = { version = "53.0.0" }
+arrow = "53.0.0"
+arrow-array = "53.0.0" 
 arrow-flight = { version = "53.0.0", features = ["tls"] }
 arrow-ipc = { version = "53.0.0", features = ["zstd"] }
 arrow-json = "53.0.0"

@@ -35,7 +35,7 @@ use crate::storage::StreamType;
 pub fn update_stats(
     stream_name: &str,
     origin: &'static str,
-    size: u64,
+    size: usize,
     num_rows: usize,
     parsed_date: NaiveDate,
 ) {
