@@ -42,6 +42,7 @@ use std::ops::Bound;
 use std::sync::Arc;
 use stream_schema_provider::collect_manifest_files;
 use sysinfo::System;
+use tokio::runtime::Runtime;
 
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
@@ -59,6 +60,24 @@ use crate::utils::time::TimeRange;
 
 pub static QUERY_SESSION: Lazy<SessionContext> =
     Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
+
+/// Dedicated multi-threaded runtime to run all queries on
+pub static QUERY_RUNTIME: Lazy<Runtime> =
+    Lazy::new(|| Runtime::new().expect("Runtime should be constructible"));
+
+
+/// This function executes a query on the dedicated runtime, ensuring that the query is not isolated to a single thread/CPU
+/// at a time and has access to the entire thread pool, enabling better concurrent processing, and thus quicker results.
+pub async fn execute(
+    query: Query,
+    stream_name: &str,
+) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
+    let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
+    QUERY_RUNTIME
+        .spawn(async move { query.execute(time_partition.as_ref()).await })
+        .await
+        .expect("The Join should have been successful")
+}
 
 // A query request by client
 #[derive(Debug)]
@@ -129,15 +148,12 @@ impl Query {
         SessionContext::new_with_state(state)
     }
 
-    #[tokio::main(flavor = "multi_thread")]
     pub async fn execute(
         &self,
-        stream_name: String,
+        time_partition: Option<&String>,
     ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
-        let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
-
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan(&time_partition))
+            .execute_logical_plan(self.final_logical_plan(time_partition))
             .await?;
 
         let fields = df
@@ -153,21 +169,23 @@ impl Query {
         }
 
         let results = df.collect().await?;
+
         Ok((results, fields))
     }
 
-    pub async fn get_dataframe(&self, stream_name: String) -> Result<DataFrame, ExecuteError> {
-        let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
-
+    pub async fn get_dataframe(
+        &self,
+        time_partition: Option<&String>,
+    ) -> Result<DataFrame, ExecuteError> {
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan(&time_partition))
+            .execute_logical_plan(self.final_logical_plan(time_partition))
             .await?;
 
         Ok(df)
     }
 
     /// return logical plan with all time filters applied through
-    fn final_logical_plan(&self, time_partition: &Option<String>) -> LogicalPlan {
+    fn final_logical_plan(&self, time_partition: Option<&String>) -> LogicalPlan {
         // see https://github.com/apache/arrow-datafusion/pull/8400
         // this can be eliminated in later version of datafusion but with slight caveat
         // transform cannot modify stringified plans by itself
@@ -487,7 +505,7 @@ fn transform(
     plan: LogicalPlan,
     start_time: NaiveDateTime,
     end_time: NaiveDateTime,
-    time_partition: &Option<String>,
+    time_partition: Option<&String>,
 ) -> Transformed<LogicalPlan> {
     plan.transform(&|plan| match plan {
         LogicalPlan::TableScan(table) => {
@@ -545,7 +563,7 @@ fn transform(
 
 fn table_contains_any_time_filters(
     table: &datafusion::logical_expr::TableScan,
-    time_partition: &Option<String>,
+    time_partition: Option<&String>,
 ) -> bool {
     table
         .filters
@@ -559,8 +577,8 @@ fn table_contains_any_time_filters(
         })
         .any(|expr| {
             matches!(&*expr.left, Expr::Column(Column { name, .. })
-            if ((time_partition.is_some() && name == time_partition.as_ref().unwrap()) ||
-            (!time_partition.is_some() && name == event::DEFAULT_TIMESTAMP_KEY)))
+            if (time_partition.is_some_and(|field| field == name) ||
+            (time_partition.is_none() && name == event::DEFAULT_TIMESTAMP_KEY)))
         })
 }
 
