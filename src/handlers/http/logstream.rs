@@ -16,9 +16,19 @@
  *
  */
 
-use self::error::StreamError;
-use super::cluster::utils::{IngestionStats, QueriedStats, StorageStats};
-use super::query::update_schema_when_distributed;
+use std::fs;
+use std::sync::Arc;
+
+use actix_web::http::StatusCode;
+use actix_web::web::{Json, Path};
+use actix_web::{web, HttpRequest, Responder};
+use arrow_json::reader::infer_json_schema_from_iterator;
+use chrono::Utc;
+use error::StreamError;
+use itertools::Itertools;
+use serde_json::{json, Value};
+use tracing::warn;
+
 use crate::event::format::override_data_type;
 use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
 use crate::metadata::SchemaVersion;
@@ -26,23 +36,15 @@ use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STO
 use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::rbac::role::Action;
 use crate::rbac::Users;
+use crate::static_schema::StaticSchema;
 use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
 use crate::storage::retention::Retention;
 use crate::storage::{StreamInfo, StreamType};
 use crate::utils::actix::extract_session_key_from_req;
 use crate::{stats, validator, LOCK_EXPECT};
 
-use actix_web::http::StatusCode;
-use actix_web::web::{Json, Path};
-use actix_web::{web, HttpRequest, Responder};
-use arrow_json::reader::infer_json_schema_from_iterator;
-use bytes::Bytes;
-use chrono::Utc;
-use itertools::Itertools;
-use serde_json::{json, Value};
-use std::fs;
-use std::sync::Arc;
-use tracing::warn;
+use super::cluster::utils::{IngestionStats, QueriedStats, StorageStats};
+use super::query::update_schema_when_distributed;
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
@@ -144,12 +146,16 @@ pub async fn get_schema(stream_name: Path<String>) -> Result<impl Responder, Str
 pub async fn put_stream(
     req: HttpRequest,
     stream_name: Path<String>,
-    body: Bytes,
+    static_schema: Option<Json<StaticSchema>>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
 
     PARSEABLE
-        .create_update_stream(req.headers(), &body, &stream_name)
+        .create_update_stream(
+            req.headers(),
+            static_schema.as_ref().map(|Json(schema)| schema),
+            &stream_name,
+        )
         .await?;
 
     Ok(("Log stream created", StatusCode::OK))

@@ -75,7 +75,7 @@ pub const STORAGE_UPLOAD_INTERVAL: Duration = Duration::from_secs(30);
 static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
     ClientBuilder::new()
         .connect_timeout(Duration::from_secs(3)) // set a timeout of 3s for each connection setup
-        .timeout(Duration::from_secs(10)) // set a timeout of 10s for each request
+        .timeout(Duration::from_secs(30)) // set a timeout of 30s for each request
         .pool_idle_timeout(Duration::from_secs(90)) // set a timeout of 90s for each idle connection
         .pool_max_idle_per_host(32) // max 32 idle connections per host
         .gzip(true) // gzip compress for all requests

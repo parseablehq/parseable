@@ -20,10 +20,9 @@ use core::str;
 use std::fs;
 
 use actix_web::{
-    web::{self, Path},
+    web::{Json, Path},
     HttpRequest, Responder,
 };
-use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
 use relative_path::RelativePathBuf;
@@ -44,6 +43,7 @@ use crate::{
     },
     hottier::HotTierManager,
     parseable::{StreamNotFound, PARSEABLE},
+    static_schema::StaticSchema,
     stats::{self, Stats},
     storage::{ObjectStoreFormat, StreamType, STREAM_ROOT_DIRECTORY},
 };
@@ -109,15 +109,16 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
 pub async fn put_stream(
     req: HttpRequest,
     stream_name: Path<String>,
-    body: Bytes,
+    static_schema: Option<Json<StaticSchema>>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
     let _ = CREATE_STREAM_LOCK.lock().await;
+    let static_schema = static_schema.map(|Json(s)| s);
     let headers = PARSEABLE
-        .create_update_stream(req.headers(), &body, &stream_name)
+        .create_update_stream(req.headers(), static_schema.as_ref(), &stream_name)
         .await?;
 
-    sync_streams_with_ingestors(headers, body, &stream_name).await?;
+    sync_streams_with_ingestors(headers, static_schema, &stream_name).await?;
 
     Ok(("Log stream created", StatusCode::OK))
 }
@@ -188,7 +189,7 @@ pub async fn get_stats(
             };
             let stats = serde_json::to_value(total_stats)?;
 
-            return Ok((web::Json(stats), StatusCode::OK));
+            return Ok((Json(stats), StatusCode::OK));
         }
     }
 
@@ -235,5 +236,5 @@ pub async fn get_stats(
 
     let stats = serde_json::to_value(stats)?;
 
-    Ok((web::Json(stats), StatusCode::OK))
+    Ok((Json(stats), StatusCode::OK))
 }
