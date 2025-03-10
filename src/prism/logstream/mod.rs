@@ -28,13 +28,13 @@ use crate::{
     handlers::http::{
         cluster::{
             fetch_stats_from_ingestors,
-            utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
+            utils::{IngestionStats, QueriedStats, StorageStats},
         },
         logstream::error::StreamError,
         query::update_schema_when_distributed,
     },
     parseable::{StreamNotFound, PARSEABLE},
-    stats,
+    stats::FullStats,
     storage::{retention::Retention, StreamInfo, StreamType},
     LOCK_EXPECT,
 };
@@ -93,7 +93,7 @@ async fn get_stream_schema_helper(stream_name: &str) -> Result<Arc<Schema>, Stre
 }
 
 async fn get_stats(stream_name: &str) -> Result<QueriedStats, PrismLogstreamError> {
-    let stats = stats::get_current_stats(stream_name, "json")
+    let stats = FullStats::get_current(stream_name, "json")
         .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?;
 
     let ingestor_stats = if PARSEABLE
@@ -129,7 +129,7 @@ async fn get_stats(stream_name: &str) -> Result<QueriedStats, PrismLogstreamErro
 
     let stats = if let Some(mut ingestor_stats) = ingestor_stats {
         ingestor_stats.push(stats);
-        merge_quried_stats(ingestor_stats)
+        QueriedStats::merge(ingestor_stats)
     } else {
         stats
     };
