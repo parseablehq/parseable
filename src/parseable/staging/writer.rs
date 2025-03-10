@@ -18,10 +18,7 @@
  */
 
 use std::{
-    collections::{HashMap, HashSet},
-    fs::{File, OpenOptions},
-    path::PathBuf,
-    sync::Arc,
+    collections::{HashMap, HashSet}, fs::{File, OpenOptions}, io::BufWriter, path::PathBuf, sync::Arc
 };
 
 use arrow_array::RecordBatch;
@@ -42,7 +39,7 @@ pub struct Writer {
 }
 
 pub struct DiskWriter {
-    pub inner: StreamWriter<File>,
+    pub inner: StreamWriter<BufWriter<File>>,
     pub path: PathBuf,
 }
 
@@ -50,7 +47,7 @@ impl DiskWriter {
     pub fn new(path: PathBuf, schema: &Schema) -> Result<Self, StagingError> {
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
 
-        let inner = StreamWriter::try_new(file, schema)?;
+        let inner = StreamWriter::try_new_buffered(file, schema)?;
 
         Ok(Self { inner, path })
     }
