@@ -280,18 +280,7 @@ impl EventFormat for Event {
                 _ => p_timestamp.naive_utc(),
             };
 
-            let prefix = format!(
-                "{}.{}.minute={}.{}",
-                get_schema_key(&schema),
-                parsed_timestamp.format("date=%Y-%m-%d.hour=%H"),
-                Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
-                custom_partition_values
-                    .iter()
-                    .sorted_by_key(|v| v.0)
-                    .map(|(key, value)| format!("{key}={value}"))
-                    .join(".")
-            );
-
+            let prefix = generate_prefix(&schema, parsed_timestamp, &custom_partition_values);
             if let Some(JsonPartition { batch, .. }) = json_partitions.get_mut(&prefix) {
                 batch.push(json)
             } else {
@@ -336,6 +325,24 @@ impl EventFormat for Event {
             stream_type,
         })
     }
+}
+
+fn generate_prefix(
+    schema: &[Arc<Field>],
+    parsed_timestamp: NaiveDateTime,
+    custom_partition_values: &HashMap<String, String>,
+) -> String {
+    format!(
+        "{}.{}.minute={}{}",
+        get_schema_key(schema),
+        parsed_timestamp.format("date=%Y-%m-%d.hour=%H"),
+        Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
+        custom_partition_values
+            .iter()
+            .sorted_by_key(|v| v.0)
+            .map(|(key, value)| format!(".{key}={value}"))
+            .join("")
+    )
 }
 
 /// Extracts custom partition values from provided JSON object
@@ -463,6 +470,7 @@ mod tests {
 
     use arrow::datatypes::Int64Type;
     use arrow_array::{ArrayRef, Float64Array, Int64Array, ListArray, StringArray};
+    use chrono::Timelike;
     use serde_json::json;
 
     use super::*;
@@ -975,5 +983,52 @@ mod tests {
             rb.column_by_name("c_b").unwrap().as_float64_arr().unwrap(),
             &Float64Array::from(vec![None, None, None, Some(2.0)])
         );
+    }
+
+    #[test]
+    fn generate_correct_prefix_with_current_time_and_no_custom_partitioning() {
+        let schema = vec![];
+        let parsed_timestamp = NaiveDate::from_ymd_opt(2023, 10, 1)
+            .unwrap()
+            .and_hms_opt(12, 30, 0)
+            .unwrap();
+        let custom_partition_values = HashMap::new();
+
+        let expected = format!(
+            "{}.date={}.hour={:02}.minute={}",
+            get_schema_key(&schema),
+            parsed_timestamp.date(),
+            parsed_timestamp.hour(),
+            Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
+        );
+
+        let generated = generate_prefix(&schema, parsed_timestamp, &custom_partition_values);
+
+        assert_eq!(generated, expected);
+    }
+
+    #[test]
+    fn generate_correct_prefix_with_current_time_and_custom_partitioning() {
+        let schema = vec![];
+        let parsed_timestamp = NaiveDate::from_ymd_opt(2023, 10, 1)
+            .unwrap()
+            .and_hms_opt(12, 30, 0)
+            .unwrap();
+        let custom_partition_values = HashMap::from_iter([
+            ("key1".to_string(), "value1".to_string()),
+            ("key2".to_string(), "value2".to_string()),
+        ]);
+
+        let expected = format!(
+            "{}.date={}.hour={:02}.minute={}.key1=value1.key2=value2",
+            get_schema_key(&schema),
+            parsed_timestamp.date(),
+            parsed_timestamp.hour(),
+            Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
+        );
+
+        let generated = generate_prefix(&schema, parsed_timestamp, &custom_partition_values);
+
+        assert_eq!(generated, expected);
     }
 }
