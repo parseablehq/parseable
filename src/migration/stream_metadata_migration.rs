@@ -17,6 +17,8 @@
 *
 */
 
+use std::collections::HashSet;
+
 use serde_json::{json, Value};
 
 use crate::{
@@ -195,7 +197,7 @@ pub fn v5_v6(mut stream_metadata: Value) -> Value {
     match log_source {
         Some(stream_log_source) => {
             let log_source: LogSource = serde_json::from_value(stream_log_source.clone()).unwrap();
-            log_source_entry.add_log_source(log_source, vec![]);
+            log_source_entry.add_log_source(log_source, HashSet::new());
             stream_metadata_map.insert("log_source".to_owned(), log_source_entry.to_value());
         }
         None => {

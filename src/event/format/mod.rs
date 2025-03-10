@@ -92,21 +92,21 @@ impl Display for LogSource {
     }
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogSourceEntry {
-    log_source_format: LogSource,
-    fields: Vec<String>,
+    pub log_source_format: LogSource,
+    pub fields: HashSet<String>,
 }
 
 impl LogSourceEntry {
-    pub fn new(log_source_format: &LogSource, fields: Vec<String>) -> Self {
+    pub fn new(log_source_format: &LogSource, fields: HashSet<String>) -> Self {
         LogSourceEntry {
             log_source_format: log_source_format.clone(),
             fields,
         }
     }
 
-    pub fn add_log_source(&mut self, log_source_format: LogSource, fields: Vec<String>) {
+    pub fn add_log_source(&mut self, log_source_format: LogSource, fields: HashSet<String>) {
         self.log_source_format = log_source_format;
         self.fields = fields;
     }
