@@ -193,7 +193,6 @@ pub fn v5_v6(mut stream_metadata: Value) -> Value {
     );
     let log_source = stream_metadata_map.get("log_source");
     let mut log_source_entry = LogSourceEntry::default();
-
     match log_source {
         Some(stream_log_source) => {
             let log_source: LogSource = serde_json::from_value(stream_log_source.clone()).unwrap();
