@@ -18,7 +18,11 @@
  */
 
 use std::{
-    collections::{HashMap, HashSet}, fs::{File, OpenOptions}, io::BufWriter, path::PathBuf, sync::Arc
+    collections::{HashMap, HashSet},
+    fs::{File, OpenOptions},
+    io::BufWriter,
+    path::PathBuf,
+    sync::Arc,
 };
 
 use arrow_array::RecordBatch;
@@ -67,6 +71,12 @@ impl DiskWriter {
         if let Err(err) = std::fs::rename(&self.path, &arrow_path) {
             error!("Couldn't rename file {:?}, error = {err}", self.path);
         }
+    }
+}
+
+impl Drop for DiskWriter {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 
