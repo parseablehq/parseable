@@ -26,7 +26,7 @@ use chrono::Utc;
 use http::StatusCode;
 use serde_json::Value;
 
-use crate::event;
+use crate::event::{self, detect_schema};
 use crate::event::error::EventError;
 use crate::event::format::{self, EventFormat, LogSource};
 use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
@@ -55,9 +55,6 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
     if internal_stream_names.contains(&stream_name) {
         return Err(PostError::InternalStream(stream_name));
     }
-    PARSEABLE
-        .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::default())
-        .await?;
 
     let log_source = req
         .headers()
@@ -71,8 +68,28 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
     ) {
         return Err(PostError::OtelNotSupported);
     }
+    match &json {
+        Value::Array(vec_json_value) => {
+            for json_value in vec_json_value.iter(){
+                let json_string = json_value.to_string();
+                let schema = detect_schema::detect_schema(&json_string, log_source.to_string().as_str());
 
-    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+            }
+        }
+        Value::Object(json_value) => {
+            
+        }
+        _ => {
+            return Err(PostError::CustomError("Invalid JSON object".to_string()));
+        }
+    }
+
+    PARSEABLE
+    .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::default())
+    .await?;
+
+
+    flatten_and_push_logs(json.clone(), &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }

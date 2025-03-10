@@ -18,6 +18,7 @@
 */
 
 pub mod format;
+pub mod detect_schema;
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Fields, Schema};
