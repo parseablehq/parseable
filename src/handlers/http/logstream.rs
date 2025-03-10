@@ -114,7 +114,13 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
     };
 
     let mut schema = Arc::new(infer_json_schema_from_iterator(log_records.iter().map(Ok)).unwrap());
-    for log_record in log_records {
+    for value in log_records {
+        let Value::Object(log_record) = value else {
+            return Err(StreamError::Custom {
+                msg: format!("Expected an object, received: {value:?}"),
+                status: StatusCode::BAD_REQUEST,
+            });
+        };
         schema = override_data_type(schema, log_record, SchemaVersion::V1);
     }
     Ok((web::Json(schema), StatusCode::OK))
