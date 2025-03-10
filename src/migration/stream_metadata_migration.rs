@@ -195,8 +195,15 @@ pub fn v5_v6(mut stream_metadata: Value) -> Value {
     let mut log_source_entry = LogSourceEntry::default();
     match log_source {
         Some(stream_log_source) => {
-            let log_source: LogSource = serde_json::from_value(stream_log_source.clone()).unwrap();
-            log_source_entry.add_log_source(log_source, HashSet::new());
+            if let Ok(log_source) = serde_json::from_value::<LogSource>(stream_log_source.clone()) {
+                log_source_entry.add_log_source(log_source, HashSet::new());
+            } else {
+                // If deserialization fails, use default
+                stream_metadata_map.insert(
+                    "log_source".to_owned(),
+                    LogSourceEntry::default().to_value(),
+                );
+            }
             stream_metadata_map.insert("log_source".to_owned(), log_source_entry.to_value());
         }
         None => {
