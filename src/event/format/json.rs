@@ -288,8 +288,8 @@ impl EventFormat for Event {
                 custom_partition_values
                     .iter()
                     .sorted_by_key(|v| v.0)
-                    .map(|(key, value)| format!("{key}={value}."))
-                    .join("")
+                    .map(|(key, value)| format!("{key}={value}"))
+                    .join(".")
             );
 
             if let Some(JsonPartition { batch, .. }) = json_partitions.get_mut(&prefix) {
