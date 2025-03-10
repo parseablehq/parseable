@@ -113,7 +113,7 @@ impl LogSourceEntry {
 
     pub fn to_value(&self) -> Value {
         json!([{
-            "log_source_format": self.log_source_format.to_string(),
+            "log_source_format": self.log_source_format,
             "fields": self.fields,
         }])
     }

@@ -72,7 +72,7 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
         return Err(PostError::OtelNotSupported);
     }
 
-    let log_source_entry = LogSourceEntry::new(&log_source, HashSet::from(["hello".to_string()]));
+    let log_source_entry = LogSourceEntry::new(&log_source, HashSet::new());
     PARSEABLE
         .create_stream_if_not_exists(
             &stream_name,
