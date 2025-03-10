@@ -35,7 +35,7 @@ use tracing::error;
 use crate::connectors::kafka::config::KafkaConfig;
 use crate::{
     cli::{Cli, Options, StorageOptions},
-    event::format::LogSource,
+    event::format::{LogSource, LogSourceEntry},
     handlers::{
         http::{
             cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME},
@@ -346,11 +346,12 @@ impl Parseable {
     }
 
     pub async fn create_internal_stream_if_not_exists(&self) -> Result<(), StreamError> {
+        let log_source_entry = LogSourceEntry::new(&LogSource::Pmeta, vec![]);
         match self
             .create_stream_if_not_exists(
                 INTERNAL_STREAM_NAME,
                 StreamType::Internal,
-                LogSource::Pmeta,
+                vec![log_source_entry],
             )
             .await
         {
@@ -374,7 +375,7 @@ impl Parseable {
         &self,
         stream_name: &str,
         stream_type: StreamType,
-        log_source: LogSource,
+        log_source: Vec<LogSourceEntry>,
     ) -> Result<bool, PostError> {
         if self.streams.contains(stream_name) {
             return Ok(true);
@@ -469,7 +470,7 @@ impl Parseable {
             custom_partition.as_ref(),
             static_schema_flag,
         )?;
-
+        let log_source_entry = LogSourceEntry::new(&log_source, vec![]);
         self.create_stream(
             stream_name.to_string(),
             &time_partition,
@@ -478,7 +479,7 @@ impl Parseable {
             static_schema_flag,
             schema,
             stream_type,
-            log_source,
+            vec![log_source_entry],
         )
         .await?;
 
@@ -534,7 +535,7 @@ impl Parseable {
         static_schema_flag: bool,
         schema: Arc<Schema>,
         stream_type: StreamType,
-        log_source: LogSource,
+        log_source: Vec<LogSourceEntry>,
     ) -> Result<(), CreateStreamError> {
         // fail to proceed if invalid stream name
         if stream_type != StreamType::Internal {

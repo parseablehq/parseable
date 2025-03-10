@@ -254,6 +254,12 @@ async fn migration_stream(
                     .put_object(&path, to_bytes(&stream_metadata_value))
                     .await?;
             }
+            Some("v5") => {
+                stream_metadata_value = stream_metadata_migration::v5_v6(stream_metadata_value);
+                storage
+                    .put_object(&path, to_bytes(&stream_metadata_value))
+                    .await?;
+            }
             _ => (),
         }
     }

@@ -20,7 +20,9 @@
 use serde_json::{json, Value};
 
 use crate::{
-    catalog::snapshot::CURRENT_SNAPSHOT_VERSION, handlers::http::cluster::INTERNAL_STREAM_NAME,
+    catalog::snapshot::CURRENT_SNAPSHOT_VERSION,
+    event::format::{LogSource, LogSourceEntry},
+    handlers::http::cluster::INTERNAL_STREAM_NAME,
     storage,
 };
 
@@ -173,6 +175,33 @@ pub fn v4_v5(mut stream_metadata: Value, stream_name: &str) -> Value {
         }
     }
 
+    stream_metadata
+}
+
+pub fn v5_v6(mut stream_metadata: Value) -> Value {
+    let stream_metadata_map: &mut serde_json::Map<String, Value> =
+        stream_metadata.as_object_mut().unwrap();
+    stream_metadata_map.insert(
+        "objectstore-format".to_owned(),
+        Value::String(storage::CURRENT_OBJECT_STORE_VERSION.into()),
+    );
+    stream_metadata_map.insert(
+        "version".to_owned(),
+        Value::String(storage::CURRENT_SCHEMA_VERSION.into()),
+    );
+    let log_source = stream_metadata_map.get("log_source");
+    let mut log_source_entry = LogSourceEntry::default();
+
+    match log_source {
+        Some(stream_log_source) => {
+            let log_source: LogSource = serde_json::from_value(stream_log_source.clone()).unwrap();
+            log_source_entry.add_log_source(log_source, vec![]);
+            stream_metadata_map.insert("log_source".to_owned(), log_source_entry.to_value());
+        }
+        None => {
+            stream_metadata_map.insert("log_source".to_owned(), log_source_entry.to_value());
+        }
+    }
     stream_metadata
 }
 
