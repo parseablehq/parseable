@@ -31,7 +31,6 @@ use actix_web::{
 use bytes::BytesMut;
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
-use itertools::Itertools;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tracing::error;
 use url::Url;
