@@ -28,7 +28,7 @@ use tracing::{debug, error};
 use crate::{
     connectors::common::processor::Processor,
     event::{
-        format::{json, EventFormat, LogSource},
+        format::{json, EventFormat, LogSourceEntry},
         Event as ParseableEvent,
     },
     parseable::PARSEABLE,
@@ -49,9 +49,14 @@ impl ParseableSinkProcessor {
             .first()
             .map(|r| r.topic.as_str())
             .unwrap_or_default();
+        let log_source_entry = LogSourceEntry::default();
 
         PARSEABLE
-            .create_stream_if_not_exists(stream_name, StreamType::UserDefined, LogSource::Json)
+            .create_stream_if_not_exists(
+                stream_name,
+                StreamType::UserDefined,
+                vec![log_source_entry],
+            )
             .await?;
 
         let stream = PARSEABLE.get_stream(stream_name)?;
