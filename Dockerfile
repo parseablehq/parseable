@@ -14,13 +14,15 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 # build stage
-FROM  rust:1.84.0-bookworm AS builder
-
+FROM rust:1.84.0-alpine AS builder
 
 LABEL org.opencontainers.image.title="Parseable"
 LABEL maintainer="Parseable Team <hi@parseable.io>"
 LABEL org.opencontainers.image.vendor="Parseable Inc"
 LABEL org.opencontainers.image.licenses="AGPL-3.0"
+
+# Install dependencies for build
+RUN apk add --no-cache build-base git bash
 
 WORKDIR /parseable
 
@@ -32,12 +34,12 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && r
 COPY src ./src
 RUN cargo build --release
 
-# final stage
-FROM gcr.io/distroless/cc-debian12:latest
+# Final stage as base-image
+FROM scratch
 
-WORKDIR /parseable
+WORKDIR /
 
 # Copy the static binary into the final image
-COPY --from=builder /parseable/target/release/parseable /usr/bin/parseable
+COPY --from=builder /parseable/target/release/parseable /parseable
 
-CMD ["/usr/bin/parseable"]
+ENTRYPOINT ["/parseable"]
