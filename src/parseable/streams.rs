@@ -686,10 +686,20 @@ impl Stream {
 
     pub fn add_log_source(&self, log_source: LogSourceEntry) {
         let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        // Check if this log source format already exists
+        for existing in &metadata.log_source {
+            if existing.log_source_format == log_source.log_source_format {
+                self.add_fields_to_log_source(
+                    &log_source.log_source_format,
+                    log_source.fields.clone(),
+                );
+                return;
+            }
+        }
         metadata.log_source.push(log_source);
     }
 
-    pub fn add_fields_to_log_source(&self, log_source: &LogSource, fields: Vec<String>) {
+    pub fn add_fields_to_log_source(&self, log_source: &LogSource, fields: HashSet<String>) {
         let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
         for log_source_entry in metadata.log_source.iter_mut() {
             if log_source_entry.log_source_format == *log_source {
