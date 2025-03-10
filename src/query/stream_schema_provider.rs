@@ -233,7 +233,7 @@ impl StandardTableProvider {
         };
 
         // Staging arrow exection plan
-        let records = staging.recordbatches_cloned(&self.schema);
+        let records = staging.recordbatches_cloned(&self.schema, staging.get_time_partition());
         let arrow_exec = reversed_mem_table(records, self.schema.clone())?
             .scan(state, projection, filters, limit)
             .await?;
