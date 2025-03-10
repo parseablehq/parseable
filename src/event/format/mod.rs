@@ -28,7 +28,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use crate::{
     metadata::SchemaVersion,
@@ -44,7 +44,7 @@ static TIME_FIELD_NAME_PARTS: [&str; 2] = ["time", "date"];
 type EventSchema = Vec<Arc<Field>>;
 
 /// Source of the logs, used to perform special processing for certain sources
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum LogSource {
     // AWS Kinesis sends logs in the format of a json array
     Kinesis,
@@ -89,6 +89,33 @@ impl Display for LogSource {
             LogSource::Pmeta => "pmeta",
             LogSource::Custom(custom) => custom,
         })
+    }
+}
+
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogSourceEntry {
+    pub log_source_format: LogSource,
+    pub fields: HashSet<String>,
+}
+
+impl LogSourceEntry {
+    pub fn new(log_source_format: &LogSource, fields: HashSet<String>) -> Self {
+        LogSourceEntry {
+            log_source_format: log_source_format.clone(),
+            fields,
+        }
+    }
+
+    pub fn add_log_source(&mut self, log_source_format: LogSource, fields: HashSet<String>) {
+        self.log_source_format = log_source_format;
+        self.fields = fields;
+    }
+
+    pub fn to_value(&self) -> Value {
+        json!([{
+            "log_source_format": self.log_source_format,
+            "fields": self.fields,
+        }])
     }
 }
 

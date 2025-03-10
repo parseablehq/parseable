@@ -27,6 +27,14 @@ use super::otel_utils::collect_json_from_values;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
 
+pub const OTEL_LOG_KNOWN_FIELD_LIST: [&str; 6] = [
+    "time_unix_nano",
+    "severity_number",
+    "severity_text",
+    "body",
+    "span_id",
+    "trace_id",
+];
 /// otel log event has severity number
 /// there is a mapping of severity number to severity text provided in proto
 /// this function fetches the severity text from the severity number

@@ -153,47 +153,8 @@ async fn migration_stream(
 ) -> anyhow::Result<Option<LogStreamMetadata>> {
     let mut arrow_schema: Schema = Schema::empty();
 
-    //check if schema exists for the node
-    //if not, create schema from querier schema from storage
-    //if not present with querier, create schema from ingestor schema from storage
-    let schema_path = schema_path(stream);
-    let schema = if let Ok(schema) = storage.get_object(&schema_path).await {
-        schema
-    } else {
-        let querier_schema = storage
-            .create_schema_from_querier(stream)
-            .await
-            .unwrap_or_default();
-        if !querier_schema.is_empty() {
-            querier_schema
-        } else {
-            storage
-                .create_schema_from_ingestor(stream)
-                .await
-                .unwrap_or_default()
-        }
-    };
-
-    //check if stream.json exists for the node
-    //if not, create stream.json from querier stream.json from storage
-    //if not present with querier, create from ingestor stream.json from storage
-    let path = stream_json_path(stream);
-    let stream_metadata = if let Ok(stream_metadata) = storage.get_object(&path).await {
-        stream_metadata
-    } else {
-        let querier_stream = storage
-            .create_stream_from_querier(stream)
-            .await
-            .unwrap_or_default();
-        if !querier_stream.is_empty() {
-            querier_stream
-        } else {
-            storage
-                .create_stream_from_ingestor(stream)
-                .await
-                .unwrap_or_default()
-        }
-    };
+    let schema = fetch_or_create_schema(stream, storage).await?;
+    let stream_metadata = fetch_or_create_stream_metadata(stream, storage).await?;
 
     let mut stream_meta_found = true;
     if stream_metadata.is_empty() {
@@ -202,67 +163,143 @@ async fn migration_stream(
         }
         stream_meta_found = false;
     }
+
     let mut stream_metadata_value = Value::Null;
     if stream_meta_found {
         stream_metadata_value =
             serde_json::from_slice(&stream_metadata).expect("stream.json is valid json");
-        let version = stream_metadata_value
-            .as_object()
-            .and_then(|meta| meta.get("version"))
-            .and_then(|version| version.as_str());
-
-        match version {
-            Some("v1") => {
-                stream_metadata_value = stream_metadata_migration::v1_v4(stream_metadata_value);
-                stream_metadata_value =
-                    stream_metadata_migration::v4_v5(stream_metadata_value, stream);
-                storage
-                    .put_object(&path, to_bytes(&stream_metadata_value))
-                    .await?;
-                let schema = serde_json::from_slice(&schema).ok();
-                arrow_schema = schema_migration::v1_v4(schema)?;
-                storage
-                    .put_object(&schema_path, to_bytes(&arrow_schema))
-                    .await?;
-            }
-            Some("v2") => {
-                stream_metadata_value = stream_metadata_migration::v2_v4(stream_metadata_value);
-                stream_metadata_value =
-                    stream_metadata_migration::v4_v5(stream_metadata_value, stream);
-                storage
-                    .put_object(&path, to_bytes(&stream_metadata_value))
-                    .await?;
-
-                let schema = serde_json::from_slice(&schema)?;
-                arrow_schema = schema_migration::v2_v4(schema)?;
-                storage
-                    .put_object(&schema_path, to_bytes(&arrow_schema))
-                    .await?;
-            }
-            Some("v3") => {
-                stream_metadata_value = stream_metadata_migration::v3_v4(stream_metadata_value);
-                stream_metadata_value =
-                    stream_metadata_migration::v4_v5(stream_metadata_value, stream);
-                storage
-                    .put_object(&path, to_bytes(&stream_metadata_value))
-                    .await?;
-            }
-            Some("v4") => {
-                stream_metadata_value =
-                    stream_metadata_migration::v4_v5(stream_metadata_value, stream);
-                storage
-                    .put_object(&path, to_bytes(&stream_metadata_value))
-                    .await?;
-            }
-            _ => (),
-        }
+        stream_metadata_value =
+            migrate_stream_metadata(stream_metadata_value, stream, storage, &schema).await?;
     }
 
     if arrow_schema.fields().is_empty() {
         arrow_schema = serde_json::from_slice(&schema)?;
     }
 
-    // Setup logstream meta on startup
+    let metadata =
+        setup_logstream_metadata(stream, &mut arrow_schema, stream_metadata_value).await?;
+    Ok(Some(metadata))
+}
+
+async fn fetch_or_create_schema(
+    stream: &str,
+    storage: &dyn ObjectStorage,
+) -> anyhow::Result<Bytes> {
+    let schema_path = schema_path(stream);
+    if let Ok(schema) = storage.get_object(&schema_path).await {
+        Ok(schema)
+    } else {
+        let querier_schema = storage
+            .create_schema_from_querier(stream)
+            .await
+            .unwrap_or_default();
+        if !querier_schema.is_empty() {
+            Ok(querier_schema)
+        } else {
+            Ok(storage
+                .create_schema_from_ingestor(stream)
+                .await
+                .unwrap_or_default())
+        }
+    }
+}
+
+async fn fetch_or_create_stream_metadata(
+    stream: &str,
+    storage: &dyn ObjectStorage,
+) -> anyhow::Result<Bytes> {
+    let path = stream_json_path(stream);
+    if let Ok(stream_metadata) = storage.get_object(&path).await {
+        Ok(stream_metadata)
+    } else {
+        let querier_stream = storage
+            .create_stream_from_querier(stream)
+            .await
+            .unwrap_or_default();
+        if !querier_stream.is_empty() {
+            Ok(querier_stream)
+        } else {
+            Ok(storage
+                .create_stream_from_ingestor(stream)
+                .await
+                .unwrap_or_default())
+        }
+    }
+}
+
+async fn migrate_stream_metadata(
+    mut stream_metadata_value: Value,
+    stream: &str,
+    storage: &dyn ObjectStorage,
+    schema: &Bytes,
+) -> anyhow::Result<Value> {
+    let path = stream_json_path(stream);
+    let schema_path = schema_path(stream);
+
+    let version = stream_metadata_value
+        .as_object()
+        .and_then(|meta| meta.get("version"))
+        .and_then(|version| version.as_str());
+
+    match version {
+        Some("v1") => {
+            stream_metadata_value = stream_metadata_migration::v1_v4(stream_metadata_value);
+            stream_metadata_value = stream_metadata_migration::v4_v5(stream_metadata_value, stream);
+            stream_metadata_value = stream_metadata_migration::v5_v6(stream_metadata_value);
+            storage
+                .put_object(&path, to_bytes(&stream_metadata_value))
+                .await?;
+            let schema = serde_json::from_slice(schema).ok();
+            let arrow_schema = schema_migration::v1_v4(schema)?;
+            storage
+                .put_object(&schema_path, to_bytes(&arrow_schema))
+                .await?;
+        }
+        Some("v2") => {
+            stream_metadata_value = stream_metadata_migration::v2_v4(stream_metadata_value);
+            stream_metadata_value = stream_metadata_migration::v4_v5(stream_metadata_value, stream);
+            stream_metadata_value = stream_metadata_migration::v5_v6(stream_metadata_value);
+            storage
+                .put_object(&path, to_bytes(&stream_metadata_value))
+                .await?;
+            let schema = serde_json::from_slice(schema)?;
+            let arrow_schema = schema_migration::v2_v4(schema)?;
+            storage
+                .put_object(&schema_path, to_bytes(&arrow_schema))
+                .await?;
+        }
+        Some("v3") => {
+            stream_metadata_value = stream_metadata_migration::v3_v4(stream_metadata_value);
+            stream_metadata_value = stream_metadata_migration::v4_v5(stream_metadata_value, stream);
+            stream_metadata_value = stream_metadata_migration::v5_v6(stream_metadata_value);
+            storage
+                .put_object(&path, to_bytes(&stream_metadata_value))
+                .await?;
+        }
+        Some("v4") => {
+            stream_metadata_value = stream_metadata_migration::v4_v5(stream_metadata_value, stream);
+            stream_metadata_value = stream_metadata_migration::v5_v6(stream_metadata_value);
+            storage
+                .put_object(&path, to_bytes(&stream_metadata_value))
+                .await?;
+        }
+        Some("v5") => {
+            stream_metadata_value = stream_metadata_migration::v5_v6(stream_metadata_value);
+            storage
+                .put_object(&path, to_bytes(&stream_metadata_value))
+                .await?;
+        }
+        _ => (),
+    }
+
+    Ok(stream_metadata_value)
+}
+
+async fn setup_logstream_metadata(
+    stream: &str,
+    arrow_schema: &mut Schema,
+    stream_metadata_value: Value,
+) -> anyhow::Result<LogStreamMetadata> {
     let ObjectStoreFormat {
         schema_version,
         created_at,
@@ -279,19 +316,17 @@ async fn migration_stream(
         log_source,
         ..
     } = serde_json::from_value(stream_metadata_value).unwrap_or_default();
+
     let storage = PARSEABLE.storage.get_object_store();
 
-    // update the schema and store it back
-    // NOTE: write could be saved, but the cost is cheap, given the low possibilities of being called multiple times
-    update_data_type_time_partition(&mut arrow_schema, time_partition.as_ref()).await?;
-    storage.put_schema(stream, &arrow_schema).await?;
-    //load stats from storage
+    update_data_type_time_partition(arrow_schema, time_partition.as_ref()).await?;
+    storage.put_schema(stream, arrow_schema).await?;
     fetch_stats_from_storage(stream, stats).await;
     load_daily_metrics(&snapshot.manifest_list, stream);
 
     let schema = PARSEABLE
         .get_or_create_stream(stream)
-        .updated_schema(arrow_schema);
+        .updated_schema(arrow_schema.clone());
     let schema = HashMap::from_iter(
         schema
             .fields
@@ -314,7 +349,7 @@ async fn migration_stream(
         log_source,
     };
 
-    Ok(Some(metadata))
+    Ok(metadata)
 }
 
 #[inline(always)]

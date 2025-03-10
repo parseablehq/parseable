@@ -65,7 +65,6 @@ pub static QUERY_SESSION: Lazy<SessionContext> =
 pub static QUERY_RUNTIME: Lazy<Runtime> =
     Lazy::new(|| Runtime::new().expect("Runtime should be constructible"));
 
-
 /// This function executes a query on the dedicated runtime, ensuring that the query is not isolated to a single thread/CPU
 /// at a time and has access to the entire thread pool, enabling better concurrent processing, and thus quicker results.
 pub async fn execute(

@@ -45,6 +45,8 @@ use ulid::Ulid;
 use crate::alerts::AlertConfig;
 use crate::catalog::{self, manifest::Manifest, snapshot::Snapshot};
 use crate::correlation::{CorrelationConfig, CorrelationError};
+use crate::event::format::LogSource;
+use crate::event::format::LogSourceEntry;
 use crate::handlers::http::modal::ingest_server::INGESTOR_EXPECT;
 use crate::handlers::http::users::CORRELATION_DIR;
 use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
@@ -261,6 +263,20 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     ) -> Result<(), ObjectStorageError> {
         let mut format = self.get_object_store_format(stream_name).await?;
         format.custom_partition = custom_partition.cloned();
+        let format_json = to_bytes(&format);
+        self.put_object(&stream_json_path(stream_name), format_json)
+            .await?;
+
+        Ok(())
+    }
+
+    async fn update_log_source_in_stream(
+        &self,
+        stream_name: &str,
+        log_source: &[LogSourceEntry],
+    ) -> Result<(), ObjectStorageError> {
+        let mut format = self.get_object_store_format(stream_name).await?;
+        format.log_source = log_source.to_owned();
         let format_json = to_bytes(&format);
         self.put_object(&stream_json_path(stream_name), format_json)
             .await?;
@@ -544,6 +560,8 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         stream_name: &str,
     ) -> Result<Bytes, ObjectStorageError> {
         let stream_path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
+        let mut all_log_sources: Vec<LogSourceEntry> = Vec::new();
+
         if let Some(stream_metadata_obs) = self
             .get_objects(
                 Some(&stream_path),
@@ -556,12 +574,39 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             .next()
         {
             if !stream_metadata_obs.is_empty() {
-                let stream_metadata_bytes = &stream_metadata_obs[0];
+                for stream_metadata_bytes in stream_metadata_obs.iter() {
+                    let stream_ob_metadata =
+                        serde_json::from_slice::<ObjectStoreFormat>(stream_metadata_bytes)?;
+                    all_log_sources.extend(stream_ob_metadata.log_source.clone());
+                }
+
+                // Merge log sources
+                let mut merged_log_sources: Vec<LogSourceEntry> = Vec::new();
+                let mut log_source_map: HashMap<LogSource, HashSet<String>> = HashMap::new();
+
+                for log_source_entry in all_log_sources {
+                    let log_source_format = log_source_entry.log_source_format;
+                    let fields = log_source_entry.fields;
+
+                    log_source_map
+                        .entry(log_source_format)
+                        .or_default()
+                        .extend(fields);
+                }
+
+                for (log_source_format, fields) in log_source_map {
+                    merged_log_sources.push(LogSourceEntry {
+                        log_source_format,
+                        fields: fields.into_iter().collect(),
+                    });
+                }
+
                 let stream_ob_metadata =
-                    serde_json::from_slice::<ObjectStoreFormat>(stream_metadata_bytes)?;
+                    serde_json::from_slice::<ObjectStoreFormat>(&stream_metadata_obs[0])?;
                 let stream_metadata = ObjectStoreFormat {
                     stats: FullStats::default(),
                     snapshot: Snapshot::default(),
+                    log_source: merged_log_sources,
                     ..stream_ob_metadata
                 };
 
@@ -640,6 +685,41 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         }
 
         Ok(stream_metas)
+    }
+
+    async fn get_log_source_from_storage(
+        &self,
+        stream_name: &str,
+    ) -> Result<Vec<LogSourceEntry>, ObjectStorageError> {
+        let mut all_log_sources: Vec<LogSourceEntry> = Vec::new();
+        let stream_metas = self.get_stream_meta_from_storage(stream_name).await;
+        if let Ok(stream_metas) = stream_metas {
+            for stream_meta in stream_metas.iter() {
+                // fetch unique log sources and their fields
+                all_log_sources.extend(stream_meta.log_source.clone());
+            }
+        }
+
+        //merge fields of same log source
+        let mut merged_log_sources: Vec<LogSourceEntry> = Vec::new();
+        let mut log_source_map: HashMap<LogSource, HashSet<String>> = HashMap::new();
+        for log_source_entry in all_log_sources {
+            let log_source_format = log_source_entry.log_source_format;
+            let fields = log_source_entry.fields;
+
+            log_source_map
+                .entry(log_source_format)
+                .or_default()
+                .extend(fields);
+        }
+
+        for (log_source_format, fields) in log_source_map {
+            merged_log_sources.push(LogSourceEntry {
+                log_source_format,
+                fields: fields.into_iter().collect(),
+            });
+        }
+        Ok(merged_log_sources)
     }
 
     /// Retrieves the earliest first-event-at from the storage for the specified stream.
