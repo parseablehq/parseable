@@ -27,10 +27,7 @@ use tracing::{debug, error};
 
 use crate::{
     connectors::common::processor::Processor,
-    event::{
-        format::{json, EventFormat, LogSource},
-        Event as ParseableEvent,
-    },
+    event::format::{json, EventFormat, LogSource},
     parseable::PARSEABLE,
     storage::StreamType,
 };
@@ -41,10 +38,7 @@ use super::{config::BufferConfig, ConsumerRecord, StreamConsumer, TopicPartition
 pub struct ParseableSinkProcessor;
 
 impl ParseableSinkProcessor {
-    async fn build_event_from_chunk(
-        &self,
-        records: &[ConsumerRecord],
-    ) -> anyhow::Result<ParseableEvent> {
+    async fn process_event_from_chunk(&self, records: &[ConsumerRecord]) -> anyhow::Result<()> {
         let stream_name = records
             .first()
             .map(|r| r.topic.as_str())
@@ -55,11 +49,6 @@ impl ParseableSinkProcessor {
             .await?;
 
         let stream = PARSEABLE.get_stream(stream_name)?;
-        let schema = stream.get_schema_raw();
-        let time_partition = stream.get_time_partition();
-        let custom_partition = stream.get_custom_partition();
-        let static_schema_flag = stream.get_static_schema_flag();
-        let schema_version = stream.get_schema_version();
 
         let mut json_vec = Vec::with_capacity(records.len());
         let mut total_payload_size = 0u64;
@@ -71,18 +60,11 @@ impl ParseableSinkProcessor {
             }
         }
 
-        let p_event = json::Event::new(Value::Array(json_vec)).into_event(
-            stream_name.to_string(),
-            total_payload_size,
-            &schema,
-            static_schema_flag,
-            custom_partition.as_ref(),
-            time_partition.as_ref(),
-            schema_version,
-            StreamType::UserDefined,
-        )?;
+        json::Event::new(Value::Array(json_vec))
+            .to_event(&stream, total_payload_size)?
+            .process(&stream)?;
 
-        Ok(p_event)
+        Ok(())
     }
 }
 
@@ -92,7 +74,7 @@ impl Processor<Vec<ConsumerRecord>, ()> for ParseableSinkProcessor {
         let len = records.len();
         debug!("Processing {len} records");
 
-        self.build_event_from_chunk(&records).await?.process()?;
+        self.process_event_from_chunk(&records).await?;
 
         debug!("Processed {len} records");
         Ok(())
