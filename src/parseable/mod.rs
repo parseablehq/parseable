@@ -822,6 +822,25 @@ impl Parseable {
 
         Some(first_event_at.to_string())
     }
+
+    pub async fn update_log_source(
+        &self,
+        stream_name: &str,
+        log_source: Vec<LogSourceEntry>,
+    ) -> Result<(), StreamError> {
+        let storage = self.storage.get_object_store();
+        if let Err(err) = storage
+            .update_log_source_in_stream(stream_name, &log_source)
+            .await
+        {
+            return Err(StreamError::Storage(err));
+        }
+
+        let stream = self.get_stream(stream_name).expect(STREAM_EXISTS);
+        stream.set_log_source(log_source);
+
+        Ok(())
+    }
 }
 
 pub fn validate_static_schema(
