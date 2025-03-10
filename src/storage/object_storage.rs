@@ -687,6 +687,41 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         Ok(stream_metas)
     }
 
+    async fn get_log_source_from_storage(
+        &self,
+        stream_name: &str,
+    ) -> Result<Vec<LogSourceEntry>, ObjectStorageError> {
+        let mut all_log_sources: Vec<LogSourceEntry> = Vec::new();
+        let stream_metas = self.get_stream_meta_from_storage(stream_name).await;
+        if let Ok(stream_metas) = stream_metas {
+            for stream_meta in stream_metas.iter() {
+                // fetch unique log sources and their fields
+                all_log_sources.extend(stream_meta.log_source.clone());
+            }
+        }
+
+        //merge fields of same log source
+        let mut merged_log_sources: Vec<LogSourceEntry> = Vec::new();
+        let mut log_source_map: HashMap<LogSource, HashSet<String>> = HashMap::new();
+        for log_source_entry in all_log_sources {
+            let log_source_format = log_source_entry.log_source_format;
+            let fields = log_source_entry.fields;
+
+            log_source_map
+                .entry(log_source_format)
+                .or_default()
+                .extend(fields);
+        }
+
+        for (log_source_format, fields) in log_source_map {
+            merged_log_sources.push(LogSourceEntry {
+                log_source_format,
+                fields: fields.into_iter().collect(),
+            });
+        }
+        Ok(merged_log_sources)
+    }
+
     /// Retrieves the earliest first-event-at from the storage for the specified stream.
     ///
     /// This function fetches the object-store format from all the stream.json files for the given stream from the storage,
