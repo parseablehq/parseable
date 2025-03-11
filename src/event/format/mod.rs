@@ -28,7 +28,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 
 use crate::{
     metadata::SchemaVersion,
@@ -106,15 +106,6 @@ impl LogSourceEntry {
             log_source_format,
             fields,
         }
-    }
-
-    pub fn add_log_source(&mut self, log_source_format: LogSource, fields: HashSet<String>) {
-        self.log_source_format = log_source_format;
-        self.fields = fields;
-    }
-
-    pub fn to_value(&self) -> Value {
-        json!(self)
     }
 }
 

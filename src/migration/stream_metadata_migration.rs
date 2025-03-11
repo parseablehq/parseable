@@ -191,14 +191,13 @@ pub fn v5_v6(mut stream_metadata: Value) -> Value {
         "version".to_owned(),
         Value::String(storage::CURRENT_SCHEMA_VERSION.into()),
     );
-    let log_source = stream_metadata_map.get("log_source");
     let mut log_source_entry = LogSourceEntry::default();
-    if log_source.is_some() {
-        if let Ok(log_source) = serde_json::from_value::<LogSource>(log_source.unwrap().clone()) {
-            log_source_entry.add_log_source(log_source, HashSet::new());
+    if let Some(log_source) = stream_metadata_map.get("log_source") {
+        if let Ok(log_source) = serde_json::from_value::<LogSource>(log_source.clone()) {
+            log_source_entry = LogSourceEntry::new(log_source, HashSet::new());
         }
     }
-    stream_metadata_map.insert("log_source".to_owned(), log_source_entry.to_value());
+    stream_metadata_map.insert("log_source".to_owned(), json!(log_source_entry));
     stream_metadata
 }
 
