@@ -29,13 +29,10 @@ use tracing::error;
 use crate::{
     alerts::{get_alerts_info, AlertError, AlertsInfo, ALERTS},
     correlation::{CorrelationError, CORRELATIONS},
-    handlers::http::{
-        cluster::fetch_daily_stats_from_ingestors,
-        logstream::{error::StreamError, get_stats_date},
-    },
+    handlers::http::logstream::error::StreamError,
     parseable::PARSEABLE,
     rbac::{map::SessionKey, role::Action, Users},
-    stats::Stats,
+    stats::{DatedStats, Stats},
     storage::{ObjectStorageError, ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
     users::{dashboards::DASHBOARDS, filters::FILTERS},
 };
@@ -45,14 +42,6 @@ struct StreamInfo {
     // stream_count: u32,
     // log_source_count: u32,
     stats_summary: Stats,
-}
-
-#[derive(Debug, Serialize, Default)]
-struct DatedStats {
-    date: String,
-    events: u64,
-    ingestion_size: u64,
-    storage_size: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -155,8 +144,8 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
                 .checked_sub_signed(chrono::Duration::days(i))
                 .ok_or_else(|| anyhow::Error::msg("Date conversion faield"))
                 .unwrap()
+                .date_naive()
         })
-        .map(|date| date.format("%Y-%m-%d").to_string())
         .collect_vec();
 
     let mut stream_details = Vec::new();
@@ -193,7 +182,11 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
     }
 
     for date in dates.into_iter() {
-        let dated_stats = stats_for_date(date, stream_wise_ingestor_stream_json.clone()).await?;
+        let Some(dated_stats) =
+            DatedStats::for_all_streams(date, &stream_wise_ingestor_stream_json)?
+        else {
+            continue;
+        };
         summary.stats_summary.events += dated_stats.events;
         summary.stats_summary.ingestion += dated_stats.ingestion_size;
         summary.stats_summary.storage += dated_stats.storage_size;
@@ -211,28 +204,6 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
         filter_titles,
         alerts_info,
     })
-}
-
-async fn stats_for_date(
-    date: String,
-    stream_wise_meta: HashMap<String, Vec<ObjectStoreFormat>>,
-) -> Result<DatedStats, PrismHomeError> {
-    // collect stats for all the streams for the given date
-    let mut details = DatedStats {
-        date: date.clone(),
-        ..Default::default()
-    };
-
-    for (stream, meta) in stream_wise_meta {
-        let querier_stats = get_stats_date(&stream, &date).await?;
-        let ingestor_stats = fetch_daily_stats_from_ingestors(&date, &meta)?;
-        // collect date-wise stats for all streams
-        details.events += querier_stats.events + ingestor_stats.events;
-        details.ingestion_size += querier_stats.ingestion + ingestor_stats.ingestion;
-        details.storage_size += querier_stats.storage + ingestor_stats.storage;
-    }
-
-    Ok(details)
 }
 
 #[derive(Debug, thiserror::Error)]
