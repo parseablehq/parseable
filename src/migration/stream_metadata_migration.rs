@@ -197,7 +197,7 @@ pub fn v5_v6(mut stream_metadata: Value) -> Value {
             log_source_entry = LogSourceEntry::new(log_source, HashSet::new());
         }
     }
-    stream_metadata_map.insert("log_source".to_owned(), json!(log_source_entry));
+    stream_metadata_map.insert("log_source".to_owned(), json!([log_source_entry]));
     stream_metadata
 }
 
