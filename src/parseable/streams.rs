@@ -685,8 +685,20 @@ impl Stream {
     }
 
     pub fn add_log_source(&self, log_source: LogSourceEntry) {
+        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+        for existing in &metadata.log_source {
+            if existing.log_source_format == log_source.log_source_format {
+                drop(metadata);
+                self.add_fields_to_log_source(
+                    &log_source.log_source_format,
+                    log_source.fields.clone(),
+                );
+                return;
+            }
+        }
+        drop(metadata);
+
         let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
-        // Check if this log source format already exists
         for existing in &metadata.log_source {
             if existing.log_source_format == log_source.log_source_format {
                 self.add_fields_to_log_source(
