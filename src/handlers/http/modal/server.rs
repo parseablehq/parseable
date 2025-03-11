@@ -21,6 +21,7 @@ use std::thread;
 use crate::alerts::ALERTS;
 use crate::analytics;
 use crate::correlation::CORRELATIONS;
+use crate::event::detect_schema::EventProcessor;
 use crate::handlers;
 use crate::handlers::http::about;
 use crate::handlers::http::alerts;
@@ -147,6 +148,8 @@ impl ParseableServer for Server {
         if PARSEABLE.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
+
+        EventProcessor::new();
 
         tokio::spawn(handlers::livetail::server());
         tokio::spawn(handlers::airplane::server());
