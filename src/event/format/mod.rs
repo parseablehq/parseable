@@ -92,6 +92,8 @@ impl Display for LogSource {
     }
 }
 
+/// Contains the format name and a list of known field names that are associated with the said format.
+/// Stored on disk as part of `ObjectStoreFormat` in stream.json
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogSourceEntry {
     pub log_source_format: LogSource,
@@ -99,9 +101,9 @@ pub struct LogSourceEntry {
 }
 
 impl LogSourceEntry {
-    pub fn new(log_source_format: &LogSource, fields: HashSet<String>) -> Self {
+    pub fn new(log_source_format: LogSource, fields: HashSet<String>) -> Self {
         LogSourceEntry {
-            log_source_format: log_source_format.clone(),
+            log_source_format,
             fields,
         }
     }
@@ -112,10 +114,7 @@ impl LogSourceEntry {
     }
 
     pub fn to_value(&self) -> Value {
-        json!([{
-            "log_source_format": self.log_source_format,
-            "fields": self.fields,
-        }])
+        json!(self)
     }
 }
 

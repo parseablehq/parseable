@@ -352,7 +352,7 @@ impl Parseable {
     }
 
     pub async fn create_internal_stream_if_not_exists(&self) -> Result<(), StreamError> {
-        let log_source_entry = LogSourceEntry::new(&LogSource::Pmeta, HashSet::new());
+        let log_source_entry = LogSourceEntry::new(LogSource::Pmeta, HashSet::new());
         match self
             .create_stream_if_not_exists(
                 INTERNAL_STREAM_NAME,
@@ -532,7 +532,7 @@ impl Parseable {
             custom_partition.as_ref(),
             static_schema_flag,
         )?;
-        let log_source_entry = LogSourceEntry::new(&log_source, HashSet::new());
+        let log_source_entry = LogSourceEntry::new(log_source, HashSet::new());
         self.create_stream(
             stream_name.to_string(),
             &time_partition,

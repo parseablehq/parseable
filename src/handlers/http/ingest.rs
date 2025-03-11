@@ -72,7 +72,7 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
         return Err(PostError::OtelNotSupported);
     }
 
-    let log_source_entry = LogSourceEntry::new(&log_source, HashSet::new());
+    let log_source_entry = LogSourceEntry::new(log_source.clone(), HashSet::new());
     PARSEABLE
         .create_stream_if_not_exists(
             &stream_name,
@@ -130,7 +130,7 @@ pub async fn handle_otel_logs_ingestion(
     let stream_name = stream_name.to_str().unwrap().to_owned();
 
     let log_source_entry = LogSourceEntry::new(
-        &log_source,
+        log_source.clone(),
         OTEL_LOG_KNOWN_FIELD_LIST
             .iter()
             .map(|&s| s.to_string())
@@ -168,7 +168,7 @@ pub async fn handle_otel_metrics_ingestion(
     }
     let stream_name = stream_name.to_str().unwrap().to_owned();
     let log_source_entry = LogSourceEntry::new(
-        &log_source,
+        log_source.clone(),
         OTEL_METRICS_KNOWN_FIELD_LIST
             .iter()
             .map(|&s| s.to_string())
@@ -207,7 +207,7 @@ pub async fn handle_otel_traces_ingestion(
     }
     let stream_name = stream_name.to_str().unwrap().to_owned();
     let log_source_entry = LogSourceEntry::new(
-        &log_source,
+        log_source.clone(),
         OTEL_TRACES_KNOWN_FIELD_LIST
             .iter()
             .map(|&s| s.to_string())
