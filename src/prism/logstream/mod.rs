@@ -246,6 +246,13 @@ impl PrismDatasetRequest {
 
         let mut responses = vec![];
         for stream in self.streams.iter() {
+            if Users.authorize(key.clone(), Action::ListStream, Some(stream), None)
+                != crate::rbac::Response::Authorized
+            {
+                warn!("Unauthorized access requested for stream: {stream}");
+                continue;
+            }
+
             if PARSEABLE.check_or_load_stream(&stream).await {
                 debug!("Stream not found: {stream}");
                 continue;
