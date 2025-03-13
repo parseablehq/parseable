@@ -239,7 +239,7 @@ impl PrismDatasetRequest {
     ///
     /// # Note
     /// 1. This method won't fail if individual streams fail - it will only include
-    /// successfully processed streams in the result.
+    ///    successfully processed streams in the result.
     /// 2. On receiving an empty stream list, we return for all streams the user is able to query for
     pub async fn get_datasets(
         mut self,
@@ -258,7 +258,7 @@ impl PrismDatasetRequest {
                 continue;
             }
 
-            if PARSEABLE.check_or_load_stream(&stream).await {
+            if PARSEABLE.check_or_load_stream(stream).await {
                 debug!("Stream not found: {stream}");
                 continue;
             }
@@ -268,11 +268,11 @@ impl PrismDatasetRequest {
                 stats,
                 retention,
                 ..
-            } = get_prism_logstream_info(&stream).await?;
+            } = get_prism_logstream_info(stream).await?;
 
             let hottier = match HotTierManager::global() {
                 Some(hot_tier_manager) => {
-                    let stats = hot_tier_manager.get_hot_tier(&stream).await?;
+                    let stats = hot_tier_manager.get_hot_tier(stream).await?;
                     Some(stats)
                 }
                 _ => None,
@@ -292,9 +292,9 @@ impl PrismDatasetRequest {
 
             // Retrieve distinct values for source identifiers
             // Returns None if fields aren't present or if query fails
-            let ips = self.get_distinct_entries(&stream, "p_src_ip").await.ok();
+            let ips = self.get_distinct_entries(stream, "p_src_ip").await.ok();
             let user_agents = self
-                .get_distinct_entries(&stream, "p_user_agent")
+                .get_distinct_entries(stream, "p_user_agent")
                 .await
                 .ok();
 
