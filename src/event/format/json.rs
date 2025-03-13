@@ -283,63 +283,15 @@ fn valid_type(
     match field.data_type() {
         DataType::Boolean => value.is_boolean(),
         DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
-            if static_schema_flag {
-                if let Value::String(s) = value {
-                    return s.parse::<i64>().is_ok();
-                }
-            }
-            value.is_i64()
+            validate_int(value, static_schema_flag)
         }
         DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => value.is_u64(),
         DataType::Float16 | DataType::Float32 => value.is_f64(),
-        DataType::Float64 => {
-            if static_schema_flag {
-                if let Value::String(s) = value.clone() {
-                    return s.parse::<f64>().is_ok() || s.parse::<i64>().is_ok();
-                }
-                return value.is_number();
-            }
-            match schema_version {
-                SchemaVersion::V1 => value.is_number(),
-                _ => value.is_f64(),
-            }
-        }
+        DataType::Float64 => validate_float(value, schema_version, static_schema_flag),
         DataType::Utf8 => value.is_string(),
-        DataType::List(field) => {
-            if let Value::Array(arr) = value {
-                for elem in arr {
-                    if elem.is_null() {
-                        continue;
-                    }
-                    if !valid_type(field, elem, schema_version, static_schema_flag) {
-                        return false;
-                    }
-                }
-            }
-            true
-        }
+        DataType::List(field) => validate_list(field, value, schema_version, static_schema_flag),
         DataType::Struct(fields) => {
-            if let Value::Object(val) = value {
-                for (key, value) in val {
-                    let field = (0..fields.len())
-                        .find(|idx| fields[*idx].name() == key)
-                        .map(|idx| &fields[idx]);
-
-                    if let Some(field) = field {
-                        if value.is_null() {
-                            continue;
-                        }
-                        if !valid_type(field, value, schema_version, static_schema_flag) {
-                            return false;
-                        }
-                    } else {
-                        return false;
-                    }
-                }
-                true
-            } else {
-                false
-            }
+            validate_struct(fields, value, schema_version, static_schema_flag)
         }
         DataType::Timestamp(_, _) => value.is_string() || value.is_number(),
         _ => {
@@ -348,8 +300,79 @@ fn valid_type(
                 field.data_type(),
                 value
             );
-            unreachable!()
+            false
         }
+    }
+}
+
+fn validate_int(value: &Value, static_schema_flag: bool) -> bool {
+    // allow casting string to int for static schema
+    if static_schema_flag {
+        if let Value::String(s) = value {
+            return s.trim().parse::<i64>().is_ok();
+        }
+    }
+    value.is_i64()
+}
+
+fn validate_float(value: &Value, schema_version: SchemaVersion, static_schema_flag: bool) -> bool {
+    // allow casting string to int for static schema
+    if static_schema_flag {
+        if let Value::String(s) = value.clone() {
+            let trimmed = s.trim();
+            return trimmed.parse::<f64>().is_ok() || trimmed.parse::<i64>().is_ok();
+        }
+        return value.is_number();
+    }
+    match schema_version {
+        SchemaVersion::V1 => value.is_number(),
+        _ => value.is_f64(),
+    }
+}
+
+fn validate_list(
+    field: &Field,
+    value: &Value,
+    schema_version: SchemaVersion,
+    static_schema_flag: bool,
+) -> bool {
+    if let Value::Array(arr) = value {
+        for elem in arr {
+            if elem.is_null() {
+                continue;
+            }
+            if !valid_type(field, elem, schema_version, static_schema_flag) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn validate_struct(
+    fields: &Fields,
+    value: &Value,
+    schema_version: SchemaVersion,
+    static_schema_flag: bool,
+) -> bool {
+    if let Value::Object(val) = value {
+        for (key, value) in val {
+            let field = fields.iter().find(|f| f.name() == key);
+
+            if let Some(field) = field {
+                if value.is_null() {
+                    continue;
+                }
+                if !valid_type(field, value, schema_version, static_schema_flag) {
+                    return false;
+                }
+            } else {
+                return false;
+            }
+        }
+        true
+    } else {
+        false
     }
 }
 
