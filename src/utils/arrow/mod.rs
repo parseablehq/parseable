@@ -45,7 +45,7 @@ use std::{collections::HashMap, sync::Arc};
 use arrow_array::{
     Array, ArrayRef, RecordBatch, StringArray, TimestampMillisecondArray, UInt64Array,
 };
-use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};
 use arrow_select::take::take;
 use chrono::{DateTime, Utc};
 use itertools::Itertools;
@@ -147,41 +147,50 @@ pub fn add_parseable_fields(
     rb: RecordBatch,
     p_timestamp: DateTime<Utc>,
     p_custom_fields: &HashMap<String, String>,
-) -> RecordBatch {
+) -> Result<RecordBatch, ArrowError> {
+    // Return Result for proper error handling
+
+    // Add custom fields in sorted order
+    let mut sorted_keys: Vec<&String> = p_custom_fields.keys().collect();
+    sorted_keys.sort();
+
     let schema = rb.schema();
     let row_count = rb.num_rows();
 
-    let mut fields: Vec<Field> = schema.fields().iter().map(|f| f.as_ref().clone()).collect();
-    let mut columns: Vec<ArrayRef> = rb.columns().to_vec();
-
-    // Create and insert the p_timestamp field and array at index 0
-    let p_timestamp_array = Arc::new(TimestampMillisecondArray::from_iter_values(
-        std::iter::repeat(p_timestamp.timestamp_millis()).take(row_count),
-    ));
-    let p_timestamp_field = Field::new(
-        DEFAULT_TIMESTAMP_KEY.to_string(),
-        DataType::Timestamp(TimeUnit::Millisecond, None),
-        false,
+    let mut fields = schema
+        .fields()
+        .iter()
+        .map(|f| f.as_ref().clone())
+        .collect_vec();
+    fields.insert(
+        0,
+        Field::new(
+            DEFAULT_TIMESTAMP_KEY,
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            true,
+        ),
     );
-    fields.insert(0, p_timestamp_field);
-    columns.insert(0, p_timestamp_array);
+    fields.extend(
+        sorted_keys
+            .iter()
+            .map(|k| Field::new(*k, DataType::Utf8, true)),
+    );
 
-    // Sort p_custom_fields by key and insert custom fields at the beginning, after the p_timestamp field
-    let mut sorted_keys: Vec<&String> = p_custom_fields.keys().collect();
-    sorted_keys.sort();
-    for key in sorted_keys.iter().rev() {
-        let value = p_custom_fields.get(*key).unwrap();
-        let string_array: ArrayRef = Arc::new(StringArray::from_iter_values(
+    let mut columns = rb.columns().iter().map(Arc::clone).collect_vec();
+    columns.insert(
+        0,
+        Arc::new(get_timestamp_array(p_timestamp, row_count)) as ArrayRef,
+    );
+    columns.extend(sorted_keys.iter().map(|k| {
+        let value = p_custom_fields.get(*k).unwrap();
+        Arc::new(StringArray::from_iter_values(
             std::iter::repeat(value).take(row_count),
-        ));
-        columns.insert(1, string_array);
+        )) as ArrayRef
+    }));
 
-        let new_field = Field::new((*key).clone(), DataType::Utf8, true);
-        fields.insert(1, new_field);
-    }
-
+    // Create the new schema and batch
     let new_schema = Arc::new(Schema::new(fields));
-    RecordBatch::try_new(new_schema, columns).unwrap()
+    RecordBatch::try_new(new_schema, columns)
 }
 
 pub fn reverse(rb: &RecordBatch) -> RecordBatch {

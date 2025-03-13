@@ -148,7 +148,7 @@ pub trait EventFormat: Sized {
         p_custom_fields: &HashMap<String, String>,
     ) -> Result<(RecordBatch, bool), AnyError> {
         let p_timestamp = self.get_p_timestamp();
-        let (data, mut schema, is_first) = self.to_data(
+        let (data, schema, is_first) = self.to_data(
             storage_schema,
             time_partition,
             schema_version,
@@ -172,7 +172,7 @@ pub trait EventFormat: Sized {
 
         let rb = Self::decode(data, new_schema.clone())?;
 
-        let rb = add_parseable_fields(rb, p_timestamp, p_custom_fields);
+        let rb = add_parseable_fields(rb, p_timestamp, p_custom_fields)?;
 
         Ok((rb, is_first))
     }
