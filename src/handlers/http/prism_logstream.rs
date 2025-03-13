@@ -35,11 +35,15 @@ pub async fn get_info(stream_name: Path<String>) -> Result<impl Responder, Prism
 
 /// A combination of /stats, /retention, /hottier, /info, /counts and /query
 pub async fn post_datasets(
-    Json(prism_req): Json<PrismDatasetRequest>,
+    dataset_req: Option<Json<PrismDatasetRequest>>,
     req: HttpRequest,
 ) -> Result<impl Responder, PrismLogstreamError> {
     let session_key = extract_session_key_from_req(&req)?;
-    let dataset = prism_req.get_datasets(session_key).await?;
+    let dataset = dataset_req
+        .map(|Json(r)| r)
+        .unwrap_or_default()
+        .get_datasets(session_key)
+        .await?;
 
     Ok(web::Json(dataset))
 }

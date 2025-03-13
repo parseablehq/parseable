@@ -215,7 +215,7 @@ pub struct PrismDatasetResponse {
 
 /// Request parameters for retrieving Prism dataset information.
 /// Defines which streams to query
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct PrismDatasetRequest {
     /// List of stream names to query
