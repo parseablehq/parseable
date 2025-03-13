@@ -24,7 +24,7 @@ use chrono::Utc;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::{
     handlers::http::{
@@ -38,6 +38,7 @@ use crate::{
     hottier::{HotTierError, HotTierManager, StreamHotTier},
     parseable::{StreamNotFound, PARSEABLE},
     query::{error::ExecuteError, execute, CountsRequest, CountsResponse, QUERY_SESSION},
+    rbac::{map::SessionKey, role::Action, Users},
     stats,
     storage::{retention::Retention, StreamInfo, StreamType},
     utils::{
@@ -237,11 +238,15 @@ impl PrismDatasetRequest {
     /// - `Err(PrismLogstreamError)`: If a critical error occurs during processing
     ///
     /// # Note
-    /// This method won't fail if individual streams fail - it will only include
+    /// 1. This method won't fail if individual streams fail - it will only include
     /// successfully processed streams in the result.
-    pub async fn get_datasets(self) -> Result<Vec<PrismDatasetResponse>, PrismLogstreamError> {
+    /// 2. On receiving an empty stream list, we return for all streams the user is able to query for
+    pub async fn get_datasets(
+        mut self,
+        key: SessionKey,
+    ) -> Result<Vec<PrismDatasetResponse>, PrismLogstreamError> {
         if self.streams.is_empty() {
-            return Err(PrismLogstreamError::Empty);
+            self.streams = PARSEABLE.streams.list();
         }
 
         let mut responses = vec![];
@@ -284,7 +289,7 @@ impl PrismDatasetRequest {
                 fields: vec!["start_time".into(), "end_time".into(), "count".into()],
                 records,
             };
-            
+
             // Retrieve distinct values for source identifiers
             // Returns None if fields aren't present or if query fails
             let ips = self.get_distinct_entries(&stream, "p_src_ip").await.ok();
@@ -367,8 +372,8 @@ pub enum PrismLogstreamError {
     TimeParse(#[from] TimeParseError),
     #[error("Execute: {0}")]
     Execute(#[from] ExecuteError),
-    #[error("Empty Stream List")]
-    Empty,
+    #[error("Auth: {0}")]
+    Auth(#[from] actix_web::Error),
 }
 
 impl actix_web::ResponseError for PrismLogstreamError {
@@ -381,7 +386,7 @@ impl actix_web::ResponseError for PrismLogstreamError {
             PrismLogstreamError::Query(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PrismLogstreamError::TimeParse(_) => StatusCode::NOT_FOUND,
             PrismLogstreamError::Execute(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PrismLogstreamError::Empty => StatusCode::BAD_REQUEST,
+            PrismLogstreamError::Auth(_) => StatusCode::UNAUTHORIZED,
         }
     }
 
