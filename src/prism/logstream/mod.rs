@@ -214,17 +214,13 @@ pub struct PrismDatasetResponse {
 }
 
 /// Request parameters for retrieving Prism dataset information.
-/// Defines which streams to query and the time range for the query.
+/// Defines which streams to query
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrismDatasetRequest {
     /// List of stream names to query
     #[serde(default)]
     streams: Vec<String>,
-    /// ISO 8601 formatted start time or human-readable time expression
-    start_time: String,
-    /// ISO 8601 formatted end time or human-readable time expression
-    end_time: String,
 }
 
 impl PrismDatasetRequest {
@@ -283,8 +279,8 @@ impl PrismDatasetRequest {
             };
             let records = CountsRequest {
                 stream: stream.clone(),
-                start_time: self.start_time.clone(),
-                end_time: self.end_time.clone(),
+                start_time: "1h".to_owned(),
+                end_time: "now".to_owned(),
                 num_bins: 1,
             }
             .get_bin_density()
@@ -331,13 +327,13 @@ impl PrismDatasetRequest {
     ) -> Result<Vec<String>, QueryError> {
         let query = Query {
             query: format!("SELECT DISTINCT({field}) FOR {stream_name}"),
-            start_time: self.start_time.clone(),
-            end_time: self.end_time.clone(),
+            start_time: "1h".to_owned(),
+            end_time: "now".to_owned(),
             send_null: false,
             filter_tags: None,
             fields: true,
         };
-        let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
+        let time_range = TimeRange::parse_human_time("1h", "now")?;
 
         let session_state = QUERY_SESSION.state();
         let query = into_query(&query, &session_state, time_range).await?;
