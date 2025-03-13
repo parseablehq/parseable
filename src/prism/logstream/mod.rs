@@ -245,7 +245,8 @@ impl PrismDatasetRequest {
         mut self,
         key: SessionKey,
     ) -> Result<Vec<PrismDatasetResponse>, PrismLogstreamError> {
-        if self.streams.is_empty() {
+        let is_empty = self.streams.is_empty();
+        if is_empty {
             self.streams = PARSEABLE.streams.list();
         }
 
@@ -254,7 +255,10 @@ impl PrismDatasetRequest {
             if Users.authorize(key.clone(), Action::ListStream, Some(stream), None)
                 != crate::rbac::Response::Authorized
             {
-                warn!("Unauthorized access requested for stream: {stream}");
+                // Don't warn if listed from Parseable
+                if !is_empty {
+                    warn!("Unauthorized access requested for stream: {stream}");
+                }
                 continue;
             }
 
@@ -293,10 +297,7 @@ impl PrismDatasetRequest {
             // Retrieve distinct values for source identifiers
             // Returns None if fields aren't present or if query fails
             let ips = self.get_distinct_entries(stream, "p_src_ip").await.ok();
-            let user_agents = self
-                .get_distinct_entries(stream, "p_user_agent")
-                .await
-                .ok();
+            let user_agents = self.get_distinct_entries(stream, "p_user_agent").await.ok();
 
             responses.push(PrismDatasetResponse {
                 info,
