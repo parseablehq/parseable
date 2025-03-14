@@ -309,6 +309,14 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
             None
         };
 
+    let stream_log_source = storage
+        .get_log_source_from_storage(&stream_name)
+        .await
+        .unwrap_or_default();
+    PARSEABLE
+        .update_log_source(&stream_name, stream_log_source)
+        .await?;
+
     let hash_map = PARSEABLE.streams.read().unwrap();
     let stream_meta = hash_map
         .get(&stream_name)
