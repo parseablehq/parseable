@@ -93,12 +93,12 @@ static ARROWS_NAME_STRUCTURE: Lazy<Regex> = Lazy::new(|| {
 
 /// Returns the filename for parquet if provided arrows file path is valid as per our expectation
 fn arrow_path_to_parquet(path: &Path, random_string: &str) -> Option<PathBuf> {
-    let filename = path.file_name().unwrap().to_str().unwrap();
-    let filename = ARROWS_NAME_STRUCTURE
+    let filename = path.file_name()?.to_str()?;
+    let front = ARROWS_NAME_STRUCTURE
         .captures(filename)
         .and_then(|c| c.get(1))?
         .as_str();
-    let filename_with_random_number = format!("{filename}.data.{random_string}.parquet");
+    let filename_with_random_number = format!("{front}.data.{random_string}.parquet");
     let mut parquet_path = path.to_owned();
     parquet_path.set_file_name(filename_with_random_number);
 
