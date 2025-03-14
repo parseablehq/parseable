@@ -102,6 +102,7 @@ pub trait EventFormat: Sized {
         schema: &HashMap<String, Arc<Field>>,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
+        static_schema_flag: bool,
     ) -> Result<(Self::Data, EventSchema, bool), AnyError>;
 
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
@@ -117,8 +118,12 @@ pub trait EventFormat: Sized {
         schema_version: SchemaVersion,
     ) -> Result<(RecordBatch, bool), AnyError> {
         let p_timestamp = self.get_p_timestamp();
-        let (data, mut schema, is_first) =
-            self.to_data(storage_schema, time_partition, schema_version)?;
+        let (data, mut schema, is_first) = self.to_data(
+            storage_schema,
+            time_partition,
+            schema_version,
+            static_schema_flag,
+        )?;
 
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
             return Err(anyhow!(
