@@ -33,6 +33,7 @@ use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
+use once_cell::sync::Lazy;
 use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
@@ -41,6 +42,7 @@ use parquet::{
     schema::types::ColumnPath,
 };
 use rand::distributions::DistString;
+use regex::Regex;
 use relative_path::RelativePathBuf;
 use tokio::task::JoinSet;
 use tracing::{error, info, trace, warn};
@@ -67,6 +69,41 @@ use super::{
     },
     LogStream, ARROW_FILE_EXTENSION,
 };
+
+/// Regex pattern for parsing arrow file names.
+///
+/// # Format
+/// The expected format is: `<schema_key>.<front_part>.data.arrows`
+/// where:
+/// - schema_key: A key that is associated with the timestamp at ingestion, hash of arrow schema and the key-value
+///               pairs joined by '&' and '=' (e.g., "20200201T1830f8a5fc1edc567d56&key1=value1&key2=value2")
+/// - front_part: Captured for parquet file naming, contains the timestamp associted with current/time-partition
+///               as well as the custom partitioning key=value pairs (e.g., "date=2020-01-21.hour=10.minute=30.key1=value1.key2=value2.ee529ffc8e76")
+///
+/// # Limitations
+/// - Partition keys and values must only contain alphanumeric characters
+/// - Special characters in partition values will cause the pattern to fail in capturing
+///
+/// # Examples
+/// Valid: "key1=value1,key2=value2"
+/// Invalid: "key1=special!value,key2=special#value"
+static ARROWS_NAME_STRUCTURE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"^[a-zA-Z0-9&=]+\.(?P<front>\S+)\.data\.arrows$").expect("Validated regex")
+});
+
+/// Returns the filename for parquet if provided arrows file path is valid as per our expectation
+fn arrow_path_to_parquet(path: &Path, random_string: &str) -> Option<PathBuf> {
+    let filename = path.file_name()?.to_str()?;
+    let front = ARROWS_NAME_STRUCTURE
+        .captures(filename)
+        .and_then(|c| c.get(1))?
+        .as_str();
+    let filename_with_random_number = format!("{front}.data.{random_string}.parquet");
+    let mut parquet_path = path.to_owned();
+    parquet_path.set_file_name(filename_with_random_number);
+
+    Some(parquet_path)
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("Stream not found: {0}")]
@@ -187,7 +224,11 @@ impl Stream {
         let paths = dir
             .flatten()
             .map(|file| file.path())
-            .filter(|file| file.extension().is_some_and(|ext| ext.eq("arrows")))
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|f| f.to_str())
+                    .is_some_and(|file_name| ARROWS_NAME_STRUCTURE.is_match(file_name))
+            })
             .sorted_by_key(|f| f.metadata().unwrap().modified().unwrap())
             .collect();
 
@@ -230,12 +271,13 @@ impl Stream {
                     &arrow_file_path, self.stream_name
                 );
                 remove_file(&arrow_file_path).unwrap();
-            } else {
-                let key = Self::arrow_path_to_parquet(&arrow_file_path, &random_string);
+            } else if let Some(key) = arrow_path_to_parquet(&arrow_file_path, &random_string) {
                 grouped_arrow_file
                     .entry(key)
                     .or_default()
                     .push(arrow_file_path);
+            } else {
+                warn!("Unexpected arrows file: {}", arrow_file_path.display());
             }
         }
         grouped_arrow_file
@@ -292,17 +334,6 @@ impl Stream {
         } else {
             None
         }
-    }
-
-    fn arrow_path_to_parquet(path: &Path, random_string: &str) -> PathBuf {
-        let filename = path.file_stem().unwrap().to_str().unwrap();
-        let (_, filename) = filename.split_once('.').unwrap();
-        assert!(filename.contains('.'), "contains the delim `.`");
-        let filename_with_random_number = format!("{filename}.{random_string}.arrows");
-        let mut parquet_path = path.to_owned();
-        parquet_path.set_file_name(filename_with_random_number);
-        parquet_path.set_extension("parquet");
-        parquet_path
     }
 
     /// Converts arrow files in staging into parquet files, does so only for past minutes when run with `!shutdown_signal`
@@ -824,7 +855,7 @@ impl Streams {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{io::Write, time::Duration};
 
     use arrow_array::{Int32Array, StringArray, TimestampMillisecondArray};
     use arrow_schema::{DataType, Field, TimeUnit};
@@ -1198,5 +1229,95 @@ mod tests {
         // Verify parquet files were created and the arrow file left
         assert_eq!(staging.parquet_files().len(), 2);
         assert_eq!(staging.arrow_files().len(), 1);
+    }
+
+    fn create_test_file(dir: &TempDir, filename: &str) -> PathBuf {
+        let file_path = dir.path().join(filename);
+        let mut file = File::create(&file_path).expect("Failed to create test file");
+        // Write some dummy content
+        file.write_all(b"test content")
+            .expect("Failed to write to test file");
+        file_path
+    }
+
+    #[test]
+    fn test_valid_arrow_path_conversion() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let filename = "12345abcde&key1=value1.date=2020-01-21.hour=10.minute=30.key1=value1.key2=value2.ee529ffc8e76.data.arrows";
+        let file_path = create_test_file(&temp_dir, filename);
+        let random_string = "random123";
+
+        let result = arrow_path_to_parquet(&file_path, random_string);
+
+        assert!(result.is_some());
+        let parquet_path = result.unwrap();
+        assert_eq!(
+                parquet_path.file_name().unwrap().to_str().unwrap(),
+                "date=2020-01-21.hour=10.minute=30.key1=value1.key2=value2.ee529ffc8e76.data.random123.parquet"
+            );
+    }
+
+    #[test]
+    fn test_invalid_arrow_path() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        // Missing the ".data.arrows" suffix
+        let filename = "12345abcde&key1=value1.date=2020-01-21.hour=10.minute=30";
+        let file_path = create_test_file(&temp_dir, filename);
+        let random_string = "random123";
+
+        let result = arrow_path_to_parquet(&file_path, random_string);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_invalid_schema_key() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        // Invalid schema key with special characters
+        let filename = "12345abcde&key1=value1!.date=2020-01-21.hour=10.minute=30.data.arrows";
+        let file_path = create_test_file(&temp_dir, filename);
+        let random_string = "random123";
+
+        let result = arrow_path_to_parquet(&file_path, random_string);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_complex_path() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let nested_dir = temp_dir.path().join("nested/directory/structure");
+        std::fs::create_dir_all(&nested_dir).expect("Failed to create nested directories");
+
+        let filename = "20200201T1830f8a5fc1edc567d56&key1=value1&key2=value2.date=2020-01-21.hour=10.minute=30.region=us-west.ee529ffc8e76.data.arrows";
+        let file_path = nested_dir.join(filename);
+
+        let mut file = File::create(&file_path).expect("Failed to create test file");
+        file.write_all(b"test content")
+            .expect("Failed to write to test file");
+
+        let random_string = "random456";
+
+        let result = arrow_path_to_parquet(&file_path, random_string);
+
+        assert!(result.is_some());
+        let parquet_path = result.unwrap();
+        assert_eq!(
+            parquet_path.file_name().unwrap().to_str().unwrap(),
+            "date=2020-01-21.hour=10.minute=30.region=us-west.ee529ffc8e76.data.random456.parquet"
+        );
+    }
+
+    #[test]
+    fn test_empty_front_part() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        // Valid but with empty front part
+        let filename = "schema_key..data.arrows";
+        let file_path = create_test_file(&temp_dir, filename);
+        let random_string = "random789";
+
+        let result = arrow_path_to_parquet(&file_path, random_string);
+
+        assert!(result.is_none());
     }
 }
