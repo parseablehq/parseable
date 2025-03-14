@@ -458,7 +458,7 @@ mod tests {
         let mut batches = Vec::with_capacity(count);
 
         for batch_num in 1..=count as i32 {
-            let id_array = Int32Array::from_iter(batch_num * 10..batch_num * 10 + 1);
+            let id_array = Int32Array::from_iter(batch_num * 10..=batch_num * 10 + 1);
             let name_array = StringArray::from(vec![
                 format!("Name {batch_num}-1"),
                 format!("Name {batch_num}-2"),
