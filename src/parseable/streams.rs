@@ -358,18 +358,11 @@ impl Stream {
     }
 
     pub fn flush(&self) {
-        let mut disk_writers = {
-            let mut writer = self.writer.lock().unwrap();
-            // Flush memory
-            writer.mem.clear();
-            // Take schema -> disk writer mapping
-            std::mem::take(&mut writer.disk)
-        };
-
-        // Flush disk
-        for writer in disk_writers.values_mut() {
-            _ = writer.finish();
-        }
+        let mut writer = self.writer.lock().unwrap();
+        // Flush memory
+        writer.mem.clear();
+        // Drop schema -> disk writer mapping, triggers flush to disk
+        writer.disk.drain();
     }
 
     fn parquet_writer_props(
