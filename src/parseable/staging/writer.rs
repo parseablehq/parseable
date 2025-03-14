@@ -69,9 +69,11 @@ impl DiskWriter {
     pub fn write(&mut self, rb: &RecordBatch) -> Result<(), StagingError> {
         self.inner.write(rb).map_err(StagingError::Arrow)
     }
+}
 
+impl Drop for DiskWriter {
     /// Write the continuation bytes and mark the file as done, rename to `.data.arrows`
-    pub fn finish(&mut self) {
+    fn drop(&mut self) {
         if let Err(err) = self.inner.finish() {
             error!("Couldn't finish arrow file {:?}, error = {err}", self.path);
             return;
@@ -82,12 +84,6 @@ impl DiskWriter {
         if let Err(err) = std::fs::rename(&self.path, &arrow_path) {
             error!("Couldn't rename file {:?}, error = {err}", self.path);
         }
-    }
-}
-
-impl Drop for DiskWriter {
-    fn drop(&mut self) {
-        self.finish();
     }
 }
 
