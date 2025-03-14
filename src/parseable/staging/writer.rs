@@ -32,7 +32,10 @@ use arrow_select::concat::concat_batches;
 use itertools::Itertools;
 use tracing::error;
 
-use crate::{parseable::ARROW_FILE_EXTENSION, utils::arrow::adapt_batch};
+use crate::{
+    parseable::{ARROW_FILE_EXTENSION, PART_FILE_EXTENSION},
+    utils::arrow::adapt_batch,
+};
 
 use super::StagingError;
 
@@ -50,8 +53,9 @@ pub struct DiskWriter {
 impl DiskWriter {
     /// Try to create a file to stream arrows into
     pub fn try_new(path: impl Into<PathBuf>, schema: &Schema) -> Result<Self, StagingError> {
-        let path = path.into();
-        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+        let mut path = path.into();
+        path.set_extension(PART_FILE_EXTENSION);
+        let file = OpenOptions::new().write(true).create(true).open(&path)?;
         let inner = StreamWriter::try_new_buffered(file, schema)?;
 
         Ok(Self { inner, path })
