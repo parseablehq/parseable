@@ -90,10 +90,12 @@ pub fn replace_columns(
 /// * Result<Vec<Map<String, Value>>>
 ///
 /// A vector of JSON objects representing the record batches.
-pub fn record_batches_to_json(records: &[&RecordBatch]) -> Result<Vec<Map<String, Value>>> {
+pub fn record_batches_to_json(records: &[RecordBatch]) -> Result<Vec<Map<String, Value>>> {
     let buf = vec![];
     let mut writer = arrow_json::ArrayWriter::new(buf);
-    writer.write_batches(records)?;
+    for record in records {
+        writer.write(record)?;
+    }
     writer.finish()?;
 
     let buf = writer.into_inner();
@@ -188,7 +190,7 @@ mod tests {
     #[test]
     fn check_empty_json_to_record_batches() {
         let r = RecordBatch::new_empty(Arc::new(Schema::empty()));
-        let rb = vec![&r];
+        let rb = vec![r];
         let batches = record_batches_to_json(&rb).unwrap();
         assert_eq!(batches, vec![]);
     }

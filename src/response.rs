@@ -33,8 +33,7 @@ pub struct QueryResponse {
 impl QueryResponse {
     pub fn to_http(&self) -> Result<HttpResponse, QueryError> {
         info!("{}", "Returning query results");
-        let records: Vec<&RecordBatch> = self.records.iter().collect();
-        let mut json_records = record_batches_to_json(&records)?;
+        let mut json_records = record_batches_to_json(&self.records)?;
 
         if self.fill_null {
             for map in &mut json_records {

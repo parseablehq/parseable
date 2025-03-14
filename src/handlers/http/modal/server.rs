@@ -95,7 +95,8 @@ impl ParseableServer for Server {
             .service(
                 web::scope(&prism_base_path())
                     .service(Server::get_prism_home())
-                    .service(Server::get_prism_logstream()),
+                    .service(Server::get_prism_logstream())
+                    .service(Server::get_prism_datasets()),
             )
             .service(Self::get_ingest_otel_factory())
             .service(Self::get_generated());
@@ -177,6 +178,17 @@ impl Server {
                         .authorize_for_stream(Action::GetRetention),
                 ),
             ),
+        )
+    }
+
+    pub fn get_prism_datasets() -> Scope {
+        web::scope("/datasets").route(
+            "",
+            web::post()
+                .to(http::prism_logstream::post_datasets)
+                .authorize_for_stream(Action::GetStreamInfo)
+                .authorize_for_stream(Action::GetStats)
+                .authorize_for_stream(Action::GetRetention),
         )
     }
 

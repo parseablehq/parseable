@@ -17,15 +17,33 @@
  */
 
 use actix_web::{
-    web::{self, Path},
-    Responder,
+    web::{self, Json, Path},
+    HttpRequest, Responder,
 };
 
-use crate::prism::logstream::{get_prism_logstream_info, PrismLogstreamError};
+use crate::{
+    prism::logstream::{get_prism_logstream_info, PrismDatasetRequest, PrismLogstreamError},
+    utils::actix::extract_session_key_from_req,
+};
 
 /// This API is essentially just combining the responses of /info and /schema together
 pub async fn get_info(stream_name: Path<String>) -> Result<impl Responder, PrismLogstreamError> {
     let prism_logstream_info = get_prism_logstream_info(&stream_name).await?;
 
     Ok(web::Json(prism_logstream_info))
+}
+
+/// A combination of /stats, /retention, /hottier, /info, /counts and /query
+pub async fn post_datasets(
+    dataset_req: Option<Json<PrismDatasetRequest>>,
+    req: HttpRequest,
+) -> Result<impl Responder, PrismLogstreamError> {
+    let session_key = extract_session_key_from_req(&req)?;
+    let dataset = dataset_req
+        .map(|Json(r)| r)
+        .unwrap_or_default()
+        .get_datasets(session_key)
+        .await?;
+
+    Ok(web::Json(dataset))
 }
