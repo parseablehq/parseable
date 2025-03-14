@@ -19,7 +19,9 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    fs::File,
+    fs::{File, OpenOptions},
+    io::BufWriter,
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -28,13 +30,54 @@ use arrow_ipc::writer::StreamWriter;
 use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
 use itertools::Itertools;
+use tracing::error;
 
-use crate::utils::arrow::adapt_batch;
+use crate::{parseable::ARROW_FILE_EXTENSION, utils::arrow::adapt_batch};
+
+use super::StagingError;
 
 #[derive(Default)]
 pub struct Writer {
     pub mem: MemWriter<16384>,
-    pub disk: HashMap<String, StreamWriter<File>>,
+    pub disk: HashMap<String, DiskWriter>,
+}
+
+pub struct DiskWriter {
+    pub inner: StreamWriter<BufWriter<File>>,
+    pub path: PathBuf,
+}
+
+impl DiskWriter {
+    pub fn new(path: PathBuf, schema: &Schema) -> Result<Self, StagingError> {
+        let file = OpenOptions::new().create(true).append(true).open(&path)?;
+
+        let inner = StreamWriter::try_new_buffered(file, schema)?;
+
+        Ok(Self { inner, path })
+    }
+
+    pub fn write(&mut self, rb: &RecordBatch) -> Result<(), StagingError> {
+        self.inner.write(rb).map_err(StagingError::Arrow)
+    }
+
+    pub fn finish(&mut self) {
+        if let Err(err) = self.inner.finish() {
+            error!("Couldn't finish arrow file {:?}, error = {err}", self.path);
+            return;
+        }
+
+        let mut arrow_path = self.path.to_owned();
+        arrow_path.set_extension(ARROW_FILE_EXTENSION);
+        if let Err(err) = std::fs::rename(&self.path, &arrow_path) {
+            error!("Couldn't rename file {:?}, error = {err}", self.path);
+        }
+    }
+}
+
+impl Drop for DiskWriter {
+    fn drop(&mut self) {
+        self.finish();
+    }
 }
 
 /// Structure to keep recordbatches in memory.

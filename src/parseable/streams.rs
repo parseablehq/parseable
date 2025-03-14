@@ -28,7 +28,6 @@ use std::{
 };
 
 use arrow_array::RecordBatch;
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike};
 use derive_more::{Deref, DerefMut};
@@ -59,7 +58,7 @@ use crate::{
 use super::{
     staging::{
         reader::{MergedRecordReader, MergedReverseRecordReader},
-        writer::Writer,
+        writer::{DiskWriter, Writer},
         StagingError,
     },
     LogStream, ARROW_FILE_EXTENSION,
@@ -133,12 +132,7 @@ impl Stream {
                     );
                     std::fs::create_dir_all(&self.data_path)?;
 
-                    let file = OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&file_path)?;
-
-                    let mut writer = StreamWriter::try_new(file, &record.schema())
+                    let mut writer = DiskWriter::new(file_path, &record.schema())
                         .expect("File and RecordBatch both are checked");
 
                     writer.write(record)?;
