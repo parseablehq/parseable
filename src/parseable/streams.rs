@@ -1230,4 +1230,68 @@ mod tests {
         assert_eq!(staging.parquet_files().len(), 2);
         assert_eq!(staging.arrow_files().len(), 1);
     }
+
+    #[test]
+    fn test_valid_arrow_path_conversion() {
+        let path = Path::new("/tmp/12345abcde&key1=value1.date=2020-01-21.hour=10.minute=30.key1=value1.key2=value2.ee529ffc8e76.data.arrows");
+        let random_string = "random123";
+
+        let result = arrow_path_to_parquet(path, random_string);
+
+        assert!(result.is_some());
+        let parquet_path = result.unwrap();
+        assert_eq!(
+            parquet_path.to_str().unwrap(),
+            "/tmp/date=2020-01-21.hour=10.minute=30.key1=value1.key2=value2.ee529ffc8e76.data.random123.parquet"
+        );
+    }
+
+    #[test]
+    fn test_invalid_arrow_path() {
+        // Missing the ".data.arrows" suffix
+        let path = Path::new("/tmp/12345abcde&key1=value1.date=2020-01-21.hour=10.minute=30");
+        let random_string = "random123";
+
+        let result = arrow_path_to_parquet(path, random_string);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_invalid_schema_key() {
+        // Invalid schema key with special characters
+        let path =
+            Path::new("/tmp/12345abcde&key1=value1!.date=2020-01-21.hour=10.minute=30.data.arrows");
+        let random_string = "random123";
+
+        let result = arrow_path_to_parquet(path, random_string);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_complex_path() {
+        let path = Path::new("/nested/directory/structure/20200201T1830f8a5fc1edc567d56&key1=value1&key2=value2.date=2020-01-21.hour=10.minute=30.region=us-west.ee529ffc8e76.data.arrows");
+        let random_string = "random456";
+
+        let result = arrow_path_to_parquet(path, random_string);
+
+        assert!(result.is_some());
+        let parquet_path = result.unwrap();
+        assert_eq!(
+            parquet_path.to_str().unwrap(),
+            "/nested/directory/structure/date=2020-01-21.hour=10.minute=30.region=us-west.ee529ffc8e76.data.random456.parquet"
+        );
+    }
+
+    #[test]
+    fn test_empty_front_part() {
+        // Valid but with empty front part
+        let path = Path::new("/tmp/schema_key..data.arrows");
+        let random_string = "random789";
+
+        let result = arrow_path_to_parquet(path, random_string);
+
+        assert!(result.is_none());
+    }
 }
