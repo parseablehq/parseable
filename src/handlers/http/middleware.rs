@@ -357,6 +357,25 @@ where
                     Ok(res)
                 })
             }
+
+            Mode::Index => {
+                let accessable_endpoints = ["create", "delete"];
+                let cond = path.split('/').any(|x| accessable_endpoints.contains(&x));
+                if !cond {
+                    Box::pin(async {
+                        Err(actix_web::error::ErrorUnauthorized(
+                            "Only Index API can be accessed in Index Mode",
+                        ))
+                    })
+                } else {
+                    let fut = self.service.call(req);
+
+                    Box::pin(async move {
+                        let res = fut.await?;
+                        Ok(res)
+                    })
+                }
+            }
         }
     }
 }

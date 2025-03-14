@@ -45,7 +45,7 @@ use std::sync::Arc;
 use arrow_array::{Array, RecordBatch, TimestampMillisecondArray, UInt64Array};
 use arrow_schema::Schema;
 use arrow_select::take::take;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use itertools::Itertools;
 
 pub mod batch_adapter;
@@ -107,8 +107,8 @@ pub fn get_field<'a>(
 /// # Returns
 ///
 /// A column in arrow, containing the current timestamp in millis.
-pub fn get_timestamp_array(size: usize) -> TimestampMillisecondArray {
-    TimestampMillisecondArray::from_value(Utc::now().timestamp_millis(), size)
+pub fn get_timestamp_array(p_timestamp: DateTime<Utc>, size: usize) -> TimestampMillisecondArray {
+    TimestampMillisecondArray::from_value(p_timestamp.timestamp_millis(), size)
 }
 
 pub fn reverse(rb: &RecordBatch) -> RecordBatch {
@@ -162,19 +162,19 @@ mod tests {
     #[test]
     fn test_timestamp_array_has_correct_size_and_value() {
         let size = 5;
-        let now = Utc::now().timestamp_millis();
+        let now = Utc::now();
 
-        let array = get_timestamp_array(size);
+        let array = get_timestamp_array(now, size);
 
         assert_eq!(array.len(), size);
         for i in 0..size {
-            assert!(array.value(i) >= now);
+            assert!(array.value(i) >= now.timestamp_millis());
         }
     }
 
     #[test]
     fn test_timestamp_array_with_zero_size() {
-        let array = get_timestamp_array(0);
+        let array = get_timestamp_array(Utc::now(), 0);
 
         assert_eq!(array.len(), 0);
         assert!(array.is_empty());

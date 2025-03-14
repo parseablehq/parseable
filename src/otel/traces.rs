@@ -293,9 +293,15 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
         span_record_json.extend(flatten_status(status));
     }
 
-    for span_json in &mut span_records_json {
-        for (key, value) in &span_record_json {
-            span_json.insert(key.clone(), value.clone());
+    // if span_record.events is null, code should still flatten other elements in the span record - this is handled in the if block
+    // else block handles the flattening the span record that includes events and links records in each span record
+    if span_records_json.is_empty() {
+        span_records_json = vec![span_record_json];
+    } else {
+        for span_json in &mut span_records_json {
+            for (key, value) in &span_record_json {
+                span_json.insert(key.clone(), value.clone());
+            }
         }
     }
 
