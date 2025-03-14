@@ -18,7 +18,7 @@
  */
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{remove_file, write, File, OpenOptions},
     num::NonZeroU32,
     path::{Path, PathBuf},
@@ -48,12 +48,15 @@ use tracing::{debug, error, info, trace, warn};
 
 use crate::{
     cli::Options,
-    event::DEFAULT_TIMESTAMP_KEY,
+    event::{
+        format::{LogSource, LogSourceEntry},
+        DEFAULT_TIMESTAMP_KEY,
+    },
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
     storage::{object_storage::to_bytes, retention::Retention, StreamType},
-    utils::minute_to_slot,
+    utils::time::Minute,
     LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
 };
 
@@ -206,7 +209,7 @@ impl Stream {
             "{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
-            minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
+            Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             custom_partition_values
                 .iter()
                 .sorted_by_key(|v| v.0)
@@ -728,6 +731,61 @@ impl Stream {
         self.metadata.read().expect(LOCK_EXPECT).stream_type
     }
 
+    pub fn set_log_source(&self, log_source: Vec<LogSourceEntry>) {
+        self.metadata.write().expect(LOCK_EXPECT).log_source = log_source;
+    }
+
+    pub fn get_log_source(&self) -> Vec<LogSourceEntry> {
+        self.metadata.read().expect(LOCK_EXPECT).log_source.clone()
+    }
+
+    pub fn add_log_source(&self, log_source: LogSourceEntry) {
+        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+        for existing in &metadata.log_source {
+            if existing.log_source_format == log_source.log_source_format {
+                drop(metadata);
+                self.add_fields_to_log_source(
+                    &log_source.log_source_format,
+                    log_source.fields.clone(),
+                );
+                return;
+            }
+        }
+        drop(metadata);
+
+        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        for existing in &metadata.log_source {
+            if existing.log_source_format == log_source.log_source_format {
+                self.add_fields_to_log_source(
+                    &log_source.log_source_format,
+                    log_source.fields.clone(),
+                );
+                return;
+            }
+        }
+        metadata.log_source.push(log_source);
+    }
+
+    pub fn add_fields_to_log_source(&self, log_source: &LogSource, fields: HashSet<String>) {
+        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        for log_source_entry in metadata.log_source.iter_mut() {
+            if log_source_entry.log_source_format == *log_source {
+                log_source_entry.fields.extend(fields);
+                return;
+            }
+        }
+    }
+
+    pub fn get_fields_from_log_source(&self, log_source: &LogSource) -> Option<HashSet<String>> {
+        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+        for log_source_entry in metadata.log_source.iter() {
+            if log_source_entry.log_source_format == *log_source {
+                return Some(log_source_entry.fields.clone());
+            }
+        }
+        None
+    }
+
     /// First flushes arrows onto disk and then converts the arrow into parquet
     pub fn flush_and_convert(&self, shutdown_signal: bool) -> Result<(), StagingError> {
         self.flush();
@@ -945,7 +1003,7 @@ mod tests {
             "{stream_hash}.date={}.hour={:02}.minute={}.{}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
-            minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
+            Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             hostname::get().unwrap().into_string().unwrap()
         ));
 
@@ -982,7 +1040,7 @@ mod tests {
             "{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
-            minute_to_slot(parsed_timestamp.minute(), OBJECT_STORE_DATA_GRANULARITY).unwrap(),
+            Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             hostname::get().unwrap().into_string().unwrap()
         ));
 

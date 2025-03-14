@@ -27,6 +27,23 @@ use serde_json::{Map, Value};
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
 
+pub const OTEL_TRACES_KNOWN_FIELD_LIST: [&str; 15] = [
+    "span_trace_id",
+    "span_span_id",
+    "span_name",
+    "span_parent_span_id",
+    "flags",
+    "name",
+    "span_kind",
+    "span_kind_description",
+    "span_start_time_unix_nano",
+    "span_end_time_unix_nano",
+    "event_name",
+    "event_time_unix_nano",
+    "span_status_code",
+    "span_status_description",
+    "span_status_message",
+];
 /// this function flattens the `ScopeSpans` object
 /// and returns a `Vec` of `Map` of the flattened json
 fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<Map<String, Value>> {

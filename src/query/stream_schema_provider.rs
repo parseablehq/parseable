@@ -894,7 +894,7 @@ pub fn extract_primary_filter(
         .collect()
 }
 
-trait ManifestExt: ManifestFile {
+pub trait ManifestExt: ManifestFile {
     fn find_matching_column(&self, partial_filter: &Expr) -> Option<&Column> {
         let name = match partial_filter {
             Expr::BinaryExpr(binary_expr) => {
@@ -967,6 +967,7 @@ fn cast_or_none(scalar: &ScalarValue) -> Option<CastRes<'_>> {
         ScalarValue::UInt32(val) => val.map(|val| CastRes::Int(val as i64)),
         ScalarValue::UInt64(val) => val.map(|val| CastRes::Int(val as i64)),
         ScalarValue::Utf8(val) => val.as_ref().map(|val| CastRes::String(val)),
+        ScalarValue::Date32(val) => val.map(|val| CastRes::Int(val as i64)),
         ScalarValue::TimestampMillisecond(val, _) => val.map(CastRes::Int),
         _ => None,
     }

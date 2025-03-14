@@ -128,17 +128,27 @@ fn get_default_timestamp_millis(batch: &RecordBatch) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs::File, path::Path, sync::Arc};
+    use std::{fs::File, io, path::Path, sync::Arc};
 
     use arrow_array::{
-        cast::AsArray, types::Int64Type, Array, Float64Array, Int64Array, RecordBatch, StringArray,
+        cast::AsArray, types::Int64Type, Array, Float64Array, Int32Array, Int64Array, RecordBatch,
+        StringArray,
     };
     use arrow_ipc::{reader::FileReader, writer::FileWriter};
+    use arrow_schema::{DataType, Field, Schema};
     use temp_dir::TempDir;
 
+    use crate::parseable::staging::reader::MergedRecordReader;
+
     fn rb(rows: usize) -> RecordBatch {
-        let array1: Arc<dyn Array> = Arc::new(Int64Array::from_iter(0..(rows as i64)));
-        let array2: Arc<dyn Array> = Arc::new(Float64Array::from_iter((0..rows).map(|x| x as f64)));
+        let array1: Arc<dyn Array> = Arc::new(Int64Array::from_iter(0..rows as i64));
+        let array2: Arc<dyn Array> = Arc::new(Float64Array::from_iter((0..rows as i64).map(|i| {
+            if i == 0 {
+                0.0
+            } else {
+                1.0 / i as f64
+            }
+        })));
         let array3: Arc<dyn Array> = Arc::new(StringArray::from_iter(
             (0..rows).map(|x| Some(format!("str {}", x))),
         ));
@@ -222,5 +232,140 @@ mod tests {
             .flatten()
             .collect();
         assert_eq!(col1_val, vec![0, 1, 2]);
+    }
+
+    // Helper function to create test record batches
+    fn create_test_batches(schema: &Arc<Schema>, count: usize) -> Vec<RecordBatch> {
+        let mut batches = Vec::with_capacity(count);
+
+        for batch_num in 1..=count as i32 {
+            let id_array = Int32Array::from_iter(batch_num * 10..=batch_num * 10 + 1);
+            let name_array = StringArray::from(vec![
+                format!("Name {batch_num}-1"),
+                format!("Name {batch_num}-2"),
+            ]);
+
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![Arc::new(id_array), Arc::new(name_array)],
+            )
+            .expect("Failed to create test batch");
+
+            batches.push(batch);
+        }
+
+        batches
+    }
+
+    // Helper function to write batches to a file
+    fn write_test_batches(
+        path: &Path,
+        schema: &Arc<Schema>,
+        batches: &[RecordBatch],
+    ) -> io::Result<()> {
+        let file = File::create(path)?;
+        let mut writer = FileWriter::try_new(file, schema).expect("Failed to create StreamWriter");
+
+        for batch in batches {
+            writer.write(batch).expect("Failed to write batch");
+        }
+
+        writer.finish().expect("Failed to finalize writer");
+        Ok(())
+    }
+
+    #[test]
+    fn test_merged_reverse_record_reader() -> io::Result<()> {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.arrow");
+
+        // Create a schema
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]));
+
+        // Create test batches (3 batches)
+        let batches = create_test_batches(&schema, 3);
+
+        // Write batches to file
+        write_test_batches(&file_path, &schema, &batches)?;
+
+        // Now read them back in reverse order
+        let mut reader = MergedRecordReader::new(&[file_path]).merged_iter(schema, None);
+
+        // We should get batches in reverse order: 3, 2, 1
+        // But first message should be schema, so we'll still read them in order
+
+        // Read batch 3
+        let batch = reader.next().expect("Failed to read batch");
+        assert_eq!(batch.num_rows(), 2);
+        let id_array = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(id_array.value(0), 31); // affect of reverse on each recordbatch
+        assert_eq!(id_array.value(1), 30);
+
+        // Read batch 2
+        let batch = reader.next().expect("Failed to read batch");
+        assert_eq!(batch.num_rows(), 2);
+        let id_array = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(id_array.value(0), 21);
+        assert_eq!(id_array.value(1), 20);
+
+        // Read batch 1
+        let batch = reader.next().expect("Failed to read batch");
+        assert_eq!(batch.num_rows(), 2);
+        let id_array = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(id_array.value(0), 11);
+        assert_eq!(id_array.value(1), 10);
+
+        // No more batches
+        assert!(reader.next().is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_get_reverse_reader_single_message() -> io::Result<()> {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test_single.arrow");
+
+        // Create a schema
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+        // Create a single batch
+        let batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![42]))])
+                .expect("Failed to create batch");
+
+        // Write batch to file
+        write_test_batches(&file_path, &schema, &[batch])?;
+
+        let mut reader = MergedRecordReader::new(&[file_path]).merged_iter(schema, None);
+
+        // Should get the batch
+        let result_batch = reader.next().expect("Failed to read batch");
+        let id_array = result_batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(id_array.value(0), 42);
+
+        // No more batches
+        assert!(reader.next().is_none());
+
+        Ok(())
     }
 }
