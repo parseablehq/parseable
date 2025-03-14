@@ -280,6 +280,11 @@ impl TimeRange {
 
         Self { start, end }
     }
+
+    /// Returns true if the provided timestamp is within the timerange
+    pub fn contains(&self, time: DateTime<Utc>) -> bool {
+        self.start <= time && self.end > time
+    }
 }
 
 /// Represents a minute value (0-59) and provides methods for converting it to a slot range.
