@@ -53,8 +53,7 @@ impl DiskWriter {
             .open(partfile_path)?;
 
         Ok(Self {
-            inner: FileWriter::try_new_buffered(file, schema)
-                .expect("File and RecordBatch both are checked"),
+            inner: FileWriter::try_new_buffered(file, schema)?,
             path_prefix,
         })
     }
