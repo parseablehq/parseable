@@ -58,7 +58,7 @@ impl Iterator for ReverseReader {
     type Item = Result<RecordBatch, ArrowError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.idx <= 0 {
+        if self.idx == 0 {
             return None;
         }
 
