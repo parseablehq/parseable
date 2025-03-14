@@ -30,7 +30,7 @@ use arrow_ipc::writer::StreamWriter;
 use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
 use itertools::Itertools;
-use tracing::error;
+use tracing::{error, warn};
 
 use crate::{
     parseable::{ARROW_FILE_EXTENSION, PART_FILE_EXTENSION},
@@ -81,6 +81,11 @@ impl Drop for DiskWriter {
 
         let mut arrow_path = self.path.to_owned();
         arrow_path.set_extension(ARROW_FILE_EXTENSION);
+
+        if arrow_path.exists() {
+            warn!("File {arrow_path:?} exists and will be overwritten");
+        }
+
         if let Err(err) = std::fs::rename(&self.path, &arrow_path) {
             error!("Couldn't rename file {:?}, error = {err}", self.path);
         }
