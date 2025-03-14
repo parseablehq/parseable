@@ -29,12 +29,13 @@ use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
+use chrono::Utc;
 use itertools::Itertools;
 use tracing::{error, warn};
 
 use crate::{
     parseable::{ARROW_FILE_EXTENSION, PART_FILE_EXTENSION},
-    utils::arrow::adapt_batch,
+    utils::{arrow::adapt_batch, time::TimeRange},
 };
 
 use super::StagingError;
@@ -48,11 +49,16 @@ pub struct Writer {
 pub struct DiskWriter {
     inner: StreamWriter<BufWriter<File>>,
     path: PathBuf,
+    range: TimeRange,
 }
 
 impl DiskWriter {
     /// Try to create a file to stream arrows into
-    pub fn try_new(path: impl Into<PathBuf>, schema: &Schema) -> Result<Self, StagingError> {
+    pub fn try_new(
+        path: impl Into<PathBuf>,
+        schema: &Schema,
+        range: TimeRange,
+    ) -> Result<Self, StagingError> {
         let mut path = path.into();
         path.set_extension(PART_FILE_EXTENSION);
         let file = OpenOptions::new()
@@ -62,7 +68,11 @@ impl DiskWriter {
             .open(&path)?;
         let inner = StreamWriter::try_new_buffered(file, schema)?;
 
-        Ok(Self { inner, path })
+        Ok(Self { inner, path, range })
+    }
+
+    pub fn is_current(&self) -> bool {
+        self.range.contains(Utc::now())
     }
 
     /// Write a single recordbatch into file

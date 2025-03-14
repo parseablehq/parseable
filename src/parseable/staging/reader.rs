@@ -335,11 +335,16 @@ mod tests {
         write_message, DictionaryTracker, IpcDataGenerator, IpcWriteOptions, StreamWriter,
     };
     use arrow_schema::{DataType, Field, Schema};
+    use chrono::Utc;
     use temp_dir::TempDir;
 
-    use crate::parseable::staging::{
-        reader::{MergedReverseRecordReader, OffsetReader},
-        writer::DiskWriter,
+    use crate::{
+        parseable::staging::{
+            reader::{MergedReverseRecordReader, OffsetReader},
+            writer::DiskWriter,
+        },
+        utils::time::TimeRange,
+        OBJECT_STORE_DATA_GRANULARITY,
     };
 
     use super::get_reverse_reader;
@@ -484,7 +489,9 @@ mod tests {
         schema: &Arc<Schema>,
         batches: &[RecordBatch],
     ) -> io::Result<()> {
-        let mut writer = DiskWriter::try_new(path, schema).expect("Failed to create StreamWriter");
+        let range = TimeRange::granularity_range(Utc::now(), OBJECT_STORE_DATA_GRANULARITY);
+        let mut writer =
+            DiskWriter::try_new(path, schema, range).expect("Failed to create StreamWriter");
 
         for batch in batches {
             writer.write(batch).expect("Failed to write batch");

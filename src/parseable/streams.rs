@@ -29,7 +29,7 @@ use std::{
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Fields, Schema};
-use chrono::{NaiveDateTime, Timelike};
+use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
 use parquet::{
@@ -51,7 +51,7 @@ use crate::{
     metrics,
     option::Mode,
     storage::{object_storage::to_bytes, retention::Retention, StreamType},
-    utils::time::Minute,
+    utils::time::{Minute, TimeRange},
     LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
 };
 
@@ -132,7 +132,11 @@ impl Stream {
                     );
                     std::fs::create_dir_all(&self.data_path)?;
 
-                    let mut writer = DiskWriter::try_new(file_path, &record.schema())
+                    let range = TimeRange::granularity_range(
+                        parsed_timestamp.and_local_timezone(Utc).unwrap(),
+                        OBJECT_STORE_DATA_GRANULARITY,
+                    );
+                    let mut writer = DiskWriter::try_new(file_path, &record.schema(), range)
                         .expect("File and RecordBatch both are checked");
 
                     writer.write(record)?;
@@ -357,12 +361,12 @@ impl Stream {
         self.writer.lock().unwrap().mem.clear();
     }
 
-    pub fn flush(&self) {
+    pub fn flush(&self, forced: bool) {
         let mut writer = self.writer.lock().unwrap();
         // Flush memory
         writer.mem.clear();
         // Drop schema -> disk writer mapping, triggers flush to disk
-        writer.disk.drain();
+        writer.disk.retain(|_, w| !forced && w.is_current());
     }
 
     fn parquet_writer_props(
@@ -662,7 +666,7 @@ impl Stream {
 
     /// First flushes arrows onto disk and then converts the arrow into parquet
     pub fn flush_and_convert(&self, shutdown_signal: bool) -> Result<(), StagingError> {
-        self.flush();
+        self.flush(shutdown_signal);
 
         self.prepare_parquet(shutdown_signal)
     }
@@ -974,7 +978,7 @@ mod tests {
                 StreamType::UserDefined,
             )
             .unwrap();
-        staging.flush();
+        staging.flush(true);
     }
 
     #[test]
