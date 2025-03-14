@@ -48,18 +48,21 @@ pub struct DiskWriter {
 }
 
 impl DiskWriter {
-    pub fn new(path: PathBuf, schema: &Schema) -> Result<Self, StagingError> {
+    /// Try to create a file to stream arrows into
+    pub fn try_new(path: impl Into<PathBuf>, schema: &Schema) -> Result<Self, StagingError> {
+        let path = path.into();
         let file = OpenOptions::new().create(true).append(true).open(&path)?;
-
         let inner = StreamWriter::try_new_buffered(file, schema)?;
 
         Ok(Self { inner, path })
     }
 
+    /// Write a single recordbatch into file
     pub fn write(&mut self, rb: &RecordBatch) -> Result<(), StagingError> {
         self.inner.write(rb).map_err(StagingError::Arrow)
     }
 
+    /// Write the continuation bytes and mark the file as done, rename to `.data.arrows`
     pub fn finish(&mut self) {
         if let Err(err) = self.inner.finish() {
             error!("Couldn't finish arrow file {:?}, error = {err}", self.path);
