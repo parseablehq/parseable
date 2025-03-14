@@ -55,7 +55,11 @@ impl DiskWriter {
     pub fn try_new(path: impl Into<PathBuf>, schema: &Schema) -> Result<Self, StagingError> {
         let mut path = path.into();
         path.set_extension(PART_FILE_EXTENSION);
-        let file = OpenOptions::new().write(true).create(true).open(&path)?;
+        let file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(&path)?;
         let inner = StreamWriter::try_new_buffered(file, schema)?;
 
         Ok(Self { inner, path })
