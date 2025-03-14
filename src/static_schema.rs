@@ -111,6 +111,7 @@ pub fn convert_static_schema_to_arrow_schema(
                     "boolean" => DataType::Boolean,
                     "string" => DataType::Utf8,
                     "datetime" => DataType::Timestamp(TimeUnit::Millisecond, None),
+                    "date" => DataType::Date32,
                     "string_list" => {
                         DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)))
                     }

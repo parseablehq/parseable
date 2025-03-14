@@ -23,7 +23,7 @@ use anyhow::anyhow;
 use arrow_array::RecordBatch;
 use arrow_json::reader::{infer_json_schema_from_iterator, ReaderBuilder};
 use arrow_schema::{DataType, Field, Fields, Schema};
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use itertools::Itertools;
 use serde_json::Value;
@@ -292,6 +292,12 @@ fn valid_type(
         DataType::List(field) => validate_list(field, value, schema_version, static_schema_flag),
         DataType::Struct(fields) => {
             validate_struct(fields, value, schema_version, static_schema_flag)
+        }
+        DataType::Date32 => {
+            if let Value::String(s) = value {
+                return NaiveDate::parse_from_str(s, "%Y-%m-%d").is_ok();
+            }
+            false
         }
         DataType::Timestamp(_, _) => value.is_string() || value.is_number(),
         _ => {
