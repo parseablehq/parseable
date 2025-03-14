@@ -46,8 +46,8 @@ pub struct Writer {
 }
 
 pub struct DiskWriter {
-    pub inner: StreamWriter<BufWriter<File>>,
-    pub path: PathBuf,
+    inner: StreamWriter<BufWriter<File>>,
+    path: PathBuf,
 }
 
 impl DiskWriter {
