@@ -22,13 +22,13 @@ use std::{collections::HashMap, num::NonZeroU32, path::PathBuf, str::FromStr, sy
 use actix_web::http::header::HeaderMap;
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
-use chrono::Local;
+use chrono::Utc;
 use clap::{error::ErrorKind, Parser};
 use http::{header::CONTENT_TYPE, HeaderName, HeaderValue, StatusCode};
 use once_cell::sync::Lazy;
 pub use staging::StagingError;
 use streams::StreamRef;
-pub use streams::{StreamNotFound, Streams};
+pub use streams::{Stream, StreamNotFound, Streams};
 use tracing::error;
 
 #[cfg(feature = "kafka")]
@@ -451,11 +451,12 @@ impl Parseable {
                 .await;
         }
 
-        let time_partition_in_days = if !time_partition_limit.is_empty() {
-            Some(validate_time_partition_limit(&time_partition_limit)?)
-        } else {
-            None
-        };
+        if !time_partition.is_empty() || !time_partition_limit.is_empty() {
+            return Err(StreamError::Custom {
+                msg: "Creating stream with time partition is not supported anymore".to_string(),
+                status: StatusCode::BAD_REQUEST,
+            });
+        }
 
         if let Some(custom_partition) = &custom_partition {
             validate_custom_partition(custom_partition)?;
@@ -494,7 +495,7 @@ impl Parseable {
         self.create_stream(
             stream_name.to_string(),
             &time_partition,
-            time_partition_in_days,
+            None,
             custom_partition.as_ref(),
             static_schema_flag,
             schema,
@@ -565,7 +566,7 @@ impl Parseable {
         let storage = self.storage.get_object_store();
 
         let meta = ObjectStoreFormat {
-            created_at: Local::now().to_rfc3339(),
+            created_at: Utc::now().to_rfc3339(),
             permissions: vec![Permisssion::new(PARSEABLE.options.username.clone())],
             stream_type,
             time_partition: (!time_partition.is_empty()).then(|| time_partition.to_string()),

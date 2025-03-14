@@ -16,7 +16,6 @@
  *
  */
 
-use chrono::Local;
 use object_store::path::Path;
 use relative_path::RelativePath;
 use serde::{Deserialize, Serialize};
@@ -31,6 +30,10 @@ use crate::{
     stats::FullStats,
     utils::json::{deserialize_string_as_true, serialize_bool_as_true},
 };
+
+use chrono::Utc;
+
+use std::fmt::Debug;
 
 mod azure_blob;
 mod localfs;
@@ -204,7 +207,7 @@ impl Default for ObjectStoreFormat {
             schema_version: SchemaVersion::V1, // Newly created streams should be v1
             objectstore_format: CURRENT_OBJECT_STORE_VERSION.to_string(),
             stream_type: StreamType::UserDefined,
-            created_at: Local::now().to_rfc3339(),
+            created_at: Utc::now().to_rfc3339(),
             first_event_at: None,
             owner: Owner::new("".to_string(), "".to_string()),
             permissions: vec![Permisssion::new("parseable".to_string())],
