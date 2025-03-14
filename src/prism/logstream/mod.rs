@@ -199,6 +199,8 @@ async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, StreamE
 /// and query results.
 #[derive(Serialize)]
 pub struct PrismDatasetResponse {
+    /// Name of the stream
+    stream: String,
     /// Basic information about the stream
     info: StreamInfo,
     /// Statistics for the queried timeframe
@@ -296,6 +298,7 @@ impl PrismDatasetRequest {
             let user_agents = self.get_distinct_entries(stream, "p_user_agent").await.ok();
 
             responses.push(PrismDatasetResponse {
+                stream: stream.clone(),
                 info,
                 stats,
                 retention,
