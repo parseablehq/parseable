@@ -37,7 +37,7 @@ use ulid::Ulid;
 pub mod alerts_utils;
 pub mod target;
 
-use crate::parseable::PARSEABLE;
+use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::map::SessionKey;
 use crate::storage;
@@ -514,17 +514,16 @@ impl AlertConfig {
 
         // for now proceed in a similar fashion as we do in query
         // TODO: in case of multiple table query does the selection of time partition make a difference? (especially when the tables don't have overlapping data)
-        let stream_name = if let Some(stream_name) = query.first_table_name() {
-            stream_name
-        } else {
+        let Some(stream_name) = query.first_table_name() else {
             return Err(AlertError::CustomError(format!(
                 "Table name not found in query- {}",
                 self.query
             )));
         };
 
+        let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
         let base_df = query
-            .get_dataframe(stream_name)
+            .get_dataframe(time_partition.as_ref())
             .await
             .map_err(|err| AlertError::CustomError(err.to_string()))?;
 
@@ -704,6 +703,8 @@ pub enum AlertError {
     CustomError(String),
     #[error("Invalid State Change: {0}")]
     InvalidStateChange(String),
+    #[error("{0}")]
+    StreamNotFound(#[from] StreamNotFound),
 }
 
 impl actix_web::ResponseError for AlertError {
@@ -717,6 +718,7 @@ impl actix_web::ResponseError for AlertError {
             Self::DatafusionError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::CustomError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidStateChange(_) => StatusCode::BAD_REQUEST,
+            Self::StreamNotFound(_) => StatusCode::NOT_FOUND,
         }
     }
 
