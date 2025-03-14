@@ -20,13 +20,13 @@
 use std::{
     fs::{remove_file, File},
     io::BufReader,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
 use arrow_array::{RecordBatch, TimestampMillisecondArray};
 use arrow_ipc::reader::FileReader;
-use arrow_schema::Schema;
+use arrow_schema::{ArrowError, Schema, SchemaRef};
 use itertools::kmerge_by;
 use tracing::error;
 
@@ -36,27 +36,57 @@ use crate::{
 };
 
 #[derive(Debug)]
+pub struct ReverseReader {
+    inner: FileReader<BufReader<File>>,
+    idx: usize,
+}
+
+impl ReverseReader {
+    fn try_new(path: impl AsRef<Path>) -> Result<Self, ArrowError> {
+        let inner = FileReader::try_new(BufReader::new(File::open(path).unwrap()), None)?;
+        let idx = inner.num_batches();
+
+        Ok(Self { inner, idx })
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
+    }
+}
+
+impl Iterator for ReverseReader {
+    type Item = Result<RecordBatch, ArrowError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.idx <= 0 {
+            return None;
+        }
+
+        self.idx -= 1;
+        if let Err(e) = self.inner.set_index(self.idx) {
+            return Some(Err(e));
+        }
+
+        self.inner.next()
+    }
+}
+
+#[derive(Debug)]
 pub struct MergedRecordReader {
-    pub readers: Vec<FileReader<BufReader<File>>>,
+    pub readers: Vec<ReverseReader>,
 }
 
 impl MergedRecordReader {
-    pub fn new(files: &[PathBuf]) -> Self {
-        let mut readers = Vec::with_capacity(files.len());
+    pub fn new(paths: &[PathBuf]) -> Self {
+        let mut readers = Vec::with_capacity(paths.len());
 
-        for file in files {
+        for path in paths {
             //remove empty files before reading
-            if file.metadata().unwrap().len() == 0 {
-                error!("Invalid file detected, removing it: {:?}", file);
-                remove_file(file).unwrap();
+            if path.metadata().unwrap().len() == 0 {
+                error!("Invalid file detected, removing it: {path:?}");
+                remove_file(path).unwrap();
             } else {
-                let Ok(reader) =
-                    FileReader::try_new(BufReader::new(File::open(file).unwrap()), None)
-                else {
-                    error!("Invalid file detected, ignoring it: {:?}", file);
-                    continue;
-                };
-
+                let reader = ReverseReader::try_new(path).unwrap();
                 readers.push(reader);
             }
         }
