@@ -124,7 +124,7 @@ impl Stream {
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
             let filename =
                 self.filename_by_partition(schema_key, parsed_timestamp, custom_partition_values);
-            match guard.disk.get_mut(schema_key) {
+            match guard.disk.get_mut(&filename) {
                 Some(writer) => {
                     writer.write(record)?;
                 }
@@ -136,12 +136,12 @@ impl Stream {
                         parsed_timestamp.and_local_timezone(Utc).unwrap(),
                         OBJECT_STORE_DATA_GRANULARITY,
                     );
-                    let file_path = self.data_path.join(filename);
+                    let file_path = self.data_path.join(&filename);
                     let mut writer = DiskWriter::try_new(file_path, &record.schema(), range)
                         .expect("File and RecordBatch both are checked");
 
                     writer.write(record)?;
-                    guard.disk.insert(schema_key.to_owned(), writer);
+                    guard.disk.insert(filename, writer);
                 }
             };
         }
