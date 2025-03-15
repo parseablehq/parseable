@@ -119,23 +119,21 @@ impl Stream {
     ) -> Result<(), StagingError> {
         let mut guard = self.writer.lock().unwrap();
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
+            let filename =
+                self.filename_by_partition(schema_key, parsed_timestamp, custom_partition_values);
             match guard.disk.get_mut(schema_key) {
                 Some(writer) => {
                     writer.write(record)?;
                 }
                 None => {
                     // entry is not present thus we create it
-                    let file_path = self.path_by_current_time(
-                        schema_key,
-                        parsed_timestamp,
-                        custom_partition_values,
-                    );
                     std::fs::create_dir_all(&self.data_path)?;
 
                     let range = TimeRange::granularity_range(
                         parsed_timestamp.and_local_timezone(Utc).unwrap(),
                         OBJECT_STORE_DATA_GRANULARITY,
                     );
+                    let file_path = self.data_path.join(filename);
                     let mut writer = DiskWriter::try_new(file_path, &record.schema(), range)
                         .expect("File and RecordBatch both are checked");
 
@@ -150,17 +148,17 @@ impl Stream {
         Ok(())
     }
 
-    pub fn path_by_current_time(
+    pub fn filename_by_partition(
         &self,
         stream_hash: &str,
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
-    ) -> PathBuf {
+    ) -> String {
         let mut hostname = hostname::get().unwrap().into_string().unwrap();
         if let Some(id) = &self.ingestor_id {
             hostname.push_str(id);
         }
-        let filename = format!(
+        format!(
             "{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
@@ -170,8 +168,7 @@ impl Stream {
                 .sorted_by_key(|v| v.0)
                 .map(|(key, value)| format!("{key}={value}."))
                 .join("")
-        );
-        self.data_path.join(filename)
+        )
     }
 
     pub fn arrow_files(&self) -> Vec<PathBuf> {
@@ -877,18 +874,18 @@ mod tests {
             None,
         );
 
-        let expected_path = staging.data_path.join(format!(
+        let expected = format!(
             "{stream_hash}.date={}.hour={:02}.minute={}.{}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             hostname::get().unwrap().into_string().unwrap()
-        ));
+        );
 
-        let generated_path =
-            staging.path_by_current_time(stream_hash, parsed_timestamp, &custom_partition_values);
+        let generated =
+            staging.filename_by_partition(stream_hash, parsed_timestamp, &custom_partition_values);
 
-        assert_eq!(generated_path, expected_path);
+        assert_eq!(generated, expected);
     }
 
     #[test]
@@ -911,18 +908,18 @@ mod tests {
             None,
         );
 
-        let expected_path = staging.data_path.join(format!(
+        let expected = format!(
             "{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             hostname::get().unwrap().into_string().unwrap()
-        ));
+        );
 
-        let generated_path =
-            staging.path_by_current_time(stream_hash, parsed_timestamp, &custom_partition_values);
+        let generated =
+            staging.filename_by_partition(stream_hash, parsed_timestamp, &custom_partition_values);
 
-        assert_eq!(generated_path, expected_path);
+        assert_eq!(generated, expected);
     }
 
     #[test]
