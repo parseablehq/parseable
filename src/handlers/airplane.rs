@@ -38,7 +38,7 @@ use crate::handlers::http::query::{into_query, update_schema_when_distributed};
 use crate::handlers::livetail::cross_origin_config;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::parseable::PARSEABLE;
-use crate::query::{TableScanVisitor, QUERY_SESSION};
+use crate::query::{execute, TableScanVisitor, QUERY_SESSION};
 use crate::utils::arrow::flight::{
     append_temporary_events, get_query_from_ticket, into_flight_data, run_do_get_rpc,
     send_to_ingester,
@@ -215,8 +215,8 @@ impl FlightService for AirServiceImpl {
             Status::permission_denied("User Does not have permission to access this")
         })?;
         let time = Instant::now();
-        let (records, _) = query
-            .execute(stream_name.clone())
+
+        let (records, _) = execute(query, &stream_name)
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
 

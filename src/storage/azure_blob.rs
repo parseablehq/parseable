@@ -35,9 +35,10 @@ use datafusion::{
 use futures::{stream::FuturesUnordered, StreamExt, TryStreamExt};
 use object_store::{
     azure::{MicrosoftAzure, MicrosoftAzureBuilder},
+    buffered::BufReader,
     limit::LimitStore,
     path::Path as StorePath,
-    BackoffConfig, ClientOptions, ObjectStore, PutPayload, RetryConfig,
+    BackoffConfig, ClientOptions, ObjectMeta, ObjectStore, PutPayload, RetryConfig,
 };
 use relative_path::{RelativePath, RelativePathBuf};
 use tracing::{error, info};
@@ -423,6 +424,26 @@ impl BlobStore {
 
 #[async_trait]
 impl ObjectStorage for BlobStore {
+    async fn get_buffered_reader(
+        &self,
+        _path: &RelativePath,
+    ) -> Result<BufReader, ObjectStorageError> {
+        Err(ObjectStorageError::UnhandledError(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Buffered reader not implemented for Blob Storage yet",
+            ),
+        )))
+    }
+    async fn head(&self, _path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
+        Err(ObjectStorageError::UnhandledError(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Head operation not implemented for Blob Storage yet",
+            ),
+        )))
+    }
+
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         Ok(self._get_object(path).await?)
     }

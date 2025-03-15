@@ -367,64 +367,29 @@ pub async fn sync_role_update_with_ingestors(
     Ok(())
 }
 
-pub async fn fetch_daily_stats_from_ingestors(
-    stream_name: &str,
+pub fn fetch_daily_stats_from_ingestors(
     date: &str,
+    stream_meta_list: &[ObjectStoreFormat],
 ) -> Result<Stats, StreamError> {
-    let mut total_events_ingested: u64 = 0;
-    let mut total_ingestion_size: u64 = 0;
-    let mut total_storage_size: u64 = 0;
+    // for the given date, get the stats from the ingestors
+    let mut events_ingested = 0;
+    let mut ingestion_size = 0;
+    let mut storage_size = 0;
 
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        error!("Fatal: failed to get ingestor info: {:?}", err);
-        StreamError::Anyhow(err)
-    })?;
-    for ingestor in ingestor_infos.iter() {
-        let uri = Url::parse(&format!(
-            "{}{}/metrics",
-            &ingestor.domain_name,
-            base_path_without_preceding_slash()
-        ))
-        .map_err(|err| {
-            StreamError::Anyhow(anyhow::anyhow!("Invalid URL in Ingestor Metadata: {}", err))
-        })?;
-
-        let res = HTTP_CLIENT
-            .get(uri)
-            .header(header::AUTHORIZATION, &ingestor.token)
-            .header(header::CONTENT_TYPE, "application/json")
-            .send()
-            .await;
-
-        if let Ok(res) = res {
-            let text = res
-                .text()
-                .await
-                .map_err(|err| StreamError::Anyhow(anyhow::anyhow!("Request failed: {}", err)))?;
-            let lines: Vec<Result<String, std::io::Error>> =
-                text.lines().map(|line| Ok(line.to_owned())).collect_vec();
-
-            let sample = prometheus_parse::Scrape::parse(lines.into_iter())
-                .map_err(|err| {
-                    StreamError::Anyhow(anyhow::anyhow!(
-                        "Invalid URL in Ingestor Metadata: {}",
-                        err
-                    ))
-                })?
-                .samples;
-
-            let (events_ingested, ingestion_size, storage_size) =
-                Metrics::get_daily_stats_from_samples(sample, stream_name, date);
-            total_events_ingested += events_ingested;
-            total_ingestion_size += ingestion_size;
-            total_storage_size += storage_size;
+    for meta in stream_meta_list.iter() {
+        for manifest in meta.snapshot.manifest_list.iter() {
+            if manifest.time_lower_bound.date_naive().to_string() == date {
+                events_ingested += manifest.events_ingested;
+                ingestion_size += manifest.ingestion_size;
+                storage_size += manifest.storage_size;
+            }
         }
     }
 
     let stats = Stats {
-        events: total_events_ingested,
-        ingestion: total_ingestion_size,
-        storage: total_storage_size,
+        events: events_ingested,
+        ingestion: ingestion_size,
+        storage: storage_size,
     };
     Ok(stats)
 }
@@ -474,17 +439,17 @@ pub async fn fetch_stats_from_ingestors(
         Utc::now(),
         IngestionStats::new(
             count,
-            format!("{} Bytes", ingestion_size),
+            ingestion_size,
             lifetime_count,
-            format!("{} Bytes", lifetime_ingestion_size),
+            lifetime_ingestion_size,
             deleted_count,
-            format!("{} Bytes", deleted_ingestion_size),
+            deleted_ingestion_size,
             "json",
         ),
         StorageStats::new(
-            format!("{} Bytes", storage_size),
-            format!("{} Bytes", lifetime_storage_size),
-            format!("{} Bytes", deleted_storage_size),
+            storage_size,
+            lifetime_storage_size,
+            deleted_storage_size,
             "parquet",
         ),
     );

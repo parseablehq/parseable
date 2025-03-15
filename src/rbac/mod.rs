@@ -19,11 +19,15 @@
 pub mod map;
 pub mod role;
 pub mod user;
+pub mod utils;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Days, Utc};
 use itertools::Itertools;
+use role::model::DefaultPrivilege;
+use serde::Serialize;
+use url::Url;
 
 use crate::rbac::map::{mut_sessions, mut_users, sessions, users};
 use crate::rbac::role::Action;
@@ -164,6 +168,23 @@ impl Users {
     pub fn get_username_from_session(&self, session: &SessionKey) -> Option<String> {
         sessions().get_username(session).cloned()
     }
+}
+
+/// This struct represents a user along with their roles, email, etc
+///
+/// TODO: rename this after deprecating the older struct
+#[derive(Debug, Serialize, Clone)]
+pub struct UsersPrism {
+    // username
+    pub id: String,
+    // oaith or native
+    pub method: String,
+    // email only if method is oauth
+    pub email: Option<String>,
+    // picture only if oauth
+    pub picture: Option<Url>,
+    // roles for the user
+    pub roles: HashMap<String, Vec<DefaultPrivilege>>,
 }
 
 fn roles_to_permission(roles: Vec<String>) -> Vec<Permission> {

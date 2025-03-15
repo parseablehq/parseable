@@ -37,9 +37,10 @@ use datafusion::{
 use futures::{stream::FuturesUnordered, StreamExt, TryStreamExt};
 use object_store::{
     aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum},
+    buffered::BufReader,
     limit::LimitStore,
     path::Path as StorePath,
-    BackoffConfig, ClientOptions, ObjectStore, PutPayload, RetryConfig,
+    BackoffConfig, ClientOptions, ObjectMeta, ObjectStore, PutPayload, RetryConfig,
 };
 use relative_path::{RelativePath, RelativePathBuf};
 use tracing::{error, info};
@@ -310,9 +311,6 @@ impl ObjectStorageProvider for S3Config {
     fn construct_client(&self) -> Arc<dyn ObjectStorage> {
         let s3 = self.get_default_builder().build().unwrap();
 
-        // limit objectstore to a concurrent request limit
-        let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
-
         Arc::new(S3 {
             client: s3,
             bucket: self.bucket_name.clone(),
@@ -331,7 +329,7 @@ impl ObjectStorageProvider for S3Config {
 
 #[derive(Debug)]
 pub struct S3 {
-    client: LimitStore<AmazonS3>,
+    client: AmazonS3,
     bucket: String,
     root: StorePath,
 }
@@ -557,6 +555,21 @@ impl S3 {
 
 #[async_trait]
 impl ObjectStorage for S3 {
+    async fn get_buffered_reader(
+        &self,
+        path: &RelativePath,
+    ) -> Result<BufReader, ObjectStorageError> {
+        let path = &to_object_store_path(path);
+        let meta = self.client.head(path).await?;
+
+        let store: Arc<dyn ObjectStore> = Arc::new(self.client.clone());
+        let buf = object_store::buffered::BufReader::new(store, &meta);
+        Ok(buf)
+    }
+    async fn head(&self, path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
+        Ok(self.client.head(&to_object_store_path(path)).await?)
+    }
+
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         Ok(self._get_object(path).await?)
     }

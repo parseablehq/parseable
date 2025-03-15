@@ -16,9 +16,7 @@
  *
  */
 
-use chrono::{DateTime, NaiveDate, TimeDelta, Timelike, Utc};
-
-use super::minute_to_slot;
+use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeDelta, Timelike, Utc};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TimeParseError {
@@ -231,8 +229,8 @@ impl TimeRange {
         prefixes: &mut Vec<String>,
     ) {
         let mut push_prefix = |block: u32| {
-            if let Some(minute_slot) = minute_to_slot(block * data_granularity, data_granularity) {
-                let prefix = format!("{hour_prefix}minute={minute_slot}/");
+            if let Ok(minute) = Minute::try_from(block * data_granularity) {
+                let prefix = format!("{hour_prefix}minute={}/", minute.to_slot(data_granularity));
                 prefixes.push(prefix);
             }
         };
@@ -263,6 +261,61 @@ impl TimeRange {
             time_bounds.end_minute = 60;
         }
         time_bounds
+    }
+}
+
+/// Represents a minute value (0-59) and provides methods for converting it to a slot range.
+///
+/// # Examples
+///
+/// ```
+/// use crate::utils::time::Minute;
+///
+/// let minute = Minute::try_from(15).unwrap();
+/// assert_eq!(minute.to_slot(10), "10-19");
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct Minute {
+    block: u32,
+}
+
+impl TryFrom<u32> for Minute {
+    type Error = u32;
+
+    /// Returns a Minute if block is an acceptable minute value, else returns it as is
+    fn try_from(block: u32) -> Result<Self, Self::Error> {
+        if block >= 60 {
+            return Err(block);
+        }
+
+        Ok(Self { block })
+    }
+}
+
+impl From<NaiveDateTime> for Minute {
+    fn from(timestamp: NaiveDateTime) -> Self {
+        Self {
+            block: timestamp.minute(),
+        }
+    }
+}
+
+impl Minute {
+    /// Convert minutes to a slot range
+    /// e.g. given minute = 15 and OBJECT_STORE_DATA_GRANULARITY = 10 returns "10-19"
+    ///
+    /// ### PANICS
+    /// If the provided `data_granularity` value isn't cleanly divisble from 60
+    pub fn to_slot(self, data_granularity: u32) -> String {
+        assert!(60 % data_granularity == 0);
+        let block_n = self.block / data_granularity;
+        let block_start = block_n * data_granularity;
+        if data_granularity == 1 {
+            return format!("{block_start:02}");
+        }
+
+        let block_end = (block_n + 1) * data_granularity - 1;
+        format!("{block_start:02}-{block_end:02}")
     }
 }
 
@@ -420,5 +473,44 @@ mod tests {
         let prefixes = time_period.generate_prefixes(1);
         let left = prefixes.iter().map(String::as_str).collect::<Vec<&str>>();
         assert_eq!(left.as_slice(), right);
+    }
+
+    #[test]
+    fn valid_minute_to_minute_slot() {
+        let res = Minute::try_from(10);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().to_slot(1), "10");
+    }
+
+    #[test]
+    fn invalid_minute() {
+        assert!(Minute::try_from(100).is_err());
+    }
+
+    #[test]
+    fn minute_from_timestamp() {
+        let timestamp =
+            NaiveDateTime::parse_from_str("2025-01-01 02:03", "%Y-%m-%d %H:%M").unwrap();
+        assert_eq!(Minute::from(timestamp).to_slot(1), "03");
+    }
+
+    #[test]
+    fn slot_5_min_from_timestamp() {
+        let timestamp =
+            NaiveDateTime::parse_from_str("2025-01-01 02:03", "%Y-%m-%d %H:%M").unwrap();
+        assert_eq!(Minute::from(timestamp).to_slot(5), "00-04");
+    }
+
+    #[test]
+    fn slot_30_min_from_timestamp() {
+        let timestamp =
+            NaiveDateTime::parse_from_str("2025-01-01 02:33", "%Y-%m-%d %H:%M").unwrap();
+        assert_eq!(Minute::from(timestamp).to_slot(30), "30-59");
+    }
+
+    #[test]
+    #[should_panic]
+    fn illegal_slot_granularity() {
+        Minute::try_from(0).unwrap().to_slot(40);
     }
 }

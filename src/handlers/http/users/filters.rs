@@ -21,7 +21,7 @@ use crate::{
     parseable::PARSEABLE,
     storage::{object_storage::filter_path, ObjectStorageError},
     users::filters::{Filter, CURRENT_FILTER_VERSION, FILTERS},
-    utils::{get_hash, get_user_from_request},
+    utils::{actix::extract_session_key_from_req, get_hash, get_user_from_request},
 };
 use actix_web::{
     http::header::ContentType,
@@ -34,8 +34,9 @@ use http::StatusCode;
 use serde_json::Error as SerdeError;
 
 pub async fn list(req: HttpRequest) -> Result<impl Responder, FiltersError> {
-    let user_id = get_user_from_request(&req)?;
-    let filters = FILTERS.list_filters_by_user(&get_hash(&user_id));
+    let key =
+        extract_session_key_from_req(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
+    let filters = FILTERS.list_filters(&key).await;
     Ok((web::Json(filters), StatusCode::OK))
 }
 
@@ -46,7 +47,7 @@ pub async fn get(
     let user_id = get_user_from_request(&req)?;
     let filter_id = filter_id.into_inner();
 
-    if let Some(filter) = FILTERS.get_filter(&filter_id, &get_hash(&user_id)) {
+    if let Some(filter) = FILTERS.get_filter(&filter_id, &get_hash(&user_id)).await {
         return Ok((web::Json(filter), StatusCode::OK));
     }
 
@@ -63,7 +64,7 @@ pub async fn post(
     filter.filter_id = Some(filter_id.clone());
     filter.user_id = Some(user_id.clone());
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
-    FILTERS.update(&filter);
+    FILTERS.update(&filter).await;
 
     let path = filter_path(
         &user_id,
@@ -86,13 +87,13 @@ pub async fn update(
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
     let filter_id = filter_id.into_inner();
-    if FILTERS.get_filter(&filter_id, &user_id).is_none() {
+    if FILTERS.get_filter(&filter_id, &user_id).await.is_none() {
         return Err(FiltersError::Metadata("Filter does not exist"));
     }
     filter.filter_id = Some(filter_id.clone());
     filter.user_id = Some(user_id.clone());
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
-    FILTERS.update(&filter);
+    FILTERS.update(&filter).await;
 
     let path = filter_path(
         &user_id,
@@ -116,6 +117,7 @@ pub async fn delete(
     let filter_id = filter_id.into_inner();
     let filter = FILTERS
         .get_filter(&filter_id, &user_id)
+        .await
         .ok_or(FiltersError::Metadata("Filter does not exist"))?;
 
     let path = filter_path(
@@ -126,7 +128,7 @@ pub async fn delete(
     let store = PARSEABLE.storage.get_object_store();
     store.delete_object(&path).await?;
 
-    FILTERS.delete_filter(&filter_id);
+    FILTERS.delete_filter(&filter_id).await;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -141,6 +143,8 @@ pub enum FiltersError {
     Metadata(&'static str),
     #[error("User does not exist")]
     UserDoesNotExist(#[from] RBACError),
+    #[error("Error: {0}")]
+    Custom(String),
 }
 
 impl actix_web::ResponseError for FiltersError {
@@ -150,6 +154,7 @@ impl actix_web::ResponseError for FiltersError {
             Self::Serde(_) => StatusCode::BAD_REQUEST,
             Self::Metadata(_) => StatusCode::BAD_REQUEST,
             Self::UserDoesNotExist(_) => StatusCode::NOT_FOUND,
+            Self::Custom(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 

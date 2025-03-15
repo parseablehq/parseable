@@ -17,14 +17,14 @@
  */
 
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use chrono::{Local, NaiveDate};
+use chrono::{NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 
 use crate::catalog::snapshot::ManifestItem;
-use crate::event::format::LogSource;
+use crate::event::format::LogSourceEntry;
 use crate::metrics::{
     EVENTS_INGESTED, EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
     EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
@@ -87,7 +87,7 @@ pub struct LogStreamMetadata {
     pub static_schema_flag: bool,
     pub hot_tier_enabled: bool,
     pub stream_type: StreamType,
-    pub log_source: LogSource,
+    pub log_source: Vec<LogSourceEntry>,
 }
 
 impl LogStreamMetadata {
@@ -101,11 +101,11 @@ impl LogStreamMetadata {
         static_schema: HashMap<String, Arc<Field>>,
         stream_type: StreamType,
         schema_version: SchemaVersion,
-        log_source: LogSource,
+        log_source: Vec<LogSourceEntry>,
     ) -> Self {
         LogStreamMetadata {
             created_at: if created_at.is_empty() {
-                Local::now().to_rfc3339()
+                Utc::now().to_rfc3339()
             } else {
                 created_at
             },

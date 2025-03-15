@@ -19,12 +19,12 @@
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::RwLock;
+use tokio::sync::RwLock;
 
 use super::TimeFilter;
 use crate::{
-    migration::to_bytes, parseable::PARSEABLE, storage::object_storage::filter_path,
-    utils::get_hash, LOCK_EXPECT,
+    alerts::alerts_utils::user_auth_for_query, migration::to_bytes, parseable::PARSEABLE,
+    rbac::map::SessionKey, storage::object_storage::filter_path, utils::get_hash,
 };
 
 pub static FILTERS: Lazy<Filters> = Lazy::new(Filters::default);
@@ -124,27 +124,27 @@ impl Filters {
             }
         }
 
-        let mut s = self.0.write().expect(LOCK_EXPECT);
+        let mut s = self.0.write().await;
         s.append(&mut this);
 
         Ok(())
     }
 
-    pub fn update(&self, filter: &Filter) {
-        let mut s = self.0.write().expect(LOCK_EXPECT);
+    pub async fn update(&self, filter: &Filter) {
+        let mut s = self.0.write().await;
         s.retain(|f| f.filter_id != filter.filter_id);
         s.push(filter.clone());
     }
 
-    pub fn delete_filter(&self, filter_id: &str) {
-        let mut s = self.0.write().expect(LOCK_EXPECT);
+    pub async fn delete_filter(&self, filter_id: &str) {
+        let mut s = self.0.write().await;
         s.retain(|f| f.filter_id != Some(filter_id.to_string()));
     }
 
-    pub fn get_filter(&self, filter_id: &str, user_id: &str) -> Option<Filter> {
+    pub async fn get_filter(&self, filter_id: &str, user_id: &str) -> Option<Filter> {
         self.0
             .read()
-            .expect(LOCK_EXPECT)
+            .await
             .iter()
             .find(|f| {
                 f.filter_id == Some(filter_id.to_string()) && f.user_id == Some(user_id.to_string())
@@ -152,14 +152,23 @@ impl Filters {
             .cloned()
     }
 
-    pub fn list_filters_by_user(&self, user_id: &str) -> Vec<Filter> {
-        self.0
-            .read()
-            .expect(LOCK_EXPECT)
-            .iter()
-            .filter(|f| f.user_id == Some(user_id.to_string()))
-            .cloned()
-            .collect()
+    pub async fn list_filters(&self, key: &SessionKey) -> Vec<Filter> {
+        let read = self.0.read().await;
+
+        let mut filters = Vec::new();
+
+        for f in read.iter() {
+            let query = if let Some(q) = &f.query.filter_query {
+                q
+            } else {
+                continue;
+            };
+
+            if (user_auth_for_query(key, query).await).is_ok() {
+                filters.push(f.clone())
+            }
+        }
+        filters
     }
 }
 

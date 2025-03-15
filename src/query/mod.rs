@@ -42,6 +42,7 @@ use std::ops::Bound;
 use std::sync::Arc;
 use stream_schema_provider::collect_manifest_files;
 use sysinfo::System;
+use tokio::runtime::Runtime;
 
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
@@ -59,6 +60,23 @@ use crate::utils::time::TimeRange;
 
 pub static QUERY_SESSION: Lazy<SessionContext> =
     Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
+
+/// Dedicated multi-threaded runtime to run all queries on
+pub static QUERY_RUNTIME: Lazy<Runtime> =
+    Lazy::new(|| Runtime::new().expect("Runtime should be constructible"));
+
+/// This function executes a query on the dedicated runtime, ensuring that the query is not isolated to a single thread/CPU
+/// at a time and has access to the entire thread pool, enabling better concurrent processing, and thus quicker results.
+pub async fn execute(
+    query: Query,
+    stream_name: &str,
+) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
+    let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
+    QUERY_RUNTIME
+        .spawn(async move { query.execute(time_partition.as_ref()).await })
+        .await
+        .expect("The Join should have been successful")
+}
 
 // A query request by client
 #[derive(Debug)]
@@ -88,15 +106,12 @@ impl Query {
         let runtime_config = runtime_config.with_memory_limit(pool_size, fraction);
         let runtime = Arc::new(runtime_config.build().unwrap());
 
+        // All the config options are explained here -
+        // https://datafusion.apache.org/user-guide/configs.html
         let mut config = SessionConfig::default()
             .with_parquet_pruning(true)
             .with_prefer_existing_sort(true)
-            .with_round_robin_repartition(true);
-
-        // For more details refer https://datafusion.apache.org/user-guide/configs.html
-
-        // Reduce the number of rows read (if possible)
-        config.options_mut().execution.parquet.enable_page_index = true;
+            .with_batch_size(1000000);
 
         // Pushdown filters allows DF to push the filters as far down in the plan as possible
         // and thus, reducing the number of rows decoded
@@ -104,9 +119,14 @@ impl Query {
 
         // Reorder filters allows DF to decide the order of filters minimizing the cost of filter evaluation
         config.options_mut().execution.parquet.reorder_filters = true;
+        config.options_mut().execution.parquet.binary_as_string = true;
+        config
+            .options_mut()
+            .execution
+            .use_row_number_estimates_to_optimize_partitioning = true;
 
-        // Enable StringViewArray
-        // https://www.influxdata.com/blog/faster-queries-with-stringview-part-one-influxdb/
+        //adding this config as it improves query performance as explained here -
+        // https://github.com/apache/datafusion/pull/13101
         config
             .options_mut()
             .execution
@@ -137,12 +157,10 @@ impl Query {
 
     pub async fn execute(
         &self,
-        stream_name: String,
+        time_partition: Option<&String>,
     ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
-        let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
-
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan(&time_partition))
+            .execute_logical_plan(self.final_logical_plan(time_partition))
             .await?;
 
         let fields = df
@@ -158,21 +176,23 @@ impl Query {
         }
 
         let results = df.collect().await?;
+
         Ok((results, fields))
     }
 
-    pub async fn get_dataframe(&self, stream_name: String) -> Result<DataFrame, ExecuteError> {
-        let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
-
+    pub async fn get_dataframe(
+        &self,
+        time_partition: Option<&String>,
+    ) -> Result<DataFrame, ExecuteError> {
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan(&time_partition))
+            .execute_logical_plan(self.final_logical_plan(time_partition))
             .await?;
 
         Ok(df)
     }
 
     /// return logical plan with all time filters applied through
-    fn final_logical_plan(&self, time_partition: &Option<String>) -> LogicalPlan {
+    fn final_logical_plan(&self, time_partition: Option<&String>) -> LogicalPlan {
         // see https://github.com/apache/arrow-datafusion/pull/8400
         // this can be eliminated in later version of datafusion but with slight caveat
         // transform cannot modify stringified plans by itself
@@ -492,7 +512,7 @@ fn transform(
     plan: LogicalPlan,
     start_time: NaiveDateTime,
     end_time: NaiveDateTime,
-    time_partition: &Option<String>,
+    time_partition: Option<&String>,
 ) -> Transformed<LogicalPlan> {
     plan.transform(&|plan| match plan {
         LogicalPlan::TableScan(table) => {
@@ -550,7 +570,7 @@ fn transform(
 
 fn table_contains_any_time_filters(
     table: &datafusion::logical_expr::TableScan,
-    time_partition: &Option<String>,
+    time_partition: Option<&String>,
 ) -> bool {
     table
         .filters
@@ -564,8 +584,8 @@ fn table_contains_any_time_filters(
         })
         .any(|expr| {
             matches!(&*expr.left, Expr::Column(Column { name, .. })
-            if ((time_partition.is_some() && name == time_partition.as_ref().unwrap()) ||
-            (!time_partition.is_some() && name == event::DEFAULT_TIMESTAMP_KEY)))
+            if (time_partition.is_some_and(|field| field == name) ||
+            (time_partition.is_none() && name == event::DEFAULT_TIMESTAMP_KEY)))
         })
 }
 

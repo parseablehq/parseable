@@ -19,12 +19,17 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
-    rbac::{map::roles, role::model::DefaultPrivilege, user, Users},
+    rbac::{self, map::roles, role::model::DefaultPrivilege, user, utils::to_prism_user, Users},
     storage::ObjectStorageError,
     validator::{self, error::UsernameValidationError},
 };
-use actix_web::{http::header::ContentType, web, Responder};
+use actix_web::{
+    http::header::ContentType,
+    web::{self, Path},
+    Responder,
+};
 use http::StatusCode;
+use itertools::Itertools;
 use tokio::sync::Mutex;
 
 use super::modal::utils::rbac_utils::{get_metadata, put_metadata};
@@ -56,6 +61,29 @@ impl From<&user::User> for User {
 // returns list of all registerd users
 pub async fn list_users() -> impl Responder {
     web::Json(Users.collect_user::<User>())
+}
+
+/// Handler for GET /api/v1/users
+/// returns list of all registerd users along with their roles and other info
+pub async fn list_users_prism() -> impl Responder {
+    // get all users
+    let prism_users = rbac::map::users().values().map(to_prism_user).collect_vec();
+
+    web::Json(prism_users)
+}
+
+/// Function for GET /users/{username}
+pub async fn get_prism_user(username: Path<String>) -> Result<impl Responder, RBACError> {
+    let username = username.into_inner();
+    // First check if the user exists
+    let users = rbac::map::users();
+    if let Some(user) = users.get(&username) {
+        // Create UsersPrism for the found user only
+        let prism_user = to_prism_user(user);
+        Ok(web::Json(prism_user))
+    } else {
+        Err(RBACError::UserDoesNotExist)
+    }
 }
 
 // Handler for POST /api/v1/user/{username}

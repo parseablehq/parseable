@@ -44,7 +44,7 @@ static TIME_FIELD_NAME_PARTS: [&str; 2] = ["time", "date"];
 type EventSchema = Vec<Arc<Field>>;
 
 /// Source of the logs, used to perform special processing for certain sources
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum LogSource {
     // AWS Kinesis sends logs in the format of a json array
     Kinesis,
@@ -92,6 +92,23 @@ impl Display for LogSource {
     }
 }
 
+/// Contains the format name and a list of known field names that are associated with the said format.
+/// Stored on disk as part of `ObjectStoreFormat` in stream.json
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogSourceEntry {
+    pub log_source_format: LogSource,
+    pub fields: HashSet<String>,
+}
+
+impl LogSourceEntry {
+    pub fn new(log_source_format: LogSource, fields: HashSet<String>) -> Self {
+        LogSourceEntry {
+            log_source_format,
+            fields,
+        }
+    }
+}
+
 // Global Trait for event format
 // This trait is implemented by all the event formats
 pub trait EventFormat: Sized {
@@ -102,6 +119,7 @@ pub trait EventFormat: Sized {
         schema: &HashMap<String, Arc<Field>>,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
+        static_schema_flag: bool,
     ) -> Result<(Self::Data, EventSchema, bool), AnyError>;
 
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
@@ -117,8 +135,12 @@ pub trait EventFormat: Sized {
         schema_version: SchemaVersion,
     ) -> Result<(RecordBatch, bool), AnyError> {
         let p_timestamp = self.get_p_timestamp();
-        let (data, mut schema, is_first) =
-            self.to_data(storage_schema, time_partition, schema_version)?;
+        let (data, mut schema, is_first) = self.to_data(
+            storage_schema,
+            time_partition,
+            schema_version,
+            static_schema_flag,
+        )?;
 
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
             return Err(anyhow!(
