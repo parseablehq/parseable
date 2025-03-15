@@ -27,6 +27,14 @@ use super::otel_utils::{
     convert_epoch_nano_to_timestamp, insert_attributes, insert_number_if_some,
 };
 
+pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 5] = [
+    "metric_name",
+    "metric_description",
+    "metric_unit",
+    "start_time_unix_nano",
+    "time_unix_nano",
+];
+
 /// otel metrics event has json array for exemplar
 /// this function flatten the exemplar json array
 /// and returns a `Map` of the exemplar json
