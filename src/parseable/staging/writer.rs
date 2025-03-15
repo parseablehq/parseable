@@ -19,7 +19,9 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    fs::File,
+    fs::{File, OpenOptions},
+    io::BufWriter,
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -27,14 +29,77 @@ use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
+use chrono::Utc;
 use itertools::Itertools;
+use tracing::{error, warn};
 
-use crate::utils::arrow::adapt_batch;
+use crate::{
+    parseable::{ARROW_FILE_EXTENSION, PART_FILE_EXTENSION},
+    utils::{arrow::adapt_batch, time::TimeRange},
+};
+
+use super::StagingError;
 
 #[derive(Default)]
 pub struct Writer {
     pub mem: MemWriter<16384>,
-    pub disk: HashMap<String, StreamWriter<File>>,
+    pub disk: HashMap<String, DiskWriter>,
+}
+
+pub struct DiskWriter {
+    inner: StreamWriter<BufWriter<File>>,
+    path: PathBuf,
+    range: TimeRange,
+}
+
+impl DiskWriter {
+    /// Try to create a file to stream arrows into
+    pub fn try_new(
+        path: impl Into<PathBuf>,
+        schema: &Schema,
+        range: TimeRange,
+    ) -> Result<Self, StagingError> {
+        let mut path = path.into();
+        path.set_extension(PART_FILE_EXTENSION);
+        let file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(&path)?;
+        let inner = StreamWriter::try_new_buffered(file, schema)?;
+
+        Ok(Self { inner, path, range })
+    }
+
+    pub fn is_current(&self) -> bool {
+        self.range.contains(Utc::now())
+    }
+
+    /// Write a single recordbatch into file
+    pub fn write(&mut self, rb: &RecordBatch) -> Result<(), StagingError> {
+        self.inner.write(rb).map_err(StagingError::Arrow)
+    }
+}
+
+impl Drop for DiskWriter {
+    /// Write the continuation bytes and mark the file as done, rename to `.data.arrows`
+    fn drop(&mut self) {
+        if let Err(err) = self.inner.finish() {
+            error!("Couldn't finish arrow file {:?}, error = {err}", self.path);
+            return;
+        }
+
+        let mut arrow_path = self.path.to_owned();
+        arrow_path.set_extension(ARROW_FILE_EXTENSION);
+
+        if arrow_path.exists() {
+            warn!("File {arrow_path:?} exists and will be overwritten");
+        }
+
+        if let Err(err) = std::fs::rename(&self.path, &arrow_path) {
+            error!("Couldn't rename file {:?}, error = {err}", self.path);
+        }
+    }
 }
 
 /// Structure to keep recordbatches in memory.

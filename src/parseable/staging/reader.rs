@@ -322,7 +322,6 @@ fn find_limit_and_type(
 #[cfg(test)]
 mod tests {
     use std::{
-        fs::File,
         io::{self, Cursor, Read},
         path::Path,
         sync::Arc,
@@ -336,9 +335,17 @@ mod tests {
         write_message, DictionaryTracker, IpcDataGenerator, IpcWriteOptions, StreamWriter,
     };
     use arrow_schema::{DataType, Field, Schema};
+    use chrono::Utc;
     use temp_dir::TempDir;
 
-    use crate::parseable::staging::reader::{MergedReverseRecordReader, OffsetReader};
+    use crate::{
+        parseable::staging::{
+            reader::{MergedReverseRecordReader, OffsetReader},
+            writer::DiskWriter,
+        },
+        utils::time::TimeRange,
+        OBJECT_STORE_DATA_GRANULARITY,
+    };
 
     use super::get_reverse_reader;
 
@@ -482,15 +489,14 @@ mod tests {
         schema: &Arc<Schema>,
         batches: &[RecordBatch],
     ) -> io::Result<()> {
-        let file = File::create(path)?;
+        let range = TimeRange::granularity_range(Utc::now(), OBJECT_STORE_DATA_GRANULARITY);
         let mut writer =
-            StreamWriter::try_new(file, schema).expect("Failed to create StreamWriter");
+            DiskWriter::try_new(path, schema, range).expect("Failed to create StreamWriter");
 
         for batch in batches {
             writer.write(batch).expect("Failed to write batch");
         }
 
-        writer.finish().expect("Failed to finalize writer");
         Ok(())
     }
 
@@ -524,7 +530,7 @@ mod tests {
     #[test]
     fn test_merged_reverse_record_reader() -> io::Result<()> {
         let dir = TempDir::new().unwrap();
-        let file_path = dir.path().join("test.arrow");
+        let file_path = dir.path().join("test.data.arrows");
 
         // Create a schema
         let schema = Arc::new(Schema::new(vec![
@@ -627,7 +633,7 @@ mod tests {
     #[test]
     fn test_get_reverse_reader_single_message() -> io::Result<()> {
         let dir = TempDir::new().unwrap();
-        let file_path = dir.path().join("test_single.arrow");
+        let file_path = dir.path().join("test_single.data.arrows");
 
         // Create a schema
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
