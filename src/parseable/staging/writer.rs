@@ -21,6 +21,7 @@ use std::{
     collections::{HashMap, HashSet},
     fs::{File, OpenOptions},
     io::BufWriter,
+    path::PathBuf,
     sync::Arc,
 };
 
@@ -28,55 +29,77 @@ use arrow_array::RecordBatch;
 use arrow_ipc::writer::FileWriter;
 use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
+use chrono::Utc;
 use itertools::Itertools;
-use tracing::trace;
+use tracing::{error, warn};
 
-use crate::parseable::ARROW_FILE_EXTENSION;
-use crate::utils::arrow::adapt_batch;
+use crate::{
+    parseable::{ARROW_FILE_EXTENSION, PART_FILE_EXTENSION},
+    utils::{arrow::adapt_batch, time::TimeRange},
+};
 
 use super::StagingError;
+
+#[derive(Default)]
+pub struct Writer {
+    pub mem: MemWriter<16384>,
+    pub disk: HashMap<String, DiskWriter>,
+}
 
 /// Context regarding `.arrows` file being persisted onto disk
 pub struct DiskWriter {
     inner: FileWriter<BufWriter<File>>,
-    /// Used to ensure un"finish"ed arrow files are renamed on "finish"
-    path_prefix: String,
+    path: PathBuf,
+    range: TimeRange,
 }
 
 impl DiskWriter {
-    pub fn new(path_prefix: String, schema: &Schema) -> Result<Self, StagingError> {
-        // Live writes happen into partfile
-        let partfile_path = format!("{path_prefix}.part.{ARROW_FILE_EXTENSION}");
+    /// Try to create a file to stream arrows into
+    pub fn try_new(
+        path: impl Into<PathBuf>,
+        schema: &Schema,
+        range: TimeRange,
+    ) -> Result<Self, StagingError> {
+        let mut path = path.into();
+        path.set_extension(PART_FILE_EXTENSION);
         let file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
             .create(true)
-            .append(true)
-            .open(partfile_path)?;
+            .open(&path)?;
+        let inner = FileWriter::try_new_buffered(file, schema)?;
 
-        Ok(Self {
-            inner: FileWriter::try_new_buffered(file, schema)?,
-            path_prefix,
-        })
+        Ok(Self { inner, path, range })
     }
 
-    /// Appends records into a `.part.arrows` file
+    pub fn is_current(&self) -> bool {
+        self.range.contains(Utc::now())
+    }
+
+    /// Write a single recordbatch into file
     pub fn write(&mut self, rb: &RecordBatch) -> Result<(), StagingError> {
-        self.inner.write(rb)?;
-
-        Ok(())
+        self.inner.write(rb).map_err(StagingError::Arrow)
     }
+}
 
-    /// Ensures `.arrows`` file in staging directory is "finish"ed and renames it from "part".
-    pub fn finish(&mut self) -> Result<(), StagingError> {
-        self.inner.finish()?;
+impl Drop for DiskWriter {
+    /// Write the continuation bytes and mark the file as done, rename to `.data.arrows`
+    fn drop(&mut self) {
+        if let Err(err) = self.inner.finish() {
+            error!("Couldn't finish arrow file {:?}, error = {err}", self.path);
+            return;
+        }
 
-        let partfile_path = format!("{}.part.{ARROW_FILE_EXTENSION}", self.path_prefix);
-        let arrows_path = format!("{}.data.{ARROW_FILE_EXTENSION}", self.path_prefix);
+        let mut arrow_path = self.path.to_owned();
+        arrow_path.set_extension(ARROW_FILE_EXTENSION);
 
-        // Rename from part file to finished arrows file
-        std::fs::rename(partfile_path, &arrows_path)?;
-        trace!("Finished arrows file: {arrows_path}");
+        if arrow_path.exists() {
+            warn!("File {arrow_path:?} exists and will be overwritten");
+        }
 
-        Ok(())
+        if let Err(err) = std::fs::rename(&self.path, &arrow_path) {
+            error!("Couldn't rename file {:?}, error = {err}", self.path);
+        }
     }
 }
 
@@ -170,10 +193,4 @@ impl<const N: usize> MutableBuffer<N> {
             None
         }
     }
-}
-
-#[derive(Default)]
-pub struct Writer<const N: usize> {
-    pub mem: MemWriter<N>,
-    pub disk: HashMap<String, DiskWriter>,
 }

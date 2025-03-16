@@ -29,7 +29,7 @@ use std::{
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Fields, Schema};
-use chrono::{NaiveDateTime, Timelike};
+use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
 use once_cell::sync::Lazy;
@@ -44,7 +44,7 @@ use rand::distributions::DistString;
 use regex::Regex;
 use relative_path::RelativePathBuf;
 use tokio::task::JoinSet;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 
 use crate::{
     cli::Options,
@@ -56,7 +56,7 @@ use crate::{
     metrics,
     option::Mode,
     storage::{object_storage::to_bytes, retention::Retention, StreamType},
-    utils::time::Minute,
+    utils::time::{Minute, TimeRange},
     LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
 };
 
@@ -128,7 +128,7 @@ pub struct Stream {
     pub data_path: PathBuf,
     pub options: Arc<Options>,
     /// Writer with a ~16K rows limit for optimal I/O performance.
-    pub writer: Mutex<Writer<MAX_RECORD_BATCH_SIZE>>,
+    pub writer: Mutex<Writer>,
     pub ingestor_id: Option<String>,
 }
 
@@ -168,24 +168,26 @@ impl Stream {
 
         let mut guard = self.writer.lock().unwrap();
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
-            match guard.disk.get_mut(schema_key) {
+            let filename =
+                self.filename_by_partition(schema_key, parsed_timestamp, custom_partition_values);
+            match guard.disk.get_mut(&filename) {
                 Some(writer) => {
                     writer.write(record)?;
                 }
                 None => {
                     // entry is not present thus we create it
-                    let path_prefix = self.path_prefix_by_current_time(
-                        schema_key,
-                        parsed_timestamp,
-                        custom_partition_values,
-                    );
                     std::fs::create_dir_all(&self.data_path)?;
 
-                    let mut writer =
-                        DiskWriter::new(path_prefix.display().to_string(), &record.schema())?;
-                    writer.write(record)?;
+                    let range = TimeRange::granularity_range(
+                        parsed_timestamp.and_local_timezone(Utc).unwrap(),
+                        OBJECT_STORE_DATA_GRANULARITY,
+                    );
+                    let file_path = self.data_path.join(&filename);
+                    let mut writer = DiskWriter::try_new(file_path, &record.schema(), range)
+                        .expect("File and RecordBatch both are checked");
 
-                    guard.disk.insert(schema_key.to_owned(), writer);
+                    writer.write(record)?;
+                    guard.disk.insert(filename, writer);
                 }
             };
         }
@@ -195,17 +197,17 @@ impl Stream {
         Ok(())
     }
 
-    pub fn path_prefix_by_current_time(
+    pub fn filename_by_partition(
         &self,
         stream_hash: &str,
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
-    ) -> PathBuf {
+    ) -> String {
         let mut hostname = hostname::get().unwrap().into_string().unwrap();
         if let Some(id) = &self.ingestor_id {
             hostname.push_str(id);
         }
-        let filename = format!(
+        format!(
             "{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
@@ -215,8 +217,7 @@ impl Stream {
                 .sorted_by_key(|v| v.0)
                 .map(|(key, value)| format!("{key}={value}."))
                 .join("")
-        );
-        self.data_path.join(filename)
+        )
     }
 
     pub fn arrow_files(&self) -> Vec<PathBuf> {
@@ -418,23 +419,12 @@ impl Stream {
         self.writer.lock().unwrap().mem.clear();
     }
 
-    pub fn flush(&self) {
-        let disk_writers = {
-            let mut writer = self.writer.lock().unwrap();
-            // Flush memory
-            writer.mem.clear();
-            // Take schema -> disk writer mapping
-            std::mem::take(&mut writer.disk)
-        };
-
-        // Flush disk
-        for (_, mut writer) in disk_writers {
-            if let Err(err) = writer.finish() {
-                warn!("Couldn't finish `.arrows` file: {err}");
-            } else {
-                debug!("Finished `.arrows` file sync onto disk")
-            }
-        }
+    pub fn flush(&self, forced: bool) {
+        let mut writer = self.writer.lock().unwrap();
+        // Flush memory
+        writer.mem.clear();
+        // Drop schema -> disk writer mapping, triggers flush to disk
+        writer.disk.retain(|_, w| !forced && w.is_current());
     }
 
     fn parquet_writer_props(
@@ -788,7 +778,7 @@ impl Stream {
 
     /// First flushes arrows onto disk and then converts the arrow into parquet
     pub fn flush_and_convert(&self, shutdown_signal: bool) -> Result<(), StagingError> {
-        self.flush();
+        self.flush(shutdown_signal);
 
         self.prepare_parquet(shutdown_signal)
     }
@@ -999,21 +989,18 @@ mod tests {
             None,
         );
 
-        let expected_path = staging.data_path.join(format!(
+        let expected = format!(
             "{stream_hash}.date={}.hour={:02}.minute={}.{}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             hostname::get().unwrap().into_string().unwrap()
-        ));
-
-        let generated_path = staging.path_prefix_by_current_time(
-            stream_hash,
-            parsed_timestamp,
-            &custom_partition_values,
         );
 
-        assert_eq!(generated_path, expected_path);
+        let generated =
+            staging.filename_by_partition(stream_hash, parsed_timestamp, &custom_partition_values);
+
+        assert_eq!(generated, expected);
     }
 
     #[test]
@@ -1036,21 +1023,18 @@ mod tests {
             None,
         );
 
-        let expected_path = staging.data_path.join(format!(
+        let expected = format!(
             "{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             hostname::get().unwrap().into_string().unwrap()
-        ));
-
-        let generated_path = staging.path_prefix_by_current_time(
-            stream_hash,
-            parsed_timestamp,
-            &custom_partition_values,
         );
 
-        assert_eq!(generated_path, expected_path);
+        let generated =
+            staging.filename_by_partition(stream_hash, parsed_timestamp, &custom_partition_values);
+
+        assert_eq!(generated, expected);
     }
 
     #[test]
@@ -1106,7 +1090,7 @@ mod tests {
                 StreamType::UserDefined,
             )
             .unwrap();
-        staging.flush();
+        staging.flush(true);
     }
 
     #[test]

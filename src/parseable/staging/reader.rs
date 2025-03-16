@@ -166,9 +166,14 @@ mod tests {
     };
     use arrow_ipc::{reader::FileReader, writer::FileWriter};
     use arrow_schema::{DataType, Field, Schema};
+    use chrono::Utc;
     use temp_dir::TempDir;
 
-    use crate::parseable::staging::reader::MergedRecordReader;
+    use crate::{
+        parseable::staging::{reader::MergedRecordReader, writer::DiskWriter},
+        utils::time::TimeRange,
+        OBJECT_STORE_DATA_GRANULARITY,
+    };
 
     fn rb(rows: usize) -> RecordBatch {
         let array1: Arc<dyn Array> = Arc::new(Int64Array::from_iter(0..rows as i64));
@@ -293,21 +298,21 @@ mod tests {
         schema: &Arc<Schema>,
         batches: &[RecordBatch],
     ) -> io::Result<()> {
-        let file = File::create(path)?;
-        let mut writer = FileWriter::try_new(file, schema).expect("Failed to create StreamWriter");
+        let range = TimeRange::granularity_range(Utc::now(), OBJECT_STORE_DATA_GRANULARITY);
+        let mut writer =
+            DiskWriter::try_new(path, schema, range).expect("Failed to create StreamWriter");
 
         for batch in batches {
             writer.write(batch).expect("Failed to write batch");
         }
 
-        writer.finish().expect("Failed to finalize writer");
         Ok(())
     }
 
     #[test]
     fn test_merged_reverse_record_reader() -> io::Result<()> {
         let dir = TempDir::new().unwrap();
-        let file_path = dir.path().join("test.arrow");
+        let file_path = dir.path().join("test.data.arrows");
 
         // Create a schema
         let schema = Arc::new(Schema::new(vec![
@@ -369,7 +374,7 @@ mod tests {
     #[test]
     fn test_get_reverse_reader_single_message() -> io::Result<()> {
         let dir = TempDir::new().unwrap();
-        let file_path = dir.path().join("test_single.arrow");
+        let file_path = dir.path().join("test_single.data.arrows");
 
         // Create a schema
         let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
