@@ -269,7 +269,7 @@ impl TimeRange {
 /// # Examples
 ///
 /// ```
-/// use crate::utils::time::Minute;
+/// use parseable::utils::time::Minute;
 ///
 /// let minute = Minute::try_from(15).unwrap();
 /// assert_eq!(minute.to_slot(10), "10-19");
