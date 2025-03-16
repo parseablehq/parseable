@@ -67,6 +67,9 @@ mod streams;
 /// File extension for arrow files in staging
 const ARROW_FILE_EXTENSION: &str = "arrows";
 
+/// File extension for incomplete arrow files
+const PART_FILE_EXTENSION: &str = "part";
+
 /// Name of a Stream
 /// NOTE: this used to be a struct, flattened out for simplicity
 pub type LogStream = String;
