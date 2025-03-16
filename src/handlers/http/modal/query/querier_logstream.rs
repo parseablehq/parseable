@@ -15,18 +15,11 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-
-use core::str;
 use std::fs;
 
-use actix_web::{
-    web::{self, Path},
-    HttpRequest, Responder,
-};
+use actix_web::{web::Path, HttpRequest, Responder};
 use bytes::Bytes;
-use chrono::Utc;
 use http::StatusCode;
-use relative_path::RelativePathBuf;
 use tokio::sync::Mutex;
 use tracing::{error, warn};
 
@@ -35,17 +28,12 @@ static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
 use crate::{
     handlers::http::{
         base_path_without_preceding_slash,
-        cluster::{
-            self, fetch_daily_stats_from_ingestors, fetch_stats_from_ingestors,
-            sync_streams_with_ingestors,
-            utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
-        },
-        logstream::{error::StreamError, get_stats_date},
+        cluster::{self, sync_streams_with_ingestors},
+        logstream::error::StreamError,
     },
     hottier::HotTierManager,
     parseable::{StreamNotFound, PARSEABLE},
-    stats::{self, Stats},
-    storage::{ObjectStoreFormat, StreamType, STREAM_ROOT_DIRECTORY},
+    stats,
 };
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
@@ -120,120 +108,4 @@ pub async fn put_stream(
     sync_streams_with_ingestors(headers, body, &stream_name).await?;
 
     Ok(("Log stream created", StatusCode::OK))
-}
-
-pub async fn get_stats(
-    req: HttpRequest,
-    stream_name: Path<String>,
-) -> Result<impl Responder, StreamError> {
-    let stream_name = stream_name.into_inner();
-    // if the stream not found in memory map,
-    //check if it exists in the storage
-    //create stream and schema from storage
-    if !PARSEABLE.streams.contains(&stream_name)
-        && !PARSEABLE
-            .create_stream_and_schema_from_storage(&stream_name)
-            .await
-            .unwrap_or(false)
-    {
-        return Err(StreamNotFound(stream_name.clone()).into());
-    }
-
-    let query_string = req.query_string();
-    if !query_string.is_empty() {
-        let date_key = query_string.split('=').collect::<Vec<&str>>()[0];
-        let date_value = query_string.split('=').collect::<Vec<&str>>()[1];
-        if date_key != "date" {
-            return Err(StreamError::Custom {
-                msg: "Invalid query parameter".to_string(),
-                status: StatusCode::BAD_REQUEST,
-            });
-        }
-
-        if !date_value.is_empty() {
-            let querier_stats = get_stats_date(&stream_name, date_value).await?;
-
-            // this function requires all the ingestor stream jsons
-            let path = RelativePathBuf::from_iter([&stream_name, STREAM_ROOT_DIRECTORY]);
-            let obs = PARSEABLE
-                .storage
-                .get_object_store()
-                .get_objects(
-                    Some(&path),
-                    Box::new(|file_name| {
-                        file_name.starts_with(".ingestor") && file_name.ends_with("stream.json")
-                    }),
-                )
-                .await?;
-
-            let mut ingestor_stream_jsons = Vec::new();
-            for ob in obs {
-                let stream_metadata: ObjectStoreFormat = match serde_json::from_slice(&ob) {
-                    Ok(d) => d,
-                    Err(e) => {
-                        error!("Failed to parse stream metadata: {:?}", e);
-                        continue;
-                    }
-                };
-                ingestor_stream_jsons.push(stream_metadata);
-            }
-
-            let ingestor_stats =
-                fetch_daily_stats_from_ingestors(date_value, &ingestor_stream_jsons)?;
-
-            let total_stats = Stats {
-                events: querier_stats.events + ingestor_stats.events,
-                ingestion: querier_stats.ingestion + ingestor_stats.ingestion,
-                storage: querier_stats.storage + ingestor_stats.storage,
-            };
-            let stats = serde_json::to_value(total_stats)?;
-
-            return Ok((web::Json(stats), StatusCode::OK));
-        }
-    }
-
-    let stats = stats::get_current_stats(&stream_name, "json")
-        .ok_or_else(|| StreamNotFound(stream_name.clone()))?;
-
-    let ingestor_stats = if PARSEABLE
-        .get_stream(&stream_name)
-        .is_ok_and(|stream| stream.get_stream_type() == StreamType::UserDefined)
-    {
-        Some(fetch_stats_from_ingestors(&stream_name).await?)
-    } else {
-        None
-    };
-
-    let time = Utc::now();
-
-    let stats = {
-        let ingestion_stats = IngestionStats::new(
-            stats.current_stats.events,
-            stats.current_stats.ingestion,
-            stats.lifetime_stats.events,
-            stats.lifetime_stats.ingestion,
-            stats.deleted_stats.events,
-            stats.deleted_stats.ingestion,
-            "json",
-        );
-        let storage_stats = StorageStats::new(
-            stats.current_stats.storage,
-            stats.lifetime_stats.storage,
-            stats.deleted_stats.storage,
-            "parquet",
-        );
-
-        QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
-    };
-
-    let stats = if let Some(mut ingestor_stats) = ingestor_stats {
-        ingestor_stats.push(stats);
-        merge_quried_stats(ingestor_stats)
-    } else {
-        stats
-    };
-
-    let stats = serde_json::to_value(stats)?;
-
-    Ok((web::Json(stats), StatusCode::OK))
 }
