@@ -24,7 +24,7 @@ use std::{
     path::{Path, PathBuf},
     process,
     sync::{Arc, Mutex, RwLock},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use arrow_array::RecordBatch;
@@ -733,9 +733,23 @@ impl Stream {
 
     /// First flushes arrows onto disk and then converts the arrow into parquet
     pub fn flush_and_convert(&self, shutdown_signal: bool) -> Result<(), StagingError> {
+        let start_flush = Instant::now();
         self.flush();
+        trace!(
+            "Flushing stream ({}) took: {}s",
+            self.stream_name,
+            start_flush.elapsed().as_secs_f64()
+        );
 
-        self.prepare_parquet(shutdown_signal)
+        let start_convert = Instant::now();
+        self.prepare_parquet(shutdown_signal)?;
+        trace!(
+            "Converting arrows to parquet on stream ({}) took: {}s",
+            self.stream_name,
+            start_convert.elapsed().as_secs_f64()
+        );
+
+        Ok(())
     }
 }
 
