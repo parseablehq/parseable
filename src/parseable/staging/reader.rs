@@ -35,21 +35,29 @@ use crate::{
     utils::arrow::{adapt_batch, reverse},
 };
 
+/// `ReverseReader` provides an iterator over record batches in an Arrow IPC file format
+/// in reverse order (from the last batch to the first).
+///
+/// This is useful for scenarios where you need to process the most recent data first,
+/// or when implementing time-series data exploration that starts with the latest records.
 #[derive(Debug)]
 pub struct ReverseReader {
     inner: FileReader<BufReader<File>>,
+    /// Current index for iteration (starts from the last batch)
     idx: usize,
 }
 
 impl ReverseReader {
-    fn try_new(path: impl AsRef<Path>) -> Result<Self, ArrowError> {
+    /// Creates a new `ReverseReader` from given path.
+    pub fn try_new(path: impl AsRef<Path>) -> Result<Self, ArrowError> {
         let inner = FileReader::try_new(BufReader::new(File::open(path).unwrap()), None)?;
         let idx = inner.num_batches();
 
         Ok(Self { inner, idx })
     }
 
-    fn schema(&self) -> SchemaRef {
+    /// Returns the schema of the underlying Arrow file.
+    pub fn schema(&self) -> SchemaRef {
         self.inner.schema()
     }
 }
@@ -57,6 +65,9 @@ impl ReverseReader {
 impl Iterator for ReverseReader {
     type Item = Result<RecordBatch, ArrowError>;
 
+    /// Returns the next record batch in reverse order(latest to the first) from arrows file.
+    ///
+    /// Returns `None` when all batches have been processed.
     fn next(&mut self) -> Option<Self::Item> {
         if self.idx == 0 {
             return None;
@@ -158,19 +169,27 @@ fn get_default_timestamp_millis(batch: &RecordBatch) -> i64 {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs::File, io, path::Path, sync::Arc};
+    use std::{
+        fs::File,
+        io::{self, Write},
+        path::{Path, PathBuf},
+        sync::Arc,
+    };
 
     use arrow_array::{
         cast::AsArray, types::Int64Type, Array, Float64Array, Int32Array, Int64Array, RecordBatch,
         StringArray,
     };
     use arrow_ipc::{reader::FileReader, writer::FileWriter};
-    use arrow_schema::{DataType, Field, Schema};
+    use arrow_schema::{ArrowError, DataType, Field, Schema};
     use chrono::Utc;
     use temp_dir::TempDir;
 
     use crate::{
-        parseable::staging::{reader::MergedRecordReader, writer::DiskWriter},
+        parseable::staging::{
+            reader::{MergedRecordReader, ReverseReader},
+            writer::DiskWriter,
+        },
         utils::time::TimeRange,
         OBJECT_STORE_DATA_GRANULARITY,
     };
@@ -402,5 +421,148 @@ mod tests {
         assert!(reader.next().is_none());
 
         Ok(())
+    }
+
+    fn create_test_arrow_file(path: &PathBuf, num_batches: usize) -> Result<(), ArrowError> {
+        // Create schema
+        let schema = Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, false),
+        ]);
+        let schema_ref = std::sync::Arc::new(schema);
+
+        // Create file and writer
+        let file = File::create(path)?;
+        let mut writer = FileWriter::try_new(file, &schema_ref)?;
+
+        // Create and write batches
+        for i in 0..num_batches {
+            let id_array =
+                Int32Array::from(vec![i as i32 * 10, i as i32 * 10 + 1, i as i32 * 10 + 2]);
+            let name_array = StringArray::from(vec![
+                format!("batch_{i}_name_0"),
+                format!("batch_{i}_name_1"),
+                format!("batch_{i}_name_2"),
+            ]);
+
+            let batch = RecordBatch::try_new(
+                schema_ref.clone(),
+                vec![
+                    std::sync::Arc::new(id_array),
+                    std::sync::Arc::new(name_array),
+                ],
+            )?;
+
+            writer.write(&batch)?;
+        }
+
+        writer.finish()?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_reverse_reader_creation() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.arrow");
+
+        // Create test file with 3 batches
+        create_test_arrow_file(&file_path, 3).unwrap();
+
+        // Test successful creation
+        let reader = ReverseReader::try_new(&file_path);
+        assert!(reader.is_ok());
+
+        // Test schema retrieval
+        let reader = reader.unwrap();
+        let schema = reader.schema();
+        assert_eq!(schema.fields().len(), 2);
+        assert_eq!(schema.field(0).name(), "id");
+        assert_eq!(schema.field(1).name(), "name");
+    }
+
+    #[test]
+    fn test_reverse_reader_iteration() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.arrow");
+
+        // Create test file with 3 batches
+        create_test_arrow_file(&file_path, 3).unwrap();
+
+        // Create reader and iterate
+        let reader = ReverseReader::try_new(&file_path).unwrap();
+        let batches: Vec<_> = reader.collect::<Result<Vec<_>, _>>().unwrap();
+
+        // Verify correct number of batches
+        assert_eq!(batches.len(), 3);
+
+        // Verify reverse order
+        // Batch 2 (last written, first read)
+        let batch0 = &batches[0];
+        assert_eq!(batch0.num_columns(), 2);
+        let id_array = batch0
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(id_array.value(0), 20);
+
+        // Batch 1 (middle)
+        let batch1 = &batches[1];
+        let id_array = batch1
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(id_array.value(0), 10);
+
+        // Batch 0 (first written, last read)
+        let batch2 = &batches[2];
+        let id_array = batch2
+            .column(0)
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .unwrap();
+        assert_eq!(id_array.value(0), 0);
+    }
+
+    #[test]
+    fn test_empty_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("empty.arrow");
+
+        // Create empty file with schema but no batches
+        create_test_arrow_file(&file_path, 0).unwrap();
+
+        let reader = ReverseReader::try_new(&file_path).unwrap();
+        let batches: Vec<_> = reader.collect::<Result<Vec<_>, _>>().unwrap();
+
+        // Should be empty
+        assert_eq!(batches.len(), 0);
+    }
+
+    #[test]
+    fn test_invalid_file() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("invalid.txt");
+
+        // Create a non-Arrow file
+        let mut file = File::create(&file_path).unwrap();
+        writeln!(&mut file, "This is not an Arrow file").unwrap();
+
+        // Attempting to create a reader should fail
+        let reader = ReverseReader::try_new(&file_path);
+        assert!(reader.is_err());
+    }
+
+    #[test]
+    fn test_num_batches() {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test.arrow");
+
+        // Create test file with 5 batches
+        create_test_arrow_file(&file_path, 5).unwrap();
+
+        let reader = ReverseReader::try_new(&file_path).unwrap();
+        assert_eq!(reader.count(), 5);
     }
 }
