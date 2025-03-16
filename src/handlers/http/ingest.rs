@@ -16,6 +16,8 @@
  *
  */
 
+use std::collections::HashSet;
+
 use actix_web::web::Path;
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_array::RecordBatch;
@@ -24,10 +26,13 @@ use http::StatusCode;
 use serde_json::Value;
 
 use crate::event::error::EventError;
-use crate::event::format::{json, EventFormat, LogSource};
+use crate::event::format::{json, EventFormat, LogSource, LogSourceEntry};
 use crate::event::{self, get_schema_key, PartitionEvent};
 use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
 use crate::option::Mode;
+use crate::otel::logs::OTEL_LOG_KNOWN_FIELD_LIST;
+use crate::otel::metrics::OTEL_METRICS_KNOWN_FIELD_LIST;
+use crate::otel::traces::OTEL_TRACES_KNOWN_FIELD_LIST;
 use crate::parseable::{Stream, StreamNotFound, PARSEABLE};
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
@@ -54,9 +59,6 @@ pub async fn ingest(
     if internal_stream_names.contains(&stream_name) {
         return Err(PostError::InternalStream(stream_name));
     }
-    PARSEABLE
-        .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::default())
-        .await?;
 
     let log_source = req
         .headers()
@@ -70,6 +72,15 @@ pub async fn ingest(
     ) {
         return Err(PostError::OtelNotSupported);
     }
+
+    let log_source_entry = LogSourceEntry::new(log_source.clone(), HashSet::new());
+    PARSEABLE
+        .create_stream_if_not_exists(
+            &stream_name,
+            StreamType::UserDefined,
+            vec![log_source_entry],
+        )
+        .await?;
 
     let stream = PARSEABLE.get_or_create_stream(&stream_name);
 
@@ -100,8 +111,20 @@ pub async fn handle_otel_logs_ingestion(
     }
 
     let stream_name = stream_name.to_str().unwrap().to_owned();
+
+    let log_source_entry = LogSourceEntry::new(
+        log_source.clone(),
+        OTEL_LOG_KNOWN_FIELD_LIST
+            .iter()
+            .map(|&s| s.to_string())
+            .collect(),
+    );
     PARSEABLE
-        .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelLogs)
+        .create_stream_if_not_exists(
+            &stream_name,
+            StreamType::UserDefined,
+            vec![log_source_entry],
+        )
         .await?;
 
     let stream = PARSEABLE.get_or_create_stream(&stream_name);
@@ -131,11 +154,18 @@ pub async fn handle_otel_metrics_ingestion(
         return Err(PostError::IncorrectLogSource(LogSource::OtelMetrics));
     }
     let stream_name = stream_name.to_str().unwrap().to_owned();
+    let log_source_entry = LogSourceEntry::new(
+        log_source.clone(),
+        OTEL_METRICS_KNOWN_FIELD_LIST
+            .iter()
+            .map(|&s| s.to_string())
+            .collect(),
+    );
     PARSEABLE
         .create_stream_if_not_exists(
             &stream_name,
             StreamType::UserDefined,
-            LogSource::OtelMetrics,
+            vec![log_source_entry],
         )
         .await?;
 
@@ -167,8 +197,20 @@ pub async fn handle_otel_traces_ingestion(
         return Err(PostError::IncorrectLogSource(LogSource::OtelTraces));
     }
     let stream_name = stream_name.to_str().unwrap().to_owned();
+    let log_source_entry = LogSourceEntry::new(
+        log_source.clone(),
+        OTEL_TRACES_KNOWN_FIELD_LIST
+            .iter()
+            .map(|&s| s.to_string())
+            .collect(),
+    );
+
     PARSEABLE
-        .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelTraces)
+        .create_stream_if_not_exists(
+            &stream_name,
+            StreamType::UserDefined,
+            vec![log_source_entry],
+        )
         .await?;
 
     let stream = PARSEABLE.get_or_create_stream(&stream_name);
@@ -240,13 +282,12 @@ pub async fn push_logs_unchecked(
     let unchecked_event = event::Event {
         origin_format: "json",
         origin_size: 0,
-        time_partition: None,
         is_first_event: true, // NOTE: Maybe should be false
         partitions: [(
             get_schema_key(&rb.schema().fields),
             PartitionEvent {
                 rb,
-                date: Utc::now().date_naive(),
+                parsed_timestamp: Utc::now().naive_utc(),
             },
         )]
         .into_iter()

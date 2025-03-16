@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 use self::error::EventError;
 use crate::{metadata::update_stats, parseable::Stream, storage::StreamType};
-use chrono::NaiveDate;
+use chrono::NaiveDateTime;
 use std::collections::HashMap;
 
 pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
@@ -34,7 +34,7 @@ pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
 #[derive(Debug)]
 pub struct PartitionEvent {
     pub rb: RecordBatch,
-    pub date: NaiveDate,
+    pub parsed_timestamp: NaiveDateTime,
 }
 
 #[derive(Debug)]
@@ -42,7 +42,6 @@ pub struct Event {
     pub origin_format: &'static str,
     pub origin_size: usize,
     pub is_first_event: bool,
-    pub time_partition: Option<String>,
     pub partitions: HashMap<String, PartitionEvent>,
     pub stream_type: StreamType,
 }
@@ -50,18 +49,25 @@ pub struct Event {
 // Events holds the schema related to a each event for a single log stream
 impl Event {
     pub fn process(self, stream: &Stream) -> Result<(), EventError> {
-        for (prefix, PartitionEvent { rb, date }) in self.partitions {
+        for (
+            prefix,
+            PartitionEvent {
+                rb,
+                parsed_timestamp,
+            },
+        ) in self.partitions
+        {
             if self.is_first_event {
                 stream.commit_schema(rb.schema().as_ref().clone())?;
             }
-            stream.push(&prefix, &rb, self.stream_type)?;
+            stream.push(&prefix, parsed_timestamp, &rb, self.stream_type)?;
 
             update_stats(
                 &stream.stream_name,
                 self.origin_format,
                 self.origin_size,
                 rb.num_rows(),
-                date,
+                parsed_timestamp.date(),
             );
 
             crate::livetail::LIVETAIL.process(&stream.stream_name, &rb);
@@ -71,7 +77,12 @@ impl Event {
 
     pub fn process_unchecked(&self, stream: &Stream) -> Result<(), EventError> {
         for (prefix, partition) in &self.partitions {
-            stream.push(prefix, &partition.rb, self.stream_type)?;
+            stream.push(
+                prefix,
+                partition.parsed_timestamp,
+                &partition.rb,
+                self.stream_type,
+            )?;
         }
 
         Ok(())

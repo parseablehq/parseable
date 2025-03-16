@@ -27,7 +27,7 @@ use datafusion::{
     common::{
         stats::Precision,
         tree_node::{TreeNode, TreeNodeRecursion},
-        ToDFSchema,
+        Constraints, ToDFSchema,
     },
     datasource::{
         file_format::{parquet::ParquetFormat, FileFormat},
@@ -161,6 +161,7 @@ impl StandardTableProvider {
                     limit,
                     output_ordering: vec![LexOrdering::from_iter([sort_expr])],
                     table_partition_cols: Vec::new(),
+                    constraints: Constraints::empty(),
                 },
                 filters.as_ref(),
             )
@@ -388,6 +389,7 @@ impl StandardTableProvider {
                         max_value: Precision::Exact(max),
                         min_value: Precision::Exact(min),
                         distinct_count: Precision::Absent,
+                        sum_value: Precision::Absent,
                     })
                     .unwrap_or_default()
             })
@@ -967,6 +969,7 @@ fn cast_or_none(scalar: &ScalarValue) -> Option<CastRes<'_>> {
         ScalarValue::UInt32(val) => val.map(|val| CastRes::Int(val as i64)),
         ScalarValue::UInt64(val) => val.map(|val| CastRes::Int(val as i64)),
         ScalarValue::Utf8(val) => val.as_ref().map(|val| CastRes::String(val)),
+        ScalarValue::Date32(val) => val.map(|val| CastRes::Int(val as i64)),
         ScalarValue::TimestampMillisecond(val, _) => val.map(CastRes::Int),
         _ => None,
     }

@@ -18,7 +18,7 @@
  */
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{remove_file, write, File, OpenOptions},
     io::BufReader,
     num::NonZeroU32,
@@ -30,6 +30,7 @@ use std::{
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Fields, Schema};
+use chrono::{NaiveDateTime, Utc};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
 use parquet::{
@@ -46,12 +47,16 @@ use tracing::{error, info, trace, warn};
 
 use crate::{
     cli::Options,
-    event::DEFAULT_TIMESTAMP_KEY,
+    event::{
+        format::{LogSource, LogSourceEntry},
+        DEFAULT_TIMESTAMP_KEY,
+    },
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
     storage::{object_storage::to_bytes, retention::Retention, StreamType},
-    LOCK_EXPECT,
+    utils::time::TimeRange,
+    LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
 };
 
 use super::{
@@ -111,6 +116,7 @@ impl Stream {
     pub fn push(
         &self,
         prefix: &str,
+        parsed_timestamp: NaiveDateTime,
         record: &RecordBatch,
         stream_type: StreamType,
     ) -> Result<(), StagingError> {
@@ -120,12 +126,16 @@ impl Stream {
                 Some(writer) => {
                     writer.write(record)?;
                 }
+                // entry is not present thus we create it
                 None => {
-                    // entry is not present thus we create it
-                    let path = self.path_by_current_time(prefix);
                     std::fs::create_dir_all(&self.data_path)?;
-
-                    let mut writer = DiskWriter::new(path, &record.schema())?;
+                    let range = TimeRange::granularity_range(
+                        parsed_timestamp.and_local_timezone(Utc).unwrap(),
+                        OBJECT_STORE_DATA_GRANULARITY,
+                    );
+                    let filename = self.filename_from_prefix(prefix);
+                    let file_path = self.data_path.join(filename);
+                    let mut writer = DiskWriter::try_new(file_path, &record.schema(), range)?;
                     writer.write(record)?;
                     guard.disk.insert(prefix.to_owned(), writer);
                 }
@@ -137,14 +147,12 @@ impl Stream {
         Ok(())
     }
 
-    pub fn path_by_current_time(&self, prefix: &str) -> PathBuf {
+    pub fn filename_from_prefix(&self, prefix: &str) -> String {
         let mut hostname = hostname::get().unwrap().into_string().unwrap();
         if let Some(id) = &self.ingestor_id {
             hostname.push_str(id);
         }
-
-        let filename = format!("{prefix}.{hostname}.data.part",);
-        self.data_path.join(filename)
+        format!("{prefix}.{hostname}.data.{ARROW_FILE_EXTENSION}")
     }
 
     pub fn arrow_files(&self) -> Vec<PathBuf> {
@@ -324,12 +332,12 @@ impl Stream {
         self.writer.lock().unwrap().mem.clear();
     }
 
-    pub fn flush(&self) {
+    pub fn flush(&self, forced: bool) {
         let mut writer = self.writer.lock().unwrap();
         // Flush memory
         writer.mem.clear();
-        // Drop DiskWirters to flush all streams in memory
-        drop(std::mem::take(&mut writer.disk))
+        // Drop schema -> disk writer mapping, triggers flush to disk
+        writer.disk.retain(|_, w| !forced && w.is_current());
     }
 
     fn parquet_writer_props(
@@ -640,9 +648,64 @@ impl Stream {
         self.metadata.read().expect(LOCK_EXPECT).stream_type
     }
 
+    pub fn set_log_source(&self, log_source: Vec<LogSourceEntry>) {
+        self.metadata.write().expect(LOCK_EXPECT).log_source = log_source;
+    }
+
+    pub fn get_log_source(&self) -> Vec<LogSourceEntry> {
+        self.metadata.read().expect(LOCK_EXPECT).log_source.clone()
+    }
+
+    pub fn add_log_source(&self, log_source: LogSourceEntry) {
+        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+        for existing in &metadata.log_source {
+            if existing.log_source_format == log_source.log_source_format {
+                drop(metadata);
+                self.add_fields_to_log_source(
+                    &log_source.log_source_format,
+                    log_source.fields.clone(),
+                );
+                return;
+            }
+        }
+        drop(metadata);
+
+        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        for existing in &metadata.log_source {
+            if existing.log_source_format == log_source.log_source_format {
+                self.add_fields_to_log_source(
+                    &log_source.log_source_format,
+                    log_source.fields.clone(),
+                );
+                return;
+            }
+        }
+        metadata.log_source.push(log_source);
+    }
+
+    pub fn add_fields_to_log_source(&self, log_source: &LogSource, fields: HashSet<String>) {
+        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        for log_source_entry in metadata.log_source.iter_mut() {
+            if log_source_entry.log_source_format == *log_source {
+                log_source_entry.fields.extend(fields);
+                return;
+            }
+        }
+    }
+
+    pub fn get_fields_from_log_source(&self, log_source: &LogSource) -> Option<HashSet<String>> {
+        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+        for log_source_entry in metadata.log_source.iter() {
+            if log_source_entry.log_source_format == *log_source {
+                return Some(log_source_entry.fields.clone());
+            }
+        }
+        None
+    }
+
     /// First flushes arrows onto disk and then converts the arrow into parquet
     pub fn flush_and_convert(&self, shutdown_signal: bool) -> Result<(), StagingError> {
-        self.flush();
+        self.flush(shutdown_signal);
 
         self.prepare_parquet(shutdown_signal)
     }
@@ -838,7 +901,7 @@ mod tests {
     }
 
     #[test]
-    fn generate_correct_path() {
+    fn generate_filename_given_prefix() {
         let stream_name = "test_stream";
         let parsed_timestamp = NaiveDate::from_ymd_opt(2023, 10, 1)
             .unwrap()
@@ -862,14 +925,14 @@ mod tests {
             None,
         );
 
-        let expected_path = staging.data_path.join(format!(
-            "{prefix}.{}.data.part",
+        let expected = format!(
+            "{prefix}.{}.data.{ARROW_FILE_EXTENSION}",
             hostname::get().unwrap().into_string().unwrap()
-        ));
+        );
 
-        let generated_path = staging.path_by_current_time(&prefix);
+        let generated = staging.filename_from_prefix(&prefix);
 
-        assert_eq!(generated_path, expected_path);
+        assert_eq!(generated, expected);
     }
 
     #[test]
@@ -920,10 +983,11 @@ mod tests {
             ],
         )
         .unwrap();
+        let parsed_timestamp = Utc::now().naive_utc();
         staging
-            .push(&prefix, &batch, StreamType::UserDefined)
+            .push(&prefix, parsed_timestamp, &batch, StreamType::UserDefined)
             .unwrap();
-        staging.flush();
+        staging.flush(true);
     }
 
     #[test]

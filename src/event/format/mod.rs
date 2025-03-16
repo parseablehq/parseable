@@ -48,7 +48,7 @@ static TIME_FIELD_NAME_PARTS: [&str; 2] = ["time", "date"];
 type EventSchema = Vec<Arc<Field>>;
 
 /// Source of the logs, used to perform special processing for certain sources
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum LogSource {
     // AWS Kinesis sends logs in the format of a json array
     Kinesis,
@@ -97,6 +97,23 @@ impl Display for LogSource {
 }
 
 pub type IsFirstEvent = bool;
+
+/// Contains the format name and a list of known field names that are associated with the said format.
+/// Stored on disk as part of `ObjectStoreFormat` in stream.json
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogSourceEntry {
+    pub log_source_format: LogSource,
+    pub fields: HashSet<String>,
+}
+
+impl LogSourceEntry {
+    pub fn new(log_source_format: LogSource, fields: HashSet<String>) -> Self {
+        LogSourceEntry {
+            log_source_format,
+            fields,
+        }
+    }
+}
 
 // Global Trait for event format
 // This trait is implemented by all the event formats
