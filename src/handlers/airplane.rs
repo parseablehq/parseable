@@ -34,7 +34,7 @@ use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic_web::GrpcWebLayer;
 
 use crate::handlers::http::cluster::get_ingestor_info;
-use crate::handlers::http::query::{into_query, update_schema_when_distributed};
+use crate::handlers::http::query::into_query;
 use crate::handlers::livetail::cross_origin_config;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::parseable::PARSEABLE;
@@ -156,7 +156,8 @@ impl FlightService for AirServiceImpl {
             .ok_or_else(|| Status::aborted("Malformed SQL Provided, Table Name Not Found"))?
             .to_owned();
 
-        update_schema_when_distributed(&streams)
+        PARSEABLE
+            .update_schema_when_distributed(&streams)
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
 

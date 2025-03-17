@@ -16,6 +16,7 @@
  *
  */
 
+use arrow_schema::ArrowError;
 use object_store::path::Path;
 use relative_path::RelativePath;
 use serde::{Deserialize, Serialize};
@@ -261,6 +262,9 @@ pub enum ObjectStorageError {
 
     #[error("JoinError: {0}")]
     JoinError(#[from] JoinError),
+
+    #[error("ArrowError: {0}")]
+    Arrow(#[from] ArrowError),
 }
 
 pub fn to_object_store_path(path: &RelativePath) -> Path {

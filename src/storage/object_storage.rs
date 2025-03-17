@@ -860,7 +860,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             for path in stream.schema_files() {
                 let file = File::open(&path)?;
                 let schema: Schema = serde_json::from_reader(file)?;
-                commit_schema_to_storage(&stream_name, schema).await?;
+                self.commit_schema(&stream_name, schema).await?;
                 if let Err(e) = remove_file(path) {
                     warn!("Failed to remove staged file: {e}");
                 }
@@ -869,16 +869,43 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
         Ok(())
     }
-}
 
-pub async fn commit_schema_to_storage(
-    stream_name: &str,
-    schema: Schema,
-) -> Result<(), ObjectStorageError> {
-    let storage = PARSEABLE.storage().get_object_store();
-    let stream_schema = storage.get_schema(stream_name).await?;
-    let new_schema = Schema::try_merge(vec![schema, stream_schema]).unwrap();
-    storage.put_schema(stream_name, &new_schema).await
+    /// Stores updated schema into storage
+    async fn commit_schema(
+        &self,
+        stream_name: &str,
+        schema: Schema,
+    ) -> Result<(), ObjectStorageError> {
+        let stream_schema = self.get_schema(stream_name).await?;
+        let new_schema = Schema::try_merge(vec![schema, stream_schema])?;
+        self.put_schema(stream_name, &new_schema).await
+    }
+
+    /// Fetches all schemas associated with a specified stream.
+    ///
+    /// # Arguments
+    ///
+    /// * `stream_name` - The name of the stream to fetch the schema for.
+    ///
+    /// # Returns
+    ///
+    /// An array of `arrow_schema::Schema` for the specified stream.
+    async fn fetch_schemas(&self, stream_name: &str) -> Result<Vec<Schema>, ObjectStorageError> {
+        let path_prefix = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
+        let mut schemas: Vec<Schema> = vec![];
+        for byte_obj in self
+            .get_objects(
+                Some(&path_prefix),
+                Box::new(|file_name: String| file_name.contains(".schema")),
+            )
+            .await?
+        {
+            let schema = serde_json::from_slice(&byte_obj)?;
+            schemas.push(schema);
+        }
+
+        Ok(schemas)
+    }
 }
 
 #[inline(always)]
