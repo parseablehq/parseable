@@ -283,7 +283,7 @@ impl PrismDatasetRequest {
                 stream: stream.clone(),
                 start_time: "1h".to_owned(),
                 end_time: "now".to_owned(),
-                num_bins: 1,
+                num_bins: 10,
             }
             .get_bin_density()
             .await?;
