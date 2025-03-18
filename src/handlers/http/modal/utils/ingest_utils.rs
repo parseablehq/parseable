@@ -23,7 +23,7 @@ use opentelemetry_proto::tonic::{
 use serde_json::Value;
 
 use crate::{
-    event::format::{json, known_schema::extract_from_inline_log, EventFormat, LogSource},
+    event::format::{json, known_schema::KNOWN_SCHEMA_LIST, EventFormat, LogSource},
     handlers::http::{
         ingest::PostError,
         kinesis::{flatten_kinesis_logs, Message},
@@ -70,7 +70,7 @@ pub async fn flatten_and_push_logs(
             }
         }
         LogSource::Custom(src) => {
-            let json = extract_from_inline_log(json, src, extract_log);
+            let json = KNOWN_SCHEMA_LIST.extract_from_inline_log(json, src, extract_log);
             push_logs(stream_name, json, log_source).await?;
         }
         _ => push_logs(stream_name, json, log_source).await?,
