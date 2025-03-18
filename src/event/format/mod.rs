@@ -40,7 +40,7 @@ use super::{Event, DEFAULT_TIMESTAMP_KEY};
 
 pub mod json;
 
-static TIME_FIELD_NAME_PARTS: [&str; 13] = [
+static TIME_FIELD_NAME_PARTS: [&str; 11] = [
     "time",
     "date",
     "timestamp",
@@ -50,8 +50,6 @@ static TIME_FIELD_NAME_PARTS: [&str; 13] = [
     "collected",
     "start",
     "end",
-    "event",
-    "log",
     "ts",
     "dt",
 ];
