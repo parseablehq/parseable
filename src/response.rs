@@ -16,7 +16,7 @@
  *
  */
 
-use crate::handlers::http::query::QueryError;
+use crate::{handlers::http::query::QueryError, utils::arrow::record_batches_to_json};
 use datafusion::arrow::record_batch::RecordBatch;
 use serde_json::{json, Map, Value};
 
@@ -30,13 +30,7 @@ pub struct QueryResponse {
 impl QueryResponse {
     /// TODO: maybe this can be futher optimized by directly converting `arrow` to `serde_json` instead of serializing to bytes
     pub fn to_json(&self) -> Result<Value, QueryError> {
-        let buf = vec![];
-        let mut writer = arrow_json::ArrayWriter::new(buf);
-        let records: Vec<&RecordBatch> = self.records.iter().collect();
-        writer.write_batches(&records)?;
-        writer.finish()?;
-
-        let mut json: Vec<Map<String, Value>> = serde_json::from_slice(&writer.into_inner())?;
+        let mut json: Vec<Map<String, Value>> = record_batches_to_json(&self.records)?;
 
         if self.fill_null {
             for object in json.iter_mut() {

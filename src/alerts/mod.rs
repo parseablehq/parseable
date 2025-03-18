@@ -886,6 +886,7 @@ pub struct AlertsInfo {
     low: u64,
     medium: u64,
     high: u64,
+    critical: u64,
 }
 
 // TODO: add RBAC
@@ -898,6 +899,7 @@ pub async fn get_alerts_info() -> Result<AlertsInfo, AlertError> {
     let mut low = 0;
     let mut medium = 0;
     let mut high = 0;
+    let mut critical = 0;
 
     for (_, alert) in alerts.iter() {
         total += 1;
@@ -911,7 +913,7 @@ pub async fn get_alerts_info() -> Result<AlertsInfo, AlertError> {
             Severity::Low => low += 1,
             Severity::Medium => medium += 1,
             Severity::High => high += 1,
-            _ => {}
+            Severity::Critical => critical += 1,
         }
     }
 
@@ -923,5 +925,6 @@ pub async fn get_alerts_info() -> Result<AlertsInfo, AlertError> {
         low,
         medium,
         high,
+        critical,
     })
 }

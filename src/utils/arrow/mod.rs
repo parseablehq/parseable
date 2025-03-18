@@ -43,7 +43,7 @@
 use std::sync::Arc;
 
 use arrow_array::{Array, RecordBatch, TimestampMillisecondArray, UInt64Array};
-use arrow_schema::Schema;
+use arrow_schema::{ArrowError, Schema};
 use arrow_select::take::take;
 use chrono::{DateTime, Utc};
 use itertools::Itertools;
@@ -52,6 +52,7 @@ pub mod batch_adapter;
 pub mod flight;
 
 pub use batch_adapter::adapt_batch;
+use serde_json::{Map, Value};
 
 /// Replaces columns in a record batch with new arrays.
 ///
@@ -76,6 +77,34 @@ pub fn replace_columns(
         batch_arrays[index] = Arc::clone(arr);
     }
     RecordBatch::try_new(schema, batch_arrays).unwrap()
+}
+
+/// Converts a slice of record batches to JSON.
+///
+/// # Arguments
+///
+/// * `records` - The record batches to convert.
+///
+/// # Returns
+/// * Result<Vec<Map<String, Value>>>
+///
+/// A vector of JSON objects representing the record batches.
+pub fn record_batches_to_json(
+    records: &[RecordBatch],
+) -> Result<Vec<Map<String, Value>>, ArrowError> {
+    let buf = vec![];
+    let mut writer = arrow_json::ArrayWriter::new(buf);
+    for record in records {
+        writer.write(record)?;
+    }
+    writer.finish()?;
+
+    let buf = writer.into_inner();
+
+    let json_rows: Vec<Map<String, Value>> =
+        serde_json::from_reader(buf.as_slice()).unwrap_or_default();
+
+    Ok(json_rows)
 }
 
 /// Retrieves a field from a slice of fields by name.
@@ -157,6 +186,14 @@ mod tests {
         assert_eq!(new_rb.schema(), schema_ref);
         assert_eq!(new_rb.num_columns(), 3);
         assert_eq!(new_rb.num_rows(), 3)
+    }
+
+    #[test]
+    fn check_empty_json_to_record_batches() {
+        let r = RecordBatch::new_empty(Arc::new(Schema::empty()));
+        let rb = vec![r];
+        let batches = record_batches_to_json(&rb).unwrap();
+        assert_eq!(batches, vec![]);
     }
 
     #[test]
