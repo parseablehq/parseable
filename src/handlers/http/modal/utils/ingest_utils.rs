@@ -35,7 +35,7 @@ use crate::{
 };
 
 pub async fn flatten_and_push_logs(
-    json: Value,
+    mut json: Value,
     stream_name: &str,
     log_source: &LogSource,
     extract_log: Option<&str>,
@@ -70,7 +70,7 @@ pub async fn flatten_and_push_logs(
             }
         }
         LogSource::Custom(src) => {
-            let json = KNOWN_SCHEMA_LIST.extract_from_inline_log(json, src, extract_log);
+            KNOWN_SCHEMA_LIST.extract_from_inline_log(&mut json, src, extract_log)?;
             push_logs(stream_name, json, log_source).await?;
         }
         _ => push_logs(stream_name, json, log_source).await?,

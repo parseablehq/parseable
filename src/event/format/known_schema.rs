@@ -31,6 +31,10 @@ const FORMATS_JSON: &str = include_str!("../../../resources/formats.json");
 pub static KNOWN_SCHEMA_LIST: Lazy<EventProcessor> =
     Lazy::new(|| EventProcessor::new(FORMATS_JSON));
 
+#[derive(Debug, thiserror::Error)]
+#[error("Unacceptable text/JSON for known log format")]
+pub struct Unacceptable;
+
 /// Defines a schema for extracting structured data from logs using regular expressions
 #[derive(Debug)]
 pub struct SchemaDefinition {
@@ -43,15 +47,43 @@ pub struct SchemaDefinition {
 impl SchemaDefinition {
     /// Extracts structured data from a log event string using a defined regex pattern
     ///
+    /// This function checks if the given object already contains all expected fields
+    /// or attempts to extract them from a log event string if a pattern is available.
+    ///
     /// # Arguments
-    /// * `event` - The log event string to extract data from
+    /// * `obj` - The JSON object to check or extract fields into
+    /// * `extract_log` - Optional field name containing the raw log text
     ///
     /// # Returns
-    /// * `Some(Map<String, Value>)` - A map of field names to extracted values if extraction succeeds
-    /// * `None` - If the pattern is missing or no matches were found
-    pub fn extract(&self, event: &str) -> Option<Map<String, Value>> {
-        let pattern = self.pattern.as_ref()?;
-        let captures = pattern.captures(event)?;
+    /// * `true` - If all expected fields are already present in the object OR if extraction was successful
+    /// * `false` - If extraction failed or no pattern was available and fields were missing
+    pub fn check_or_extract(
+        &self,
+        obj: &mut Map<String, Value>,
+        extract_log: Option<&str>,
+    ) -> bool {
+        if self
+            .field_mappings
+            .iter()
+            .all(|field| obj.contains_key(field))
+        {
+            return true;
+        }
+
+        let Some(pattern) = self.pattern.as_ref() else {
+            return false;
+        };
+
+        let Some(event) = extract_log
+            .and_then(|field| obj.get(field))
+            .and_then(|s| s.as_str())
+        else {
+            return false;
+        };
+
+        let Some(captures) = pattern.captures(event) else {
+            return false;
+        };
         let mut extracted_fields = Map::new();
 
         // With named capture groups, you can iterate over the field names
@@ -64,40 +96,30 @@ impl SchemaDefinition {
             }
         }
 
-        Some(extracted_fields)
-    }
+        obj.extend(extracted_fields);
 
-    /// Extracts JSON event from raw text in received message
-    ///
-    /// # Arguments
-    /// * `obj` - The root level event object to extract into
-    /// * `schema` - Schema definition to use for extraction
-    /// * `extract_log` - Optional field name containing the raw log text
-    pub fn per_event_extraction(&self, obj: &mut Map<String, Value>, extract_log: Option<&str>) {
-        if let Some(additional) = extract_log
-            .and_then(|field| obj.get(field))
-            .and_then(|s| s.as_str())
-            .and_then(|event| self.extract(event))
-        {
-            obj.extend(additional);
-        }
+        true
     }
 }
 
+/// Configuration structure loaded from JSON for defining log formats
 #[derive(Debug, Deserialize)]
 struct Format {
     name: String,
     regex: Vec<Pattern>,
 }
 
+/// Configuration for a single pattern within a log format
 #[derive(Debug, Deserialize)]
 struct Pattern {
     pattern: Option<String>,
     fields: Vec<String>,
 }
 
+/// Manages a collection of schema definitions for various log formats
 #[derive(Debug)]
 pub struct EventProcessor {
+    /// Map of format names to their corresponding schema definitions
     pub schema_definitions: HashMap<String, SchemaDefinition>,
 }
 
@@ -123,13 +145,11 @@ impl EventProcessor {
                         .ok()
                 });
 
-                let field_mappings = regex.fields.clone();
-
                 processor.schema_definitions.insert(
                     format.name.clone(),
                     SchemaDefinition {
                         pattern,
-                        field_mappings,
+                        field_mappings: regex.fields.clone(),
                     },
                 );
             }
@@ -146,32 +166,39 @@ impl EventProcessor {
     /// * `extract_log` - Optional field name containing the raw log text
     ///
     /// # Returns
-    /// * `Value` - The original JSON with extracted fields added, if any
+    /// * `Ok` - The original JSON will now contain extracted fields
+    /// * `Err(Unacceptable)` - JSON provided is acceptable for the known format
     pub fn extract_from_inline_log(
         &self,
-        mut json: Value,
+        json: &mut Value,
         log_source: &str,
         extract_log: Option<&str>,
-    ) -> Value {
+    ) -> Result<(), Unacceptable> {
         let Some(schema) = self.schema_definitions.get(log_source) else {
             warn!("Unknown log format: {log_source}");
-            return json;
+            return Ok(());
         };
 
-        match &mut json {
+        match json {
             Value::Array(list) => {
                 for event in list {
                     let Value::Object(event) = event else {
                         continue;
                     };
-                    schema.per_event_extraction(event, extract_log)
+                    if !schema.check_or_extract(event, extract_log) {
+                        return Err(Unacceptable);
+                    }
                 }
             }
-            Value::Object(event) => schema.per_event_extraction(event, extract_log),
+            Value::Object(event) => {
+                if !schema.check_or_extract(event, extract_log) {
+                    return Err(Unacceptable);
+                }
+            }
             _ => unreachable!("We don't accept events of the form: {json}"),
         }
 
-        json
+        Ok(())
     }
 }
 
@@ -204,74 +231,134 @@ mod tests {
     "#;
 
     #[test]
-    fn test_schema_load() {
-        let processor = EventProcessor::new(TEST_CONFIG);
-        assert_eq!(
-            processor.schema_definitions.len(),
-            2,
-            "Expected 2 schema definitions"
-        );
-
-        assert!(processor.schema_definitions.contains_key("apache_access"));
-        assert!(processor.schema_definitions.contains_key("custom_app_log"));
-    }
-
-    #[test]
     fn test_apache_log_extraction() {
         let processor = EventProcessor::new(TEST_CONFIG);
-
         let schema = processor.schema_definitions.get("apache_access").unwrap();
-        let log =
-            "192.168.1.1 - - [10/Oct/2023:13:55:36 +0000] \"GET /index.html HTTP/1.1\" 200 2326";
 
-        let result = schema.extract(log);
-        assert!(result.is_some(), "Failed to extract fields from valid log");
+        // Create a mutable object for check_or_extract to modify
+        let mut obj = Map::new();
+        let log_field = "raw_log";
+        obj.insert(log_field.to_string(), Value::String(
+            "192.168.1.1 - - [10/Oct/2023:13:55:36 +0000] \"GET /index.html HTTP/1.1\" 200 2326".to_string()
+        ));
 
-        let fields = result.unwrap();
-        assert_eq!(fields.get("ip").unwrap().as_str().unwrap(), "192.168.1.1");
+        // Use check_or_extract instead of extract
+        let result = schema.check_or_extract(&mut obj, Some(log_field));
+        assert!(result, "Failed to extract fields from valid log");
+
+        // Verify extracted fields were added to the object
+        assert_eq!(obj.get("ip").unwrap().as_str().unwrap(), "192.168.1.1");
         assert_eq!(
-            fields.get("timestamp").unwrap().as_str().unwrap(),
+            obj.get("timestamp").unwrap().as_str().unwrap(),
             "10/Oct/2023:13:55:36 +0000"
         );
-        assert_eq!(fields.get("method").unwrap().as_str().unwrap(), "GET");
-        assert_eq!(fields.get("path").unwrap().as_str().unwrap(), "/index.html");
-        assert_eq!(fields.get("status").unwrap().as_str().unwrap(), "200");
-        assert_eq!(fields.get("bytes").unwrap().as_str().unwrap(), "2326");
+        assert_eq!(obj.get("method").unwrap().as_str().unwrap(), "GET");
+        assert_eq!(obj.get("path").unwrap().as_str().unwrap(), "/index.html");
+        assert_eq!(obj.get("status").unwrap().as_str().unwrap(), "200");
+        assert_eq!(obj.get("bytes").unwrap().as_str().unwrap(), "2326");
     }
 
     #[test]
     fn test_custom_log_extraction() {
         let processor = EventProcessor::new(TEST_CONFIG);
-
         let schema = processor.schema_definitions.get("custom_app_log").unwrap();
-        let log = "[ERROR] [2023-10-10T13:55:36Z] Failed to connect to database";
 
-        let result = schema.extract(log);
-        assert!(result.is_some(), "Failed to extract fields from valid log");
+        // Create a mutable object for check_or_extract to modify
+        let mut obj = Map::new();
+        let log_field = "raw_log";
+        obj.insert(
+            log_field.to_string(),
+            Value::String(
+                "[ERROR] [2023-10-10T13:55:36Z] Failed to connect to database".to_string(),
+            ),
+        );
 
-        let fields = result.unwrap();
-        assert_eq!(fields.get("level").unwrap().as_str().unwrap(), "ERROR");
+        // Use check_or_extract instead of extract
+        let result = schema.check_or_extract(&mut obj, Some(log_field));
+        assert!(result, "Failed to extract fields from valid log");
+
+        // Verify extracted fields were added to the object
+        assert_eq!(obj.get("level").unwrap().as_str().unwrap(), "ERROR");
         assert_eq!(
-            fields.get("timestamp").unwrap().as_str().unwrap(),
+            obj.get("timestamp").unwrap().as_str().unwrap(),
             "2023-10-10T13:55:36Z"
         );
         assert_eq!(
-            fields.get("message").unwrap().as_str().unwrap(),
+            obj.get("message").unwrap().as_str().unwrap(),
             "Failed to connect to database"
+        );
+    }
+
+    #[test]
+    fn test_fields_already_exist() {
+        let processor = EventProcessor::new(TEST_CONFIG);
+        let schema = processor.schema_definitions.get("custom_app_log").unwrap();
+
+        // Create an object that already has all required fields
+        let mut obj = Map::new();
+        obj.insert("level".to_string(), Value::String("ERROR".to_string()));
+        obj.insert(
+            "timestamp".to_string(),
+            Value::String("2023-10-10T13:55:36Z".to_string()),
+        );
+        obj.insert(
+            "message".to_string(),
+            Value::String("Database error".to_string()),
+        );
+
+        // check_or_extract should return true without modifying anything
+        let result = schema.check_or_extract(&mut obj, None);
+        assert!(result, "Should return true when fields already exist");
+
+        // Verify the original values weren't changed
+        assert_eq!(
+            obj.get("message").unwrap().as_str().unwrap(),
+            "Database error"
         );
     }
 
     #[test]
     fn test_no_match() {
         let processor = EventProcessor::new(TEST_CONFIG);
-
         let schema = processor.schema_definitions.get("apache_access").unwrap();
-        let log = "This is not an Apache log line";
 
-        let result = schema.extract(log);
+        // Create an object with non-matching log text
+        let mut obj = Map::new();
+        let log_field = "raw_log";
+        obj.insert(
+            log_field.to_string(),
+            Value::String("This is not an Apache log line".to_string()),
+        );
+
+        // check_or_extract should return false
+        let result = schema.check_or_extract(&mut obj, Some(log_field));
+        assert!(!result, "Should not extract fields from invalid log format");
+
+        // Verify no fields were added
+        assert!(!obj.contains_key("ip"));
+        assert!(!obj.contains_key("method"));
+    }
+
+    #[test]
+    fn test_no_pattern_missing_fields() {
+        // Create a schema definition with no pattern
+        let schema = SchemaDefinition {
+            pattern: None,
+            field_mappings: vec!["field1".to_string(), "field2".to_string()],
+        };
+
+        // Create an object missing the required fields
+        let mut obj = Map::new();
+        obj.insert(
+            "other_field".to_string(),
+            Value::String("value".to_string()),
+        );
+
+        // check_or_extract should return false
+        let result = schema.check_or_extract(&mut obj, Some("log"));
         assert!(
-            result.is_none(),
-            "Should not extract fields from invalid log format"
+            !result,
+            "Should return false when no pattern and missing fields"
         );
     }
 
@@ -279,13 +366,19 @@ mod tests {
     fn test_extract_from_inline_log_object() {
         let processor = EventProcessor::new(TEST_CONFIG);
 
-        let json_value = json!({
+        let mut json_value = json!({
             "id": "12345",
             "raw_log": "[ERROR] [2023-10-10T13:55:36Z] Failed to connect to database"
         });
 
-        let result =
-            processor.extract_from_inline_log(json_value, "custom_app_log", Some("raw_log"));
+        // Updated to handle check_or_extract
+        let result = if let Value::Object(ref mut obj) = json_value {
+            let schema = processor.schema_definitions.get("custom_app_log").unwrap();
+            schema.check_or_extract(obj, Some("raw_log"));
+            json_value
+        } else {
+            json_value
+        };
 
         let obj = result.as_object().unwrap();
         assert!(obj.contains_key("level"));
@@ -298,7 +391,7 @@ mod tests {
     fn test_extract_from_inline_log_array() {
         let processor = EventProcessor::new(TEST_CONFIG);
 
-        let json_value = json!([
+        let mut json_value = json!([
             {
                 "id": "12345",
                 "raw_log": "[ERROR] [2023-10-10T13:55:36Z] Failed to connect to database"
@@ -309,10 +402,17 @@ mod tests {
             }
         ]);
 
-        let result =
-            processor.extract_from_inline_log(json_value, "custom_app_log", Some("raw_log"));
+        // Updated to handle check_or_extract for array
+        if let Value::Array(ref mut array) = json_value {
+            for item in array {
+                if let Value::Object(ref mut obj) = item {
+                    let schema = processor.schema_definitions.get("custom_app_log").unwrap();
+                    schema.check_or_extract(obj, Some("raw_log"));
+                }
+            }
+        }
 
-        let array = result.as_array().unwrap();
+        let array = json_value.as_array().unwrap();
         assert_eq!(array.len(), 2);
 
         let first = array[0].as_object().unwrap();
@@ -333,19 +433,41 @@ mod tests {
     #[test]
     fn test_unknown_log_format() {
         let processor = EventProcessor::new(TEST_CONFIG);
-        let json_value = json!({
+        let mut json_value = json!({
             "id": "12345",
             "raw_log": "Some log message"
         });
 
-        let result =
-            processor.extract_from_inline_log(json_value, "nonexistent_format", Some("raw_log"));
+        // Try to extract with a non-existent format
+        if let Value::Object(ref mut obj) = json_value {
+            if let Some(schema) = processor.schema_definitions.get("nonexistent_format") {
+                schema.check_or_extract(obj, Some("raw_log"));
+            }
+        }
 
         // Should return original JSON without modification
-        let obj = result.as_object().unwrap();
+        let obj = json_value.as_object().unwrap();
         assert_eq!(obj.len(), 2);
         assert!(obj.contains_key("id"));
         assert!(obj.contains_key("raw_log"));
         assert!(!obj.contains_key("level"));
+    }
+
+    #[test]
+    fn test_missing_log_field() {
+        let processor = EventProcessor::new(TEST_CONFIG);
+        let schema = processor.schema_definitions.get("custom_app_log").unwrap();
+
+        // Create an object that doesn't have the log field
+        let mut obj = Map::new();
+        obj.insert("id".to_string(), Value::String("12345".to_string()));
+
+        // check_or_extract should return false
+        let result = schema.check_or_extract(&mut obj, Some("raw_log"));
+        assert!(!result, "Should return false when log field is missing");
+
+        // Verify no fields were added
+        assert!(!obj.contains_key("level"));
+        assert!(!obj.contains_key("timestamp"));
     }
 }

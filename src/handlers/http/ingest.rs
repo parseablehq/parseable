@@ -28,6 +28,7 @@ use serde_json::Value;
 
 use crate::event;
 use crate::event::error::EventError;
+use crate::event::format::known_schema::Unacceptable;
 use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
 use crate::handlers::{EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
 use crate::metadata::SchemaVersion;
@@ -347,6 +348,8 @@ pub enum PostError {
     IngestionNotAllowed,
     #[error("Missing field for time partition in json: {0}")]
     MissingTimePartition(String),
+    #[error("Known Format: {0}")]
+    KnownFormat(#[from] Unacceptable),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -373,6 +376,7 @@ impl actix_web::ResponseError for PostError {
             PostError::IncorrectLogSource(_) => StatusCode::BAD_REQUEST,
             PostError::IngestionNotAllowed => StatusCode::BAD_REQUEST,
             PostError::MissingTimePartition(_) => StatusCode::BAD_REQUEST,
+            PostError::KnownFormat(_) => StatusCode::BAD_REQUEST,
         }
     }
 
