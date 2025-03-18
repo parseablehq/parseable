@@ -90,6 +90,11 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         base_path: Option<&RelativePath>,
         filter_fun: Box<dyn Fn(String) -> bool + Send>,
     ) -> Result<Vec<Bytes>, ObjectStorageError>;
+    async fn upload_multipart(
+        &self,
+        key: &RelativePath,
+        path: &Path,
+    ) -> Result<(), ObjectStorageError>;
     async fn put_object(
         &self,
         path: &RelativePath,

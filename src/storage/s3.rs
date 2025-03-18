@@ -43,6 +43,7 @@ use object_store::{
     BackoffConfig, ClientOptions, ObjectMeta, ObjectStore, PutPayload, RetryConfig,
 };
 use relative_path::{RelativePath, RelativePathBuf};
+use tokio::{fs::OpenOptions, io::AsyncReadExt};
 use tracing::{error, info};
 
 use crate::{
@@ -61,6 +62,7 @@ use super::{
 // in bytes
 // const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
 const AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: &str = "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI";
+const MIN_MULTIPART_UPLOAD_SIZE: usize = 5 * 1024 * 1024;
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -509,48 +511,66 @@ impl S3 {
         res
     }
 
-    // TODO: introduce parallel, multipart-uploads if required
-    // async fn _upload_multipart(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
-    //     let mut buf = vec![0u8; MULTIPART_UPLOAD_SIZE / 2];
-    //     let mut file = OpenOptions::new().read(true).open(path).await?;
+    async fn _upload_multipart(
+        &self,
+        key: &RelativePath,
+        path: &Path,
+    ) -> Result<(), ObjectStorageError> {
+        let mut file = OpenOptions::new().read(true).open(path).await?;
+        let location = &to_object_store_path(key);
 
-    //     // let (multipart_id, mut async_writer) = self.client.put_multipart(&key.into()).await?;
-    //     let mut async_writer = self.client.put_multipart(&key.into()).await?;
+        let mut async_writer = self.client.put_multipart(location).await?;
 
-    //     /* `abort_multipart()` has been removed */
-    //     // let close_multipart = |err| async move {
-    //     //     error!("multipart upload failed. {:?}", err);
-    //     //     self.client
-    //     //         .abort_multipart(&key.into(), &multipart_id)
-    //     //         .await
-    //     // };
+        // /* `abort_multipart()` has been removed */
+        // let close_multipart = |err| async move {
+        //     error!("multipart upload failed. {:?}", err);
+        //     self.client
+        //         .abort_multipart(&key.into(), &multipart_id)
+        //         .await
+        // };
 
-    //     loop {
-    //         match file.read(&mut buf).await {
-    //             Ok(len) => {
-    //                 if len == 0 {
-    //                     break;
-    //                 }
-    //                 if let Err(err) = async_writer.write_all(&buf[0..len]).await {
-    //                     // close_multipart(err).await?;
-    //                     break;
-    //                 }
-    //                 if let Err(err) = async_writer.flush().await {
-    //                     // close_multipart(err).await?;
-    //                     break;
-    //                 }
-    //             }
-    //             Err(err) => {
-    //                 // close_multipart(err).await?;
-    //                 break;
-    //             }
-    //         }
-    //     }
+        let meta = file.metadata().await?;
+        let total_size = meta.len() as usize;
+        if total_size < MIN_MULTIPART_UPLOAD_SIZE {
+            let mut data = Vec::new();
+            file.read_to_end(&mut data).await?;
+            self.client.put(location, data.into()).await?;
+            // async_writer.put_part(data.into()).await?;
+            // async_writer.complete().await?;
+            return Ok(());
+        } else {
+            let mut data = Vec::new();
+            file.read_to_end(&mut data).await?;
 
-    //     async_writer.shutdown().await?;
+            // let mut upload_parts = Vec::new();
 
-    //     Ok(())
-    // }
+            let has_final_partial_part = total_size % MIN_MULTIPART_UPLOAD_SIZE > 0;
+            let num_full_parts = total_size / MIN_MULTIPART_UPLOAD_SIZE;
+            let total_parts = num_full_parts + if has_final_partial_part { 1 } else { 0 };
+
+            // Upload each part
+            for part_number in 0..(total_parts) {
+                let start_pos = part_number * MIN_MULTIPART_UPLOAD_SIZE;
+                let end_pos = if part_number == num_full_parts && has_final_partial_part {
+                    // Last part might be smaller than 5MB (which is allowed)
+                    total_size
+                } else {
+                    // All other parts must be at least 5MB
+                    start_pos + MIN_MULTIPART_UPLOAD_SIZE
+                };
+
+                // Extract this part's data
+                let part_data = data[start_pos..end_pos].to_vec();
+
+                // Upload the part
+                async_writer.put_part(part_data.into()).await?;
+
+                // upload_parts.push(part_number as u64 + 1);
+            }
+            async_writer.complete().await?;
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -565,6 +585,13 @@ impl ObjectStorage for S3 {
         let store: Arc<dyn ObjectStore> = Arc::new(self.client.clone());
         let buf = object_store::buffered::BufReader::new(store, &meta);
         Ok(buf)
+    }
+    async fn upload_multipart(
+        &self,
+        key: &RelativePath,
+        path: &Path,
+    ) -> Result<(), ObjectStorageError> {
+        self._upload_multipart(key, path).await
     }
     async fn head(&self, path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
         Ok(self.client.head(&to_object_store_path(path)).await?)

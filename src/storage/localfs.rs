@@ -104,6 +104,13 @@ impl LocalFS {
 
 #[async_trait]
 impl ObjectStorage for LocalFS {
+    async fn upload_multipart(
+        &self,
+        _key: &RelativePath,
+        _path: &Path,
+    ) -> Result<(), ObjectStorageError> {
+        unimplemented!()
+    }
     async fn get_buffered_reader(
         &self,
         _path: &RelativePath,
