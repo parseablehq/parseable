@@ -28,7 +28,10 @@ use crate::{
     option::StandaloneWithDistributed,
     parseable::StreamNotFound,
     stats::FullStats,
-    utils::json::{deserialize_string_as_true, serialize_bool_as_true},
+    utils::json::{
+        deserialize_custom_partitions, deserialize_string_as_true, serialize_bool_as_true,
+        serialize_custom_partitions,
+    },
 };
 
 use chrono::Utc;
@@ -103,8 +106,11 @@ pub struct ObjectStoreFormat {
     pub time_partition: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_partition_limit: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub custom_partition: Option<String>,
+    #[serde(
+        deserialize_with = "deserialize_custom_partitions",
+        serialize_with = "serialize_custom_partitions"
+    )]
+    pub custom_partitions: Vec<String>,
     #[serde(
         default,    // sets to false if not configured
         deserialize_with = "deserialize_string_as_true",
@@ -131,8 +137,12 @@ pub struct StreamInfo {
     pub time_partition: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_partition_limit: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub custom_partition: Option<String>,
+    #[serde(
+        deserialize_with = "deserialize_custom_partitions",
+        serialize_with = "serialize_custom_partitions",
+        rename = "custom_partition"
+    )]
+    pub custom_partitions: Vec<String>,
     #[serde(
         default,    // sets to false if not configured
         deserialize_with = "deserialize_string_as_true",
@@ -216,7 +226,7 @@ impl Default for ObjectStoreFormat {
             retention: None,
             time_partition: None,
             time_partition_limit: None,
-            custom_partition: None,
+            custom_partitions: vec![],
             static_schema_flag: false,
             hot_tier_enabled: false,
             log_source: vec![LogSourceEntry::default()],

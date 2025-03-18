@@ -186,7 +186,7 @@ async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, StreamE
         time_partition_limit: stream_meta
             .time_partition_limit
             .map(|limit| limit.to_string()),
-        custom_partition: stream_meta.custom_partition.clone(),
+        custom_partitions: stream_meta.custom_partitions.clone(),
         static_schema_flag: stream_meta.static_schema_flag,
         log_source: stream_meta.log_source.clone(),
     };

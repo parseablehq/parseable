@@ -16,33 +16,38 @@
  *
  */
 
-use self::error::StreamError;
-use super::cluster::utils::{IngestionStats, QueriedStats, StorageStats};
-use super::query::update_schema_when_distributed;
-use crate::event::format::override_data_type;
-use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
-use crate::metadata::SchemaVersion;
-use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
-use crate::parseable::{StreamNotFound, PARSEABLE};
-use crate::rbac::role::Action;
-use crate::rbac::Users;
-use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
-use crate::storage::retention::Retention;
-use crate::storage::{StreamInfo, StreamType};
-use crate::utils::actix::extract_session_key_from_req;
-use crate::{stats, validator, LOCK_EXPECT};
+use std::{fs, sync::Arc};
 
-use actix_web::http::StatusCode;
-use actix_web::web::{Json, Path};
-use actix_web::{web, HttpRequest, Responder};
+use actix_web::{
+    web::{Json, Path},
+    HttpRequest, Responder,
+};
 use arrow_json::reader::infer_json_schema_from_iterator;
 use bytes::Bytes;
 use chrono::Utc;
+use error::StreamError;
+use http::StatusCode;
 use itertools::Itertools;
 use serde_json::{json, Value};
-use std::fs;
-use std::sync::Arc;
 use tracing::warn;
+
+use crate::{
+    event::format::override_data_type,
+    hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION},
+    metadata::SchemaVersion,
+    metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE},
+    parseable::{StreamNotFound, PARSEABLE},
+    rbac::{role::Action, Users},
+    stats::{self, event_labels_date, storage_size_labels_date, Stats},
+    storage::{retention::Retention, StreamInfo, StreamType},
+    utils::actix::extract_session_key_from_req,
+    validator, LOCK_EXPECT,
+};
+
+use super::{
+    cluster::utils::{IngestionStats, QueriedStats, StorageStats},
+    query::update_schema_when_distributed,
+};
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
@@ -98,7 +103,7 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, StreamError> {
         .map(|name| json!({"name": name}))
         .collect_vec();
 
-    Ok(web::Json(res))
+    Ok(Json(res))
 }
 
 pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, StreamError> {
@@ -117,7 +122,7 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
     for log_record in log_records {
         schema = override_data_type(schema, log_record, SchemaVersion::V1);
     }
-    Ok((web::Json(schema), StatusCode::OK))
+    Ok((Json(schema), StatusCode::OK))
 }
 
 pub async fn get_schema(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
@@ -132,7 +137,7 @@ pub async fn get_schema(stream_name: Path<String>) -> Result<impl Responder, Str
     match update_schema_when_distributed(&vec![stream_name.clone()]).await {
         Ok(_) => {
             let schema = stream.get_schema();
-            Ok((web::Json(schema), StatusCode::OK))
+            Ok((Json(schema), StatusCode::OK))
         }
         Err(err) => Err(StreamError::Custom {
             msg: err.to_string(),
@@ -168,7 +173,7 @@ pub async fn get_retention(stream_name: Path<String>) -> Result<impl Responder, 
         .get_stream(&stream_name)?
         .get_retention()
         .unwrap_or_default();
-    Ok((web::Json(retention), StatusCode::OK))
+    Ok((Json(retention), StatusCode::OK))
 }
 
 pub async fn put_retention(
@@ -250,7 +255,7 @@ pub async fn get_stats(
         if !date_value.is_empty() {
             let stats = get_stats_date(&stream_name, date_value).await?;
             let stats = serde_json::to_value(stats)?;
-            return Ok((web::Json(stats), StatusCode::OK));
+            return Ok((Json(stats), StatusCode::OK));
         }
     }
 
@@ -281,7 +286,7 @@ pub async fn get_stats(
 
     let stats = serde_json::to_value(stats)?;
 
-    Ok((web::Json(stats), StatusCode::OK))
+    Ok((Json(stats), StatusCode::OK))
 }
 
 pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
@@ -333,12 +338,12 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
         time_partition_limit: stream_meta
             .time_partition_limit
             .map(|limit| limit.to_string()),
-        custom_partition: stream_meta.custom_partition.clone(),
+        custom_partitions: stream_meta.custom_partitions.clone(),
         static_schema_flag: stream_meta.static_schema_flag,
         log_source: stream_meta.log_source.clone(),
     };
 
-    Ok((web::Json(stream_info), StatusCode::OK))
+    Ok((Json(stream_info), StatusCode::OK))
 }
 
 pub async fn put_stream_hot_tier(
@@ -405,7 +410,7 @@ pub async fn get_stream_hot_tier(stream_name: Path<String>) -> Result<impl Respo
     };
     let meta = hot_tier_manager.get_hot_tier(&stream_name).await?;
 
-    Ok((web::Json(meta), StatusCode::OK))
+    Ok((Json(meta), StatusCode::OK))
 }
 
 pub async fn delete_stream_hot_tier(
@@ -455,6 +460,7 @@ pub mod error {
     use http::StatusCode;
 
     use crate::{
+        handlers::http::modal::utils::logstream_utils::HeaderParseError,
         hottier::HotTierError,
         parseable::StreamNotFound,
         storage::ObjectStorageError,
@@ -524,6 +530,8 @@ pub mod error {
         HotTierValidation(#[from] HotTierValidationError),
         #[error("{0}")]
         HotTierError(#[from] HotTierError),
+        #[error("Error when parsing headers: {0}")]
+        HeaderParsing(#[from] HeaderParseError),
     }
 
     impl actix_web::ResponseError for StreamError {
@@ -559,6 +567,7 @@ pub mod error {
                 StreamError::HotTierNotEnabled(_) => StatusCode::FORBIDDEN,
                 StreamError::HotTierValidation(_) => StatusCode::BAD_REQUEST,
                 StreamError::HotTierError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                StreamError::HeaderParsing(_) => StatusCode::BAD_REQUEST,
             }
         }
 
@@ -596,7 +605,7 @@ mod tests {
     #[actix_web::test]
     async fn header_without_log_source() {
         let req = TestRequest::default().to_http_request();
-        let PutStreamHeaders { log_source, .. } = req.headers().into();
+        let PutStreamHeaders { log_source, .. } = req.headers().try_into().unwrap();
         assert_eq!(log_source, crate::event::format::LogSource::Json);
     }
 
@@ -605,19 +614,19 @@ mod tests {
         let mut req = TestRequest::default()
             .insert_header(("X-P-Log-Source", "pmeta"))
             .to_http_request();
-        let PutStreamHeaders { log_source, .. } = req.headers().into();
+        let PutStreamHeaders { log_source, .. } = req.headers().try_into().unwrap();
         assert_eq!(log_source, crate::event::format::LogSource::Pmeta);
 
         req = TestRequest::default()
             .insert_header(("X-P-Log-Source", "otel-logs"))
             .to_http_request();
-        let PutStreamHeaders { log_source, .. } = req.headers().into();
+        let PutStreamHeaders { log_source, .. } = req.headers().try_into().unwrap();
         assert_eq!(log_source, crate::event::format::LogSource::OtelLogs);
 
         req = TestRequest::default()
             .insert_header(("X-P-Log-Source", "kinesis"))
             .to_http_request();
-        let PutStreamHeaders { log_source, .. } = req.headers().into();
+        let PutStreamHeaders { log_source, .. } = req.headers().try_into().unwrap();
         assert_eq!(log_source, crate::event::format::LogSource::Kinesis);
     }
 
@@ -626,7 +635,7 @@ mod tests {
         let req = TestRequest::default()
             .insert_header(("X-P-Log-Source", "teststream"))
             .to_http_request();
-        let PutStreamHeaders { log_source, .. } = req.headers().into();
+        let PutStreamHeaders { log_source, .. } = req.headers().try_into().unwrap();
         assert_eq!(log_source, crate::event::format::LogSource::Json);
     }
 }

@@ -82,20 +82,18 @@ async fn push_logs(
 ) -> Result<(), PostError> {
     let stream = PARSEABLE.get_stream(stream_name)?;
     let time_partition = stream.get_time_partition();
-    let time_partition_limit = PARSEABLE
-        .get_stream(stream_name)?
-        .get_time_partition_limit();
+    let time_partition_limit = stream.get_time_partition_limit();
     let static_schema_flag = stream.get_static_schema_flag();
-    let custom_partition = stream.get_custom_partition();
+    let custom_partitions = stream.get_custom_partitions();
     let schema_version = stream.get_schema_version();
     let p_timestamp = Utc::now();
 
-    let data = if time_partition.is_some() || custom_partition.is_some() {
+    let data = if time_partition.is_some() || !custom_partitions.is_empty() {
         convert_array_to_object(
             json,
             time_partition.as_ref(),
             time_partition_limit,
-            custom_partition.as_ref(),
+            &custom_partitions,
             schema_version,
             log_source,
         )?
@@ -104,7 +102,7 @@ async fn push_logs(
             json,
             None,
             None,
-            None,
+            &[],
             schema_version,
             log_source,
         )?)?]
@@ -119,7 +117,7 @@ async fn push_logs(
                 origin_size,
                 &schema,
                 static_schema_flag,
-                custom_partition.as_ref(),
+                &custom_partitions,
                 time_partition.as_ref(),
                 schema_version,
                 StreamType::UserDefined,

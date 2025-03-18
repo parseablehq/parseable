@@ -219,7 +219,7 @@ pub trait EventFormat: Sized {
         origin_size: u64,
         storage_schema: &HashMap<String, Arc<Field>>,
         static_schema_flag: bool,
-        custom_partitions: Option<&String>,
+        custom_partitions: &[String],
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
         stream_type: StreamType,

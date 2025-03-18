@@ -62,7 +62,7 @@ impl ParseableSinkProcessor {
         let stream = PARSEABLE.get_stream(stream_name)?;
         let schema = stream.get_schema_raw();
         let time_partition = stream.get_time_partition();
-        let custom_partition = stream.get_custom_partition();
+        let custom_partition = stream.get_custom_partitions();
         let static_schema_flag = stream.get_static_schema_flag();
         let schema_version = stream.get_schema_version();
 
