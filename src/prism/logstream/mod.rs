@@ -33,18 +33,15 @@ use crate::{
             utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
         },
         logstream::error::StreamError,
-        query::{into_query, update_schema_when_distributed, Query, QueryError},
+        query::{update_schema_when_distributed, QueryError, QueryParams, QueryRequest},
     },
     hottier::{HotTierError, HotTierManager, StreamHotTier},
     parseable::{StreamNotFound, PARSEABLE},
-    query::{error::ExecuteError, execute, CountsRequest, CountsResponse, QUERY_SESSION},
+    query::{error::ExecuteError, execute, CountsRequest, CountsResponse},
     rbac::{map::SessionKey, role::Action, Users},
     stats,
     storage::{retention::Retention, StreamInfo, StreamType},
-    utils::{
-        arrow::record_batches_to_json,
-        time::{TimeParseError, TimeRange},
-    },
+    utils::{arrow::record_batches_to_json, time::TimeParseError},
     LOCK_EXPECT,
 };
 
@@ -294,8 +291,14 @@ impl PrismDatasetRequest {
 
             // Retrieve distinct values for source identifiers
             // Returns None if fields aren't present or if query fails
-            let ips = self.get_distinct_entries(stream, "p_src_ip").await.ok();
-            let user_agents = self.get_distinct_entries(stream, "p_user_agent").await.ok();
+            let ips = self
+                .get_distinct_entries(stream, "p_src_ip", &key)
+                .await
+                .ok();
+            let user_agents = self
+                .get_distinct_entries(stream, "p_user_agent", &key)
+                .await
+                .ok();
 
             responses.push(PrismDatasetResponse {
                 stream: stream.clone(),
@@ -327,19 +330,20 @@ impl PrismDatasetRequest {
         &self,
         stream_name: &str,
         field: &str,
+        key: &SessionKey,
     ) -> Result<Vec<String>, QueryError> {
-        let query = Query {
+        let query = QueryRequest {
             query: format!("SELECT DISTINCT({field}) FOR {stream_name}"),
             start_time: "1h".to_owned(),
             end_time: "now".to_owned(),
-            send_null: false,
+            params: QueryParams {
+                send_null: false,
+                fields: true,
+            },
             filter_tags: None,
-            fields: true,
         };
-        let time_range = TimeRange::parse_human_time("1h", "now")?;
 
-        let session_state = QUERY_SESSION.state();
-        let query = into_query(&query, &session_state, time_range).await?;
+        let query = query.into_query(key).await?;
         let (records, _) = execute(query, stream_name).await?;
         let response = record_batches_to_json(&records)?;
         // Extract field values from the JSON response

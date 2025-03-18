@@ -16,96 +16,129 @@
  *
  */
 
-use actix_web::http::header::ContentType;
-use actix_web::web::{self, Json};
-use actix_web::{FromRequest, HttpRequest, HttpResponse, Responder};
+use std::{future::Future, pin::Pin, sync::Arc, time::Instant};
+
+use actix_web::{
+    http::header::ContentType, web::Json, FromRequest, HttpRequest, HttpResponse, Responder,
+};
 use chrono::{DateTime, Utc};
-use datafusion::common::tree_node::TreeNode;
-use datafusion::error::DataFusionError;
-use datafusion::execution::context::SessionState;
-use futures_util::Future;
+use datafusion::{common::tree_node::TreeNode, error::DataFusionError};
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Instant;
-use tracing::error;
 
-use crate::event::error::EventError;
-use crate::handlers::http::fetch_schema;
+use crate::{
+    event::{commit_schema, error::EventError},
+    metrics::QUERY_EXECUTE_TIME,
+    option::Mode,
+    parseable::{StreamNotFound, PARSEABLE},
+    query::{
+        error::ExecuteError, execute, CountsRequest, CountsResponse, Query, TableScanVisitor,
+        QUERY_SESSION,
+    },
+    rbac::{map::SessionKey, Users},
+    response::QueryResponse,
+    storage::{object_storage::commit_schema_to_storage, ObjectStorageError},
+    utils::{
+        actix::extract_session_key_from_req,
+        time::{TimeParseError, TimeRange},
+        user_auth_for_query,
+    },
+};
 
-use crate::event::commit_schema;
-use crate::metrics::QUERY_EXECUTE_TIME;
-use crate::option::Mode;
-use crate::parseable::{StreamNotFound, PARSEABLE};
-use crate::query::error::ExecuteError;
-use crate::query::{execute, CountsRequest, CountsResponse, Query as LogicalQuery};
-use crate::query::{TableScanVisitor, QUERY_SESSION};
-use crate::rbac::Users;
-use crate::response::QueryResponse;
-use crate::storage::object_storage::commit_schema_to_storage;
-use crate::storage::ObjectStorageError;
-use crate::utils::actix::extract_session_key_from_req;
-use crate::utils::time::{TimeParseError, TimeRange};
-use crate::utils::user_auth_for_query;
+use super::fetch_schema;
 
-/// Query Request through http endpoint.
+/// Can be optionally be accepted as query params in the query request
+/// NOTE: ensure that the fields param is not set based on request body
+#[derive(Debug, Default, Deserialize, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryParams {
+    #[serde(default)]
+    pub fields: bool,
+    #[serde(default)]
+    pub send_null: bool,
+}
+
+/// Query Request in json format.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct Query {
+pub struct QueryRequest {
     pub query: String,
     pub start_time: String,
     pub end_time: String,
-    #[serde(default)]
-    pub send_null: bool,
-    #[serde(skip)]
-    pub fields: bool,
+    #[serde(default, flatten)]
+    pub params: QueryParams,
     #[serde(skip)]
     pub filter_tags: Option<Vec<String>>,
 }
 
-pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
-    let session_state = QUERY_SESSION.state();
-    let raw_logical_plan = match session_state
-        .create_logical_plan(&query_request.query)
-        .await
-    {
-        Ok(raw_logical_plan) => raw_logical_plan,
-        Err(_) => {
+impl QueryRequest {
+    // fields param is set based only on query param and send_null is set to true if either body or query param is true
+    fn update_params(&mut self, QueryParams { fields, send_null }: QueryParams) {
+        self.params.fields = fields;
+        self.params.send_null |= send_null;
+    }
+
+    // Constructs a query from the http request
+    pub async fn into_query(&self, key: &SessionKey) -> Result<Query, QueryError> {
+        if self.query.is_empty() {
+            return Err(QueryError::EmptyQuery);
+        }
+
+        if self.start_time.is_empty() {
+            return Err(QueryError::EmptyStartTime);
+        }
+
+        if self.end_time.is_empty() {
+            return Err(QueryError::EmptyEndTime);
+        }
+
+        let session_state = QUERY_SESSION.state();
+        let plan = if let Ok(plan) = session_state.create_logical_plan(&self.query).await {
+            plan
+        } else {
             //if logical plan creation fails, create streams and try again
             create_streams_for_querier().await;
-            session_state
-                .create_logical_plan(&query_request.query)
-                .await?
-        }
-    };
-    let time_range =
-        TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
+            session_state.create_logical_plan(&self.query).await?
+        };
 
-    // Create a visitor to extract the table names present in query
-    let mut visitor = TableScanVisitor::default();
-    let _ = raw_logical_plan.visit(&mut visitor);
+        // create a visitor to extract the table names present in query
+        let mut visitor = TableScanVisitor::default();
+        let _ = plan.visit(&mut visitor);
+        let stream_names = visitor.into_inner();
+        let permissions = Users.get_permissions(key);
+        user_auth_for_query(&permissions, &stream_names)?;
 
-    let tables = visitor.into_inner();
-    update_schema_when_distributed(&tables).await?;
-    let query: LogicalQuery = into_query(&query_request, &session_state, time_range).await?;
+        update_schema_when_distributed(&stream_names).await?;
 
-    let creds = extract_session_key_from_req(&req)?;
-    let permissions = Users.get_permissions(&creds);
+        let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
 
-    let table_name = query
-        .first_table_name()
+        Ok(Query {
+            plan,
+            time_range,
+            filter_tag: self.filter_tags.clone(),
+            stream_names,
+        })
+    }
+}
+
+pub async fn query(
+    req: HttpRequest,
+    query_request: QueryRequest,
+) -> Result<impl Responder, QueryError> {
+    let key = extract_session_key_from_req(&req)?;
+    let query = query_request.into_query(&key).await?;
+    let first_stream_name = query
+        .first_stream_name()
         .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
-
-    user_auth_for_query(&permissions, &tables)?;
+    let histogram = QUERY_EXECUTE_TIME.with_label_values(&[first_stream_name]);
 
     let time = Instant::now();
+
     // Intercept `count(*)`` queries and use the counts API
     if let Some(column_name) = query.is_logical_plan_count_without_filters() {
         let counts_req = CountsRequest {
-            stream: table_name.clone(),
+            stream: first_stream_name.to_owned(),
             start_time: query_request.start_time.clone(),
             end_time: query_request.end_time.clone(),
             num_bins: 1,
@@ -113,7 +146,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         let count_records = counts_req.get_bin_density().await?;
         // NOTE: this should not panic, since there is atleast one bin, always
         let count = count_records[0].count;
-        let response = if query_request.fields {
+        let response = if query_request.params.fields {
             json!({
                 "fields": [&column_name],
                 "records": [json!({column_name: count})]
@@ -125,27 +158,25 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         let time = time.elapsed().as_secs_f64();
 
         QUERY_EXECUTE_TIME
-            .with_label_values(&[&table_name])
+            .with_label_values(&[first_stream_name])
             .observe(time);
 
         return Ok(HttpResponse::Ok().json(response));
     }
 
-    let (records, fields) = execute(query, &table_name).await?;
-
+    let stream_name = query.first_stream_name().cloned().unwrap_or_default();
+    let (records, fields) = execute(query, &stream_name).await?;
     let response = QueryResponse {
         records,
         fields,
-        fill_null: query_request.send_null,
-        with_fields: query_request.fields,
+        fill_null: query_request.params.send_null,
+        with_fields: query_request.params.fields,
     }
     .to_http()?;
 
     let time = time.elapsed().as_secs_f64();
 
-    QUERY_EXECUTE_TIME
-        .with_label_values(&[&table_name])
-        .observe(time);
+    histogram.observe(time);
 
     Ok(response)
 }
@@ -162,7 +193,7 @@ pub async fn get_counts(
 
     let records = counts_request.get_bin_density().await?;
 
-    Ok(web::Json(CountsResponse {
+    Ok(Json(CountsResponse {
         fields: vec!["start_time".into(), "end_time".into(), "count".into()],
         records,
     }))
@@ -188,9 +219,13 @@ pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), 
 /// create streams for memory from storage if they do not exist
 pub async fn create_streams_for_querier() {
     let querier_streams = PARSEABLE.streams.list();
-    let store = PARSEABLE.storage.get_object_store();
-    let storage_streams = store.list_streams().await.unwrap();
-    for stream_name in storage_streams {
+    for stream_name in PARSEABLE
+        .storage
+        .get_object_store()
+        .list_streams()
+        .await
+        .unwrap()
+    {
         if !querier_streams.contains(&stream_name) {
             let _ = PARSEABLE
                 .create_stream_and_schema_from_storage(&stream_name)
@@ -199,25 +234,20 @@ pub async fn create_streams_for_querier() {
     }
 }
 
-impl FromRequest for Query {
+impl FromRequest for QueryRequest {
     type Error = actix_web::Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
 
     fn from_request(req: &HttpRequest, payload: &mut actix_web::dev::Payload) -> Self::Future {
-        let query = Json::<Query>::from_request(req, payload);
-        let params = web::Query::<HashMap<String, bool>>::from_request(req, payload)
+        let query = Json::<QueryRequest>::from_request(req, payload);
+        let params = actix_web::web::Query::<QueryParams>::from_request(req, payload)
             .into_inner()
             .map(|x| x.0)
             .unwrap_or_default();
 
         let fut = async move {
             let mut query = query.await?.into_inner();
-            // format output json to include field names
-            query.fields = params.get("fields").cloned().unwrap_or(false);
-
-            if !query.send_null {
-                query.send_null = params.get("sendNull").cloned().unwrap_or(false);
-            }
+            query.update_params(params);
 
             Ok(query)
         };
@@ -226,33 +256,9 @@ impl FromRequest for Query {
     }
 }
 
-pub async fn into_query(
-    query: &Query,
-    session_state: &SessionState,
-    time_range: TimeRange,
-) -> Result<LogicalQuery, QueryError> {
-    if query.query.is_empty() {
-        return Err(QueryError::EmptyQuery);
-    }
-
-    if query.start_time.is_empty() {
-        return Err(QueryError::EmptyStartTime);
-    }
-
-    if query.end_time.is_empty() {
-        return Err(QueryError::EmptyEndTime);
-    }
-
-    Ok(crate::query::Query {
-        raw_logical_plan: session_state.create_logical_plan(&query.query).await?,
-        time_range,
-        filter_tag: query.filter_tags.clone(),
-    })
-}
-
 /// unused for now, might need it in the future
 #[allow(unused)]
-fn transform_query_for_ingestor(query: &Query) -> Option<Query> {
+fn transform_query_for_ingestor(query: &QueryRequest) -> Option<QueryRequest> {
     if query.query.is_empty() {
         return None;
     }
@@ -265,7 +271,7 @@ fn transform_query_for_ingestor(query: &Query) -> Option<Query> {
         return None;
     }
 
-    let end_time: DateTime<Utc> = if query.end_time == "now" {
+    let end_time = if query.end_time == "now" {
         Utc::now()
     } else {
         DateTime::parse_from_rfc3339(&query.end_time)
@@ -275,14 +281,10 @@ fn transform_query_for_ingestor(query: &Query) -> Option<Query> {
 
     let start_time = end_time - chrono::Duration::minutes(1);
     // when transforming the query, the ingestors are forced to return an array of values
-    let q = Query {
-        query: query.query.clone(),
-        fields: false,
-        filter_tags: query.filter_tags.clone(),
-        send_null: query.send_null,
-        start_time: start_time.to_rfc3339(),
-        end_time: end_time.to_rfc3339(),
-    };
+    let mut q = query.clone();
+    q.params.fields = false;
+    q.start_time = start_time.to_rfc3339();
+    q.end_time = end_time.to_rfc3339();
 
     Some(q)
 }

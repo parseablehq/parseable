@@ -32,7 +32,7 @@ use tracing::trace;
 use crate::{
     alerts::AggregateCondition,
     parseable::PARSEABLE,
-    query::{TableScanVisitor, QUERY_SESSION},
+    query::{Query, TableScanVisitor, QUERY_SESSION},
     rbac::{
         map::SessionKey,
         role::{Action, Permission},
@@ -102,7 +102,7 @@ pub async fn evaluate_alert(alert: &AlertConfig) -> Result<(), AlertError> {
     trace!("RUNNING EVAL TASK FOR- {alert:?}");
 
     let query = prepare_query(alert).await?;
-    let base_df = execute_base_query(&query, &alert.query).await?;
+    let base_df = execute_base_query(query, &alert.query).await?;
     let agg_results = evaluate_aggregates(&alert.aggregate_config, &base_df).await?;
     let final_res = calculate_final_result(&alert.aggregate_config, &agg_results);
 
@@ -118,27 +118,29 @@ async fn prepare_query(alert: &AlertConfig) -> Result<crate::query::Query, Alert
     };
 
     let session_state = QUERY_SESSION.state();
-    let raw_logical_plan = session_state.create_logical_plan(&alert.query).await?;
+    let plan = session_state.create_logical_plan(&alert.query).await?;
 
     let time_range = TimeRange::parse_human_time(start_time, end_time)
         .map_err(|err| AlertError::CustomError(err.to_string()))?;
+    // create a visitor to extract the table names present in query
+    let mut visitor = TableScanVisitor::default();
+    let _ = plan.visit(&mut visitor);
+    let stream_names = visitor.into_inner();
 
-    Ok(crate::query::Query {
-        raw_logical_plan,
+    Ok(Query {
+        plan,
         time_range,
         filter_tag: None,
+        stream_names,
     })
 }
 
-async fn execute_base_query(
-    query: &crate::query::Query,
-    original_query: &str,
-) -> Result<DataFrame, AlertError> {
-    let stream_name = query.first_table_name().ok_or_else(|| {
-        AlertError::CustomError(format!("Table name not found in query- {}", original_query))
+async fn execute_base_query(query: Query, original_query: &str) -> Result<DataFrame, AlertError> {
+    let stream_name = query.first_stream_name().ok_or_else(|| {
+        AlertError::CustomError(format!("Table name not found in query- {original_query}"))
     })?;
 
-    let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
+    let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
     query
         .get_dataframe(time_partition.as_ref())
         .await
