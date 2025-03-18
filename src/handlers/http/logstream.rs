@@ -16,33 +16,38 @@
  *
  */
 
-use self::error::StreamError;
-use super::cluster::utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats};
-use super::query::update_schema_when_distributed;
-use crate::event::format::override_data_type;
-use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
-use crate::metadata::SchemaVersion;
-use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
-use crate::parseable::{StreamNotFound, PARSEABLE};
-use crate::rbac::role::Action;
-use crate::rbac::Users;
-use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
-use crate::storage::retention::Retention;
-use crate::storage::{StreamInfo, StreamType};
-use crate::utils::actix::extract_session_key_from_req;
-use crate::{stats, validator, LOCK_EXPECT};
+use std::{fs, sync::Arc};
 
-use actix_web::http::StatusCode;
-use actix_web::web::{Json, Path};
-use actix_web::{web, HttpRequest, Responder};
+use actix_web::{
+    web::{Json, Path},
+    HttpRequest, Responder,
+};
 use arrow_json::reader::infer_json_schema_from_iterator;
 use bytes::Bytes;
 use chrono::Utc;
+use error::StreamError;
+use http::StatusCode;
 use itertools::Itertools;
 use serde_json::{json, Value};
-use std::fs;
-use std::sync::Arc;
 use tracing::warn;
+
+use crate::{
+    event::format::override_data_type,
+    hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION},
+    metadata::SchemaVersion,
+    metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE},
+    parseable::{StreamNotFound, PARSEABLE},
+    rbac::{role::Action, Users},
+    stats::{self, event_labels_date, storage_size_labels_date, Stats},
+    storage::{retention::Retention, StreamInfo, StreamType},
+    utils::actix::extract_session_key_from_req,
+    validator, LOCK_EXPECT,
+};
+
+use super::{
+    cluster::utils::{IngestionStats, QueriedStats, StorageStats},
+    query::update_schema_when_distributed,
+};
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
@@ -98,7 +103,7 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, StreamError> {
         .map(|name| json!({"name": name}))
         .collect_vec();
 
-    Ok(web::Json(res))
+    Ok(Json(res))
 }
 
 pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, StreamError> {
@@ -117,7 +122,7 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
     for log_record in log_records {
         schema = override_data_type(schema, log_record, SchemaVersion::V1);
     }
-    Ok((web::Json(schema), StatusCode::OK))
+    Ok((Json(schema), StatusCode::OK))
 }
 
 pub async fn get_schema(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
@@ -132,7 +137,7 @@ pub async fn get_schema(stream_name: Path<String>) -> Result<impl Responder, Str
     match update_schema_when_distributed(&vec![stream_name.clone()]).await {
         Ok(_) => {
             let schema = stream.get_schema();
-            Ok((web::Json(schema), StatusCode::OK))
+            Ok((Json(schema), StatusCode::OK))
         }
         Err(err) => Err(StreamError::Custom {
             msg: err.to_string(),
@@ -168,7 +173,7 @@ pub async fn get_retention(stream_name: Path<String>) -> Result<impl Responder, 
         .get_stream(&stream_name)?
         .get_retention()
         .unwrap_or_default();
-    Ok((web::Json(retention), StatusCode::OK))
+    Ok((Json(retention), StatusCode::OK))
 }
 
 pub async fn put_retention(
@@ -250,76 +255,38 @@ pub async fn get_stats(
         if !date_value.is_empty() {
             let stats = get_stats_date(&stream_name, date_value).await?;
             let stats = serde_json::to_value(stats)?;
-            return Ok((web::Json(stats), StatusCode::OK));
+            return Ok((Json(stats), StatusCode::OK));
         }
     }
 
     let stats = stats::get_current_stats(&stream_name, "json")
         .ok_or_else(|| StreamNotFound(stream_name.clone()))?;
 
-    let ingestor_stats: Option<Vec<QueriedStats>> = None;
-
-    let hash_map = PARSEABLE.streams.read().expect("Readable");
-    let stream_meta = &hash_map
-        .get(&stream_name)
-        .ok_or_else(|| StreamNotFound(stream_name.clone()))?
-        .metadata
-        .read()
-        .expect(LOCK_EXPECT);
-
     let time = Utc::now();
 
-    let stats = match &stream_meta.first_event_at {
-        Some(_) => {
-            let ingestion_stats = IngestionStats::new(
-                stats.current_stats.events,
-                format!("{} {}", stats.current_stats.ingestion, "Bytes"),
-                stats.lifetime_stats.events,
-                format!("{} {}", stats.lifetime_stats.ingestion, "Bytes"),
-                stats.deleted_stats.events,
-                format!("{} {}", stats.deleted_stats.ingestion, "Bytes"),
-                "json",
-            );
-            let storage_stats = StorageStats::new(
-                format!("{} {}", stats.current_stats.storage, "Bytes"),
-                format!("{} {}", stats.lifetime_stats.storage, "Bytes"),
-                format!("{} {}", stats.deleted_stats.storage, "Bytes"),
-                "parquet",
-            );
+    let stats = {
+        let ingestion_stats = IngestionStats::new(
+            stats.current_stats.events,
+            stats.current_stats.ingestion,
+            stats.lifetime_stats.events,
+            stats.lifetime_stats.ingestion,
+            stats.deleted_stats.events,
+            stats.deleted_stats.ingestion,
+            "json",
+        );
+        let storage_stats = StorageStats::new(
+            stats.current_stats.storage,
+            stats.lifetime_stats.storage,
+            stats.deleted_stats.storage,
+            "parquet",
+        );
 
-            QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
-        }
-
-        None => {
-            let ingestion_stats = IngestionStats::new(
-                stats.current_stats.events,
-                format!("{} {}", stats.current_stats.ingestion, "Bytes"),
-                stats.lifetime_stats.events,
-                format!("{} {}", stats.lifetime_stats.ingestion, "Bytes"),
-                stats.deleted_stats.events,
-                format!("{} {}", stats.deleted_stats.ingestion, "Bytes"),
-                "json",
-            );
-            let storage_stats = StorageStats::new(
-                format!("{} {}", stats.current_stats.storage, "Bytes"),
-                format!("{} {}", stats.lifetime_stats.storage, "Bytes"),
-                format!("{} {}", stats.deleted_stats.storage, "Bytes"),
-                "parquet",
-            );
-
-            QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
-        }
-    };
-    let stats = if let Some(mut ingestor_stats) = ingestor_stats {
-        ingestor_stats.push(stats);
-        merge_quried_stats(ingestor_stats)
-    } else {
-        stats
+        QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
     };
 
     let stats = serde_json::to_value(stats)?;
 
-    Ok((web::Json(stats), StatusCode::OK))
+    Ok((Json(stats), StatusCode::OK))
 }
 
 pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
@@ -347,6 +314,14 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
             None
         };
 
+    let stream_log_source = storage
+        .get_log_source_from_storage(&stream_name)
+        .await
+        .unwrap_or_default();
+    PARSEABLE
+        .update_log_source(&stream_name, stream_log_source)
+        .await?;
+
     let hash_map = PARSEABLE.streams.read().unwrap();
     let stream_meta = hash_map
         .get(&stream_name)
@@ -363,12 +338,12 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
         time_partition_limit: stream_meta
             .time_partition_limit
             .map(|limit| limit.to_string()),
-        custom_partition: stream_meta.custom_partitions.clone(),
+        custom_partitions: stream_meta.custom_partitions.clone(),
         static_schema_flag: stream_meta.static_schema_flag,
         log_source: stream_meta.log_source.clone(),
     };
 
-    Ok((web::Json(stream_info), StatusCode::OK))
+    Ok((Json(stream_info), StatusCode::OK))
 }
 
 pub async fn put_stream_hot_tier(
@@ -435,7 +410,7 @@ pub async fn get_stream_hot_tier(stream_name: Path<String>) -> Result<impl Respo
     };
     let meta = hot_tier_manager.get_hot_tier(&stream_name).await?;
 
-    Ok((web::Json(meta), StatusCode::OK))
+    Ok((Json(meta), StatusCode::OK))
 }
 
 pub async fn delete_stream_hot_tier(

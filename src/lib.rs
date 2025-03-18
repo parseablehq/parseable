@@ -38,6 +38,7 @@ mod oidc;
 pub mod option;
 pub mod otel;
 pub mod parseable;
+pub mod prism;
 pub mod query;
 pub mod rbac;
 mod response;
