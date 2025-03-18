@@ -844,7 +844,11 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 let stream_relative_path = format!("{stream_name}/{file_suffix}");
 
                 // Try uploading the file, handle potential errors without breaking the loop
-                if let Err(e) = self.upload_file(&stream_relative_path, &path).await {
+                // if let Err(e) = self.upload_multipart(key, path)
+                if let Err(e) = self
+                    .upload_multipart(&RelativePathBuf::from(&stream_relative_path), &path)
+                    .await
+                {
                     error!("Failed to upload file {filename:?}: {e}");
                     continue; // Skip to the next file
                 }

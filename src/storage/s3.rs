@@ -521,14 +521,6 @@ impl S3 {
 
         let mut async_writer = self.client.put_multipart(location).await?;
 
-        // /* `abort_multipart()` has been removed */
-        // let close_multipart = |err| async move {
-        //     error!("multipart upload failed. {:?}", err);
-        //     self.client
-        //         .abort_multipart(&key.into(), &multipart_id)
-        //         .await
-        // };
-
         let meta = file.metadata().await?;
         let total_size = meta.len() as usize;
         if total_size < MIN_MULTIPART_UPLOAD_SIZE {
@@ -567,7 +559,13 @@ impl S3 {
 
                 // upload_parts.push(part_number as u64 + 1);
             }
-            async_writer.complete().await?;
+            match async_writer.complete().await {
+                Ok(_) => {},
+                Err(err) => {
+                    error!("Failed to complete multipart upload. {:?}", err);
+                    async_writer.abort().await?;
+                }
+            };
         }
         Ok(())
     }
