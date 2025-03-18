@@ -151,7 +151,7 @@ pub fn reverse(rb: &RecordBatch) -> RecordBatch {
 mod tests {
     use std::sync::Arc;
 
-    use arrow_array::{Array, Int32Array, RecordBatch};
+    use arrow_array::{Array, ArrayRef, Int32Array, RecordBatch};
     use arrow_schema::{DataType, Field, Schema};
 
     use super::*;
@@ -212,5 +212,82 @@ mod tests {
 
         assert_eq!(array.len(), 0);
         assert!(array.is_empty());
+    }
+
+    #[test]
+    fn test_replace_single_column() {
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+            Field::new("c", DataType::Int32, false),
+        ]);
+
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(Int32Array::from(vec![4, 5, 6])),
+            Arc::new(Int32Array::from(vec![7, 8, 9])),
+        ];
+
+        let batch = RecordBatch::try_new(Arc::new(schema.clone()), columns.clone()).unwrap();
+
+        let new_b = Arc::new(Int32Array::from(vec![10, 11, 12]));
+
+        let result = replace_columns(Arc::new(schema), &batch, &[(1, new_b.clone())]);
+
+        assert_eq!(result.column(0).as_ref(), columns[0].as_ref());
+        assert_eq!(result.column(1).as_ref(), new_b.as_ref());
+        assert_eq!(result.column(2).as_ref(), columns[2].as_ref());
+    }
+
+    #[test]
+    fn replace_multiple_columns() {
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+            Field::new("c", DataType::Int32, false),
+        ]);
+
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(Int32Array::from(vec![4, 5, 6])),
+            Arc::new(Int32Array::from(vec![7, 8, 9])),
+        ];
+
+        let batch = RecordBatch::try_new(Arc::new(schema.clone()), columns.clone()).unwrap();
+
+        let new_a = Arc::new(Int32Array::from(vec![10, 11, 12]));
+        let new_c = Arc::new(Int32Array::from(vec![13, 14, 15]));
+
+        let result = replace_columns(
+            Arc::new(schema),
+            &batch,
+            &[(0, new_a.clone()), (2, new_c.clone())],
+        );
+
+        assert_eq!(result.column(0).as_ref(), new_a.as_ref());
+        assert_eq!(result.column(1).as_ref(), columns[1].as_ref());
+        assert_eq!(result.column(2).as_ref(), new_c.as_ref());
+    }
+
+    #[test]
+    #[should_panic]
+    fn replace_column_with_different_length_array() {
+        let schema = Schema::new(vec![
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+            Field::new("c", DataType::Int32, false),
+        ]);
+
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(Int32Array::from(vec![1, 2, 3])),
+            Arc::new(Int32Array::from(vec![4, 5, 6])),
+            Arc::new(Int32Array::from(vec![7, 8, 9])),
+        ];
+
+        let batch = RecordBatch::try_new(Arc::new(schema.clone()), columns.clone()).unwrap();
+
+        let new_b = Arc::new(Int32Array::from(vec![10, 11])); // Different length
+
+        replace_columns(Arc::new(schema), &batch, &[(1, new_b.clone())]);
     }
 }
