@@ -111,7 +111,7 @@ impl Query {
         let mut config = SessionConfig::default()
             .with_parquet_pruning(true)
             .with_prefer_existing_sort(true)
-            .with_batch_size(1000000);
+            .with_batch_size(20000);
 
         // Pushdown filters allows DF to push the filters as far down in the plan as possible
         // and thus, reducing the number of rows decoded
