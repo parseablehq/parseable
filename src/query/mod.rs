@@ -42,6 +42,7 @@ use std::ops::Bound;
 use std::sync::Arc;
 use stream_schema_provider::collect_manifest_files;
 use sysinfo::System;
+use tokio::runtime::Runtime;
 
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
@@ -76,15 +77,12 @@ pub static QUERY_SESSION: Lazy<SessionContext> = Lazy::new(|| {
     let runtime_config = runtime_config.with_memory_limit(pool_size, fraction);
     let runtime = Arc::new(runtime_config.build().unwrap());
 
+    // All the config options are explained here -
+    // https://datafusion.apache.org/user-guide/configs.html
     let mut config = SessionConfig::default()
         .with_parquet_pruning(true)
         .with_prefer_existing_sort(true)
-        .with_round_robin_repartition(true);
-
-    // For more details refer https://datafusion.apache.org/user-guide/configs.html
-
-    // Reduce the number of rows read (if possible)
-    config.options_mut().execution.parquet.enable_page_index = true;
+        .with_batch_size(1000000);
 
     // Pushdown filters allows DF to push the filters as far down in the plan as possible
     // and thus, reducing the number of rows decoded
@@ -92,9 +90,14 @@ pub static QUERY_SESSION: Lazy<SessionContext> = Lazy::new(|| {
 
     // Reorder filters allows DF to decide the order of filters minimizing the cost of filter evaluation
     config.options_mut().execution.parquet.reorder_filters = true;
+    config.options_mut().execution.parquet.binary_as_string = true;
+    config
+        .options_mut()
+        .execution
+        .use_row_number_estimates_to_optimize_partitioning = true;
 
-    // Enable StringViewArray
-    // https://www.influxdata.com/blog/faster-queries-with-stringview-part-one-influxdb/
+    //adding this config as it improves query performance as explained here -
+    // https://github.com/apache/datafusion/pull/13101
     config
         .options_mut()
         .execution
@@ -123,6 +126,23 @@ pub static QUERY_SESSION: Lazy<SessionContext> = Lazy::new(|| {
     SessionContext::new_with_state(state)
 });
 
+/// Dedicated multi-threaded runtime to run all queries on
+pub static QUERY_RUNTIME: Lazy<Runtime> =
+    Lazy::new(|| Runtime::new().expect("Runtime should be constructible"));
+
+/// This function executes a query on the dedicated runtime, ensuring that the query is not isolated to a single thread/CPU
+/// at a time and has access to the entire thread pool, enabling better concurrent processing, and thus quicker results.
+pub async fn execute(
+    query: Query,
+    stream_name: &str,
+) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
+    let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
+    QUERY_RUNTIME
+        .spawn(async move { query.execute(time_partition.as_ref()).await })
+        .await
+        .expect("The Join should have been successful")
+}
+
 // A query request by client
 #[derive(Debug)]
 pub struct Query {
@@ -133,16 +153,13 @@ pub struct Query {
 }
 
 impl Query {
-    pub async fn execute(self) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
-        let stream_name = self
-            .stream_names
-            .first()
-            .ok_or_else(|| ExecuteError::NoStream)?;
-        let time_partition = PARSEABLE
-            .get_or_create_stream(stream_name)
-            .get_time_partition();
-        let logical_plan = self.final_logical_plan(time_partition.as_ref());
-        let df = QUERY_SESSION.execute_logical_plan(logical_plan).await?;
+    pub async fn execute(
+        self,
+        time_partition: Option<&String>,
+    ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
+        let df = QUERY_SESSION
+            .execute_logical_plan(self.final_logical_plan(time_partition))
+            .await?;
 
         let fields = df
             .schema()
@@ -157,15 +174,16 @@ impl Query {
         }
 
         let results = df.collect().await?;
+
         Ok((results, fields))
     }
 
-    pub async fn get_dataframe(self) -> Result<DataFrame, ExecuteError> {
-        let stream_name = self.stream_names.first().ok_or(ExecuteError::NoStream)?;
-        let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
-
+    pub async fn get_dataframe(
+        self,
+        time_partition: Option<&String>,
+    ) -> Result<DataFrame, ExecuteError> {
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan(time_partition.as_ref()))
+            .execute_logical_plan(self.final_logical_plan(time_partition))
             .await?;
 
         Ok(df)

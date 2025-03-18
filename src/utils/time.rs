@@ -16,9 +16,7 @@
  *
  */
 
-use chrono::{DateTime, NaiveDate, TimeDelta, Timelike, Utc};
-
-use super::minute_to_slot;
+use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeDelta, Timelike, Utc};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TimeParseError {
@@ -231,8 +229,8 @@ impl TimeRange {
         prefixes: &mut Vec<String>,
     ) {
         let mut push_prefix = |block: u32| {
-            if let Some(minute_slot) = minute_to_slot(block * data_granularity, data_granularity) {
-                let prefix = format!("{hour_prefix}minute={minute_slot}/");
+            if let Ok(minute) = Minute::try_from(block * data_granularity) {
+                let prefix = format!("{hour_prefix}minute={}/", minute.to_slot(data_granularity));
                 prefixes.push(prefix);
             }
         };
@@ -264,13 +262,91 @@ impl TimeRange {
         }
         time_bounds
     }
+
+    /// Returns a time range of `data_granularity` length which incorporates provided timestamp
+    pub fn granularity_range(timestamp: DateTime<Utc>, data_granularity: u32) -> Self {
+        let time = timestamp
+            .time()
+            .with_second(0)
+            .and_then(|time| time.with_nanosecond(0))
+            .expect("Within expected time range");
+        let timestamp = timestamp.with_time(time).unwrap();
+        let block_n = timestamp.minute() / data_granularity;
+        let block_start = block_n * data_granularity;
+        let start = timestamp
+            .with_minute(block_start)
+            .expect("Within minute range");
+        let end = start + TimeDelta::minutes(data_granularity as i64);
+
+        Self { start, end }
+    }
+
+    /// Returns true if the provided timestamp is within the timerange
+    pub fn contains(&self, time: DateTime<Utc>) -> bool {
+        self.start <= time && self.end > time
+    }
+}
+
+/// Represents a minute value (0-59) and provides methods for converting it to a slot range.
+///
+/// # Examples
+///
+/// ```
+/// use parseable::utils::time::Minute;
+///
+/// let minute = Minute::try_from(15).unwrap();
+/// assert_eq!(minute.to_slot(10), "10-19");
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct Minute {
+    block: u32,
+}
+
+impl TryFrom<u32> for Minute {
+    type Error = u32;
+
+    /// Returns a Minute if block is an acceptable minute value, else returns it as is
+    fn try_from(block: u32) -> Result<Self, Self::Error> {
+        if block >= 60 {
+            return Err(block);
+        }
+
+        Ok(Self { block })
+    }
+}
+
+impl From<NaiveDateTime> for Minute {
+    fn from(timestamp: NaiveDateTime) -> Self {
+        Self {
+            block: timestamp.minute(),
+        }
+    }
+}
+
+impl Minute {
+    /// Convert minutes to a slot range
+    /// e.g. given minute = 15 and OBJECT_STORE_DATA_GRANULARITY = 10 returns "10-19"
+    ///
+    /// ### PANICS
+    /// If the provided `data_granularity` value isn't cleanly divisble from 60
+    pub fn to_slot(self, data_granularity: u32) -> String {
+        assert!(60 % data_granularity == 0);
+        let block_n = self.block / data_granularity;
+        let block_start = block_n * data_granularity;
+        if data_granularity == 1 {
+            return format!("{block_start:02}");
+        }
+
+        let block_end = (block_n + 1) * data_granularity - 1;
+        format!("{block_start:02}-{block_end:02}")
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use chrono::{Duration, SecondsFormat, Utc};
+    use chrono::{Duration, SecondsFormat, TimeZone, Utc};
     use rstest::*;
 
     #[test]
@@ -420,5 +496,122 @@ mod tests {
         let prefixes = time_period.generate_prefixes(1);
         let left = prefixes.iter().map(String::as_str).collect::<Vec<&str>>();
         assert_eq!(left.as_slice(), right);
+    }
+
+    #[test]
+    fn valid_minute_to_minute_slot() {
+        let res = Minute::try_from(10);
+        assert!(res.is_ok());
+        assert_eq!(res.unwrap().to_slot(1), "10");
+    }
+
+    #[test]
+    fn invalid_minute() {
+        assert!(Minute::try_from(100).is_err());
+    }
+
+    #[test]
+    fn minute_from_timestamp() {
+        let timestamp =
+            NaiveDateTime::parse_from_str("2025-01-01 02:03", "%Y-%m-%d %H:%M").unwrap();
+        assert_eq!(Minute::from(timestamp).to_slot(1), "03");
+    }
+
+    #[test]
+    fn slot_5_min_from_timestamp() {
+        let timestamp =
+            NaiveDateTime::parse_from_str("2025-01-01 02:03", "%Y-%m-%d %H:%M").unwrap();
+        assert_eq!(Minute::from(timestamp).to_slot(5), "00-04");
+    }
+
+    #[test]
+    fn slot_30_min_from_timestamp() {
+        let timestamp =
+            NaiveDateTime::parse_from_str("2025-01-01 02:33", "%Y-%m-%d %H:%M").unwrap();
+        assert_eq!(Minute::from(timestamp).to_slot(30), "30-59");
+    }
+
+    #[test]
+    #[should_panic]
+    fn illegal_slot_granularity() {
+        Minute::try_from(0).unwrap().to_slot(40);
+    }
+
+    #[test]
+    fn test_granularity_one_minute() {
+        // Test with 1-minute granularity
+        let timestamp = Utc.with_ymd_and_hms(2023, 1, 1, 12, 30, 45).unwrap();
+        let range = TimeRange::granularity_range(timestamp, 1);
+
+        assert_eq!(range.start.minute(), 30);
+        assert_eq!(range.end.minute(), 31);
+        assert_eq!(range.start.hour(), 12);
+        assert_eq!(range.end.hour(), 12);
+    }
+
+    #[test]
+    fn test_granularity_five_minutes() {
+        // Test with 5-minute granularity
+        let timestamp = Utc.with_ymd_and_hms(2023, 1, 1, 12, 17, 45).unwrap();
+        let range = TimeRange::granularity_range(timestamp, 5);
+
+        // For minute 17, with granularity 5, block_n = 17 / 5 = 3
+        // block_start = 3 * 5 = 15
+        // block_end = (3 + 1) * 5 = 20
+        assert_eq!(range.start.minute(), 15);
+        assert_eq!(range.end.minute(), 20);
+    }
+
+    #[test]
+    fn test_granularity_fifteen_minutes() {
+        // Test with 15-minute granularity
+        let timestamp = Utc.with_ymd_and_hms(2023, 1, 1, 12, 29, 0).unwrap();
+        let range = TimeRange::granularity_range(timestamp, 15);
+
+        // For minute 29, with granularity 15, block_n = 29 / 15 = 1
+        // block_start = 1 * 15 = 15
+        // block_end = (1 + 1) * 15 = 30
+        assert_eq!(range.start.minute(), 15);
+        assert_eq!(range.end.minute(), 30);
+    }
+
+    #[test]
+    fn test_granularity_thirty_minutes() {
+        // Test with 30-minute granularity
+        let timestamp = Utc.with_ymd_and_hms(2023, 1, 1, 12, 31, 0).unwrap();
+        let range = TimeRange::granularity_range(timestamp, 30);
+
+        // For minute 31, with granularity 30, block_n = 31 / 30 = 1
+        // block_start = 1 * 30 = 30
+        // block_end = (1 + 1) * 30 = 60, which should wrap to 0 in the next hour
+        assert_eq!(range.start.minute(), 30);
+        assert_eq!(range.end.minute(), 0);
+        assert_eq!(range.start.hour(), 12);
+        assert_eq!(range.end.hour(), 13); // Should be next hour
+    }
+
+    #[test]
+    fn test_granularity_edge_case() {
+        // Test edge case where minute is exactly at granularity boundary
+        let timestamp = Utc.with_ymd_and_hms(2023, 1, 1, 12, 15, 0).unwrap();
+        let range = TimeRange::granularity_range(timestamp, 15);
+
+        assert_eq!(range.start.minute(), 15);
+        assert_eq!(range.end.minute(), 30);
+    }
+
+    #[test]
+    fn test_granularity_hour_boundary() {
+        // Test case where end would exceed hour boundary
+        let timestamp = Utc.with_ymd_and_hms(2023, 1, 1, 12, 59, 59).unwrap();
+        let range = TimeRange::granularity_range(timestamp, 20);
+
+        // For minute 59, block_n = 59 / 20 = 2
+        // block_start = 2 * 20 = 40
+        // block_end = (2 + 1) * 20 = 60, which should wrap to 0 in the next hour
+        assert_eq!(range.start.minute(), 40);
+        assert_eq!(range.end.minute(), 0);
+        assert_eq!(range.start.hour(), 12);
+        assert_eq!(range.end.hour(), 13);
     }
 }

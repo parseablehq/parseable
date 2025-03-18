@@ -17,25 +17,31 @@
  *
  */
 
-use std::{collections::HashMap, num::NonZeroU32, path::PathBuf, str::FromStr, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    num::NonZeroU32,
+    path::PathBuf,
+    str::FromStr,
+    sync::Arc,
+};
 
 use actix_web::http::header::HeaderMap;
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
-use chrono::Local;
+use chrono::Utc;
 use clap::{error::ErrorKind, Parser};
 use http::{header::CONTENT_TYPE, HeaderName, HeaderValue, StatusCode};
 use once_cell::sync::Lazy;
 pub use staging::StagingError;
 use streams::StreamRef;
-pub use streams::{StreamNotFound, Streams};
+pub use streams::{Stream, StreamNotFound, Streams};
 use tracing::error;
 
 #[cfg(feature = "kafka")]
 use crate::connectors::kafka::config::KafkaConfig;
 use crate::{
     cli::{Cli, Options, StorageOptions},
-    event::format::LogSource,
+    event::format::{LogSource, LogSourceEntry},
     handlers::{
         http::{
             cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME},
@@ -58,6 +64,12 @@ use crate::{
 mod staging;
 mod streams;
 
+/// File extension for arrow files in staging
+const ARROW_FILE_EXTENSION: &str = "arrows";
+
+/// File extension for incomplete arrow files
+const PART_FILE_EXTENSION: &str = "part";
+
 /// Name of a Stream
 /// NOTE: this used to be a struct, flattened out for simplicity
 pub type LogStream = String;
@@ -69,7 +81,7 @@ pub const STREAM_EXISTS: &str = "Stream exists";
 /// Shared state of the Parseable server.
 pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| match Cli::parse().storage {
     StorageOptions::Local(args) => {
-        if args.options.local_staging_path == args.storage.root {
+        if args.options.staging_dir() == &args.storage.root {
             clap::Error::raw(
                 ErrorKind::ValueValidation,
                 "Cannot use same path for storage and staging",
@@ -129,7 +141,7 @@ impl Parseable {
         storage: Arc<dyn ObjectStorageProvider>,
     ) -> Self {
         let ingestor_metadata = match &options.mode {
-            Mode::Ingest => Some(IngestorMetadata::load()),
+            Mode::Ingest => Some(IngestorMetadata::load(&options, storage.as_ref())),
             _ => None,
         };
         Parseable {
@@ -169,14 +181,14 @@ impl Parseable {
         )
     }
 
-    /// Writes all streams in staging onto disk, awaiting conversion into parquet.
-    /// Deletes all in memory recordbatches, freeing up rows in mem-writer.
-    pub fn flush_all_streams(&self) {
-        let streams = self.streams.read().unwrap();
-
-        for staging in streams.values() {
-            staging.flush()
-        }
+    /// Checks for the stream in memory, or loads it from storage when in distributed mode
+    pub async fn check_or_load_stream(&self, stream_name: &str) -> bool {
+        !self.streams.contains(stream_name)
+            && (self.options.mode != Mode::Query
+                || !self
+                    .create_stream_and_schema_from_storage(stream_name)
+                    .await
+                    .unwrap_or_default())
     }
 
     // validate the storage, if the proper path for staging directory is provided
@@ -217,10 +229,6 @@ impl Parseable {
         self.storage.clone()
     }
 
-    pub fn staging_dir(&self) -> &PathBuf {
-        &self.options.local_staging_path
-    }
-
     pub fn hot_tier_dir(&self) -> &Option<PathBuf> {
         &self.options.hot_tier_storage_path
     }
@@ -244,6 +252,7 @@ impl Parseable {
         match self.options.mode {
             Mode::Query => "Distributed (Query)",
             Mode::Ingest => "Distributed (Ingest)",
+            Mode::Index => "Distributed (Index)",
             Mode::All => "Standalone",
         }
     }
@@ -346,11 +355,12 @@ impl Parseable {
     }
 
     pub async fn create_internal_stream_if_not_exists(&self) -> Result<(), StreamError> {
+        let log_source_entry = LogSourceEntry::new(LogSource::Pmeta, HashSet::new());
         match self
             .create_stream_if_not_exists(
                 INTERNAL_STREAM_NAME,
                 StreamType::Internal,
-                LogSource::Pmeta,
+                vec![log_source_entry],
             )
             .await
         {
@@ -374,9 +384,14 @@ impl Parseable {
         &self,
         stream_name: &str,
         stream_type: StreamType,
-        log_source: LogSource,
+        log_source: Vec<LogSourceEntry>,
     ) -> Result<bool, PostError> {
         if self.streams.contains(stream_name) {
+            for stream_log_source in log_source {
+                self.add_update_log_source(stream_name, stream_log_source)
+                    .await?;
+            }
+
             return Ok(true);
         }
 
@@ -404,6 +419,57 @@ impl Parseable {
         .await?;
 
         Ok(false)
+    }
+
+    pub async fn add_update_log_source(
+        &self,
+        stream_name: &str,
+        log_source: LogSourceEntry,
+    ) -> Result<(), StreamError> {
+        let stream = self.get_stream(stream_name).expect(STREAM_EXISTS);
+        let mut log_sources = stream.get_log_source();
+        let mut changed = false;
+
+        // Try to find existing log source with the same format
+        if let Some(stream_log_source) = log_sources
+            .iter_mut()
+            .find(|source| source.log_source_format == log_source.log_source_format)
+        {
+            // Use a HashSet to efficiently track only new fields
+            let existing_fields: HashSet<String> =
+                stream_log_source.fields.iter().cloned().collect();
+            let new_fields: HashSet<String> = log_source
+                .fields
+                .iter()
+                .filter(|field| !existing_fields.contains(*field))
+                .cloned()
+                .collect();
+
+            // Only update if there are new fields to add
+            if !new_fields.is_empty() {
+                stream_log_source.fields.extend(new_fields);
+                changed = true;
+            }
+        } else {
+            // If no matching log source found, add the new one
+            log_sources.push(log_source);
+            changed = true;
+        }
+
+        // Only persist to storage if we made changes
+        if changed {
+            stream.set_log_source(log_sources.clone());
+
+            let storage = self.storage.get_object_store();
+            if let Err(err) = storage
+                .update_log_source_in_stream(stream_name, &log_sources)
+                .await
+            {
+                return Err(StreamError::Storage(err));
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn create_update_stream(
@@ -451,32 +517,15 @@ impl Parseable {
                 .await;
         }
 
-        let time_partition_in_days = if !time_partition_limit.is_empty() {
-            Some(validate_time_partition_limit(&time_partition_limit)?)
-        } else {
-            None
-        };
+        if !time_partition.is_empty() || !time_partition_limit.is_empty() {
+            return Err(StreamError::Custom {
+                msg: "Creating stream with time partition is not supported anymore".to_string(),
+                status: StatusCode::BAD_REQUEST,
+            });
+        }
 
         if let Some(custom_partition) = &custom_partition {
             validate_custom_partition(custom_partition)?;
-        }
-
-        if !time_partition.is_empty() && custom_partition.is_some() {
-            let custom_partition_list = custom_partition
-                .as_ref()
-                .unwrap()
-                .split(',')
-                .collect::<Vec<&str>>();
-            if custom_partition_list.contains(&time_partition.as_str()) {
-                return Err(CreateStreamError::Custom {
-                    msg: format!(
-                        "time partition {} cannot be set as custom partition",
-                        time_partition
-                    ),
-                    status: StatusCode::BAD_REQUEST,
-                }
-                .into());
-            }
         }
 
         let schema = validate_static_schema(
@@ -486,16 +535,16 @@ impl Parseable {
             custom_partition.as_ref(),
             static_schema_flag,
         )?;
-
+        let log_source_entry = LogSourceEntry::new(log_source, HashSet::new());
         self.create_stream(
             stream_name.to_string(),
             &time_partition,
-            time_partition_in_days,
+            None,
             custom_partition.as_ref(),
             static_schema_flag,
             schema,
             stream_type,
-            log_source,
+            vec![log_source_entry],
         )
         .await?;
 
@@ -551,7 +600,7 @@ impl Parseable {
         static_schema_flag: bool,
         schema: Arc<Schema>,
         stream_type: StreamType,
-        log_source: LogSource,
+        log_source: Vec<LogSourceEntry>,
     ) -> Result<(), CreateStreamError> {
         // fail to proceed if invalid stream name
         if stream_type != StreamType::Internal {
@@ -561,7 +610,7 @@ impl Parseable {
         let storage = self.storage.get_object_store();
 
         let meta = ObjectStoreFormat {
-            created_at: Local::now().to_rfc3339(),
+            created_at: Utc::now().to_rfc3339(),
             permissions: vec![Permisssion::new(PARSEABLE.options.username.clone())],
             stream_type,
             time_partition: (!time_partition.is_empty()).then(|| time_partition.to_string()),
@@ -624,9 +673,17 @@ impl Parseable {
         stream_name: &str,
         custom_partition: Option<&String>,
     ) -> Result<(), StreamError> {
+        let stream = self.get_stream(stream_name).expect(STREAM_EXISTS);
+        if stream.get_time_partition().is_some() {
+            return Err(StreamError::Custom {
+                msg: "Cannot set both time partition and custom partition".to_string(),
+                status: StatusCode::BAD_REQUEST,
+            });
+        }
         if let Some(custom_partition) = custom_partition {
             validate_custom_partition(custom_partition)?;
         }
+
         self.update_custom_partition_in_stream(stream_name.to_string(), custom_partition)
             .await?;
 
@@ -755,20 +812,37 @@ impl Parseable {
             .await
         {
             error!(
-                "Failed to update first_event_at in storage for stream {:?}: {err:?}",
-                stream_name
+                "Failed to update first_event_at in storage for stream {stream_name:?}: {err:?}"
             );
         }
 
         match self.get_stream(stream_name) {
             Ok(stream) => stream.set_first_event_at(first_event_at),
             Err(err) => error!(
-                "Failed to update first_event_at in stream info for stream {:?}: {err:?}",
-                stream_name
+                "Failed to update first_event_at in stream info for stream {stream_name:?}: {err:?}"
             ),
         }
 
         Some(first_event_at.to_string())
+    }
+
+    pub async fn update_log_source(
+        &self,
+        stream_name: &str,
+        log_source: Vec<LogSourceEntry>,
+    ) -> Result<(), StreamError> {
+        let storage = self.storage.get_object_store();
+        if let Err(err) = storage
+            .update_log_source_in_stream(stream_name, &log_source)
+            .await
+        {
+            return Err(StreamError::Storage(err));
+        }
+
+        let stream = self.get_stream(stream_name).expect(STREAM_EXISTS);
+        stream.set_log_source(log_source);
+
+        Ok(())
     }
 }
 
@@ -825,9 +899,9 @@ pub fn validate_time_partition_limit(
 
 pub fn validate_custom_partition(custom_partition: &str) -> Result<(), CreateStreamError> {
     let custom_partition_list = custom_partition.split(',').collect::<Vec<&str>>();
-    if custom_partition_list.len() > 3 {
+    if custom_partition_list.len() > 1 {
         return Err(CreateStreamError::Custom {
-            msg: "Maximum 3 custom partition keys are supported".to_string(),
+            msg: "Maximum 1 custom partition key is supported".to_string(),
             status: StatusCode::BAD_REQUEST,
         });
     }

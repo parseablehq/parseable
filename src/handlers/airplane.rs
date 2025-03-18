@@ -36,6 +36,7 @@ use crate::handlers::http::cluster::get_ingestor_info;
 use crate::handlers::livetail::cross_origin_config;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::parseable::PARSEABLE;
+use crate::query::execute;
 use crate::utils::arrow::flight::{
     append_temporary_events, get_query_from_ticket, into_flight_data, run_do_get_rpc,
     send_to_ingester,
@@ -139,7 +140,7 @@ impl FlightService for AirServiceImpl {
         info!("query requested to airplane: {:?}", query_request);
 
         // map payload to query
-        let query = query_request.into_query(key).await.map_err(|e| {
+        let query = query_request.into_query(&key).await.map_err(|e| {
             error!("Error faced while constructing logical query: {e}");
             Status::internal(format!("Failed to process query: {e}"))
         })?;
@@ -178,8 +179,8 @@ impl FlightService for AirServiceImpl {
         };
 
         let time = Instant::now();
-        let (records, _) = query
-            .execute()
+
+        let (records, _) = execute(query, &stream_name)
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
 

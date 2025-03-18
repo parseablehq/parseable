@@ -37,8 +37,11 @@ jobs:
       - name: Check with clippy
         run: cargo hack clippy --verbose --each-feature --no-dev-deps -- -D warnings
 
-      - name: Tests
-        run: cargo hack --each-feature llvm-cov --no-report nextest
+      - name: Test default feature set
+        run: cargo hack llvm-cov --no-report nextest
+
+      - name: Test kafka feature
+        run: cargo hack --features kafka llvm-cov --no-report nextest --filter-expr 'test(kafka)'
 
       - name: Generate coverage report
         run: cargo llvm-cov report --lcov --output-path coverage.lcov

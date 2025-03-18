@@ -16,39 +16,37 @@
  *
  */
 
-use actix_web::http::header::ContentType;
-use actix_web::web::{self, Json};
-use actix_web::{FromRequest, HttpRequest, HttpResponse, Responder};
+use std::{future::Future, pin::Pin, sync::Arc, time::Instant};
+
+use actix_web::{
+    http::header::ContentType, web::Json, FromRequest, HttpRequest, HttpResponse, Responder,
+};
 use chrono::{DateTime, Utc};
-use datafusion::common::tree_node::TreeNode;
-use datafusion::error::DataFusionError;
-use futures_util::Future;
+use datafusion::{common::tree_node::TreeNode, error::DataFusionError};
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Instant;
-use tracing::error;
 
-use crate::event::error::EventError;
-use crate::handlers::http::fetch_schema;
+use crate::{
+    event::{commit_schema, error::EventError},
+    metrics::QUERY_EXECUTE_TIME,
+    option::Mode,
+    parseable::{StreamNotFound, PARSEABLE},
+    query::{
+        error::ExecuteError, execute, CountsRequest, CountsResponse, Query, TableScanVisitor,
+        QUERY_SESSION,
+    },
+    rbac::{map::SessionKey, Users},
+    response::QueryResponse,
+    storage::{object_storage::commit_schema_to_storage, ObjectStorageError},
+    utils::{
+        actix::extract_session_key_from_req,
+        time::{TimeParseError, TimeRange},
+        user_auth_for_query,
+    },
+};
 
-use crate::event::commit_schema;
-use crate::metrics::QUERY_EXECUTE_TIME;
-use crate::option::Mode;
-use crate::parseable::PARSEABLE;
-use crate::query::error::ExecuteError;
-use crate::query::{CountsRequest, CountsResponse, Query, Query as LogicalQuery};
-use crate::query::{TableScanVisitor, QUERY_SESSION};
-use crate::rbac::map::SessionKey;
-use crate::rbac::Users;
-use crate::response::QueryResponse;
-use crate::storage::object_storage::commit_schema_to_storage;
-use crate::storage::ObjectStorageError;
-use crate::utils::actix::extract_session_key_from_req;
-use crate::utils::time::{TimeParseError, TimeRange};
-use crate::utils::user_auth_for_query;
+use super::fetch_schema;
 
 /// Can be optionally be accepted as query params in the query request
 /// NOTE: ensure that the fields param is not set based on request body
@@ -56,9 +54,9 @@ use crate::utils::user_auth_for_query;
 #[serde(rename_all = "camelCase")]
 pub struct QueryParams {
     #[serde(default)]
-    fields: bool,
+    pub fields: bool,
     #[serde(default)]
-    send_null: bool,
+    pub send_null: bool,
 }
 
 /// Query Request in json format.
@@ -82,7 +80,7 @@ impl QueryRequest {
     }
 
     // Constructs a query from the http request
-    pub async fn into_query(&self, key: SessionKey) -> Result<LogicalQuery, QueryError> {
+    pub async fn into_query(&self, key: &SessionKey) -> Result<Query, QueryError> {
         if self.query.is_empty() {
             return Err(QueryError::EmptyQuery);
         }
@@ -108,7 +106,7 @@ impl QueryRequest {
         let mut visitor = TableScanVisitor::default();
         let _ = plan.visit(&mut visitor);
         let stream_names = visitor.into_inner();
-        let permissions = Users.get_permissions(&key);
+        let permissions = Users.get_permissions(key);
         user_auth_for_query(&permissions, &stream_names)?;
 
         update_schema_when_distributed(&stream_names).await?;
@@ -129,7 +127,7 @@ pub async fn query(
     query_request: QueryRequest,
 ) -> Result<impl Responder, QueryError> {
     let key = extract_session_key_from_req(&req)?;
-    let query = query_request.into_query(key).await?;
+    let query = query_request.into_query(&key).await?;
     let first_stream_name = query
         .first_stream_name()
         .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
@@ -166,7 +164,8 @@ pub async fn query(
         return Ok(HttpResponse::Ok().json(response));
     }
 
-    let (records, fields) = query.execute().await?;
+    let stream_name = query.first_stream_name().cloned().unwrap_or_default();
+    let (records, fields) = execute(query, &stream_name).await?;
     let response = QueryResponse {
         records,
         fields,
@@ -194,13 +193,13 @@ pub async fn get_counts(
 
     let records = counts_request.get_bin_density().await?;
 
-    Ok(web::Json(CountsResponse {
+    Ok(Json(CountsResponse {
         fields: vec!["start_time".into(), "end_time".into(), "count".into()],
         records,
     }))
 }
 
-pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), QueryError> {
+pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), EventError> {
     if PARSEABLE.options.mode == Mode::Query {
         for table in tables {
             if let Ok(new_schema) = fetch_schema(table).await {
@@ -241,7 +240,7 @@ impl FromRequest for QueryRequest {
 
     fn from_request(req: &HttpRequest, payload: &mut actix_web::dev::Payload) -> Self::Future {
         let query = Json::<QueryRequest>::from_request(req, payload);
-        let params = web::Query::<QueryParams>::from_request(req, payload)
+        let params = actix_web::web::Query::<QueryParams>::from_request(req, payload)
             .into_inner()
             .map(|x| x.0)
             .unwrap_or_default();
@@ -308,7 +307,7 @@ pub enum QueryError {
     Execute(#[from] ExecuteError),
     #[error("ObjectStorage Error: {0}")]
     ObjectStorage(#[from] ObjectStorageError),
-    #[error("Evern Error: {0}")]
+    #[error("Event Error: {0}")]
     EventError(#[from] EventError),
     #[error("Error: {0}")]
     MalformedQuery(&'static str),
@@ -322,6 +321,8 @@ Description: {0}"#
     ActixError(#[from] actix_web::Error),
     #[error("Error: {0}")]
     Anyhow(#[from] anyhow::Error),
+    #[error("Error: {0}")]
+    StreamNotFound(#[from] StreamNotFound),
 }
 
 impl actix_web::ResponseError for QueryError {

@@ -20,7 +20,7 @@ use crate::event::Event;
 use crate::handlers::http::ingest::push_logs_unchecked;
 use crate::handlers::http::query::QueryRequest;
 use crate::parseable::PARSEABLE;
-use crate::query::stream_schema_provider::include_now;
+use crate::query::stream_schema_provider::{extract_primary_filter, is_within_staging_window};
 use crate::{handlers::http::modal::IngestorMetadata, option::Mode};
 
 use arrow_array::RecordBatch;
@@ -131,9 +131,9 @@ pub fn send_to_ingester(start: i64, end: i64) -> bool {
         datafusion::logical_expr::Operator::Lt,
         Box::new(filter_end),
     );
-    let ex = [Expr::BinaryExpr(ex1), Expr::BinaryExpr(ex2)];
-
-    PARSEABLE.options.mode == Mode::Query && include_now(&ex, &None)
+    let time_filters =
+        extract_primary_filter(&[Expr::BinaryExpr(ex1), Expr::BinaryExpr(ex2)], &None);
+    PARSEABLE.options.mode == Mode::Query && is_within_staging_window(&time_filters)
 }
 
 fn lit_timestamp_milli(time: i64) -> Expr {

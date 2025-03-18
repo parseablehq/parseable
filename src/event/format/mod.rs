@@ -26,24 +26,37 @@ use std::{
 use anyhow::{anyhow, Error as AnyError};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
     metadata::SchemaVersion,
+    storage::StreamType,
     utils::arrow::{get_field, get_timestamp_array, replace_columns},
 };
 
-use super::DEFAULT_TIMESTAMP_KEY;
+use super::{Event, DEFAULT_TIMESTAMP_KEY};
 
 pub mod json;
 
-static TIME_FIELD_NAME_PARTS: [&str; 2] = ["time", "date"];
+static TIME_FIELD_NAME_PARTS: [&str; 11] = [
+    "time",
+    "date",
+    "timestamp",
+    "created",
+    "received",
+    "ingested",
+    "collected",
+    "start",
+    "end",
+    "ts",
+    "dt",
+];
 type EventSchema = Vec<Arc<Field>>;
 
 /// Source of the logs, used to perform special processing for certain sources
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum LogSource {
     // AWS Kinesis sends logs in the format of a json array
     Kinesis,
@@ -91,6 +104,23 @@ impl Display for LogSource {
     }
 }
 
+/// Contains the format name and a list of known field names that are associated with the said format.
+/// Stored on disk as part of `ObjectStoreFormat` in stream.json
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogSourceEntry {
+    pub log_source_format: LogSource,
+    pub fields: HashSet<String>,
+}
+
+impl LogSourceEntry {
+    pub fn new(log_source_format: LogSource, fields: HashSet<String>) -> Self {
+        LogSourceEntry {
+            log_source_format,
+            fields,
+        }
+    }
+}
+
 // Global Trait for event format
 // This trait is implemented by all the event formats
 pub trait EventFormat: Sized {
@@ -101,9 +131,13 @@ pub trait EventFormat: Sized {
         schema: &HashMap<String, Arc<Field>>,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
+        static_schema_flag: bool,
     ) -> Result<(Self::Data, EventSchema, bool), AnyError>;
 
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
+
+    /// Returns the UTC time at ingestion
+    fn get_p_timestamp(&self) -> DateTime<Utc>;
 
     fn into_recordbatch(
         self,
@@ -112,8 +146,13 @@ pub trait EventFormat: Sized {
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
     ) -> Result<(RecordBatch, bool), AnyError> {
-        let (data, mut schema, is_first) =
-            self.to_data(storage_schema, time_partition, schema_version)?;
+        let p_timestamp = self.get_p_timestamp();
+        let (data, mut schema, is_first) = self.to_data(
+            storage_schema,
+            time_partition,
+            schema_version,
+            static_schema_flag,
+        )?;
 
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
             return Err(anyhow!(
@@ -145,7 +184,7 @@ pub trait EventFormat: Sized {
             rb.schema(),
             &rb,
             &[0],
-            &[Arc::new(get_timestamp_array(rb.num_rows()))],
+            &[Arc::new(get_timestamp_array(p_timestamp, rb.num_rows()))],
         );
 
         Ok((rb, is_first))
@@ -172,6 +211,19 @@ pub trait EventFormat: Sized {
         }
         true
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn into_event(
+        self,
+        stream_name: String,
+        origin_size: u64,
+        storage_schema: &HashMap<String, Arc<Field>>,
+        static_schema_flag: bool,
+        custom_partitions: Option<&String>,
+        time_partition: Option<&String>,
+        schema_version: SchemaVersion,
+        stream_type: StreamType,
+    ) -> Result<Event, AnyError>;
 }
 
 pub fn get_existing_field_names(

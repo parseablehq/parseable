@@ -31,7 +31,8 @@ use tracing::trace;
 
 use crate::{
     alerts::AggregateCondition,
-    query::{error::ExecuteError, Query, TableScanVisitor, QUERY_SESSION},
+    parseable::PARSEABLE,
+    query::{Query, TableScanVisitor, QUERY_SESSION},
     rbac::{
         map::SessionKey,
         role::{Action, Permission},
@@ -135,12 +136,15 @@ async fn prepare_query(alert: &AlertConfig) -> Result<crate::query::Query, Alert
 }
 
 async fn execute_base_query(query: Query, original_query: &str) -> Result<DataFrame, AlertError> {
-    query.get_dataframe().await.map_err(|err| match err {
-        ExecuteError::NoStream => {
-            AlertError::CustomError(format!("Table name not found in query- {}", original_query))
-        }
-        e => AlertError::CustomError(e.to_string()),
-    })
+    let stream_name = query.first_stream_name().ok_or_else(|| {
+        AlertError::CustomError(format!("Table name not found in query- {original_query}"))
+    })?;
+
+    let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
+    query
+        .get_dataframe(time_partition.as_ref())
+        .await
+        .map_err(|err| AlertError::CustomError(err.to_string()))
 }
 
 async fn evaluate_aggregates(
