@@ -130,7 +130,7 @@ ureq = "2.12"
 url = "2.5"
 vergen = { version = "9.0", features = ["build", "cargo", "rustc", "si"] }
 vergen-gitcl = { version = "1.0", features = ["build", "cargo", "rustc", "si"] }
-zip = { version = "2.2", default-features = false, features = ["deflate"] }
+zip = { version = "2.3", default-features = false, features = ["deflate"] }
 anyhow = "1.0"
 
 [dev-dependencies]
