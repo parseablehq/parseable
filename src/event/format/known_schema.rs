@@ -28,25 +28,21 @@ pub struct SchemaDefinition {
 
 impl SchemaDefinition {
     pub fn extract(&self, event: &str) -> Option<Map<String, Value>> {
-        if let Some(pattern) = &self.pattern {
-            if let Some(captures) = pattern.captures(event) {
-                let mut extracted_fields = Map::new();
+        let pattern = self.pattern.as_ref()?;
+        let captures = pattern.captures(event)?;
+        let mut extracted_fields = Map::new();
 
-                // With named capture groups, you can iterate over the field names
-                for field_name in self.field_mappings.iter() {
-                    if let Some(value) = captures.name(field_name) {
-                        extracted_fields.insert(
-                            field_name.to_owned(),
-                            Value::String(value.as_str().to_string()),
-                        );
-                    }
-                }
-
-                return Some(extracted_fields);
+        // With named capture groups, you can iterate over the field names
+        for field_name in self.field_mappings.iter() {
+            if let Some(value) = captures.name(field_name) {
+                extracted_fields.insert(
+                    field_name.to_owned(),
+                    Value::String(value.as_str().to_string()),
+                );
             }
         }
 
-        None
+        Some(extracted_fields)
     }
 }
 
@@ -55,6 +51,7 @@ struct Format {
     name: String,
     regex: Vec<Pattern>,
 }
+
 #[derive(Debug, Deserialize)]
 struct Pattern {
     pattern: Option<String>,
@@ -73,44 +70,25 @@ impl EventProcessor {
             serde_json::from_value(json_data).expect("Failed to parse formats.json");
 
         for format in formats {
-            for pattern in &format.regex {
-                if let Some(pattern_str) = &pattern.pattern {
-                    // Compile the regex pattern
-                    match Regex::new(pattern_str) {
-                        Ok(exp) => {
-                            let field_mappings = pattern
-                                .fields
-                                .iter()
-                                .map(|field| field.to_string())
-                                .collect();
+            for regex in &format.regex {
+                // Compile the regex pattern if present
+                let pattern = regex.pattern.as_ref().and_then(|pattern| {
+                    Regex::new(pattern)
+                        .inspect_err(|err| {
+                            error!("Error compiling regex pattern: {err}; Pattern: {pattern}")
+                        })
+                        .ok()
+                });
 
-                            self.schema_definitions.insert(
-                                format.name.clone(),
-                                SchemaDefinition {
-                                    pattern: Some(exp),
-                                    field_mappings,
-                                },
-                            );
-                        }
-                        Err(e) => {
-                            error!("Error compiling regex pattern: {e}; Pattern: {pattern_str}");
-                        }
-                    }
-                } else {
-                    let field_mappings = pattern
-                        .fields
-                        .iter()
-                        .map(|field| field.to_string())
-                        .collect();
+                let field_mappings = regex.fields.clone();
 
-                    self.schema_definitions.insert(
-                        format.name.clone(),
-                        SchemaDefinition {
-                            pattern: None,
-                            field_mappings,
-                        },
-                    );
-                }
+                self.schema_definitions.insert(
+                    format.name.clone(),
+                    SchemaDefinition {
+                        pattern,
+                        field_mappings,
+                    },
+                );
             }
         }
     }
@@ -146,12 +124,11 @@ pub fn per_event_extraction(
     schema: &SchemaDefinition,
     extract_log: Option<&str>,
 ) {
-    if let Some(event) = extract_log
+    if let Some(additional) = extract_log
         .and_then(|field| obj.get(field))
         .and_then(|s| s.as_str())
+        .and_then(|event| schema.extract(event))
     {
-        if let Some(additional) = schema.extract(event) {
-            obj.extend(additional);
-        }
+        obj.extend(additional);
     }
 }
