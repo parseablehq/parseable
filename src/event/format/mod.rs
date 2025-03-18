@@ -39,6 +39,7 @@ use crate::{
 use super::{Event, DEFAULT_TIMESTAMP_KEY};
 
 pub mod json;
+pub mod known_schema;
 
 static TIME_FIELD_NAME_PARTS: [&str; 2] = ["time", "date"];
 type EventSchema = Vec<Arc<Field>>;
