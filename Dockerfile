@@ -30,6 +30,7 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && r
 
 # Build the actual binary
 COPY src ./src
+COPY resources ./resources
 RUN cargo build --release
 
 # final stage
