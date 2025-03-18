@@ -40,7 +40,19 @@ use super::{Event, DEFAULT_TIMESTAMP_KEY};
 
 pub mod json;
 
-static TIME_FIELD_NAME_PARTS: [&str; 2] = ["time", "date"];
+static TIME_FIELD_NAME_PARTS: [&str; 11] = [
+    "time",
+    "date",
+    "timestamp",
+    "created",
+    "received",
+    "ingested",
+    "collected",
+    "start",
+    "end",
+    "ts",
+    "dt",
+];
 type EventSchema = Vec<Arc<Field>>;
 
 /// Source of the logs, used to perform special processing for certain sources
