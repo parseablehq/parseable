@@ -16,7 +16,7 @@
  *
  */
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -41,7 +41,7 @@ pub struct SchemaDefinition {
     /// Regular expression pattern used to match and capture fields from log strings
     pattern: Option<Regex>,
     // Maps field names to regex capture groups
-    field_mappings: Vec<String>,
+    field_mappings: Vec<HashSet<String>>,
 }
 
 impl SchemaDefinition {
@@ -65,7 +65,7 @@ impl SchemaDefinition {
         if self
             .field_mappings
             .iter()
-            .all(|field| obj.contains_key(field))
+            .any(|fields| fields.iter().all(|field| obj.contains_key(field)))
         {
             return true;
         }
@@ -87,7 +87,7 @@ impl SchemaDefinition {
         let mut extracted_fields = Map::new();
 
         // With named capture groups, you can iterate over the field names
-        for field_name in self.field_mappings.iter() {
+        for field_name in self.field_mappings.iter().flatten() {
             if let Some(value) = captures.name(field_name) {
                 extracted_fields.insert(
                     field_name.to_owned(),
@@ -113,7 +113,7 @@ struct Format {
 #[derive(Debug, Deserialize)]
 struct Pattern {
     pattern: Option<String>,
-    fields: Vec<String>,
+    fields: HashSet<String>,
 }
 
 /// Manages a collection of schema definitions for various log formats
@@ -145,13 +145,15 @@ impl EventProcessor {
                         .ok()
                 });
 
-                processor.schema_definitions.insert(
-                    format.name.clone(),
-                    SchemaDefinition {
+                let schema = processor
+                    .schema_definitions
+                    .entry(format.name.clone())
+                    .or_insert_with(|| SchemaDefinition {
                         pattern,
-                        field_mappings: regex.fields.clone(),
-                    },
-                );
+                        field_mappings: vec![],
+                    });
+
+                schema.field_mappings.push(regex.fields.clone());
             }
         }
 
@@ -344,7 +346,10 @@ mod tests {
         // Create a schema definition with no pattern
         let schema = SchemaDefinition {
             pattern: None,
-            field_mappings: vec!["field1".to_string(), "field2".to_string()],
+            field_mappings: vec![HashSet::from_iter([
+                "field1".to_string(),
+                "field2".to_string(),
+            ])],
         };
 
         // Create an object missing the required fields
