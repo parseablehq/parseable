@@ -54,7 +54,7 @@ where
 #[derive(Debug, Default, Deserialize)]
 struct Pattern {
     /// Regular expression pattern used to match and capture fields from log strings
-    #[serde(deserialize_with = "deserialize_regex")]
+    #[serde(deserialize_with = "deserialize_regex", default)]
     pattern: Option<Regex>,
     // Maps field names to regex capture groups
     fields: HashSet<String>,
