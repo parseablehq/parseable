@@ -74,7 +74,8 @@ impl From<&str> for LogSource {
             "otel-metrics" => LogSource::OtelMetrics,
             "otel-traces" => LogSource::OtelTraces,
             "pmeta" => LogSource::Pmeta,
-            _ => LogSource::Json,
+            "" | "json" => LogSource::Json,
+            custom => LogSource::Custom(custom.to_owned()),
         }
     }
 }
