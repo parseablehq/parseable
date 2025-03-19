@@ -22,7 +22,7 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
-use tracing::{error, warn};
+use tracing::error;
 
 /// Predefined JSON with known textual logging formats
 const FORMATS_JSON: &str = include_str!("../../../resources/formats.json");
@@ -32,8 +32,12 @@ pub static KNOWN_SCHEMA_LIST: Lazy<EventProcessor> =
     Lazy::new(|| EventProcessor::new(FORMATS_JSON));
 
 #[derive(Debug, thiserror::Error)]
-#[error("Event is not in the expected text/JSON format for {0}")]
-pub struct Unacceptable(String);
+pub enum Error {
+    #[error("Event is not in the expected text/JSON format for {0}")]
+    Unacceptable(String),
+    #[error("Unknown log format: {0}")]
+    Unknown(String),
+}
 
 /// Deserializes a string pattern into a compiled Regex
 /// NOTE: we only warn if the pattern doesn't compile
@@ -178,10 +182,9 @@ impl EventProcessor {
         json: &mut Value,
         log_source: &str,
         extract_log: Option<&str>,
-    ) -> Result<HashSet<String>, Unacceptable> {
+    ) -> Result<HashSet<String>, Error> {
         let Some(schema) = self.schema_definitions.get(log_source) else {
-            warn!("Unknown log format: {log_source}");
-            return Ok(HashSet::new());
+            return Err(Error::Unknown(log_source.to_owned()));
         };
 
         let mut fields = HashSet::new();
@@ -194,7 +197,7 @@ impl EventProcessor {
                     if let Some(known_fields) = schema.check_or_extract(event, extract_log) {
                         fields.extend(known_fields);
                     } else {
-                        return Err(Unacceptable(log_source.to_owned()));
+                        return Err(Error::Unacceptable(log_source.to_owned()));
                     }
                 }
             }
@@ -202,7 +205,7 @@ impl EventProcessor {
                 if let Some(known_fields) = schema.check_or_extract(event, extract_log) {
                     return Ok(known_fields);
                 } else {
-                    return Err(Unacceptable(log_source.to_owned()));
+                    return Err(Error::Unacceptable(log_source.to_owned()));
                 }
             }
             _ => unreachable!("We don't accept events of the form: {json}"),

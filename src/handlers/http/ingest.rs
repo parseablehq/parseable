@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use crate::event;
 use crate::event::error::EventError;
-use crate::event::format::known_schema::{Unacceptable, KNOWN_SCHEMA_LIST};
+use crate::event::format::known_schema::{self, KNOWN_SCHEMA_LIST};
 use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
 use crate::handlers::{EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
 use crate::metadata::SchemaVersion;
@@ -49,7 +49,10 @@ use super::users::filters::FiltersError;
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
 // creates if stream does not exist
-pub async fn ingest(req: HttpRequest, Json(mut json): Json<Value>) -> Result<HttpResponse, PostError> {
+pub async fn ingest(
+    req: HttpRequest,
+    Json(mut json): Json<Value>,
+) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
@@ -363,7 +366,7 @@ pub enum PostError {
     #[error("Missing field for time partition in json: {0}")]
     MissingTimePartition(String),
     #[error("{0}")]
-    KnownFormat(#[from] Unacceptable),
+    KnownFormat(#[from] known_schema::Error),
 }
 
 impl actix_web::ResponseError for PostError {
