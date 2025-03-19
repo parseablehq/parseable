@@ -184,7 +184,7 @@ impl EventProcessor {
     ) -> Result<HashSet<String>, Unacceptable> {
         let Some(schema) = self.schema_definitions.get(log_source) else {
             warn!("Unknown log format: {log_source}");
-            return Ok(Default::default());
+            return Ok(HashSet::new());
         };
 
         let mut fields = HashSet::new();
