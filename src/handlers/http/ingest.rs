@@ -28,7 +28,7 @@ use serde_json::Value;
 
 use crate::event;
 use crate::event::error::EventError;
-use crate::event::format::known_schema::Unacceptable;
+use crate::event::format::known_schema::{Unacceptable, KNOWN_SCHEMA_LIST};
 use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
 use crate::handlers::{EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
 use crate::metadata::SchemaVersion;
@@ -49,7 +49,7 @@ use super::users::filters::FiltersError;
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
 // creates if stream does not exist
-pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpResponse, PostError> {
+pub async fn ingest(req: HttpRequest, Json(mut json): Json<Value>) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
@@ -78,7 +78,18 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
         return Err(PostError::OtelNotSupported);
     }
 
-    let log_source_entry = LogSourceEntry::new(log_source.clone(), HashSet::new());
+    let fields = match &log_source {
+        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
+            return Err(PostError::OtelNotSupported)
+        }
+        LogSource::Custom(src) => {
+            KNOWN_SCHEMA_LIST.extract_from_inline_log(&mut json, src, extract_log)?
+        }
+        _ => HashSet::new(),
+    };
+
+    let log_source_entry = LogSourceEntry::new(log_source.clone(), fields);
+
     PARSEABLE
         .create_stream_if_not_exists(
             &stream_name,
@@ -87,7 +98,7 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
         )
         .await?;
 
-    flatten_and_push_logs(json, &stream_name, &log_source, extract_log).await?;
+    flatten_and_push_logs(json, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -150,7 +161,7 @@ pub async fn handle_otel_logs_ingestion(
         )
         .await?;
 
-    flatten_and_push_logs(json, &stream_name, &log_source, None).await?;
+    flatten_and_push_logs(json, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -188,7 +199,7 @@ pub async fn handle_otel_metrics_ingestion(
         )
         .await?;
 
-    flatten_and_push_logs(json, &stream_name, &log_source, None).await?;
+    flatten_and_push_logs(json, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -228,7 +239,7 @@ pub async fn handle_otel_traces_ingestion(
         )
         .await?;
 
-    flatten_and_push_logs(json, &stream_name, &log_source, None).await?;
+    flatten_and_push_logs(json, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -239,7 +250,7 @@ pub async fn handle_otel_traces_ingestion(
 pub async fn post_event(
     req: HttpRequest,
     stream_name: Path<String>,
-    Json(json): Json<Value>,
+    Json(mut json): Json<Value>,
 ) -> Result<HttpResponse, PostError> {
     let stream_name = stream_name.into_inner();
 
@@ -275,14 +286,17 @@ pub async fn post_event(
         .get(EXTRACT_LOG_KEY)
         .and_then(|h| h.to_str().ok());
 
-    if matches!(
-        log_source,
-        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces
-    ) {
-        return Err(PostError::OtelNotSupported);
+    match &log_source {
+        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
+            return Err(PostError::OtelNotSupported)
+        }
+        LogSource::Custom(src) => {
+            KNOWN_SCHEMA_LIST.extract_from_inline_log(&mut json, src, extract_log)?;
+        }
+        _ => {}
     }
 
-    flatten_and_push_logs(json, &stream_name, &log_source, extract_log).await?;
+    flatten_and_push_logs(json, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }

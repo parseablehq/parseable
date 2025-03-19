@@ -20,7 +20,7 @@ use std::collections::{HashMap, HashSet};
 
 use once_cell::sync::Lazy;
 use regex::Regex;
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 use tracing::{error, warn};
 
@@ -35,13 +35,35 @@ pub static KNOWN_SCHEMA_LIST: Lazy<EventProcessor> =
 #[error("Event is not in the expected text/JSON format for {0}")]
 pub struct Unacceptable(String);
 
+/// Deserializes a string pattern into a compiled Regex
+/// NOTE: we only warn if the pattern doesn't compile
+pub fn deserialize_regex<'de, D>(deserializer: D) -> Result<Option<Regex>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let pattern = String::deserialize(deserializer)?;
+
+    let regex = Regex::new(&pattern)
+        .inspect_err(|err| error!("Error compiling regex pattern: {err}; Pattern: {pattern}"))
+        .ok();
+
+    Ok(regex)
+}
+
+/// Configuration for a single pattern within a log format
+#[derive(Debug, Default, Deserialize)]
+struct Pattern {
+    /// Regular expression pattern used to match and capture fields from log strings
+    #[serde(deserialize_with = "deserialize_regex")]
+    pattern: Option<Regex>,
+    // Maps field names to regex capture groups
+    fields: HashSet<String>,
+}
+
 /// Defines a schema for extracting structured data from logs using regular expressions
 #[derive(Debug, Default)]
 pub struct SchemaDefinition {
-    /// Regular expression pattern used to match and capture fields from log strings
-    patterns: Vec<Regex>,
-    // Maps field names to regex capture groups
-    field_mappings: Vec<HashSet<String>>,
+    patterns: Vec<Pattern>,
 }
 
 impl SchemaDefinition {
@@ -55,36 +77,40 @@ impl SchemaDefinition {
     /// * `extract_log` - Optional field name containing the raw log text
     ///
     /// # Returns
-    /// * `true` - If all expected fields are already present in the object OR if extraction was successful
-    /// * `false` - If extraction failed or no pattern was available and fields were missing
+    /// * `Some` - If all expected fields are already present in the object OR if extraction was successful
+    ///            Contains fields present in catch group
+    /// * `None` - If extraction failed or no pattern was available and fields were missing
     pub fn check_or_extract(
         &self,
         obj: &mut Map<String, Value>,
         extract_log: Option<&str>,
-    ) -> bool {
-        if self
-            .field_mappings
+    ) -> Option<HashSet<String>> {
+        if let Some(pattern) = self
+            .patterns
             .iter()
-            .any(|fields| fields.iter().all(|field| obj.contains_key(field)))
+            .find(|pattern| pattern.fields.iter().all(|field| obj.contains_key(field)))
         {
-            return true;
+            return Some(pattern.fields.clone());
         }
 
         let Some(event) = extract_log
             .and_then(|field| obj.get(field))
             .and_then(|s| s.as_str())
         else {
-            return false;
+            return None;
         };
 
-        for pattern in self.patterns.iter() {
+        for format in self.patterns.iter() {
+            let Some(pattern) = format.pattern.as_ref() else {
+                continue;
+            };
             let Some(captures) = pattern.captures(event) else {
                 continue;
             };
             let mut extracted_fields = Map::new();
 
             // With named capture groups, you can iterate over the field names
-            for field_name in self.field_mappings.iter().flatten() {
+            for field_name in format.fields.iter() {
                 if let Some(value) = captures.name(field_name) {
                     extracted_fields.insert(
                         field_name.to_owned(),
@@ -95,10 +121,10 @@ impl SchemaDefinition {
 
             obj.extend(extracted_fields);
 
-            return true;
+            return Some(format.fields.clone());
         }
 
-        false
+        None
     }
 }
 
@@ -107,13 +133,6 @@ impl SchemaDefinition {
 struct Format {
     name: String,
     regex: Vec<Pattern>,
-}
-
-/// Configuration for a single pattern within a log format
-#[derive(Debug, Deserialize)]
-struct Pattern {
-    pattern: Option<String>,
-    fields: HashSet<String>,
 }
 
 /// Manages a collection of schema definitions for various log formats
@@ -140,18 +159,7 @@ impl EventProcessor {
                     .entry(format.name.clone())
                     .or_insert_with(SchemaDefinition::default);
 
-                schema.field_mappings.push(regex.fields.clone());
-                // Compile the regex pattern if present
-                // NOTE: we only warn if the pattern doesn't compile
-                if let Some(pattern) = regex.pattern.and_then(|pattern| {
-                    Regex::new(&pattern)
-                        .inspect_err(|err| {
-                            error!("Error compiling regex pattern: {err}; Pattern: {pattern}")
-                        })
-                        .ok()
-                }) {
-                    schema.patterns.push(pattern);
-                }
+                schema.patterns.push(regex);
             }
         }
 
@@ -173,32 +181,37 @@ impl EventProcessor {
         json: &mut Value,
         log_source: &str,
         extract_log: Option<&str>,
-    ) -> Result<(), Unacceptable> {
+    ) -> Result<HashSet<String>, Unacceptable> {
         let Some(schema) = self.schema_definitions.get(log_source) else {
             warn!("Unknown log format: {log_source}");
-            return Ok(());
+            return Ok(Default::default());
         };
 
+        let mut fields = HashSet::new();
         match json {
             Value::Array(list) => {
                 for event in list {
                     let Value::Object(event) = event else {
                         continue;
                     };
-                    if !schema.check_or_extract(event, extract_log) {
+                    if let Some(known_fields) = schema.check_or_extract(event, extract_log) {
+                        fields.extend(known_fields);
+                    } else {
                         return Err(Unacceptable(log_source.to_owned()));
                     }
                 }
             }
             Value::Object(event) => {
-                if !schema.check_or_extract(event, extract_log) {
+                if let Some(known_fields) = schema.check_or_extract(event, extract_log) {
+                    return Ok(known_fields);
+                } else {
                     return Err(Unacceptable(log_source.to_owned()));
                 }
             }
             _ => unreachable!("We don't accept events of the form: {json}"),
         }
 
-        Ok(())
+        Ok(fields)
     }
 }
 
@@ -244,7 +257,7 @@ mod tests {
 
         // Use check_or_extract instead of extract
         let result = schema.check_or_extract(&mut obj, Some(log_field));
-        assert!(result, "Failed to extract fields from valid log");
+        assert!(result.is_some(), "Failed to extract fields from valid log");
 
         // Verify extracted fields were added to the object
         assert_eq!(obj.get("ip").unwrap().as_str().unwrap(), "192.168.1.1");
@@ -275,7 +288,7 @@ mod tests {
 
         // Use check_or_extract instead of extract
         let result = schema.check_or_extract(&mut obj, Some(log_field));
-        assert!(result, "Failed to extract fields from valid log");
+        assert!(result.is_some(), "Failed to extract fields from valid log");
 
         // Verify extracted fields were added to the object
         assert_eq!(obj.get("level").unwrap().as_str().unwrap(), "ERROR");
@@ -308,7 +321,10 @@ mod tests {
 
         // check_or_extract should return true without modifying anything
         let result = schema.check_or_extract(&mut obj, None);
-        assert!(result, "Should return true when fields already exist");
+        assert!(
+            result.is_some(),
+            "Should return true when fields already exist"
+        );
 
         // Verify the original values weren't changed
         assert_eq!(
@@ -332,7 +348,10 @@ mod tests {
 
         // check_or_extract should return false
         let result = schema.check_or_extract(&mut obj, Some(log_field));
-        assert!(!result, "Should not extract fields from invalid log format");
+        assert!(
+            result.is_none(),
+            "Should not extract fields from invalid log format"
+        );
 
         // Verify no fields were added
         assert!(!obj.contains_key("ip"));
@@ -343,11 +362,10 @@ mod tests {
     fn test_no_pattern_missing_fields() {
         // Create a schema definition with no pattern
         let schema = SchemaDefinition {
-            patterns: vec![],
-            field_mappings: vec![HashSet::from_iter([
-                "field1".to_string(),
-                "field2".to_string(),
-            ])],
+            patterns: vec![Pattern {
+                pattern: None,
+                fields: HashSet::from_iter(["field1".to_string(), "field2".to_string()]),
+            }],
         };
 
         // Create an object missing the required fields
@@ -360,7 +378,7 @@ mod tests {
         // check_or_extract should return false
         let result = schema.check_or_extract(&mut obj, Some("log"));
         assert!(
-            !result,
+            result.is_none(),
             "Should return false when no pattern and missing fields"
         );
     }
@@ -467,7 +485,10 @@ mod tests {
 
         // check_or_extract should return false
         let result = schema.check_or_extract(&mut obj, Some("raw_log"));
-        assert!(!result, "Should return false when log field is missing");
+        assert!(
+            result.is_none(),
+            "Should return false when log field is missing"
+        );
 
         // Verify no fields were added
         assert!(!obj.contains_key("level"));
