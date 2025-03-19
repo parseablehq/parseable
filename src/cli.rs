@@ -271,6 +271,14 @@ pub struct Options {
     pub row_group_size: usize,
 
     #[arg(
+        long,
+        env = "P_EXECUTION_BATCH_SIZE",
+        default_value = "20000",
+        help = "batch size for query execution"
+    )]
+    pub execution_batch_size: usize,
+
+    #[arg(
         long = "compression-algo",
         env = "P_PARQUET_COMPRESSION_ALGO",
         default_value = "lz4_raw",
