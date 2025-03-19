@@ -93,12 +93,9 @@ impl SchemaDefinition {
             return Some(pattern.fields.clone());
         }
 
-        let Some(event) = extract_log
+        let event = extract_log
             .and_then(|field| obj.get(field))
-            .and_then(|s| s.as_str())
-        else {
-            return None;
-        };
+            .and_then(|s| s.as_str())?;
 
         for format in self.patterns.iter() {
             let Some(pattern) = format.pattern.as_ref() else {
@@ -157,7 +154,7 @@ impl EventProcessor {
                 let schema = processor
                     .schema_definitions
                     .entry(format.name.clone())
-                    .or_insert_with(SchemaDefinition::default);
+                    .or_default();
 
                 schema.patterns.push(regex);
             }
