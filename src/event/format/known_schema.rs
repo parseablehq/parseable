@@ -36,10 +36,10 @@ pub static KNOWN_SCHEMA_LIST: Lazy<EventProcessor> =
 pub struct Unacceptable(String);
 
 /// Defines a schema for extracting structured data from logs using regular expressions
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct SchemaDefinition {
     /// Regular expression pattern used to match and capture fields from log strings
-    pattern: Option<Regex>,
+    patterns: Vec<Regex>,
     // Maps field names to regex capture groups
     field_mappings: Vec<HashSet<String>>,
 }
@@ -70,10 +70,6 @@ impl SchemaDefinition {
             return true;
         }
 
-        let Some(pattern) = self.pattern.as_ref() else {
-            return false;
-        };
-
         let Some(event) = extract_log
             .and_then(|field| obj.get(field))
             .and_then(|s| s.as_str())
@@ -81,24 +77,28 @@ impl SchemaDefinition {
             return false;
         };
 
-        let Some(captures) = pattern.captures(event) else {
-            return false;
-        };
-        let mut extracted_fields = Map::new();
+        for pattern in self.patterns.iter() {
+            let Some(captures) = pattern.captures(event) else {
+                continue;
+            };
+            let mut extracted_fields = Map::new();
 
-        // With named capture groups, you can iterate over the field names
-        for field_name in self.field_mappings.iter().flatten() {
-            if let Some(value) = captures.name(field_name) {
-                extracted_fields.insert(
-                    field_name.to_owned(),
-                    Value::String(value.as_str().to_string()),
-                );
+            // With named capture groups, you can iterate over the field names
+            for field_name in self.field_mappings.iter().flatten() {
+                if let Some(value) = captures.name(field_name) {
+                    extracted_fields.insert(
+                        field_name.to_owned(),
+                        Value::String(value.as_str().to_string()),
+                    );
+                }
             }
+
+            obj.extend(extracted_fields);
+
+            return true;
         }
 
-        obj.extend(extracted_fields);
-
-        true
+        false
     }
 }
 
@@ -134,26 +134,24 @@ impl EventProcessor {
             serde_json::from_str(json_text).expect("Known formats are stored as JSON text");
 
         for format in formats {
-            for regex in &format.regex {
+            for regex in format.regex {
+                let schema = processor
+                    .schema_definitions
+                    .entry(format.name.clone())
+                    .or_insert_with(SchemaDefinition::default);
+
+                schema.field_mappings.push(regex.fields.clone());
                 // Compile the regex pattern if present
                 // NOTE: we only warn if the pattern doesn't compile
-                let pattern = regex.pattern.as_ref().and_then(|pattern| {
-                    Regex::new(pattern)
+                if let Some(pattern) = regex.pattern.and_then(|pattern| {
+                    Regex::new(&pattern)
                         .inspect_err(|err| {
                             error!("Error compiling regex pattern: {err}; Pattern: {pattern}")
                         })
                         .ok()
-                });
-
-                let schema = processor
-                    .schema_definitions
-                    .entry(format.name.clone())
-                    .or_insert_with(|| SchemaDefinition {
-                        pattern,
-                        field_mappings: vec![],
-                    });
-
-                schema.field_mappings.push(regex.fields.clone());
+                }) {
+                    schema.patterns.push(pattern);
+                }
             }
         }
 
@@ -345,7 +343,7 @@ mod tests {
     fn test_no_pattern_missing_fields() {
         // Create a schema definition with no pattern
         let schema = SchemaDefinition {
-            pattern: None,
+            patterns: vec![],
             field_mappings: vec![HashSet::from_iter([
                 "field1".to_string(),
                 "field2".to_string(),
