@@ -32,8 +32,8 @@ pub static KNOWN_SCHEMA_LIST: Lazy<EventProcessor> =
     Lazy::new(|| EventProcessor::new(FORMATS_JSON));
 
 #[derive(Debug, thiserror::Error)]
-#[error("Unacceptable text/JSON for known log format")]
-pub struct Unacceptable;
+#[error("Event is not in the expected text/JSON format for {0}")]
+pub struct Unacceptable(String);
 
 /// Defines a schema for extracting structured data from logs using regular expressions
 #[derive(Debug)]
@@ -186,13 +186,13 @@ impl EventProcessor {
                         continue;
                     };
                     if !schema.check_or_extract(event, extract_log) {
-                        return Err(Unacceptable);
+                        return Err(Unacceptable(log_source.to_owned()));
                     }
                 }
             }
             Value::Object(event) => {
                 if !schema.check_or_extract(event, extract_log) {
-                    return Err(Unacceptable);
+                    return Err(Unacceptable(log_source.to_owned()));
                 }
             }
             _ => unreachable!("We don't accept events of the form: {json}"),

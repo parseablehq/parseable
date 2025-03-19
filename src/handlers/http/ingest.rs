@@ -348,7 +348,7 @@ pub enum PostError {
     IngestionNotAllowed,
     #[error("Missing field for time partition in json: {0}")]
     MissingTimePartition(String),
-    #[error("Known Format: {0}")]
+    #[error("{0}")]
     KnownFormat(#[from] Unacceptable),
 }
 
