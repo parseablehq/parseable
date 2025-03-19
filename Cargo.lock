@@ -3527,7 +3527,6 @@ dependencies = [
  "uptime_lib",
  "ureq",
  "url",
- "vergen",
  "vergen-gitcl",
  "xxhash-rust",
  "zip",
