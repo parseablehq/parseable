@@ -30,7 +30,10 @@ use fs_extra::file::CopyOptions;
 use futures::{stream::FuturesUnordered, TryStreamExt};
 use object_store::{buffered::BufReader, ObjectMeta};
 use relative_path::{RelativePath, RelativePathBuf};
-use tokio::fs::{self, DirEntry};
+use tokio::{
+    fs::{self, DirEntry, OpenOptions},
+    io::AsyncReadExt,
+};
 use tokio_stream::wrappers::ReadDirStream;
 
 use crate::{
@@ -106,10 +109,13 @@ impl LocalFS {
 impl ObjectStorage for LocalFS {
     async fn upload_multipart(
         &self,
-        _key: &RelativePath,
-        _path: &Path,
+        key: &RelativePath,
+        path: &Path,
     ) -> Result<(), ObjectStorageError> {
-        unimplemented!()
+        let mut file = OpenOptions::new().read(true).open(path).await?;
+        let mut data = Vec::new();
+        file.read_to_end(&mut data).await?;
+        self.put_object(key, data.into()).await
     }
     async fn get_buffered_reader(
         &self,

@@ -55,14 +55,13 @@ use crate::{
 use super::{
     metrics_layer::MetricLayer, object_storage::parseable_json_path, to_object_store_path,
     ObjectStorage, ObjectStorageError, ObjectStorageProvider, CONNECT_TIMEOUT_SECS,
-    PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME,
-    STREAM_ROOT_DIRECTORY,
+    MIN_MULTIPART_UPLOAD_SIZE, PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, SCHEMA_FILE_NAME,
+    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 // in bytes
 // const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
 const AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: &str = "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI";
-const MIN_MULTIPART_UPLOAD_SIZE: usize = 25 * 1024 * 1024;
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -560,7 +559,7 @@ impl S3 {
                 // upload_parts.push(part_number as u64 + 1);
             }
             match async_writer.complete().await {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(err) => {
                     error!("Failed to complete multipart upload. {:?}", err);
                     async_writer.abort().await?;

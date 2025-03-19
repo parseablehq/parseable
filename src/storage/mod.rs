@@ -77,6 +77,7 @@ pub const CURRENT_SCHEMA_VERSION: &str = "v6";
 const CONNECT_TIMEOUT_SECS: u64 = 5;
 const REQUEST_TIMEOUT_SECS: u64 = 300;
 
+pub const MIN_MULTIPART_UPLOAD_SIZE: usize = 25 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectStoreFormat {
     /// Version of schema registry
