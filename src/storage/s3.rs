@@ -62,7 +62,7 @@ use super::{
 // in bytes
 // const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
 const AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: &str = "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI";
-const MIN_MULTIPART_UPLOAD_SIZE: usize = 5 * 1024 * 1024;
+const MIN_MULTIPART_UPLOAD_SIZE: usize = 25 * 1024 * 1024;
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
