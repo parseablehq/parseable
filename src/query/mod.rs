@@ -111,7 +111,9 @@ impl Query {
         let mut config = SessionConfig::default()
             .with_parquet_pruning(true)
             .with_prefer_existing_sort(true)
-            .with_batch_size(20000);
+            //batch size has been made configurable via environment variable
+            //default value is 20000
+            .with_batch_size(PARSEABLE.options.execution_batch_size);
 
         // Pushdown filters allows DF to push the filters as far down in the plan as possible
         // and thus, reducing the number of rows decoded
