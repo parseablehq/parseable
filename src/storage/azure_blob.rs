@@ -427,12 +427,9 @@ impl BlobStore {
 
                 // upload_parts.push(part_number as u64 + 1);
             }
-            match async_writer.complete().await {
-                Ok(_) => {}
-                Err(err) => {
-                    error!("Failed to complete multipart upload. {:?}", err);
-                    async_writer.abort().await?;
-                }
+            if let Err(err) = async_writer.complete().await {
+                error!("Failed to complete multipart upload. {:?}", err);
+                async_writer.abort().await?;
             };
         }
         Ok(())
