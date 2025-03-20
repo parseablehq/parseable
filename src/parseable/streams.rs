@@ -737,17 +737,22 @@ pub struct Streams(RwLock<HashMap<String, StreamRef>>);
 // 4. When first event is sent to stream (update the schema)
 // 5. When set alert API is called (update the alert)
 impl Streams {
-    pub fn create(
+    /// Checks after getting an excluse lock whether already stream exists, else creates it.
+    /// NOTE: This is done to ensure we don't have contention among threads.
+    pub fn get_or_create(
         &self,
         options: Arc<Options>,
         stream_name: String,
         metadata: LogStreamMetadata,
         ingestor_id: Option<String>,
     ) -> StreamRef {
+        let mut guard = self.write().expect(LOCK_EXPECT);
+        if let Some(stream) = guard.get(&stream_name) {
+            return stream.clone();
+        }
+
         let stream = Stream::new(options, &stream_name, metadata, ingestor_id);
-        self.write()
-            .expect(LOCK_EXPECT)
-            .insert(stream_name, stream.clone());
+        guard.insert(stream_name, stream.clone());
 
         stream
     }
