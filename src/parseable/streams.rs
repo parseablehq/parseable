@@ -737,7 +737,7 @@ pub struct Streams(RwLock<HashMap<String, StreamRef>>);
 // 4. When first event is sent to stream (update the schema)
 // 5. When set alert API is called (update the alert)
 impl Streams {
-    /// Checks after getting an excluse lock whether the stream already exists, else creates it.
+    /// Checks after getting an exclusive lock whether the stream already exists, else creates it.
     /// NOTE: This is done to ensure we don't have contention among threads.
     pub fn get_or_create(
         &self,
