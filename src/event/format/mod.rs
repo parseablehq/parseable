@@ -158,17 +158,33 @@ pub trait EventFormat: Sized {
             )),
         );
 
-        if static_schema_flag
-            && schema.iter().any(|field| {
-                storage_schema
-                    .get(field.name())
-                    .is_none_or(|storage_field| storage_field != field)
-            })
-        {
+        if !Self::is_schema_matching(&schema, storage_schema, static_schema_flag) {
             return Err(anyhow!("Schema mismatch"));
         }
 
         Ok(schema)
+    }
+
+    fn is_schema_matching(
+        schema: &EventSchema,
+        storage_schema: &HashMap<String, Arc<Field>>,
+        static_schema_flag: bool,
+    ) -> bool {
+        if !static_schema_flag {
+            return true;
+        }
+        for field in schema.iter() {
+            let Some(storage_field) = storage_schema.get(field.name()) else {
+                return false;
+            };
+            if field.name() != storage_field.name() {
+                return false;
+            }
+            if field.data_type() != storage_field.data_type() {
+                return false;
+            }
+        }
+        true
     }
 
     fn into_recordbatch(
