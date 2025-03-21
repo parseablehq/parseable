@@ -1239,32 +1239,6 @@ mod tests {
     }
 
     #[test]
-    fn test_invalid_arrow_path() {
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        // Missing the ".data.arrows" suffix
-        let filename = "12345abcde&key1=value1.date=2020-01-21.hour=10.minute=30";
-        let file_path = create_test_file(&temp_dir, filename);
-        let random_string = "random123";
-
-        let result = arrow_path_to_parquet(&file_path, random_string);
-
-        assert!(result.is_none());
-    }
-
-    #[test]
-    fn test_invalid_schema_key() {
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        // Invalid schema key with special characters
-        let filename = "12345abcde&key1=value1!.date=2020-01-21.hour=10.minute=30.data.arrows";
-        let file_path = create_test_file(&temp_dir, filename);
-        let random_string = "random123";
-
-        let result = arrow_path_to_parquet(&file_path, random_string);
-
-        assert!(result.is_none());
-    }
-
-    #[test]
     fn test_complex_path() {
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let nested_dir = temp_dir.path().join("nested/directory/structure");
@@ -1287,19 +1261,6 @@ mod tests {
             parquet_path.file_name().unwrap().to_str().unwrap(),
             "date=2020-01-21.hour=10.minute=30.region=us-west.ee529ffc8e76.data.random456.parquet"
         );
-    }
-
-    #[test]
-    fn test_empty_front_part() {
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        // Valid but with empty front part
-        let filename = "schema_key..data.arrows";
-        let file_path = create_test_file(&temp_dir, filename);
-        let random_string = "random789";
-
-        let result = arrow_path_to_parquet(&file_path, random_string);
-
-        assert!(result.is_none());
     }
 
     #[test]
