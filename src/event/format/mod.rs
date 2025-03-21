@@ -33,7 +33,7 @@ use serde_json::Value;
 use crate::{
     metadata::SchemaVersion,
     storage::StreamType,
-    utils::arrow::{get_field, get_timestamp_array, replace_columns},
+    utils::arrow::{add_parseable_fields, get_field},
 };
 
 use super::{Event, DEFAULT_TIMESTAMP_KEY};
@@ -145,9 +145,10 @@ pub trait EventFormat: Sized {
         static_schema_flag: bool,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
+        p_custom_fields: &HashMap<String, String>,
     ) -> Result<(RecordBatch, bool), AnyError> {
         let p_timestamp = self.get_p_timestamp();
-        let (data, mut schema, is_first) = self.to_data(
+        let (data, schema, is_first) = self.to_data(
             storage_schema,
             time_partition,
             schema_version,
@@ -160,16 +161,6 @@ pub trait EventFormat: Sized {
                 DEFAULT_TIMESTAMP_KEY
             ));
         };
-
-        // add the p_timestamp field to the event schema to the 0th index
-        schema.insert(
-            0,
-            Arc::new(Field::new(
-                DEFAULT_TIMESTAMP_KEY,
-                DataType::Timestamp(TimeUnit::Millisecond, None),
-                true,
-            )),
-        );
 
         if !is_schema_matching(&schema, storage_schema, static_schema_flag) {
             return Err(anyhow!("Schema mismatch"));
@@ -184,13 +175,8 @@ pub trait EventFormat: Sized {
             schema_version,
         );
 
-        let mut rb = Self::decode(data, new_schema.clone())?;
-        rb = replace_columns(
-            rb.schema(),
-            &rb,
-            &[0],
-            &[Arc::new(get_timestamp_array(p_timestamp, rb.num_rows()))],
-        );
+        let rb = Self::decode(data, new_schema.clone())?;
+        let rb = add_parseable_fields(rb, p_timestamp, p_custom_fields)?;
 
         Ok((rb, is_first))
     }
@@ -206,6 +192,7 @@ pub trait EventFormat: Sized {
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
         stream_type: StreamType,
+        p_custom_fields: &HashMap<String, String>,
     ) -> Result<Event, AnyError>;
 }
 
