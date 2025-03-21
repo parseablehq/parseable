@@ -27,7 +27,7 @@ mod cli;
 pub mod connectors;
 pub mod correlation;
 pub mod enterprise;
-mod event;
+pub mod event;
 pub mod handlers;
 pub mod hottier;
 mod livetail;

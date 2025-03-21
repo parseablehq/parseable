@@ -178,7 +178,7 @@ impl Parseable {
         }
 
         // Gets write privileges only for creating the stream when it doesn't already exist.
-        self.streams.create(
+        self.streams.get_or_create(
             self.options.clone(),
             stream_name.to_owned(),
             LogStreamMetadata::default(),
@@ -382,7 +382,7 @@ impl Parseable {
             schema_version,
             log_source,
         );
-        self.streams.create(
+        self.streams.get_or_create(
             self.options.clone(),
             stream_name.to_string(),
             metadata,
@@ -692,7 +692,7 @@ impl Parseable {
                     SchemaVersion::V1, // New stream
                     log_source,
                 );
-                self.streams.create(
+                self.streams.get_or_create(
                     self.options.clone(),
                     stream_name.to_string(),
                     metadata,
