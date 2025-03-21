@@ -82,7 +82,7 @@ pub enum LogSource {
 
 impl From<&str> for LogSource {
     fn from(s: &str) -> Self {
-        match s {
+        match s.to_lowercase().as_str() {
             "kinesis" => LogSource::Kinesis,
             "otel-logs" => LogSource::OtelLogs,
             "otel-metrics" => LogSource::OtelMetrics,
