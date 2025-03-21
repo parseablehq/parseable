@@ -550,5 +550,51 @@
                 "fields": ["timestamp", "process_id", "log_level", "sql_statement"]
             }
         ]
+    },
+    {
+        "name": "java",
+        "regex": [
+            {
+                "pattern": "^(?<timestamp_fb>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z)\\s+(?<stream>\\w+)\\s+(?<log_type>\\w+)\\s+(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2},\\d{3})\\s+(?<log_level>\\w+)\\s+\\[(?<thread>[^\\]]+)\\]\\s+(?<logger>[^\\s]+)\\s+-\\s+(?<client_ip>[^\\s]+)\\s+(?<http_method>\\w+)\\s+(?<url>\/\/[^\\s]+)\\s+(?<http_version>HTTP\/\\d+\\.\\d+)\\s+(?<status_code>\\d+)$",
+                "fields": ["timestamp_fb", "stream", "log_type", "timestamp", "log_level", "thread", "logger", "client_ip", "http_method", "http_version", "status_code"]
+            }
+        ]
+    },
+    {
+        "name": "nginx_access",
+        "regex": [
+            {
+                "pattern": "(?<remote_addr>[^ ]*) - (?<remote_user>[^ ]*) \\[(?<timestamp>[^\\]]*)\\] \"(?<method>\\S+)(?: +(?<request>[^\"]*?)(?: +\\S*)?)?\" (?<status>[^ ]*) (?<body_bytes_sent>[^ ]*) \"(?<http_referer>[^\"]*)\" \"(?<http_user_agent>[^\"]*)\" (?<request_length>[^ ]*) (?<request_time>[^ ]*) \\[(?<proxy_upstream_name>[^ ]*)\\] \\[(?<proxy_alternative_upstream_name>[^ ]*)\\] (?<upstream_addr>[^,]*),?(?:[^,]*),?(?:[^ ]*) (?<upstream_response_length>[^,]*),?(?:[^,]*),?(?:[^ ]*) (?<upstream_response_time>[^,]*),?(?:[^,]*),?(?:[^ ]*) (?<upstream_status>[^,]*),?(?:[^,]*),?(?:[^ ]*) (?<req_id>[^ ]*)",
+                "fields": ["remote_addr", "remote_user", "timestamp", "method", "request", "status", "body_bytes_sent", "http_referer", "http_user_agent", "request_length", "request_time", "proxy_upstream_name", "proxy_alternative_upstream_name", "upstream_addr", "upstream_response_length", "upstream_response_time", "upstream_status", "req_id"]
+            }
+        ]
+    },
+    {
+        "name": "postgres",
+        "regex": [
+            {
+                "pattern": "^(?<timestamp_fb>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z)\\s+(?<stream>\\w+)\\s+(?<log_type>\\w+)\\s+(?<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3} GMT)\\s+\\[(?<process_id>\\d+)\\]\\s+(?<log_level>\\w+):\\s+(?<message>.+)$",
+                "fields": ["timestamp_fb", "stream", "log_type", "timestamp", "process_id", "log_level", "message"]
+            }
+        ]
+    },
+    {
+        "name": "zookeeper",
+        "regex": [
+            {
+                "pattern": "^(?<timestamp_fb>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z)\\s+(?<stream>\\w+)\\s+(?<log_type>\\w+)\\s+(?<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3})\\s+\\[(?<myid>[^\\]]*)\\]\\s+-\\s+(?<log_level>[A-Z]+)\\s+\\[(?<thread>[^\\]]+)\\]\\s+-\\s+(?<message>.+)$",
+                "fields": ["timestamp_fb", "stream", "log_type", "timestamp", "myid", "log_level", "thread", "message"]
+            }
+        ]
+    },
+    {
+        "name": "csi",
+        "regex": [
+          {
+              "pattern": "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z)\\s+(?<stream>\\w+)\\s+(?<log_type>\\w+)\\s+(?<severity>[IWEF])(?<month>\\d{2})(?<day>\\d{2})\\s+(?<time>\\d{2}:\\d{2}:\\d{2}\\.\\d{6})\\s+(?<pid>\\d+)\\s+(?<source_file>[^:]+):(?<line_number>\\d+)\\]\\s+(?<message>.*)$",
+              "fields": ["timestamp", "stream", "log_type", "severity", "month", "day", "time", "pid", "source_file", "line_number", "message"]
+          }
+        ]
     }
-  ]
+]
+
