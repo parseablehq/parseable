@@ -24,7 +24,7 @@ use chrono::Utc;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tracing::{debug, warn};
+use tracing::{debug, error, warn};
 
 use crate::{
     handlers::http::{
@@ -45,6 +45,7 @@ use crate::{
         arrow::record_batches_to_json,
         time::{TimeParseError, TimeRange},
     },
+    validator::error::HotTierValidationError,
     LOCK_EXPECT,
 };
 
@@ -203,6 +204,8 @@ pub struct PrismDatasetResponse {
     stream: String,
     /// Basic information about the stream
     info: StreamInfo,
+    /// Schema of the stream
+    schema: Arc<Schema>,
     /// Statistics for the queried timeframe
     stats: QueriedStats,
     /// Retention policy details
@@ -267,16 +270,19 @@ impl PrismDatasetRequest {
 
             let PrismLogstreamInfo {
                 info,
+                schema,
                 stats,
                 retention,
-                ..
             } = get_prism_logstream_info(stream).await?;
 
             let hottier = match HotTierManager::global() {
-                Some(hot_tier_manager) => {
-                    let stats = hot_tier_manager.get_hot_tier(stream).await?;
-                    Some(stats)
-                }
+                Some(manager) => match manager.get_hot_tier(stream).await {
+                    Ok(stats) => Some(stats),
+                    Err(HotTierError::HotTierValidationError(
+                        HotTierValidationError::NotFound(_),
+                    )) => None,
+                    Err(err) => return Err(err.into()),
+                },
                 _ => None,
             };
             let records = CountsRequest {
@@ -300,6 +306,7 @@ impl PrismDatasetRequest {
             responses.push(PrismDatasetResponse {
                 stream: stream.clone(),
                 info,
+                schema,
                 stats,
                 retention,
                 hottier,
