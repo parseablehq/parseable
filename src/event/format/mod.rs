@@ -35,7 +35,7 @@ use crate::{
     metadata::SchemaVersion,
     parseable::Stream,
     utils::{
-        arrow::{get_field, get_timestamp_array, replace_columns},
+        arrow::{add_parseable_fields, get_field},
         json::Json,
     },
 };
@@ -44,7 +44,19 @@ use super::{Event, DEFAULT_TIMESTAMP_KEY};
 
 pub mod json;
 
-static TIME_FIELD_NAME_PARTS: [&str; 2] = ["time", "date"];
+static TIME_FIELD_NAME_PARTS: [&str; 11] = [
+    "time",
+    "date",
+    "timestamp",
+    "created",
+    "received",
+    "ingested",
+    "collected",
+    "start",
+    "end",
+    "ts",
+    "dt",
+];
 type EventSchema = Vec<Arc<Field>>;
 
 /// Source of the logs, used to perform special processing for certain sources
@@ -140,23 +152,13 @@ pub trait EventFormat: Sized {
 
     /// Updates inferred schema with `p_timestamp` field and ensures it adheres to expectations
     fn prepare_and_validate_schema(
-        mut schema: EventSchema,
+        schema: EventSchema,
         storage_schema: &HashMap<String, Arc<Field>>,
         static_schema_flag: bool,
     ) -> anyhow::Result<EventSchema> {
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
             return Err(anyhow!("field {DEFAULT_TIMESTAMP_KEY} is a reserved field",));
         }
-
-        // add the p_timestamp field to the event schema to the 0th index
-        schema.insert(
-            0,
-            Arc::new(Field::new(
-                DEFAULT_TIMESTAMP_KEY,
-                DataType::Timestamp(TimeUnit::Millisecond, None),
-                true,
-            )),
-        );
 
         if !Self::is_schema_matching(&schema, storage_schema, static_schema_flag) {
             return Err(anyhow!("Schema mismatch"));
@@ -193,24 +195,24 @@ pub trait EventFormat: Sized {
         schema: &EventSchema,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
+        p_custom_fields: &HashMap<String, String>,
     ) -> anyhow::Result<RecordBatch> {
         // prepare the record batch and new fields to be added
         let mut new_schema = Arc::new(Schema::new(schema.clone()));
         new_schema =
             update_field_type_in_schema(new_schema, None, time_partition, None, schema_version);
 
-        let mut rb = Self::decode(data, new_schema.clone())?;
-        rb = replace_columns(
-            rb.schema(),
-            &rb,
-            &[0],
-            &[Arc::new(get_timestamp_array(p_timestamp, rb.num_rows()))],
-        );
+        let rb = Self::decode(data, new_schema.clone())?;
+        let rb = add_parseable_fields(rb, p_timestamp, p_custom_fields)?;
 
         Ok(rb)
     }
 
-    fn into_event(self, stream: &Stream) -> anyhow::Result<Event>;
+    fn into_event(
+        self,
+        stream: &Stream,
+        p_custom_fields: HashMap<String, String>,
+    ) -> anyhow::Result<Event>;
 }
 
 pub fn get_existing_field_names(

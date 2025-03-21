@@ -16,18 +16,21 @@
  *
  */
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use rdkafka::consumer::{CommitMode, Consumer};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error};
 
 use crate::{
     connectors::common::processor::Processor,
-    event::format::{json, EventFormat, LogSource, LogSourceEntry},
+    event::{
+        format::{json, EventFormat, LogSource, LogSourceEntry},
+        USER_AGENT_KEY,
+    },
     parseable::PARSEABLE,
     storage::StreamType,
 };
@@ -64,13 +67,15 @@ impl ParseableSinkProcessor {
         }
 
         let stream = PARSEABLE.get_or_create_stream(stream_name);
+        let mut p_custom_fields = HashMap::new();
+        p_custom_fields.insert(USER_AGENT_KEY.to_string(), "kafka".to_string());
 
         json::Event::new(
             Value::Array(json_vec),
             total_payload_size,
             LogSource::Custom("Kafka".to_owned()),
         )
-        .into_event(&stream)?
+        .into_event(&stream, p_custom_fields)?
         .process(&stream)?;
 
         Ok(total_payload_size)

@@ -42,6 +42,13 @@ pub fn get_ingestor_id() -> String {
     id
 }
 
+pub fn get_indexer_id() -> String {
+    let now = Utc::now().to_rfc3339();
+    let id = get_hash(&now).to_string().split_at(15).0.to_string();
+    debug!("Indexer ID: {id}");
+    id
+}
+
 pub fn extract_datetime(path: &str) -> Option<NaiveDateTime> {
     let re = Regex::new(r"date=(\d{4}-\d{2}-\d{2})/hour=(\d{2})/minute=(\d{2})").unwrap();
     if let Some(caps) = re.captures(path) {

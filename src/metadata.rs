@@ -74,7 +74,7 @@ pub enum SchemaVersion {
     V1,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct LogStreamMetadata {
     pub schema_version: SchemaVersion,
     pub schema: HashMap<String, Arc<Field>>,

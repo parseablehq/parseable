@@ -237,7 +237,11 @@ impl EventFormat for Event {
     }
 
     /// Converts a JSON event into a Parseable Event
-    fn into_event(self, stream: &Stream) -> anyhow::Result<super::Event> {
+    fn into_event(
+        self,
+        stream: &Stream,
+        p_custom_fields: HashMap<String, String>,
+    ) -> anyhow::Result<super::Event> {
         let time_partition = stream.get_time_partition();
         let time_partition_limit = stream.get_time_partition_limit();
         let static_schema_flag = stream.get_static_schema_flag();
@@ -311,6 +315,7 @@ impl EventFormat for Event {
                 &schema,
                 time_partition.as_ref(),
                 schema_version,
+                &p_custom_fields,
             )?;
 
             partitions.insert(
@@ -601,8 +606,15 @@ mod tests {
             .unwrap();
         let (schema, _) =
             Event::infer_schema(&data[0], &store_schema, None, false, SchemaVersion::V0).unwrap();
-        let rb =
-            Event::into_recordbatch(Utc::now(), &data, &schema, None, SchemaVersion::V0).unwrap();
+        let rb = Event::into_recordbatch(
+            Utc::now(),
+            &data,
+            &schema,
+            None,
+            SchemaVersion::V0,
+            &HashMap::new(),
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 4);
@@ -634,8 +646,15 @@ mod tests {
             .unwrap();
         let (schema, _) =
             Event::infer_schema(&data[0], &store_schema, None, false, SchemaVersion::V0).unwrap();
-        let rb =
-            Event::into_recordbatch(Utc::now(), &data, &schema, None, SchemaVersion::V0).unwrap();
+        let rb = Event::into_recordbatch(
+            Utc::now(),
+            &data,
+            &schema,
+            None,
+            SchemaVersion::V0,
+            &HashMap::new(),
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -669,8 +688,15 @@ mod tests {
             .unwrap();
         let (schema, _) =
             Event::infer_schema(&data[0], &store_schema, None, false, SchemaVersion::V0).unwrap();
-        let rb =
-            Event::into_recordbatch(Utc::now(), &data, &schema, None, SchemaVersion::V0).unwrap();
+        let rb = Event::into_recordbatch(
+            Utc::now(),
+            &data,
+            &schema,
+            None,
+            SchemaVersion::V0,
+            &HashMap::new(),
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -727,8 +753,15 @@ mod tests {
             .unwrap();
         let (schema, _) =
             Event::infer_schema(&data[0], &store_schema, None, false, SchemaVersion::V0).unwrap();
-        let rb =
-            Event::into_recordbatch(Utc::now(), &data, &schema, None, SchemaVersion::V0).unwrap();
+        let rb = Event::into_recordbatch(
+            Utc::now(),
+            &data,
+            &schema,
+            None,
+            SchemaVersion::V0,
+            &HashMap::new(),
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 1);
@@ -758,8 +791,15 @@ mod tests {
             .unwrap();
         let (schema, _) =
             Event::infer_schema(&data[1], &store_schema, None, false, SchemaVersion::V0).unwrap();
-        let rb =
-            Event::into_recordbatch(Utc::now(), &data, &schema, None, SchemaVersion::V0).unwrap();
+        let rb = Event::into_recordbatch(
+            Utc::now(),
+            &data,
+            &schema,
+            None,
+            SchemaVersion::V0,
+            &HashMap::new(),
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -811,8 +851,15 @@ mod tests {
             .unwrap();
         let (schema, _) =
             Event::infer_schema(&data[1], &store_schema, None, false, SchemaVersion::V0).unwrap();
-        let rb =
-            Event::into_recordbatch(Utc::now(), &data, &schema, None, SchemaVersion::V0).unwrap();
+        let rb = Event::into_recordbatch(
+            Utc::now(),
+            &data,
+            &schema,
+            None,
+            SchemaVersion::V0,
+            &HashMap::new(),
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -863,8 +910,15 @@ mod tests {
             .unwrap();
         let (schema, _) =
             Event::infer_schema(&data[0], &store_schema, None, false, SchemaVersion::V0).unwrap();
-        let rb =
-            Event::into_recordbatch(Utc::now(), &data, &schema, None, SchemaVersion::V0).unwrap();
+        let rb = Event::into_recordbatch(
+            Utc::now(),
+            &data,
+            &schema,
+            None,
+            SchemaVersion::V0,
+            &HashMap::new(),
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -940,8 +994,15 @@ mod tests {
             .unwrap();
         let (schema, _) =
             Event::infer_schema(&data[3], &store_schema, None, false, SchemaVersion::V0).unwrap();
-        let rb =
-            Event::into_recordbatch(Utc::now(), &data, &schema, None, SchemaVersion::V0).unwrap();
+        let rb = Event::into_recordbatch(
+            Utc::now(),
+            &data,
+            &schema,
+            None,
+            SchemaVersion::V0,
+            &HashMap::new(),
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 5);
@@ -1018,8 +1079,15 @@ mod tests {
             .unwrap();
         let (schema, _) =
             Event::infer_schema(&data[3], &store_schema, None, false, SchemaVersion::V1).unwrap();
-        let rb =
-            Event::into_recordbatch(Utc::now(), &data, &schema, None, SchemaVersion::V1).unwrap();
+        let rb = Event::into_recordbatch(
+            Utc::now(),
+            &data,
+            &schema,
+            None,
+            SchemaVersion::V1,
+            &HashMap::new(),
+        )
+        .unwrap();
 
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 5);

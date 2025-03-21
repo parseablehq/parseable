@@ -35,6 +35,7 @@ use crate::otel::metrics::OTEL_METRICS_KNOWN_FIELD_LIST;
 use crate::otel::traces::OTEL_TRACES_KNOWN_FIELD_LIST;
 use crate::parseable::{Stream, StreamNotFound, PARSEABLE};
 use crate::storage::{ObjectStorageError, StreamType};
+use crate::utils::actix::get_custom_fields_from_header;
 use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::flatten::JsonFlattenError;
 
@@ -82,10 +83,10 @@ pub async fn ingest(
         )
         .await?;
 
+    let p_custom_fields = get_custom_fields_from_header(req);
     let stream = PARSEABLE.get_or_create_stream(&stream_name);
-
     json::Event::new(json, byte_size, log_source)
-        .into_event(&stream)?
+        .into_event(&stream, p_custom_fields)?
         .process(&stream)?;
 
     Ok(HttpResponse::Ok().finish())
@@ -126,11 +127,12 @@ pub async fn handle_otel_logs_ingestion(
             vec![log_source_entry],
         )
         .await?;
+    let p_custom_fields = get_custom_fields_from_header(req);
 
     let stream = PARSEABLE.get_or_create_stream(&stream_name);
 
     json::Event::new(json, byte_size, log_source)
-        .into_event(&stream)?
+        .into_event(&stream, p_custom_fields)?
         .process(&stream)?;
 
     Ok(HttpResponse::Ok().finish())
@@ -153,6 +155,7 @@ pub async fn handle_otel_metrics_ingestion(
     if log_source != LogSource::OtelMetrics {
         return Err(PostError::IncorrectLogSource(LogSource::OtelMetrics));
     }
+
     let stream_name = stream_name.to_str().unwrap().to_owned();
     let log_source_entry = LogSourceEntry::new(
         log_source.clone(),
@@ -169,10 +172,10 @@ pub async fn handle_otel_metrics_ingestion(
         )
         .await?;
 
+    let p_custom_fields = get_custom_fields_from_header(req);
     let stream = PARSEABLE.get_or_create_stream(&stream_name);
-
     json::Event::new(json, byte_size, log_source)
-        .into_event(&stream)?
+        .into_event(&stream, p_custom_fields)?
         .process(&stream)?;
 
     Ok(HttpResponse::Ok().finish())
@@ -213,10 +216,10 @@ pub async fn handle_otel_traces_ingestion(
         )
         .await?;
 
+    let p_custom_fields = get_custom_fields_from_header(req);
     let stream = PARSEABLE.get_or_create_stream(&stream_name);
-
     json::Event::new(json, byte_size, log_source)
-        .into_event(&stream)?
+        .into_event(&stream, p_custom_fields)?
         .process(&stream)?;
 
     Ok(HttpResponse::Ok().finish())
@@ -266,10 +269,10 @@ pub async fn post_event(
         return Err(PostError::OtelNotSupported);
     }
 
+    let p_custom_fields = get_custom_fields_from_header(req);
     let stream = PARSEABLE.get_or_create_stream(&stream_name);
-
     json::Event::new(json, byte_size, log_source)
-        .into_event(&stream)?
+        .into_event(&stream, p_custom_fields)?
         .process(&stream)?;
 
     Ok(HttpResponse::Ok().finish())
