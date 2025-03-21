@@ -34,9 +34,10 @@ use tracing::{error, info, warn};
 use crate::{
     cli::Options,
     oidc::Claims,
+    option::Mode,
     parseable::PARSEABLE,
     storage::{ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY},
-    utils::get_ingestor_id,
+    utils::{get_indexer_id, get_ingestor_id},
 };
 
 use super::{audit, cross_origin_config, health_check, API_BASE_PATH, API_VERSION};
@@ -199,7 +200,7 @@ impl IngestorMetadata {
             .staging_dir()
             .read_dir()
             .expect("Couldn't read from file");
-        let url = options.get_url();
+        let url = options.get_url(Mode::Ingest);
         let port = url.port().unwrap_or(80).to_string();
         let url = url.to_string();
         let Options {
@@ -325,6 +326,181 @@ impl IngestorMetadata {
     /// * `staging_path`: Staging root directory.
     pub fn put_on_disk(&self, staging_path: &Path) -> anyhow::Result<()> {
         let file_name = format!("ingestor.{}.json", self.ingestor_id);
+        let file_path = staging_path.join(file_name);
+
+        std::fs::write(file_path, serde_json::to_vec(&self)?)?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone, Eq, PartialEq)]
+pub struct IndexerMetadata {
+    pub version: String,
+    pub port: String,
+    pub domain_name: String,
+    pub bucket_name: String,
+    pub token: String,
+    pub indexer_id: String,
+    pub flight_port: String,
+}
+
+impl IndexerMetadata {
+    pub fn new(
+        port: String,
+        domain_name: String,
+        bucket_name: String,
+        username: &str,
+        password: &str,
+        indexer_id: String,
+        flight_port: String,
+    ) -> Self {
+        let token = base64::prelude::BASE64_STANDARD.encode(format!("{username}:{password}"));
+
+        Self {
+            port,
+            domain_name,
+            version: DEFAULT_VERSION.to_string(),
+            bucket_name,
+            token: format!("Basic {token}"),
+            indexer_id,
+            flight_port,
+        }
+    }
+
+    /// Capture metadata information by either loading it from staging or starting fresh
+    pub fn load(options: &Options, storage: &dyn ObjectStorageProvider) -> Arc<Self> {
+        // all the files should be in the staging directory root
+        let entries = options
+            .staging_dir()
+            .read_dir()
+            .expect("Couldn't read from file");
+        let url = options.get_url(Mode::Index);
+        let port = url.port().unwrap_or(80).to_string();
+        let url = url.to_string();
+        let Options {
+            username, password, ..
+        } = options;
+        let staging_path = options.staging_dir();
+        let flight_port = options.flight_port.to_string();
+
+        for entry in entries {
+            // cause the staging directory will have only one file with indexer in the name
+            // so the JSON Parse should not error unless the file is corrupted
+            let path = entry.expect("Should be a directory entry").path();
+            if !path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|s| s.contains("indexer"))
+            {
+                continue;
+            }
+
+            // get the indexer metadata from staging
+            let bytes = std::fs::read(path).expect("File should be present");
+            let mut meta =
+                Self::from_bytes(&bytes, options.flight_port).expect("Extracted indexer metadata");
+
+            // compare url endpoint and port, update
+            if meta.domain_name != url {
+                info!(
+                    "Domain Name was Updated. Old: {} New: {}",
+                    meta.domain_name, url
+                );
+                meta.domain_name = url;
+            }
+
+            if meta.port != port {
+                info!("Port was Updated. Old: {} New: {}", meta.port, port);
+                meta.port = port;
+            }
+
+            let token = format!(
+                "Basic {}",
+                BASE64_STANDARD.encode(format!("{username}:{password}"))
+            );
+            if meta.token != token {
+                // TODO: Update the message to be more informative with username and password
+                warn!(
+                    "Credentials were Updated. Tokens updated; Old: {} New: {}",
+                    meta.token, token
+                );
+                meta.token = token;
+            }
+            meta.put_on_disk(staging_path)
+                .expect("Couldn't write to disk");
+
+            return Arc::new(meta);
+        }
+
+        let storage = storage.get_object_store();
+        let meta = Self::new(
+            port,
+            url,
+            storage.get_bucket_name(),
+            username,
+            password,
+            get_indexer_id(),
+            flight_port,
+        );
+
+        meta.put_on_disk(staging_path)
+            .expect("Should Be valid Json");
+        Arc::new(meta)
+    }
+
+    pub fn get_indexer_id(&self) -> String {
+        self.indexer_id.clone()
+    }
+
+    #[inline(always)]
+    pub fn file_path(&self) -> RelativePathBuf {
+        RelativePathBuf::from_iter([
+            PARSEABLE_ROOT_DIRECTORY,
+            &format!("indexer.{}.json", self.get_indexer_id()),
+        ])
+    }
+
+    /// Updates json with `flight_port` field if not already present
+    fn from_bytes(bytes: &[u8], flight_port: u16) -> anyhow::Result<Self> {
+        let mut json: Map<String, Value> = serde_json::from_slice(bytes)?;
+        json.entry("flight_port")
+            .or_insert_with(|| Value::String(flight_port.to_string()));
+
+        Ok(serde_json::from_value(Value::Object(json))?)
+    }
+
+    pub async fn migrate(&self) -> anyhow::Result<Option<IndexerMetadata>> {
+        let imp = self.file_path();
+        let bytes = match PARSEABLE.storage.get_object_store().get_object(&imp).await {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                return Ok(None);
+            }
+        };
+
+        let resource = Self::from_bytes(&bytes, PARSEABLE.options.flight_port)?;
+        let bytes = Bytes::from(serde_json::to_vec(&resource)?);
+
+        resource.put_on_disk(PARSEABLE.options.staging_dir())?;
+
+        PARSEABLE
+            .storage
+            .get_object_store()
+            .put_object(&imp, bytes)
+            .await?;
+
+        Ok(Some(resource))
+    }
+
+    /// Puts the indexer info into the staging.
+    ///
+    /// This function takes the indexer info as a parameter and stores it in staging.
+    /// # Parameters
+    ///
+    /// * `staging_path`: Staging root directory.
+    pub fn put_on_disk(&self, staging_path: &Path) -> anyhow::Result<()> {
+        let file_name = format!("indexer.{}.json", self.indexer_id);
         let file_path = staging_path.join(file_name);
 
         std::fs::write(file_path, serde_json::to_vec(&self)?)?;

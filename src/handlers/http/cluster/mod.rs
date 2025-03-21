@@ -51,11 +51,13 @@ use crate::HTTP_CLIENT;
 use super::base_path_without_preceding_slash;
 use super::ingest::PostError;
 use super::logstream::error::StreamError;
-use super::modal::IngestorMetadata;
+use super::modal::{IndexerMetadata, IngestorMetadata};
 use super::rbac::RBACError;
 use super::role::RoleError;
 
 type IngestorMetadataArr = Vec<IngestorMetadata>;
+
+type IndexerMetadataArr = Vec<IndexerMetadata>;
 
 pub const INTERNAL_STREAM_NAME: &str = "pmeta";
 
@@ -616,7 +618,6 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
     Ok(actix_web::HttpResponse::Ok().json(dresses))
 }
 
-// update the .query.json file and return the new ingestorMetadataArr
 pub async fn get_ingestor_info() -> anyhow::Result<IngestorMetadataArr> {
     let store = PARSEABLE.storage.get_object_store();
 
@@ -630,6 +631,24 @@ pub async fn get_ingestor_info() -> anyhow::Result<IngestorMetadataArr> {
         .iter()
         // this unwrap will most definateley shoot me in the foot later
         .map(|x| serde_json::from_slice::<IngestorMetadata>(x).unwrap_or_default())
+        .collect_vec();
+
+    Ok(arr)
+}
+
+pub async fn get_indexer_info() -> anyhow::Result<IndexerMetadataArr> {
+    let store = PARSEABLE.storage.get_object_store();
+
+    let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
+    let arr = store
+        .get_objects(
+            Some(&root_path),
+            Box::new(|file_name| file_name.starts_with("indexer")),
+        )
+        .await?
+        .iter()
+        // this unwrap will most definateley shoot me in the foot later
+        .map(|x| serde_json::from_slice::<IndexerMetadata>(x).unwrap_or_default())
         .collect_vec();
 
     Ok(arr)
