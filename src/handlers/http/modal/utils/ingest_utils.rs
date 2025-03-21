@@ -20,6 +20,7 @@ use std::collections::HashMap;
 
 use actix_web::HttpRequest;
 use chrono::Utc;
+use http::header::USER_AGENT;
 use opentelemetry_proto::tonic::{
     logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
 };
@@ -28,7 +29,7 @@ use serde_json::Value;
 use crate::{
     event::{
         format::{json, EventFormat, LogSource},
-        SOURCE_IP_KEY, USER_AGENT_KEY,
+        FORMAT_KEY, SOURCE_IP_KEY, USER_AGENT_KEY,
     },
     handlers::{
         http::{
@@ -43,7 +44,7 @@ use crate::{
     utils::json::{convert_array_to_object, flatten::convert_to_array},
 };
 
-const IGNORE_HEADERS: [&str; 2] = [STREAM_NAME_HEADER_KEY, LOG_SOURCE_KEY];
+const IGNORE_HEADERS: [&str; 1] = [STREAM_NAME_HEADER_KEY];
 
 pub async fn flatten_and_push_logs(
     json: Value,
@@ -146,7 +147,7 @@ async fn push_logs(
 pub fn get_custom_fields_from_header(req: HttpRequest) -> HashMap<String, String> {
     let user_agent = req
         .headers()
-        .get("User-Agent")
+        .get(USER_AGENT)
         .and_then(|a| a.to_str().ok())
         .unwrap_or_default();
 
@@ -166,6 +167,58 @@ pub fn get_custom_fields_from_header(req: HttpRequest) -> HashMap<String, String
                 p_custom_fields.insert(key.to_string(), value.to_string());
             }
         }
+
+        if header_name == LOG_SOURCE_KEY {
+            if let Ok(value) = header_value.to_str() {
+                p_custom_fields.insert(FORMAT_KEY.to_string(), value.to_string());
+            }
+        }
     }
+
     p_custom_fields
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use actix_web::test::TestRequest;
+
+    #[test]
+    fn test_get_custom_fields_from_header_with_custom_fields() {
+        let req = TestRequest::default()
+            .insert_header((USER_AGENT, "TestUserAgent"))
+            .insert_header(("x-p-environment", "dev"))
+            .to_http_request();
+
+        let custom_fields = get_custom_fields_from_header(req);
+
+        assert_eq!(custom_fields.get(USER_AGENT_KEY).unwrap(), "TestUserAgent");
+        assert_eq!(custom_fields.get("environment").unwrap(), "dev");
+    }
+
+    #[test]
+    fn test_get_custom_fields_from_header_with_ignored_headers() {
+        let req = TestRequest::default()
+            .insert_header((USER_AGENT, "TestUserAgent"))
+            .insert_header((STREAM_NAME_HEADER_KEY, "teststream"))
+            .to_http_request();
+
+        let custom_fields = get_custom_fields_from_header(req);
+
+        assert_eq!(custom_fields.get(USER_AGENT_KEY).unwrap(), "TestUserAgent");
+        assert!(!custom_fields.contains_key(STREAM_NAME_HEADER_KEY));
+    }
+
+    #[test]
+    fn test_get_custom_fields_from_header_with_format_key() {
+        let req = TestRequest::default()
+            .insert_header((USER_AGENT, "TestUserAgent"))
+            .insert_header((LOG_SOURCE_KEY, "otel-logs"))
+            .to_http_request();
+
+        let custom_fields = get_custom_fields_from_header(req);
+
+        assert_eq!(custom_fields.get(USER_AGENT_KEY).unwrap(), "TestUserAgent");
+        assert_eq!(custom_fields.get(FORMAT_KEY).unwrap(), "otel-logs");
+    }
 }
