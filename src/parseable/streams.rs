@@ -71,7 +71,7 @@ use super::{
 fn arrow_path_to_parquet(path: &Path, random_string: &str) -> Option<PathBuf> {
     let filename = path.file_stem()?.to_str()?;
     let (_, front) = filename.split_once('.')?;
-    assert!(filename.contains('.'), "contains the delim `.`");
+    assert!(front.contains('.'), "contains the delim `.`");
     let filename_with_random_number = format!("{front}.data.{random_string}.parquet");
     let mut parquet_path = path.to_owned();
     parquet_path.set_file_name(filename_with_random_number);
