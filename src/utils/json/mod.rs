@@ -278,4 +278,138 @@ mod tests {
         assert_eq!(deserialized.value, original.value);
         assert_eq!(deserialized.other_field, original.other_field);
     }
+
+    #[test]
+    fn non_object_arr_is_err() {
+        let json = json!([1]);
+
+        assert!(flatten_json_body(
+            json,
+            None,
+            None,
+            None,
+            SchemaVersion::V0,
+            false,
+            &crate::event::format::LogSource::default()
+        )
+        .is_err())
+    }
+
+    #[test]
+    fn arr_obj_with_nested_type() {
+        let json = json!([
+            {
+                "a": 1,
+                "b": "hello",
+            },
+            {
+                "a": 1,
+                "b": "hello",
+            },
+            {
+                "a": 1,
+                "b": "hello",
+                "c": [{"a": 1}]
+            },
+            {
+                "a": 1,
+                "b": "hello",
+                "c": [{"a": 1, "b": 2}]
+            },
+        ]);
+        let flattened_json = flatten_json_body(
+            json,
+            None,
+            None,
+            None,
+            SchemaVersion::V0,
+            false,
+            &crate::event::format::LogSource::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            json!([
+                {
+                    "a": 1,
+                    "b": "hello",
+                },
+                {
+                    "a": 1,
+                    "b": "hello",
+                },
+                {
+                    "a": 1,
+                    "b": "hello",
+                    "c_a": [1],
+                },
+                {
+                    "a": 1,
+                    "b": "hello",
+                    "c_a": [1],
+                    "c_b": [2],
+                },
+            ]),
+            flattened_json
+        );
+    }
+
+    #[test]
+    fn arr_obj_with_nested_type_v1() {
+        let json = json!([
+            {
+                "a": 1,
+                "b": "hello",
+            },
+            {
+                "a": 1,
+                "b": "hello",
+            },
+            {
+                "a": 1,
+                "b": "hello",
+                "c": [{"a": 1}]
+            },
+            {
+                "a": 1,
+                "b": "hello",
+                "c": [{"a": 1, "b": 2}]
+            },
+        ]);
+        let flattened_json = flatten_json_body(
+            json,
+            None,
+            None,
+            None,
+            SchemaVersion::V1,
+            false,
+            &crate::event::format::LogSource::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            json!([
+                {
+                    "a": 1,
+                    "b": "hello",
+                },
+                {
+                    "a": 1,
+                    "b": "hello",
+                },
+                {
+                    "a": 1,
+                    "b": "hello",
+                    "c_a": 1,
+                },
+                {
+                    "a": 1,
+                    "b": "hello",
+                    "c_a": 1,
+                    "c_b": 2,
+                },
+            ]),
+            flattened_json
+        );
+    }
 }
