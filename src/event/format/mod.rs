@@ -63,6 +63,8 @@ pub enum LogSource {
     #[default]
     // Json object or array
     Json,
+    // Custom Log Sources e.g. "syslog"
+    #[serde(untagged)]
     Custom(String),
 }
 
