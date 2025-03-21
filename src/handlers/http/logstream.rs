@@ -116,7 +116,7 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
 
     let mut schema = infer_json_schema_from_iterator(log_records.iter().map(Ok)).unwrap();
     for log_record in log_records.iter() {
-        schema = override_inferred_data_type(schema, log_record, SchemaVersion::V1);
+        override_inferred_data_type(&mut schema, log_record, SchemaVersion::V1);
     }
 
     Ok((web::Json(schema), StatusCode::OK))

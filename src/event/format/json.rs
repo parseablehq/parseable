@@ -30,7 +30,7 @@ use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 use tracing::error;
 
-use super::{update_field_type_in_schema, EventFormat};
+use super::EventFormat;
 use crate::{metadata::SchemaVersion, storage::StreamType, utils::arrow::get_field};
 
 static TIME_FIELD_NAME_PARTS: [&str; 11] = [
@@ -74,7 +74,6 @@ impl EventFormat for Event {
     fn to_data(
         self,
         schema: &HashMap<String, Arc<Field>>,
-        time_partition: Option<&String>,
         schema_version: SchemaVersion,
         static_schema_flag: bool,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool), anyhow::Error> {
@@ -101,12 +100,11 @@ impl EventFormat for Event {
                     .map_err(|err| {
                         anyhow!("Could not infer schema for this event due to err {:?}", err)
                     })?;
-                let new_infer_schema = update_field_type_in_schema(
-                    Arc::new(infer_schema),
-                    Some(stream_schema),
-                    time_partition,
-                );
-                infer_schema = Schema::new(new_infer_schema.fields().clone());
+
+                for log_record in value_arr.iter() {
+                    override_inferred_data_type(&mut infer_schema, log_record, schema_version);
+                }
+
                 Schema::try_merge(vec![
                     Schema::new(stream_schema.values().cloned().collect::<Fields>()),
                     infer_schema.clone(),
@@ -237,14 +235,14 @@ fn extract_and_parse_time(
 // From Schema v1 onwards, convert json fields with name containig "date"/"time" and having
 // a string value parseable into timestamp as timestamp type and all numbers as float64.
 pub fn override_inferred_data_type(
-    inferred_schema: Schema,
+    schema: &mut Schema,
     log_record: &Value,
     schema_version: SchemaVersion,
-) -> Schema {
+) {
     let Value::Object(map) = log_record else {
-        return inferred_schema;
+        return;
     };
-    let updated_fields = inferred_schema
+    schema.fields = schema
         .fields()
         .iter()
         .map(|field| {
@@ -277,9 +275,7 @@ pub fn override_inferred_data_type(
                 _ => Field::new(field_name, field.data_type().clone(), true),
             }
         })
-        .collect_vec();
-
-    Schema::new(updated_fields)
+        .collect();
 }
 
 // Returns arrow schema with the fields that are present in the request body

@@ -115,7 +115,6 @@ pub trait EventFormat: Sized {
     fn to_data(
         self,
         schema: &HashMap<String, Arc<Field>>,
-        time_partition: Option<&String>,
         schema_version: SchemaVersion,
         static_schema_flag: bool,
     ) -> Result<(Self::Data, EventSchema, bool), AnyError>;
@@ -134,12 +133,8 @@ pub trait EventFormat: Sized {
         p_custom_fields: &HashMap<String, String>,
     ) -> Result<(RecordBatch, bool), AnyError> {
         let p_timestamp = self.get_p_timestamp();
-        let (data, schema, is_first) = self.to_data(
-            storage_schema,
-            time_partition,
-            schema_version,
-            static_schema_flag,
-        )?;
+        let (data, schema, is_first) =
+            self.to_data(storage_schema, schema_version, static_schema_flag)?;
 
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
             return Err(anyhow!(
@@ -149,21 +144,22 @@ pub trait EventFormat: Sized {
         };
 
         // prepare the record batch and new fields to be added
-        let mut new_schema = Arc::new(Schema::new(schema));
-        if !Self::is_schema_matching(new_schema.clone(), storage_schema, static_schema_flag) {
+        let mut new_schema = Schema::new(schema);
+        if !Self::is_schema_matching(&new_schema, storage_schema, static_schema_flag) {
             return Err(anyhow!("Schema mismatch"));
         }
-        new_schema = update_field_type_in_schema(new_schema, None, time_partition);
 
-        let rb = Self::decode(data, new_schema.clone())?;
+        update_field_type_in_schema(&mut new_schema, Some(storage_schema), time_partition);
+        let updated_schema = Arc::new(new_schema);
 
+        let rb = Self::decode(data, updated_schema)?;
         let rb = add_parseable_fields(rb, p_timestamp, p_custom_fields)?;
 
         Ok((rb, is_first))
     }
 
     fn is_schema_matching(
-        new_schema: Arc<Schema>,
+        new_schema: &Schema,
         storage_schema: &HashMap<String, Arc<Field>>,
         static_schema_flag: bool,
     ) -> bool {
@@ -200,7 +196,7 @@ pub trait EventFormat: Sized {
 }
 
 pub fn get_existing_field_names(
-    inferred_schema: Arc<Schema>,
+    inferred_schema: &Schema,
     existing_schema: Option<&HashMap<String, Arc<Field>>>,
 ) -> HashSet<String> {
     let mut existing_field_names = HashSet::new();
@@ -219,8 +215,8 @@ pub fn get_existing_field_names(
 
 pub fn override_existing_timestamp_fields(
     existing_schema: &HashMap<String, Arc<Field>>,
-    inferred_schema: Arc<Schema>,
-) -> Arc<Schema> {
+    inferred_schema: &mut Schema,
+) {
     let timestamp_field_names: HashSet<String> = existing_schema
         .values()
         .filter_map(|field| {
@@ -231,7 +227,8 @@ pub fn override_existing_timestamp_fields(
             }
         })
         .collect();
-    let updated_fields: Vec<Arc<Field>> = inferred_schema
+
+    inferred_schema.fields = inferred_schema
         .fields()
         .iter()
         .map(|field| {
@@ -246,28 +243,24 @@ pub fn override_existing_timestamp_fields(
             }
         })
         .collect();
-
-    Arc::new(Schema::new(updated_fields))
 }
 
 pub fn update_field_type_in_schema(
-    inferred_schema: Arc<Schema>,
+    inferred_schema: &mut Schema,
     existing_schema: Option<&HashMap<String, Arc<Field>>>,
     time_partition: Option<&String>,
-) -> Arc<Schema> {
-    let mut updated_schema = inferred_schema.clone();
-    let existing_field_names = get_existing_field_names(inferred_schema.clone(), existing_schema);
-
+) {
+    let existing_field_names = get_existing_field_names(inferred_schema, existing_schema);
     if let Some(existing_schema) = existing_schema {
         // overriding known timestamp fields which were inferred as string fields
-        updated_schema = override_existing_timestamp_fields(existing_schema, updated_schema);
+        override_existing_timestamp_fields(existing_schema, inferred_schema);
     }
 
     let Some(time_partition) = time_partition else {
-        return updated_schema;
+        return;
     };
 
-    let new_schema: Vec<Field> = updated_schema
+    inferred_schema.fields = inferred_schema
         .fields()
         .iter()
         .map(|field| {
@@ -283,5 +276,4 @@ pub fn update_field_type_in_schema(
             }
         })
         .collect();
-    Arc::new(Schema::new(new_schema))
 }
