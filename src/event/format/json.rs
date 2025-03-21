@@ -22,7 +22,7 @@
 use anyhow::anyhow;
 use arrow_array::RecordBatch;
 use arrow_json::reader::{infer_json_schema_from_iterator, ReaderBuilder};
-use arrow_schema::{DataType, Field, Fields, Schema};
+use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use itertools::Itertools;
@@ -32,6 +32,20 @@ use tracing::error;
 
 use super::EventFormat;
 use crate::{metadata::SchemaVersion, storage::StreamType, utils::arrow::get_field};
+
+static TIME_FIELD_NAME_PARTS: [&str; 11] = [
+    "time",
+    "date",
+    "timestamp",
+    "created",
+    "received",
+    "ingested",
+    "collected",
+    "start",
+    "end",
+    "ts",
+    "dt",
+];
 
 pub struct Event {
     pub json: Value,
@@ -60,7 +74,6 @@ impl EventFormat for Event {
     fn to_data(
         self,
         schema: &HashMap<String, Arc<Field>>,
-        time_partition: Option<&String>,
         schema_version: SchemaVersion,
         static_schema_flag: bool,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool), anyhow::Error> {
@@ -87,14 +100,11 @@ impl EventFormat for Event {
                     .map_err(|err| {
                         anyhow!("Could not infer schema for this event due to err {:?}", err)
                     })?;
-                let new_infer_schema = super::update_field_type_in_schema(
-                    Arc::new(infer_schema),
-                    Some(stream_schema),
-                    time_partition,
-                    Some(&value_arr),
-                    schema_version,
-                );
-                infer_schema = Schema::new(new_infer_schema.fields().clone());
+
+                for log_record in value_arr.iter() {
+                    override_inferred_data_type(&mut infer_schema, log_record, schema_version);
+                }
+
                 Schema::try_merge(vec![
                     Schema::new(stream_schema.values().cloned().collect::<Fields>()),
                     infer_schema.clone(),
@@ -220,6 +230,52 @@ fn extract_and_parse_time(
     let parsed_time: DateTime<Utc> = serde_json::from_value(current_time.clone())?;
 
     Ok(parsed_time.naive_utc())
+}
+
+// From Schema v1 onwards, convert json fields with name containig "date"/"time" and having
+// a string value parseable into timestamp as timestamp type and all numbers as float64.
+pub fn override_inferred_data_type(
+    schema: &mut Schema,
+    log_record: &Value,
+    schema_version: SchemaVersion,
+) {
+    let Value::Object(map) = log_record else {
+        return;
+    };
+    schema.fields = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            let field_name = field.name().as_str();
+            match (schema_version, map.get(field.name())) {
+                // in V1 for new fields in json named "time"/"date" or such and having inferred
+                // type string, that can be parsed as timestamp, use the timestamp type.
+                // NOTE: support even more datetime string formats
+                (SchemaVersion::V1, Some(Value::String(s)))
+                    if TIME_FIELD_NAME_PARTS
+                        .iter()
+                        .any(|part| field_name.to_lowercase().contains(part))
+                        && field.data_type() == &DataType::Utf8
+                        && (DateTime::parse_from_rfc3339(s).is_ok()
+                            || DateTime::parse_from_rfc2822(s).is_ok()) =>
+                {
+                    // Update the field's data type to Timestamp
+                    Field::new(
+                        field_name,
+                        DataType::Timestamp(TimeUnit::Millisecond, None),
+                        true,
+                    )
+                }
+                // in V1 for new fields in json with inferred type number, cast as float64.
+                (SchemaVersion::V1, Some(Value::Number(_))) if field.data_type().is_numeric() => {
+                    // Update the field's data type to Float64
+                    Field::new(field_name, DataType::Float64, true)
+                }
+                // Return the original field if no update is needed
+                _ => Field::new(field_name, field.data_type().clone(), true),
+            }
+        })
+        .collect();
 }
 
 // Returns arrow schema with the fields that are present in the request body
@@ -415,5 +471,132 @@ mod tests {
         let parsed = extract_and_parse_time(&json, "timestamp");
 
         assert!(parsed.is_err());
+    }
+
+    #[test]
+    fn updates_field_type_to_timestamp_for_time_related_fields() {
+        let fields = Fields::from(vec![Field::new("created_time", DataType::Utf8, true)]);
+        let mut schema = Schema::new(fields);
+
+        // Create a JSON log record with a time field in RFC3339 format
+        let log_record = serde_json::json!({
+            "created_time": "2023-01-01T12:00:00Z"
+        });
+
+        // Call the function to override the inferred data type
+        override_inferred_data_type(&mut schema, &log_record, SchemaVersion::V1);
+
+        // Check that the field type was updated to Timestamp
+        let updated_field = schema.field(0);
+        assert_eq!(
+            updated_field.data_type(),
+            &DataType::Timestamp(TimeUnit::Millisecond, None)
+        );
+        assert_eq!(updated_field.name(), "created_time");
+    }
+
+    #[test]
+    fn update_field_type_to_timestamp_for_rfc2822_format() {
+        let fields = Fields::from(vec![Field::new("event_time", DataType::Utf8, true)]);
+        let mut schema = Schema::new(fields);
+
+        // Create a JSON log record with a time field in RFC2822 format
+        let log_record = serde_json::json!({
+            "event_time": "Wed, 02 Oct 2002 15:00:00 +0200"
+        });
+
+        // Call the function to override the inferred data type
+        override_inferred_data_type(&mut schema, &log_record, SchemaVersion::V1);
+
+        // Check that the field type was updated to Timestamp
+        let updated_field = schema.field(0);
+        assert_eq!(
+            updated_field.data_type(),
+            &DataType::Timestamp(TimeUnit::Millisecond, None)
+        );
+        assert_eq!(updated_field.name(), "event_time");
+    }
+
+    #[test]
+    fn update_numeric_fields_to_float64() {
+        let fields = Fields::from(vec![Field::new("numeric_field", DataType::Int32, true)]);
+        let mut schema = Schema::new(fields);
+
+        // Create a JSON log record with a numeric field
+        let log_record = serde_json::json!({
+            "numeric_field": 42
+        });
+
+        // Call the function to override the inferred data type
+        override_inferred_data_type(&mut schema, &log_record, SchemaVersion::V1);
+
+        // Check that the field type was updated to Float64
+        let updated_field = schema.field(0);
+        assert_eq!(updated_field.data_type(), &DataType::Float64);
+        assert_eq!(updated_field.name(), "numeric_field");
+    }
+
+    #[test]
+    fn handle_non_standard_time_strings() {
+        let fields = Fields::from(vec![Field::new("event_time", DataType::Utf8, true)]);
+        let mut schema = Schema::new(fields);
+
+        // Create a JSON log record with a non-standard time format
+        let log_record = serde_json::json!({
+            "event_time": "01-01-2023 12:00:00"
+        });
+
+        // Call the function to override the inferred data type
+        override_inferred_data_type(&mut schema, &log_record, SchemaVersion::V1);
+
+        // Check that the field type was not updated to Timestamp
+        let updated_field = schema.field(0);
+        assert_eq!(updated_field.data_type(), &DataType::Utf8);
+        assert_eq!(updated_field.name(), "event_time");
+    }
+
+    #[test]
+    fn handles_numeric_fields_already_float64() {
+        let fields = Fields::from(vec![Field::new("numeric_value", DataType::Float64, true)]);
+        let mut schema = Schema::new(fields);
+
+        // Create a JSON log record with a numeric field
+        let log_record = serde_json::json!({
+            "numeric_value": 42.0
+        });
+
+        // Call the function to override the inferred data type
+        override_inferred_data_type(&mut schema, &log_record, SchemaVersion::V1);
+
+        // Check that the field type remains Float64
+        let updated_field = schema.field(0);
+        assert_eq!(updated_field.data_type(), &DataType::Float64);
+        assert_eq!(updated_field.name(), "numeric_value");
+    }
+
+    #[test]
+    fn does_not_update_field_type_for_v0_schema_version() {
+        let fields = Fields::from(vec![
+            Field::new("event_time", DataType::Utf8, true),
+            Field::new("numeric_field", DataType::Int32, true),
+        ]);
+        let mut schema = Schema::new(fields);
+
+        // Create a JSON log record with a string field
+        let log_record = serde_json::json!({
+            "event_time": "01-01-2023 12:00:00",
+            "numeric_field": 42
+        });
+
+        // Call the function to override the inferred data type with a non-V1 schema version
+        override_inferred_data_type(&mut schema, &log_record, SchemaVersion::V0);
+
+        // Check that the field type was not updated
+        let updated_field = schema.field(0);
+        assert_eq!(updated_field.data_type(), &DataType::Utf8);
+        assert_eq!(updated_field.name(), "event_time");
+        let updated_field = schema.field(1);
+        assert_eq!(updated_field.data_type(), &DataType::Int32);
+        assert_eq!(updated_field.name(), "numeric_field");
     }
 }
