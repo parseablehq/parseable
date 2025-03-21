@@ -16,21 +16,7 @@
  *
  */
 
-use self::error::StreamError;
-use super::cluster::utils::{IngestionStats, QueriedStats, StorageStats};
-use super::query::update_schema_when_distributed;
-use crate::event::format::override_data_type;
-use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
-use crate::metadata::SchemaVersion;
-use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
-use crate::parseable::{StreamNotFound, PARSEABLE};
-use crate::rbac::role::Action;
-use crate::rbac::Users;
-use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
-use crate::storage::retention::Retention;
-use crate::storage::{StreamInfo, StreamType};
-use crate::utils::actix::extract_session_key_from_req;
-use crate::{stats, validator, LOCK_EXPECT};
+use std::fs::remove_dir_all;
 
 use actix_web::http::StatusCode;
 use actix_web::web::{Json, Path};
@@ -38,11 +24,26 @@ use actix_web::{web, HttpRequest, Responder};
 use arrow_json::reader::infer_json_schema_from_iterator;
 use bytes::Bytes;
 use chrono::Utc;
+use error::StreamError;
 use itertools::Itertools;
 use serde_json::{json, Value};
-use std::fs;
-use std::sync::Arc;
 use tracing::warn;
+
+use crate::event::format::json::override_inferred_data_type;
+use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
+use crate::metadata::SchemaVersion;
+use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
+use crate::parseable::{StreamNotFound, PARSEABLE};
+use crate::rbac::role::Action;
+use crate::rbac::Users;
+use crate::stats::{self, event_labels_date, storage_size_labels_date, Stats};
+use crate::storage::retention::Retention;
+use crate::storage::{StreamInfo, StreamType};
+use crate::utils::actix::extract_session_key_from_req;
+use crate::{validator, LOCK_EXPECT};
+
+use super::cluster::utils::{IngestionStats, QueriedStats, StorageStats};
+use super::query::update_schema_when_distributed;
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
@@ -57,7 +58,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     objectstore.delete_stream(&stream_name).await?;
     // Delete from staging
     let stream_dir = PARSEABLE.get_or_create_stream(&stream_name);
-    if fs::remove_dir_all(&stream_dir.data_path).is_err() {
+    if remove_dir_all(&stream_dir.data_path).is_err() {
         warn!(
             "failed to delete local data for stream {}. Clean {} manually",
             stream_name,
@@ -113,10 +114,11 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
         }
     };
 
-    let mut schema = Arc::new(infer_json_schema_from_iterator(log_records.iter().map(Ok)).unwrap());
-    for log_record in log_records {
-        schema = override_data_type(schema, log_record, SchemaVersion::V1);
+    let mut schema = infer_json_schema_from_iterator(log_records.iter().map(Ok)).unwrap();
+    for log_record in log_records.iter() {
+        schema = override_inferred_data_type(schema, log_record, SchemaVersion::V1);
     }
+
     Ok((web::Json(schema), StatusCode::OK))
 }
 

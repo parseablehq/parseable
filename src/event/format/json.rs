@@ -22,7 +22,7 @@
 use anyhow::anyhow;
 use arrow_array::RecordBatch;
 use arrow_json::reader::{infer_json_schema_from_iterator, ReaderBuilder};
-use arrow_schema::{DataType, Field, Fields, Schema};
+use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use itertools::Itertools;
@@ -30,8 +30,22 @@ use serde_json::Value;
 use std::{collections::HashMap, sync::Arc};
 use tracing::error;
 
-use super::EventFormat;
+use super::{update_field_type_in_schema, EventFormat};
 use crate::{metadata::SchemaVersion, storage::StreamType, utils::arrow::get_field};
+
+static TIME_FIELD_NAME_PARTS: [&str; 11] = [
+    "time",
+    "date",
+    "timestamp",
+    "created",
+    "received",
+    "ingested",
+    "collected",
+    "start",
+    "end",
+    "ts",
+    "dt",
+];
 
 pub struct Event {
     pub json: Value,
@@ -87,12 +101,10 @@ impl EventFormat for Event {
                     .map_err(|err| {
                         anyhow!("Could not infer schema for this event due to err {:?}", err)
                     })?;
-                let new_infer_schema = super::update_field_type_in_schema(
+                let new_infer_schema = update_field_type_in_schema(
                     Arc::new(infer_schema),
                     Some(stream_schema),
                     time_partition,
-                    Some(&value_arr),
-                    schema_version,
                 );
                 infer_schema = Schema::new(new_infer_schema.fields().clone());
                 Schema::try_merge(vec![
@@ -220,6 +232,54 @@ fn extract_and_parse_time(
     let parsed_time: DateTime<Utc> = serde_json::from_value(current_time.clone())?;
 
     Ok(parsed_time.naive_utc())
+}
+
+// From Schema v1 onwards, convert json fields with name containig "date"/"time" and having
+// a string value parseable into timestamp as timestamp type and all numbers as float64.
+pub fn override_inferred_data_type(
+    inferred_schema: Schema,
+    log_record: &Value,
+    schema_version: SchemaVersion,
+) -> Schema {
+    let Value::Object(map) = log_record else {
+        return inferred_schema;
+    };
+    let updated_fields = inferred_schema
+        .fields()
+        .iter()
+        .map(|field| {
+            let field_name = field.name().as_str();
+            match (schema_version, map.get(field.name())) {
+                // in V1 for new fields in json named "time"/"date" or such and having inferred
+                // type string, that can be parsed as timestamp, use the timestamp type.
+                // NOTE: support even more datetime string formats
+                (SchemaVersion::V1, Some(Value::String(s)))
+                    if TIME_FIELD_NAME_PARTS
+                        .iter()
+                        .any(|part| field_name.to_lowercase().contains(part))
+                        && field.data_type() == &DataType::Utf8
+                        && (DateTime::parse_from_rfc3339(s).is_ok()
+                            || DateTime::parse_from_rfc2822(s).is_ok()) =>
+                {
+                    // Update the field's data type to Timestamp
+                    Field::new(
+                        field_name,
+                        DataType::Timestamp(TimeUnit::Millisecond, None),
+                        true,
+                    )
+                }
+                // in V1 for new fields in json with inferred type number, cast as float64.
+                (SchemaVersion::V1, Some(Value::Number(_))) if field.data_type().is_numeric() => {
+                    // Update the field's data type to Float64
+                    Field::new(field_name, DataType::Float64, true)
+                }
+                // Return the original field if no update is needed
+                _ => Field::new(field_name, field.data_type().clone(), true),
+            }
+        })
+        .collect_vec();
+
+    Schema::new(updated_fields)
 }
 
 // Returns arrow schema with the fields that are present in the request body

@@ -28,7 +28,6 @@ use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use crate::{
     metadata::SchemaVersion,
@@ -40,19 +39,6 @@ use super::{Event, DEFAULT_TIMESTAMP_KEY};
 
 pub mod json;
 
-static TIME_FIELD_NAME_PARTS: [&str; 11] = [
-    "time",
-    "date",
-    "timestamp",
-    "created",
-    "received",
-    "ingested",
-    "collected",
-    "start",
-    "end",
-    "ts",
-    "dt",
-];
 type EventSchema = Vec<Arc<Field>>;
 
 /// Source of the logs, used to perform special processing for certain sources
@@ -167,8 +153,7 @@ pub trait EventFormat: Sized {
         if !Self::is_schema_matching(new_schema.clone(), storage_schema, static_schema_flag) {
             return Err(anyhow!("Schema mismatch"));
         }
-        new_schema =
-            update_field_type_in_schema(new_schema, None, time_partition, None, schema_version);
+        new_schema = update_field_type_in_schema(new_schema, None, time_partition);
 
         let rb = Self::decode(data, new_schema.clone())?;
 
@@ -269,8 +254,6 @@ pub fn update_field_type_in_schema(
     inferred_schema: Arc<Schema>,
     existing_schema: Option<&HashMap<String, Arc<Field>>>,
     time_partition: Option<&String>,
-    log_records: Option<&Vec<Value>>,
-    schema_version: SchemaVersion,
 ) -> Arc<Schema> {
     let mut updated_schema = inferred_schema.clone();
     let existing_field_names = get_existing_field_names(inferred_schema.clone(), existing_schema);
@@ -278,13 +261,6 @@ pub fn update_field_type_in_schema(
     if let Some(existing_schema) = existing_schema {
         // overriding known timestamp fields which were inferred as string fields
         updated_schema = override_existing_timestamp_fields(existing_schema, updated_schema);
-    }
-
-    if let Some(log_records) = log_records {
-        for log_record in log_records {
-            updated_schema =
-                override_data_type(updated_schema.clone(), log_record.clone(), schema_version);
-        }
     }
 
     let Some(time_partition) = time_partition else {
@@ -308,52 +284,4 @@ pub fn update_field_type_in_schema(
         })
         .collect();
     Arc::new(Schema::new(new_schema))
-}
-
-// From Schema v1 onwards, convert json fields with name containig "date"/"time" and having
-// a string value parseable into timestamp as timestamp type and all numbers as float64.
-pub fn override_data_type(
-    inferred_schema: Arc<Schema>,
-    log_record: Value,
-    schema_version: SchemaVersion,
-) -> Arc<Schema> {
-    let Value::Object(map) = log_record else {
-        return inferred_schema;
-    };
-    let updated_schema: Vec<Field> = inferred_schema
-        .fields()
-        .iter()
-        .map(|field| {
-            let field_name = field.name().as_str();
-            match (schema_version, map.get(field.name())) {
-                // in V1 for new fields in json named "time"/"date" or such and having inferred
-                // type string, that can be parsed as timestamp, use the timestamp type.
-                // NOTE: support even more datetime string formats
-                (SchemaVersion::V1, Some(Value::String(s)))
-                    if TIME_FIELD_NAME_PARTS
-                        .iter()
-                        .any(|part| field_name.to_lowercase().contains(part))
-                        && field.data_type() == &DataType::Utf8
-                        && (DateTime::parse_from_rfc3339(s).is_ok()
-                            || DateTime::parse_from_rfc2822(s).is_ok()) =>
-                {
-                    // Update the field's data type to Timestamp
-                    Field::new(
-                        field_name,
-                        DataType::Timestamp(TimeUnit::Millisecond, None),
-                        true,
-                    )
-                }
-                // in V1 for new fields in json with inferred type number, cast as float64.
-                (SchemaVersion::V1, Some(Value::Number(_))) if field.data_type().is_numeric() => {
-                    // Update the field's data type to Float64
-                    Field::new(field_name, DataType::Float64, true)
-                }
-                // Return the original field if no update is needed
-                _ => Field::new(field_name, field.data_type().clone(), true),
-            }
-        })
-        .collect();
-
-    Arc::new(Schema::new(updated_schema))
 }
