@@ -303,6 +303,14 @@ pub struct Options {
     )]
     pub ingestor_endpoint: String,
 
+    #[arg(
+        long,
+        env = "P_INDEXER_ENDPOINT",
+        default_value = "",
+        help = "URL to connect to this specific indexer. Default is the address of the server"
+    )]
+    pub indexer_endpoint: String,
+
     #[command(flatten)]
     pub oidc: Option<OidcConfig>,
 
@@ -404,29 +412,47 @@ impl Options {
     }
 
     /// TODO: refactor and document
-    pub fn get_url(&self) -> Url {
-        if self.ingestor_endpoint.is_empty() {
-            return format!(
-                "{}://{}",
-                self.get_scheme(),
-                self.address
-            )
-            .parse::<Url>() // if the value was improperly set, this will panic before hand
-            .unwrap_or_else(|err| {
-                panic!("{err}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.", self.address)
-            });
+    pub fn get_url(&self, mode: Mode) -> Url {
+        let (endpoint, env_var) = match mode {
+            Mode::Ingest => {
+                if self.ingestor_endpoint.is_empty() {
+                    return format!(
+                        "{}://{}",
+                        self.get_scheme(),
+                        self.address
+                    )
+                    .parse::<Url>() // if the value was improperly set, this will panic before hand
+                    .unwrap_or_else(|err| {
+                        panic!("{err}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.", self.address)
+                    });
+                }
+                (&self.ingestor_endpoint, "P_INGESTOR_ENDPOINT")
+            }
+            Mode::Index => {
+                if self.indexer_endpoint.is_empty() {
+                    return format!(
+                        "{}://{}",
+                        self.get_scheme(),
+                        self.address
+                    )
+                    .parse::<Url>() // if the value was improperly set, this will panic before hand
+                    .unwrap_or_else(|err| {
+                        panic!("{err}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.", self.address)
+                    });
+                }
+                (&self.indexer_endpoint, "P_INDEXER_ENDPOINT")
+            }
+            _ => panic!("Invalid mode"),
+        };
+
+        if endpoint.starts_with("http") {
+            panic!("Invalid value `{}`, please set the environement variable `{env_var}` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.", endpoint);
         }
 
-        let ingestor_endpoint = &self.ingestor_endpoint;
-
-        if ingestor_endpoint.starts_with("http") {
-            panic!("Invalid value `{}`, please set the environement variable `P_INGESTOR_ENDPOINT` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.", ingestor_endpoint);
-        }
-
-        let addr_from_env = ingestor_endpoint.split(':').collect::<Vec<&str>>();
+        let addr_from_env = endpoint.split(':').collect::<Vec<&str>>();
 
         if addr_from_env.len() != 2 {
-            panic!("Invalid value `{}`, please set the environement variable `P_INGESTOR_ENDPOINT` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.", ingestor_endpoint);
+            panic!("Invalid value `{}`, please set the environement variable `{env_var}` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.", endpoint);
         }
 
         let mut hostname = addr_from_env[0].to_string();
