@@ -44,7 +44,9 @@ use crate::{
     utils::json::{convert_array_to_object, flatten::convert_to_array},
 };
 
-const IGNORE_HEADERS: [&str; 1] = [STREAM_NAME_HEADER_KEY];
+const IGNORE_HEADERS: [&str; 2] = [STREAM_NAME_HEADER_KEY, LOG_SOURCE_KEY];
+const MAX_CUSTOM_FIELDS: usize = 10;
+const MAX_FIELD_VALUE_LENGTH: usize = 100;
 
 pub async fn flatten_and_push_logs(
     json: Value,
@@ -160,12 +162,31 @@ pub fn get_custom_fields_from_header(req: HttpRequest) -> HashMap<String, String
 
     // Iterate through headers and add custom fields
     for (header_name, header_value) in req.headers().iter() {
+        // Check if we've reached the maximum number of custom fields
+        if p_custom_fields.len() >= MAX_CUSTOM_FIELDS {
+            warn!(
+                "Maximum number of custom fields ({}) reached, ignoring remaining headers",
+                MAX_CUSTOM_FIELDS
+            );
+            break;
+        }
+
         let header_name = header_name.as_str();
         if header_name.starts_with("x-p-") && !IGNORE_HEADERS.contains(&header_name) {
             if let Ok(value) = header_value.to_str() {
                 let key = header_name.trim_start_matches("x-p-");
                 if !key.is_empty() {
-                    p_custom_fields.insert(key.to_string(), value.to_string());
+                    // Truncate value if it exceeds the maximum length
+                    let truncated_value = if value.len() > MAX_FIELD_VALUE_LENGTH {
+                        warn!(
+                            "Header value for '{}' exceeds maximum length, truncating",
+                            header_name
+                        );
+                        &value[..MAX_FIELD_VALUE_LENGTH]
+                    } else {
+                        value
+                    };
+                    p_custom_fields.insert(key.to_string(), truncated_value.to_string());
                 } else {
                     warn!(
                         "Ignoring header with empty key after prefix: {}",
