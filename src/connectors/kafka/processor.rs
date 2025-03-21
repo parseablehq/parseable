@@ -16,12 +16,12 @@
  *
  */
 
-use std::sync::Arc;
-
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use rdkafka::consumer::{CommitMode, Consumer};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error};
 
@@ -29,7 +29,7 @@ use crate::{
     connectors::common::processor::Processor,
     event::{
         format::{json, EventFormat, LogSourceEntry},
-        Event as ParseableEvent,
+        Event as ParseableEvent, USER_AGENT_KEY,
     },
     parseable::PARSEABLE,
     storage::StreamType,
@@ -76,6 +76,9 @@ impl ParseableSinkProcessor {
             }
         }
 
+        let mut p_custom_fields = HashMap::new();
+        p_custom_fields.insert(USER_AGENT_KEY.to_string(), "kafka".to_string());
+
         let p_event = json::Event::new(Value::Array(json_vec)).into_event(
             stream_name.to_string(),
             total_payload_size,
@@ -85,6 +88,7 @@ impl ParseableSinkProcessor {
             time_partition.as_ref(),
             schema_version,
             StreamType::UserDefined,
+            &p_custom_fields,
         )?;
 
         Ok(p_event)
