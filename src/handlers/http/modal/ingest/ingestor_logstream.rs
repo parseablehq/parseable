@@ -20,7 +20,6 @@ use actix_web::{
     web::{Json, Path},
     HttpRequest, Responder,
 };
-use bytes::Bytes;
 use http::StatusCode;
 use tracing::warn;
 
@@ -28,6 +27,7 @@ use crate::{
     catalog::remove_manifest_from_snapshot,
     handlers::http::logstream::error::StreamError,
     parseable::{StreamNotFound, PARSEABLE},
+    static_schema::StaticSchema,
     stats,
 };
 
@@ -80,11 +80,15 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
 pub async fn put_stream(
     req: HttpRequest,
     stream_name: Path<String>,
-    body: Bytes,
+    static_schema: Option<Json<StaticSchema>>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
     PARSEABLE
-        .create_update_stream(req.headers(), &body, &stream_name)
+        .create_update_stream(
+            req.headers(),
+            static_schema.as_ref().map(|Json(s)| s),
+            &stream_name,
+        )
         .await?;
 
     Ok(("Log stream created", StatusCode::OK))
