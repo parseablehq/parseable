@@ -16,10 +16,22 @@
  *
  */
 
-use crate::{handlers::http::base_path_without_preceding_slash, HTTP_CLIENT};
-use actix_web::http::header;
+use std::{future::Future, pin::Pin};
+
+use crate::{
+    handlers::http::{base_path_without_preceding_slash, MAX_EVENT_PAYLOAD_SIZE},
+    HTTP_CLIENT,
+};
+use actix_web::{
+    dev::Payload,
+    error::{ErrorPayloadTooLarge, JsonPayloadError},
+    http::header,
+    FromRequest, HttpRequest,
+};
+use bytes::BytesMut;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use futures::StreamExt;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tracing::error;
 use url::Url;
 
@@ -198,4 +210,50 @@ pub fn to_url_string(str: String) -> String {
     }
 
     format!("http://{}/", str)
+}
+
+pub struct JsonWithSize<T> {
+    pub json: T,
+    pub byte_size: usize,
+}
+
+impl<T: DeserializeOwned + 'static> FromRequest for JsonWithSize<T> {
+    type Error = actix_web::error::Error;
+    type Future = Pin<Box<dyn Future<Output = Result<Self, Self::Error>>>>;
+
+    fn from_request(_: &HttpRequest, payload: &mut Payload) -> Self::Future {
+        let limit = MAX_EVENT_PAYLOAD_SIZE;
+
+        // Take ownership of payload for async processing
+        let mut payload = payload.take();
+
+        Box::pin(async move {
+            // Buffer to collect all bytes
+            let mut body = BytesMut::new();
+            let mut byte_size = 0;
+
+            // Collect all bytes from the payload stream
+            while let Some(chunk) = payload.next().await {
+                let chunk = chunk?;
+                byte_size += chunk.len();
+
+                // Check the size limit
+                if byte_size > limit {
+                    return Err(ErrorPayloadTooLarge(byte_size));
+                }
+
+                // Extend our buffer with the chunk
+                body.extend_from_slice(&chunk);
+            }
+
+            // Convert the collected bytes to Bytes
+            let bytes = body.freeze();
+
+            // Deserialize the JSON payload
+            let json =
+                serde_json::from_slice::<T>(&bytes).map_err(JsonPayloadError::Deserialize)?;
+
+            Ok(JsonWithSize { json, byte_size })
+        })
+    }
 }

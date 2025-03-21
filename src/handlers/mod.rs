@@ -21,7 +21,7 @@ pub mod http;
 pub mod livetail;
 
 pub const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
-const LOG_SOURCE_KEY: &str = "x-p-log-source";
+pub const LOG_SOURCE_KEY: &str = "x-p-log-source";
 const TIME_PARTITION_KEY: &str = "x-p-time-partition";
 const TIME_PARTITION_LIMIT_KEY: &str = "x-p-time-partition-limit";
 const CUSTOM_PARTITION_KEY: &str = "x-p-custom-partition";
