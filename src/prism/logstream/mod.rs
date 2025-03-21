@@ -204,6 +204,8 @@ pub struct PrismDatasetResponse {
     stream: String,
     /// Basic information about the stream
     info: StreamInfo,
+    /// Schema of the stream
+    schema: Arc<Schema>,
     /// Statistics for the queried timeframe
     stats: QueriedStats,
     /// Retention policy details
@@ -268,9 +270,9 @@ impl PrismDatasetRequest {
 
             let PrismLogstreamInfo {
                 info,
+                schema,
                 stats,
                 retention,
-                ..
             } = get_prism_logstream_info(stream).await?;
 
             let hottier = match HotTierManager::global() {
@@ -304,6 +306,7 @@ impl PrismDatasetRequest {
             responses.push(PrismDatasetResponse {
                 stream: stream.clone(),
                 info,
+                schema,
                 stats,
                 retention,
                 hottier,
