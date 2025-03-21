@@ -60,12 +60,15 @@ use crate::{
 
 use super::{
     staging::{
-        reader::{MergedRecordReader, MergedReverseRecordReader},
+        reader::MergedRecordReader,
         writer::{DiskWriter, Writer},
         StagingError,
     },
     LogStream, ARROW_FILE_EXTENSION,
 };
+
+// ~16K rows is default in-memory limit for each recordbatch
+const MAX_RECORD_BATCH_SIZE: usize = 16384;
 
 #[derive(Debug, thiserror::Error)]
 #[error("Stream not found: {0}")]
@@ -87,6 +90,7 @@ pub struct Stream {
     pub metadata: RwLock<LogStreamMetadata>,
     pub data_path: PathBuf,
     pub options: Arc<Options>,
+    /// Writer with a ~16K rows limit for optimal I/O performance.
     pub writer: Mutex<Writer>,
     pub ingestor_id: Option<String>,
 }
@@ -120,6 +124,11 @@ impl Stream {
         custom_partition_values: &HashMap<String, String>,
         stream_type: StreamType,
     ) -> Result<(), StagingError> {
+        let row_count = record.num_rows();
+        if row_count > MAX_RECORD_BATCH_SIZE {
+            return Err(StagingError::RowLimit(row_count));
+        }
+
         let mut guard = self.writer.lock().unwrap();
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
             let filename =
@@ -307,7 +316,7 @@ impl Stream {
             self.stream_name
         );
 
-        let time_partition = self.get_time_partition();
+        let time_partition: Option<String> = self.get_time_partition();
         let custom_partition = self.get_custom_partition();
 
         // read arrow files on disk
@@ -324,8 +333,7 @@ impl Stream {
         // if yes, then merge them and save
 
         if let Some(mut schema) = schema {
-            let static_schema_flag = self.get_static_schema_flag();
-            if !static_schema_flag {
+            if !self.get_static_schema_flag() {
                 // schema is dynamic, read from staging and merge if present
 
                 // need to add something before .schema to make the file have an extension of type `schema`
@@ -353,8 +361,26 @@ impl Stream {
         Ok(())
     }
 
-    pub fn recordbatches_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
-        self.writer.lock().unwrap().mem.recordbatch_cloned(schema)
+    /// Returns records batches as found in staging
+    pub fn recordbatches_cloned(
+        &self,
+        schema: &Arc<Schema>,
+        time_partition: Option<String>,
+    ) -> Vec<RecordBatch> {
+        // All records found in memory
+        let mut records = self.writer.lock().unwrap().mem.recordbatch_cloned(schema);
+        // Append records batches picked up from `.arrows` files
+        let arrow_files = self.arrow_files();
+        let record_reader = MergedRecordReader::new(&arrow_files);
+        if record_reader.readers.is_empty() {
+            return records;
+        }
+        let mut from_file = record_reader
+            .merged_iter(schema.clone(), time_partition)
+            .collect();
+        records.append(&mut from_file);
+
+        records
     }
 
     pub fn clear(&self) {
@@ -462,7 +488,7 @@ impl Stream {
 
         // warn!("staging files-\n{staging_files:?}\n");
         for (parquet_path, arrow_files) in staging_files {
-            let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
+            let record_reader = MergedRecordReader::new(&arrow_files);
             if record_reader.readers.is_empty() {
                 continue;
             }
@@ -528,13 +554,12 @@ impl Stream {
 
     pub fn updated_schema(&self, current_schema: Schema) -> Schema {
         let staging_files = self.arrow_files();
-        let record_reader = MergedRecordReader::try_new(&staging_files).unwrap();
+        let record_reader = MergedRecordReader::new(&staging_files);
         if record_reader.readers.is_empty() {
             return current_schema;
         }
 
         let schema = record_reader.merged_schema();
-
         Schema::try_merge(vec![schema, current_schema]).unwrap()
     }
 
