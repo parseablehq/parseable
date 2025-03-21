@@ -40,7 +40,10 @@
 //! }
 //! ```
 
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use arrow_array::{
     Array, ArrayRef, RecordBatch, StringArray, TimestampMillisecondArray, UInt64Array,
@@ -162,6 +165,8 @@ pub fn add_parseable_fields(
         .iter()
         .map(|f| f.as_ref().clone())
         .collect_vec();
+    let mut field_names: HashSet<String> = fields.iter().map(|f| f.name().to_string()).collect();
+
     fields.insert(
         0,
         Field::new(
@@ -170,23 +175,24 @@ pub fn add_parseable_fields(
             true,
         ),
     );
-    fields.extend(
-        sorted_keys
-            .iter()
-            .map(|k| Field::new(*k, DataType::Utf8, true)),
-    );
-
     let mut columns = rb.columns().iter().map(Arc::clone).collect_vec();
     columns.insert(
         0,
         Arc::new(get_timestamp_array(p_timestamp, row_count)) as ArrayRef,
     );
-    columns.extend(sorted_keys.iter().map(|k| {
-        let value = p_custom_fields.get(*k).unwrap();
-        Arc::new(StringArray::from_iter_values(
-            std::iter::repeat(value).take(row_count),
-        )) as ArrayRef
-    }));
+
+    //ignore the duplicate fields, no need to add them again
+    for key in sorted_keys {
+        if !field_names.contains(key) {
+            fields.push(Field::new(key, DataType::Utf8, true));
+            field_names.insert(key.to_string());
+
+            let value = p_custom_fields.get(key).unwrap();
+            columns.push(Arc::new(StringArray::from_iter_values(
+                std::iter::repeat(value).take(row_count),
+            )) as ArrayRef);
+        }
+    }
 
     // Create the new schema and batch
     let new_schema = Arc::new(Schema::new(fields));

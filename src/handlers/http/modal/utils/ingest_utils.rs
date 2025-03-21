@@ -16,8 +16,6 @@
  *
  */
 
-use std::collections::HashMap;
-
 use actix_web::HttpRequest;
 use chrono::Utc;
 use http::header::USER_AGENT;
@@ -25,6 +23,8 @@ use opentelemetry_proto::tonic::{
     logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
 };
 use serde_json::Value;
+use std::collections::HashMap;
+use tracing::warn;
 
 use crate::{
     event::{
@@ -164,7 +164,14 @@ pub fn get_custom_fields_from_header(req: HttpRequest) -> HashMap<String, String
         if header_name.starts_with("x-p-") && !IGNORE_HEADERS.contains(&header_name) {
             if let Ok(value) = header_value.to_str() {
                 let key = header_name.trim_start_matches("x-p-");
-                p_custom_fields.insert(key.to_string(), value.to_string());
+                if !key.is_empty() {
+                    p_custom_fields.insert(key.to_string(), value.to_string());
+                } else {
+                    warn!(
+                        "Ignoring header with empty key after prefix: {}",
+                        header_name
+                    );
+                }
             }
         }
 
@@ -220,5 +227,18 @@ mod tests {
 
         assert_eq!(custom_fields.get(USER_AGENT_KEY).unwrap(), "TestUserAgent");
         assert_eq!(custom_fields.get(FORMAT_KEY).unwrap(), "otel-logs");
+    }
+
+    #[test]
+    fn test_get_custom_fields_empty_header_after_prefix() {
+        let req = TestRequest::default()
+            .insert_header(("x-p-", "empty"))
+            .to_http_request();
+
+        let custom_fields = get_custom_fields_from_header(req);
+
+        assert_eq!(custom_fields.len(), 2);
+        assert_eq!(custom_fields.get(USER_AGENT_KEY).unwrap(), "");
+        assert_eq!(custom_fields.get(SOURCE_IP_KEY).unwrap(), "");
     }
 }
