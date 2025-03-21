@@ -979,7 +979,6 @@ fn satisfy_constraints(value: CastRes, op: Operator, stats: &TypedStatistics) ->
     fn matches<T: std::cmp::PartialOrd>(value: T, min: T, max: T, op: Operator) -> Option<bool> {
         let val = match op {
             Operator::Eq | Operator::IsNotDistinctFrom => value >= min && value <= max,
-            Operator::NotEq => value < min && value > max,
             Operator::Lt => value > min,
             Operator::LtEq => value >= min,
             Operator::Gt => value < max,

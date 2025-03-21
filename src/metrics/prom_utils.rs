@@ -19,6 +19,7 @@
 use crate::handlers::http::base_path_without_preceding_slash;
 use crate::handlers::http::ingest::PostError;
 use crate::handlers::http::modal::IngestorMetadata;
+use crate::option::Mode;
 use crate::parseable::PARSEABLE;
 use crate::HTTP_CLIENT;
 use actix_web::http::header;
@@ -61,7 +62,8 @@ struct StorageMetrics {
 
 impl Default for Metrics {
     fn default() -> Self {
-        let url = PARSEABLE.options.get_url();
+        // for now it is only for ingestor
+        let url = PARSEABLE.options.get_url(Mode::Ingest);
         let address = format!(
             "http://{}:{}",
             url.domain()

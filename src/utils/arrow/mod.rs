@@ -40,10 +40,15 @@
 //! }
 //! ```
 
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
-use arrow_array::{Array, RecordBatch, TimestampMillisecondArray, UInt64Array};
-use arrow_schema::Schema;
+use arrow_array::{
+    Array, ArrayRef, RecordBatch, StringArray, TimestampMillisecondArray, UInt64Array,
+};
+use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};
 use arrow_select::take::take;
 use chrono::{DateTime, Utc};
 use itertools::Itertools;
@@ -54,6 +59,8 @@ pub mod flight;
 use anyhow::Result;
 pub use batch_adapter::adapt_batch;
 use serde_json::{Map, Value};
+
+use crate::event::DEFAULT_TIMESTAMP_KEY;
 
 /// Replaces columns in a record batch with new arrays.
 ///
@@ -90,10 +97,12 @@ pub fn replace_columns(
 /// * Result<Vec<Map<String, Value>>>
 ///
 /// A vector of JSON objects representing the record batches.
-pub fn record_batches_to_json(records: &[&RecordBatch]) -> Result<Vec<Map<String, Value>>> {
+pub fn record_batches_to_json(records: &[RecordBatch]) -> Result<Vec<Map<String, Value>>> {
     let buf = vec![];
     let mut writer = arrow_json::ArrayWriter::new(buf);
-    writer.write_batches(records)?;
+    for record in records {
+        writer.write(record)?;
+    }
     writer.finish()?;
 
     let buf = writer.into_inner();
@@ -135,6 +144,59 @@ pub fn get_field<'a>(
 /// A column in arrow, containing the current timestamp in millis.
 pub fn get_timestamp_array(p_timestamp: DateTime<Utc>, size: usize) -> TimestampMillisecondArray {
     TimestampMillisecondArray::from_value(p_timestamp.timestamp_millis(), size)
+}
+
+pub fn add_parseable_fields(
+    rb: RecordBatch,
+    p_timestamp: DateTime<Utc>,
+    p_custom_fields: &HashMap<String, String>,
+) -> Result<RecordBatch, ArrowError> {
+    // Return Result for proper error handling
+
+    // Add custom fields in sorted order
+    let mut sorted_keys: Vec<&String> = p_custom_fields.keys().collect();
+    sorted_keys.sort();
+
+    let schema = rb.schema();
+    let row_count = rb.num_rows();
+
+    let mut fields = schema
+        .fields()
+        .iter()
+        .map(|f| f.as_ref().clone())
+        .collect_vec();
+    let mut field_names: HashSet<String> = fields.iter().map(|f| f.name().to_string()).collect();
+
+    fields.insert(
+        0,
+        Field::new(
+            DEFAULT_TIMESTAMP_KEY,
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            true,
+        ),
+    );
+    let mut columns = rb.columns().iter().map(Arc::clone).collect_vec();
+    columns.insert(
+        0,
+        Arc::new(get_timestamp_array(p_timestamp, row_count)) as ArrayRef,
+    );
+
+    //ignore the duplicate fields, no need to add them again
+    for key in sorted_keys {
+        if !field_names.contains(key) {
+            fields.push(Field::new(key, DataType::Utf8, true));
+            field_names.insert(key.to_string());
+
+            let value = p_custom_fields.get(key).unwrap();
+            columns.push(Arc::new(StringArray::from_iter_values(
+                std::iter::repeat(value).take(row_count),
+            )) as ArrayRef);
+        }
+    }
+
+    // Create the new schema and batch
+    let new_schema = Arc::new(Schema::new(fields));
+    RecordBatch::try_new(new_schema, columns)
 }
 
 pub fn reverse(rb: &RecordBatch) -> RecordBatch {
@@ -188,7 +250,7 @@ mod tests {
     #[test]
     fn check_empty_json_to_record_batches() {
         let r = RecordBatch::new_empty(Arc::new(Schema::empty()));
-        let rb = vec![&r];
+        let rb = vec![r];
         let batches = record_batches_to_json(&rb).unwrap();
         assert_eq!(batches, vec![]);
     }

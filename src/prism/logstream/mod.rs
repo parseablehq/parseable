@@ -22,7 +22,9 @@ use actix_web::http::header::ContentType;
 use arrow_schema::Schema;
 use chrono::Utc;
 use http::StatusCode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use tracing::{debug, error, warn};
 
 use crate::{
     handlers::http::{
@@ -31,11 +33,19 @@ use crate::{
             utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
         },
         logstream::error::StreamError,
-        query::update_schema_when_distributed,
+        query::{into_query, update_schema_when_distributed, Query, QueryError},
     },
+    hottier::{HotTierError, HotTierManager, StreamHotTier},
     parseable::{StreamNotFound, PARSEABLE},
+    query::{error::ExecuteError, execute, CountsRequest, CountsResponse, QUERY_SESSION},
+    rbac::{map::SessionKey, role::Action, Users},
     stats,
     storage::{retention::Retention, StreamInfo, StreamType},
+    utils::{
+        arrow::record_batches_to_json,
+        time::{TimeParseError, TimeRange},
+    },
+    validator::error::HotTierValidationError,
     LOCK_EXPECT,
 };
 
@@ -185,6 +195,174 @@ async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, StreamE
     Ok(stream_info)
 }
 
+/// Response structure for Prism dataset queries.
+/// Contains information about a stream, its statistics, retention policy,
+/// and query results.
+#[derive(Serialize)]
+pub struct PrismDatasetResponse {
+    /// Name of the stream
+    stream: String,
+    /// Basic information about the stream
+    info: StreamInfo,
+    /// Schema of the stream
+    schema: Arc<Schema>,
+    /// Statistics for the queried timeframe
+    stats: QueriedStats,
+    /// Retention policy details
+    retention: Retention,
+    /// Hot tier information if available
+    hottier: Option<StreamHotTier>,
+    /// Count of records in the specified time range
+    counts: CountsResponse,
+    /// Collection of distinct values for source identifiers
+    distinct_sources: Value,
+}
+
+/// Request parameters for retrieving Prism dataset information.
+/// Defines which streams to query
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PrismDatasetRequest {
+    /// List of stream names to query
+    #[serde(default)]
+    streams: Vec<String>,
+}
+
+impl PrismDatasetRequest {
+    /// Retrieves dataset information for all specified streams.
+    ///
+    /// Processes each stream in the request and compiles their information.
+    /// Streams that don't exist or can't be accessed are skipped.
+    ///
+    /// # Returns
+    /// - `Ok(Vec<PrismDatasetResponse>)`: List of responses for successfully processed streams
+    /// - `Err(PrismLogstreamError)`: If a critical error occurs during processing
+    ///
+    /// # Note
+    /// 1. This method won't fail if individual streams fail - it will only include
+    ///    successfully processed streams in the result.
+    /// 2. On receiving an empty stream list, we return for all streams the user is able to query for
+    pub async fn get_datasets(
+        mut self,
+        key: SessionKey,
+    ) -> Result<Vec<PrismDatasetResponse>, PrismLogstreamError> {
+        let is_empty = self.streams.is_empty();
+        if is_empty {
+            self.streams = PARSEABLE.streams.list();
+        }
+
+        let mut responses = vec![];
+        for stream in self.streams.iter() {
+            if Users.authorize(key.clone(), Action::ListStream, Some(stream), None)
+                != crate::rbac::Response::Authorized
+            {
+                // Don't warn if listed from Parseable
+                if !is_empty {
+                    warn!("Unauthorized access requested for stream: {stream}");
+                }
+                continue;
+            }
+
+            if PARSEABLE.check_or_load_stream(stream).await {
+                debug!("Stream not found: {stream}");
+                continue;
+            }
+
+            let PrismLogstreamInfo {
+                info,
+                schema,
+                stats,
+                retention,
+            } = get_prism_logstream_info(stream).await?;
+
+            let hottier = match HotTierManager::global() {
+                Some(manager) => match manager.get_hot_tier(stream).await {
+                    Ok(stats) => Some(stats),
+                    Err(HotTierError::HotTierValidationError(
+                        HotTierValidationError::NotFound(_),
+                    )) => None,
+                    Err(err) => return Err(err.into()),
+                },
+                _ => None,
+            };
+            let records = CountsRequest {
+                stream: stream.clone(),
+                start_time: "1h".to_owned(),
+                end_time: "now".to_owned(),
+                num_bins: 10,
+            }
+            .get_bin_density()
+            .await?;
+            let counts = CountsResponse {
+                fields: vec!["start_time".into(), "end_time".into(), "count".into()],
+                records,
+            };
+
+            // Retrieve distinct values for source identifiers
+            // Returns None if fields aren't present or if query fails
+            let ips = self.get_distinct_entries(stream, "p_src_ip").await.ok();
+            let user_agents = self.get_distinct_entries(stream, "p_user_agent").await.ok();
+
+            responses.push(PrismDatasetResponse {
+                stream: stream.clone(),
+                info,
+                schema,
+                stats,
+                retention,
+                hottier,
+                counts,
+                distinct_sources: json!({
+                    "ips": ips,
+                    "user_agents": user_agents
+                }),
+            })
+        }
+
+        Ok(responses)
+    }
+
+    /// Retrieves distinct values for a specific field in a stream.
+    ///
+    /// # Parameters
+    /// - `stream_name`: Name of the stream to query
+    /// - `field`: Field name to get distinct values for
+    ///
+    /// # Returns
+    /// - `Ok(Vec<String>)`: List of distinct values found for the field
+    /// - `Err(QueryError)`: If the query fails or field doesn't exist
+    async fn get_distinct_entries(
+        &self,
+        stream_name: &str,
+        field: &str,
+    ) -> Result<Vec<String>, QueryError> {
+        let query = Query {
+            query: format!("SELECT DISTINCT({field}) FOR {stream_name}"),
+            start_time: "1h".to_owned(),
+            end_time: "now".to_owned(),
+            send_null: false,
+            filter_tags: None,
+            fields: true,
+        };
+        let time_range = TimeRange::parse_human_time("1h", "now")?;
+
+        let session_state = QUERY_SESSION.state();
+        let query = into_query(&query, &session_state, time_range).await?;
+        let (records, _) = execute(query, stream_name).await?;
+        let response = record_batches_to_json(&records)?;
+        // Extract field values from the JSON response
+        let values = response
+            .iter()
+            .flat_map(|row| {
+                row.get(field)
+                    .and_then(|s| s.as_str())
+                    .map(|s| s.to_string())
+            })
+            .collect();
+
+        Ok(values)
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum PrismLogstreamError {
     #[error("Error: {0}")]
@@ -193,6 +371,16 @@ pub enum PrismLogstreamError {
     StreamError(#[from] StreamError),
     #[error("StreamNotFound: {0}")]
     StreamNotFound(#[from] StreamNotFound),
+    #[error("Hottier: {0}")]
+    Hottier(#[from] HotTierError),
+    #[error("Query: {0}")]
+    Query(#[from] QueryError),
+    #[error("TimeParse: {0}")]
+    TimeParse(#[from] TimeParseError),
+    #[error("Execute: {0}")]
+    Execute(#[from] ExecuteError),
+    #[error("Auth: {0}")]
+    Auth(#[from] actix_web::Error),
 }
 
 impl actix_web::ResponseError for PrismLogstreamError {
@@ -201,6 +389,11 @@ impl actix_web::ResponseError for PrismLogstreamError {
             PrismLogstreamError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PrismLogstreamError::StreamError(e) => e.status_code(),
             PrismLogstreamError::StreamNotFound(_) => StatusCode::NOT_FOUND,
+            PrismLogstreamError::Hottier(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PrismLogstreamError::Query(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PrismLogstreamError::TimeParse(_) => StatusCode::NOT_FOUND,
+            PrismLogstreamError::Execute(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PrismLogstreamError::Auth(_) => StatusCode::UNAUTHORIZED,
         }
     }
 
