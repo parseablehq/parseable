@@ -427,11 +427,6 @@ impl Parseable {
         log_source: Vec<LogSourceEntry>,
     ) -> Result<bool, PostError> {
         if self.streams.contains(stream_name) {
-            for stream_log_source in log_source {
-                self.add_update_log_source(stream_name, stream_log_source)
-                    .await?;
-            }
-
             return Ok(true);
         }
 
@@ -443,7 +438,7 @@ impl Parseable {
                 .create_stream_and_schema_from_storage(stream_name)
                 .await?
         {
-            return Ok(false);
+            return Ok(true);
         }
 
         self.create_stream(
