@@ -29,6 +29,7 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build && rm -rf src
 
 # Build the actual binary
 COPY src ./src
+COPY resources ./resources
 RUN cargo build
 
 # final stage

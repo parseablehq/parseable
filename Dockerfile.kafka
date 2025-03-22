@@ -42,6 +42,7 @@ RUN mkdir src && echo "fn main() {}" > src/main.rs && \
 
 # Copy the actual source code
 COPY src ./src
+COPY resources ./resources
 
 # Build the actual binary with kafka feature
 RUN cargo build --release --features kafka

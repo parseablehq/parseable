@@ -572,7 +572,9 @@ pub mod error {
 
 #[cfg(test)]
 mod tests {
-    use crate::handlers::http::modal::utils::logstream_utils::PutStreamHeaders;
+    use crate::{
+        event::format::LogSource, handlers::http::modal::utils::logstream_utils::PutStreamHeaders,
+    };
     use actix_web::test::TestRequest;
 
     // TODO: Fix this test with routes
@@ -597,7 +599,7 @@ mod tests {
     async fn header_without_log_source() {
         let req = TestRequest::default().to_http_request();
         let PutStreamHeaders { log_source, .. } = req.headers().into();
-        assert_eq!(log_source, crate::event::format::LogSource::Json);
+        assert_eq!(log_source, LogSource::Json);
     }
 
     #[actix_web::test]
@@ -606,19 +608,19 @@ mod tests {
             .insert_header(("X-P-Log-Source", "pmeta"))
             .to_http_request();
         let PutStreamHeaders { log_source, .. } = req.headers().into();
-        assert_eq!(log_source, crate::event::format::LogSource::Pmeta);
+        assert_eq!(log_source, LogSource::Pmeta);
 
         req = TestRequest::default()
             .insert_header(("X-P-Log-Source", "otel-logs"))
             .to_http_request();
         let PutStreamHeaders { log_source, .. } = req.headers().into();
-        assert_eq!(log_source, crate::event::format::LogSource::OtelLogs);
+        assert_eq!(log_source, LogSource::OtelLogs);
 
         req = TestRequest::default()
             .insert_header(("X-P-Log-Source", "kinesis"))
             .to_http_request();
         let PutStreamHeaders { log_source, .. } = req.headers().into();
-        assert_eq!(log_source, crate::event::format::LogSource::Kinesis);
+        assert_eq!(log_source, LogSource::Kinesis);
     }
 
     #[actix_web::test]
@@ -627,6 +629,9 @@ mod tests {
             .insert_header(("X-P-Log-Source", "teststream"))
             .to_http_request();
         let PutStreamHeaders { log_source, .. } = req.headers().into();
-        assert_eq!(log_source, crate::event::format::LogSource::Json);
+        matches!(
+            log_source,
+            LogSource::Custom(src) if src == "teststream"
+        );
     }
 }

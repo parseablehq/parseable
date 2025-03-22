@@ -28,8 +28,9 @@ use serde_json::Value;
 
 use crate::event;
 use crate::event::error::EventError;
+use crate::event::format::known_schema::{self, KNOWN_SCHEMA_LIST};
 use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
-use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
+use crate::handlers::{EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
 use crate::metadata::SchemaVersion;
 use crate::option::Mode;
 use crate::otel::logs::OTEL_LOG_KNOWN_FIELD_LIST;
@@ -48,7 +49,10 @@ use super::users::filters::FiltersError;
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
 // creates if stream does not exist
-pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpResponse, PostError> {
+pub async fn ingest(
+    req: HttpRequest,
+    Json(mut json): Json<Value>,
+) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
@@ -65,6 +69,11 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
         .and_then(|h| h.to_str().ok())
         .map_or(LogSource::default(), LogSource::from);
 
+    let extract_log = req
+        .headers()
+        .get(EXTRACT_LOG_KEY)
+        .and_then(|h| h.to_str().ok());
+
     if matches!(
         log_source,
         LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces
@@ -72,9 +81,16 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
         return Err(PostError::OtelNotSupported);
     }
 
+    let fields = match &log_source {
+        LogSource::Custom(src) => {
+            KNOWN_SCHEMA_LIST.extract_from_inline_log(&mut json, src, extract_log)?
+        }
+        _ => HashSet::new(),
+    };
+
+    let log_source_entry = LogSourceEntry::new(log_source.clone(), fields);
     let p_custom_fields = get_custom_fields_from_header(req);
 
-    let log_source_entry = LogSourceEntry::new(log_source.clone(), HashSet::new());
     PARSEABLE
         .create_stream_if_not_exists(
             &stream_name,
@@ -242,7 +258,7 @@ pub async fn handle_otel_traces_ingestion(
 pub async fn post_event(
     req: HttpRequest,
     stream_name: Path<String>,
-    Json(json): Json<Value>,
+    Json(mut json): Json<Value>,
 ) -> Result<HttpResponse, PostError> {
     let stream_name = stream_name.into_inner();
 
@@ -273,11 +289,19 @@ pub async fn post_event(
         .and_then(|h| h.to_str().ok())
         .map_or(LogSource::default(), LogSource::from);
 
-    if matches!(
-        log_source,
-        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces
-    ) {
-        return Err(PostError::OtelNotSupported);
+    let extract_log = req
+        .headers()
+        .get(EXTRACT_LOG_KEY)
+        .and_then(|h| h.to_str().ok());
+
+    match &log_source {
+        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
+            return Err(PostError::OtelNotSupported)
+        }
+        LogSource::Custom(src) => {
+            KNOWN_SCHEMA_LIST.extract_from_inline_log(&mut json, src, extract_log)?;
+        }
+        _ => {}
     }
 
     let p_custom_fields = get_custom_fields_from_header(req);
@@ -347,6 +371,8 @@ pub enum PostError {
     IngestionNotAllowed,
     #[error("Missing field for time partition in json: {0}")]
     MissingTimePartition(String),
+    #[error("{0}")]
+    KnownFormat(#[from] known_schema::Error),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -373,6 +399,7 @@ impl actix_web::ResponseError for PostError {
             PostError::IncorrectLogSource(_) => StatusCode::BAD_REQUEST,
             PostError::IngestionNotAllowed => StatusCode::BAD_REQUEST,
             PostError::MissingTimePartition(_) => StatusCode::BAD_REQUEST,
+            PostError::KnownFormat(_) => StatusCode::BAD_REQUEST,
         }
     }
 
