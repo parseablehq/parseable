@@ -36,7 +36,7 @@ use crate::{
             ingest::PostError,
             kinesis::{flatten_kinesis_logs, Message},
         },
-        LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY,
+        EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY,
     },
     otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
     parseable::PARSEABLE,
@@ -44,7 +44,7 @@ use crate::{
     utils::json::{convert_array_to_object, flatten::convert_to_array},
 };
 
-const IGNORE_HEADERS: [&str; 2] = [STREAM_NAME_HEADER_KEY, LOG_SOURCE_KEY];
+const IGNORE_HEADERS: [&str; 3] = [STREAM_NAME_HEADER_KEY, LOG_SOURCE_KEY, EXTRACT_LOG_KEY];
 const MAX_CUSTOM_FIELDS: usize = 10;
 const MAX_FIELD_VALUE_LENGTH: usize = 100;
 

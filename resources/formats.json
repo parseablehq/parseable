@@ -384,6 +384,18 @@
         {
           "pattern": "^<(?P<log_pri>\\d+)>(?P<syslog_version>\\d+) (?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{6})?(?:[^ ]+)?) (?P<log_hostname>[^ ]+|-) (?P<log_syslog_tag>(?P<log_procname>[^ ]+|-) (?P<log_pid>[^ ]+|-) (?P<log_msgid>[^ ]+|-)) (?P<log_struct>\\[(?:[^\\]\"]|\"(?:\\.|[^\"])+\")*\\]|-|)\\s+(?P<body>.*)",
           "fields": ["log_pri", "syslog_version", "timestamp", "log_hostname", "log_syslog_tag", "log_procname", "log_pid", "log_msgid", "log_struct", "body"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+\\+\\d{2}:\\d{2})\\s+(?P<hostname>\\S+)\\s+(?P<log_source>)\\[(?P<pid>\\d+)\\]:\\s+\\[(?P<metric_timestamp>\\d+)\\]\\s+cpu\\.local:\\s+\\[\\[(?P<unix_time>\\d+\\.\\d+),\\s+\\{\\}\\],\\s+\\{(?P<cpu_metrics>.*)\\}\\]$",
+          "fields": ["timestamp", "hostname", "log_source", "pid", "metric_timestamp", "unix_time", "cpu_metrics"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+\\+\\d{2}:\\d{2})\\s+(?P<hostname>\\S+)\\s+(?P<log_source>)\\[(?P<pid>\\d+)\\]:\\s+\\[(?P<log_timestamp>\\d{4}/\\d{2}/\\d{2}\\s+\\d{2}:\\d{2}:\\d{2})\\]\\s+\\[(?P<level>info|error|warn)\\]\\s+\\[(?P<component>output:http:http\\.\\d+)\\]\\s+(?P<message>.*)$",
+          "fields": ["timestamp", "hostname", "log_source", "pid", "log_timestamp", "level", "component", "message"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+\\+\\d{2}:\\d{2})\\s+(?P<hostname>\\S+)\\s+(?P<log_source>)\\[(?P<pid>\\d+)\\]:(?P<message>\\S+)$",
+          "fields": ["timestamp", "hostname", "log_source", "pid", "message"]
         }
       ]
     },

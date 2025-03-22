@@ -82,9 +82,6 @@ pub async fn ingest(
     }
 
     let fields = match &log_source {
-        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
-            return Err(PostError::OtelNotSupported)
-        }
         LogSource::Custom(src) => {
             KNOWN_SCHEMA_LIST.extract_from_inline_log(&mut json, src, extract_log)?
         }
