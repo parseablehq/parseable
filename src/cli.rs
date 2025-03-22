@@ -174,6 +174,14 @@ pub struct Options {
     )]
     pub send_analytics: bool,
 
+    #[arg(
+        long,
+        env = "P_MASK_PII",
+        default_value = "false",
+        help = "mask PII data when sending to Prism"
+    )]
+    pub mask_pii: bool,
+
     // TLS/Security
     #[arg(
         long,
