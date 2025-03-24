@@ -17,7 +17,13 @@
  *
  */
 
-use std::{collections::HashMap, num::NonZeroU32, path::PathBuf, str::FromStr, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    num::NonZeroU32,
+    path::PathBuf,
+    str::FromStr,
+    sync::Arc,
+};
 
 use actix_web::http::header::HeaderMap;
 use arrow_schema::{Field, Schema};
@@ -35,13 +41,13 @@ use tracing::error;
 use crate::connectors::kafka::config::KafkaConfig;
 use crate::{
     cli::{Cli, Options, StorageOptions},
-    event::format::LogSource,
+    event::format::{LogSource, LogSourceEntry},
     handlers::{
         http::{
             cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME},
             ingest::PostError,
             logstream::error::{CreateStreamError, StreamError},
-            modal::{utils::logstream_utils::PutStreamHeaders, IngestorMetadata},
+            modal::{utils::logstream_utils::PutStreamHeaders, IndexerMetadata, IngestorMetadata},
         },
         STREAM_TYPE_KEY,
     },
@@ -60,6 +66,9 @@ mod streams;
 
 /// File extension for arrow files in staging
 const ARROW_FILE_EXTENSION: &str = "arrows";
+
+/// File extension for incomplete arrow files
+const PART_FILE_EXTENSION: &str = "part";
 
 /// Name of a Stream
 /// NOTE: this used to be a struct, flattened out for simplicity
@@ -120,6 +129,8 @@ pub struct Parseable {
     pub streams: Streams,
     /// Metadata associated only with an ingestor
     pub ingestor_metadata: Option<Arc<IngestorMetadata>>,
+    /// Metadata associated only with an indexer
+    pub indexer_metadata: Option<Arc<IndexerMetadata>>,
     /// Used to configure the kafka connector
     #[cfg(feature = "kafka")]
     pub kafka_config: KafkaConfig,
@@ -135,11 +146,16 @@ impl Parseable {
             Mode::Ingest => Some(IngestorMetadata::load(&options, storage.as_ref())),
             _ => None,
         };
+        let indexer_metadata = match &options.mode {
+            Mode::Index => Some(IndexerMetadata::load(&options, storage.as_ref())),
+            _ => None,
+        };
         Parseable {
             options: Arc::new(options),
             storage,
             streams: Streams::default(),
             ingestor_metadata,
+            indexer_metadata,
             #[cfg(feature = "kafka")]
             kafka_config,
         }
@@ -162,7 +178,7 @@ impl Parseable {
         }
 
         // Gets write privileges only for creating the stream when it doesn't already exist.
-        self.streams.create(
+        self.streams.get_or_create(
             self.options.clone(),
             stream_name.to_owned(),
             LogStreamMetadata::default(),
@@ -249,35 +265,68 @@ impl Parseable {
     }
 
     // create the ingestor metadata and put the .ingestor.json file in the object store
-    pub async fn store_ingestor_metadata(&self) -> anyhow::Result<()> {
-        let Some(meta) = self.ingestor_metadata.as_ref() else {
-            return Ok(());
-        };
-        let storage_ingestor_metadata = meta.migrate().await?;
-        let store = self.storage.get_object_store();
+    pub async fn store_metadata(&self, mode: Mode) -> anyhow::Result<()> {
+        match mode {
+            Mode::Ingest => {
+                let Some(meta) = self.ingestor_metadata.as_ref() else {
+                    return Ok(());
+                };
+                let storage_ingestor_metadata = meta.migrate().await?;
+                let store = self.storage.get_object_store();
 
-        // use the id that was generated/found in the staging and
-        // generate the path for the object store
-        let path = meta.file_path();
+                // use the id that was generated/found in the staging and
+                // generate the path for the object store
+                let path = meta.file_path();
 
-        // we are considering that we can always get from object store
-        if let Some(mut store_data) = storage_ingestor_metadata {
-            if store_data.domain_name != meta.domain_name {
-                store_data.domain_name.clone_from(&meta.domain_name);
-                store_data.port.clone_from(&meta.port);
+                // we are considering that we can always get from object store
+                if let Some(mut store_data) = storage_ingestor_metadata {
+                    if store_data.domain_name != meta.domain_name {
+                        store_data.domain_name.clone_from(&meta.domain_name);
+                        store_data.port.clone_from(&meta.port);
 
-                let resource = Bytes::from(serde_json::to_vec(&store_data)?);
+                        let resource = Bytes::from(serde_json::to_vec(&store_data)?);
 
-                // if pushing to object store fails propagate the error
-                store.put_object(&path, resource).await?;
+                        // if pushing to object store fails propagate the error
+                        store.put_object(&path, resource).await?;
+                    }
+                } else {
+                    let resource = serde_json::to_vec(&meta)?.into();
+
+                    store.put_object(&path, resource).await?;
+                }
+                Ok(())
             }
-        } else {
-            let resource = serde_json::to_vec(&meta)?.into();
+            Mode::Index => {
+                let Some(meta) = self.indexer_metadata.as_ref() else {
+                    return Ok(());
+                };
+                let storage_indexer_metadata = meta.migrate().await?;
+                let store = self.storage.get_object_store();
 
-            store.put_object(&path, resource).await?;
+                // use the id that was generated/found in the staging and
+                // generate the path for the object store
+                let path = meta.file_path();
+
+                // we are considering that we can always get from object store
+                if let Some(mut store_data) = storage_indexer_metadata {
+                    if store_data.domain_name != meta.domain_name {
+                        store_data.domain_name.clone_from(&meta.domain_name);
+                        store_data.port.clone_from(&meta.port);
+
+                        let resource = Bytes::from(serde_json::to_vec(&store_data)?);
+
+                        // if pushing to object store fails propagate the error
+                        store.put_object(&path, resource).await?;
+                    }
+                } else {
+                    let resource = serde_json::to_vec(&meta)?.into();
+
+                    store.put_object(&path, resource).await?;
+                }
+                Ok(())
+            }
+            _ => Err(anyhow::anyhow!("Invalid mode")),
         }
-
-        Ok(())
     }
 
     /// list all streams from storage
@@ -333,7 +382,7 @@ impl Parseable {
             schema_version,
             log_source,
         );
-        self.streams.create(
+        self.streams.get_or_create(
             self.options.clone(),
             stream_name.to_string(),
             metadata,
@@ -346,11 +395,12 @@ impl Parseable {
     }
 
     pub async fn create_internal_stream_if_not_exists(&self) -> Result<(), StreamError> {
+        let log_source_entry = LogSourceEntry::new(LogSource::Pmeta, HashSet::new());
         match self
             .create_stream_if_not_exists(
                 INTERNAL_STREAM_NAME,
                 StreamType::Internal,
-                LogSource::Pmeta,
+                vec![log_source_entry],
             )
             .await
         {
@@ -374,9 +424,14 @@ impl Parseable {
         &self,
         stream_name: &str,
         stream_type: StreamType,
-        log_source: LogSource,
+        log_source: Vec<LogSourceEntry>,
     ) -> Result<bool, PostError> {
         if self.streams.contains(stream_name) {
+            for stream_log_source in log_source {
+                self.add_update_log_source(stream_name, stream_log_source)
+                    .await?;
+            }
+
             return Ok(true);
         }
 
@@ -404,6 +459,57 @@ impl Parseable {
         .await?;
 
         Ok(false)
+    }
+
+    pub async fn add_update_log_source(
+        &self,
+        stream_name: &str,
+        log_source: LogSourceEntry,
+    ) -> Result<(), StreamError> {
+        let stream = self.get_stream(stream_name).expect(STREAM_EXISTS);
+        let mut log_sources = stream.get_log_source();
+        let mut changed = false;
+
+        // Try to find existing log source with the same format
+        if let Some(stream_log_source) = log_sources
+            .iter_mut()
+            .find(|source| source.log_source_format == log_source.log_source_format)
+        {
+            // Use a HashSet to efficiently track only new fields
+            let existing_fields: HashSet<String> =
+                stream_log_source.fields.iter().cloned().collect();
+            let new_fields: HashSet<String> = log_source
+                .fields
+                .iter()
+                .filter(|field| !existing_fields.contains(*field))
+                .cloned()
+                .collect();
+
+            // Only update if there are new fields to add
+            if !new_fields.is_empty() {
+                stream_log_source.fields.extend(new_fields);
+                changed = true;
+            }
+        } else {
+            // If no matching log source found, add the new one
+            log_sources.push(log_source);
+            changed = true;
+        }
+
+        // Only persist to storage if we made changes
+        if changed {
+            stream.set_log_source(log_sources.clone());
+
+            let storage = self.storage.get_object_store();
+            if let Err(err) = storage
+                .update_log_source_in_stream(stream_name, &log_sources)
+                .await
+            {
+                return Err(StreamError::Storage(err));
+            }
+        }
+
+        Ok(())
     }
 
     pub async fn create_update_stream(
@@ -469,7 +575,7 @@ impl Parseable {
             custom_partition.as_ref(),
             static_schema_flag,
         )?;
-
+        let log_source_entry = LogSourceEntry::new(log_source, HashSet::new());
         self.create_stream(
             stream_name.to_string(),
             &time_partition,
@@ -478,7 +584,7 @@ impl Parseable {
             static_schema_flag,
             schema,
             stream_type,
-            log_source,
+            vec![log_source_entry],
         )
         .await?;
 
@@ -534,7 +640,7 @@ impl Parseable {
         static_schema_flag: bool,
         schema: Arc<Schema>,
         stream_type: StreamType,
-        log_source: LogSource,
+        log_source: Vec<LogSourceEntry>,
     ) -> Result<(), CreateStreamError> {
         // fail to proceed if invalid stream name
         if stream_type != StreamType::Internal {
@@ -586,7 +692,7 @@ impl Parseable {
                     SchemaVersion::V1, // New stream
                     log_source,
                 );
-                self.streams.create(
+                self.streams.get_or_create(
                     self.options.clone(),
                     stream_name.to_string(),
                     metadata,
@@ -758,6 +864,25 @@ impl Parseable {
         }
 
         Some(first_event_at.to_string())
+    }
+
+    pub async fn update_log_source(
+        &self,
+        stream_name: &str,
+        log_source: Vec<LogSourceEntry>,
+    ) -> Result<(), StreamError> {
+        let storage = self.storage.get_object_store();
+        if let Err(err) = storage
+            .update_log_source_in_stream(stream_name, &log_source)
+            .await
+        {
+            return Err(StreamError::Storage(err));
+        }
+
+        let stream = self.get_stream(stream_name).expect(STREAM_EXISTS);
+        stream.set_log_source(log_source);
+
+        Ok(())
     }
 }
 

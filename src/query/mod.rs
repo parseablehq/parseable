@@ -65,7 +65,6 @@ pub static QUERY_SESSION: Lazy<SessionContext> =
 pub static QUERY_RUNTIME: Lazy<Runtime> =
     Lazy::new(|| Runtime::new().expect("Runtime should be constructible"));
 
-
 /// This function executes a query on the dedicated runtime, ensuring that the query is not isolated to a single thread/CPU
 /// at a time and has access to the entire thread pool, enabling better concurrent processing, and thus quicker results.
 pub async fn execute(
@@ -112,7 +111,9 @@ impl Query {
         let mut config = SessionConfig::default()
             .with_parquet_pruning(true)
             .with_prefer_existing_sort(true)
-            .with_batch_size(1000000);
+            //batch size has been made configurable via environment variable
+            //default value is 20000
+            .with_batch_size(PARSEABLE.options.execution_batch_size);
 
         // Pushdown filters allows DF to push the filters as far down in the plan as possible
         // and thus, reducing the number of rows decoded
@@ -125,6 +126,14 @@ impl Query {
             .options_mut()
             .execution
             .use_row_number_estimates_to_optimize_partitioning = true;
+
+        //adding this config as it improves query performance as explained here -
+        // https://github.com/apache/datafusion/pull/13101
+        config
+            .options_mut()
+            .execution
+            .parquet
+            .schema_force_view_types = true;
 
         let state = SessionStateBuilder::new()
             .with_default_features()

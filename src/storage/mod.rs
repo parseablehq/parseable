@@ -23,7 +23,7 @@ use tokio::task::JoinError;
 
 use crate::{
     catalog::snapshot::Snapshot,
-    event::format::LogSource,
+    event::format::LogSourceEntry,
     metadata::SchemaVersion,
     option::StandaloneWithDistributed,
     parseable::StreamNotFound,
@@ -71,12 +71,13 @@ const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
 // const PERMISSIONS_READ_WRITE: &str = "readwrite";
 const ACCESS_ALL: &str = "all";
 
-pub const CURRENT_OBJECT_STORE_VERSION: &str = "v5";
-pub const CURRENT_SCHEMA_VERSION: &str = "v5";
+pub const CURRENT_OBJECT_STORE_VERSION: &str = "v6";
+pub const CURRENT_SCHEMA_VERSION: &str = "v6";
 
 const CONNECT_TIMEOUT_SECS: u64 = 5;
 const REQUEST_TIMEOUT_SECS: u64 = 300;
 
+pub const MIN_MULTIPART_UPLOAD_SIZE: usize = 25 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectStoreFormat {
     /// Version of schema registry
@@ -117,7 +118,7 @@ pub struct ObjectStoreFormat {
     #[serde(default)]
     pub stream_type: StreamType,
     #[serde(default)]
-    pub log_source: LogSource,
+    pub log_source: Vec<LogSourceEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,7 +143,7 @@ pub struct StreamInfo {
     pub static_schema_flag: bool,
     #[serde(default)]
     pub stream_type: StreamType,
-    pub log_source: LogSource,
+    pub log_source: Vec<LogSourceEntry>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -219,7 +220,7 @@ impl Default for ObjectStoreFormat {
             custom_partition: None,
             static_schema_flag: false,
             hot_tier_enabled: false,
-            log_source: LogSource::default(),
+            log_source: vec![LogSourceEntry::default()],
         }
     }
 }

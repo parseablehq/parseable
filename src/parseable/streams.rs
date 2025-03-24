@@ -18,19 +18,18 @@
  */
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{remove_file, write, File, OpenOptions},
     num::NonZeroU32,
     path::{Path, PathBuf},
     process,
     sync::{Arc, Mutex, RwLock},
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
 use arrow_array::RecordBatch;
-use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{Field, Fields, Schema};
-use chrono::{NaiveDateTime, Timelike};
+use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
 use parquet::{
@@ -47,23 +46,38 @@ use tracing::{error, info, trace, warn};
 
 use crate::{
     cli::Options,
-    event::DEFAULT_TIMESTAMP_KEY,
+    event::{
+        format::{LogSource, LogSourceEntry},
+        DEFAULT_TIMESTAMP_KEY,
+    },
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
     storage::{object_storage::to_bytes, retention::Retention, StreamType},
-    utils::time::Minute,
+    utils::time::{Minute, TimeRange},
     LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
 };
 
 use super::{
     staging::{
         reader::{MergedRecordReader, MergedReverseRecordReader},
-        writer::Writer,
+        writer::{DiskWriter, Writer},
         StagingError,
     },
     LogStream, ARROW_FILE_EXTENSION,
 };
+
+/// Returns the filename for parquet if provided arrows file path is valid as per our expectation
+fn arrow_path_to_parquet(path: &Path, random_string: &str) -> Option<PathBuf> {
+    let filename = path.file_stem()?.to_str()?;
+    let (_, front) = filename.split_once('.')?;
+    assert!(front.contains('.'), "contains the delim `.`");
+    let filename_with_random_number = format!("{front}.{random_string}.parquet");
+    let mut parquet_path = path.to_owned();
+    parquet_path.set_file_name(filename_with_random_number);
+
+    Some(parquet_path)
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("Stream not found: {0}")]
@@ -120,29 +134,26 @@ impl Stream {
     ) -> Result<(), StagingError> {
         let mut guard = self.writer.lock().unwrap();
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
-            match guard.disk.get_mut(schema_key) {
+            let filename =
+                self.filename_by_partition(schema_key, parsed_timestamp, custom_partition_values);
+            match guard.disk.get_mut(&filename) {
                 Some(writer) => {
                     writer.write(record)?;
                 }
                 None => {
                     // entry is not present thus we create it
-                    let file_path = self.path_by_current_time(
-                        schema_key,
-                        parsed_timestamp,
-                        custom_partition_values,
-                    );
                     std::fs::create_dir_all(&self.data_path)?;
 
-                    let file = OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&file_path)?;
-
-                    let mut writer = StreamWriter::try_new(file, &record.schema())
+                    let range = TimeRange::granularity_range(
+                        parsed_timestamp.and_local_timezone(Utc).unwrap(),
+                        OBJECT_STORE_DATA_GRANULARITY,
+                    );
+                    let file_path = self.data_path.join(&filename);
+                    let mut writer = DiskWriter::try_new(file_path, &record.schema(), range)
                         .expect("File and RecordBatch both are checked");
 
                     writer.write(record)?;
-                    guard.disk.insert(schema_key.to_owned(), writer);
+                    guard.disk.insert(filename, writer);
                 }
             };
         }
@@ -152,17 +163,17 @@ impl Stream {
         Ok(())
     }
 
-    pub fn path_by_current_time(
+    pub fn filename_by_partition(
         &self,
         stream_hash: &str,
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
-    ) -> PathBuf {
+    ) -> String {
         let mut hostname = hostname::get().unwrap().into_string().unwrap();
         if let Some(id) = &self.ingestor_id {
             hostname.push_str(id);
         }
-        let filename = format!(
+        format!(
             "{stream_hash}.date={}.hour={:02}.minute={}.{}{hostname}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
@@ -172,8 +183,7 @@ impl Stream {
                 .sorted_by_key(|v| v.0)
                 .map(|(key, value)| format!("{key}={value}."))
                 .join("")
-        );
-        self.data_path.join(filename)
+        )
     }
 
     pub fn arrow_files(&self) -> Vec<PathBuf> {
@@ -184,7 +194,10 @@ impl Stream {
         let paths = dir
             .flatten()
             .map(|file| file.path())
-            .filter(|file| file.extension().is_some_and(|ext| ext.eq("arrows")))
+            .filter(|file| {
+                file.extension()
+                    .is_some_and(|ext| ext.eq(ARROW_FILE_EXTENSION))
+            })
             .sorted_by_key(|f| f.metadata().unwrap().modified().unwrap())
             .collect();
 
@@ -227,12 +240,13 @@ impl Stream {
                     &arrow_file_path, self.stream_name
                 );
                 remove_file(&arrow_file_path).unwrap();
-            } else {
-                let key = Self::arrow_path_to_parquet(&arrow_file_path, &random_string);
+            } else if let Some(key) = arrow_path_to_parquet(&arrow_file_path, &random_string) {
                 grouped_arrow_file
                     .entry(key)
                     .or_default()
                     .push(arrow_file_path);
+            } else {
+                warn!("Unexpected arrows file: {}", arrow_file_path.display());
             }
         }
         grouped_arrow_file
@@ -289,17 +303,6 @@ impl Stream {
         } else {
             None
         }
-    }
-
-    fn arrow_path_to_parquet(path: &Path, random_string: &str) -> PathBuf {
-        let filename = path.file_stem().unwrap().to_str().unwrap();
-        let (_, filename) = filename.split_once('.').unwrap();
-        assert!(filename.contains('.'), "contains the delim `.`");
-        let filename_with_random_number = format!("{filename}.{random_string}.arrows");
-        let mut parquet_path = path.to_owned();
-        parquet_path.set_file_name(filename_with_random_number);
-        parquet_path.set_extension("parquet");
-        parquet_path
     }
 
     /// Converts arrow files in staging into parquet files, does so only for past minutes when run with `!shutdown_signal`
@@ -363,19 +366,12 @@ impl Stream {
         self.writer.lock().unwrap().mem.clear();
     }
 
-    pub fn flush(&self) {
-        let mut disk_writers = {
-            let mut writer = self.writer.lock().unwrap();
-            // Flush memory
-            writer.mem.clear();
-            // Take schema -> disk writer mapping
-            std::mem::take(&mut writer.disk)
-        };
-
-        // Flush disk
-        for writer in disk_writers.values_mut() {
-            _ = writer.finish();
-        }
+    pub fn flush(&self, forced: bool) {
+        let mut writer = self.writer.lock().unwrap();
+        // Flush memory
+        writer.mem.clear();
+        // Drop schema -> disk writer mapping, triggers flush to disk
+        writer.disk.retain(|_, w| !forced && w.is_current());
     }
 
     fn parquet_writer_props(
@@ -673,11 +669,80 @@ impl Stream {
         self.metadata.read().expect(LOCK_EXPECT).stream_type
     }
 
+    pub fn set_log_source(&self, log_source: Vec<LogSourceEntry>) {
+        self.metadata.write().expect(LOCK_EXPECT).log_source = log_source;
+    }
+
+    pub fn get_log_source(&self) -> Vec<LogSourceEntry> {
+        self.metadata.read().expect(LOCK_EXPECT).log_source.clone()
+    }
+
+    pub fn add_log_source(&self, log_source: LogSourceEntry) {
+        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+        for existing in &metadata.log_source {
+            if existing.log_source_format == log_source.log_source_format {
+                drop(metadata);
+                self.add_fields_to_log_source(
+                    &log_source.log_source_format,
+                    log_source.fields.clone(),
+                );
+                return;
+            }
+        }
+        drop(metadata);
+
+        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        for existing in &metadata.log_source {
+            if existing.log_source_format == log_source.log_source_format {
+                self.add_fields_to_log_source(
+                    &log_source.log_source_format,
+                    log_source.fields.clone(),
+                );
+                return;
+            }
+        }
+        metadata.log_source.push(log_source);
+    }
+
+    pub fn add_fields_to_log_source(&self, log_source: &LogSource, fields: HashSet<String>) {
+        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        for log_source_entry in metadata.log_source.iter_mut() {
+            if log_source_entry.log_source_format == *log_source {
+                log_source_entry.fields.extend(fields);
+                return;
+            }
+        }
+    }
+
+    pub fn get_fields_from_log_source(&self, log_source: &LogSource) -> Option<HashSet<String>> {
+        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+        for log_source_entry in metadata.log_source.iter() {
+            if log_source_entry.log_source_format == *log_source {
+                return Some(log_source_entry.fields.clone());
+            }
+        }
+        None
+    }
+
     /// First flushes arrows onto disk and then converts the arrow into parquet
     pub fn flush_and_convert(&self, shutdown_signal: bool) -> Result<(), StagingError> {
-        self.flush();
+        let start_flush = Instant::now();
+        self.flush(shutdown_signal);
+        trace!(
+            "Flushing stream ({}) took: {}s",
+            self.stream_name,
+            start_flush.elapsed().as_secs_f64()
+        );
 
-        self.prepare_parquet(shutdown_signal)
+        let start_convert = Instant::now();
+        self.prepare_parquet(shutdown_signal)?;
+        trace!(
+            "Converting arrows to parquet on stream ({}) took: {}s",
+            self.stream_name,
+            start_convert.elapsed().as_secs_f64()
+        );
+
+        Ok(())
     }
 }
 
@@ -691,17 +756,22 @@ pub struct Streams(RwLock<HashMap<String, StreamRef>>);
 // 4. When first event is sent to stream (update the schema)
 // 5. When set alert API is called (update the alert)
 impl Streams {
-    pub fn create(
+    /// Checks after getting an exclusive lock whether the stream already exists, else creates it.
+    /// NOTE: This is done to ensure we don't have contention among threads.
+    pub fn get_or_create(
         &self,
         options: Arc<Options>,
         stream_name: String,
         metadata: LogStreamMetadata,
         ingestor_id: Option<String>,
     ) -> StreamRef {
+        let mut guard = self.write().expect(LOCK_EXPECT);
+        if let Some(stream) = guard.get(&stream_name) {
+            return stream.clone();
+        }
+
         let stream = Stream::new(options, &stream_name, metadata, ingestor_id);
-        self.write()
-            .expect(LOCK_EXPECT)
-            .insert(stream_name, stream.clone());
+        guard.insert(stream_name, stream.clone());
 
         stream
     }
@@ -766,7 +836,7 @@ impl Streams {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{io::Write, sync::Barrier, thread::spawn, time::Duration};
 
     use arrow_array::{Int32Array, StringArray, TimestampMillisecondArray};
     use arrow_schema::{DataType, Field, TimeUnit};
@@ -886,18 +956,18 @@ mod tests {
             None,
         );
 
-        let expected_path = staging.data_path.join(format!(
+        let expected = format!(
             "{stream_hash}.date={}.hour={:02}.minute={}.{}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             hostname::get().unwrap().into_string().unwrap()
-        ));
+        );
 
-        let generated_path =
-            staging.path_by_current_time(stream_hash, parsed_timestamp, &custom_partition_values);
+        let generated =
+            staging.filename_by_partition(stream_hash, parsed_timestamp, &custom_partition_values);
 
-        assert_eq!(generated_path, expected_path);
+        assert_eq!(generated, expected);
     }
 
     #[test]
@@ -920,18 +990,18 @@ mod tests {
             None,
         );
 
-        let expected_path = staging.data_path.join(format!(
+        let expected = format!(
             "{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
             hostname::get().unwrap().into_string().unwrap()
-        ));
+        );
 
-        let generated_path =
-            staging.path_by_current_time(stream_hash, parsed_timestamp, &custom_partition_values);
+        let generated =
+            staging.filename_by_partition(stream_hash, parsed_timestamp, &custom_partition_values);
 
-        assert_eq!(generated_path, expected_path);
+        assert_eq!(generated, expected);
     }
 
     #[test]
@@ -987,7 +1057,7 @@ mod tests {
                 StreamType::UserDefined,
             )
             .unwrap();
-        staging.flush();
+        staging.flush(true);
     }
 
     #[test]
@@ -1140,5 +1210,165 @@ mod tests {
         // Verify parquet files were created and the arrow file left
         assert_eq!(staging.parquet_files().len(), 2);
         assert_eq!(staging.arrow_files().len(), 1);
+    }
+
+    fn create_test_file(dir: &TempDir, filename: &str) -> PathBuf {
+        let file_path = dir.path().join(filename);
+        let mut file = File::create(&file_path).expect("Failed to create test file");
+        // Write some dummy content
+        file.write_all(b"test content")
+            .expect("Failed to write to test file");
+        file_path
+    }
+
+    #[test]
+    fn test_valid_arrow_path_conversion() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let filename = "12345abcde&key1=value1.date=2020-01-21.hour=10.minute=30.key1=value1.key2=value2.ee529ffc8e76.data.arrows";
+        let file_path = create_test_file(&temp_dir, filename);
+        let random_string = "random123";
+
+        let result = arrow_path_to_parquet(&file_path, random_string);
+
+        assert!(result.is_some());
+        let parquet_path = result.unwrap();
+        assert_eq!(
+                parquet_path.file_name().unwrap().to_str().unwrap(),
+                "date=2020-01-21.hour=10.minute=30.key1=value1.key2=value2.ee529ffc8e76.data.random123.parquet"
+            );
+    }
+
+    #[test]
+    fn test_complex_path() {
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let nested_dir = temp_dir.path().join("nested/directory/structure");
+        std::fs::create_dir_all(&nested_dir).expect("Failed to create nested directories");
+
+        let filename = "20200201T1830f8a5fc1edc567d56&key1=value1&key2=value2.date=2020-01-21.hour=10.minute=30.region=us-west.ee529ffc8e76.data.arrows";
+        let file_path = nested_dir.join(filename);
+
+        let mut file = File::create(&file_path).expect("Failed to create test file");
+        file.write_all(b"test content")
+            .expect("Failed to write to test file");
+
+        let random_string = "random456";
+
+        let result = arrow_path_to_parquet(&file_path, random_string);
+
+        assert!(result.is_some());
+        let parquet_path = result.unwrap();
+        assert_eq!(
+            parquet_path.file_name().unwrap().to_str().unwrap(),
+            "date=2020-01-21.hour=10.minute=30.region=us-west.ee529ffc8e76.data.random456.parquet"
+        );
+    }
+
+    #[test]
+    fn get_or_create_returns_existing_stream() {
+        let streams = Streams::default();
+        let options = Arc::new(Options::default());
+        let stream_name = "test_stream";
+        let metadata = LogStreamMetadata::default();
+        let ingestor_id = Some("test_ingestor".to_owned());
+
+        // Create the stream first
+        let stream1 = streams.get_or_create(
+            options.clone(),
+            stream_name.to_owned(),
+            metadata.clone(),
+            ingestor_id.clone(),
+        );
+
+        // Call get_or_create again with the same stream_name
+        let stream2 = streams.get_or_create(
+            options.clone(),
+            stream_name.to_owned(),
+            metadata.clone(),
+            ingestor_id.clone(),
+        );
+
+        // Assert that both references point to the same stream
+        assert!(Arc::ptr_eq(&stream1, &stream2));
+
+        // Verify the map contains only one entry
+        let guard = streams.read().expect("Failed to acquire read lock");
+        assert_eq!(guard.len(), 1);
+    }
+
+    #[test]
+    fn create_and_return_new_stream_when_name_does_not_exist() {
+        let streams = Streams::default();
+        let options = Arc::new(Options::default());
+        let stream_name = "new_stream";
+        let metadata = LogStreamMetadata::default();
+        let ingestor_id = Some("new_ingestor".to_owned());
+
+        // Assert the stream doesn't exist already
+        let guard = streams.read().expect("Failed to acquire read lock");
+        assert_eq!(guard.len(), 0);
+        assert!(!guard.contains_key(stream_name));
+        drop(guard);
+
+        // Call get_or_create with a new stream_name
+        let stream = streams.get_or_create(
+            options.clone(),
+            stream_name.to_owned(),
+            metadata.clone(),
+            ingestor_id.clone(),
+        );
+
+        // verify created stream has the same ingestor_id
+        assert_eq!(stream.ingestor_id, ingestor_id);
+
+        // Assert that the stream is created
+        let guard = streams.read().expect("Failed to acquire read lock");
+        assert_eq!(guard.len(), 1);
+        assert!(guard.contains_key(stream_name));
+    }
+
+    #[test]
+    fn get_or_create_stream_concurrently() {
+        let streams = Arc::new(Streams::default());
+        let options = Arc::new(Options::default());
+        let stream_name = String::from("concurrent_stream");
+        let metadata = LogStreamMetadata::default();
+        let ingestor_id = Some(String::from("concurrent_ingestor"));
+
+        // Barrier to synchronize threads
+        let barrier = Arc::new(Barrier::new(2));
+
+        // Clones for the first thread
+        let streams1 = Arc::clone(&streams);
+        let options1 = Arc::clone(&options);
+        let barrier1 = Arc::clone(&barrier);
+        let stream_name1 = stream_name.clone();
+        let metadata1 = metadata.clone();
+        let ingestor_id1 = ingestor_id.clone();
+
+        // First thread
+        let handle1 = spawn(move || {
+            barrier1.wait();
+            streams1.get_or_create(options1, stream_name1, metadata1, ingestor_id1)
+        });
+
+        // Cloned for the second thread
+        let streams2 = Arc::clone(&streams);
+
+        // Second thread
+        let handle2 = spawn(move || {
+            barrier.wait();
+            streams2.get_or_create(options, stream_name, metadata, ingestor_id)
+        });
+
+        // Wait for both threads to complete and get their results
+        let stream1 = handle1.join().expect("Thread 1 panicked");
+        let stream2 = handle2.join().expect("Thread 2 panicked");
+
+        // Assert that both references point to the same stream
+        assert!(Arc::ptr_eq(&stream1, &stream2));
+
+        // Verify the map contains only one entry
+        let guard = streams.read().expect("Failed to acquire read lock");
+        assert_eq!(guard.len(), 1);
     }
 }

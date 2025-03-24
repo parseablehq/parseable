@@ -138,7 +138,7 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
     let alerts_info = get_alerts_info().await?;
 
     // generate dates for date-wise stats
-    let dates = (0..7)
+    let mut dates = (0..7)
         .map(|i| {
             Utc::now()
                 .checked_sub_signed(chrono::Duration::days(i))
@@ -147,6 +147,7 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
                 .date_naive()
         })
         .collect_vec();
+    dates.reverse();
 
     let mut stream_details = Vec::new();
 
