@@ -16,33 +16,33 @@
  *
  */
 
-use self::error::StreamError;
-use super::cluster::utils::{IngestionStats, QueriedStats, StorageStats};
-use super::query::update_schema_when_distributed;
-use crate::event::format::override_data_type;
-use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
-use crate::metadata::SchemaVersion;
-use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
-use crate::parseable::{StreamNotFound, PARSEABLE};
-use crate::rbac::role::Action;
-use crate::rbac::Users;
-use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
-use crate::storage::retention::Retention;
-use crate::storage::{StreamInfo, StreamType};
-use crate::utils::actix::extract_session_key_from_req;
-use crate::{stats, validator, LOCK_EXPECT};
-
 use actix_web::http::StatusCode;
-use actix_web::web::{Json, Path};
-use actix_web::{web, HttpRequest, Responder};
+use actix_web::web::{Json, Path, Query};
+use actix_web::{web, HttpRequest, HttpResponse, Responder};
 use arrow_json::reader::infer_json_schema_from_iterator;
 use bytes::Bytes;
 use chrono::Utc;
+use error::StreamError;
 use itertools::Itertools;
 use serde_json::{json, Value};
 use std::fs;
 use std::sync::Arc;
 use tracing::warn;
+
+use crate::event::format::override_data_type;
+use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
+use crate::metadata::SchemaVersion;
+use crate::parseable::{StreamNotFound, PARSEABLE};
+use crate::rbac::role::Action;
+use crate::rbac::Users;
+use crate::stats::{FullStats, Stats, StatsParams};
+use crate::storage::retention::Retention;
+use crate::storage::{StreamInfo, StreamType};
+use crate::utils::actix::extract_session_key_from_req;
+use crate::{stats, validator, LOCK_EXPECT};
+
+use super::cluster::utils::{IngestionStats, QueriedStats, StorageStats};
+use super::query::update_schema_when_distributed;
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
@@ -198,34 +198,10 @@ pub async fn put_retention(
     ))
 }
 
-pub async fn get_stats_date(stream_name: &str, date: &str) -> Result<Stats, StreamError> {
-    let event_labels = event_labels_date(stream_name, "json", date);
-    let storage_size_labels = storage_size_labels_date(stream_name, date);
-    let events_ingested = EVENTS_INGESTED_DATE
-        .get_metric_with_label_values(&event_labels)
-        .unwrap()
-        .get() as u64;
-    let ingestion_size = EVENTS_INGESTED_SIZE_DATE
-        .get_metric_with_label_values(&event_labels)
-        .unwrap()
-        .get() as u64;
-    let storage_size = EVENTS_STORAGE_SIZE_DATE
-        .get_metric_with_label_values(&storage_size_labels)
-        .unwrap()
-        .get() as u64;
-
-    let stats = Stats {
-        events: events_ingested,
-        ingestion: ingestion_size,
-        storage: storage_size,
-    };
-    Ok(stats)
-}
-
 pub async fn get_stats(
-    req: HttpRequest,
     stream_name: Path<String>,
-) -> Result<impl Responder, StreamError> {
+    Query(params): Query<StatsParams>,
+) -> Result<HttpResponse, StreamError> {
     let stream_name = stream_name.into_inner();
 
     // For query mode, if the stream not found in memory map,
@@ -235,30 +211,14 @@ pub async fn get_stats(
         return Err(StreamNotFound(stream_name.clone()).into());
     }
 
-    let query_string = req.query_string();
-    if !query_string.is_empty() {
-        let tokens = query_string.split('=').collect::<Vec<&str>>();
-        let date_key = tokens[0];
-        let date_value = tokens[1];
-        if date_key != "date" {
-            return Err(StreamError::Custom {
-                msg: "Invalid query parameter".to_string(),
-                status: StatusCode::BAD_REQUEST,
-            });
-        }
-
-        if !date_value.is_empty() {
-            let stats = get_stats_date(&stream_name, date_value).await?;
-            let stats = serde_json::to_value(stats)?;
-            return Ok((web::Json(stats), StatusCode::OK));
-        }
+    if let Some(date) = params.date {
+        let stats = Stats::for_stream_on_date(date, &stream_name);
+        return Ok(HttpResponse::build(StatusCode::OK).json(stats));
     }
 
-    let stats = stats::get_current_stats(&stream_name, "json")
+    let stats = FullStats::get_current(&stream_name, "json")
         .ok_or_else(|| StreamNotFound(stream_name.clone()))?;
-
     let time = Utc::now();
-
     let stats = {
         let ingestion_stats = IngestionStats::new(
             stats.current_stats.events,
@@ -279,9 +239,7 @@ pub async fn get_stats(
         QueriedStats::new(&stream_name, time, ingestion_stats, storage_stats)
     };
 
-    let stats = serde_json::to_value(stats)?;
-
-    Ok((web::Json(stats), StatusCode::OK))
+    Ok(HttpResponse::build(StatusCode::OK).json(stats))
 }
 
 pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
@@ -572,26 +530,9 @@ pub mod error {
 
 #[cfg(test)]
 mod tests {
-    use crate::handlers::http::modal::utils::logstream_utils::PutStreamHeaders;
     use actix_web::test::TestRequest;
 
-    // TODO: Fix this test with routes
-    // #[actix_web::test]
-    // #[should_panic]
-    // async fn get_stats_panics_without_logstream() {
-    //     let req = TestRequest::default().to_http_request();
-    //     let _ = get_stats(req).await;
-    // }
-
-    // #[actix_web::test]
-    // async fn get_stats_stream_not_found_error_for_unknown_logstream() -> anyhow::Result<()> {
-    //     let req = TestRequest::default().to_http_request();
-
-    //     match get_stats(req, web::Path::from("test".to_string())).await {
-    //         Err(StreamError::StreamNotFound(_)) => Ok(()),
-    //         _ => bail!("expected StreamNotFound error"),
-    //     }
-    // }
+    use crate::handlers::http::modal::utils::logstream_utils::PutStreamHeaders;
 
     #[actix_web::test]
     async fn header_without_log_source() {
