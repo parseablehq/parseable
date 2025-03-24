@@ -201,6 +201,38 @@ pub fn v5_v6(mut stream_metadata: Value) -> Value {
     stream_metadata
 }
 
+pub fn rename_log_source_v6(mut stream_metadata: Value) -> Value {
+    let stream_metadata_map: &mut serde_json::Map<String, Value> =
+        stream_metadata.as_object_mut().unwrap();
+    let log_source = stream_metadata_map.get("log_source");
+    if let Some(log_source) = log_source {
+        //rename log_source_format ->
+        //Kinesis to kinesis
+        //OtelLogs to otel-logs
+        //OtelTraces to otel-traces
+        //OtelMetrics to otel-metrics
+        //Pmeta to pmeta
+        //Json to json
+
+        let log_source_entry = serde_json::from_value::<LogSourceEntry>(log_source.clone());
+        if let Ok(mut log_source_entry) = log_source_entry {
+            let log_source = log_source_entry.log_source_format.clone();
+            let log_source_format = match log_source {
+                LogSource::Kinesis => "kinesis",
+                LogSource::OtelLogs => "otel-logs",
+                LogSource::OtelTraces => "otel-traces",
+                LogSource::OtelMetrics => "otel-metrics",
+                LogSource::Pmeta => "pmeta",
+                LogSource::Json => "json",
+                _ => "",
+            };
+            log_source_entry.log_source_format = LogSource::from(log_source_format);
+            stream_metadata_map.insert("log_source".to_owned(), json!([log_source_entry]));
+        }
+    }
+    stream_metadata
+}
+
 fn v1_v2_snapshot_migration(mut snapshot: Value) -> Value {
     let manifest_list = snapshot.get("manifest_list").unwrap();
     let mut new_manifest_list = Vec::new();

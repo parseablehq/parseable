@@ -59,19 +59,25 @@ type EventSchema = Vec<Arc<Field>>;
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum LogSource {
     // AWS Kinesis sends logs in the format of a json array
+    #[serde(rename = "kinesis")]
     Kinesis,
     // OpenTelemetry sends logs according to the specification as explained here
     // https://github.com/open-telemetry/opentelemetry-proto/tree/v1.0.0/opentelemetry/proto/logs/v1
+    #[serde(rename = "otel-logs")]
     OtelLogs,
     // OpenTelemetry sends traces according to the specification as explained here
     // https://github.com/open-telemetry/opentelemetry-proto/blob/v1.0.0/opentelemetry/proto/trace/v1/trace.proto
+    #[serde(rename = "otel-traces")]
     OtelMetrics,
     // OpenTelemetry sends traces according to the specification as explained here
     // https://github.com/open-telemetry/opentelemetry-proto/tree/v1.0.0/opentelemetry/proto/metrics/v1
+    #[serde(rename = "otel-metrics")]
     OtelTraces,
     // Internal Stream format
+    #[serde(rename = "pmeta")]
     Pmeta,
     #[default]
+    #[serde(rename = "json")]
     // Json object or array
     Json,
     Custom(String),
