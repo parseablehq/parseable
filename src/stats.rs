@@ -45,6 +45,69 @@ pub struct Stats {
 }
 
 impl Stats {
+    fn get_current(event_labels: &[&str], storage_size_labels: &[&str]) -> Option<Self> {
+        let events = EVENTS_INGESTED
+            .get_metric_with_label_values(event_labels)
+            .ok()?
+            .get() as u64;
+        let ingestion = EVENTS_INGESTED_SIZE
+            .get_metric_with_label_values(event_labels)
+            .ok()?
+            .get() as u64;
+        let storage = STORAGE_SIZE
+            .get_metric_with_label_values(storage_size_labels)
+            .ok()?
+            .get() as u64;
+
+        Some(Self {
+            events,
+            ingestion,
+            storage,
+        })
+    }
+
+    fn get_lifetime(event_labels: &[&str], storage_size_labels: &[&str]) -> Option<Self> {
+        let events = LIFETIME_EVENTS_INGESTED
+            .get_metric_with_label_values(event_labels)
+            .ok()?
+            .get() as u64;
+        let ingestion = LIFETIME_EVENTS_INGESTED_SIZE
+            .get_metric_with_label_values(event_labels)
+            .ok()?
+            .get() as u64;
+        let storage = LIFETIME_EVENTS_STORAGE_SIZE
+            .get_metric_with_label_values(storage_size_labels)
+            .ok()?
+            .get() as u64;
+
+        Some(Self {
+            events,
+            ingestion,
+            storage,
+        })
+    }
+
+    fn get_deleted(event_labels: &[&str], storage_size_labels: &[&str]) -> Option<Self> {
+        let events = EVENTS_DELETED
+            .get_metric_with_label_values(event_labels)
+            .ok()?
+            .get() as u64;
+        let ingestion = EVENTS_DELETED_SIZE
+            .get_metric_with_label_values(event_labels)
+            .ok()?
+            .get() as u64;
+        let storage = DELETED_EVENTS_STORAGE_SIZE
+            .get_metric_with_label_values(storage_size_labels)
+            .ok()?
+            .get() as u64;
+
+        Some(Self {
+            events,
+            ingestion,
+            storage,
+        })
+    }
+
     pub fn for_stream_on_date(date: NaiveDate, stream_name: &str) -> Stats {
         let date = date.to_string();
         let event_labels = event_labels_date(stream_name, "json", &date);
@@ -141,59 +204,10 @@ impl FullStats {
         let event_labels = event_labels(stream_name, format);
         let storage_size_labels = storage_size_labels(stream_name);
 
-        let events_ingested = EVENTS_INGESTED
-            .get_metric_with_label_values(&event_labels)
-            .ok()?
-            .get() as u64;
-        let ingestion_size = EVENTS_INGESTED_SIZE
-            .get_metric_with_label_values(&event_labels)
-            .ok()?
-            .get() as u64;
-        let storage_size = STORAGE_SIZE
-            .get_metric_with_label_values(&storage_size_labels)
-            .ok()?
-            .get() as u64;
-        let events_deleted = EVENTS_DELETED
-            .get_metric_with_label_values(&event_labels)
-            .ok()?
-            .get() as u64;
-        let events_deleted_size = EVENTS_DELETED_SIZE
-            .get_metric_with_label_values(&event_labels)
-            .ok()?
-            .get() as u64;
-        let deleted_events_storage_size = DELETED_EVENTS_STORAGE_SIZE
-            .get_metric_with_label_values(&storage_size_labels)
-            .ok()?
-            .get() as u64;
-        let lifetime_events_ingested = LIFETIME_EVENTS_INGESTED
-            .get_metric_with_label_values(&event_labels)
-            .ok()?
-            .get() as u64;
-        let lifetime_ingestion_size = LIFETIME_EVENTS_INGESTED_SIZE
-            .get_metric_with_label_values(&event_labels)
-            .ok()?
-            .get() as u64;
-        let lifetime_events_storage_size = LIFETIME_EVENTS_STORAGE_SIZE
-            .get_metric_with_label_values(&storage_size_labels)
-            .ok()?
-            .get() as u64;
-
         Some(FullStats {
-            lifetime_stats: Stats {
-                events: lifetime_events_ingested,
-                ingestion: lifetime_ingestion_size,
-                storage: lifetime_events_storage_size,
-            },
-            current_stats: Stats {
-                events: events_ingested,
-                ingestion: ingestion_size,
-                storage: storage_size,
-            },
-            deleted_stats: Stats {
-                events: events_deleted,
-                ingestion: events_deleted_size,
-                storage: deleted_events_storage_size,
-            },
+            lifetime_stats: Stats::get_lifetime(&event_labels, &storage_size_labels)?,
+            current_stats: Stats::get_current(&event_labels, &storage_size_labels)?,
+            deleted_stats: Stats::get_deleted(&event_labels, &storage_size_labels)?,
         })
     }
 }
