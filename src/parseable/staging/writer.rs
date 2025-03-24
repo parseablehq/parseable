@@ -26,7 +26,7 @@ use std::{
 };
 
 use arrow_array::RecordBatch;
-use arrow_ipc::writer::StreamWriter;
+use arrow_ipc::writer::FileWriter;
 use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
 use chrono::Utc;
@@ -46,8 +46,9 @@ pub struct Writer {
     pub disk: HashMap<String, DiskWriter>,
 }
 
+/// Context regarding `.arrows` file being persisted onto disk
 pub struct DiskWriter {
-    inner: StreamWriter<BufWriter<File>>,
+    inner: FileWriter<BufWriter<File>>,
     path: PathBuf,
     range: TimeRange,
 }
@@ -66,7 +67,7 @@ impl DiskWriter {
             .truncate(true)
             .create(true)
             .open(&path)?;
-        let inner = StreamWriter::try_new_buffered(file, schema)?;
+        let inner = FileWriter::try_new_buffered(file, schema)?;
 
         Ok(Self { inner, path, range })
     }
@@ -175,20 +176,15 @@ impl<const N: usize> MutableBuffer<N> {
     fn push(&mut self, rb: &RecordBatch) -> Option<Vec<RecordBatch>> {
         if self.inner.len() + rb.num_rows() >= N {
             let left = N - self.inner.len();
-            let right = rb.num_rows() - left;
             let left_slice = rb.slice(0, left);
-            let right_slice = if left < rb.num_rows() {
-                Some(rb.slice(left, right))
-            } else {
-                None
-            };
             self.inner.push(left_slice);
             // take all records
             let src = Vec::with_capacity(self.inner.len());
             let inner = std::mem::replace(&mut self.inner, src);
 
-            if let Some(right_slice) = right_slice {
-                self.inner.push(right_slice);
+            if left < rb.num_rows() {
+                let right = rb.num_rows() - left;
+                self.inner.push(rb.slice(left, right));
             }
 
             Some(inner)
