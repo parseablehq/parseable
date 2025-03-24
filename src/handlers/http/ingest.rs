@@ -16,39 +16,41 @@
  *
  */
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-use actix_web::web::{Json, Path};
+use actix_web::web::Path;
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_array::RecordBatch;
-use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
 use serde_json::Value;
 
-use crate::event;
 use crate::event::error::EventError;
-use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
+use crate::event::format::{json, EventFormat, LogSource, LogSourceEntry};
+use crate::event::{self, get_schema_key, PartitionEvent};
 use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
-use crate::metadata::SchemaVersion;
 use crate::option::Mode;
 use crate::otel::logs::OTEL_LOG_KNOWN_FIELD_LIST;
 use crate::otel::metrics::OTEL_METRICS_KNOWN_FIELD_LIST;
 use crate::otel::traces::OTEL_TRACES_KNOWN_FIELD_LIST;
-use crate::parseable::{StreamNotFound, PARSEABLE};
+use crate::parseable::{Stream, StreamNotFound, PARSEABLE};
 use crate::storage::{ObjectStorageError, StreamType};
+use crate::utils::actix::get_custom_fields_from_header;
 use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::flatten::JsonFlattenError;
 
+use super::cluster::utils::JsonWithSize;
 use super::logstream::error::{CreateStreamError, StreamError};
-use super::modal::utils::ingest_utils::{flatten_and_push_logs, get_custom_fields_from_header};
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
 
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
 // creates if stream does not exist
-pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpResponse, PostError> {
+pub async fn ingest(
+    req: HttpRequest,
+    JsonWithSize { json, byte_size }: JsonWithSize<Value>,
+) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
@@ -72,8 +74,6 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
         return Err(PostError::OtelNotSupported);
     }
 
-    let p_custom_fields = get_custom_fields_from_header(req);
-
     let log_source_entry = LogSourceEntry::new(log_source.clone(), HashSet::new());
     PARSEABLE
         .create_stream_if_not_exists(
@@ -83,32 +83,13 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
         )
         .await?;
 
-    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
+    let p_custom_fields = get_custom_fields_from_header(req);
+    let stream = PARSEABLE.get_or_create_stream(&stream_name);
+    json::Event::new(json, byte_size, log_source)
+        .into_event(&stream, p_custom_fields)?
+        .process(&stream)?;
 
     Ok(HttpResponse::Ok().finish())
-}
-
-pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
-    let size: usize = body.len();
-    let json: Value = serde_json::from_slice(&body)?;
-    let schema = PARSEABLE.get_stream(&stream_name)?.get_schema_raw();
-
-    // For internal streams, use old schema
-    format::json::Event::new(json)
-        .into_event(
-            stream_name,
-            size as u64,
-            &schema,
-            false,
-            None,
-            None,
-            SchemaVersion::V0,
-            StreamType::Internal,
-            &HashMap::new(),
-        )?
-        .process()?;
-
-    Ok(())
 }
 
 // Handler for POST /v1/logs to ingest OTEL logs
@@ -116,7 +97,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
 // creates if stream does not exist
 pub async fn handle_otel_logs_ingestion(
     req: HttpRequest,
-    Json(json): Json<Value>,
+    JsonWithSize { json, byte_size }: JsonWithSize<Value>,
 ) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
@@ -148,7 +129,11 @@ pub async fn handle_otel_logs_ingestion(
         .await?;
     let p_custom_fields = get_custom_fields_from_header(req);
 
-    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
+    let stream = PARSEABLE.get_or_create_stream(&stream_name);
+
+    json::Event::new(json, byte_size, log_source)
+        .into_event(&stream, p_custom_fields)?
+        .process(&stream)?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -158,7 +143,7 @@ pub async fn handle_otel_logs_ingestion(
 // creates if stream does not exist
 pub async fn handle_otel_metrics_ingestion(
     req: HttpRequest,
-    Json(json): Json<Value>,
+    JsonWithSize { json, byte_size }: JsonWithSize<Value>,
 ) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
@@ -188,8 +173,10 @@ pub async fn handle_otel_metrics_ingestion(
         .await?;
 
     let p_custom_fields = get_custom_fields_from_header(req);
-
-    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
+    let stream = PARSEABLE.get_or_create_stream(&stream_name);
+    json::Event::new(json, byte_size, log_source)
+        .into_event(&stream, p_custom_fields)?
+        .process(&stream)?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -199,7 +186,7 @@ pub async fn handle_otel_metrics_ingestion(
 // creates if stream does not exist
 pub async fn handle_otel_traces_ingestion(
     req: HttpRequest,
-    Json(json): Json<Value>,
+    JsonWithSize { json, byte_size }: JsonWithSize<Value>,
 ) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
@@ -230,8 +217,10 @@ pub async fn handle_otel_traces_ingestion(
         .await?;
 
     let p_custom_fields = get_custom_fields_from_header(req);
-
-    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
+    let stream = PARSEABLE.get_or_create_stream(&stream_name);
+    json::Event::new(json, byte_size, log_source)
+        .into_event(&stream, p_custom_fields)?
+        .process(&stream)?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -242,7 +231,7 @@ pub async fn handle_otel_traces_ingestion(
 pub async fn post_event(
     req: HttpRequest,
     stream_name: Path<String>,
-    Json(json): Json<Value>,
+    JsonWithSize { json, byte_size }: JsonWithSize<Value>,
 ) -> Result<HttpResponse, PostError> {
     let stream_name = stream_name.into_inner();
 
@@ -281,27 +270,35 @@ pub async fn post_event(
     }
 
     let p_custom_fields = get_custom_fields_from_header(req);
-    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
+    let stream = PARSEABLE.get_or_create_stream(&stream_name);
+    json::Event::new(json, byte_size, log_source)
+        .into_event(&stream, p_custom_fields)?
+        .process(&stream)?;
 
     Ok(HttpResponse::Ok().finish())
 }
 
 pub async fn push_logs_unchecked(
-    batches: RecordBatch,
-    stream_name: &str,
+    rb: RecordBatch,
+    stream: &Stream,
 ) -> Result<event::Event, PostError> {
     let unchecked_event = event::Event {
-        rb: batches,
-        stream_name: stream_name.to_string(),
         origin_format: "json",
         origin_size: 0,
-        parsed_timestamp: Utc::now().naive_utc(),
-        time_partition: None,
-        is_first_event: true,                    // NOTE: Maybe should be false
-        custom_partition_values: HashMap::new(), // should be an empty map for unchecked push
+        is_first_event: true, // NOTE: Maybe should be false
+        partitions: [(
+            get_schema_key(&rb.schema().fields),
+            PartitionEvent {
+                rb,
+                parsed_timestamp: Utc::now().naive_utc(),
+            },
+        )]
+        .into_iter()
+        .collect(),
         stream_type: StreamType::UserDefined,
     };
-    unchecked_event.process_unchecked()?;
+
+    unchecked_event.process_unchecked(stream)?;
 
     Ok(unchecked_event)
 }
@@ -380,540 +377,5 @@ impl actix_web::ResponseError for PostError {
         actix_web::HttpResponse::build(self.status_code())
             .insert_header(ContentType::plaintext())
             .body(self.to_string())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-
-    use arrow::datatypes::Int64Type;
-    use arrow_array::{ArrayRef, Float64Array, Int64Array, ListArray, StringArray};
-    use arrow_schema::{DataType, Field};
-    use serde_json::json;
-    use std::{collections::HashMap, sync::Arc};
-
-    use crate::{
-        event::format::{json, EventFormat},
-        metadata::SchemaVersion,
-        utils::json::{convert_array_to_object, flatten::convert_to_array},
-    };
-
-    trait TestExt {
-        fn as_int64_arr(&self) -> Option<&Int64Array>;
-        fn as_float64_arr(&self) -> Option<&Float64Array>;
-        fn as_utf8_arr(&self) -> Option<&StringArray>;
-    }
-
-    impl TestExt for ArrayRef {
-        fn as_int64_arr(&self) -> Option<&Int64Array> {
-            self.as_any().downcast_ref()
-        }
-
-        fn as_float64_arr(&self) -> Option<&Float64Array> {
-            self.as_any().downcast_ref()
-        }
-
-        fn as_utf8_arr(&self) -> Option<&StringArray> {
-            self.as_any().downcast_ref()
-        }
-    }
-
-    fn fields_to_map(iter: impl Iterator<Item = Field>) -> HashMap<String, Arc<Field>> {
-        iter.map(|x| (x.name().clone(), Arc::new(x))).collect()
-    }
-
-    #[test]
-    fn basic_object_into_rb() {
-        let json = json!({
-            "c": 4.23,
-            "a": 1,
-            "b": "hello",
-        });
-
-        let (rb, _) = json::Event::new(json)
-            .into_recordbatch(
-                &HashMap::default(),
-                false,
-                None,
-                SchemaVersion::V0,
-                &HashMap::new(),
-            )
-            .unwrap();
-
-        assert_eq!(rb.num_rows(), 1);
-        assert_eq!(rb.num_columns(), 4);
-        assert_eq!(
-            rb.column_by_name("a").unwrap().as_int64_arr().unwrap(),
-            &Int64Array::from_iter([1])
-        );
-        assert_eq!(
-            rb.column_by_name("b").unwrap().as_utf8_arr().unwrap(),
-            &StringArray::from_iter_values(["hello"])
-        );
-        assert_eq!(
-            rb.column_by_name("c").unwrap().as_float64_arr().unwrap(),
-            &Float64Array::from_iter([4.23])
-        );
-    }
-
-    #[test]
-    fn basic_object_with_null_into_rb() {
-        let json = json!({
-            "a": 1,
-            "b": "hello",
-            "c": null
-        });
-
-        let (rb, _) = json::Event::new(json)
-            .into_recordbatch(
-                &HashMap::default(),
-                false,
-                None,
-                SchemaVersion::V0,
-                &HashMap::new(),
-            )
-            .unwrap();
-
-        assert_eq!(rb.num_rows(), 1);
-        assert_eq!(rb.num_columns(), 3);
-        assert_eq!(
-            rb.column_by_name("a").unwrap().as_int64_arr().unwrap(),
-            &Int64Array::from_iter([1])
-        );
-        assert_eq!(
-            rb.column_by_name("b").unwrap().as_utf8_arr().unwrap(),
-            &StringArray::from_iter_values(["hello"])
-        );
-    }
-
-    #[test]
-    fn basic_object_derive_schema_into_rb() {
-        let json = json!({
-            "a": 1,
-            "b": "hello",
-        });
-
-        let schema = fields_to_map(
-            [
-                Field::new("a", DataType::Int64, true),
-                Field::new("b", DataType::Utf8, true),
-                Field::new("c", DataType::Float64, true),
-            ]
-            .into_iter(),
-        );
-
-        let (rb, _) = json::Event::new(json)
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
-            .unwrap();
-
-        assert_eq!(rb.num_rows(), 1);
-        assert_eq!(rb.num_columns(), 3);
-        assert_eq!(
-            rb.column_by_name("a").unwrap().as_int64_arr().unwrap(),
-            &Int64Array::from_iter([1])
-        );
-        assert_eq!(
-            rb.column_by_name("b").unwrap().as_utf8_arr().unwrap(),
-            &StringArray::from_iter_values(["hello"])
-        );
-    }
-
-    #[test]
-    fn basic_object_schema_mismatch() {
-        let json = json!({
-            "a": 1,
-            "b": 1, // type mismatch
-        });
-
-        let schema = fields_to_map(
-            [
-                Field::new("a", DataType::Int64, true),
-                Field::new("b", DataType::Utf8, true),
-                Field::new("c", DataType::Float64, true),
-            ]
-            .into_iter(),
-        );
-
-        assert!(json::Event::new(json)
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
-            .is_err());
-    }
-
-    #[test]
-    fn empty_object() {
-        let json = json!({});
-
-        let schema = fields_to_map(
-            [
-                Field::new("a", DataType::Int64, true),
-                Field::new("b", DataType::Utf8, true),
-                Field::new("c", DataType::Float64, true),
-            ]
-            .into_iter(),
-        );
-
-        let (rb, _) = json::Event::new(json)
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
-            .unwrap();
-
-        assert_eq!(rb.num_rows(), 1);
-        assert_eq!(rb.num_columns(), 1);
-    }
-
-    #[test]
-    fn non_object_arr_is_err() {
-        let json = json!([1]);
-
-        assert!(convert_array_to_object(
-            json,
-            None,
-            None,
-            None,
-            SchemaVersion::V0,
-            &crate::event::format::LogSource::default()
-        )
-        .is_err())
-    }
-
-    #[test]
-    fn array_into_recordbatch_inffered_schema() {
-        let json = json!([
-            {
-                "b": "hello",
-            },
-            {
-                "b": "hello",
-                "a": 1,
-                "c": 1
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": null
-            },
-        ]);
-
-        let (rb, _) = json::Event::new(json)
-            .into_recordbatch(
-                &HashMap::default(),
-                false,
-                None,
-                SchemaVersion::V0,
-                &HashMap::new(),
-            )
-            .unwrap();
-
-        assert_eq!(rb.num_rows(), 3);
-        assert_eq!(rb.num_columns(), 4);
-
-        let schema = rb.schema();
-        let fields = &schema.fields;
-
-        assert_eq!(&*fields[1], &Field::new("a", DataType::Int64, true));
-        assert_eq!(&*fields[2], &Field::new("b", DataType::Utf8, true));
-        assert_eq!(&*fields[3], &Field::new("c", DataType::Int64, true));
-
-        assert_eq!(
-            rb.column_by_name("a").unwrap().as_int64_arr().unwrap(),
-            &Int64Array::from(vec![None, Some(1), Some(1)])
-        );
-        assert_eq!(
-            rb.column_by_name("b").unwrap().as_utf8_arr().unwrap(),
-            &StringArray::from(vec![Some("hello"), Some("hello"), Some("hello"),])
-        );
-        assert_eq!(
-            rb.column_by_name("c").unwrap().as_int64_arr().unwrap(),
-            &Int64Array::from(vec![None, Some(1), None])
-        );
-    }
-
-    #[test]
-    fn arr_with_null_into_rb() {
-        let json = json!([
-            {
-                "c": null,
-                "b": "hello",
-                "a": null
-            },
-            {
-                "a": 1,
-                "c": 1.22,
-                "b": "hello"
-            },
-            {
-                "b": "hello",
-                "a": 1,
-                "c": null
-            },
-        ]);
-
-        let (rb, _) = json::Event::new(json)
-            .into_recordbatch(
-                &HashMap::default(),
-                false,
-                None,
-                SchemaVersion::V0,
-                &HashMap::new(),
-            )
-            .unwrap();
-
-        assert_eq!(rb.num_rows(), 3);
-        assert_eq!(rb.num_columns(), 4);
-        assert_eq!(
-            rb.column_by_name("a").unwrap().as_int64_arr().unwrap(),
-            &Int64Array::from(vec![None, Some(1), Some(1)])
-        );
-        assert_eq!(
-            rb.column_by_name("b").unwrap().as_utf8_arr().unwrap(),
-            &StringArray::from(vec![Some("hello"), Some("hello"), Some("hello"),])
-        );
-        assert_eq!(
-            rb.column_by_name("c").unwrap().as_float64_arr().unwrap(),
-            &Float64Array::from(vec![None, Some(1.22), None,])
-        );
-    }
-
-    #[test]
-    fn arr_with_null_derive_schema_into_rb() {
-        let json = json!([
-            {
-                "c": null,
-                "b": "hello",
-                "a": null
-            },
-            {
-                "a": 1,
-                "c": 1.22,
-                "b": "hello"
-            },
-            {
-                "b": "hello",
-                "a": 1,
-                "c": null
-            },
-        ]);
-
-        let schema = fields_to_map(
-            [
-                Field::new("a", DataType::Int64, true),
-                Field::new("b", DataType::Utf8, true),
-                Field::new("c", DataType::Float64, true),
-            ]
-            .into_iter(),
-        );
-
-        let (rb, _) = json::Event::new(json)
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
-            .unwrap();
-
-        assert_eq!(rb.num_rows(), 3);
-        assert_eq!(rb.num_columns(), 4);
-        assert_eq!(
-            rb.column_by_name("a").unwrap().as_int64_arr().unwrap(),
-            &Int64Array::from(vec![None, Some(1), Some(1)])
-        );
-        assert_eq!(
-            rb.column_by_name("b").unwrap().as_utf8_arr().unwrap(),
-            &StringArray::from(vec![Some("hello"), Some("hello"), Some("hello"),])
-        );
-        assert_eq!(
-            rb.column_by_name("c").unwrap().as_float64_arr().unwrap(),
-            &Float64Array::from(vec![None, Some(1.22), None,])
-        );
-    }
-
-    #[test]
-    fn arr_schema_mismatch() {
-        let json = json!([
-            {
-                "a": null,
-                "b": "hello",
-                "c": 1.24
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": 1
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": null
-            },
-        ]);
-
-        let schema = fields_to_map(
-            [
-                Field::new("a", DataType::Int64, true),
-                Field::new("b", DataType::Utf8, true),
-                Field::new("c", DataType::Float64, true),
-            ]
-            .into_iter(),
-        );
-
-        assert!(json::Event::new(json)
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
-            .is_err());
-    }
-
-    #[test]
-    fn arr_obj_with_nested_type() {
-        let json = json!([
-            {
-                "a": 1,
-                "b": "hello",
-            },
-            {
-                "a": 1,
-                "b": "hello",
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": [{"a": 1}]
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": [{"a": 1, "b": 2}]
-            },
-        ]);
-        let flattened_json = convert_to_array(
-            convert_array_to_object(
-                json,
-                None,
-                None,
-                None,
-                SchemaVersion::V0,
-                &crate::event::format::LogSource::default(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-
-        let (rb, _) = json::Event::new(flattened_json)
-            .into_recordbatch(
-                &HashMap::default(),
-                false,
-                None,
-                SchemaVersion::V0,
-                &HashMap::new(),
-            )
-            .unwrap();
-        assert_eq!(rb.num_rows(), 4);
-        assert_eq!(rb.num_columns(), 5);
-        assert_eq!(
-            rb.column_by_name("a").unwrap().as_int64_arr().unwrap(),
-            &Int64Array::from(vec![Some(1), Some(1), Some(1), Some(1)])
-        );
-        assert_eq!(
-            rb.column_by_name("b").unwrap().as_utf8_arr().unwrap(),
-            &StringArray::from(vec![
-                Some("hello"),
-                Some("hello"),
-                Some("hello"),
-                Some("hello")
-            ])
-        );
-
-        assert_eq!(
-            rb.column_by_name("c_a")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<ListArray>()
-                .unwrap(),
-            &ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
-                None,
-                None,
-                Some(vec![Some(1i64)]),
-                Some(vec![Some(1)])
-            ])
-        );
-
-        assert_eq!(
-            rb.column_by_name("c_b")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<ListArray>()
-                .unwrap(),
-            &ListArray::from_iter_primitive::<Int64Type, _, _>(vec![
-                None,
-                None,
-                None,
-                Some(vec![Some(2i64)])
-            ])
-        );
-    }
-
-    #[test]
-    fn arr_obj_with_nested_type_v1() {
-        let json = json!([
-            {
-                "a": 1,
-                "b": "hello",
-            },
-            {
-                "a": 1,
-                "b": "hello",
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": [{"a": 1}]
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": [{"a": 1, "b": 2}]
-            },
-        ]);
-        let flattened_json = convert_to_array(
-            convert_array_to_object(
-                json,
-                None,
-                None,
-                None,
-                SchemaVersion::V1,
-                &crate::event::format::LogSource::default(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
-
-        let (rb, _) = json::Event::new(flattened_json)
-            .into_recordbatch(
-                &HashMap::default(),
-                false,
-                None,
-                SchemaVersion::V1,
-                &HashMap::new(),
-            )
-            .unwrap();
-
-        assert_eq!(rb.num_rows(), 4);
-        assert_eq!(rb.num_columns(), 5);
-        assert_eq!(
-            rb.column_by_name("a").unwrap().as_float64_arr().unwrap(),
-            &Float64Array::from(vec![Some(1.0), Some(1.0), Some(1.0), Some(1.0)])
-        );
-        assert_eq!(
-            rb.column_by_name("b").unwrap().as_utf8_arr().unwrap(),
-            &StringArray::from(vec![
-                Some("hello"),
-                Some("hello"),
-                Some("hello"),
-                Some("hello")
-            ])
-        );
-
-        assert_eq!(
-            rb.column_by_name("c_a").unwrap().as_float64_arr().unwrap(),
-            &Float64Array::from(vec![None, None, Some(1.0), Some(1.0)])
-        );
-
-        assert_eq!(
-            rb.column_by_name("c_b").unwrap().as_float64_arr().unwrap(),
-            &Float64Array::from(vec![None, None, None, Some(2.0)])
-        );
     }
 }
