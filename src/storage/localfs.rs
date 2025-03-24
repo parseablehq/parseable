@@ -28,8 +28,12 @@ use bytes::Bytes;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use fs_extra::file::CopyOptions;
 use futures::{stream::FuturesUnordered, TryStreamExt};
+use object_store::{buffered::BufReader, ObjectMeta};
 use relative_path::{RelativePath, RelativePathBuf};
-use tokio::fs::{self, DirEntry};
+use tokio::{
+    fs::{self, DirEntry, OpenOptions},
+    io::AsyncReadExt,
+};
 use tokio_stream::wrappers::ReadDirStream;
 
 use crate::{
@@ -103,6 +107,35 @@ impl LocalFS {
 
 #[async_trait]
 impl ObjectStorage for LocalFS {
+    async fn upload_multipart(
+        &self,
+        key: &RelativePath,
+        path: &Path,
+    ) -> Result<(), ObjectStorageError> {
+        let mut file = OpenOptions::new().read(true).open(path).await?;
+        let mut data = Vec::new();
+        file.read_to_end(&mut data).await?;
+        self.put_object(key, data.into()).await
+    }
+    async fn get_buffered_reader(
+        &self,
+        _path: &RelativePath,
+    ) -> Result<BufReader, ObjectStorageError> {
+        Err(ObjectStorageError::UnhandledError(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Buffered reader not implemented for LocalFS yet",
+            ),
+        )))
+    }
+    async fn head(&self, _path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
+        Err(ObjectStorageError::UnhandledError(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Head operation not implemented for LocalFS yet",
+            ),
+        )))
+    }
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         let time = Instant::now();
         let file_path = self.path_in_root(path);

@@ -35,11 +35,13 @@ use datafusion::{
 use futures::{stream::FuturesUnordered, StreamExt, TryStreamExt};
 use object_store::{
     azure::{MicrosoftAzure, MicrosoftAzureBuilder},
+    buffered::BufReader,
     limit::LimitStore,
     path::Path as StorePath,
-    BackoffConfig, ClientOptions, ObjectStore, PutPayload, RetryConfig,
+    BackoffConfig, ClientOptions, ObjectMeta, ObjectStore, PutPayload, RetryConfig,
 };
 use relative_path::{RelativePath, RelativePathBuf};
+use tokio::{fs::OpenOptions, io::AsyncReadExt};
 use tracing::{error, info};
 use url::Url;
 
@@ -52,8 +54,8 @@ use crate::{
 use super::{
     metrics_layer::MetricLayer, object_storage::parseable_json_path, to_object_store_path,
     ObjectStorage, ObjectStorageError, ObjectStorageProvider, CONNECT_TIMEOUT_SECS,
-    PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME,
-    STREAM_ROOT_DIRECTORY,
+    MIN_MULTIPART_UPLOAD_SIZE, PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, SCHEMA_FILE_NAME,
+    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -377,6 +379,62 @@ impl BlobStore {
         res
     }
 
+    async fn _upload_multipart(
+        &self,
+        key: &RelativePath,
+        path: &Path,
+    ) -> Result<(), ObjectStorageError> {
+        let mut file = OpenOptions::new().read(true).open(path).await?;
+        let location = &to_object_store_path(key);
+
+        let mut async_writer = self.client.put_multipart(location).await?;
+
+        let meta = file.metadata().await?;
+        let total_size = meta.len() as usize;
+        if total_size < MIN_MULTIPART_UPLOAD_SIZE {
+            let mut data = Vec::new();
+            file.read_to_end(&mut data).await?;
+            self.client.put(location, data.into()).await?;
+            // async_writer.put_part(data.into()).await?;
+            // async_writer.complete().await?;
+            return Ok(());
+        } else {
+            let mut data = Vec::new();
+            file.read_to_end(&mut data).await?;
+
+            // let mut upload_parts = Vec::new();
+
+            let has_final_partial_part = total_size % MIN_MULTIPART_UPLOAD_SIZE > 0;
+            let num_full_parts = total_size / MIN_MULTIPART_UPLOAD_SIZE;
+            let total_parts = num_full_parts + if has_final_partial_part { 1 } else { 0 };
+
+            // Upload each part
+            for part_number in 0..(total_parts) {
+                let start_pos = part_number * MIN_MULTIPART_UPLOAD_SIZE;
+                let end_pos = if part_number == num_full_parts && has_final_partial_part {
+                    // Last part might be smaller than 5MB (which is allowed)
+                    total_size
+                } else {
+                    // All other parts must be at least 5MB
+                    start_pos + MIN_MULTIPART_UPLOAD_SIZE
+                };
+
+                // Extract this part's data
+                let part_data = data[start_pos..end_pos].to_vec();
+
+                // Upload the part
+                async_writer.put_part(part_data.into()).await?;
+
+                // upload_parts.push(part_number as u64 + 1);
+            }
+            if let Err(err) = async_writer.complete().await {
+                error!("Failed to complete multipart upload. {:?}", err);
+                async_writer.abort().await?;
+            };
+        }
+        Ok(())
+    }
+
     // TODO: introduce parallel, multipart-uploads if required
     // async fn _upload_multipart(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
     //     let mut buf = vec![0u8; MULTIPART_UPLOAD_SIZE / 2];
@@ -423,6 +481,33 @@ impl BlobStore {
 
 #[async_trait]
 impl ObjectStorage for BlobStore {
+    async fn upload_multipart(
+        &self,
+        key: &RelativePath,
+        path: &Path,
+    ) -> Result<(), ObjectStorageError> {
+        self._upload_multipart(key, path).await
+    }
+    async fn get_buffered_reader(
+        &self,
+        _path: &RelativePath,
+    ) -> Result<BufReader, ObjectStorageError> {
+        Err(ObjectStorageError::UnhandledError(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Buffered reader not implemented for Blob Storage yet",
+            ),
+        )))
+    }
+    async fn head(&self, _path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
+        Err(ObjectStorageError::UnhandledError(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "Head operation not implemented for Blob Storage yet",
+            ),
+        )))
+    }
+
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         Ok(self._get_object(path).await?)
     }

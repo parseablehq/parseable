@@ -31,6 +31,7 @@ use tracing::trace;
 
 use crate::{
     alerts::AggregateCondition,
+    parseable::PARSEABLE,
     query::{TableScanVisitor, QUERY_SESSION},
     rbac::{
         map::SessionKey,
@@ -137,8 +138,9 @@ async fn execute_base_query(
         AlertError::CustomError(format!("Table name not found in query- {}", original_query))
     })?;
 
+    let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
     query
-        .get_dataframe(stream_name)
+        .get_dataframe(time_partition.as_ref())
         .await
         .map_err(|err| AlertError::CustomError(err.to_string()))
 }

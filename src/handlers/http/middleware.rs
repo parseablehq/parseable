@@ -357,6 +357,15 @@ where
                     Ok(res)
                 })
             }
+
+            Mode::Index => {
+                let fut = self.service.call(req);
+
+                Box::pin(async move {
+                    let res = fut.await?;
+                    Ok(res)
+                })
+            }
         }
     }
 }

@@ -26,6 +26,7 @@ use crate::handlers::http::about;
 use crate::handlers::http::alerts;
 use crate::handlers::http::base_path;
 use crate::handlers::http::health_check;
+use crate::handlers::http::prism_base_path;
 use crate::handlers::http::query;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
@@ -80,14 +81,22 @@ impl ParseableServer for Server {
                     .service(Self::get_about_factory())
                     .service(Self::get_logstream_webscope())
                     .service(Self::get_user_webscope())
+                    .service(Self::get_users_webscope())
                     .service(Self::get_dashboards_webscope())
                     .service(Self::get_filters_webscope())
                     .service(Self::get_llm_webscope())
                     .service(Self::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope())
+                    .service(Self::get_roles_webscope())
                     .service(Self::get_counts_webscope())
                     .service(Self::get_alerts_webscope())
                     .service(Self::get_metrics_webscope()),
+            )
+            .service(
+                web::scope(&prism_base_path())
+                    .service(Server::get_prism_home())
+                    .service(Server::get_prism_logstream())
+                    .service(Server::get_prism_datasets()),
             )
             .service(Self::get_ingest_otel_factory())
             .service(Self::get_generated());
@@ -154,6 +163,35 @@ impl ParseableServer for Server {
 }
 
 impl Server {
+    pub fn get_prism_home() -> Resource {
+        web::resource("/home").route(web::get().to(http::prism_home::home_api))
+    }
+
+    pub fn get_prism_logstream() -> Scope {
+        web::scope("/logstream").service(
+            web::scope("/{logstream}").service(
+                web::resource("/info").route(
+                    web::get()
+                        .to(http::prism_logstream::get_info)
+                        .authorize_for_stream(Action::GetStreamInfo)
+                        .authorize_for_stream(Action::GetStats)
+                        .authorize_for_stream(Action::GetRetention),
+                ),
+            ),
+        )
+    }
+
+    pub fn get_prism_datasets() -> Scope {
+        web::scope("/datasets").route(
+            "",
+            web::post()
+                .to(http::prism_logstream::post_datasets)
+                .authorize_for_stream(Action::GetStreamInfo)
+                .authorize_for_stream(Action::GetStats)
+                .authorize_for_stream(Action::GetRetention),
+        )
+    }
+
     pub fn get_metrics_webscope() -> Scope {
         web::scope("/metrics").service(
             web::resource("").route(web::get().to(metrics::get).authorize(Action::Metrics)),
@@ -455,6 +493,13 @@ impl Server {
         }
     }
 
+    // get list of roles
+    pub fn get_roles_webscope() -> Scope {
+        web::scope("/roles").service(
+            web::resource("").route(web::get().to(role::list_roles).authorize(Action::ListRole)),
+        )
+    }
+
     // get the role webscope
     pub fn get_user_role_webscope() -> Scope {
         web::scope("/role")
@@ -472,6 +517,27 @@ impl Server {
                     .route(web::put().to(role::put).authorize(Action::PutRole))
                     .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
                     .route(web::get().to(role::get).authorize(Action::GetRole)),
+            )
+    }
+
+    // get the users webscope (for Prism only)
+    pub fn get_users_webscope() -> Scope {
+        web::scope("/users")
+            .service(
+                web::resource("")
+                    // GET /users => List all users
+                    .route(
+                        web::get()
+                            .to(http::rbac::list_users_prism)
+                            .authorize(Action::ListUser),
+                    ),
+            )
+            .service(
+                web::resource("/{username}").route(
+                    web::get()
+                        .to(http::rbac::get_prism_user)
+                        .authorize_for_user(Action::GetUserRoles),
+                ),
             )
     }
 

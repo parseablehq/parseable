@@ -21,9 +21,9 @@ use std::thread;
 use crate::alerts::ALERTS;
 use crate::correlation::CORRELATIONS;
 use crate::handlers::airplane;
-use crate::handlers::http::base_path;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
+use crate::handlers::http::{base_path, prism_base_path};
 use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::handlers::http::{rbac, role};
 use crate::hottier::HotTierManager;
@@ -61,15 +61,23 @@ impl ParseableServer for QueryServer {
                     .service(Server::get_about_factory())
                     .service(Self::get_logstream_webscope())
                     .service(Self::get_user_webscope())
+                    .service(Server::get_users_webscope())
                     .service(Server::get_dashboards_webscope())
                     .service(Server::get_filters_webscope())
                     .service(Server::get_llm_webscope())
                     .service(Server::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope())
+                    .service(Server::get_roles_webscope())
                     .service(Server::get_counts_webscope())
                     .service(Server::get_metrics_webscope())
                     .service(Server::get_alerts_webscope())
                     .service(Self::get_cluster_web_scope()),
+            )
+            .service(
+                web::scope(&prism_base_path())
+                    .service(Server::get_prism_home())
+                    .service(Server::get_prism_logstream())
+                    .service(Server::get_prism_datasets()),
             )
             .service(Server::get_generated());
     }

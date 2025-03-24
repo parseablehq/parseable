@@ -35,27 +35,17 @@ use regex::Regex;
 use sha2::{Digest, Sha256};
 use tracing::debug;
 
-/// Convert minutes to a slot range
-/// e.g. given minute = 15 and OBJECT_STORE_DATA_GRANULARITY = 10 returns "10-19"
-pub fn minute_to_slot(minute: u32, data_granularity: u32) -> Option<String> {
-    if minute >= 60 {
-        return None;
-    }
-
-    let block_n = minute / data_granularity;
-    let block_start = block_n * data_granularity;
-    if data_granularity == 1 {
-        return Some(format!("{block_start:02}"));
-    }
-
-    let block_end = (block_n + 1) * data_granularity - 1;
-    Some(format!("{block_start:02}-{block_end:02}"))
-}
-
 pub fn get_ingestor_id() -> String {
     let now = Utc::now().to_rfc3339();
     let id = get_hash(&now).to_string().split_at(15).0.to_string();
     debug!("Ingestor ID: {id}");
+    id
+}
+
+pub fn get_indexer_id() -> String {
+    let now = Utc::now().to_rfc3339();
+    let id = get_hash(&now).to_string().split_at(15).0.to_string();
+    debug!("Indexer ID: {id}");
     id
 }
 

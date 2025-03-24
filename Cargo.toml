@@ -1,6 +1,6 @@
 [package]
 name = "parseable"
-version = "1.7.3"
+version = "1.7.5"
 authors = ["Parseable Team <hi@parseable.com>"]
 edition = "2021"
 rust-version = "1.83.0"
@@ -9,15 +9,16 @@ build = "build.rs"
 
 [dependencies]
 # Arrow and DataFusion ecosystem
-arrow-array = { version = "53.0.0" }
-arrow-flight = { version = "53.0.0", features = ["tls"] }
-arrow-ipc = { version = "53.0.0", features = ["zstd"] }
-arrow-json = "53.0.0"
-arrow-schema = { version = "53.0.0", features = ["serde"] }
-arrow-select = "53.0.0"
-datafusion = "44.0.0"
+arrow = "54.0.0"
+arrow-array = "54.0.0" 
+arrow-flight = { version = "54.0.0", features = ["tls"] }
+arrow-ipc = { version = "54.0.0", features = ["zstd"] }
+arrow-json = "54.0.0"
+arrow-schema = { version = "54.0.0", features = ["serde"] }
+arrow-select = "54.0.0"
+datafusion = "45.0.0"
 object_store = { version = "0.11.2", features = ["cloud", "aws", "azure"] }
-parquet = "53.0.0"
+parquet = "54.0.0"
 
 # Web server and HTTP-related
 actix-cors = "0.7.0"
@@ -106,7 +107,6 @@ bytes = "1.4"
 clokwerk = "0.4"
 derive_more = { version = "1", features = ["full"] }
 itertools = "0.14"
-lazy_static = "1.4"
 once_cell = "1.20"
 rand = "0.8.5"
 regex = "1.7.3"
@@ -128,19 +128,18 @@ sha1_smol = { version = "1.0", features = ["std"] }
 static-files = "0.2"
 ureq = "2.12"
 url = "2.5"
-vergen = { version = "9.0", features = ["build", "cargo", "rustc", "si"] }
 vergen-gitcl = { version = "1.0", features = ["build", "cargo", "rustc", "si"] }
-zip = { version = "2.2", default-features = false, features = ["deflate"] }
+zip = { version = "2.3", default-features = false, features = ["deflate"] }
 anyhow = "1.0"
 
 [dev-dependencies]
 rstest = "0.23.0"
-arrow = "53.0.0"
+arrow = "54.0.0"
 temp-dir = "0.1.14"
 
 [package.metadata.parseable_ui]
-assets-url = "https://github.com/parseablehq/console/releases/download/v0.9.18/build.zip"
-assets-sha1 = "4516db38c8e556707b29b33569f9b1e53d5165f2"
+assets-url = "https://github.com/parseablehq/console/releases/download/v0.9.20/build.zip"
+assets-sha1 = "58eb74bdb6727b5df04d6f9f339cf370c0bf4eec"
 
 [features]
 debug = []

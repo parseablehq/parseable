@@ -24,6 +24,7 @@ use datafusion::common::tree_node::TreeNode;
 use http::StatusCode;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
+use serde::Serialize;
 use serde_json::Error as SerdeError;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
@@ -36,7 +37,7 @@ use ulid::Ulid;
 pub mod alerts_utils;
 pub mod target;
 
-use crate::parseable::PARSEABLE;
+use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::map::SessionKey;
 use crate::storage;
@@ -513,17 +514,16 @@ impl AlertConfig {
 
         // for now proceed in a similar fashion as we do in query
         // TODO: in case of multiple table query does the selection of time partition make a difference? (especially when the tables don't have overlapping data)
-        let stream_name = if let Some(stream_name) = query.first_table_name() {
-            stream_name
-        } else {
+        let Some(stream_name) = query.first_table_name() else {
             return Err(AlertError::CustomError(format!(
                 "Table name not found in query- {}",
                 self.query
             )));
         };
 
+        let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
         let base_df = query
-            .get_dataframe(stream_name)
+            .get_dataframe(time_partition.as_ref())
             .await
             .map_err(|err| AlertError::CustomError(err.to_string()))?;
 
@@ -703,6 +703,8 @@ pub enum AlertError {
     CustomError(String),
     #[error("Invalid State Change: {0}")]
     InvalidStateChange(String),
+    #[error("{0}")]
+    StreamNotFound(#[from] StreamNotFound),
 }
 
 impl actix_web::ResponseError for AlertError {
@@ -716,6 +718,7 @@ impl actix_web::ResponseError for AlertError {
             Self::DatafusionError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::CustomError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidStateChange(_) => StatusCode::BAD_REQUEST,
+            Self::StreamNotFound(_) => StatusCode::NOT_FOUND,
         }
     }
 
@@ -872,4 +875,56 @@ impl Alerts {
 
         Ok(())
     }
+}
+
+#[derive(Debug, Serialize)]
+pub struct AlertsInfo {
+    total: u64,
+    silenced: u64,
+    resolved: u64,
+    triggered: u64,
+    low: u64,
+    medium: u64,
+    high: u64,
+    critical: u64,
+}
+
+// TODO: add RBAC
+pub async fn get_alerts_info() -> Result<AlertsInfo, AlertError> {
+    let alerts = ALERTS.alerts.read().await;
+    let mut total = 0;
+    let mut silenced = 0;
+    let mut resolved = 0;
+    let mut triggered = 0;
+    let mut low = 0;
+    let mut medium = 0;
+    let mut high = 0;
+    let mut critical = 0;
+
+    for (_, alert) in alerts.iter() {
+        total += 1;
+        match alert.state {
+            AlertState::Silenced => silenced += 1,
+            AlertState::Resolved => resolved += 1,
+            AlertState::Triggered => triggered += 1,
+        }
+
+        match alert.severity {
+            Severity::Low => low += 1,
+            Severity::Medium => medium += 1,
+            Severity::High => high += 1,
+            Severity::Critical => critical += 1,
+        }
+    }
+
+    Ok(AlertsInfo {
+        total,
+        silenced,
+        resolved,
+        triggered,
+        low,
+        medium,
+        high,
+        critical,
+    })
 }

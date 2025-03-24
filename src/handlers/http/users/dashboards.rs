@@ -30,12 +30,13 @@ use crate::{
     parseable::PARSEABLE,
     storage::{object_storage::dashboard_path, ObjectStorageError},
     users::dashboards::{Dashboard, DASHBOARDS},
-    utils::{get_hash, get_user_from_request},
+    utils::{actix::extract_session_key_from_req, get_hash, get_user_from_request},
 };
 
 pub async fn list(req: HttpRequest) -> Result<impl Responder, DashboardError> {
-    let user_id = get_user_from_request(&req)?;
-    let dashboards = DASHBOARDS.list_dashboards_by_user(&get_hash(&user_id));
+    let key =
+        extract_session_key_from_req(&req).map_err(|e| DashboardError::Custom(e.to_string()))?;
+    let dashboards = DASHBOARDS.list_dashboards(&key).await;
 
     Ok((web::Json(dashboards), StatusCode::OK))
 }
@@ -47,7 +48,7 @@ pub async fn get(
     let user_id = get_user_from_request(&req)?;
     let dashboard_id = dashboard_id.into_inner();
 
-    if let Some(dashboard) = DASHBOARDS.get(&dashboard_id, &get_hash(&user_id)) {
+    if let Some(dashboard) = DASHBOARDS.get(&dashboard_id, &get_hash(&user_id)).await {
         return Ok((web::Json(dashboard), StatusCode::OK));
     }
 
@@ -61,7 +62,7 @@ pub async fn post(
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
     dashboard.user_id = Some(user_id.clone());
-    DASHBOARDS.update(&dashboard);
+    DASHBOARDS.update(&dashboard).await;
 
     let path = dashboard_path(&user_id, &format!("{}.json", dashboard.dashboard_id));
 
@@ -83,12 +84,12 @@ pub async fn update(
     user_id = get_hash(&user_id);
     let dashboard_id = dashboard_id.into_inner();
 
-    if DASHBOARDS.get(&dashboard_id, &user_id).is_none() {
+    if DASHBOARDS.get(&dashboard_id, &user_id).await.is_none() {
         return Err(DashboardError::DashboardDoesNotExist);
     }
     dashboard.dashboard_id = dashboard_id.to_string();
     dashboard.user_id = Some(user_id.clone());
-    DASHBOARDS.update(&dashboard);
+    DASHBOARDS.update(&dashboard).await;
 
     let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
 
@@ -108,14 +109,14 @@ pub async fn delete(
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
     let dashboard_id = dashboard_id.into_inner();
-    if DASHBOARDS.get(&dashboard_id, &user_id).is_none() {
+    if DASHBOARDS.get(&dashboard_id, &user_id).await.is_none() {
         return Err(DashboardError::DashboardDoesNotExist);
     }
     let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
     let store = PARSEABLE.storage.get_object_store();
     store.delete_object(&path).await?;
 
-    DASHBOARDS.delete(&dashboard_id);
+    DASHBOARDS.delete(&dashboard_id).await;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -132,6 +133,8 @@ pub enum DashboardError {
     DashboardDoesNotExist,
     #[error("User does not exist")]
     UserDoesNotExist(#[from] RBACError),
+    #[error("Error: {0}")]
+    Custom(String),
 }
 
 impl actix_web::ResponseError for DashboardError {
@@ -142,6 +145,7 @@ impl actix_web::ResponseError for DashboardError {
             Self::Metadata(_) => StatusCode::BAD_REQUEST,
             Self::DashboardDoesNotExist => StatusCode::NOT_FOUND,
             Self::UserDoesNotExist(_) => StatusCode::NOT_FOUND,
+            Self::Custom(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 

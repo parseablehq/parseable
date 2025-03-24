@@ -37,11 +37,13 @@ use datafusion::{
 use futures::{stream::FuturesUnordered, StreamExt, TryStreamExt};
 use object_store::{
     aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum},
+    buffered::BufReader,
     limit::LimitStore,
     path::Path as StorePath,
-    BackoffConfig, ClientOptions, ObjectStore, PutPayload, RetryConfig,
+    BackoffConfig, ClientOptions, ObjectMeta, ObjectStore, PutPayload, RetryConfig,
 };
 use relative_path::{RelativePath, RelativePathBuf};
+use tokio::{fs::OpenOptions, io::AsyncReadExt};
 use tracing::{error, info};
 
 use crate::{
@@ -53,8 +55,8 @@ use crate::{
 use super::{
     metrics_layer::MetricLayer, object_storage::parseable_json_path, to_object_store_path,
     ObjectStorage, ObjectStorageError, ObjectStorageProvider, CONNECT_TIMEOUT_SECS,
-    PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME,
-    STREAM_ROOT_DIRECTORY,
+    MIN_MULTIPART_UPLOAD_SIZE, PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, SCHEMA_FILE_NAME,
+    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 // in bytes
@@ -310,9 +312,6 @@ impl ObjectStorageProvider for S3Config {
     fn construct_client(&self) -> Arc<dyn ObjectStorage> {
         let s3 = self.get_default_builder().build().unwrap();
 
-        // limit objectstore to a concurrent request limit
-        let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
-
         Arc::new(S3 {
             client: s3,
             bucket: self.bucket_name.clone(),
@@ -331,7 +330,7 @@ impl ObjectStorageProvider for S3Config {
 
 #[derive(Debug)]
 pub struct S3 {
-    client: LimitStore<AmazonS3>,
+    client: AmazonS3,
     bucket: String,
     root: StorePath,
 }
@@ -511,52 +510,87 @@ impl S3 {
         res
     }
 
-    // TODO: introduce parallel, multipart-uploads if required
-    // async fn _upload_multipart(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
-    //     let mut buf = vec![0u8; MULTIPART_UPLOAD_SIZE / 2];
-    //     let mut file = OpenOptions::new().read(true).open(path).await?;
+    async fn _upload_multipart(
+        &self,
+        key: &RelativePath,
+        path: &Path,
+    ) -> Result<(), ObjectStorageError> {
+        let mut file = OpenOptions::new().read(true).open(path).await?;
+        let location = &to_object_store_path(key);
 
-    //     // let (multipart_id, mut async_writer) = self.client.put_multipart(&key.into()).await?;
-    //     let mut async_writer = self.client.put_multipart(&key.into()).await?;
+        let mut async_writer = self.client.put_multipart(location).await?;
 
-    //     /* `abort_multipart()` has been removed */
-    //     // let close_multipart = |err| async move {
-    //     //     error!("multipart upload failed. {:?}", err);
-    //     //     self.client
-    //     //         .abort_multipart(&key.into(), &multipart_id)
-    //     //         .await
-    //     // };
+        let meta = file.metadata().await?;
+        let total_size = meta.len() as usize;
+        if total_size < MIN_MULTIPART_UPLOAD_SIZE {
+            let mut data = Vec::new();
+            file.read_to_end(&mut data).await?;
+            self.client.put(location, data.into()).await?;
+            // async_writer.put_part(data.into()).await?;
+            // async_writer.complete().await?;
+            return Ok(());
+        } else {
+            let mut data = Vec::new();
+            file.read_to_end(&mut data).await?;
 
-    //     loop {
-    //         match file.read(&mut buf).await {
-    //             Ok(len) => {
-    //                 if len == 0 {
-    //                     break;
-    //                 }
-    //                 if let Err(err) = async_writer.write_all(&buf[0..len]).await {
-    //                     // close_multipart(err).await?;
-    //                     break;
-    //                 }
-    //                 if let Err(err) = async_writer.flush().await {
-    //                     // close_multipart(err).await?;
-    //                     break;
-    //                 }
-    //             }
-    //             Err(err) => {
-    //                 // close_multipart(err).await?;
-    //                 break;
-    //             }
-    //         }
-    //     }
+            // let mut upload_parts = Vec::new();
 
-    //     async_writer.shutdown().await?;
+            let has_final_partial_part = total_size % MIN_MULTIPART_UPLOAD_SIZE > 0;
+            let num_full_parts = total_size / MIN_MULTIPART_UPLOAD_SIZE;
+            let total_parts = num_full_parts + if has_final_partial_part { 1 } else { 0 };
 
-    //     Ok(())
-    // }
+            // Upload each part
+            for part_number in 0..(total_parts) {
+                let start_pos = part_number * MIN_MULTIPART_UPLOAD_SIZE;
+                let end_pos = if part_number == num_full_parts && has_final_partial_part {
+                    // Last part might be smaller than 5MB (which is allowed)
+                    total_size
+                } else {
+                    // All other parts must be at least 5MB
+                    start_pos + MIN_MULTIPART_UPLOAD_SIZE
+                };
+
+                // Extract this part's data
+                let part_data = data[start_pos..end_pos].to_vec();
+
+                // Upload the part
+                async_writer.put_part(part_data.into()).await?;
+
+                // upload_parts.push(part_number as u64 + 1);
+            }
+            if let Err(err) = async_writer.complete().await {
+                error!("Failed to complete multipart upload. {:?}", err);
+                async_writer.abort().await?;
+            };
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
 impl ObjectStorage for S3 {
+    async fn get_buffered_reader(
+        &self,
+        path: &RelativePath,
+    ) -> Result<BufReader, ObjectStorageError> {
+        let path = &to_object_store_path(path);
+        let meta = self.client.head(path).await?;
+
+        let store: Arc<dyn ObjectStore> = Arc::new(self.client.clone());
+        let buf = object_store::buffered::BufReader::new(store, &meta);
+        Ok(buf)
+    }
+    async fn upload_multipart(
+        &self,
+        key: &RelativePath,
+        path: &Path,
+    ) -> Result<(), ObjectStorageError> {
+        self._upload_multipart(key, path).await
+    }
+    async fn head(&self, path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
+        Ok(self.client.head(&to_object_store_path(path)).await?)
+    }
+
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         Ok(self._get_object(path).await?)
     }
