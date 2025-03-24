@@ -117,15 +117,10 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
     let dashboard_titles = DASHBOARDS
         .list_dashboards(key)
         .await
-        .iter()
+        .into_iter()
         .map(|dashboard| TitleAndId {
             title: dashboard.name.clone(),
-            id: dashboard
-                .dashboard_id
-                .as_ref()
-                .ok_or_else(|| anyhow::Error::msg("Dashboard ID is null"))
-                .unwrap()
-                .clone(),
+            id: dashboard.dashboard_id,
         })
         .collect_vec();
 
