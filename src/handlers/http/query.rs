@@ -35,8 +35,6 @@ use tracing::error;
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
-
-use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::Mode;
 use crate::parseable::{StreamNotFound, PARSEABLE};
@@ -178,7 +176,9 @@ pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), 
                     .commit_schema(table, new_schema.clone())
                     .await?;
 
-                commit_schema(table, Arc::new(new_schema))?;
+                PARSEABLE
+                    .get_stream(table)?
+                    .commit_schema(Arc::new(new_schema))?;
             }
         }
     }
