@@ -3447,7 +3447,7 @@ dependencies = [
 
 [[package]]
 name = "parseable"
-version = "1.7.4"
+version = "1.7.5"
 dependencies = [
  "actix-cors",
  "actix-web",
@@ -3527,7 +3527,6 @@ dependencies = [
  "uptime_lib",
  "ureq",
  "url",
- "vergen",
  "vergen-gitcl",
  "xxhash-rust",
  "zip",

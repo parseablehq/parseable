@@ -1,5 +1,6 @@
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 
+use chrono::{TimeZone, Utc};
 use datafusion::{common::Column, prelude::Expr};
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
@@ -119,14 +120,35 @@ pub async fn fetch_parquet_file_paths(
 
     selected_files
         .into_iter()
-        .map(|file| {
+        .filter_map(|file| {
             let date = file.file_path.split("/").collect_vec();
 
-            let date = date.as_slice()[1..4].iter().map(|s| s.to_string());
+            let year = &date[1][5..9];
+            let month = &date[1][10..12];
+            let day = &date[1][13..15];
+            let hour = &date[2][5..7];
+            let min = &date[3][7..9];
+            let file_date = Utc
+                .with_ymd_and_hms(
+                    year.parse::<i32>().unwrap(),
+                    month.parse::<u32>().unwrap(),
+                    day.parse::<u32>().unwrap(),
+                    hour.parse::<u32>().unwrap(),
+                    min.parse::<u32>().unwrap(),
+                    0,
+                )
+                .unwrap();
 
-            let date = RelativePathBuf::from_iter(date);
+            if file_date < time_range.start {
+                None
+            } else {
+                let date = date.as_slice()[1..4].iter().map(|s| s.to_string());
 
-            parquet_files.entry(date).or_default().push(file);
+                let date = RelativePathBuf::from_iter(date);
+
+                parquet_files.entry(date).or_default().push(file);
+                Some("")
+            }
         })
         .for_each(|_| {});
 

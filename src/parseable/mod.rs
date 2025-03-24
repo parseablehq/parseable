@@ -47,7 +47,7 @@ use crate::{
             cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME},
             ingest::PostError,
             logstream::error::{CreateStreamError, StreamError},
-            modal::{utils::logstream_utils::PutStreamHeaders, IngestorMetadata},
+            modal::{utils::logstream_utils::PutStreamHeaders, IndexerMetadata, IngestorMetadata},
         },
         STREAM_TYPE_KEY,
     },
@@ -129,6 +129,8 @@ pub struct Parseable {
     pub streams: Streams,
     /// Metadata associated only with an ingestor
     pub ingestor_metadata: Option<Arc<IngestorMetadata>>,
+    /// Metadata associated only with an indexer
+    pub indexer_metadata: Option<Arc<IndexerMetadata>>,
     /// Used to configure the kafka connector
     #[cfg(feature = "kafka")]
     pub kafka_config: KafkaConfig,
@@ -144,11 +146,16 @@ impl Parseable {
             Mode::Ingest => Some(IngestorMetadata::load(&options, storage.as_ref())),
             _ => None,
         };
+        let indexer_metadata = match &options.mode {
+            Mode::Index => Some(IndexerMetadata::load(&options, storage.as_ref())),
+            _ => None,
+        };
         Parseable {
             options: Arc::new(options),
             storage,
             streams: Streams::default(),
             ingestor_metadata,
+            indexer_metadata,
             #[cfg(feature = "kafka")]
             kafka_config,
         }
@@ -171,7 +178,7 @@ impl Parseable {
         }
 
         // Gets write privileges only for creating the stream when it doesn't already exist.
-        self.streams.create(
+        self.streams.get_or_create(
             self.options.clone(),
             stream_name.to_owned(),
             LogStreamMetadata::default(),
@@ -258,35 +265,68 @@ impl Parseable {
     }
 
     // create the ingestor metadata and put the .ingestor.json file in the object store
-    pub async fn store_ingestor_metadata(&self) -> anyhow::Result<()> {
-        let Some(meta) = self.ingestor_metadata.as_ref() else {
-            return Ok(());
-        };
-        let storage_ingestor_metadata = meta.migrate().await?;
-        let store = self.storage.get_object_store();
+    pub async fn store_metadata(&self, mode: Mode) -> anyhow::Result<()> {
+        match mode {
+            Mode::Ingest => {
+                let Some(meta) = self.ingestor_metadata.as_ref() else {
+                    return Ok(());
+                };
+                let storage_ingestor_metadata = meta.migrate().await?;
+                let store = self.storage.get_object_store();
 
-        // use the id that was generated/found in the staging and
-        // generate the path for the object store
-        let path = meta.file_path();
+                // use the id that was generated/found in the staging and
+                // generate the path for the object store
+                let path = meta.file_path();
 
-        // we are considering that we can always get from object store
-        if let Some(mut store_data) = storage_ingestor_metadata {
-            if store_data.domain_name != meta.domain_name {
-                store_data.domain_name.clone_from(&meta.domain_name);
-                store_data.port.clone_from(&meta.port);
+                // we are considering that we can always get from object store
+                if let Some(mut store_data) = storage_ingestor_metadata {
+                    if store_data.domain_name != meta.domain_name {
+                        store_data.domain_name.clone_from(&meta.domain_name);
+                        store_data.port.clone_from(&meta.port);
 
-                let resource = Bytes::from(serde_json::to_vec(&store_data)?);
+                        let resource = Bytes::from(serde_json::to_vec(&store_data)?);
 
-                // if pushing to object store fails propagate the error
-                store.put_object(&path, resource).await?;
+                        // if pushing to object store fails propagate the error
+                        store.put_object(&path, resource).await?;
+                    }
+                } else {
+                    let resource = serde_json::to_vec(&meta)?.into();
+
+                    store.put_object(&path, resource).await?;
+                }
+                Ok(())
             }
-        } else {
-            let resource = serde_json::to_vec(&meta)?.into();
+            Mode::Index => {
+                let Some(meta) = self.indexer_metadata.as_ref() else {
+                    return Ok(());
+                };
+                let storage_indexer_metadata = meta.migrate().await?;
+                let store = self.storage.get_object_store();
 
-            store.put_object(&path, resource).await?;
+                // use the id that was generated/found in the staging and
+                // generate the path for the object store
+                let path = meta.file_path();
+
+                // we are considering that we can always get from object store
+                if let Some(mut store_data) = storage_indexer_metadata {
+                    if store_data.domain_name != meta.domain_name {
+                        store_data.domain_name.clone_from(&meta.domain_name);
+                        store_data.port.clone_from(&meta.port);
+
+                        let resource = Bytes::from(serde_json::to_vec(&store_data)?);
+
+                        // if pushing to object store fails propagate the error
+                        store.put_object(&path, resource).await?;
+                    }
+                } else {
+                    let resource = serde_json::to_vec(&meta)?.into();
+
+                    store.put_object(&path, resource).await?;
+                }
+                Ok(())
+            }
+            _ => Err(anyhow::anyhow!("Invalid mode")),
         }
-
-        Ok(())
     }
 
     /// list all streams from storage
@@ -342,7 +382,7 @@ impl Parseable {
             schema_version,
             log_source,
         );
-        self.streams.create(
+        self.streams.get_or_create(
             self.options.clone(),
             stream_name.to_string(),
             metadata,
@@ -652,7 +692,7 @@ impl Parseable {
                     SchemaVersion::V1, // New stream
                     log_source,
                 );
-                self.streams.create(
+                self.streams.get_or_create(
                     self.options.clone(),
                     stream_name.to_string(),
                     metadata,
