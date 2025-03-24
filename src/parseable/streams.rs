@@ -144,10 +144,8 @@ impl Stream {
                     // entry is not present thus we create it
                     std::fs::create_dir_all(&self.data_path)?;
 
-                    let range = TimeRange::granularity_range(
-                        parsed_timestamp.and_local_timezone(Utc).unwrap(),
-                        OBJECT_STORE_DATA_GRANULARITY,
-                    );
+                    let range =
+                        TimeRange::granularity_range(Utc::now(), OBJECT_STORE_DATA_GRANULARITY);
                     let file_path = self.data_path.join(&filename);
                     let mut writer = DiskWriter::try_new(file_path, &record.schema(), range)
                         .expect("File and RecordBatch both are checked");
