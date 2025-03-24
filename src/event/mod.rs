@@ -47,7 +47,7 @@ pub struct Event {
     pub origin_size: u64,
     pub is_first_event: bool,
     pub parsed_timestamp: NaiveDateTime,
-    pub time_partitioned: bool,
+    pub is_time_partitioned: bool,
     pub custom_partition_values: HashMap<String, String>,
     pub stream_type: StreamType,
 }
@@ -56,7 +56,7 @@ pub struct Event {
 impl Event {
     pub fn process(self) -> Result<(), EventError> {
         let mut key = get_schema_key(&self.rb.schema().fields);
-        if self.time_partitioned {
+        if self.is_time_partitioned {
             // For time partitioned streams, concatenate timestamp to filename, ensuring we don't write to a finished arrows file
             let curr_timestamp = Utc::now().format("%Y%m%dT%H%M").to_string();
             key.push_str(&curr_timestamp);

@@ -179,7 +179,7 @@ impl EventFormat for Event {
             origin_size,
             is_first_event,
             parsed_timestamp,
-            time_partitioned: time_partition.is_some(),
+            is_time_partitioned: time_partition.is_some(),
             custom_partition_values,
             stream_type,
         })
