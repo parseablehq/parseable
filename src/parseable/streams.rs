@@ -144,6 +144,7 @@ impl Stream {
                     // entry is not present thus we create it
                     std::fs::create_dir_all(&self.data_path)?;
 
+                    // Use current time for partitioning to ensure consistent partition boundaries
                     let range =
                         TimeRange::granularity_range(Utc::now(), OBJECT_STORE_DATA_GRANULARITY);
                     let file_path = self.data_path.join(&filename);
