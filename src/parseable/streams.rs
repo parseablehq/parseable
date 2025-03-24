@@ -28,7 +28,7 @@ use std::{
 };
 
 use arrow_array::RecordBatch;
-use arrow_schema::{Field, Fields, Schema};
+use arrow_schema::{Field, Fields, Schema, SchemaRef};
 use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::{Deref, DerefMut};
 use itertools::Itertools;
@@ -589,6 +589,18 @@ impl Stream {
 
     pub fn get_schema_version(&self) -> SchemaVersion {
         self.metadata.read().expect(LOCK_EXPECT).schema_version
+    }
+
+    /// Stores updated schema in-memory
+    pub fn commit_schema(&self, schema: SchemaRef) -> Result<(), StagingError> {
+        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        let current_schema = Schema::new(metadata.schema.values().cloned().collect::<Fields>());
+        let schema = Schema::try_merge(vec![current_schema, schema.as_ref().clone()])?;
+        metadata.schema.clear();
+        metadata
+            .schema
+            .extend(schema.fields.iter().map(|f| (f.name().clone(), f.clone())));
+        Ok(())
     }
 
     pub fn get_schema(&self) -> Arc<Schema> {
