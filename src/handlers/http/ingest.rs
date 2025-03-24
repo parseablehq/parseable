@@ -296,7 +296,7 @@ pub async fn push_logs_unchecked(
         origin_format: "json",
         origin_size: 0,
         parsed_timestamp: Utc::now().naive_utc(),
-        time_partition: None,
+        time_partitioned: false,
         is_first_event: true,                    // NOTE: Maybe should be false
         custom_partition_values: HashMap::new(), // should be an empty map for unchecked push
         stream_type: StreamType::UserDefined,
