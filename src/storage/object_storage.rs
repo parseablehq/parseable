@@ -879,13 +879,14 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         Ok(())
     }
 
+    /// Stores updated schema in storage
     async fn commit_schema(
         &self,
         stream_name: &str,
         schema: Schema,
     ) -> Result<(), ObjectStorageError> {
         let stream_schema = self.get_schema(stream_name).await?;
-        let new_schema = Schema::try_merge(vec![schema, stream_schema]).unwrap();
+        let new_schema = Schema::try_merge(vec![schema, stream_schema])?;
         self.put_schema(stream_name, &new_schema).await
     }
 }

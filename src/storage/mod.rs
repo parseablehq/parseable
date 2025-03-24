@@ -262,6 +262,9 @@ pub enum ObjectStorageError {
 
     #[error("JoinError: {0}")]
     JoinError(#[from] JoinError),
+
+    #[error("Arrow Error: {0}")]
+    Arrow(#[from] arrow_schema::ArrowError),
 }
 
 pub fn to_object_store_path(path: &RelativePath) -> Path {
