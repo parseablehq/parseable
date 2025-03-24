@@ -25,13 +25,7 @@ LABEL org.opencontainers.image.licenses="AGPL-3.0"
 RUN apk add --no-cache build-base git bash
 
 WORKDIR /parseable
-
-# Cache dependencies
-COPY Cargo.toml Cargo.lock build.rs ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && rm -rf src
-
-# Build the actual binary
-COPY src ./src
+COPY . .
 RUN cargo build --release
 
 # Final stage as base-image

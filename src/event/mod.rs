@@ -25,11 +25,19 @@ use itertools::Itertools;
 use std::sync::Arc;
 
 use self::error::EventError;
-use crate::{metadata::update_stats, parseable::PARSEABLE, storage::StreamType, LOCK_EXPECT};
+use crate::{
+    metadata::update_stats,
+    parseable::{StagingError, PARSEABLE},
+    storage::StreamType,
+    LOCK_EXPECT,
+};
 use chrono::NaiveDateTime;
 use std::collections::HashMap;
 
 pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
+pub const USER_AGENT_KEY: &str = "p_user_agent";
+pub const SOURCE_IP_KEY: &str = "p_src_ip";
+pub const FORMAT_KEY: &str = "p_format";
 
 #[derive(Clone)]
 pub struct Event {
@@ -46,7 +54,7 @@ pub struct Event {
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
-    pub async fn process(self) -> Result<(), EventError> {
+    pub fn process(self) -> Result<(), EventError> {
         let mut key = get_schema_key(&self.rb.schema().fields);
         if self.time_partition.is_some() {
             let parsed_timestamp_to_min = self.parsed_timestamp.format("%Y%m%dT%H%M").to_string();
@@ -76,7 +84,7 @@ impl Event {
             self.origin_format,
             self.origin_size,
             self.rb.num_rows(),
-            self.parsed_timestamp,
+            self.parsed_timestamp.date(),
         );
 
         crate::livetail::LIVETAIL.process(&self.stream_name, &self.rb);
@@ -109,7 +117,7 @@ pub fn get_schema_key(fields: &[Arc<Field>]) -> String {
     format!("{hash:x}")
 }
 
-pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), EventError> {
+pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), StagingError> {
     let mut stream_metadata = PARSEABLE.streams.write().expect("lock poisoned");
 
     let map = &mut stream_metadata
@@ -127,16 +135,13 @@ pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), Event
 }
 
 pub mod error {
-    use arrow_schema::ArrowError;
 
     use crate::{parseable::StagingError, storage::ObjectStorageError};
 
     #[derive(Debug, thiserror::Error)]
     pub enum EventError {
-        #[error("Stream Writer Failed: {0}")]
-        StreamWriter(#[from] StagingError),
-        #[error("Stream Writer Failed: {0}")]
-        Arrow(#[from] ArrowError),
+        #[error("Staging Failed: {0}")]
+        Staging(#[from] StagingError),
         #[error("ObjectStorage Error: {0}")]
         ObjectStorage(#[from] ObjectStorageError),
     }

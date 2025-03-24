@@ -16,7 +16,7 @@
  *
  */
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use actix_web::web::{Json, Path};
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
@@ -24,27 +24,24 @@ use arrow_array::RecordBatch;
 use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
-use opentelemetry_proto::tonic::logs::v1::LogsData;
-use opentelemetry_proto::tonic::metrics::v1::MetricsData;
-use opentelemetry_proto::tonic::trace::v1::TracesData;
 use serde_json::Value;
 
+use crate::event;
 use crate::event::error::EventError;
-use crate::event::format::{self, EventFormat, LogSource};
+use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
 use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
 use crate::metadata::SchemaVersion;
 use crate::option::Mode;
-use crate::otel::logs::flatten_otel_logs;
-use crate::otel::metrics::flatten_otel_metrics;
-use crate::otel::traces::flatten_otel_traces;
+use crate::otel::logs::OTEL_LOG_KNOWN_FIELD_LIST;
+use crate::otel::metrics::OTEL_METRICS_KNOWN_FIELD_LIST;
+use crate::otel::traces::OTEL_TRACES_KNOWN_FIELD_LIST;
 use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::flatten::JsonFlattenError;
-use crate::{event, LOCK_EXPECT};
 
 use super::logstream::error::{CreateStreamError, StreamError};
-use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
+use super::modal::utils::ingest_utils::{flatten_and_push_logs, get_custom_fields_from_header};
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
 
@@ -61,51 +58,56 @@ pub async fn ingest(req: HttpRequest, Json(json): Json<Value>) -> Result<HttpRes
     if internal_stream_names.contains(&stream_name) {
         return Err(PostError::InternalStream(stream_name));
     }
-    PARSEABLE
-        .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::default())
-        .await?;
 
     let log_source = req
         .headers()
         .get(LOG_SOURCE_KEY)
         .and_then(|h| h.to_str().ok())
         .map_or(LogSource::default(), LogSource::from);
-    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+
+    if matches!(
+        log_source,
+        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces
+    ) {
+        return Err(PostError::OtelNotSupported);
+    }
+
+    let p_custom_fields = get_custom_fields_from_header(req);
+
+    let log_source_entry = LogSourceEntry::new(log_source.clone(), HashSet::new());
+    PARSEABLE
+        .create_stream_if_not_exists(
+            &stream_name,
+            StreamType::UserDefined,
+            vec![log_source_entry],
+        )
+        .await?;
+
+    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
 
 pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
     let size: usize = body.len();
-    let parsed_timestamp = Utc::now().naive_utc();
-    let (rb, is_first) = {
-        let body_val: Value = serde_json::from_slice(&body)?;
-        let hash_map = PARSEABLE.streams.read().unwrap();
-        let schema = hash_map
-            .get(&stream_name)
-            .ok_or_else(|| StreamNotFound(stream_name.clone()))?
-            .metadata
-            .read()
-            .expect(LOCK_EXPECT)
-            .schema
-            .clone();
-        let event = format::json::Event { data: body_val };
-        // For internal streams, use old schema
-        event.into_recordbatch(&schema, false, None, SchemaVersion::V0)?
-    };
-    event::Event {
-        rb,
-        stream_name,
-        origin_format: "json",
-        origin_size: size as u64,
-        is_first_event: is_first,
-        parsed_timestamp,
-        time_partition: None,
-        custom_partition_values: HashMap::new(),
-        stream_type: StreamType::Internal,
-    }
-    .process()
-    .await?;
+    let json: Value = serde_json::from_slice(&body)?;
+    let schema = PARSEABLE.get_stream(&stream_name)?.get_schema_raw();
+
+    // For internal streams, use old schema
+    format::json::Event::new(json)
+        .into_event(
+            stream_name,
+            size as u64,
+            &schema,
+            false,
+            None,
+            None,
+            SchemaVersion::V0,
+            StreamType::Internal,
+            &HashMap::new(),
+        )?
+        .process()?;
+
     Ok(())
 }
 
@@ -129,15 +131,24 @@ pub async fn handle_otel_logs_ingestion(
     }
 
     let stream_name = stream_name.to_str().unwrap().to_owned();
-    PARSEABLE
-        .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelLogs)
-        .await?;
 
-    //custom flattening required for otel logs
-    let logs: LogsData = serde_json::from_value(json)?;
-    for record in flatten_otel_logs(&logs) {
-        push_logs(&stream_name, record, &log_source).await?;
-    }
+    let log_source_entry = LogSourceEntry::new(
+        log_source.clone(),
+        OTEL_LOG_KNOWN_FIELD_LIST
+            .iter()
+            .map(|&s| s.to_string())
+            .collect(),
+    );
+    PARSEABLE
+        .create_stream_if_not_exists(
+            &stream_name,
+            StreamType::UserDefined,
+            vec![log_source_entry],
+        )
+        .await?;
+    let p_custom_fields = get_custom_fields_from_header(req);
+
+    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -159,20 +170,26 @@ pub async fn handle_otel_metrics_ingestion(
     if log_source != LogSource::OtelMetrics {
         return Err(PostError::IncorrectLogSource(LogSource::OtelMetrics));
     }
+
     let stream_name = stream_name.to_str().unwrap().to_owned();
+    let log_source_entry = LogSourceEntry::new(
+        log_source.clone(),
+        OTEL_METRICS_KNOWN_FIELD_LIST
+            .iter()
+            .map(|&s| s.to_string())
+            .collect(),
+    );
     PARSEABLE
         .create_stream_if_not_exists(
             &stream_name,
             StreamType::UserDefined,
-            LogSource::OtelMetrics,
+            vec![log_source_entry],
         )
         .await?;
 
-    //custom flattening required for otel metrics
-    let metrics: MetricsData = serde_json::from_value(json)?;
-    for record in flatten_otel_metrics(metrics) {
-        push_logs(&stream_name, record, &log_source).await?;
-    }
+    let p_custom_fields = get_custom_fields_from_header(req);
+
+    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -196,15 +213,25 @@ pub async fn handle_otel_traces_ingestion(
         return Err(PostError::IncorrectLogSource(LogSource::OtelTraces));
     }
     let stream_name = stream_name.to_str().unwrap().to_owned();
+    let log_source_entry = LogSourceEntry::new(
+        log_source.clone(),
+        OTEL_TRACES_KNOWN_FIELD_LIST
+            .iter()
+            .map(|&s| s.to_string())
+            .collect(),
+    );
+
     PARSEABLE
-        .create_stream_if_not_exists(&stream_name, StreamType::UserDefined, LogSource::OtelTraces)
+        .create_stream_if_not_exists(
+            &stream_name,
+            StreamType::UserDefined,
+            vec![log_source_entry],
+        )
         .await?;
 
-    //custom flattening required for otel traces
-    let traces: TracesData = serde_json::from_value(json)?;
-    for record in flatten_otel_traces(&traces) {
-        push_logs(&stream_name, record, &log_source).await?;
-    }
+    let p_custom_fields = get_custom_fields_from_header(req);
+
+    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -245,7 +272,16 @@ pub async fn post_event(
         .get(LOG_SOURCE_KEY)
         .and_then(|h| h.to_str().ok())
         .map_or(LogSource::default(), LogSource::from);
-    flatten_and_push_logs(json, &stream_name, &log_source).await?;
+
+    if matches!(
+        log_source,
+        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces
+    ) {
+        return Err(PostError::OtelNotSupported);
+    }
+
+    let p_custom_fields = get_custom_fields_from_header(req);
+    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -357,9 +393,8 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use crate::{
-        handlers::http::modal::utils::ingest_utils::into_event_batch,
+        event::format::{json, EventFormat},
         metadata::SchemaVersion,
-        utils::json::{convert_array_to_object, flatten::convert_to_array},
     };
 
     trait TestExt {
@@ -394,8 +429,15 @@ mod tests {
             "b": "hello",
         });
 
-        let (rb, _) =
-            into_event_batch(json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = json::Event::new(json)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
+                None,
+                SchemaVersion::V0,
+                &HashMap::new(),
+            )
+            .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 4);
@@ -421,8 +463,15 @@ mod tests {
             "c": null
         });
 
-        let (rb, _) =
-            into_event_batch(json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = json::Event::new(json)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
+                None,
+                SchemaVersion::V0,
+                &HashMap::new(),
+            )
+            .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -452,7 +501,9 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = into_event_batch(json, schema, false, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = json::Event::new(json)
+            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
+            .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 3);
@@ -482,7 +533,9 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(into_event_batch(json, schema, false, None, SchemaVersion::V0,).is_err());
+        assert!(json::Event::new(json)
+            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
+            .is_err());
     }
 
     #[test]
@@ -498,25 +551,12 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = into_event_batch(json, schema, false, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = json::Event::new(json)
+            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
+            .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 1);
-    }
-
-    #[test]
-    fn non_object_arr_is_err() {
-        let json = json!([1]);
-
-        assert!(convert_array_to_object(
-            json,
-            None,
-            None,
-            None,
-            SchemaVersion::V0,
-            &crate::event::format::LogSource::default()
-        )
-        .is_err())
     }
 
     #[test]
@@ -537,8 +577,15 @@ mod tests {
             },
         ]);
 
-        let (rb, _) =
-            into_event_batch(json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = json::Event::new(json)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
+                None,
+                SchemaVersion::V0,
+                &HashMap::new(),
+            )
+            .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -584,8 +631,15 @@ mod tests {
             },
         ]);
 
-        let (rb, _) =
-            into_event_batch(json, HashMap::default(), false, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = json::Event::new(json)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
+                None,
+                SchemaVersion::V0,
+                &HashMap::new(),
+            )
+            .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -632,7 +686,9 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = into_event_batch(json, schema, false, None, SchemaVersion::V0).unwrap();
+        let (rb, _) = json::Event::new(json)
+            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
+            .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
         assert_eq!(rb.num_columns(), 4);
@@ -679,7 +735,9 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(into_event_batch(json, schema, false, None, SchemaVersion::V0,).is_err());
+        assert!(json::Event::new(json)
+            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
+            .is_err());
     }
 
     #[test]
@@ -696,35 +754,25 @@ mod tests {
             {
                 "a": 1,
                 "b": "hello",
-                "c": [{"a": 1}]
+                "c_a": [1],
             },
             {
                 "a": 1,
                 "b": "hello",
-                "c": [{"a": 1, "b": 2}]
+                "c_a": [1],
+                "c_b": [2],
             },
         ]);
-        let flattened_json = convert_to_array(
-            convert_array_to_object(
-                json,
-                None,
-                None,
+
+        let (rb, _) = json::Event::new(json)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
                 None,
                 SchemaVersion::V0,
-                &crate::event::format::LogSource::default(),
+                &HashMap::new(),
             )
-            .unwrap(),
-        )
-        .unwrap();
-
-        let (rb, _) = into_event_batch(
-            flattened_json,
-            HashMap::default(),
-            false,
-            None,
-            SchemaVersion::V0,
-        )
-        .unwrap();
+            .unwrap();
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 5);
         assert_eq!(
@@ -784,35 +832,25 @@ mod tests {
             {
                 "a": 1,
                 "b": "hello",
-                "c": [{"a": 1}]
+                "c_a": 1,
             },
             {
                 "a": 1,
                 "b": "hello",
-                "c": [{"a": 1, "b": 2}]
+                "c_a": 1,
+                "c_b": 2,
             },
         ]);
-        let flattened_json = convert_to_array(
-            convert_array_to_object(
-                json,
-                None,
-                None,
+
+        let (rb, _) = json::Event::new(json)
+            .into_recordbatch(
+                &HashMap::default(),
+                false,
                 None,
                 SchemaVersion::V1,
-                &crate::event::format::LogSource::default(),
+                &HashMap::new(),
             )
-            .unwrap(),
-        )
-        .unwrap();
-
-        let (rb, _) = into_event_batch(
-            flattened_json,
-            HashMap::default(),
-            false,
-            None,
-            SchemaVersion::V1,
-        )
-        .unwrap();
+            .unwrap();
 
         assert_eq!(rb.num_rows(), 4);
         assert_eq!(rb.num_columns(), 5);

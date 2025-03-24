@@ -16,9 +16,14 @@
  *
  */
 
+use object_store::path::Path;
+use relative_path::RelativePath;
+use serde::{Deserialize, Serialize};
+use tokio::task::JoinError;
+
 use crate::{
     catalog::snapshot::Snapshot,
-    event::format::LogSource,
+    event::format::LogSourceEntry,
     metadata::SchemaVersion,
     option::StandaloneWithDistributed,
     parseable::StreamNotFound,
@@ -26,15 +31,14 @@ use crate::{
     utils::json::{deserialize_string_as_true, serialize_bool_as_true},
 };
 
-use chrono::Local;
-use serde::{Deserialize, Serialize};
+use chrono::Utc;
 
 use std::fmt::Debug;
 
 mod azure_blob;
 mod localfs;
 mod metrics_layer;
-pub(crate) mod object_storage;
+pub mod object_storage;
 pub mod retention;
 mod s3;
 mod store_metadata;
@@ -57,14 +61,6 @@ pub const SCHEMA_FILE_NAME: &str = ".schema";
 pub const ALERTS_ROOT_DIRECTORY: &str = ".alerts";
 pub const MANIFEST_FILE: &str = "manifest.json";
 
-/// local sync interval to move data.records to /tmp dir of that stream.
-/// 60 sec is a reasonable value.
-pub const LOCAL_SYNC_INTERVAL: u64 = 60;
-
-/// duration used to configure prefix in objectstore and local disk structure
-/// used for storage. Defaults to 1 min.
-pub const OBJECT_STORE_DATA_GRANULARITY: u32 = (LOCAL_SYNC_INTERVAL as u32) / 60;
-
 // max concurrent request allowed for datafusion object store
 const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
 
@@ -75,9 +71,13 @@ const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
 // const PERMISSIONS_READ_WRITE: &str = "readwrite";
 const ACCESS_ALL: &str = "all";
 
-pub const CURRENT_OBJECT_STORE_VERSION: &str = "v5";
-pub const CURRENT_SCHEMA_VERSION: &str = "v5";
+pub const CURRENT_OBJECT_STORE_VERSION: &str = "v6";
+pub const CURRENT_SCHEMA_VERSION: &str = "v6";
 
+const CONNECT_TIMEOUT_SECS: u64 = 5;
+const REQUEST_TIMEOUT_SECS: u64 = 300;
+
+pub const MIN_MULTIPART_UPLOAD_SIZE: usize = 25 * 1024 * 1024;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectStoreFormat {
     /// Version of schema registry
@@ -118,7 +118,7 @@ pub struct ObjectStoreFormat {
     #[serde(default)]
     pub stream_type: StreamType,
     #[serde(default)]
-    pub log_source: LogSource,
+    pub log_source: Vec<LogSourceEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -143,7 +143,7 @@ pub struct StreamInfo {
     pub static_schema_flag: bool,
     #[serde(default)]
     pub stream_type: StreamType,
-    pub log_source: LogSource,
+    pub log_source: Vec<LogSourceEntry>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
@@ -208,7 +208,7 @@ impl Default for ObjectStoreFormat {
             schema_version: SchemaVersion::V1, // Newly created streams should be v1
             objectstore_format: CURRENT_OBJECT_STORE_VERSION.to_string(),
             stream_type: StreamType::UserDefined,
-            created_at: Local::now().to_rfc3339(),
+            created_at: Utc::now().to_rfc3339(),
             first_event_at: None,
             owner: Owner::new("".to_string(), "".to_string()),
             permissions: vec![Permisssion::new("parseable".to_string())],
@@ -220,7 +220,7 @@ impl Default for ObjectStoreFormat {
             custom_partition: None,
             static_schema_flag: false,
             hot_tier_enabled: false,
-            log_source: LogSource::default(),
+            log_source: vec![LogSourceEntry::default()],
         }
     }
 }
@@ -259,4 +259,11 @@ pub enum ObjectStorageError {
 
     #[error("{0}")]
     StandaloneWithDistributed(#[from] StandaloneWithDistributed),
+
+    #[error("JoinError: {0}")]
+    JoinError(#[from] JoinError),
+}
+
+pub fn to_object_store_path(path: &RelativePath) -> Path {
+    Path::from(path.as_str())
 }

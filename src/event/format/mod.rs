@@ -26,24 +26,37 @@ use std::{
 use anyhow::{anyhow, Error as AnyError};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
     metadata::SchemaVersion,
-    utils::arrow::{get_field, get_timestamp_array, replace_columns},
+    storage::StreamType,
+    utils::arrow::{add_parseable_fields, get_field},
 };
 
-use super::DEFAULT_TIMESTAMP_KEY;
+use super::{Event, DEFAULT_TIMESTAMP_KEY};
 
 pub mod json;
 
-static TIME_FIELD_NAME_PARTS: [&str; 2] = ["time", "date"];
+static TIME_FIELD_NAME_PARTS: [&str; 11] = [
+    "time",
+    "date",
+    "timestamp",
+    "created",
+    "received",
+    "ingested",
+    "collected",
+    "start",
+    "end",
+    "ts",
+    "dt",
+];
 type EventSchema = Vec<Arc<Field>>;
 
 /// Source of the logs, used to perform special processing for certain sources
-#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum LogSource {
     // AWS Kinesis sends logs in the format of a json array
     Kinesis,
@@ -91,6 +104,23 @@ impl Display for LogSource {
     }
 }
 
+/// Contains the format name and a list of known field names that are associated with the said format.
+/// Stored on disk as part of `ObjectStoreFormat` in stream.json
+#[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LogSourceEntry {
+    pub log_source_format: LogSource,
+    pub fields: HashSet<String>,
+}
+
+impl LogSourceEntry {
+    pub fn new(log_source_format: LogSource, fields: HashSet<String>) -> Self {
+        LogSourceEntry {
+            log_source_format,
+            fields,
+        }
+    }
+}
+
 // Global Trait for event format
 // This trait is implemented by all the event formats
 pub trait EventFormat: Sized {
@@ -101,9 +131,13 @@ pub trait EventFormat: Sized {
         schema: &HashMap<String, Arc<Field>>,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
+        static_schema_flag: bool,
     ) -> Result<(Self::Data, EventSchema, bool), AnyError>;
 
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
+
+    /// Returns the UTC time at ingestion
+    fn get_p_timestamp(&self) -> DateTime<Utc>;
 
     fn into_recordbatch(
         self,
@@ -111,9 +145,15 @@ pub trait EventFormat: Sized {
         static_schema_flag: bool,
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
+        p_custom_fields: &HashMap<String, String>,
     ) -> Result<(RecordBatch, bool), AnyError> {
-        let (data, mut schema, is_first) =
-            self.to_data(storage_schema, time_partition, schema_version)?;
+        let p_timestamp = self.get_p_timestamp();
+        let (data, schema, is_first) = self.to_data(
+            storage_schema,
+            time_partition,
+            schema_version,
+            static_schema_flag,
+        )?;
 
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
             return Err(anyhow!(
@@ -121,16 +161,6 @@ pub trait EventFormat: Sized {
                 DEFAULT_TIMESTAMP_KEY
             ));
         };
-
-        // add the p_timestamp field to the event schema to the 0th index
-        schema.insert(
-            0,
-            Arc::new(Field::new(
-                DEFAULT_TIMESTAMP_KEY,
-                DataType::Timestamp(TimeUnit::Millisecond, None),
-                true,
-            )),
-        );
 
         // prepare the record batch and new fields to be added
         let mut new_schema = Arc::new(Schema::new(schema));
@@ -140,13 +170,8 @@ pub trait EventFormat: Sized {
         new_schema =
             update_field_type_in_schema(new_schema, None, time_partition, None, schema_version);
 
-        let mut rb = Self::decode(data, new_schema.clone())?;
-        rb = replace_columns(
-            rb.schema(),
-            &rb,
-            &[0],
-            &[Arc::new(get_timestamp_array(rb.num_rows()))],
-        );
+        let rb = Self::decode(data, new_schema.clone())?;
+        let rb = add_parseable_fields(rb, p_timestamp, p_custom_fields)?;
 
         Ok((rb, is_first))
     }
@@ -172,6 +197,20 @@ pub trait EventFormat: Sized {
         }
         true
     }
+
+    #[allow(clippy::too_many_arguments)]
+    fn into_event(
+        self,
+        stream_name: String,
+        origin_size: u64,
+        storage_schema: &HashMap<String, Arc<Field>>,
+        static_schema_flag: bool,
+        custom_partitions: Option<&String>,
+        time_partition: Option<&String>,
+        schema_version: SchemaVersion,
+        stream_type: StreamType,
+        p_custom_fields: &HashMap<String, String>,
+    ) -> Result<Event, AnyError>;
 }
 
 pub fn get_existing_field_names(
