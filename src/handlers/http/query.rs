@@ -19,6 +19,7 @@
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, HttpResponse, Responder};
+use arrow_schema::ArrowError;
 use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
@@ -31,7 +32,7 @@ use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
-use tracing::error;
+use tracing::{debug, error};
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
@@ -101,7 +102,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
 
     user_auth_for_query(&permissions, &tables)?;
 
-    let time = Instant::now();
+    let start = Instant::now();
     // Intercept `count(*)`` queries and use the counts API
     if let Some(column_name) = query.is_logical_plan_count_without_filters() {
         let counts_req = CountsRequest {
@@ -122,11 +123,12 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
             Value::Array(vec![json!({column_name: count})])
         };
 
-        let time = time.elapsed().as_secs_f64();
-
+        let time = start.elapsed().as_secs_f64();
         QUERY_EXECUTE_TIME
             .with_label_values(&[&table_name])
             .observe(time);
+
+        debug!("Query results returned in {time}s");
 
         return Ok(HttpResponse::Ok().json(response));
     }
@@ -139,15 +141,16 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         fill_null: query_request.send_null,
         with_fields: query_request.fields,
     }
-    .to_http()?;
+    .to_json()?;
 
-    let time = time.elapsed().as_secs_f64();
-
+    let time = start.elapsed().as_secs_f64();
     QUERY_EXECUTE_TIME
         .with_label_values(&[&table_name])
         .observe(time);
 
-    Ok(response)
+    debug!("Query results returned in {time}s");
+
+    Ok(HttpResponse::Ok().json(response))
 }
 
 pub async fn get_counts(
@@ -309,16 +312,14 @@ pub enum QueryError {
     EventError(#[from] EventError),
     #[error("Error: {0}")]
     MalformedQuery(&'static str),
-    #[allow(unused)]
-    #[error(
-        r#"Error: Failed to Parse Record Batch into Json
-Description: {0}"#
-    )]
-    JsonParse(String),
     #[error("Error: {0}")]
     ActixError(#[from] actix_web::Error),
     #[error("Error: {0}")]
     Anyhow(#[from] anyhow::Error),
+    #[error("Arrow Error: {0}")]
+    Arrow(#[from] ArrowError),
+    #[error("Error: Failed to Parse Record Batch into Json: {0}")]
+    Json(#[from] serde_json::Error),
     #[error("Error: {0}")]
     StreamNotFound(#[from] StreamNotFound),
 }
@@ -326,7 +327,9 @@ Description: {0}"#
 impl actix_web::ResponseError for QueryError {
     fn status_code(&self) -> http::StatusCode {
         match self {
-            QueryError::Execute(_) | QueryError::JsonParse(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            QueryError::Execute(_) | QueryError::Json(_) | QueryError::Arrow(_) => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
             _ => StatusCode::BAD_REQUEST,
         }
     }

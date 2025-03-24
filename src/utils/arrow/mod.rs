@@ -22,20 +22,19 @@ use std::{
     sync::Arc,
 };
 
+use arrow::error::Result;
 use arrow_array::{ArrayRef, RecordBatch, StringArray, TimestampMillisecondArray, UInt64Array};
-use arrow_schema::{ArrowError, DataType, Field, Schema, TimeUnit};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use arrow_select::take::take;
+pub use batch_adapter::adapt_batch;
 use chrono::{DateTime, Utc};
 use itertools::Itertools;
-
-pub mod batch_adapter;
-pub mod flight;
-
-use anyhow::Result;
-pub use batch_adapter::adapt_batch;
 use serde_json::{Map, Value};
 
 use crate::event::DEFAULT_TIMESTAMP_KEY;
+
+pub mod batch_adapter;
+pub mod flight;
 
 /// Converts a slice of record batches to JSON.
 ///
@@ -47,6 +46,9 @@ use crate::event::DEFAULT_TIMESTAMP_KEY;
 /// * Result<Vec<Map<String, Value>>>
 ///
 /// A vector of JSON objects representing the record batches.
+///
+/// TODO: maybe this can be futher optimized by directly converting `arrow`
+///       to an in-memory type instead of serializing to bytes.
 pub fn record_batches_to_json(records: &[RecordBatch]) -> Result<Vec<Map<String, Value>>> {
     let buf = vec![];
     let mut writer = arrow_json::ArrayWriter::new(buf);
@@ -100,7 +102,7 @@ pub fn add_parseable_fields(
     rb: RecordBatch,
     p_timestamp: DateTime<Utc>,
     p_custom_fields: &HashMap<String, String>,
-) -> Result<RecordBatch, ArrowError> {
+) -> Result<RecordBatch> {
     // Return Result for proper error handling
 
     // Add custom fields in sorted order
