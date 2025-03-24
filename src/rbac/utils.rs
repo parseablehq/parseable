@@ -17,6 +17,10 @@
  */
 use std::collections::HashMap;
 
+use url::Url;
+
+use crate::parseable::PARSEABLE;
+
 use super::{
     map::roles,
     role::model::DefaultPrivilege,
@@ -47,8 +51,97 @@ pub fn to_prism_user(user: &User) -> UsersPrism {
     UsersPrism {
         id: id.into(),
         method: method.into(),
-        email,
-        picture,
+        email: mask_pii_string(email),
+        picture: mask_pii_url(picture),
         roles,
+    }
+}
+
+//mask PII string if the P_MASK_PII is set
+fn mask_pii_string(input: Option<String>) -> Option<String> {
+    if !PARSEABLE.options.mask_pii {
+        return input;
+    }
+    mask_string(input)
+}
+
+//mask PII url if the P_MASK_PII is set
+fn mask_pii_url(input: Option<Url>) -> Option<Url> {
+    if !PARSEABLE.options.mask_pii {
+        return input;
+    }
+    None
+}
+
+fn mask_string(input: Option<String>) -> Option<String> {
+    let input = input.as_ref()?;
+    if input.contains('@') {
+        // masking an email
+        let parts: Vec<&str> = input.split('@').collect();
+        //mask everything if not a proper email format
+        if parts.len() != 2 {
+            return Some("X".repeat(input.len()));
+        }
+
+        let username = parts[0];
+
+        // Mask the username - first letter capitalized, rest are X
+        let masked_username = if !username.is_empty() {
+            let first = username.chars().next().unwrap().to_uppercase().to_string();
+            format!("{}{}", first, "X".repeat(username.len() - 1))
+        } else {
+            return Some("X".repeat(input.len()));
+        };
+
+        // mask to XXX for everything after the @ symbol
+        Some(format!("{}@XXX", masked_username))
+    } else {
+        // mask all other strings with X
+        Some("X".repeat(input.len()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mask_string_with_email() {
+        // Test masking a valid email
+        let email = Some("test@example.com".to_string());
+        let masked_email = mask_string(email);
+        assert_eq!(masked_email, Some("TXXX@XXX".to_string()));
+    }
+
+    #[test]
+    fn test_mask_string_with_invalid_email() {
+        // Test masking an invalid email
+        let invalid_email = Some("invalid-email".to_string());
+        let masked_email = mask_string(invalid_email);
+        assert_eq!(masked_email, Some("XXXXXXXXXXXXX".to_string()));
+    }
+
+    #[test]
+    fn test_mask_string_with_empty_string() {
+        // Test masking an empty string
+        let empty_string = Some("".to_string());
+        let masked_string = mask_string(empty_string);
+        assert_eq!(masked_string, Some("".to_string()));
+    }
+
+    #[test]
+    fn test_mask_string_with_generic_string() {
+        // Test masking a generic string
+        let generic_string = Some("sensitive_data".to_string());
+        let masked_string = mask_string(generic_string);
+        assert_eq!(masked_string, Some("XXXXXXXXXXXXXX".to_string()));
+    }
+
+    #[test]
+    fn test_mask_string_with_none() {
+        // Test masking a None value
+        let none_value: Option<String> = None;
+        let masked_value = mask_string(none_value);
+        assert_eq!(masked_value, None);
     }
 }

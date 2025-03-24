@@ -49,7 +49,7 @@ impl TimeBounds {
 }
 
 /// Represents a range of time with a start and end point.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TimeRange {
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
