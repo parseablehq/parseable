@@ -16,9 +16,10 @@
  *
  */
 
-use crate::{handlers::http::query::QueryError, utils::arrow::record_batches_to_json};
 use datafusion::arrow::record_batch::RecordBatch;
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
+
+use crate::{handlers::http::query::QueryError, utils::arrow::record_batches_to_json};
 
 pub struct QueryResponse {
     pub records: Vec<RecordBatch>,
@@ -28,9 +29,9 @@ pub struct QueryResponse {
 }
 
 impl QueryResponse {
-    /// TODO: maybe this can be futher optimized by directly converting `arrow` to `serde_json` instead of serializing to bytes
+    /// Convert into a JSON response
     pub fn to_json(&self) -> Result<Value, QueryError> {
-        let mut json: Vec<Map<String, Value>> = record_batches_to_json(&self.records)?;
+        let mut json = record_batches_to_json(&self.records)?;
 
         if self.fill_null {
             for object in json.iter_mut() {
