@@ -175,7 +175,6 @@ pub trait EventFormat: Sized {
             update_field_type_in_schema(new_schema, None, time_partition, None, schema_version);
 
         let rb = Self::decode(data, new_schema.clone())?;
-
         let rb = add_parseable_fields(rb, p_timestamp, p_custom_fields)?;
 
         Ok((rb, is_first))

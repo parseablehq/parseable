@@ -28,6 +28,7 @@ use relative_path::RelativePathBuf;
 use serde_json::Value;
 use tokio::sync::oneshot;
 
+use crate::option::Mode;
 use crate::{
     analytics,
     handlers::{
@@ -108,7 +109,7 @@ impl ParseableServer for IngestServer {
         tokio::spawn(airplane::server());
 
         // write the ingestor metadata to storage
-        PARSEABLE.store_ingestor_metadata().await?;
+        PARSEABLE.store_metadata(Mode::Ingest).await?;
 
         // Ingestors shouldn't have to deal with OpenId auth flow
         let result = self.start(shutdown_rx, prometheus.clone(), None).await;
@@ -251,7 +252,7 @@ impl IngestServer {
 
 // check for querier state. Is it there, or was it there in the past
 // this should happen before the set the ingestor metadata
-async fn check_querier_state() -> anyhow::Result<Option<Bytes>, ObjectStorageError> {
+pub async fn check_querier_state() -> anyhow::Result<Option<Bytes>, ObjectStorageError> {
     // how do we check for querier state?
     // based on the work flow of the system, the querier will always need to start first
     // i.e the querier will create the `.parseable.json` file

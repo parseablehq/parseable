@@ -422,7 +422,6 @@ mod tests {
     use crate::{
         event::format::{json, EventFormat},
         metadata::SchemaVersion,
-        utils::json::{convert_array_to_object, flatten::convert_to_array},
     };
 
     trait TestExt {
@@ -585,21 +584,6 @@ mod tests {
 
         assert_eq!(rb.num_rows(), 1);
         assert_eq!(rb.num_columns(), 1);
-    }
-
-    #[test]
-    fn non_object_arr_is_err() {
-        let json = json!([1]);
-
-        assert!(convert_array_to_object(
-            json,
-            None,
-            None,
-            None,
-            SchemaVersion::V0,
-            &crate::event::format::LogSource::default()
-        )
-        .is_err())
     }
 
     #[test]
@@ -797,28 +781,17 @@ mod tests {
             {
                 "a": 1,
                 "b": "hello",
-                "c": [{"a": 1}]
+                "c_a": [1],
             },
             {
                 "a": 1,
                 "b": "hello",
-                "c": [{"a": 1, "b": 2}]
+                "c_a": [1],
+                "c_b": [2],
             },
         ]);
-        let flattened_json = convert_to_array(
-            convert_array_to_object(
-                json,
-                None,
-                None,
-                None,
-                SchemaVersion::V0,
-                &crate::event::format::LogSource::default(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
 
-        let (rb, _) = json::Event::new(flattened_json)
+        let (rb, _) = json::Event::new(json)
             .into_recordbatch(
                 &HashMap::default(),
                 false,
@@ -886,28 +859,17 @@ mod tests {
             {
                 "a": 1,
                 "b": "hello",
-                "c": [{"a": 1}]
+                "c_a": 1,
             },
             {
                 "a": 1,
                 "b": "hello",
-                "c": [{"a": 1, "b": 2}]
+                "c_a": 1,
+                "c_b": 2,
             },
         ]);
-        let flattened_json = convert_to_array(
-            convert_array_to_object(
-                json,
-                None,
-                None,
-                None,
-                SchemaVersion::V1,
-                &crate::event::format::LogSource::default(),
-            )
-            .unwrap(),
-        )
-        .unwrap();
 
-        let (rb, _) = json::Event::new(flattened_json)
+        let (rb, _) = json::Event::new(json)
             .into_recordbatch(
                 &HashMap::default(),
                 false,
