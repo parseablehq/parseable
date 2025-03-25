@@ -179,8 +179,8 @@ pub fn v4_v5(mut stream_metadata: Value, stream_name: &str) -> Value {
 }
 
 pub fn v5_v6(mut stream_metadata: Value) -> Value {
-    let stream_metadata_map: &mut serde_json::Map<String, Value> =
-        stream_metadata.as_object_mut().unwrap();
+    let stream_metadata_map = stream_metadata.as_object_mut().unwrap();
+
     stream_metadata_map.insert(
         "objectstore-format".to_owned(),
         Value::String(storage::CURRENT_OBJECT_STORE_VERSION.into()),
@@ -189,54 +189,52 @@ pub fn v5_v6(mut stream_metadata: Value) -> Value {
         "version".to_owned(),
         Value::String(storage::CURRENT_SCHEMA_VERSION.into()),
     );
-    if let Some(log_source) = stream_metadata_map.remove("log_source") {
-        if let Some(format_str) = log_source.as_str() {
-            let transformed_format = match format_str {
-                "Kinesis" => "kinesis",
-                "OtelLogs" => "otel-logs",
-                "OtelTraces" => "otel-traces",
-                "OtelMetrics" => "otel-metrics",
-                "Pmeta" => "pmeta",
-                "Json" => "json",
-                _ => "json",
-            };
 
-            let log_source_entry = json!({
-                "log_source_format": transformed_format,
-                "fields": []
-            });
+    // Transform or add log_source
+    let log_source_entry = match stream_metadata_map.remove("log_source") {
+        Some(log_source) => transform_log_source(log_source),
+        None => default_log_source_entry(),
+    };
 
-            stream_metadata_map.insert("log_source".to_owned(), json!([log_source_entry]));
-        } else {
-            let default_entry = json!({
-                "log_source_format": "json",
-                "fields": []
-            });
-
-            stream_metadata_map.insert("log_source".to_owned(), json!([default_entry]));
-        }
-    } else {
-        let default_entry = json!({
-            "log_source_format": "json",
-            "fields": []
-        });
-
-        stream_metadata_map.insert("log_source".to_owned(), json!([default_entry]));
-    }
+    stream_metadata_map.insert("log_source".to_owned(), json!([log_source_entry]));
 
     stream_metadata
 }
 
-pub fn rename_log_source_v6(mut stream_metadata: Value) -> Value {
-    let mut format_mapping = HashMap::new();
-    format_mapping.insert("Kinesis", "kinesis");
-    format_mapping.insert("OtelLogs", "otel-logs");
-    format_mapping.insert("OtelTraces", "otel-traces");
-    format_mapping.insert("OtelMetrics", "otel-metrics");
-    format_mapping.insert("Pmeta", "pmeta");
-    format_mapping.insert("Json", "json");
+fn transform_log_source(log_source: Value) -> Value {
+    if let Some(format_str) = log_source.as_str() {
+        let transformed_format = map_log_source_format(format_str);
+        json!({
+            "log_source_format": transformed_format,
+            "fields": []
+        })
+    } else {
+        default_log_source_entry()
+    }
+}
 
-    // Transform log_source_format in each log_source entry if it exists
+fn map_log_source_format(format_str: &str) -> &str {
+    match format_str {
+        "Kinesis" => "kinesis",
+        "OtelLogs" => "otel-logs",
+        "OtelTraces" => "otel-traces",
+        "OtelMetrics" => "otel-metrics",
+        "Pmeta" => "pmeta",
+        "Json" => "json",
+        _ => "json",
+    }
+}
+
+fn default_log_source_entry() -> Value {
+    json!({
+        "log_source_format": "json",
+        "fields": []
+    })
+}
+
+pub fn rename_log_source_v6(mut stream_metadata: Value) -> Value {
+    let format_mapping = create_format_mapping();
+
     if let Some(log_sources) = stream_metadata
         .get_mut("log_source")
         .and_then(|v| v.as_array_mut())
@@ -251,7 +249,19 @@ pub fn rename_log_source_v6(mut stream_metadata: Value) -> Value {
             }
         }
     }
+
     stream_metadata
+}
+
+fn create_format_mapping() -> HashMap<&'static str, &'static str> {
+    HashMap::from([
+        ("Kinesis", "kinesis"),
+        ("OtelLogs", "otel-logs"),
+        ("OtelTraces", "otel-traces"),
+        ("OtelMetrics", "otel-metrics"),
+        ("Pmeta", "pmeta"),
+        ("Json", "json"),
+    ])
 }
 
 fn v1_v2_snapshot_migration(mut snapshot: Value) -> Value {
