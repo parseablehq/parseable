@@ -83,3 +83,115 @@ pub fn flatten_kinesis_logs(message: Message) -> Vec<Value> {
 
     vec_kinesis_json
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{json, Value};
+
+    use super::{flatten_kinesis_logs, Message};
+
+    #[test]
+    fn flatten_kinesis_logs_decodes_base64_data() {
+        let message: Message = serde_json::from_value(json!( {
+            "requestId": "9b848d8a-2d89-474b-b073-04b8e5232210".to_string(),
+            "timestamp": 1705026780451_i64,
+            "records": [
+                 {
+                    "data": "eyJDSEFOR0UiOi0wLjQ1LCJQUklDRSI6NS4zNiwiVElDS0VSX1NZTUJPTCI6IkRFRyIsIlNFQ1RPUiI6IkVORVJHWSJ9".to_string(),
+                },
+                 {
+                    "data": "eyJDSEFOR0UiOjMuMTYsIlBSSUNFIjo3My43NiwiVElDS0VSX1NZTUJPTCI6IldNVCIsIlNFQ1RPUiI6IlJFVEFJTCJ9".to_string(),
+                },
+            ],
+        })).unwrap();
+
+        let result = flatten_kinesis_logs(message);
+        assert_eq!(result.len(), 2);
+
+        let Value::Object(map) = &result[0] else {
+            panic!("Expected first result to be a JSON object");
+        };
+        assert_eq!(map.get("CHANGE").unwrap().as_f64().unwrap(), -0.45);
+        assert_eq!(map.get("PRICE").unwrap().as_f64().unwrap(), 5.36);
+        assert_eq!(map.get("TICKER_SYMBOL").unwrap().as_str().unwrap(), "DEG");
+        assert_eq!(map.get("SECTOR").unwrap().as_str().unwrap(), "ENERGY");
+        assert_eq!(
+            map.get("requestId").unwrap().as_str().unwrap(),
+            "9b848d8a-2d89-474b-b073-04b8e5232210"
+        );
+        assert_eq!(
+            map.get("timestamp").unwrap().as_str().unwrap(),
+            "1705026780451"
+        );
+
+        let Value::Object(map) = &result[1] else {
+            panic!("Expected second result to be a JSON object");
+        };
+        assert_eq!(map.get("CHANGE").unwrap().as_f64().unwrap(), 3.16);
+        assert_eq!(map.get("PRICE").unwrap().as_f64().unwrap(), 73.76);
+        assert_eq!(map.get("TICKER_SYMBOL").unwrap(), "WMT");
+        assert_eq!(map.get("SECTOR").unwrap(), "RETAIL");
+        assert_eq!(
+            map.get("requestId").unwrap().as_str().unwrap(),
+            "9b848d8a-2d89-474b-b073-04b8e5232210"
+        );
+        assert_eq!(
+            map.get("timestamp").unwrap().as_str().unwrap(),
+            "1705026780451"
+        );
+    }
+
+    #[test]
+    fn flatten_kinesis_logs_adds_request_id_and_timestamp() {
+        let message: Message = serde_json::from_value(json!( {
+            "requestId": "9b848d8a-2d89-474b-b073-04b8e5232210".to_string(),
+            "timestamp": 1705026780451_i64,
+            "records": [
+                 {
+                    "data": "eyJDSEFOR0UiOi0wLjQ1LCJQUklDRSI6NS4zNiwiVElDS0VSX1NZTUJPTCI6IkRFRyIsIlNFQ1RPUiI6IkVORVJHWSJ9".to_string(),
+                },
+                 {
+                    "data": "eyJDSEFOR0UiOjMuMTYsIlBSSUNFIjo3My43NiwiVElDS0VSX1NZTUJPTCI6IldNVCIsIlNFQ1RPUiI6IlJFVEFJTCJ9".to_string(),
+                },
+            ],
+        })).unwrap();
+
+        let result = flatten_kinesis_logs(message);
+        assert_eq!(result.len(), 2);
+
+        let event = result[0].as_object().unwrap();
+        assert_eq!(
+            event.get("requestId").unwrap().as_str().unwrap(),
+            "9b848d8a-2d89-474b-b073-04b8e5232210"
+        );
+        assert_eq!(
+            event.get("timestamp").unwrap().as_str().unwrap(),
+            "1705026780451"
+        );
+
+        let event = result[1].as_object().unwrap();
+        assert_eq!(
+            event.get("requestId").unwrap().as_str().unwrap(),
+            "9b848d8a-2d89-474b-b073-04b8e5232210"
+        );
+        assert_eq!(
+            event.get("timestamp").unwrap().as_str().unwrap(),
+            "1705026780451"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "InvalidByte(7, 95)")]
+    fn malformed_json_after_base64_decoding() {
+        let message: Message = serde_json::from_value(json!({
+            "requestId": "9b848d8a-2d89-474b-b073-04b8e5232210".to_string(),
+            "timestamp": 1705026780451_i64,
+            "records": [ {
+                "data": "invalid_base64_data".to_string(),
+            }],
+        }))
+        .unwrap();
+
+        flatten_kinesis_logs(message);
+    }
+}
