@@ -17,7 +17,7 @@
 *
 */
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Value};
 
@@ -202,32 +202,27 @@ pub fn v5_v6(mut stream_metadata: Value) -> Value {
 }
 
 pub fn rename_log_source_v6(mut stream_metadata: Value) -> Value {
-    let stream_metadata_map: &mut serde_json::Map<String, Value> =
-        stream_metadata.as_object_mut().unwrap();
-    let log_source = stream_metadata_map.get("log_source");
-    if let Some(log_source) = log_source {
-        //rename log_source_format ->
-        //Kinesis to kinesis
-        //OtelLogs to otel-logs
-        //OtelTraces to otel-traces
-        //OtelMetrics to otel-metrics
-        //Pmeta to pmeta
-        //Json to json
+    let mut format_mapping = HashMap::new();
+    format_mapping.insert("Kinesis", "kinesis");
+    format_mapping.insert("OtelLogs", "otel-logs");
+    format_mapping.insert("OtelTraces", "otel-traces");
+    format_mapping.insert("OtelMetrics", "otel-metrics");
+    format_mapping.insert("Pmeta", "pmeta");
+    format_mapping.insert("Json", "json");
 
-        let log_source_entry = serde_json::from_value::<LogSourceEntry>(log_source.clone());
-        if let Ok(mut log_source_entry) = log_source_entry {
-            let log_source = log_source_entry.log_source_format.clone();
-            let log_source_format = match log_source {
-                LogSource::Kinesis => "kinesis",
-                LogSource::OtelLogs => "otel-logs",
-                LogSource::OtelTraces => "otel-traces",
-                LogSource::OtelMetrics => "otel-metrics",
-                LogSource::Pmeta => "pmeta",
-                LogSource::Json => "json",
-                _ => "",
-            };
-            log_source_entry.log_source_format = LogSource::from(log_source_format);
-            stream_metadata_map.insert("log_source".to_owned(), json!([log_source_entry]));
+    // Transform log_source_format in each log_source entry if it exists
+    if let Some(log_sources) = stream_metadata
+        .get_mut("log_source")
+        .and_then(|v| v.as_array_mut())
+    {
+        for source in log_sources.iter_mut() {
+            if let Some(format_value) = source.get_mut("log_source_format") {
+                if let Some(format_str) = format_value.as_str() {
+                    if let Some(new_format) = format_mapping.get(format_str) {
+                        *format_value = json!(new_format);
+                    }
+                }
+            }
         }
     }
     stream_metadata
