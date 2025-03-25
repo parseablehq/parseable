@@ -246,8 +246,6 @@ async fn migrate_stream_metadata(
             stream_metadata_value = stream_metadata_migration::v1_v4(stream_metadata_value);
             stream_metadata_value = stream_metadata_migration::v4_v5(stream_metadata_value, stream);
             stream_metadata_value = stream_metadata_migration::v5_v6(stream_metadata_value);
-            stream_metadata_value =
-                stream_metadata_migration::rename_log_source_v6(stream_metadata_value);
 
             storage
                 .put_object(&path, to_bytes(&stream_metadata_value))
@@ -262,8 +260,6 @@ async fn migrate_stream_metadata(
             stream_metadata_value = stream_metadata_migration::v2_v4(stream_metadata_value);
             stream_metadata_value = stream_metadata_migration::v4_v5(stream_metadata_value, stream);
             stream_metadata_value = stream_metadata_migration::v5_v6(stream_metadata_value);
-            stream_metadata_value =
-                stream_metadata_migration::rename_log_source_v6(stream_metadata_value);
 
             storage
                 .put_object(&path, to_bytes(&stream_metadata_value))
@@ -278,8 +274,6 @@ async fn migrate_stream_metadata(
             stream_metadata_value = stream_metadata_migration::v3_v4(stream_metadata_value);
             stream_metadata_value = stream_metadata_migration::v4_v5(stream_metadata_value, stream);
             stream_metadata_value = stream_metadata_migration::v5_v6(stream_metadata_value);
-            stream_metadata_value =
-                stream_metadata_migration::rename_log_source_v6(stream_metadata_value);
 
             storage
                 .put_object(&path, to_bytes(&stream_metadata_value))
@@ -288,8 +282,6 @@ async fn migrate_stream_metadata(
         Some("v4") => {
             stream_metadata_value = stream_metadata_migration::v4_v5(stream_metadata_value, stream);
             stream_metadata_value = stream_metadata_migration::v5_v6(stream_metadata_value);
-            stream_metadata_value =
-                stream_metadata_migration::rename_log_source_v6(stream_metadata_value);
 
             storage
                 .put_object(&path, to_bytes(&stream_metadata_value))
@@ -297,8 +289,6 @@ async fn migrate_stream_metadata(
         }
         Some("v5") => {
             stream_metadata_value = stream_metadata_migration::v5_v6(stream_metadata_value);
-            stream_metadata_value =
-                stream_metadata_migration::rename_log_source_v6(stream_metadata_value);
             storage
                 .put_object(&path, to_bytes(&stream_metadata_value))
                 .await?;
