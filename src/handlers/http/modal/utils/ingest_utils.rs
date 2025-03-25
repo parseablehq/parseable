@@ -31,13 +31,8 @@ use crate::{
         format::{json, EventFormat, LogSource},
         FORMAT_KEY, SOURCE_IP_KEY, USER_AGENT_KEY,
     },
-    handlers::{
-        http::{
-            ingest::PostError,
-            kinesis::{flatten_kinesis_logs, Message},
-        },
-        LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY,
-    },
+    handlers::{http::ingest::PostError, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY},
+    kinesis::{flatten_kinesis_logs, Message},
     otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
     parseable::PARSEABLE,
     storage::StreamType,
@@ -143,6 +138,7 @@ async fn push_logs(
             )?
             .process()?;
     }
+
     Ok(())
 }
 
