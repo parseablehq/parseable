@@ -33,9 +33,9 @@ pub static KNOWN_SCHEMA_LIST: Lazy<EventProcessor> =
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
-    #[error("Event is not in the expected text/JSON format for {0}")]
+    #[error("Event is not in the expected text/JSON format for {0}. Please create an issue on our GitHub repository (github.com/parseablehq/parseable), or reach out in the #support-channel on our Slack community for assistance. Include this error message and your log sample to help us improve compatibility.")]
     Unacceptable(String),
-    #[error("Unknown log format: {0}")]
+    #[error("Unsupported log format: '{0}'. This format cannot be parsed by the current version. Please create an issue on our GitHub repository (github.com/parseablehq/parseable) with a sample log event, or reach out in the #support-channel on our Slack community for assistance. Include this error message and your log sample to help us improve compatibility.")]
     Unknown(String),
 }
 
