@@ -23,6 +23,8 @@ use itertools::Itertools;
 use serde_json::{json, Value};
 use tracing::info;
 
+pub const TIME_ELAPSED_HEADER: &str = "p-time-elapsed";
+
 pub struct QueryResponse {
     pub records: Vec<RecordBatch>,
     pub fields: Vec<String>,
@@ -51,15 +53,13 @@ impl QueryResponse {
             json!({
                 "fields": self.fields,
                 "records": values,
-                "totalTime": self.total_time
             })
         } else {
-            json!({
-                "records": values,
-                "totalTime": self.total_time
-            })
+            Value::Array(values)
         };
 
-        Ok(HttpResponse::Ok().json(response))
+        Ok(HttpResponse::Ok()
+            .insert_header((TIME_ELAPSED_HEADER, self.total_time.as_str()))
+            .json(response))
     }
 }

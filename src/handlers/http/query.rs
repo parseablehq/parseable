@@ -44,7 +44,7 @@ use crate::query::error::ExecuteError;
 use crate::query::{execute, CountsRequest, CountsResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
-use crate::response::QueryResponse;
+use crate::response::{QueryResponse, TIME_ELAPSED_HEADER};
 use crate::storage::object_storage::commit_schema_to_storage;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
@@ -67,7 +67,6 @@ pub struct Query {
 }
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
-    let start = Instant::now();
     let session_state = QUERY_SESSION.state();
     let raw_logical_plan = match session_state
         .create_logical_plan(&query_request.query)
@@ -123,17 +122,20 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
             Value::Array(vec![json!({column_name: count})])
         };
 
+        let total_time = format!("{:?}", time.elapsed());
         let time = time.elapsed().as_secs_f64();
 
         QUERY_EXECUTE_TIME
             .with_label_values(&[&table_name])
             .observe(time);
 
-        return Ok(HttpResponse::Ok().json(response));
+        return Ok(HttpResponse::Ok()
+            .insert_header((TIME_ELAPSED_HEADER, total_time.as_str()))
+            .json(response));
     }
 
     let (records, fields) = execute(query, &table_name).await?;
-    let total_time = format!("{:?}", start.elapsed());
+    let total_time = format!("{:?}", time.elapsed());
     let response = QueryResponse {
         records,
         fields,
