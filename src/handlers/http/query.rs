@@ -67,6 +67,7 @@ pub struct Query {
 }
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
+    let start = Instant::now();
     let session_state = QUERY_SESSION.state();
     let raw_logical_plan = match session_state
         .create_logical_plan(&query_request.query)
@@ -132,12 +133,13 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     }
 
     let (records, fields) = execute(query, &table_name).await?;
-
+    let total_time = format!("{:?}", start.elapsed());
     let response = QueryResponse {
         records,
         fields,
         fill_null: query_request.send_null,
         with_fields: query_request.fields,
+        total_time,
     }
     .to_http()?;
 

@@ -28,6 +28,7 @@ pub struct QueryResponse {
     pub fields: Vec<String>,
     pub fill_null: bool,
     pub with_fields: bool,
+    pub total_time: String,
 }
 
 impl QueryResponse {
@@ -49,10 +50,14 @@ impl QueryResponse {
         let response = if self.with_fields {
             json!({
                 "fields": self.fields,
-                "records": values
+                "records": values,
+                "totalTime": self.total_time
             })
         } else {
-            Value::Array(values)
+            json!({
+                "records": values,
+                "totalTime": self.total_time
+            })
         };
 
         Ok(HttpResponse::Ok().json(response))
