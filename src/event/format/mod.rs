@@ -67,11 +67,11 @@ pub enum LogSource {
     OtelLogs,
     // OpenTelemetry sends traces according to the specification as explained here
     // https://github.com/open-telemetry/opentelemetry-proto/blob/v1.0.0/opentelemetry/proto/trace/v1/trace.proto
-    #[serde(rename = "otel-traces")]
+    #[serde(rename = "otel-metrics")]
     OtelMetrics,
     // OpenTelemetry sends traces according to the specification as explained here
     // https://github.com/open-telemetry/opentelemetry-proto/tree/v1.0.0/opentelemetry/proto/metrics/v1
-    #[serde(rename = "otel-metrics")]
+    #[serde(rename = "otel-traces")]
     OtelTraces,
     // Internal Stream format
     #[serde(rename = "pmeta")]
