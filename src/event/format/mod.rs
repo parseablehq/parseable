@@ -39,6 +39,7 @@ use crate::{
 use super::{Event, DEFAULT_TIMESTAMP_KEY};
 
 pub mod json;
+pub mod known_schema;
 
 static TIME_FIELD_NAME_PARTS: [&str; 11] = [
     "time",
@@ -80,18 +81,21 @@ pub enum LogSource {
     #[serde(rename = "json")]
     // Json object or array
     Json,
+    // Custom Log Sources e.g. "syslog"
+    #[serde(untagged)]
     Custom(String),
 }
 
 impl From<&str> for LogSource {
     fn from(s: &str) -> Self {
-        match s {
+        match s.to_lowercase().as_str() {
             "kinesis" => LogSource::Kinesis,
             "otel-logs" => LogSource::OtelLogs,
             "otel-metrics" => LogSource::OtelMetrics,
             "otel-traces" => LogSource::OtelTraces,
             "pmeta" => LogSource::Pmeta,
-            _ => LogSource::Json,
+            "" | "json" => LogSource::Json,
+            custom => LogSource::Custom(custom.to_owned()),
         }
     }
 }

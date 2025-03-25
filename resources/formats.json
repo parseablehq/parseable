@@ -1,0 +1,612 @@
+[
+    {
+      "name": "access_log",
+      "regex": [
+        {
+            "pattern": "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?) (?<c_ip>[^ ]+) (?<cs_username>[^ ]+) (?<cs_method>[A-Z]+)(?<cs_uri_stem>[^ \\?]+)(?:\\?(?<cs_uri_query>[^ ]*))? (?:-1|\\d+) (?<sc_status>\\d+) \\d+\\s*(?<body>.*)",           
+             "fields": ["timestamp", "c_ip", "cs_username", "cs_method", "cs_uri_stem", "cs_uri_query", "sc_status", "body"]
+        },
+        {
+          "pattern": "^(?P<c_ip>[\\w\\.:\\-]+)\\s+[\\w\\.\\-]+\\s+(?:-|(?P<cs_username>\\S+))\\s+\\[(?P<timestamp>[^\\]]+)\\] \"(?:\\-|(?P<cs_method>\\w+) (?P<cs_uri_stem>[^ \\?]+)(?:\\?(?P<cs_uri_query>[^ ]*))? (?P<cs_version>[\\w/\\.]+))\" (?P<sc_status>\\d+) (?P<sc_bytes>\\d+|-)(?: \"(?:-|(?P<cs_referer>[^\"]*))\" \"(?:-|(?P<cs_user_agent>[^\"]+))\")?\\s*(?P<body>.*)",
+          "fields": ["c_ip", "cs_username", "timestamp", "cs_method", "cs_uri_stem", "cs_uri_query", "cs_version", "sc_status", "sc_bytes", "cs_referer", "cs_user_agent", "body"]
+        },
+        {
+          "pattern": "^(?P<cs_host>[\\w\\-\\.]*)(?::\\d+)?\\s+(?P<c_ip>[\\w\\.:\\-]+)\\s+[\\w\\.\\-]+\\s+(?:-|(?P<cs_username>\\S+))\\s+\\[(?P<timestamp>[^\\]]+)\\] \"(?:\\-|(?P<cs_method>\\w+) (?P<cs_uri_stem>[^ \\?]+)(?:\\?(?P<cs_uri_query>[^ ]*))? (?P<cs_version>[\\w/\\.]+))\" (?P<sc_status>\\d+) (?P<sc_bytes>\\d+|-)(?: \"(?:-|(?P<cs_referer>[^\"]+))\" \"(?P<cs_user_agent>[^\"]+)\")?\\s*(?P<body>.*)",
+          "fields": ["cs_host", "c_ip", "cs_username", "timestamp", "cs_method", "cs_uri_stem", "cs_uri_query", "cs_version", "sc_status", "sc_bytes", "cs_referer", "cs_user_agent", "body"]
+        },
+        {
+          "pattern": "^(?P<c_ip>[\\w\\.:\\-]+)\\s+[\\w\\.\\-]+\\s+(?P<cs_username>\\S+)\\s+\"(?:\\-|(?P<cs_method>\\w+) (?P<cs_uri_stem>[^ \\?]+)(?:\\?(?P<cs_uri_query>[^ ]*))? (?P<cs_version>[\\w/\\.]+))\" (?P<sc_status>\\d+) (?P<sc_bytes>\\d+|-)(?: \"(?P<cs_referer>[^\"]+)\" \"(?P<cs_user_agent>[^\"]+)\")?\\s*(?P<body>.*)",
+          "fields": ["c_ip", "cs_username", "cs_method", "cs_uri_stem", "cs_uri_query", "cs_version", "sc_status", "sc_bytes", "cs_referer", "cs_user_agent", "body"]
+        }
+      ]
+    },
+    {
+      "name": "alb_log",
+      "regex": [
+        {
+          "pattern": "^(?P<type>(http)|(https)|(h2)|(ws)|(wss)) (?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z) (?P<elb>[^ ]+) (?P<client_ip>[\\w\\.:]+):(?P<client_port>\\d+) (?P<target_ip>[\\w\\.:]+):(?P<target_port>\\d+) (?P<request_processing_time>(-1)|(\\d+(\\.\\d+))?) (?P<target_processing_time>(-1)|(\\d+(\\.\\d+))?) (?P<response_processing_time>(-1)|(\\d+(\\.\\d+))?) (?P<elb_status_code>\\d+|-) (?P<target_status_code>\\d+|-) (?P<received_bytes>\\d+) (?P<sent_bytes>\\d+) \"(?:\\-|(?P<cs_method>\\w+|-) (?P<cs_uri_whole>(?P<cs_uri_stem>(?:(?P<cs_uri_scheme>https|http)?://)?(?:(?P<cs_uri_hostname>[^:]+):(?P<cs_uri_port>\\d+)?)?(?P<cs_uri_path>[^ \\?]+)?)(?:\\?(?P<cs_uri_query>[^ ]*))?) (?P<cs_version>[\\w/\\.]+|-)\\s*)\" \"(?P<user_agent>[^\"]+)\" (?P<ssl_cipher>[\\w-]+) (?P<ssl_protocol>[\\w\\.-]+) (?P<target_group_arn>[^ ]+) \"(?P<trace_id>[^ ]+)\" (?P<domain_name>[^ ]+) (?P<chosen_cert_arn>[^ ]+) ?(?P<matched_rule_priority>(-1)|\\b([0-9]|[1-8][0-9]|9[0-9]|[1-8][0-9]{2}|9[0-8][0-9]|99[0-9]|[1-8][0-9]{3}|9[0-8][0-9]{2}|99[0-8][0-9]|999[0-9]|[1-4][0-9]{4}|50000)\\b)?",
+          "fields": ["type", "timestamp", "elb", "client_ip", "client_port", "target_ip", "target_port", "request_processing_time", "target_processing_time", "response_processing_time", "elb_status_code", "target_status_code", "received_bytes", "sent_bytes", "cs_method", "cs_uri_whole", "cs_uri_stem", "cs_uri_scheme", "cs_uri_hostname", "cs_uri_port", "cs_uri_path", "cs_uri_query", "cs_version", "user_agent", "ssl_cipher", "ssl_protocol", "target_group_arn", "trace_id", "domain_name", "chosen_cert_arn", "matched_rule_priority"]
+        }
+      ]
+    },
+    {
+      "name": "block_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\S{3,8} \\w{3}\\s+\\d{1,2} \\d{2}:\\d{2}:\\d{2} \\w+ \\d{4})\\s*(?P<body>.*)",
+          "fields": ["timestamp", "body"]
+        },
+        {
+          "pattern": "^\\[(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3,6})?(?:Z|[-+]\\d{2}:?\\d{2})?)\\]\\s*(?P<body>.*)",
+          "fields": ["timestamp", "body"]
+        }
+      ]
+    },
+    {
+      "name": "candlepin_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3}) \\[(req=(?P<req>[0-9a-f-]+)|=), org=(?P<org>\\w*)\\] (?P<alert_level>\\w+)  (?P<module>[\\w.]+) - (?P<body>.*)",
+          "fields": ["timestamp", "req", "org", "alert_level", "module", "body"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}[+-]\\d{4}) (?P<body>.*)",
+          "fields": ["timestamp", "body"]
+        }
+      ]
+    },
+    {
+      "name": "choose_repo_log",
+      "regex": [
+        {
+          "pattern": "^\\[(?P<level>\\w+):[^\\]]+] [^:]+:\\d+ (?P<timestamp>\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(?:[\\.,]\\d{3})?):(?P<body>.*)",
+          "fields": ["level", "timestamp", "body"]
+        }
+      ]
+    },
+    {
+      "name": "cloudvm_ram_log",
+      "regex": [
+        {
+          "pattern": "^========== Start of cloudvm ram size dump at (?P<timestamp>[^=]+) ==========(?P<body>.*)",
+          "fields": ["timestamp", "body"]
+        }
+      ]
+    },
+    {
+      "name": "cups_log",
+      "regex": [
+        {
+          "pattern": "^(?P<level>[IEW]) \\[(?P<timestamp>\\d{2}/\\S{3,8}/\\d{4}:\\d{2}:\\d{2}:\\d{2} [+-]\\d{2,4})\\] (?P<section>\\w+): (?P<body>.*)",
+          "fields": ["level", "timestamp", "section", "body"]
+        },
+        {
+          "pattern": "^(?P<level>[IEW]) \\[(?P<timestamp>\\d{2}/\\S{3,8}/\\d{4}:\\d{2}:\\d{2}:\\d{2} [+-]\\d{2,4})\\](?P<body>.*)",
+          "fields": ["level", "timestamp", "body"]
+        }
+      ]
+    },
+    {
+      "name": "dpkg_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}[T ]\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?) (?:(?:(?P<action>startup|status|configure|install|upgrade|trigproc|remove|purge)(?: (?P<status>config-files|failed-config|half-configured|half-installed|installed|not-installed|post-inst-failed|removal-failed|triggers-awaited|triggers-pending|unpacked))? (?P<package>[^ ]+) (?P<installed_version>[^ ]+)(?: (?P<available_version>[^ ]+))?)|update-alternatives: (?P<body>.*))",
+          "fields": ["timestamp", "action", "status", "package", "installed_version", "available_version", "body"]
+        }
+      ]
+    },
+    {
+      "name": "elb_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z) (?P<elb>[^ ]+) (?P<client_ip>[\\w\\.:]+):(?P<client_port>\\d+) (?P<backend_ip>[\\w\\.:]+):(?P<backend_port>\\d+) (?P<request_processing_time>\\d+(\\.\\d+)?) (?P<backend_processing_time>\\d+(\\.\\d+)?) (?P<response_processing_time>\\d+(\\.\\d+)?) (?P<elb_status_code>\\d+|-) (?P<backend_status_code>\\d+|-) (?P<received_bytes>\\d+) (?P<sent_bytes>\\d+) \"(?:\\-|(?P<cs_method>\\w+|-) (?P<cs_uri_stem>[^ \\?]+)(?:\\?(?P<cs_uri_query>[^ ]*))? (?P<cs_version>[\\w/\\.]+|-)\\s*)\" \"(?P<user_agent>[^\"]+)\" (?P<ssl_cipher>[\\w-]+) (?P<ssl_protocol>[\\w\\.-]+)(?P<body>.*)",
+          "fields": ["timestamp", "elb", "client_ip", "client_port", "backend_ip", "backend_port", "request_processing_time", "backend_processing_time", "response_processing_time", "elb_status_code", "backend_status_code", "received_bytes", "sent_bytes", "cs_method", "cs_uri_stem", "cs_uri_query", "cs_version", "user_agent", "ssl_cipher", "ssl_protocol", "body"]
+        }
+      ]
+    },
+    {
+      "name": "engine_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3}+)\\s+(?P<level>\\w+)\\s+\\[(?P<logger>[^\\]]+)\\]\\s+\\((?P<tid>[^\\)]+)\\)\\s+(?P<body>.*)",
+          "fields": ["timestamp", "level", "logger", "tid", "body"]
+        }
+      ]
+    },
+    {
+      "name": "env_logger_log",
+      "regex": [
+        {
+          "pattern": "^\\[(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}[^ ]+) (?P<level>\\w+) (?P<module>[^\\]]+)\\]\\s+(?P<body>.*)",
+          "fields": ["timestamp", "level", "module", "body"]
+        }
+      ]
+    },
+    {
+      "name": "error_log",
+      "regex": [
+        {
+          "pattern": "^(?P<level>\\w) \\[(?P<timestamp>[^\\]]+)\\] (?P<body>.*)",
+          "fields": ["level", "timestamp", "body"]
+        },
+        {
+          "pattern": "^\\[(?P<timestamp>[^\\]]+)\\] \\[(?:(?P<module>[^:]+):)?(?P<level>\\w+)\\](?: \\[pid (?P<pid>\\d+)(:tid (?P<tid>\\d+))?\\])?(?: \\[client (?P<c_ip>[\\w\\.:\\-]+):(?P<c_port>\\d+)\\])? (?P<body>.*)",
+          "fields": ["timestamp", "module", "level", "pid", "tid", "c_ip", "c_port", "body"]
+        }
+      ]
+    },
+    {
+      "name": "esx_syslog_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>(?:\\S{3,8}\\s+\\d{1,2} \\d{2}:\\d{2}:\\d{2}|\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?Z))\\s+(?P<level>\\w+\\((?P<syslog_pri>\\d+)\\))(?:\\[\\+\\]|\\+)?(?:(?: (?P<log_syslog_tag>(?P<log_procname>(?:[^\\[:]+|[^:]+))(?:\\[(?P<log_pid>\\d+)\\])?):\\s*(?:\\w+ \\[(?P<logger>[^ ]+)(?: op[iI][dD]=(?P<opid>[^ \\]]+))?\\]\\s*)?(?P<body>.*))$|:?(?:(?: ---)? last message repeated \\d+ times?(?: ---)?))",
+          "fields": ["timestamp", "level", "syslog_pri", "log_syslog_tag", "log_procname", "log_pid", "logger", "opid", "body"]
+        },
+        {
+          "pattern": "^(?P<timestamp>(?:\\S{3,8}\\s+\\d{1,2} \\d{2}:\\d{2}:\\d{2}|\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?Z))\\s+(?P<level>\\w+\\((?P<syslog_pri>\\d+)\\))(?:\\[\\+\\]|\\+)?(?:(?: (?P<log_syslog_tag>(?:host-(?P<log_pid>\\d+))?)\\s+(?P<body>.*))$|:?(?:(?: ---)? last message repeated \\d+ times?(?: ---)?))",
+          "fields": ["timestamp", "level", "syslog_pri", "log_syslog_tag", "log_pid", "body"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2})\\s+(?P<level>\\w+\\((?P<syslog_pri>\\d+)\\))\\s+(?P<log_procname>[^\\[]+)\\[(?P<log_pid>\\d+)\\]:\\s(?P<new_time>\\d{2}:\\d{2}:\\d{2}\\.\\d+)\\s+(?P<body>.*)",
+          "fields": ["timestamp", "level", "syslog_pri", "log_procname", "log_pid", "new_time", "body"]
+        }
+      ]
+    },
+    {
+      "name": "haproxy_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\w{3} \\d{2} \\d{2}:\\d{2}:\\d{2}) (?P<logging_host>[^ ]+) (?P<process_name>\\w+)\\[(?P<pid>\\d+)\\]: Proxy (?P<frontend_name>[^ ]+) started.",
+          "fields": ["timestamp", "logging_host", "process_name", "pid", "frontend_name"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\w{3} \\d{2} \\d{2}:\\d{2}:\\d{2}) (?P<logging_host>[^ ]+) (?P<process_name>\\w+)\\[(?P<pid>\\d+)\\]: Stopping frontend (?P<frontend_name>[^ ]+) in (?P<stopping_timeout>\\d+) ms.",
+          "fields": ["timestamp", "logging_host", "process_name", "pid", "frontend_name", "stopping_timeout"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\w{3} \\d{2} \\d{2}:\\d{2}:\\d{2}) (?P<logging_host>[^ ]+) (?P<process_name>\\w+)\\[(?P<pid>\\d+)\\]: Proxy (?P<frontend_name>[^ ]+) stopped \\(FE: (?P<frontend_connections>\\d+) conns, BE: (?P<backend_connections>\\d+) conns\\).",
+          "fields": ["timestamp", "logging_host", "process_name", "pid", "frontend_name", "frontend_connections", "backend_connections"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\w{3} \\d{2} \\d{2}:\\d{2}:\\d{2}) (?P<logging_host>[^ ]+) (?P<process_name>\\w+)\\[(?P<pid>\\d+)\\]: (?P<client_ip>[^:]+):(?P<client_port>\\d+) \\[(?P<accept_date>\\d{2}\\/\\w{3}\\/\\d{4}:\\d{2}:\\d{2}:\\d{2}.\\d{3})\\] (?P<frontend_name>[^ ]+) (?P<backend_name>[^ ]+)\\/(?P<server_name>[^ ]+) (?P<tw>\\d+)\\/(?P<tc>\\d+)\\/(?P<tt>\\d+) (?P<bytes_read>\\d+) (?P<termination_state>..) (?P<actconn>\\d+)\\/(?P<feconn>\\d+)\\/(?P<beconn>\\d+)\\/(?P<srv_conn>\\d+)\\/(?P<retries>\\d+) (?P<srv_queue>\\d+)\\/(?P<backend_queue>\\d+)",
+          "fields": ["timestamp", "logging_host", "process_name", "pid", "client_ip", "client_port", "accept_date", "frontend_name", "backend_name", "server_name", "tw", "tc", "tt", "bytes_read", "termination_state", "actconn", "feconn", "beconn", "srv_conn", "retries", "srv_queue", "backend_queue"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\w{3} \\d{2} \\d{2}:\\d{2}:\\d{2}) (?P<logging_host>[^ ]+) (?P<process_name>\\w+)\\[(?P<pid>\\d+)\\]: (?P<client_ip>[^:]+):(?P<client_port>\\d+) \\[(?P<accept_date>\\d{2}\\/\\w{3}\\/\\d{4}:\\d{2}:\\d{2}:\\d{2}.\\d{3})\\] (?P<frontend_name>[^ ]+)(?P<ssl>~)? (?P<backend_name>[^ ]+)\\/(?P<server_name>[^ ]+) (?P<tq>-?\\d+)\\/(?P<tw>-?\\d+)\\/(?P<tc>-?\\d+)\\/(?P<tr>-?\\d+)\\/(?P<tt>\\d+) (?P<status_code>\\d{3}|-1) (?P<bytes_read>\\d+) (?P<captured_request_cookie>.*) (?P<captured_response_cookie>.*) (?P<termination_state>....) (?P<actconn>\\d+)\\/(?P<feconn>\\d+)\\/(?P<beconn>\\d+)\\/(?P<srv_conn>\\d+)\\/(?P<retries>\\d+) (?P<srv_queue>\\d+)\\/(?P<backend_queue>\\d+) (?:\\{(?P<captured_request_headers>.*)\\} \\{(?P<captured_response_headers>.*)\\} )?\"(?P<http_method>[A-Z<>]+)(?: (?P<http_url>.*?))?(?: (?P<http_version>HTTP\\/\\d+.\\d+))?\"?",
+          "fields": ["timestamp", "logging_host", "process_name", "pid", "client_ip", "client_port", "accept_date", "frontend_name", "ssl", "backend_name", "server_name", "tq", "tw", "tc", "tr", "tt", "status_code", "bytes_read", "captured_request_cookie", "captured_response_cookie", "termination_state", "actconn", "feconn", "beconn", "srv_conn", "retries", "srv_queue", "backend_queue", "captured_request_headers", "captured_response_headers", "http_method", "http_url", "http_version"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\w{3} \\d{2} \\d{2}:\\d{2}:\\d{2}) (?P<logging_host>[^ ]+) (?P<process_name>\\w+)\\[(?P<pid>\\d+)\\]: (?P<client_ip>[^:]+):(?P<client_port>\\d+) \\[(?P<accept_date>\\d{2}\\/\\w{3}\\/\\d{4}:\\d{2}:\\d{2}:\\d{2}.\\d{3})\\] (?P<backend_name>[^ ]+)\\/(?P<server_name>[^ ]+): (?P<ssl_error>.+)",
+          "fields": ["timestamp", "logging_host", "process_name", "pid", "client_ip", "client_port", "accept_date", "backend_name", "server_name", "ssl_error"]
+        }
+      ]
+    },
+    {
+      "name": "katello_log",
+      "regex": [
+        {
+          "pattern": "^\\[\\s?(?P<alert_level>\\w+)\\s(?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2})\\s(?P<module>\\w+)\\]\\s+(?P<message>.*)",
+          "fields": ["alert_level", "timestamp", "module", "message"]
+        }
+      ]
+    },
+    {
+      "name": "lnav_debug_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}(-|\\+)\\d{2}:\\d{2}) (?P<level>\\w) (?P<thread>\\w+) (?P<srcfile>[^:]+):(?P<srcline>\\d+) (?P<body>.*)",
+          "fields": ["timestamp", "level", "thread", "srcfile", "srcline", "body"]
+        }
+      ]
+    },
+    {
+      "name": "nextflow_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\w{3}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}) \\[(?P<thread>[^\\]]+)\\] (?P<level>[^ ]+)\\s+(?P<module>[^ ]+) - (?P<body>.*)",
+          "fields": ["timestamp", "thread", "level", "module", "body"]
+        }
+      ]
+    },
+    {
+      "name": "openam_log",
+      "regex": [
+        {
+          "pattern": "^\"(?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2})\"\\s+(?P<data>[^ \"]+|\"(?:[^\"]*|\"\")*\")\\s+(?P<loginid>[^ \"]+|\"(?:[^\"]*|\"\")*\")\\s+(?P<contextid>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?P<ipaddr>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?P<level>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?P<domain>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?P<loggedby>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?P<messageid>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?P<modulename>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?P<nameid>[^ \"]+|\"(?:[^\"]|\"\")*\")\\s+(?P<hostname>[^ \"]+|\"(?:[^\"]|\"\")*\")(?P<body>.*)",
+          "fields": ["timestamp", "data", "loginid", "contextid", "ipaddr", "level", "domain", "loggedby", "messageid", "modulename", "nameid", "hostname", "body"]
+        }
+      ]
+    },
+    {
+      "name": "openamdb_log",
+      "regex": [
+        {
+          "pattern": "^(?P<module>[\\w]+):(?P<timestamp>\\d{2}/\\d{2}/\\d{4} \\d{2}:\\d{2}:\\d{2}:\\d{3} [AP]M \\w+): Thread\\[(?P<thread>[^,]+,\\d+,[^,]+)\\]\\n?(?:\\*+|(?P<body>.*))",
+          "fields": ["module", "timestamp", "thread", "body"]
+        }
+      ]
+    },
+    {
+      "name": "openstack_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}.\\d{3}) (?P<pid>\\d+) (?P<level>\\w+) (?P<logger>\\S+) \\[(?P<tid>[^\\]]+)\\] (?P<body>.*)",
+          "fields": ["timestamp", "pid", "level", "logger", "tid", "body"]
+        },
+        {
+          "pattern": "^(?P<level>\\w+) (?P<logger>\\S+) \\[(?P<tid>[^\\]]+)\\] (?P<body>.*)",
+          "fields": ["level", "logger", "tid", "body"]
+        },
+        {
+          "pattern": "^[(](?P<logger>[^)]+)[)]: (?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3}) (?P<level>\\w+)(?P<body>.*)",
+          "fields": ["logger", "timestamp", "level", "body"]
+        },
+        {
+          "pattern": "^[(](?P<logger>[^)]+)[)]: (?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3}) (?P<level>\\w+) [(](?P<user>[^)]+)[)] (?P<body>.*)",
+          "fields": ["logger", "timestamp", "level", "user", "body"]
+        }
+      ]
+    },
+    {
+      "name": "page_log",
+      "regex": [
+        {
+          "pattern": "^(?P<printer>[\\w_\\-\\.]+) (?P<username>[\\w\\.\\-]+) (?P<job_id>\\d+) \\[(?P<timestamp>[^\\]]+)\\] (?P<page_number>total|\\d+) (?P<num_copies>\\d+) (?P<job_billing>[^ ]+) (?P<job_originating_hostname>[\\w\\.:\\-]+)",
+          "fields": ["printer", "username", "job_id", "timestamp", "page_number", "num_copies", "job_billing", "job_originating_hostname"]
+        },
+        {
+          "pattern": "^(?P<printer>[\\w_\\-\\.]+) (?P<username>[\\w\\.\\-]+) (?P<job_id>\\d+) \\[(?P<timestamp>[^\\]]+)\\] (?P<page_number>total|\\d+) (?P<num_copies>\\d+) (?P<job_billing>[^ ]+) (?P<job_originating_hostname>[\\w\\.:\\-]+) (?P<job_name>.+) (?P<media>[^ ]+) (?P<sides>.+)(?P<body>.*)",
+          "fields": ["printer", "username", "job_id", "timestamp", "page_number", "num_copies", "job_billing", "job_originating_hostname", "job_name", "media", "sides", "body"]
+        }
+      ]
+    },
+    {
+      "name": "procstate_log",
+      "regex": [
+        {
+          "pattern": "^========== Start of system state dump at (?P<timestamp>[^=]+) ==========(?P<body>.*)",
+          "fields": ["timestamp", "body"]
+        }
+      ]
+    },
+    {
+      "name": "proxifier_log",
+      "regex": [
+        {
+          "pattern": "\\[(?P<timestamp>\\d{2}\\.\\d{2} \\d{2}:\\d{2}:\\d{2})\\]\\s+(?P<app_name>[^ ]+(?: \\*64)?)(?:\\s+(?:-|(?P<app_pid>\\d+)))\\s+(?P<target_host>[^:]+):(?P<target_port>\\d+)\\s+(?P<body>(?:open|close).*)",
+          "fields": ["timestamp", "app_name", "app_pid", "target_host", "target_port", "body"]
+        },
+        {
+          "pattern": "\\[(?P<timestamp>\\d{2}\\.\\d{2} \\d{2}:\\d{2}:\\d{2})\\]\\s+(?P<app_name>[^ ]+(?: \\*64)?)(?:\\s+(?:-|(?P<app_pid>\\d+)))\\s+(?P<target_host>[^:]+):(?P<target_port>\\d+)\\s+(?P<level>error) : (?P<body>.*)",
+          "fields": ["timestamp", "app_name", "app_pid", "target_host", "target_port", "level", "body"]
+        }
+      ]
+    },
+    {
+      "name": "rails_log",
+      "regex": [
+        {
+          "pattern": "^(?P<level_char>[A-Z]),\\s\\[(?P<timestamp>\\d{4}-\\d{2}-\\d{2}(?:T| )\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{6})?) #(?P<pid>\\d+)\\]\\s+(?P<level>\\w+) --\\s(?P<module>[^:]+)?:\\s(?:\\[(?P<reqid>\\w{8}-\\w{4}-\\w{4}-\\w{4}-\\w{12})\\]\\s)?(?P<body>.*)",
+          "fields": ["level_char", "timestamp", "pid", "level", "module", "reqid", "body"]
+        }
+      ]
+    },
+    {
+      "name": "redis_log",
+      "regex": [
+        {
+          "pattern": "^\\[(?P<pid>\\d+)\\]\\s+(?P<timestamp>\\d{1,2} [a-zA-Z]{3} \\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\s+(?P<level>[\\.\\-\\*\\#])\\s+(?P<body>.*)",
+          "fields": ["pid", "timestamp", "level", "body"]
+        },
+        {
+          "pattern": "^(?P<pid>\\d+):(?P<role>[XCSM])\\s+(?P<timestamp>\\d{1,2} [a-zA-Z]{3} \\d{4} \\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\s+(?P<level>[\\.\\*\\#\\-])\\s+(?P<body>.*)",
+          "fields": ["pid", "role", "timestamp", "level", "body"]
+        },
+        {
+          "pattern": "^(?P<pid>\\d+):(?P<role>signal-handler) \\((?P<timestamp>\\d+)\\) (?P<body>.*)",
+          "fields": ["pid", "role", "timestamp", "body"]
+        }
+      ]
+    },
+    {
+      "name": "s3_log",
+      "regex": [
+        {
+          "pattern": "^(?P<owner>\\S+)\\s+(?P<bucket>\\S+)\\s+\\[(?P<timestamp>[^\\]]+)\\]\\s+(?P<c_ip>[\\w*.:-]+)\\s+(?P<cs_userid>\\S+)\\s+(?P<req_id>\\S+)\\s+(?P<op>\\S+)\\s+(?P<cs_key>\\S+)\\s+\"(?P<cs_method>\\S+)\\s+(?P<cs_uri_stem>[^ \\?]+)(?:\\?(?P<cs_uri_query>[^ ]*))?\\s+(?P<cs_version>\\S+)\"\\s+(?P<sc_status>\\d+|-)\\s+(?P<sc_error_code>\\S+)\\s+(?P<sc_bytes>\\d+|-)\\s+(?P<obj_size>\\d+|-)\\s+(?P<total_time>\\d+|-)\\s+(?P<turn_around_time>\\d+|-)\\s+\"(?P<cs_referer>.*?)\"\\s+\"(?P<cs_user_agent>.*?)\"",
+          "fields": ["owner", "bucket", "timestamp", "c_ip", "cs_userid", "req_id", "op", "cs_key", "cs_method", "cs_uri_stem", "cs_uri_query", "cs_version", "sc_status", "sc_error_code", "sc_bytes", "obj_size", "total_time", "turn_around_time", "cs_referer", "cs_user_agent"]
+        },
+        {
+          "pattern": "^(?P<owner>\\S+)\\s+(?P<bucket>\\S+)\\s+\\[(?P<timestamp>[^\\]]+)\\]\\s+(?P<c_ip>[\\w*.:-]+)\\s+(?P<cs_userid>\\S+)\\s+(?P<req_id>\\S+)\\s+(?P<op>\\S+)\\s+(?P<cs_key>\\S+)\\s+\"(?P<cs_method>\\S+)\\s+(?P<cs_uri_stem>[^ \\?]+)(?:\\?(?P<cs_uri_query>[^ ]*))?\\s+(?P<cs_version>\\S+)\"\\s+(?P<sc_status>\\d+|-)\\s+(?P<sc_error_code>\\S+)\\s+(?P<sc_bytes>\\d+|-)\\s+(?P<obj_size>\\d+|-)\\s+(?P<total_time>\\d+|-)\\s+(?P<turn_around_time>\\d+|-)\\s+\"(?P<cs_referer>.*?)\"\\s+\"(?P<cs_user_agent>.*?)\"\\s+(?P<version_id>\\S+)\\s+(?P<host_id>\\S+)\\s+(?P<sig_version>\\S+)\\s+(?P<cipher_suite>\\S+)\\s+(?P<auth_type>\\S+)\\s+(?P<cs_host>\\S+)\\s+(?P<tls_version>\\S+)",
+          "fields": ["owner", "bucket", "timestamp", "c_ip", "cs_userid", "req_id", "op", "cs_key", "cs_method", "cs_uri_stem", "cs_uri_query", "cs_version", "sc_status", "sc_error_code", "sc_bytes", "obj_size", "total_time", "turn_around_time", "cs_referer", "cs_user_agent", "version_id", "host_id", "sig_version", "cipher_suite", "auth_type", "cs_host", "tls_version"]
+        }
+      ]
+    },
+    {
+      "name": "simple_rs_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{9}[^\\s]+)\\s+(?P<level>\\w+)\\s+\\[(?P<module>\\w+)\\]\\s+(?P<body>.*)",
+          "fields": ["timestamp", "level", "module", "body"]
+        }
+      ]
+    },
+    {
+      "name": "snaplogic_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?) (?:(?:(?P<level>\\w{4,}) (?P<logger>[^ ]+) (?P<facility>[^ ]+) (?P<msgid>[^ ]+) (?P<pipe_rid>-|\\d+)(?:\\.(?P<comp_rid>[^ ]+))? (?P<resource_name>[^ ]+) (?P<invoker>[^ ]+))|(?:(?:stdout|stderr): ))(?P<body>.*)",
+          "fields": ["timestamp", "level", "logger", "facility", "msgid", "pipe_rid", "comp_rid", "resource_name", "invoker", "body"]
+        }
+      ]
+    },
+    {
+      "name": "sssd_log",
+      "regex": [
+        {
+          "pattern": "^\\((?P<timestamp>\\S{3,8} \\S{3,8} ( \\d|\\d{2}) \\d{2}:\\d{2}:\\d{2}(?:(?:\\.|:)\\d{6})? \\d{4})\\) \\[(?P<service>\\w+)\\] \\[(?P<function>\\w+)\\] \\((?P<debug_level>0x[0-9a-fA-F]{4})\\): (?P<body>.*)",
+          "fields": ["timestamp", "service", "function", "debug_level", "body"]
+        },
+        {
+          "pattern": "^\\((?P<timestamp>\\S{3,8} \\S{3,8} ( \\d|\\d{2}) \\d{2}:\\d{2}:\\d{2}(?:(?:\\.|:)\\d{6})? \\d{4})\\) \\[(?P<service>\\w+)(?P<module>\\[.*?\\])\\] \\[(?P<function>\\w+)\\] \\((?P<debug_level>0x[0-9a-fA-F]{4})\\): (?P<body>.*)",
+          "fields": ["timestamp", "service", "module", "function", "debug_level", "body"]
+        },
+        {
+          "pattern": "^\\((?P<timestamp>\\d{4}-\\d{2}-\\d{2} [ 0-9]{2}:\\d{2}:\\d{2}(?:(?:\\.|:)\\d{6})?)\\): \\[(?P<service>\\w+)(?P<module>\\[.*?\\])?\\] \\[(?P<function>\\w+)\\] \\((?P<debug_level>0x[0-9a-fA-F]{4})\\): (?P<body>.*)",
+          "fields": ["timestamp", "service", "module", "function", "debug_level", "body"]
+        }
+      ]
+    },
+    {
+      "name": "strace_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\d{2}:\\d{2}:\\d{2}\\.\\d{6}|\\d+\\.\\d{6}) (?P<syscall>\\w+)\\((?P<body>.*)\\)\\s+=\\s+(?P<rc>[-\\w]+)(?: (?P<errno>\\w+) \\([^\\)]+\\))?(?: <(?P<duration>\\d+\\.\\d+)>)?",
+          "fields": ["timestamp", "syscall", "body", "rc", "errno", "duration"]
+        }
+      ]
+    },
+    {
+      "name": "sudo_log",
+      "regex": [
+        {
+          "pattern": "^(?P<login>\\S+)\\s*: (?:(?P<error_msg>[^;]+);)?\\s*TTY=(?P<tty>[^;]+)\\s+;\\s*PWD=(?P<pwd>[^;]+)\\s+;\\s*USER=(?P<user>[^;]+)\\s+;\\s*COMMAND=(?P<command>.*)",
+          "fields": ["login", "error_msg", "tty", "pwd", "user", "command"]
+        }
+      ]
+    },
+    {
+      "name": "syslog_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>(?:\\S{3,8}\\s+\\d{1,2} \\d{2}:\\d{2}:\\d{2}|\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3,6})?(?:Z|(?:\\+|-)\\d{2}:\\d{2})))(?: (?P<log_hostname>[a-zA-Z0-9:][^ ]+[a-zA-Z0-9]))?(?: \\[CLOUDINIT\\])?(?:(?: syslogd [\\d\\.]+|(?: (?P<log_syslog_tag>(?P<log_procname>(?:[^\\[:]+|[^ :]+))(?:\\[(?P<log_pid>\\d+)\\](?: \\([^\\)]+\\))?)?))):\\s*(?P<body>.*)$|:?(?:(?: ---)? last message repeated \\d+ times?(?: ---)?))",
+          "fields": ["timestamp", "log_hostname", "log_syslog_tag", "log_procname", "log_pid", "body"]
+        },
+        {
+          "pattern": "^<(?P<log_pri>\\d+)>(?P<syslog_version>\\d+) (?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{6})?(?:[^ ]+)?) (?P<log_hostname>[^ ]+|-) (?P<log_syslog_tag>(?P<log_procname>[^ ]+|-) (?P<log_pid>[^ ]+|-) (?P<log_msgid>[^ ]+|-)) (?P<log_struct>\\[(?:[^\\]\"]|\"(?:\\.|[^\"])+\")*\\]|-|)\\s+(?P<body>.*)",
+          "fields": ["log_pri", "syslog_version", "timestamp", "log_hostname", "log_syslog_tag", "log_procname", "log_pid", "log_msgid", "log_struct", "body"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+\\+\\d{2}:\\d{2})\\s+(?P<hostname>\\S+)\\s+(?P<log_source>)\\[(?P<pid>\\d+)\\]:\\s+\\[(?P<metric_timestamp>\\d+)\\]\\s+cpu\\.local:\\s+\\[\\[(?P<unix_time>\\d+\\.\\d+),\\s+\\{\\}\\],\\s+\\{(?P<cpu_metrics>.*)\\}\\]$",
+          "fields": ["timestamp", "hostname", "log_source", "pid", "metric_timestamp", "unix_time", "cpu_metrics"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+\\+\\d{2}:\\d{2})\\s+(?P<hostname>\\S+)\\s+(?P<log_source>)\\[(?P<pid>\\d+)\\]:\\s+\\[(?P<log_timestamp>\\d{4}/\\d{2}/\\d{2}\\s+\\d{2}:\\d{2}:\\d{2})\\]\\s+\\[(?P<level>info|error|warn)\\]\\s+\\[(?P<component>output:http:http\\.\\d+)\\]\\s+(?P<message>.*)$",
+          "fields": ["timestamp", "hostname", "log_source", "pid", "log_timestamp", "level", "component", "message"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+\\+\\d{2}:\\d{2})\\s+(?P<hostname>\\S+)\\s+(?P<log_source>)\\[(?P<pid>\\d+)\\]:(?P<message>\\S+)$",
+          "fields": ["timestamp", "hostname", "log_source", "pid", "message"]
+        }
+      ]
+    },
+    {
+      "name": "tcf_log",
+      "regex": [
+        {
+          "pattern": "^TCF (?P<timestamp>\\d{2}:\\d{2}.\\d{3,6}): (?:Server-Properties: (?:.*)|channel server|\\w+: (?P<dir>--->|<---) (?P<type>\\w)(?: (?P<token>\\w+))?(?: (?P<service>\\w+))?(?: (?P<name>\\w+))?(?: (?P<msg>.*))?(?: <eom>))(?P<body>.*)",
+          "fields": ["timestamp", "dir", "type", "token", "service", "name", "msg", "body"]
+        }
+      ]
+    },
+    {
+      "name": "tcsh_history",
+      "regex": [
+        {
+          "pattern": "^#(?P<timestamp>\\+\\d+)\\n?(?P<body>.*)?",
+          "fields": ["timestamp", "body"]
+        }
+      ]
+    },
+    {
+      "name": "uwsgi_log",
+      "regex": [
+        {
+          "pattern": "^\\[pid: (?P<s_pid>\\d+)\\|app: (?P<s_app>[\\-\\d]+)\\|req: (?P<s_req>[\\-\\d]+)/(?P<s_worker_reqs>\\d+)\\] (?P<c_ip>[^ ]+) \\((?P<cs_username>[^\\)]*)\\) \\{(?P<cs_vars>\\d+) vars in (?P<cs_bytes>\\d+) bytes\\} \\[(?P<timestamp>[^\\]]+)\\] (?P<cs_method>[A-Z]+) (?P<cs_uri_stem>[^ \\?]+)(?:\\?(?P<cs_uri_query>[^ ]*))? => generated (?P<sc_bytes>\\d+) bytes in (?P<s_runtime>\\d+) (?P<rt_unit>\\w+) \\((?P<cs_version>[^ ]+) (?P<sc_status>\\d+)\\) (?P<sc_headers>\\d+) headers in (?P<sc_header_bytes>\\d+) bytes \\((?P<s_switches>\\d+) switches on core (?P<s_core>\\d+)\\)(?P<body>.*)",
+          "fields": ["s_pid", "s_app", "s_req", "s_worker_reqs", "c_ip", "cs_username", "cs_vars", "cs_bytes", "timestamp", "cs_method", "cs_uri_stem", "cs_uri_query", "sc_bytes", "s_runtime", "rt_unit", "cs_version", "sc_status", "sc_headers", "sc_header_bytes", "s_switches", "s_core", "body"]
+        }
+      ]
+    },
+    {
+      "name": "vmk_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z) cpu(?P<cpu>\\d+):(?P<world_id>\\d+)(?: opID=(?P<opid>[^\\)]+))?\\)((?:(?P<level>WARNING|ALERT)|(?P<subsystem>[^:]+)): )?(?P<body>.*)",
+          "fields": ["timestamp", "cpu", "world_id", "opid", "level", "subsystem", "body"]
+        },
+        {
+          "pattern": "^(?P<timestamp>(?:\\S{3,8}\\s+\\d{1,2} \\d{2}:\\d{2}:\\d{2}|\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?Z))\\s+(?P<level>\\w+)\\((?P<syslog_pri>\\d+)\\)(?:\\[\\+\\]|\\+)? (?:vmkernel|vmkwarning):\\s* (?:cpu(?P<cpu>\\d+):(?P<world_id>\\d+)(?: opID=(?P<opid>[^\\)]+))?\\))?((?:(?:WARNING|ALERT)|(?P<subsystem>[^:]+)): )?(?P<body>.*)",
+          "fields": ["timestamp", "level", "syslog_pri", "cpu", "world_id", "opid", "subsystem", "body"]
+        }
+      ]
+    },
+    {
+      "name": "vmw_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}(?:Z|[-+]\\d{2}:\\d{2})) (?P<level>\\w+)(?:\\(\\d+\\)+)? (?P<prc>[\\w\\-]+)\\[(?P<tid>\\w+)\\]:? \\[(?:opI(?:D|d)=(?P<opid>[^\\]]+))\\]\\s*(?P<body>.*)",
+          "fields": ["timestamp", "level", "prc", "tid", "opid", "body"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}(?:Z|[-+]\\d{2}:\\d{2})) (?:- last log rotation time, \\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}(?:Z|[-+]\\d{2}:\\d{2}))?\\s*(ESX KMX Agent started.|(?:- time the service was last started(?: \\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.\\d{3}(?:Z|[-+]\\d{2}:\\d{2}))?, )?Section for (?:[^,]+), pid=(?P<tid>\\w+).*)",
+          "fields": ["timestamp", "tid"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}(?:Z|[-+]\\d{2}:\\d{2})) (?P<level>\\w+)(?:\\(\\d+\\)+) (?P<prc>[\\w\\-]+)\\[(?P<tid>\\w+)\\]: (?:Logs rotated. \\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}(?:Z|[-+]\\d{2}:\\d{2}))?(?:- last log rotation time, \\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}(?:Z|[-+]\\d{2}:\\d{2}))?\\s*(ESX KMX Agent started.|(?:- time the service was last started(?: \\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.\\d{3}Z)?, )?Section for (?:[^,]+), pid=(?:\\w+).*)",
+          "fields": ["timestamp", "level", "prc", "tid"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}(?:Z|[-+]\\d{2}:\\d{2})) \\[(?P<tid>\\w+) (?P<level>\\w+) '(?P<comp>[^']+)'(?: opID=(?P<opid>[^ \\]]+))?(?: user=(?P<user>[^ \\]]+))?\\](?P<body>.*)(?:\\n.*)?",
+          "fields": ["timestamp", "tid", "level", "comp", "opid", "user", "body"]
+        },
+        {
+          "pattern": "^\\[(?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}) (?P<tid>\\w+) (?P<level>\\w+) '(?P<comp>[^']+)'(?: opID=(?P<opid>[^ \\]]+))?(?: user=(?P<user>[^ \\]]+))?\\](?P<body>.*)(?:\\n.*)?",
+          "fields": ["timestamp", "tid", "level", "comp", "opid", "user", "body"]
+        },
+        {
+          "pattern": "^\\[(?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3}) (?P<tid>[\\w\\-]+)\\s+(?P<level>\\w+)\\s+(?P<comp>[^\\]]+)\\]\\s+(?P<body>.*)",
+          "fields": ["timestamp", "tid", "level", "comp", "body"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}(T| )\\d{2}:\\d{2}:\\d{2}(?:.|,)\\d{3}(?:Z|[-+]\\d{2}:\\d{2})) \\[(?P<prc>[^\\[]+)\\[(?P<tid>\\w+)\\]:\\s+(?P<body>.*)\\]",
+          "fields": ["timestamp", "prc", "tid", "body"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}(T| )\\d{2}:\\d{2}:\\d{2}(?:.|,)\\d{3}(?:Z|[-+]\\d{2}:\\d{2})?) (?P<level>\\w+) (?P<prc>[^\\[]+)\\[(?P<tid>\\d+)\\]\\s+\\[(?P<file>[^ ]+) (?P<line>\\d+)\\]\\s+(?P<body>.*)",
+          "fields": ["timestamp", "level", "prc", "tid", "file", "line", "body"]
+        },
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{3})?(?:Z|[-+]\\d{2}:\\d{2})) (?P<prc>[^:]+):\\s+(?P<tid>\\d+):\\s+(?P<comp>[^:]+):(?P<line>\\d+)?\\s+(?P<level>\\w+):?\\s+(?P<body>.*)(?:\\n.*)?",
+          "fields": ["timestamp", "prc", "tid", "comp", "line", "level", "body"]
+        },
+        {
+          "pattern": "^(?P<prc>[^:]+):(?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3})\\[(?P<tid>\\w+)\\](?P<file>[^:]+):(?P<line>\\d+) \\[(?P<level>[a-zA-Z]+)\\]\\s+(?P<body>.*)",
+          "fields": ["prc", "timestamp", "tid", "file", "line", "level", "body"]
+        },
+        {
+          "pattern": "^(?P<prc>[^:]+): (?P<tid>\\d+): (?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3}) (?P<file>[^:]+):(?P<line>\\d+) (?P<level>[a-zA-Z]+)\\s+(?P<body>.*)",
+          "fields": ["prc", "tid", "timestamp", "file", "line", "level", "body"]
+        }
+      ]
+    },
+    {
+      "name": "vmw_py_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,3})?(?: (?:AM|PM) UTC)?) \\[(?P<pid>\\d+)\\](?P<level>ERROR|WARNING|INFO|DEBUG):(?P<module>[\\w\\-\\.]+):(?P<body>.*$)",
+          "fields": ["timestamp", "pid", "level", "module", "body"]
+        }
+      ]
+    },
+    {
+      "name": "vmw_vc_svc_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{1,3}Z)\\s+(?P<level>\\w+)\\s+(?P<module>\\w+)\\s\\[(?P<srcfile>[^:]+):(?P<srcline>\\d+)\\](\\s+\\[opID=(?P<opid>[^\\]]+)\\])?\\s+(?P<body>.*)",
+          "fields": ["timestamp", "level", "module", "srcfile", "srcline", "opid", "body"]
+        }
+      ]
+    },
+    {
+      "name": "vpostgres_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3} \\S+) (?P<session_id>[^ ]*) (?P<transaction_id>[^ ]*) (?P<db_name>[^ ]*) (?P<user>[^ ]*) (?P<remote_pair>[^ ]*) (?P<pid>[^ ]+) (?P<num_line>\\d+)(?P<level>[^:]+):\\s+(?P<body>.*)",
+          "fields": ["timestamp", "session_id", "transaction_id", "db_name", "user", "remote_pair", "pid", "num_line", "level", "body"]
+        }
+      ]
+    },
+    {
+      "name": "web_robot_log",
+      "regex": [
+        {
+          "fields": ["ip", "timestamp", "method", "resource", "response", "bytes", "referrer", "request", "request-id", "useragent"]
+        }
+      ]
+    },
+    {
+      "name": "xmlrpc_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\d{4}/\\d{2}/\\d{2} \\d{2}:\\d{2}:\\d{2} [+-]?\\d{2}:\\d{2}) (?P<pid>\\d+) (?P<client_ip>\\S+): (?P<module>\\w+)/(?P<function>.*)(?P<arguments>\\(.*?\\))?(?P<body>.*)",
+          "fields": ["timestamp", "pid", "client_ip", "module", "function", "arguments", "body"]
+        }
+      ]
+    },
+    {
+      "name": "zookeeper_log",
+      "regex": [
+        {
+          "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3}) \\[myid:(?P<myid>\\d+)?\\] - (?P<level>\\w+)\\s+\\[(?P<thread>.*):(?P<logger>[\\w\\.\\$]+)@(?P<line_number>\\d+)\\] - (?P<body>.*)",
+          "fields": ["timestamp", "myid", "level", "thread", "logger", "line_number", "body"]
+        },
+        {
+            "pattern": "^(<(?<pri>\\d+)>)?(?<version>\\d)\\s+(?<timestamp>[^\\s]+)\\s+(?<hostname>[^\\s]+)\\s+(?<appname>[^\\s]+)\\s+(?<procid>[^\\s]+)\\s+(?<msgid>[^\\s]+)?\\s*(\\[(?<structureddata>[^\\]]*)\\])?\\s*(?<message>.*)",
+            "fields": ["pri", "version", "timestamp", "hostname", "appname", "procid", "msgid", "structureddata", "message"]
+        }
+      ]
+    },
+    {
+        "name": "kubernetes_log",
+        "regex": [
+            {
+                "pattern": "^(?<severity>[IWEF])(?<month>\\d{2})(?<day>\\d{2})\\s+(?<time>\\d{2}:\\d{2}:\\d{2}\\.\\d{6})\\s+(?<pid>\\d+)\\s+(?<source_file>[^:]+):(?<line_number>\\d+)]\\s+(?<message>.*)$",
+                "fields": ["severity", "month", "day", "time", "pid", "source_file", "line_number", "message"]
+            }
+        ]
+    },
+    {
+        "name": "postgresql_log",
+        "regex": [
+            {
+                "pattern": "^(?<timestamp>\\d{4}-\\d{1,2}-\\d{1,2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3} \\w+) \\[(?<process_id>\\d+)\\] (?<log_level>\\w+):  (?<sql_statement>.*)$",
+                "fields": ["timestamp", "process_id", "log_level", "sql_statement"]
+            }
+        ]
+    },
+    {
+        "name": "java",
+        "regex": [
+            {
+                "pattern": "^(?<timestamp_fb>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z)\\s+(?<stream>\\w+)\\s+(?<log_type>\\w+)\\s+(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2},\\d{3})\\s+(?<log_level>\\w+)\\s+\\[(?<thread>[^\\]]+)\\]\\s+(?<logger>[^\\s]+)\\s+-\\s+(?<client_ip>[^\\s]+)\\s+(?<http_method>\\w+)\\s+(?<url>\/\/[^\\s]+)\\s+(?<http_version>HTTP\/\\d+\\.\\d+)\\s+(?<status_code>\\d+)$",
+                "fields": ["timestamp_fb", "stream", "log_type", "timestamp", "log_level", "thread", "logger", "client_ip", "http_method", "http_version", "status_code"]
+            }
+        ]
+    },
+    {
+        "name": "nginx_access",
+        "regex": [
+            {
+                "pattern": "(?<remote_addr>[^ ]*) - (?<remote_user>[^ ]*) \\[(?<timestamp>[^\\]]*)\\] \"(?<method>\\S+)(?: +(?<request>[^\"]*?)(?: +\\S*)?)?\" (?<status>[^ ]*) (?<body_bytes_sent>[^ ]*) \"(?<http_referer>[^\"]*)\" \"(?<http_user_agent>[^\"]*)\" (?<request_length>[^ ]*) (?<request_time>[^ ]*) \\[(?<proxy_upstream_name>[^ ]*)\\] \\[(?<proxy_alternative_upstream_name>[^ ]*)\\] (?<upstream_addr>[^,]*),?(?:[^,]*),?(?:[^ ]*) (?<upstream_response_length>[^,]*),?(?:[^,]*),?(?:[^ ]*) (?<upstream_response_time>[^,]*),?(?:[^,]*),?(?:[^ ]*) (?<upstream_status>[^,]*),?(?:[^,]*),?(?:[^ ]*) (?<req_id>[^ ]*)",
+                "fields": ["remote_addr", "remote_user", "timestamp", "method", "request", "status", "body_bytes_sent", "http_referer", "http_user_agent", "request_length", "request_time", "proxy_upstream_name", "proxy_alternative_upstream_name", "upstream_addr", "upstream_response_length", "upstream_response_time", "upstream_status", "req_id"]
+            }
+        ]
+    },
+    {
+        "name": "postgres",
+        "regex": [
+            {
+                "pattern": "^(?<timestamp_fb>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z)\\s+(?<stream>\\w+)\\s+(?<log_type>\\w+)\\s+(?<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3} GMT)\\s+\\[(?<process_id>\\d+)\\]\\s+(?<log_level>\\w+):\\s+(?<message>.+)$",
+                "fields": ["timestamp_fb", "stream", "log_type", "timestamp", "process_id", "log_level", "message"]
+            }
+        ]
+    },
+    {
+        "name": "zookeeper",
+        "regex": [
+            {
+                "pattern": "^(?<timestamp_fb>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z)\\s+(?<stream>\\w+)\\s+(?<log_type>\\w+)\\s+(?<timestamp>\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2},\\d{3})\\s+\\[(?<myid>[^\\]]*)\\]\\s+-\\s+(?<log_level>[A-Z]+)\\s+\\[(?<thread>[^\\]]+)\\]\\s+-\\s+(?<message>.+)$",
+                "fields": ["timestamp_fb", "stream", "log_type", "timestamp", "myid", "log_level", "thread", "message"]
+            }
+        ]
+    },
+    {
+        "name": "klog",
+        "regex": [
+          {
+              "pattern": "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z)\\s+(?<stream>\\w+)\\s+(?<log_type>\\w+)\\s+(?<severity>[IWEF])(?<month>\\d{2})(?<day>\\d{2})\\s+(?<time>\\d{2}:\\d{2}:\\d{2}\\.\\d{6})\\s+(?<pid>\\d+)\\s+(?<source_file>[^:]+):(?<line_number>\\d+)\\]\\s+(?<message>.*)$",
+              "fields": ["timestamp", "stream", "log_type", "severity", "month", "day", "time", "pid", "source_file", "line_number", "message"]
+          }
+        ]
+    }
+]
+
