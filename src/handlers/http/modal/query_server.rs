@@ -148,7 +148,9 @@ impl ParseableServer for QueryServer {
 
         tokio::spawn(airplane::server());
 
-        let result = self.start(shutdown_rx, prometheus.clone(), None).await;
+        let result = self
+            .start(shutdown_rx, prometheus.clone(), PARSEABLE.options.openid())
+            .await;
         // Cancel sync jobs
         cancel_tx.send(()).expect("Cancellation should not fail");
 

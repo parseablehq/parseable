@@ -89,7 +89,7 @@ pub async fn ingest(
     };
 
     let log_source_entry = LogSourceEntry::new(log_source.clone(), fields);
-    
+
     PARSEABLE
         .create_stream_if_not_exists(
             &stream_name,
