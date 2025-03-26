@@ -29,6 +29,7 @@ use tracing::error;
 use crate::{
     alerts::{get_alerts_info, AlertError, AlertsInfo, ALERTS},
     correlation::{CorrelationError, CORRELATIONS},
+    event::format::LogSource,
     handlers::http::{
         cluster::fetch_daily_stats_from_ingestors,
         logstream::{error::StreamError, get_stats_date},
@@ -62,6 +63,19 @@ struct TitleAndId {
 }
 
 #[derive(Debug, Serialize)]
+enum DataSetType {
+    Logs,
+    Metrics,
+    Traces,
+}
+
+#[derive(Debug, Serialize)]
+struct DataSet {
+    title: String,
+    dataset_type: DataSetType,
+}
+
+#[derive(Debug, Serialize)]
 pub struct HomeResponse {
     alert_titles: Vec<TitleAndId>,
     alerts_info: AlertsInfo,
@@ -69,7 +83,7 @@ pub struct HomeResponse {
     stream_info: StreamInfo,
     stats_details: Vec<DatedStats>,
     stream_titles: Vec<String>,
-
+    datasets: Vec<DataSet>,
     dashboard_titles: Vec<TitleAndId>,
     filter_titles: Vec<TitleAndId>,
 }
@@ -161,11 +175,11 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
     dates.reverse();
 
     let mut stream_details = Vec::new();
-
+    let mut datasets = Vec::new();
     // this will hold the summary of all streams for the last 7 days
     let mut summary = StreamInfo::default();
 
-    let mut stream_wise_ingestor_stream_json = HashMap::new();
+    let mut stream_wise_stream_json = HashMap::new();
     for stream in stream_titles.clone() {
         let path = RelativePathBuf::from_iter([&stream, STREAM_ROOT_DIRECTORY]);
         let obs = PARSEABLE
@@ -173,13 +187,11 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
             .get_object_store()
             .get_objects(
                 Some(&path),
-                Box::new(|file_name| {
-                    file_name.starts_with(".ingestor") && file_name.ends_with("stream.json")
-                }),
+                Box::new(|file_name| file_name.ends_with("stream.json")),
             )
             .await?;
 
-        let mut ingestor_stream_jsons = Vec::new();
+        let mut stream_jsons = Vec::new();
         for ob in obs {
             let stream_metadata: ObjectStoreFormat = match serde_json::from_slice(&ob) {
                 Ok(d) => d,
@@ -188,13 +200,31 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
                     continue;
                 }
             };
-            ingestor_stream_jsons.push(stream_metadata);
+            stream_jsons.push(stream_metadata);
         }
-        stream_wise_ingestor_stream_json.insert(stream, ingestor_stream_jsons);
+        stream_wise_stream_json.insert(stream.clone(), stream_jsons.clone());
+
+        let log_source = &stream_jsons[0].clone().log_source;
+
+        // if log_source_format is otel-metrics, set DataSetType to metrics
+        //if log_source_format is otel-traces, set DataSetType to traces
+        //else set DataSetType to logs
+
+        let dataset_type = match log_source[0].log_source_format {
+            LogSource::OtelMetrics => DataSetType::Metrics,
+            LogSource::OtelTraces => DataSetType::Traces,
+            _ => DataSetType::Logs,
+        };
+
+        let dataset = DataSet {
+            title: stream.clone(),
+            dataset_type,
+        };
+        datasets.push(dataset);
     }
 
     for date in dates.into_iter() {
-        let dated_stats = stats_for_date(date, stream_wise_ingestor_stream_json.clone()).await?;
+        let dated_stats = stats_for_date(date, stream_wise_stream_json.clone()).await?;
         summary.stats_summary.events += dated_stats.events;
         summary.stats_summary.ingestion += dated_stats.ingestion_size;
         summary.stats_summary.storage += dated_stats.storage_size;
@@ -205,7 +235,8 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
     Ok(HomeResponse {
         stream_info: summary,
         stats_details: stream_details,
-        stream_titles: stream_titles.clone(),
+        stream_titles,
+        datasets,
         alert_titles,
         correlation_titles,
         dashboard_titles,
