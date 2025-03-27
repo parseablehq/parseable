@@ -60,14 +60,15 @@ pub struct PrismLogstreamInfo {
 pub async fn get_prism_logstream_info(
     stream_name: &str,
 ) -> Result<PrismLogstreamInfo, PrismLogstreamError> {
-    // get StreamInfo
-    let info = get_stream_info_helper(stream_name).await?;
+    let (info, schema, stats) = tokio::join!(
+        get_stream_info_helper(stream_name),
+        get_stream_schema_helper(stream_name),
+        get_stats(stream_name),
+    );
 
-    // get stream schema
-    let schema = get_stream_schema_helper(stream_name).await?;
-
-    // get stream stats
-    let stats = get_stats(stream_name).await?;
+    let info = info?;
+    let schema = schema?;
+    let stats = stats?;
 
     // get retention
     let retention = PARSEABLE

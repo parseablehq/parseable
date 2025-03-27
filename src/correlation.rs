@@ -56,6 +56,8 @@ impl Correlations {
         let store = PARSEABLE.storage.get_object_store();
         let all_correlations = store.get_all_correlations().await.unwrap_or_default();
 
+        let mut guard = self.write().await;
+
         for correlations_bytes in all_correlations.values().flatten() {
             let correlation = match serde_json::from_slice::<CorrelationConfig>(correlations_bytes)
             {
@@ -66,9 +68,7 @@ impl Correlations {
                 }
             };
 
-            self.write()
-                .await
-                .insert(correlation.id.to_owned(), correlation);
+            guard.insert(correlation.id.to_owned(), correlation);
         }
 
         Ok(())
