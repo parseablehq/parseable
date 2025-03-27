@@ -226,6 +226,14 @@ pub struct Options {
     pub hot_tier_storage_path: Option<PathBuf>,
 
     #[arg(
+        long = "index-storage-path",
+        env = "P_INDEX_DIR",
+        value_parser = validation::canonicalize_path,
+        help = "Local path on this indexer used for indexing"
+    )]
+    pub index_storage_path: Option<PathBuf>,
+
+    #[arg(
         long,
         env = "P_MAX_DISK_USAGE_PERCENT",
         default_value = "80.0",
