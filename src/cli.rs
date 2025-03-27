@@ -225,6 +225,7 @@ pub struct Options {
     )]
     pub hot_tier_storage_path: Option<PathBuf>,
 
+    //TODO: remove this when smart cache is implemented
     #[arg(
         long = "index-storage-path",
         env = "P_INDEX_DIR",
