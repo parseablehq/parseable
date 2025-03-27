@@ -427,6 +427,17 @@ impl Options {
         &self.local_staging_path
     }
 
+    /// Path to index directory, ensures that it exists or returns the PathBuf
+    pub fn index_dir(&self) -> Option<&PathBuf> {
+        if let Some(path) = &self.index_storage_path {
+            fs::create_dir_all(path)
+                .expect("Should be able to create index directory if it doesn't exist");
+            Some(path)
+        } else {
+            None
+        }
+    }
+
     /// TODO: refactor and document
     pub fn get_url(&self, mode: Mode) -> Url {
         let (endpoint, env_var) = match mode {
