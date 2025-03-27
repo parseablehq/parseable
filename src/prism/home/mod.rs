@@ -204,7 +204,10 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
         }
         stream_wise_stream_json.insert(stream.clone(), stream_jsons.clone());
 
-        let log_source = &stream_jsons[0].clone().log_source;
+        let log_source = PARSEABLE
+            .get_stream(&stream)
+            .map_err(|e| PrismHomeError::Anyhow(e.into()))?
+            .get_log_source();
 
         // if log_source_format is otel-metrics, set DataSetType to metrics
         //if log_source_format is otel-traces, set DataSetType to traces
