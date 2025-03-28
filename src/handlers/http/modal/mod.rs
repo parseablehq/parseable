@@ -20,9 +20,11 @@ use std::{path::Path, sync::Arc};
 
 use actix_web::{middleware::from_fn, web::ServiceConfig, App, HttpServer};
 use actix_web_prometheus::PrometheusMetrics;
+use anyhow::Context;
 use async_trait::async_trait;
 use base64::{prelude::BASE64_STANDARD, Engine};
 use bytes::Bytes;
+use futures::future;
 use openid::Discovered;
 use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
@@ -32,11 +34,14 @@ use tokio::sync::oneshot;
 use tracing::{error, info, warn};
 
 use crate::{
+    alerts::ALERTS,
     cli::Options,
+    correlation::CORRELATIONS,
     oidc::Claims,
     option::Mode,
     parseable::PARSEABLE,
     storage::{ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY},
+    users::{dashboards::DASHBOARDS, filters::FILTERS},
     utils::{get_indexer_id, get_ingestor_id},
 };
 
@@ -157,6 +162,41 @@ pub trait ParseableServer {
 
         Ok(())
     }
+}
+
+pub async fn load_on_init() -> anyhow::Result<()> {
+    // Run all loading operations concurrently
+    let (correlations_result, filters_result, dashboards_result, alerts_result) = future::join4(
+        async {
+            CORRELATIONS
+                .load()
+                .await
+                .context("Failed to load correlations")
+        },
+        async { FILTERS.load().await.context("Failed to load filters") },
+        async { DASHBOARDS.load().await.context("Failed to load dashboards") },
+        async { ALERTS.load().await.context("Failed to load alerts") },
+    )
+    .await;
+
+    // Handle errors from each operation
+    if let Err(e) = correlations_result {
+        error!("{e}");
+    }
+
+    if let Err(err) = filters_result {
+        error!("{err}");
+    }
+
+    if let Err(err) = dashboards_result {
+        error!("{err}");
+    }
+
+    if let Err(err) = alerts_result {
+        error!("{err}");
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, Eq, PartialEq)]

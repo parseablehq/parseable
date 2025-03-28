@@ -21,13 +21,14 @@ pub mod metadata_migration;
 mod schema_migration;
 mod stream_metadata_migration;
 
-use std::{collections::HashMap, fs::OpenOptions, sync::Arc};
+use std::{collections::HashMap, fs::OpenOptions};
 
 use arrow_schema::Schema;
 use bytes::Bytes;
 use relative_path::RelativePathBuf;
 use serde::Serialize;
 use serde_json::Value;
+use tracing::warn;
 
 use crate::{
     metadata::{load_daily_metrics, update_data_type_time_partition, LogStreamMetadata},
@@ -36,8 +37,7 @@ use crate::{
     parseable::{Parseable, PARSEABLE},
     storage::{
         object_storage::{parseable_json_path, schema_path, stream_json_path},
-        ObjectStorage, ObjectStorageError, ObjectStoreFormat, PARSEABLE_METADATA_FILE_NAME,
-        PARSEABLE_ROOT_DIRECTORY, STREAM_ROOT_DIRECTORY,
+        ObjectStorage, ObjectStoreFormat, PARSEABLE_METADATA_FILE_NAME,
     },
 };
 
@@ -131,20 +131,51 @@ pub async fn run_metadata_migration(
     Ok(())
 }
 
-/// run the migration for all streams
+/// run the migration for all streams concurrently
 pub async fn run_migration(config: &Parseable) -> anyhow::Result<()> {
     let storage = config.storage.get_object_store();
-    for stream_name in storage.list_streams().await? {
-        let Some(metadata) = migration_stream(&stream_name, &*storage).await? else {
-            continue;
-        };
-        config
-            .get_or_create_stream(&stream_name)
-            .set_metadata(metadata)
-            .await;
-    }
 
-    Ok(())
+    // Get all stream names
+    let stream_names = storage.list_streams().await?;
+
+    // Create futures for each stream migration
+    let futures = stream_names.into_iter().map(|stream_name| {
+        let storage = storage.clone();
+        async move {
+            match migration_stream(&stream_name, &*storage).await {
+                Ok(Some(metadata)) => {
+                    // Apply the metadata update
+                    config
+                        .get_or_create_stream(&stream_name)
+                        .set_metadata(metadata)
+                        .await;
+                    Ok(())
+                }
+                Ok(None) => Ok(()),
+                Err(e) => {
+                    // Optionally log error but continue with other streams
+                    warn!("Error migrating stream {}: {:?}", stream_name, e);
+                    Err(e)
+                }
+            }
+        }
+    });
+
+    // Execute all migrations concurrently
+    let results = futures::future::join_all(futures).await;
+
+    // Check for errors
+    let errors: Vec<_> = results.into_iter().filter_map(|r| r.err()).collect();
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        // Return the first error, or aggregate them if needed
+        Err(anyhow::anyhow!(
+            "Migration errors occurred: {} failures",
+            errors.len()
+        ))
+    }
 }
 
 async fn migration_stream(
@@ -404,85 +435,5 @@ pub fn put_staging_metadata(
         .write(true)
         .open(path)?;
     serde_json::to_writer(&mut file, metadata)?;
-    Ok(())
-}
-
-pub async fn run_file_migration(config: &Parseable) -> anyhow::Result<()> {
-    let object_store = config.storage.get_object_store();
-
-    let old_meta_file_path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME);
-
-    // if this errors that means migrations is already done
-    if let Err(err) = object_store.get_object(&old_meta_file_path).await {
-        if matches!(err, ObjectStorageError::NoSuchKey(_)) {
-            return Ok(());
-        }
-        return Err(err.into());
-    }
-
-    run_meta_file_migration(&object_store, old_meta_file_path).await?;
-    run_stream_files_migration(&object_store).await?;
-
-    Ok(())
-}
-
-async fn run_meta_file_migration(
-    object_store: &Arc<dyn ObjectStorage>,
-    old_meta_file_path: RelativePathBuf,
-) -> anyhow::Result<()> {
-    // get the list of all meta files
-    let mut meta_files = object_store.get_ingestor_meta_file_paths().await?;
-    meta_files.push(old_meta_file_path);
-
-    for file in meta_files {
-        match object_store.get_object(&file).await {
-            Ok(bytes) => {
-                // we can unwrap here because we know the file exists
-                let new_path = RelativePathBuf::from_iter([
-                    PARSEABLE_ROOT_DIRECTORY,
-                    file.file_name().expect("should have a file name"),
-                ]);
-                object_store.put_object(&new_path, bytes).await?;
-                object_store.delete_object(&file).await?;
-            }
-            Err(err) => {
-                // if error is not a no such key error, something weird happened
-                // so return the error
-                if !matches!(err, ObjectStorageError::NoSuchKey(_)) {
-                    return Err(err.into());
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
-
-async fn run_stream_files_migration(object_store: &Arc<dyn ObjectStorage>) -> anyhow::Result<()> {
-    let streams = object_store.list_old_streams().await?;
-
-    for stream in streams {
-        let paths = object_store.get_stream_file_paths(&stream).await?;
-
-        for path in paths {
-            match object_store.get_object(&path).await {
-                Ok(bytes) => {
-                    let new_path = RelativePathBuf::from_iter([
-                        stream.as_str(),
-                        STREAM_ROOT_DIRECTORY,
-                        path.file_name().expect("should have a file name"),
-                    ]);
-                    object_store.put_object(&new_path, bytes).await?;
-                    object_store.delete_object(&path).await?;
-                }
-                Err(err) => {
-                    if !matches!(err, ObjectStorageError::NoSuchKey(_)) {
-                        return Err(err.into());
-                    }
-                }
-            }
-        }
-    }
-
     Ok(())
 }
