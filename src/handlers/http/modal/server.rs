@@ -18,9 +18,7 @@
 
 use std::thread;
 
-use crate::alerts::ALERTS;
 use crate::analytics;
-use crate::correlation::CORRELATIONS;
 use crate::handlers;
 use crate::handlers::http::about;
 use crate::handlers::http::alerts;
@@ -35,8 +33,6 @@ use crate::metrics;
 use crate::migration;
 use crate::storage;
 use crate::sync;
-use crate::users::dashboards::DASHBOARDS;
-use crate::users::filters::FILTERS;
 
 use actix_web::web;
 use actix_web::web::resource;
@@ -47,7 +43,6 @@ use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::oneshot;
-use tracing::error;
 
 use crate::{
     handlers::http::{
@@ -61,6 +56,7 @@ use crate::{
 
 // use super::generate;
 use super::generate;
+use super::load_on_init;
 use super::OpenIdClient;
 use super::ParseableServer;
 
@@ -103,7 +99,8 @@ impl ParseableServer for Server {
     }
 
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>> {
-        migration::run_file_migration(&PARSEABLE).await?;
+        //TODO: removed file migration
+        //deprecated support for deployments < v1.0.0
         let parseable_json = PARSEABLE.validate_storage().await?;
         migration::run_metadata_migration(&PARSEABLE, &parseable_json).await?;
 
@@ -120,20 +117,8 @@ impl ParseableServer for Server {
 
         migration::run_migration(&PARSEABLE).await?;
 
-        if let Err(e) = CORRELATIONS.load().await {
-            error!("{e}");
-        }
-        if let Err(err) = FILTERS.load().await {
-            error!("{err}")
-        };
-
-        if let Err(err) = DASHBOARDS.load().await {
-            error!("{err}")
-        };
-
-        if let Err(err) = ALERTS.load().await {
-            error!("{err}")
-        };
+        // load on init
+        load_on_init().await?;
 
         storage::retention::load_retention_from_global();
 

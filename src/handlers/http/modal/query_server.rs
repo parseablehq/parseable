@@ -18,8 +18,6 @@
 
 use std::thread;
 
-use crate::alerts::ALERTS;
-use crate::correlation::CORRELATIONS;
 use crate::handlers::airplane;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
@@ -28,8 +26,6 @@ use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::handlers::http::{rbac, role};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
-use crate::users::dashboards::DASHBOARDS;
-use crate::users::filters::FILTERS;
 use crate::{analytics, migration, storage, sync};
 use actix_web::web::{resource, ServiceConfig};
 use actix_web::{web, Scope};
@@ -37,13 +33,13 @@ use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::oneshot;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::parseable::PARSEABLE;
 use crate::Server;
 
 use super::query::{querier_ingest, querier_logstream, querier_rbac, querier_role};
-use super::{OpenIdClient, ParseableServer};
+use super::{load_on_init, OpenIdClient, ParseableServer};
 
 pub struct QueryServer;
 
@@ -90,7 +86,6 @@ impl ParseableServer for QueryServer {
              ));
         }
 
-        migration::run_file_migration(&PARSEABLE).await?;
         let parseable_json = PARSEABLE.validate_storage().await?;
         migration::run_metadata_migration(&PARSEABLE, &parseable_json).await?;
 
@@ -109,22 +104,8 @@ impl ParseableServer for QueryServer {
 
         //create internal stream at server start
         PARSEABLE.create_internal_stream_if_not_exists().await?;
-
-        if let Err(e) = CORRELATIONS.load().await {
-            error!("{e}");
-        }
-        if let Err(err) = FILTERS.load().await {
-            error!("{err}")
-        };
-
-        if let Err(err) = DASHBOARDS.load().await {
-            error!("{err}")
-        };
-
-        if let Err(err) = ALERTS.load().await {
-            error!("{err}")
-        };
-
+        // load on init
+        load_on_init().await?;
         // track all parquet files already in the data directory
         storage::retention::load_retention_from_global();
 
@@ -150,11 +131,11 @@ impl ParseableServer for QueryServer {
 
         let result = self
             .start(shutdown_rx, prometheus.clone(), PARSEABLE.options.openid())
-            .await;
+            .await?;
         // Cancel sync jobs
         cancel_tx.send(()).expect("Cancellation should not fail");
 
-        result
+        Ok(result)
     }
 }
 

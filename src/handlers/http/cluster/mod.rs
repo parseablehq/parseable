@@ -720,6 +720,12 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
             PostError::Invalid(anyhow::anyhow!("Invalid URL in Ingestor Metadata: {}", err))
         })?;
 
+        // add a check to see if the ingestor is live
+        if !check_liveness(&ingestor.domain_name).await {
+            warn!("Ingestor {} is not live", ingestor.domain_name);
+            continue;
+        }
+
         let res = HTTP_CLIENT
             .get(uri)
             .header(header::AUTHORIZATION, &ingestor.token)

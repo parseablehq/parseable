@@ -705,6 +705,8 @@ pub enum AlertError {
     InvalidStateChange(String),
     #[error("{0}")]
     StreamNotFound(#[from] StreamNotFound),
+    #[error("{0}")]
+    Anyhow(#[from] anyhow::Error),
 }
 
 impl actix_web::ResponseError for AlertError {
@@ -719,6 +721,7 @@ impl actix_web::ResponseError for AlertError {
             Self::CustomError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidStateChange(_) => StatusCode::BAD_REQUEST,
             Self::StreamNotFound(_) => StatusCode::NOT_FOUND,
+            Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
@@ -731,7 +734,7 @@ impl actix_web::ResponseError for AlertError {
 
 impl Alerts {
     /// Loads alerts from disk, blocks
-    pub async fn load(&self) -> Result<(), AlertError> {
+    pub async fn load(&self) -> anyhow::Result<()> {
         let mut map = self.alerts.write().await;
         let store = PARSEABLE.storage.get_object_store();
 
@@ -743,7 +746,8 @@ impl Alerts {
                 alert.clone(),
                 inbox_rx,
                 outbox_tx,
-            )?;
+            )
+            .map_err(|e| anyhow::Error::msg(e.to_string()))?;
 
             self.update_task(alert.id, handle, outbox_rx, inbox_tx)
                 .await;
