@@ -225,6 +225,15 @@ pub struct Options {
     )]
     pub hot_tier_storage_path: Option<PathBuf>,
 
+    //TODO: remove this when smart cache is implemented
+    #[arg(
+        long = "index-storage-path",
+        env = "P_INDEX_DIR",
+        value_parser = validation::canonicalize_path,
+        help = "Local path on this indexer used for indexing"
+    )]
+    pub index_storage_path: Option<PathBuf>,
+
     #[arg(
         long,
         env = "P_MAX_DISK_USAGE_PERCENT",
@@ -417,6 +426,17 @@ impl Options {
             .expect("Should be able to create dir if doesn't exist");
 
         &self.local_staging_path
+    }
+
+    /// Path to index directory, ensures that it exists or returns the PathBuf
+    pub fn index_dir(&self) -> Option<&PathBuf> {
+        if let Some(path) = &self.index_storage_path {
+            fs::create_dir_all(path)
+                .expect("Should be able to create index directory if it doesn't exist");
+            Some(path)
+        } else {
+            None
+        }
     }
 
     /// TODO: refactor and document
