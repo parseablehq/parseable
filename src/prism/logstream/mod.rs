@@ -24,7 +24,7 @@ use chrono::Utc;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use tracing::{debug, error, warn};
+use tracing::warn;
 
 use crate::{
     handlers::http::{
@@ -262,9 +262,15 @@ impl PrismDatasetRequest {
         let mut responses = Vec::new();
         for result in results {
             match result {
-                Some(Ok(response)) => responses.push(response),
-                Some(Err(err)) => return Err(err),
-                None => {} // Skip unauthorized or not found streams
+                Ok(Some(response)) => responses.push(response),
+                Ok(None) => {
+                    warn!("Stream not found or unauthorized access");
+                    continue;
+                }
+                Err(err) => {
+                    warn!("error: {err}");
+                    continue;
+                }
             }
         }
 
@@ -275,21 +281,21 @@ impl PrismDatasetRequest {
         &self,
         stream: String,
         key: SessionKey,
-    ) -> Option<Result<PrismDatasetResponse, PrismLogstreamError>> {
+    ) -> Result<Option<PrismDatasetResponse>, PrismLogstreamError> {
         // Skip unauthorized streams
         if !self.is_authorized(&stream, &key) {
-            return None;
+            return Ok(None);
         }
 
         // Skip streams that don't exist
         if !self.stream_exists(&stream).await {
-            return None;
+            return Ok(None);
         }
 
         // Process stream data
         match get_prism_logstream_info(&stream).await {
-            Ok(info) => Some(self.build_dataset_response(stream, info).await),
-            Err(err) => Some(Err(err)),
+            Ok(info) => Ok(Some(self.build_dataset_response(stream, info).await?)),
+            Err(err) => Err(err),
         }
     }
 
@@ -306,7 +312,7 @@ impl PrismDatasetRequest {
 
     async fn stream_exists(&self, stream: &str) -> bool {
         if PARSEABLE.check_or_load_stream(stream).await {
-            debug!("Stream not found: {stream}");
+            warn!("Stream not found: {stream}");
             false
         } else {
             true
