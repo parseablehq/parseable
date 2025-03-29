@@ -18,7 +18,7 @@
 
 use crate::handlers::http::base_path_without_preceding_slash;
 use crate::handlers::http::ingest::PostError;
-use crate::handlers::http::modal::IngestorMetadata;
+use crate::handlers::http::modal::Metadata;
 use crate::option::Mode;
 use crate::parseable::PARSEABLE;
 use crate::HTTP_CLIENT;
@@ -156,11 +156,11 @@ impl Metrics {
         }
         (events_ingested, ingestion_size, storage_size)
     }
-    pub async fn from_prometheus_samples(
+    pub async fn from_prometheus_samples<T: Metadata>(
         samples: Vec<PromSample>,
-        ingestor_metadata: &IngestorMetadata,
+        metadata: &T,
     ) -> Result<Self, PostError> {
-        let mut prom_dress = Metrics::new(ingestor_metadata.domain_name.to_string());
+        let mut prom_dress = Metrics::new(metadata.domain_name().to_string());
         for sample in samples {
             if let PromValue::Gauge(val) = sample.value {
                 match sample.metric.as_str() {
@@ -206,12 +206,13 @@ impl Metrics {
                 }
             }
         }
-        let (commit_id, staging) = Self::from_about_api_response(ingestor_metadata.clone())
-            .await
-            .map_err(|err| {
-                error!("Fatal: failed to get ingestor info: {:?}", err);
-                PostError::Invalid(err.into())
-            })?;
+        let (commit_id, staging) =
+            Self::from_about_api_response(metadata)
+                .await
+                .map_err(|err| {
+                    error!("Fatal: failed to get ingestor info: {:?}", err);
+                    PostError::Invalid(err.into())
+                })?;
 
         prom_dress.commit = commit_id;
         prom_dress.staging = staging;
@@ -219,12 +220,12 @@ impl Metrics {
         Ok(prom_dress)
     }
 
-    pub async fn from_about_api_response(
-        ingestor_metadata: IngestorMetadata,
+    pub async fn from_about_api_response<T: Metadata>(
+        metadata: &T,
     ) -> Result<(String, String), PostError> {
         let uri = Url::parse(&format!(
             "{}{}/about",
-            &ingestor_metadata.domain_name,
+            &metadata.domain_name(),
             base_path_without_preceding_slash()
         ))
         .map_err(|err| {
@@ -233,7 +234,7 @@ impl Metrics {
         let res = HTTP_CLIENT
             .get(uri)
             .header(header::CONTENT_TYPE, "application/json")
-            .header(header::AUTHORIZATION, ingestor_metadata.token)
+            .header(header::AUTHORIZATION, metadata.token())
             .send()
             .await;
         if let Ok(res) = res {
@@ -251,12 +252,12 @@ impl Metrics {
             Ok((commit_id.to_string(), staging.to_string()))
         } else {
             warn!(
-                "Failed to fetch about API response from ingestor: {}\n",
-                &ingestor_metadata.domain_name,
+                "Failed to fetch about API response from server: {}\n",
+                &metadata.domain_name(),
             );
             Err(PostError::Invalid(anyhow::anyhow!(
-                "Failed to fetch about API response from ingestor: {}\n",
-                &ingestor_metadata.domain_name
+                "Failed to fetch about API response from server: {}\n",
+                &metadata.domain_name()
             )))
         }
     }
