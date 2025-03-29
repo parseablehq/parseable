@@ -210,7 +210,7 @@ impl Metrics {
             Self::from_about_api_response(metadata)
                 .await
                 .map_err(|err| {
-                    error!("Fatal: failed to get ingestor info: {:?}", err);
+                    error!("Fatal: failed to get server info: {:?}", err);
                     PostError::Invalid(err.into())
                 })?;
 
