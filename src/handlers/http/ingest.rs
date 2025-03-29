@@ -125,7 +125,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
     let json: Value = serde_json::from_slice(&body)?;
     let schema = PARSEABLE.get_stream(&stream_name)?.get_schema_raw();
     let mut p_custom_fields = HashMap::new();
-    p_custom_fields.insert(USER_AGENT_KEY.to_string(), "Parseable".to_string());
+    p_custom_fields.insert(USER_AGENT_KEY.to_string(), "parseable".to_string());
     p_custom_fields.insert(FORMAT_KEY.to_string(), LogSource::Pmeta.to_string());
     // For internal streams, use old schema
     format::json::Event::new(json)
