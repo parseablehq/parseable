@@ -552,6 +552,7 @@ impl IndexerMetadata {
 pub trait Metadata {
     fn domain_name(&self) -> &str;
     fn token(&self) -> &str;
+    fn node_type(&self) -> &str;
 }
 
 impl Metadata for IngestorMetadata {
@@ -562,6 +563,9 @@ impl Metadata for IngestorMetadata {
     fn token(&self) -> &str {
         &self.token
     }
+    fn node_type(&self) -> &str {
+        "ingestor"
+    }
 }
 
 impl Metadata for IndexerMetadata {
@@ -571,6 +575,9 @@ impl Metadata for IndexerMetadata {
 
     fn token(&self) -> &str {
         &self.token
+    }
+    fn node_type(&self) -> &str {
+        "indexer"
     }
 }
 #[cfg(test)]

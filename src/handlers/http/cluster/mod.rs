@@ -564,8 +564,8 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
 
     // Fetch info for both node types concurrently
     let (ingestor_infos, indexer_infos) = future::join(
-        fetch_servers_info(ingestor_metadata),
-        fetch_servers_info(indexer_metadata),
+        fetch_nodes_info(ingestor_metadata),
+        fetch_nodes_info(indexer_metadata),
     )
     .await;
 
@@ -577,18 +577,18 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
     Ok(actix_web::HttpResponse::Ok().json(infos))
 }
 
-/// Fetches info for a single server (ingestor or indexer)
-async fn fetch_server_info<T: Metadata>(server: &T) -> Result<utils::ClusterInfo, StreamError> {
+/// Fetches info for a single node (ingestor or indexer)
+async fn fetch_node_info<T: Metadata>(node: &T) -> Result<utils::ClusterInfo, StreamError> {
     let uri = Url::parse(&format!(
         "{}{}/about",
-        server.domain_name(),
+        node.domain_name(),
         base_path_without_preceding_slash()
     ))
     .expect("should always be a valid url");
 
     let resp = HTTP_CLIENT
         .get(uri)
-        .header(header::AUTHORIZATION, server.token().to_owned())
+        .header(header::AUTHORIZATION, node.token().to_owned())
         .header(header::CONTENT_TYPE, "application/json")
         .send()
         .await;
@@ -597,13 +597,13 @@ async fn fetch_server_info<T: Metadata>(server: &T) -> Result<utils::ClusterInfo
         let status = Some(resp.status().to_string());
 
         let resp_data = resp.bytes().await.map_err(|err| {
-            error!("Fatal: failed to parse server info to bytes: {:?}", err);
+            error!("Fatal: failed to parse node info to bytes: {:?}", err);
             StreamError::Network(err)
         })?;
 
         let sp = serde_json::from_slice::<JsonValue>(&resp_data)
             .map_err(|err| {
-                error!("Fatal: failed to parse server info: {:?}", err);
+                error!("Fatal: failed to parse node info: {:?}", err);
                 StreamError::SerdeError(err)
             })?
             .get("staging")
@@ -627,23 +627,24 @@ async fn fetch_server_info<T: Metadata>(server: &T) -> Result<utils::ClusterInfo
     };
 
     Ok(utils::ClusterInfo::new(
-        server.domain_name(),
+        node.domain_name(),
         reachable,
         staging_path,
         PARSEABLE.storage.get_endpoint(),
         error,
         status,
+        node.node_type(),
     ))
 }
 
-/// Fetches info for multiple servers in parallel
-async fn fetch_servers_info<T: Metadata>(
-    servers: Vec<T>,
+/// Fetches info for multiple nodes in parallel
+async fn fetch_nodes_info<T: Metadata>(
+    nodes: Vec<T>,
 ) -> Result<Vec<utils::ClusterInfo>, StreamError> {
-    let servers_len = servers.len();
-    let results = stream::iter(servers)
-        .map(|server| async move { fetch_server_info(&server).await })
-        .buffer_unordered(servers_len) // No concurrency limit
+    let nodes_len = nodes.len();
+    let results = stream::iter(nodes)
+        .map(|node| async move { fetch_node_info(&node).await })
+        .buffer_unordered(nodes_len) // No concurrency limit
         .collect::<Vec<_>>()
         .await;
 
@@ -749,31 +750,29 @@ pub async fn remove_ingestor(ingestor: Path<String>) -> Result<impl Responder, P
     Ok((msg, StatusCode::OK))
 }
 
-/// Fetches metrics from a server (ingestor or indexer)
-async fn fetch_server_metrics<T>(server: &T) -> Result<Option<Metrics>, PostError>
+/// Fetches metrics from a node (ingestor or indexer)
+async fn fetch_node_metrics<T>(node: &T) -> Result<Option<Metrics>, PostError>
 where
     T: Metadata + Send + Sync + 'static,
 {
     // Format the metrics URL
     let uri = Url::parse(&format!(
         "{}{}/metrics",
-        server.domain_name(),
+        node.domain_name(),
         base_path_without_preceding_slash()
     ))
-    .map_err(|err| {
-        PostError::Invalid(anyhow::anyhow!("Invalid URL in server metadata: {}", err))
-    })?;
+    .map_err(|err| PostError::Invalid(anyhow::anyhow!("Invalid URL in node metadata: {}", err)))?;
 
-    // Check if the server is live
-    if !check_liveness(server.domain_name()).await {
-        warn!("Server {} is not live", server.domain_name());
+    // Check if the node is live
+    if !check_liveness(node.domain_name()).await {
+        warn!("node {} is not live", node.domain_name());
         return Ok(None);
     }
 
     // Fetch metrics
     let res = HTTP_CLIENT
         .get(uri)
-        .header(header::AUTHORIZATION, server.token())
+        .header(header::AUTHORIZATION, node.token())
         .header(header::CONTENT_TYPE, "application/json")
         .send()
         .await;
@@ -788,10 +787,10 @@ where
                 .map_err(|err| PostError::CustomError(err.to_string()))?
                 .samples;
 
-            let metrics = Metrics::from_prometheus_samples(sample, server)
+            let metrics = Metrics::from_prometheus_samples(sample, node)
                 .await
                 .map_err(|err| {
-                    error!("Fatal: failed to get server metrics: {:?}", err);
+                    error!("Fatal: failed to get node metrics: {:?}", err);
                     PostError::Invalid(err.into())
                 })?;
 
@@ -799,23 +798,23 @@ where
         }
         Err(_) => {
             warn!(
-                "Failed to fetch metrics from server: {}\n",
-                server.domain_name()
+                "Failed to fetch metrics from node: {}\n",
+                node.domain_name()
             );
             Ok(None)
         }
     }
 }
 
-/// Fetches metrics from multiple servers in parallel
-async fn fetch_servers_metrics<T>(servers: Vec<T>) -> Result<Vec<Metrics>, PostError>
+/// Fetches metrics from multiple nodes in parallel
+async fn fetch_nodes_metrics<T>(nodes: Vec<T>) -> Result<Vec<Metrics>, PostError>
 where
     T: Metadata + Send + Sync + 'static,
 {
-    let servers_len = servers.len();
-    let results = stream::iter(servers)
-        .map(|server| async move { fetch_server_metrics(&server).await })
-        .buffer_unordered(servers_len) // No concurrency limit
+    let nodes_len = nodes.len();
+    let results = stream::iter(nodes)
+        .map(|node| async move { fetch_node_metrics(&node).await })
+        .buffer_unordered(nodes_len) // No concurrency limit
         .collect::<Vec<_>>()
         .await;
 
@@ -823,8 +822,8 @@ where
     let mut metrics = Vec::new();
     for result in results {
         match result {
-            Ok(Some(server_metrics)) => metrics.push(server_metrics),
-            Ok(None) => {} // server was not live or metrics couldn't be fetched
+            Ok(Some(node_metrics)) => metrics.push(node_metrics),
+            Ok(None) => {} // node was not live or metrics couldn't be fetched
             Err(err) => return Err(err),
         }
     }
@@ -852,8 +851,8 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
 
     // Fetch metrics from ingestors and indexers concurrently
     let (ingestor_metrics, indexer_metrics) = future::join(
-        fetch_servers_metrics(ingestor_metadata),
-        fetch_servers_metrics(indexer_metadata),
+        fetch_nodes_metrics(ingestor_metadata),
+        fetch_nodes_metrics(indexer_metadata),
     )
     .await;
 

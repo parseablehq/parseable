@@ -37,6 +37,7 @@ use url::Url;
 #[derive(Debug, Serialize, Clone)]
 pub struct Metrics {
     address: String,
+    node_type: String,
     parseable_events_ingested: f64, // all streams
     parseable_events_ingested_size: f64,
     parseable_lifetime_events_ingested: f64, // all streams
@@ -72,6 +73,7 @@ impl Default for Metrics {
         );
         Metrics {
             address,
+            node_type: "ingestor".to_string(),
             parseable_events_ingested: 0.0,
             parseable_events_ingested_size: 0.0,
             parseable_staging_files: 0.0,
@@ -92,9 +94,10 @@ impl Default for Metrics {
 }
 
 impl Metrics {
-    fn new(address: String) -> Self {
+    fn new(address: String, node_type: String) -> Self {
         Metrics {
             address,
+            node_type,
             parseable_events_ingested: 0.0,
             parseable_events_ingested_size: 0.0,
             parseable_staging_files: 0.0,
@@ -160,7 +163,10 @@ impl Metrics {
         samples: Vec<PromSample>,
         metadata: &T,
     ) -> Result<Self, PostError> {
-        let mut prom_dress = Metrics::new(metadata.domain_name().to_string());
+        let mut prom_dress = Metrics::new(
+            metadata.domain_name().to_string(),
+            metadata.node_type().to_string(),
+        );
         for sample in samples {
             if let PromValue::Gauge(val) = sample.value {
                 match sample.metric.as_str() {
