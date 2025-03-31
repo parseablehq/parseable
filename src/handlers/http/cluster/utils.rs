@@ -55,6 +55,7 @@ pub struct ClusterInfo {
     storage_path: String,
     error: Option<String>,  // error message if the ingestor is not reachable
     status: Option<String>, // status message if the ingestor is reachable
+    node_type: String,
 }
 
 impl ClusterInfo {
@@ -65,6 +66,7 @@ impl ClusterInfo {
         storage_path: String,
         error: Option<String>,
         status: Option<String>,
+        node_type: &str,
     ) -> Self {
         Self {
             domain_name: domain_name.to_string(),
@@ -73,6 +75,7 @@ impl ClusterInfo {
             storage_path,
             error,
             status,
+            node_type: node_type.to_string(),
         }
     }
 }
