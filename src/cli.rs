@@ -16,7 +16,7 @@
  *
  */
 use clap::Parser;
-use std::{{env, fs, path::PathBuf, time::Duration}};
+use std::{env, fs, path::PathBuf, time::Duration};
 
 use url::Url;
 
