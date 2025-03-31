@@ -28,7 +28,7 @@ use tokio::{
 use tracing::{error, info, warn};
 use url::Url;
 
-use crate::{option::CONFIG, HTTP_CLIENT};
+use crate::{parseable::PARSEABLE, HTTP_CLIENT};
 
 use super::{AuditLog, AUDIT_LOG_TX};
 
@@ -48,7 +48,7 @@ impl Default for AuditLogger {
     fn default() -> Self {
         let mut logger = AuditLogger {
             log_endpoint: None,
-            batch: Vec::with_capacity(CONFIG.options.audit_batch_size),
+            batch: Vec::with_capacity(PARSEABLE.options.audit_batch_size),
             next_log_file_id: 0,
             oldest_log_file_id: 0,
         };
@@ -56,7 +56,7 @@ impl Default for AuditLogger {
         // Try to construct the log endpoint URL by joining the base URL
         // with the ingest path, This can fail if the URL is not valid,
         // when the base URL is not set or the ingest path is not valid
-        let Some(url) = CONFIG.options.audit_logger.as_ref() else {
+        let Some(url) = PARSEABLE.options.audit_logger.as_ref() else {
             return logger;
         };
 
@@ -66,11 +66,11 @@ impl Default for AuditLogger {
             .ok();
 
         // Created directory for audit logs if it doesn't exist
-        std::fs::create_dir_all(&CONFIG.options.audit_log_dir)
+        std::fs::create_dir_all(&PARSEABLE.options.audit_log_dir)
             .expect("Failed to create audit log directory");
 
         // Figure out the latest and oldest log file in directory
-        let files = std::fs::read_dir(&CONFIG.options.audit_log_dir)
+        let files = std::fs::read_dir(&PARSEABLE.options.audit_log_dir)
             .expect("Failed to read audit log directory");
         let (oldest_log_file_id, latest_log_file_id) =
             files.fold((usize::MAX, 0), |(oldest, latest), r| {
@@ -106,7 +106,7 @@ impl AuditLogger {
         }
 
         // swap the old batch with a new empty one
-        let mut logs_to_send = Vec::with_capacity(CONFIG.options.audit_batch_size);
+        let mut logs_to_send = Vec::with_capacity(PARSEABLE.options.audit_batch_size);
         std::mem::swap(&mut self.batch, &mut logs_to_send);
 
         // send the logs to the remote logging system, if no backlog, else write to disk
@@ -117,7 +117,7 @@ impl AuditLogger {
         }
 
         // write the logs to the next log file
-        let log_file_path = CONFIG
+        let log_file_path = PARSEABLE
             .options
             .audit_log_dir
             .join(format!("{}.json", self.next_log_file_id));
@@ -141,7 +141,7 @@ impl AuditLogger {
         self.batch.push(log);
 
         // Flush if batch size exceeds threshold
-        if self.batch.len() >= CONFIG.options.audit_batch_size {
+        if self.batch.len() >= PARSEABLE.options.audit_batch_size {
             self.flush().await
         }
     }
@@ -154,7 +154,7 @@ impl AuditLogger {
         }
 
         // read the oldest log file
-        let oldest_file_path = CONFIG
+        let oldest_file_path = PARSEABLE
             .options
             .audit_log_dir
             .join(format!("{}.json", self.oldest_log_file_id));
@@ -180,8 +180,8 @@ impl AuditLogger {
             .header("x-p-stream", "audit_log");
 
         // Use basic auth if credentials are configured
-        if let Some(username) = CONFIG.options.audit_username.as_ref() {
-            req = req.basic_auth(username, CONFIG.options.audit_password.as_ref())
+        if let Some(username) = PARSEABLE.options.audit_username.as_ref() {
+            req = req.basic_auth(username, PARSEABLE.options.audit_password.as_ref())
         }
 
         // Send batched logs to the audit logging backend
@@ -204,7 +204,7 @@ impl AuditLogger {
 
         // spawn the batcher
         tokio::spawn(async move {
-            let mut interval = interval(CONFIG.options.audit_flush_interval);
+            let mut interval = interval(PARSEABLE.options.audit_flush_interval);
             loop {
                 select! {
                     _ = interval.tick() => {
