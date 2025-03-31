@@ -18,27 +18,16 @@
 
 pub mod utils;
 
-use crate::handlers::http::cluster::utils::{
-    check_liveness, to_url_string, IngestionStats, QueriedStats,
-};
-use crate::handlers::http::ingest::{ingest_internal_stream, PostError};
-use crate::handlers::http::logstream::error::StreamError;
-use crate::handlers::http::role::RoleError;
-use crate::option::CONFIG;
+use futures::{future, stream, StreamExt};
+use std::collections::HashSet;
+use std::time::Duration;
 
-use crate::metrics::prom_utils::Metrics;
-use crate::rbac::role::model::DefaultPrivilege;
-use crate::rbac::user::User;
-use crate::stats::Stats;
-use crate::storage::object_storage::ingestor_metadata_path;
-use crate::storage::{ObjectStorageError, STREAM_ROOT_DIRECTORY};
-use crate::storage::{ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY};
-use crate::HTTP_CLIENT;
 use actix_web::http::header::{self, HeaderMap};
 use actix_web::web::Path;
 use actix_web::Responder;
 use bytes::Bytes;
 use chrono::Utc;
+use clokwerk::{AsyncScheduler, Interval};
 use http::{header as http_header, StatusCode};
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
@@ -47,17 +36,30 @@ use serde_json::error::Error as SerdeError;
 use serde_json::{to_vec, Value as JsonValue};
 use tracing::{error, info, warn};
 use url::Url;
-type IngestorMetadataArr = Vec<IngestorMetadata>;
+use utils::{check_liveness, to_url_string, IngestionStats, QueriedStats, StorageStats};
 
-use self::utils::StorageStats;
+use crate::handlers::http::ingest::ingest_internal_stream;
+use crate::metrics::prom_utils::Metrics;
+use crate::parseable::PARSEABLE;
+use crate::rbac::role::model::DefaultPrivilege;
+use crate::rbac::user::User;
+use crate::stats::Stats;
+use crate::storage::{
+    ObjectStorageError, ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY, STREAM_ROOT_DIRECTORY,
+};
+use crate::HTTP_CLIENT;
 
 use super::base_path_without_preceding_slash;
+use super::ingest::PostError;
+use super::logstream::error::StreamError;
+use super::modal::{IndexerMetadata, IngestorMetadata, Metadata};
 use super::rbac::RBACError;
-use std::collections::HashSet;
-use std::time::Duration;
+use super::role::RoleError;
 
-use super::modal::IngestorMetadata;
-use clokwerk::{AsyncScheduler, Interval};
+type IngestorMetadataArr = Vec<IngestorMetadata>;
+
+type IndexerMetadataArr = Vec<IndexerMetadata>;
+
 pub const INTERNAL_STREAM_NAME: &str = "pmeta";
 
 const CLUSTER_METRICS_INTERVAL_SECONDS: Interval = clokwerk::Interval::Minutes(1);
@@ -368,64 +370,29 @@ pub async fn sync_role_update_with_ingestors(
     Ok(())
 }
 
-pub async fn fetch_daily_stats_from_ingestors(
-    stream_name: &str,
+pub fn fetch_daily_stats_from_ingestors(
     date: &str,
+    stream_meta_list: &[ObjectStoreFormat],
 ) -> Result<Stats, StreamError> {
-    let mut total_events_ingested: u64 = 0;
-    let mut total_ingestion_size: u64 = 0;
-    let mut total_storage_size: u64 = 0;
+    // for the given date, get the stats from the ingestors
+    let mut events_ingested = 0;
+    let mut ingestion_size = 0;
+    let mut storage_size = 0;
 
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        error!("Fatal: failed to get ingestor info: {:?}", err);
-        StreamError::Anyhow(err)
-    })?;
-    for ingestor in ingestor_infos.iter() {
-        let uri = Url::parse(&format!(
-            "{}{}/metrics",
-            &ingestor.domain_name,
-            base_path_without_preceding_slash()
-        ))
-        .map_err(|err| {
-            StreamError::Anyhow(anyhow::anyhow!("Invalid URL in Ingestor Metadata: {}", err))
-        })?;
-
-        let res = HTTP_CLIENT
-            .get(uri)
-            .header(header::AUTHORIZATION, &ingestor.token)
-            .header(header::CONTENT_TYPE, "application/json")
-            .send()
-            .await;
-
-        if let Ok(res) = res {
-            let text = res
-                .text()
-                .await
-                .map_err(|err| StreamError::Anyhow(anyhow::anyhow!("Request failed: {}", err)))?;
-            let lines: Vec<Result<String, std::io::Error>> =
-                text.lines().map(|line| Ok(line.to_owned())).collect_vec();
-
-            let sample = prometheus_parse::Scrape::parse(lines.into_iter())
-                .map_err(|err| {
-                    StreamError::Anyhow(anyhow::anyhow!(
-                        "Invalid URL in Ingestor Metadata: {}",
-                        err
-                    ))
-                })?
-                .samples;
-
-            let (events_ingested, ingestion_size, storage_size) =
-                Metrics::get_daily_stats_from_samples(sample, stream_name, date);
-            total_events_ingested += events_ingested;
-            total_ingestion_size += ingestion_size;
-            total_storage_size += storage_size;
+    for meta in stream_meta_list.iter() {
+        for manifest in meta.snapshot.manifest_list.iter() {
+            if manifest.time_lower_bound.date_naive().to_string() == date {
+                events_ingested += manifest.events_ingested;
+                ingestion_size += manifest.ingestion_size;
+                storage_size += manifest.storage_size;
+            }
         }
     }
 
     let stats = Stats {
-        events: total_events_ingested,
-        ingestion: total_ingestion_size,
-        storage: total_storage_size,
+        events: events_ingested,
+        ingestion: ingestion_size,
+        storage: storage_size,
     };
     Ok(stats)
 }
@@ -435,8 +402,8 @@ pub async fn fetch_stats_from_ingestors(
     stream_name: &str,
 ) -> Result<Vec<utils::QueriedStats>, StreamError> {
     let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
-    let obs = CONFIG
-        .storage()
+    let obs = PARSEABLE
+        .storage
         .get_object_store()
         .get_objects(
             Some(&path),
@@ -475,17 +442,17 @@ pub async fn fetch_stats_from_ingestors(
         Utc::now(),
         IngestionStats::new(
             count,
-            format!("{} Bytes", ingestion_size),
+            ingestion_size,
             lifetime_count,
-            format!("{} Bytes", lifetime_ingestion_size),
+            lifetime_ingestion_size,
             deleted_count,
-            format!("{} Bytes", deleted_ingestion_size),
+            deleted_ingestion_size,
             "json",
         ),
         StorageStats::new(
-            format!("{} Bytes", storage_size),
-            format!("{} Bytes", lifetime_storage_size),
-            format!("{} Bytes", deleted_storage_size),
+            storage_size,
+            lifetime_storage_size,
+            deleted_storage_size,
             "parquet",
         ),
     );
@@ -575,72 +542,119 @@ pub async fn send_retention_cleanup_request(
 }
 
 pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        error!("Fatal: failed to get ingestor info: {:?}", err);
-        StreamError::Anyhow(err)
-    })?;
+    // Get ingestor and indexer metadata concurrently
+    let (ingestor_result, indexer_result) =
+        future::join(get_ingestor_info(), get_indexer_info()).await;
 
-    let mut infos = vec![];
+    // Handle ingestor metadata result
+    let ingestor_metadata = ingestor_result
+        .map_err(|err| {
+            error!("Fatal: failed to get ingestor info: {:?}", err);
+            PostError::Invalid(err)
+        })
+        .map_err(|err| StreamError::Anyhow(err.into()))?;
 
-    for ingestor in ingestor_infos {
-        let uri = Url::parse(&format!(
-            "{}{}/about",
-            ingestor.domain_name,
-            base_path_without_preceding_slash()
-        ))
-        .expect("should always be a valid url");
+    // Handle indexer metadata result
+    let indexer_metadata = indexer_result
+        .map_err(|err| {
+            error!("Fatal: failed to get indexer info: {:?}", err);
+            PostError::Invalid(err)
+        })
+        .map_err(|err| StreamError::Anyhow(err.into()))?;
 
-        let resp = HTTP_CLIENT
-            .get(uri)
-            .header(header::AUTHORIZATION, ingestor.token.clone())
-            .header(header::CONTENT_TYPE, "application/json")
-            .send()
-            .await;
+    // Fetch info for both node types concurrently
+    let (ingestor_infos, indexer_infos) = future::join(
+        fetch_nodes_info(ingestor_metadata),
+        fetch_nodes_info(indexer_metadata),
+    )
+    .await;
 
-        let (reachable, staging_path, error, status) = if let Ok(resp) = resp {
-            let status = Some(resp.status().to_string());
-
-            let resp_data = resp.bytes().await.map_err(|err| {
-                error!("Fatal: failed to parse ingestor info to bytes: {:?}", err);
-                StreamError::Network(err)
-            })?;
-
-            let sp = serde_json::from_slice::<JsonValue>(&resp_data)
-                .map_err(|err| {
-                    error!("Fatal: failed to parse ingestor info: {:?}", err);
-                    StreamError::SerdeError(err)
-                })?
-                .get("staging")
-                .ok_or(StreamError::SerdeError(SerdeError::missing_field(
-                    "staging",
-                )))?
-                .as_str()
-                .ok_or(StreamError::SerdeError(SerdeError::custom(
-                    "staging path not a string/ not provided",
-                )))?
-                .to_string();
-
-            (true, sp, None, status)
-        } else {
-            (
-                false,
-                "".to_owned(),
-                resp.as_ref().err().map(|e| e.to_string()),
-                resp.unwrap_err().status().map(|s| s.to_string()),
-            )
-        };
-
-        infos.push(utils::ClusterInfo::new(
-            &ingestor.domain_name,
-            reachable,
-            staging_path,
-            CONFIG.storage().get_endpoint(),
-            error,
-            status,
-        ));
-    }
+    // Combine results from both node types
+    let mut infos = Vec::new();
+    infos.extend(ingestor_infos?);
+    infos.extend(indexer_infos?);
 
     Ok(actix_web::HttpResponse::Ok().json(infos))
+}
+
+/// Fetches info for a single node (ingestor or indexer)
+async fn fetch_node_info<T: Metadata>(node: &T) -> Result<utils::ClusterInfo, StreamError> {
+    let uri = Url::parse(&format!(
+        "{}{}/about",
+        node.domain_name(),
+        base_path_without_preceding_slash()
+    ))
+    .expect("should always be a valid url");
+
+    let resp = HTTP_CLIENT
+        .get(uri)
+        .header(header::AUTHORIZATION, node.token().to_owned())
+        .header(header::CONTENT_TYPE, "application/json")
+        .send()
+        .await;
+
+    let (reachable, staging_path, error, status) = if let Ok(resp) = resp {
+        let status = Some(resp.status().to_string());
+
+        let resp_data = resp.bytes().await.map_err(|err| {
+            error!("Fatal: failed to parse node info to bytes: {:?}", err);
+            StreamError::Network(err)
+        })?;
+
+        let sp = serde_json::from_slice::<JsonValue>(&resp_data)
+            .map_err(|err| {
+                error!("Fatal: failed to parse node info: {:?}", err);
+                StreamError::SerdeError(err)
+            })?
+            .get("staging")
+            .ok_or(StreamError::SerdeError(SerdeError::missing_field(
+                "staging",
+            )))?
+            .as_str()
+            .ok_or(StreamError::SerdeError(SerdeError::custom(
+                "staging path not a string/ not provided",
+            )))?
+            .to_string();
+
+        (true, sp, None, status)
+    } else {
+        (
+            false,
+            "".to_owned(),
+            resp.as_ref().err().map(|e| e.to_string()),
+            resp.unwrap_err().status().map(|s| s.to_string()),
+        )
+    };
+
+    Ok(utils::ClusterInfo::new(
+        node.domain_name(),
+        reachable,
+        staging_path,
+        PARSEABLE.storage.get_endpoint(),
+        error,
+        status,
+        node.node_type(),
+    ))
+}
+
+/// Fetches info for multiple nodes in parallel
+async fn fetch_nodes_info<T: Metadata>(
+    nodes: Vec<T>,
+) -> Result<Vec<utils::ClusterInfo>, StreamError> {
+    let nodes_len = nodes.len();
+    let results = stream::iter(nodes)
+        .map(|node| async move { fetch_node_info(&node).await })
+        .buffer_unordered(nodes_len) // No concurrency limit
+        .collect::<Vec<_>>()
+        .await;
+
+    // Collect results, propagating any errors
+    let mut infos = Vec::with_capacity(results.len());
+    for result in results {
+        infos.push(result?);
+    }
+
+    Ok(infos)
 }
 
 pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
@@ -652,9 +666,8 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
     Ok(actix_web::HttpResponse::Ok().json(dresses))
 }
 
-// update the .query.json file and return the new ingestorMetadataArr
 pub async fn get_ingestor_info() -> anyhow::Result<IngestorMetadataArr> {
-    let store = CONFIG.storage().get_object_store();
+    let store = PARSEABLE.storage.get_object_store();
 
     let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
     let arr = store
@@ -671,6 +684,24 @@ pub async fn get_ingestor_info() -> anyhow::Result<IngestorMetadataArr> {
     Ok(arr)
 }
 
+pub async fn get_indexer_info() -> anyhow::Result<IndexerMetadataArr> {
+    let store = PARSEABLE.storage.get_object_store();
+
+    let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
+    let arr = store
+        .get_objects(
+            Some(&root_path),
+            Box::new(|file_name| file_name.starts_with("indexer")),
+        )
+        .await?
+        .iter()
+        // this unwrap will most definateley shoot me in the foot later
+        .map(|x| serde_json::from_slice::<IndexerMetadata>(x).unwrap_or_default())
+        .collect_vec();
+
+    Ok(arr)
+}
+
 pub async fn remove_ingestor(ingestor: Path<String>) -> Result<impl Responder, PostError> {
     let domain_name = to_url_string(ingestor.into_inner());
 
@@ -679,7 +710,7 @@ pub async fn remove_ingestor(ingestor: Path<String>) -> Result<impl Responder, P
             "The ingestor is currently live and cannot be removed"
         )));
     }
-    let object_store = CONFIG.storage().get_object_store();
+    let object_store = PARSEABLE.storage.get_object_store();
 
     let ingestor_metadatas = object_store
         .get_objects(
@@ -698,8 +729,7 @@ pub async fn remove_ingestor(ingestor: Path<String>) -> Result<impl Responder, P
         .filter(|elem| elem.domain_name == domain_name)
         .collect_vec();
 
-    let ingestor_meta_filename =
-        ingestor_metadata_path(Some(&ingestor_metadata[0].ingestor_id)).to_string();
+    let ingestor_meta_filename = ingestor_metadata[0].file_path().to_string();
     let msg = match object_store
         .try_delete_ingestor_meta(ingestor_meta_filename)
         .await
@@ -720,32 +750,35 @@ pub async fn remove_ingestor(ingestor: Path<String>) -> Result<impl Responder, P
     Ok((msg, StatusCode::OK))
 }
 
-async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
-    let ingestor_metadata = get_ingestor_info().await.map_err(|err| {
-        error!("Fatal: failed to get ingestor info: {:?}", err);
-        PostError::Invalid(err)
-    })?;
+/// Fetches metrics from a node (ingestor or indexer)
+async fn fetch_node_metrics<T>(node: &T) -> Result<Option<Metrics>, PostError>
+where
+    T: Metadata + Send + Sync + 'static,
+{
+    // Format the metrics URL
+    let uri = Url::parse(&format!(
+        "{}{}/metrics",
+        node.domain_name(),
+        base_path_without_preceding_slash()
+    ))
+    .map_err(|err| PostError::Invalid(anyhow::anyhow!("Invalid URL in node metadata: {}", err)))?;
 
-    let mut dresses = vec![];
+    // Check if the node is live
+    if !check_liveness(node.domain_name()).await {
+        warn!("node {} is not live", node.domain_name());
+        return Ok(None);
+    }
 
-    for ingestor in ingestor_metadata {
-        let uri = Url::parse(&format!(
-            "{}{}/metrics",
-            &ingestor.domain_name,
-            base_path_without_preceding_slash()
-        ))
-        .map_err(|err| {
-            PostError::Invalid(anyhow::anyhow!("Invalid URL in Ingestor Metadata: {}", err))
-        })?;
+    // Fetch metrics
+    let res = HTTP_CLIENT
+        .get(uri)
+        .header(header::AUTHORIZATION, node.token())
+        .header(header::CONTENT_TYPE, "application/json")
+        .send()
+        .await;
 
-        let res = HTTP_CLIENT
-            .get(uri)
-            .header(header::AUTHORIZATION, &ingestor.token)
-            .header(header::CONTENT_TYPE, "application/json")
-            .send()
-            .await;
-
-        if let Ok(res) = res {
+    match res {
+        Ok(res) => {
             let text = res.text().await.map_err(PostError::NetworkError)?;
             let lines: Vec<Result<String, std::io::Error>> =
                 text.lines().map(|line| Ok(line.to_owned())).collect_vec();
@@ -753,21 +786,92 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
             let sample = prometheus_parse::Scrape::parse(lines.into_iter())
                 .map_err(|err| PostError::CustomError(err.to_string()))?
                 .samples;
-            let ingestor_metrics = Metrics::from_prometheus_samples(sample, &ingestor)
+
+            let metrics = Metrics::from_prometheus_samples(sample, node)
                 .await
                 .map_err(|err| {
-                    error!("Fatal: failed to get ingestor metrics: {:?}", err);
+                    error!("Fatal: failed to get node metrics: {:?}", err);
                     PostError::Invalid(err.into())
                 })?;
-            dresses.push(ingestor_metrics);
-        } else {
+
+            Ok(Some(metrics))
+        }
+        Err(_) => {
             warn!(
-                "Failed to fetch metrics from ingestor: {}\n",
-                &ingestor.domain_name,
+                "Failed to fetch metrics from node: {}\n",
+                node.domain_name()
             );
+            Ok(None)
         }
     }
-    Ok(dresses)
+}
+
+/// Fetches metrics from multiple nodes in parallel
+async fn fetch_nodes_metrics<T>(nodes: Vec<T>) -> Result<Vec<Metrics>, PostError>
+where
+    T: Metadata + Send + Sync + 'static,
+{
+    let nodes_len = nodes.len();
+    let results = stream::iter(nodes)
+        .map(|node| async move { fetch_node_metrics(&node).await })
+        .buffer_unordered(nodes_len) // No concurrency limit
+        .collect::<Vec<_>>()
+        .await;
+
+    // Process results
+    let mut metrics = Vec::new();
+    for result in results {
+        match result {
+            Ok(Some(node_metrics)) => metrics.push(node_metrics),
+            Ok(None) => {} // node was not live or metrics couldn't be fetched
+            Err(err) => return Err(err),
+        }
+    }
+
+    Ok(metrics)
+}
+
+/// Main function to fetch all cluster metrics, parallelized and refactored
+async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
+    // Get ingestor and indexer metadata concurrently
+    let (ingestor_result, indexer_result) =
+        future::join(get_ingestor_info(), get_indexer_info()).await;
+
+    // Handle ingestor metadata result
+    let ingestor_metadata = ingestor_result.map_err(|err| {
+        error!("Fatal: failed to get ingestor info: {:?}", err);
+        PostError::Invalid(err)
+    })?;
+
+    // Handle indexer metadata result
+    let indexer_metadata = indexer_result.map_err(|err| {
+        error!("Fatal: failed to get indexer info: {:?}", err);
+        PostError::Invalid(err)
+    })?;
+
+    // Fetch metrics from ingestors and indexers concurrently
+    let (ingestor_metrics, indexer_metrics) = future::join(
+        fetch_nodes_metrics(ingestor_metadata),
+        fetch_nodes_metrics(indexer_metadata),
+    )
+    .await;
+
+    // Combine all metrics
+    let mut all_metrics = Vec::new();
+
+    // Add ingestor metrics
+    match ingestor_metrics {
+        Ok(metrics) => all_metrics.extend(metrics),
+        Err(err) => return Err(err),
+    }
+
+    // Add indexer metrics
+    match indexer_metrics {
+        Ok(metrics) => all_metrics.extend(metrics),
+        Err(err) => return Err(err),
+    }
+
+    Ok(all_metrics)
 }
 
 pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {

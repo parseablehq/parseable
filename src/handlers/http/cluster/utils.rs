@@ -19,7 +19,6 @@
 use crate::{handlers::http::base_path_without_preceding_slash, HTTP_CLIENT};
 use actix_web::http::header;
 use chrono::{DateTime, Utc};
-use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tracing::error;
 use url::Url;
@@ -56,6 +55,7 @@ pub struct ClusterInfo {
     storage_path: String,
     error: Option<String>,  // error message if the ingestor is not reachable
     status: Option<String>, // status message if the ingestor is reachable
+    node_type: String,
 }
 
 impl ClusterInfo {
@@ -66,6 +66,7 @@ impl ClusterInfo {
         storage_path: String,
         error: Option<String>,
         status: Option<String>,
+        node_type: &str,
     ) -> Self {
         Self {
             domain_name: domain_name.to_string(),
@@ -74,6 +75,7 @@ impl ClusterInfo {
             storage_path,
             error,
             status,
+            node_type: node_type.to_string(),
         }
     }
 }
@@ -81,22 +83,22 @@ impl ClusterInfo {
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct IngestionStats {
     pub count: u64,
-    pub size: String,
+    pub size: u64,
     pub format: String,
     pub lifetime_count: u64,
-    pub lifetime_size: String,
+    pub lifetime_size: u64,
     pub deleted_count: u64,
-    pub deleted_size: String,
+    pub deleted_size: u64,
 }
 
 impl IngestionStats {
     pub fn new(
         count: u64,
-        size: String,
+        size: u64,
         lifetime_count: u64,
-        lifetime_size: String,
+        lifetime_size: u64,
         deleted_count: u64,
-        deleted_size: String,
+        deleted_size: u64,
         format: &str,
     ) -> Self {
         Self {
@@ -113,14 +115,14 @@ impl IngestionStats {
 
 #[derive(Debug, Default, Serialize, Deserialize)]
 pub struct StorageStats {
-    pub size: String,
+    pub size: u64,
     pub format: String,
-    pub lifetime_size: String,
-    pub deleted_size: String,
+    pub lifetime_size: u64,
+    pub deleted_size: u64,
 }
 
 impl StorageStats {
-    pub fn new(size: String, lifetime_size: String, deleted_size: String, format: &str) -> Self {
+    pub fn new(size: u64, lifetime_size: u64, deleted_size: u64, format: &str) -> Self {
         Self {
             size,
             format: format.to_string(),
@@ -143,36 +145,12 @@ pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
             .fold(IngestionStats::default(), |acc, x| IngestionStats {
                 count: acc.count + x.count,
 
-                size: format!(
-                    "{} Bytes",
-                    acc.size.split(' ').collect_vec()[0]
-                        .parse::<u64>()
-                        .unwrap_or_default()
-                        + x.size.split(' ').collect_vec()[0]
-                            .parse::<u64>()
-                            .unwrap_or_default()
-                ),
+                size: acc.size + x.size,
                 format: x.format.clone(),
                 lifetime_count: acc.lifetime_count + x.lifetime_count,
-                lifetime_size: format!(
-                    "{} Bytes",
-                    acc.lifetime_size.split(' ').collect_vec()[0]
-                        .parse::<u64>()
-                        .unwrap_or_default()
-                        + x.lifetime_size.split(' ').collect_vec()[0]
-                            .parse::<u64>()
-                            .unwrap_or_default()
-                ),
+                lifetime_size: acc.lifetime_size + x.lifetime_size,
                 deleted_count: acc.deleted_count + x.deleted_count,
-                deleted_size: format!(
-                    "{} Bytes",
-                    acc.deleted_size.split(' ').collect_vec()[0]
-                        .parse::<u64>()
-                        .unwrap_or_default()
-                        + x.deleted_size.split(' ').collect_vec()[0]
-                            .parse::<u64>()
-                            .unwrap_or_default()
-                ),
+                deleted_size: acc.deleted_size + x.deleted_size,
             });
 
     let cumulative_storage =
@@ -180,34 +158,10 @@ pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
             .iter()
             .map(|x| &x.storage)
             .fold(StorageStats::default(), |acc, x| StorageStats {
-                size: format!(
-                    "{} Bytes",
-                    acc.size.split(' ').collect_vec()[0]
-                        .parse::<u64>()
-                        .unwrap_or_default()
-                        + x.size.split(' ').collect_vec()[0]
-                            .parse::<u64>()
-                            .unwrap_or_default()
-                ),
+                size: acc.size + x.size,
                 format: x.format.clone(),
-                lifetime_size: format!(
-                    "{} Bytes",
-                    acc.lifetime_size.split(' ').collect_vec()[0]
-                        .parse::<u64>()
-                        .unwrap_or_default()
-                        + x.lifetime_size.split(' ').collect_vec()[0]
-                            .parse::<u64>()
-                            .unwrap_or_default()
-                ),
-                deleted_size: format!(
-                    "{} Bytes",
-                    acc.deleted_size.split(' ').collect_vec()[0]
-                        .parse::<u64>()
-                        .unwrap_or_default()
-                        + x.deleted_size.split(' ').collect_vec()[0]
-                            .parse::<u64>()
-                            .unwrap_or_default()
-                ),
+                lifetime_size: acc.lifetime_size + x.lifetime_size,
+                deleted_size: acc.deleted_size + x.deleted_size,
             });
 
     QueriedStats::new(

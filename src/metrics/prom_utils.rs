@@ -18,8 +18,9 @@
 
 use crate::handlers::http::base_path_without_preceding_slash;
 use crate::handlers::http::ingest::PostError;
-use crate::handlers::http::modal::IngestorMetadata;
-use crate::utils::get_url;
+use crate::handlers::http::modal::Metadata;
+use crate::option::Mode;
+use crate::parseable::PARSEABLE;
 use crate::HTTP_CLIENT;
 use actix_web::http::header;
 use chrono::NaiveDateTime;
@@ -36,6 +37,7 @@ use url::Url;
 #[derive(Debug, Serialize, Clone)]
 pub struct Metrics {
     address: String,
+    node_type: String,
     parseable_events_ingested: f64, // all streams
     parseable_events_ingested_size: f64,
     parseable_lifetime_events_ingested: f64, // all streams
@@ -61,7 +63,8 @@ struct StorageMetrics {
 
 impl Default for Metrics {
     fn default() -> Self {
-        let url = get_url();
+        // for now it is only for ingestor
+        let url = PARSEABLE.options.get_url(Mode::Ingest);
         let address = format!(
             "http://{}:{}",
             url.domain()
@@ -70,6 +73,7 @@ impl Default for Metrics {
         );
         Metrics {
             address,
+            node_type: "ingestor".to_string(),
             parseable_events_ingested: 0.0,
             parseable_events_ingested_size: 0.0,
             parseable_staging_files: 0.0,
@@ -90,9 +94,10 @@ impl Default for Metrics {
 }
 
 impl Metrics {
-    fn new(address: String) -> Self {
+    fn new(address: String, node_type: String) -> Self {
         Metrics {
             address,
+            node_type,
             parseable_events_ingested: 0.0,
             parseable_events_ingested_size: 0.0,
             parseable_staging_files: 0.0,
@@ -154,11 +159,14 @@ impl Metrics {
         }
         (events_ingested, ingestion_size, storage_size)
     }
-    pub async fn from_prometheus_samples(
+    pub async fn from_prometheus_samples<T: Metadata>(
         samples: Vec<PromSample>,
-        ingestor_metadata: &IngestorMetadata,
+        metadata: &T,
     ) -> Result<Self, PostError> {
-        let mut prom_dress = Metrics::new(ingestor_metadata.domain_name.to_string());
+        let mut prom_dress = Metrics::new(
+            metadata.domain_name().to_string(),
+            metadata.node_type().to_string(),
+        );
         for sample in samples {
             if let PromValue::Gauge(val) = sample.value {
                 match sample.metric.as_str() {
@@ -204,12 +212,13 @@ impl Metrics {
                 }
             }
         }
-        let (commit_id, staging) = Self::from_about_api_response(ingestor_metadata.clone())
-            .await
-            .map_err(|err| {
-                error!("Fatal: failed to get ingestor info: {:?}", err);
-                PostError::Invalid(err.into())
-            })?;
+        let (commit_id, staging) =
+            Self::from_about_api_response(metadata)
+                .await
+                .map_err(|err| {
+                    error!("Fatal: failed to get server info: {:?}", err);
+                    PostError::Invalid(err.into())
+                })?;
 
         prom_dress.commit = commit_id;
         prom_dress.staging = staging;
@@ -217,12 +226,12 @@ impl Metrics {
         Ok(prom_dress)
     }
 
-    pub async fn from_about_api_response(
-        ingestor_metadata: IngestorMetadata,
+    pub async fn from_about_api_response<T: Metadata>(
+        metadata: &T,
     ) -> Result<(String, String), PostError> {
         let uri = Url::parse(&format!(
             "{}{}/about",
-            &ingestor_metadata.domain_name,
+            &metadata.domain_name(),
             base_path_without_preceding_slash()
         ))
         .map_err(|err| {
@@ -231,7 +240,7 @@ impl Metrics {
         let res = HTTP_CLIENT
             .get(uri)
             .header(header::CONTENT_TYPE, "application/json")
-            .header(header::AUTHORIZATION, ingestor_metadata.token)
+            .header(header::AUTHORIZATION, metadata.token())
             .send()
             .await;
         if let Ok(res) = res {
@@ -249,12 +258,12 @@ impl Metrics {
             Ok((commit_id.to_string(), staging.to_string()))
         } else {
             warn!(
-                "Failed to fetch about API response from ingestor: {}\n",
-                &ingestor_metadata.domain_name,
+                "Failed to fetch about API response from server: {}\n",
+                &metadata.domain_name(),
             );
             Err(PostError::Invalid(anyhow::anyhow!(
-                "Failed to fetch about API response from ingestor: {}\n",
-                &ingestor_metadata.domain_name
+                "Failed to fetch about API response from server: {}\n",
+                &metadata.domain_name()
             )))
         }
     }

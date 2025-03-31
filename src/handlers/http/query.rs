@@ -35,23 +35,21 @@ use tracing::error;
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
-use crate::metadata::STREAM_INFO;
 
 use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
-use crate::option::{Mode, CONFIG};
+use crate::option::Mode;
+use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::query::error::ExecuteError;
-use crate::query::{CountsRequest, CountsResponse, Query as LogicalQuery};
+use crate::query::{execute, CountsRequest, CountsResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
-use crate::response::QueryResponse;
+use crate::response::{QueryResponse, TIME_ELAPSED_HEADER};
 use crate::storage::object_storage::commit_schema_to_storage;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::time::{TimeParseError, TimeRange};
 use crate::utils::user_auth_for_query;
-
-use super::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
 
 /// Query Request through http endpoint.
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -124,21 +122,26 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
             Value::Array(vec![json!({column_name: count})])
         };
 
+        let total_time = format!("{:?}", time.elapsed());
         let time = time.elapsed().as_secs_f64();
 
         QUERY_EXECUTE_TIME
             .with_label_values(&[&table_name])
             .observe(time);
 
-        return Ok(HttpResponse::Ok().json(response));
+        return Ok(HttpResponse::Ok()
+            .insert_header((TIME_ELAPSED_HEADER, total_time.as_str()))
+            .json(response));
     }
-    let (records, fields) = query.execute(table_name.clone()).await?;
 
+    let (records, fields) = execute(query, &table_name).await?;
+    let total_time = format!("{:?}", time.elapsed());
     let response = QueryResponse {
         records,
         fields,
         fill_null: query_request.send_null,
         with_fields: query_request.fields,
+        total_time,
     }
     .to_http()?;
 
@@ -169,8 +172,8 @@ pub async fn get_counts(
     }))
 }
 
-pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), QueryError> {
-    if CONFIG.options.mode == Mode::Query {
+pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), EventError> {
+    if PARSEABLE.options.mode == Mode::Query {
         for table in tables {
             if let Ok(new_schema) = fetch_schema(table).await {
                 // commit schema merges the schema internally and updates the schema in storage.
@@ -188,12 +191,14 @@ pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), 
 /// get list of streams from memory and storage
 /// create streams for memory from storage if they do not exist
 pub async fn create_streams_for_querier() {
-    let querier_streams = STREAM_INFO.list_streams();
-    let store = CONFIG.storage().get_object_store();
+    let querier_streams = PARSEABLE.streams.list();
+    let store = PARSEABLE.storage.get_object_store();
     let storage_streams = store.list_streams().await.unwrap();
     for stream_name in storage_streams {
         if !querier_streams.contains(&stream_name) {
-            let _ = create_stream_and_schema_from_storage(&stream_name).await;
+            let _ = PARSEABLE
+                .create_stream_and_schema_from_storage(&stream_name)
+                .await;
         }
     }
 }
@@ -304,7 +309,7 @@ pub enum QueryError {
     Execute(#[from] ExecuteError),
     #[error("ObjectStorage Error: {0}")]
     ObjectStorage(#[from] ObjectStorageError),
-    #[error("Evern Error: {0}")]
+    #[error("Event Error: {0}")]
     EventError(#[from] EventError),
     #[error("Error: {0}")]
     MalformedQuery(&'static str),
@@ -318,6 +323,8 @@ Description: {0}"#
     ActixError(#[from] actix_web::Error),
     #[error("Error: {0}")]
     Anyhow(#[from] anyhow::Error),
+    #[error("Error: {0}")]
+    StreamNotFound(#[from] StreamNotFound),
 }
 
 impl actix_web::ResponseError for QueryError {

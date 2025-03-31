@@ -16,9 +16,12 @@
  *
  */
 use clap::Parser;
-use std::{path::PathBuf, time::Duration};
+use std::{{env, fs, path::PathBuf, time::Duration}};
 
 use url::Url;
+
+#[cfg(feature = "kafka")]
+use crate::connectors::kafka::config::KafkaConfig;
 
 use crate::{
     oidc::{self, OpenidConfig},
@@ -83,6 +86,9 @@ pub struct LocalStoreArgs {
     pub options: Options,
     #[command(flatten)]
     pub storage: FSConfig,
+    #[cfg(feature = "kafka")]
+    #[command(flatten)]
+    pub kafka: KafkaConfig,
 }
 
 #[derive(Parser)]
@@ -91,6 +97,9 @@ pub struct S3StoreArgs {
     pub options: Options,
     #[command(flatten)]
     pub storage: S3Config,
+    #[cfg(feature = "kafka")]
+    #[command(flatten)]
+    pub kafka: KafkaConfig,
 }
 
 #[derive(Parser)]
@@ -99,9 +108,12 @@ pub struct BlobStoreArgs {
     pub options: Options,
     #[command(flatten)]
     pub storage: AzureBlobConfig,
+    #[cfg(feature = "kafka")]
+    #[command(flatten)]
+    pub kafka: KafkaConfig,
 }
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Default)]
 pub struct Options {
     // Authentication
     #[arg(long, env = "P_USERNAME", help = "Admin username to be set for this Parseable server", default_value = DEFAULT_USERNAME)]
@@ -161,6 +173,14 @@ pub struct Options {
     )]
     pub send_analytics: bool,
 
+    #[arg(
+        long,
+        env = "P_MASK_PII",
+        default_value = "false",
+        help = "mask PII data when sending to Prism"
+    )]
+    pub mask_pii: bool,
+
     // TLS/Security
     #[arg(
         long,
@@ -203,6 +223,15 @@ pub struct Options {
         help = "Local path on this device to be used for hot tier data"
     )]
     pub hot_tier_storage_path: Option<PathBuf>,
+
+    //TODO: remove this when smart cache is implemented
+    #[arg(
+        long = "index-storage-path",
+        env = "P_INDEX_DIR",
+        value_parser = validation::canonicalize_path,
+        help = "Local path on this indexer used for indexing"
+    )]
+    pub index_storage_path: Option<PathBuf>,
 
     #[arg(
         long,
@@ -247,14 +276,23 @@ pub struct Options {
         help = "Set a fixed memory limit for query in GiB"
     )]
     pub query_memory_pool_size: Option<usize>,
-
+    // reduced the max row group size from 1048576
+    // smaller row groups help in faster query performance in multi threaded query
     #[arg(
         long,
         env = "P_PARQUET_ROW_GROUP_SIZE",
-        default_value = "1048576",
+        default_value = "262144",
         help = "Number of rows in a row group"
     )]
     pub row_group_size: usize,
+
+    #[arg(
+        long,
+        env = "P_EXECUTION_BATCH_SIZE",
+        default_value = "20000",
+        help = "batch size for query execution"
+    )]
+    pub execution_batch_size: usize,
 
     #[arg(
         long = "compression-algo",
@@ -281,56 +319,16 @@ pub struct Options {
     )]
     pub ingestor_endpoint: String,
 
-    #[command(flatten)]
-    oidc: Option<OidcConfig>,
-
-    // Kafka configuration (conditionally compiled)
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    #[arg(long, env = "P_KAFKA_TOPICS", help = "Kafka topics to subscribe to")]
-    pub kafka_topics: Option<String>,
-
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    #[arg(long, env = "P_KAFKA_HOST", help = "Address and port for Kafka server")]
-    pub kafka_host: Option<String>,
-
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    #[arg(long, env = "P_KAFKA_GROUP", help = "Kafka group")]
-    pub kafka_group: Option<String>,
-
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    #[arg(long, env = "P_KAFKA_CLIENT_ID", help = "Kafka client id")]
-    pub kafka_client_id: Option<String>,
-
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
     #[arg(
         long,
-        env = "P_KAFKA_SECURITY_PROTOCOL",
-        value_parser = validation::kafka_security_protocol,
-        help = "Kafka security protocol"
+        env = "P_INDEXER_ENDPOINT",
+        default_value = "",
+        help = "URL to connect to this specific indexer. Default is the address of the server"
     )]
-    pub kafka_security_protocol: Option<crate::kafka::SslProtocol>,
+    pub indexer_endpoint: String,
 
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    #[arg(long, env = "P_KAFKA_PARTITIONS", help = "Kafka partitions")]
-    pub kafka_partitions: Option<String>,
+    #[command(flatten)]
+    pub oidc: Option<OidcConfig>,
 
     // Audit logging
     #[arg(
@@ -439,5 +437,108 @@ impl Options {
             issuer: issuer.clone(),
             origin,
         })
+    }
+
+    pub fn is_default_creds(&self) -> bool {
+        self.username == DEFAULT_USERNAME && self.password == DEFAULT_PASSWORD
+    }
+
+    /// Path to staging directory, ensures that it exists or panics
+    pub fn staging_dir(&self) -> &PathBuf {
+        fs::create_dir_all(&self.local_staging_path)
+            .expect("Should be able to create dir if doesn't exist");
+
+        &self.local_staging_path
+    }
+
+    /// Path to index directory, ensures that it exists or returns the PathBuf
+    pub fn index_dir(&self) -> Option<&PathBuf> {
+        if let Some(path) = &self.index_storage_path {
+            fs::create_dir_all(path)
+                .expect("Should be able to create index directory if it doesn't exist");
+            Some(path)
+        } else {
+            None
+        }
+    }
+
+    /// TODO: refactor and document
+    pub fn get_url(&self, mode: Mode) -> Url {
+        let (endpoint, env_var) = match mode {
+            Mode::Ingest => {
+                if self.ingestor_endpoint.is_empty() {
+                    return format!(
+                        "{}://{}",
+                        self.get_scheme(),
+                        self.address
+                    )
+                    .parse::<Url>() // if the value was improperly set, this will panic before hand
+                    .unwrap_or_else(|err| {
+                        panic!("{err}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.", self.address)
+                    });
+                }
+                (&self.ingestor_endpoint, "P_INGESTOR_ENDPOINT")
+            }
+            Mode::Index => {
+                if self.indexer_endpoint.is_empty() {
+                    return format!(
+                        "{}://{}",
+                        self.get_scheme(),
+                        self.address
+                    )
+                    .parse::<Url>() // if the value was improperly set, this will panic before hand
+                    .unwrap_or_else(|err| {
+                        panic!("{err}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.", self.address)
+                    });
+                }
+                (&self.indexer_endpoint, "P_INDEXER_ENDPOINT")
+            }
+            _ => panic!("Invalid mode"),
+        };
+
+        if endpoint.starts_with("http") {
+            panic!("Invalid value `{}`, please set the environement variable `{env_var}` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.", endpoint);
+        }
+
+        let addr_from_env = endpoint.split(':').collect::<Vec<&str>>();
+
+        if addr_from_env.len() != 2 {
+            panic!("Invalid value `{}`, please set the environement variable `{env_var}` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.", endpoint);
+        }
+
+        let mut hostname = addr_from_env[0].to_string();
+        let mut port = addr_from_env[1].to_string();
+
+        // if the env var value fits the pattern $VAR_NAME:$VAR_NAME
+        // fetch the value from the specified env vars
+        if hostname.starts_with('$') {
+            let var_hostname = hostname[1..].to_string();
+            hostname = env::var(&var_hostname).unwrap_or_default();
+
+            if hostname.is_empty() {
+                panic!("The environement variable `{}` is not set, please set as <ip address / DNS> without the scheme (e.g., 192.168.1.1 or example.com). Please refer to the documentation: https://logg.ing/env for more details.", var_hostname);
+            }
+            if hostname.starts_with("http") {
+                panic!("Invalid value `{}`, please set the environement variable `{}` to `<ip address / DNS>` without the scheme (e.g., 192.168.1.1 or example.com). Please refer to the documentation: https://logg.ing/env for more details.", hostname, var_hostname);
+            } else {
+                hostname = format!("{}://{}", self.get_scheme(), hostname);
+            }
+        }
+
+        if port.starts_with('$') {
+            let var_port = port[1..].to_string();
+            port = env::var(&var_port).unwrap_or_default();
+
+            if port.is_empty() {
+                panic!(
+                    "Port is not set in the environement variable `{}`. Please refer to the documentation: https://logg.ing/env for more details.",
+                    var_port
+                );
+            }
+        }
+
+        format!("{}://{}:{}", self.get_scheme(), hostname, port)
+            .parse::<Url>()
+            .expect("Valid URL")
     }
 }

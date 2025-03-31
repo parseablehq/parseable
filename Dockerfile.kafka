@@ -1,0 +1,68 @@
+# Parseable Server (C) 2022 - 2024 Parseable, Inc.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU Affero General Public License as
+# published by the Free Software Foundation, either version 3 of the
+# License, or (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU Affero General Public License for more details.
+#
+# You should have received a copy of the GNU Affero General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+# build stage
+FROM  rust:1.84.0-bookworm AS builder
+
+LABEL org.opencontainers.image.title="Parseable"
+LABEL maintainer="Parseable Team <hi@parseable.io>"
+LABEL org.opencontainers.image.vendor="Parseable Inc"
+LABEL org.opencontainers.image.licenses="AGPL-3.0"
+
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y \
+    cmake \
+    clang \
+    librdkafka-dev \
+    ca-certificates \
+    build-essential \
+    libsasl2-dev \
+    libssl-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /parseable
+COPY Cargo.toml Cargo.lock build.rs ./
+
+# Create a dummy main.rs to pre-cache dependencies
+RUN mkdir src && echo "fn main() {}" > src/main.rs && \
+    cargo build --release --features kafka && \
+    rm -rf src
+
+# Copy the actual source code
+COPY src ./src
+COPY resources ./resources
+
+# Build the actual binary with kafka feature
+RUN cargo build --release --features kafka
+
+# final stage
+FROM gcr.io/distroless/cc-debian12:latest
+
+# Copy only the libraries that binary needs since kafka is statically linked
+ARG LIB_DIR
+COPY --from=builder /usr/lib/${LIB_DIR}/libsasl2.so.2 /usr/lib/${LIB_DIR}/
+COPY --from=builder /usr/lib/${LIB_DIR}/libssl.so.3   /usr/lib/${LIB_DIR}/
+COPY --from=builder /usr/lib/${LIB_DIR}/libcrypto.so.3 /usr/lib/${LIB_DIR}/
+
+WORKDIR /parseable
+
+# Copy the Parseable binary from builder
+COPY --from=builder /parseable/target/release/parseable /usr/bin/parseable
+
+# Copy CA certificates
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+
+CMD ["/usr/bin/parseable"]

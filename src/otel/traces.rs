@@ -27,6 +27,23 @@ use serde_json::{Map, Value};
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
 
+pub const OTEL_TRACES_KNOWN_FIELD_LIST: [&str; 15] = [
+    "span_trace_id",
+    "span_span_id",
+    "span_name",
+    "span_parent_span_id",
+    "flags",
+    "name",
+    "span_kind",
+    "span_kind_description",
+    "span_start_time_unix_nano",
+    "span_end_time_unix_nano",
+    "event_name",
+    "event_time_unix_nano",
+    "span_status_code",
+    "span_status_description",
+    "span_status_message",
+];
 /// this function flattens the `ScopeSpans` object
 /// and returns a `Vec` of `Map` of the flattened json
 fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<Map<String, Value>> {
@@ -293,9 +310,15 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
         span_record_json.extend(flatten_status(status));
     }
 
-    for span_json in &mut span_records_json {
-        for (key, value) in &span_record_json {
-            span_json.insert(key.clone(), value.clone());
+    // if span_record.events is null, code should still flatten other elements in the span record - this is handled in the if block
+    // else block handles the flattening the span record that includes events and links records in each span record
+    if span_records_json.is_empty() {
+        span_records_json = vec![span_record_json];
+    } else {
+        for span_json in &mut span_records_json {
+            for (key, value) in &span_record_json {
+                span_json.insert(key.clone(), value.clone());
+            }
         }
     }
 

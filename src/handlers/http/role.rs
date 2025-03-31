@@ -24,7 +24,7 @@ use actix_web::{
 use http::StatusCode;
 
 use crate::{
-    option::CONFIG,
+    parseable::PARSEABLE,
     rbac::{
         map::{mut_roles, DEFAULT_ROLE},
         role::model::DefaultPrivilege,
@@ -65,6 +65,14 @@ pub async fn list() -> Result<impl Responder, RoleError> {
     Ok(web::Json(roles))
 }
 
+// Handler for GET /api/v1/roles
+// Fetch all roles in the system
+pub async fn list_roles() -> Result<impl Responder, RoleError> {
+    let metadata = get_metadata().await?;
+    let roles = metadata.roles.clone();
+    Ok(web::Json(roles))
+}
+
 // Handler for DELETE /api/v1/role/{username}
 // Delete existing role
 pub async fn delete(name: web::Path<String>) -> Result<impl Responder, RoleError> {
@@ -102,8 +110,8 @@ pub async fn get_default() -> Result<impl Responder, RoleError> {
 }
 
 async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
-    let metadata = CONFIG
-        .storage()
+    let metadata = PARSEABLE
+        .storage
         .get_object_store()
         .get_metadata()
         .await?

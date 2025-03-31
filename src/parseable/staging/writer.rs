@@ -14,16 +14,93 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
+ *
  */
 
-use std::{collections::HashSet, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::{File, OpenOptions},
+    io::BufWriter,
+    path::PathBuf,
+    sync::Arc,
+};
 
 use arrow_array::RecordBatch;
+use arrow_ipc::writer::StreamWriter;
 use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
+use chrono::Utc;
 use itertools::Itertools;
+use tracing::{error, warn};
 
-use crate::utils::arrow::adapt_batch;
+use crate::{
+    parseable::{ARROW_FILE_EXTENSION, PART_FILE_EXTENSION},
+    utils::{arrow::adapt_batch, time::TimeRange},
+};
+
+use super::StagingError;
+
+#[derive(Default)]
+pub struct Writer {
+    pub mem: MemWriter<16384>,
+    pub disk: HashMap<String, DiskWriter>,
+}
+
+pub struct DiskWriter {
+    inner: StreamWriter<BufWriter<File>>,
+    path: PathBuf,
+    range: TimeRange,
+}
+
+impl DiskWriter {
+    /// Try to create a file to stream arrows into
+    pub fn try_new(
+        path: impl Into<PathBuf>,
+        schema: &Schema,
+        range: TimeRange,
+    ) -> Result<Self, StagingError> {
+        let mut path = path.into();
+        path.set_extension(PART_FILE_EXTENSION);
+        let file = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .create(true)
+            .open(&path)?;
+        let inner = StreamWriter::try_new_buffered(file, schema)?;
+
+        Ok(Self { inner, path, range })
+    }
+
+    pub fn is_current(&self) -> bool {
+        self.range.contains(Utc::now())
+    }
+
+    /// Write a single recordbatch into file
+    pub fn write(&mut self, rb: &RecordBatch) -> Result<(), StagingError> {
+        self.inner.write(rb).map_err(StagingError::Arrow)
+    }
+}
+
+impl Drop for DiskWriter {
+    /// Write the continuation bytes and mark the file as done, rename to `.data.arrows`
+    fn drop(&mut self) {
+        if let Err(err) = self.inner.finish() {
+            error!("Couldn't finish arrow file {:?}, error = {err}", self.path);
+            return;
+        }
+
+        let mut arrow_path = self.path.to_owned();
+        arrow_path.set_extension(ARROW_FILE_EXTENSION);
+
+        if arrow_path.exists() {
+            warn!("File {arrow_path:?} exists and will be overwritten");
+        }
+
+        if let Err(err) = std::fs::rename(&self.path, &arrow_path) {
+            error!("Couldn't rename file {:?}, error = {err}", self.path);
+        }
+    }
+}
 
 /// Structure to keep recordbatches in memory.
 ///
@@ -67,12 +144,11 @@ impl<const N: usize> MemWriter<N> {
         self.schema_map.clear();
         self.read_buffer.clear();
         self.mutable_buffer.inner.clear();
-        self.mutable_buffer.rows = 0;
     }
 
     pub fn recordbatch_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
         let mut read_buffer = self.read_buffer.clone();
-        if self.mutable_buffer.rows > 0 {
+        if !self.mutable_buffer.inner.is_empty() {
             let rb = concat_records(schema, &self.mutable_buffer.inner);
             read_buffer.push(rb)
         }
@@ -93,13 +169,12 @@ fn concat_records(schema: &Arc<Schema>, record: &[RecordBatch]) -> RecordBatch {
 #[derive(Debug, Default)]
 pub struct MutableBuffer<const N: usize> {
     pub inner: Vec<RecordBatch>,
-    pub rows: usize,
 }
 
 impl<const N: usize> MutableBuffer<N> {
     fn push(&mut self, rb: &RecordBatch) -> Option<Vec<RecordBatch>> {
-        if self.rows + rb.num_rows() >= N {
-            let left = N - self.rows;
+        if self.inner.len() + rb.num_rows() >= N {
+            let left = N - self.inner.len();
             let right = rb.num_rows() - left;
             let left_slice = rb.slice(0, left);
             let right_slice = if left < rb.num_rows() {
@@ -111,16 +186,13 @@ impl<const N: usize> MutableBuffer<N> {
             // take all records
             let src = Vec::with_capacity(self.inner.len());
             let inner = std::mem::replace(&mut self.inner, src);
-            self.rows = 0;
 
             if let Some(right_slice) = right_slice {
-                self.rows = right_slice.num_rows();
                 self.inner.push(right_slice);
             }
 
             Some(inner)
         } else {
-            self.rows += rb.num_rows();
             self.inner.push(rb.clone());
             None
         }

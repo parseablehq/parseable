@@ -17,21 +17,19 @@
  */
 
 pub mod about;
-mod alerts;
+pub mod alerts;
 pub mod analytics;
 pub mod audit;
 pub mod banner;
-mod catalog;
+pub mod catalog;
 mod cli;
+#[cfg(feature = "kafka")]
+pub mod connectors;
 pub mod correlation;
-mod event;
+pub mod enterprise;
+pub mod event;
 pub mod handlers;
 pub mod hottier;
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
-pub mod kafka;
 mod livetail;
 mod metadata;
 pub mod metrics;
@@ -39,7 +37,9 @@ pub mod migration;
 mod oidc;
 pub mod option;
 pub mod otel;
-mod query;
+pub mod parseable;
+pub mod prism;
+pub mod query;
 pub mod rbac;
 mod response;
 mod static_schema;
@@ -47,7 +47,7 @@ mod stats;
 pub mod storage;
 pub mod sync;
 pub mod users;
-mod utils;
+pub mod utils;
 mod validator;
 
 use std::time::Duration;
@@ -59,13 +59,24 @@ pub use handlers::http::modal::{
 use once_cell::sync::Lazy;
 use reqwest::{Client, ClientBuilder};
 
-pub const STORAGE_UPLOAD_INTERVAL: u32 = 60;
+// It is very unlikely that panic will occur when dealing with locks.
+pub const LOCK_EXPECT: &str = "Thread shouldn't panic while holding a lock";
+
+/// Describes the duration at the end of which in-memory buffers are flushed,
+/// arrows files are "finished" and compacted into parquet files.
+pub const LOCAL_SYNC_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Duration used to configure prefix generation.
+pub const OBJECT_STORE_DATA_GRANULARITY: u32 = LOCAL_SYNC_INTERVAL.as_secs() as u32 / 60;
+
+/// Describes the duration at the end of which parquets are pushed into objectstore.
+pub const STORAGE_UPLOAD_INTERVAL: Duration = Duration::from_secs(30);
 
 // A single HTTP client for all outgoing HTTP requests from the parseable server
-static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
+pub static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
     ClientBuilder::new()
         .connect_timeout(Duration::from_secs(3)) // set a timeout of 3s for each connection setup
-        .timeout(Duration::from_secs(10)) // set a timeout of 10s for each request
+        .timeout(Duration::from_secs(30)) // set a timeout of 30s for each request
         .pool_idle_timeout(Duration::from_secs(90)) // set a timeout of 90s for each idle connection
         .pool_max_idle_per_host(32) // max 32 idle connections per host
         .gzip(true) // gzip compress for all requests

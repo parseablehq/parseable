@@ -16,26 +16,18 @@
  *
  */
 
-use crate::catalog::manifest::File;
-use crate::hottier::HotTierManager;
-use crate::option::Mode;
-use crate::{
-    catalog::snapshot::{self, Snapshot},
-    storage::{ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
-};
+use std::{any::Any, collections::HashMap, ops::Bound, sync::Arc};
+
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef, SortOptions};
 use bytes::Bytes;
-use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
-use datafusion::catalog::Session;
-use datafusion::common::stats::Precision;
-use datafusion::logical_expr::utils::conjunction;
-use datafusion::physical_expr::LexOrdering;
+use chrono::{DateTime, NaiveDateTime, TimeDelta, Timelike, Utc};
 use datafusion::{
-    catalog::SchemaProvider,
+    catalog::{SchemaProvider, Session},
     common::{
+        stats::Precision,
         tree_node::{TreeNode, TreeNodeRecursion},
-        ToDFSchema,
+        Constraints, ToDFSchema,
     },
     datasource::{
         file_format::{parquet::ParquetFormat, FileFormat},
@@ -45,33 +37,36 @@ use datafusion::{
     },
     error::{DataFusionError, Result as DataFusionResult},
     execution::{context::SessionState, object_store::ObjectStoreUrl},
-    logical_expr::{BinaryExpr, Operator, TableProviderFilterPushDown, TableType},
-    physical_expr::{create_physical_expr, PhysicalSortExpr},
-    physical_plan::{self, empty::EmptyExec, union::UnionExec, ExecutionPlan, Statistics},
+    logical_expr::{
+        utils::conjunction, BinaryExpr, Operator, TableProviderFilterPushDown, TableType,
+    },
+    physical_expr::{create_physical_expr, expressions::col, LexOrdering, PhysicalSortExpr},
+    physical_plan::{empty::EmptyExec, union::UnionExec, ExecutionPlan, Statistics},
     prelude::Expr,
     scalar::ScalarValue,
 };
-
 use futures_util::{stream::FuturesOrdered, StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
 use object_store::{path::Path, ObjectStore};
 use relative_path::RelativePathBuf;
-use std::{any::Any, collections::HashMap, ops::Bound, sync::Arc};
 use url::Url;
 
 use crate::{
     catalog::{
-        self, column::TypedStatistics, manifest::Manifest, snapshot::ManifestItem, ManifestFile,
+        column::{Column, TypedStatistics},
+        manifest::{File, Manifest},
+        snapshot::{ManifestItem, Snapshot},
+        ManifestFile, Snapshot as CatalogSnapshot,
     },
-    event::{self, DEFAULT_TIMESTAMP_KEY},
-    metadata::STREAM_INFO,
+    event::DEFAULT_TIMESTAMP_KEY,
+    hottier::HotTierManager,
     metrics::QUERY_CACHE_HIT,
-    option::CONFIG,
-    storage::ObjectStorage,
+    option::Mode,
+    parseable::{PARSEABLE, STREAM_EXISTS},
+    storage::{ObjectStorage, ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
 };
 
 use super::listing_table_builder::ListingTableBuilder;
-use crate::catalog::Snapshot as CatalogSnapshot;
 
 // schema provider for stream based on global data
 #[derive(Debug)]
@@ -86,13 +81,16 @@ impl SchemaProvider for GlobalSchemaProvider {
     }
 
     fn table_names(&self) -> Vec<String> {
-        STREAM_INFO.list_streams()
+        PARSEABLE.streams.list()
     }
 
     async fn table(&self, name: &str) -> DataFusionResult<Option<Arc<dyn TableProvider>>> {
         if self.table_exist(name) {
             Ok(Some(Arc::new(StandardTableProvider {
-                schema: STREAM_INFO.schema(name).unwrap(),
+                schema: PARSEABLE
+                    .get_stream(name)
+                    .expect(STREAM_EXISTS)
+                    .get_schema(),
                 stream: name.to_owned(),
                 url: self.storage.store_url(),
             })))
@@ -102,7 +100,7 @@ impl SchemaProvider for GlobalSchemaProvider {
     }
 
     fn table_exist(&self, name: &str) -> bool {
-        STREAM_INFO.stream_exists(name)
+        PARSEABLE.streams.contains(name)
     }
 }
 
@@ -139,9 +137,9 @@ impl StandardTableProvider {
 
         let sort_expr = PhysicalSortExpr {
             expr: if let Some(time_partition) = time_partition {
-                physical_plan::expressions::col(&time_partition, &self.schema)?
+                col(&time_partition, &self.schema)?
             } else {
-                physical_plan::expressions::col(DEFAULT_TIMESTAMP_KEY, &self.schema)?
+                col(DEFAULT_TIMESTAMP_KEY, &self.schema)?
             },
             options: SortOptions {
                 descending: true,
@@ -163,6 +161,7 @@ impl StandardTableProvider {
                     limit,
                     output_ordering: vec![LexOrdering::from_iter([sort_expr])],
                     table_partition_cols: Vec::new(),
+                    constraints: Constraints::empty(),
                 },
                 filters.as_ref(),
             )
@@ -192,7 +191,7 @@ impl StandardTableProvider {
         let hot_tier_files = hot_tier_files
             .into_iter()
             .map(|mut file| {
-                let path = CONFIG
+                let path = PARSEABLE
                     .options
                     .hot_tier_storage_path
                     .as_ref()
@@ -218,6 +217,59 @@ impl StandardTableProvider {
         .await?;
 
         Ok(())
+    }
+
+    /// Create an execution plan over the records in arrows and parquet that are still in staging, awaiting push to object storage
+    async fn get_staging_execution_plan(
+        &self,
+        execution_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
+        projection: Option<&Vec<usize>>,
+        filters: &[Expr],
+        limit: Option<usize>,
+        state: &dyn Session,
+        time_partition: Option<&String>,
+    ) -> Result<(), DataFusionError> {
+        let Ok(staging) = PARSEABLE.get_stream(&self.stream) else {
+            return Ok(());
+        };
+
+        // Staging arrow exection plan
+        let records = staging.recordbatches_cloned(&self.schema);
+        let arrow_exec = reversed_mem_table(records, self.schema.clone())?
+            .scan(state, projection, filters, limit)
+            .await?;
+        execution_plans.push(arrow_exec);
+
+        // Get a list of parquet files still in staging, order by filename
+        let mut parquet_files = staging.parquet_files();
+        parquet_files.sort_by(|a, b| a.cmp(b).reverse());
+
+        // NOTE: We don't partition among CPUs to ensure consistent results.
+        // i.e. We were seeing in-consistent ordering when querying over parquets in staging.
+        let mut partitioned_files = Vec::with_capacity(parquet_files.len());
+        for file_path in parquet_files {
+            let Ok(file_meta) = file_path.metadata() else {
+                continue;
+            };
+            let file = PartitionedFile::new(file_path.display().to_string(), file_meta.len());
+            partitioned_files.push(file)
+        }
+
+        // NOTE: There is the possibility of a parquet file being pushed to object store
+        // and deleted from staging in the time it takes for datafusion to get to it.
+        // Staging parquet execution plan
+        self.create_parquet_physical_plan(
+            execution_plans,
+            ObjectStoreUrl::parse("file:///").unwrap(),
+            vec![partitioned_files],
+            Statistics::new_unknown(&self.schema),
+            projection,
+            filters,
+            limit,
+            state,
+            time_partition.cloned(),
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -274,12 +326,11 @@ impl StandardTableProvider {
 
     fn partitioned_files(
         &self,
-        manifest_files: Vec<catalog::manifest::File>,
+        manifest_files: Vec<File>,
     ) -> (Vec<Vec<PartitionedFile>>, datafusion::common::Statistics) {
         let target_partition = num_cpus::get();
         let mut partitioned_files = Vec::from_iter((0..target_partition).map(|_| Vec::new()));
-        let mut column_statistics =
-            HashMap::<String, Option<catalog::column::TypedStatistics>>::new();
+        let mut column_statistics = HashMap::<String, Option<TypedStatistics>>::new();
         let mut count = 0;
         for (index, file) in manifest_files
             .into_iter()
@@ -287,7 +338,7 @@ impl StandardTableProvider {
             .map(|(x, y)| (x % target_partition, y))
         {
             #[allow(unused_mut)]
-            let catalog::manifest::File {
+            let File {
                 mut file_path,
                 num_rows,
                 columns,
@@ -302,7 +353,7 @@ impl StandardTableProvider {
             // TODO: figure out an elegant solution to this
             #[cfg(windows)]
             {
-                if CONFIG.storage_name.eq("drive") {
+                if PARSEABLE.storage.name() == "drive" {
                     file_path = object_store::path::Path::from_absolute_path(file_path)
                         .unwrap()
                         .to_string();
@@ -338,6 +389,7 @@ impl StandardTableProvider {
                         max_value: Precision::Exact(max),
                         min_value: Precision::Exact(min),
                         distinct_count: Precision::Absent,
+                        sum_value: Precision::Absent,
                     })
                     .unwrap_or_default()
             })
@@ -354,12 +406,12 @@ impl StandardTableProvider {
 }
 
 async fn collect_from_snapshot(
-    snapshot: &catalog::snapshot::Snapshot,
+    snapshot: &Snapshot,
     time_filters: &[PartialTimeFilter],
     object_store: Arc<dyn ObjectStore>,
     filters: &[Expr],
     limit: Option<usize>,
-) -> Result<Vec<catalog::manifest::File>, DataFusionError> {
+) -> Result<Vec<File>, DataFusionError> {
     let items = snapshot.manifests(time_filters);
     let manifest_files = collect_manifest_files(
         object_store,
@@ -427,7 +479,7 @@ impl TableProvider for StandardTableProvider {
             .object_store_registry
             .get_store(&self.url)
             .unwrap();
-        let glob_storage = CONFIG.storage().get_object_store();
+        let glob_storage = PARSEABLE.storage.get_object_store();
 
         let object_store_format = glob_storage
             .get_object_store_format(&self.stream)
@@ -439,20 +491,19 @@ impl TableProvider for StandardTableProvider {
             return Err(DataFusionError::Plan("potentially unbounded query on time range. Table scanning requires atleast one time bound".to_string()));
         }
 
-        if include_now(filters, &time_partition) {
-            if let Some(records) =
-                event::STREAM_WRITERS.recordbatches_cloned(&self.stream, &self.schema)
-            {
-                let reversed_mem_table = reversed_mem_table(records, self.schema.clone())?;
-
-                let memory_exec = reversed_mem_table
-                    .scan(state, projection, filters, limit)
-                    .await?;
-                execution_plans.push(memory_exec);
-            }
+        if is_within_staging_window(&time_filters) {
+            self.get_staging_execution_plan(
+                &mut execution_plans,
+                projection,
+                filters,
+                limit,
+                state,
+                time_partition.as_ref(),
+            )
+            .await?;
         };
-        let mut merged_snapshot: snapshot::Snapshot = Snapshot::default();
-        if CONFIG.options.mode == Mode::Query {
+        let mut merged_snapshot = Snapshot::default();
+        if PARSEABLE.options.mode == Mode::Query {
             let path = RelativePathBuf::from_iter([&self.stream, STREAM_ROOT_DIRECTORY]);
             let obs = glob_storage
                 .get_objects(
@@ -581,7 +632,7 @@ fn reversed_mem_table(
     records[..].reverse();
     records
         .iter_mut()
-        .for_each(|batch| *batch = crate::utils::arrow::reverse_reader::reverse(batch));
+        .for_each(|batch| *batch = crate::utils::arrow::reverse(batch));
     MemTable::try_new(schema, vec![records])
 }
 
@@ -728,23 +779,21 @@ fn return_listing_time_filters(
     }
 }
 
-pub fn include_now(filters: &[Expr], time_partition: &Option<String>) -> bool {
-    let current_minute = Utc::now()
+/// We should consider data in staging for queries concerning a time period,
+/// ending within 5 minutes from now. e.g. If current time is 5
+pub fn is_within_staging_window(time_filters: &[PartialTimeFilter]) -> bool {
+    let five_minutes_back = (Utc::now() - TimeDelta::minutes(5))
         .with_second(0)
         .and_then(|x| x.with_nanosecond(0))
         .expect("zeroed value is valid")
         .naive_utc();
 
-    let time_filters = extract_primary_filter(filters, time_partition);
-
-    let upper_bound_matches = time_filters.iter().any(|filter| match filter {
+    if time_filters.iter().any(|filter| match filter {
         PartialTimeFilter::High(Bound::Excluded(time))
         | PartialTimeFilter::High(Bound::Included(time))
-        | PartialTimeFilter::Eq(time) => time > &current_minute,
+        | PartialTimeFilter::Eq(time) => time >= &five_minutes_back,
         _ => false,
-    });
-
-    if upper_bound_matches {
+    }) {
         return true;
     }
 
@@ -826,7 +875,7 @@ pub async fn collect_manifest_files(
 }
 
 // Extract start time and end time from filter predicate
-fn extract_primary_filter(
+pub fn extract_primary_filter(
     filters: &[Expr],
     time_partition: &Option<String>,
 ) -> Vec<PartialTimeFilter> {
@@ -847,8 +896,8 @@ fn extract_primary_filter(
         .collect()
 }
 
-trait ManifestExt: ManifestFile {
-    fn find_matching_column(&self, partial_filter: &Expr) -> Option<&catalog::column::Column> {
+pub trait ManifestExt: ManifestFile {
+    fn find_matching_column(&self, partial_filter: &Expr) -> Option<&Column> {
         let name = match partial_filter {
             Expr::BinaryExpr(binary_expr) => {
                 let Expr::Column(col) = binary_expr.left.as_ref() else {
@@ -920,6 +969,7 @@ fn cast_or_none(scalar: &ScalarValue) -> Option<CastRes<'_>> {
         ScalarValue::UInt32(val) => val.map(|val| CastRes::Int(val as i64)),
         ScalarValue::UInt64(val) => val.map(|val| CastRes::Int(val as i64)),
         ScalarValue::Utf8(val) => val.as_ref().map(|val| CastRes::String(val)),
+        ScalarValue::Date32(val) => val.map(|val| CastRes::Int(val as i64)),
         ScalarValue::TimestampMillisecond(val, _) => val.map(CastRes::Int),
         _ => None,
     }
@@ -929,7 +979,6 @@ fn satisfy_constraints(value: CastRes, op: Operator, stats: &TypedStatistics) ->
     fn matches<T: std::cmp::PartialOrd>(value: T, min: T, max: T, op: Operator) -> Option<bool> {
         let val = match op {
             Operator::Eq | Operator::IsNotDistinctFrom => value >= min && value <= max,
-            Operator::NotEq => value < min && value > max,
             Operator::Lt => value > min,
             Operator::LtEq => value >= min,
             Operator::Gt => value < max,

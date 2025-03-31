@@ -16,59 +16,94 @@
  *
  */
 
-use arrow_schema::Field;
-use chrono::{DateTime, NaiveDateTime, Utc};
-use itertools::Itertools;
+use actix_web::HttpRequest;
+use chrono::Utc;
+use http::header::USER_AGENT;
+use opentelemetry_proto::tonic::{
+    logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
+};
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
+use tracing::warn;
 
 use crate::{
     event::{
         format::{json, EventFormat, LogSource},
-        Event,
+        FORMAT_KEY, SOURCE_IP_KEY, USER_AGENT_KEY,
     },
-    handlers::http::{
-        ingest::PostError,
-        kinesis::{flatten_kinesis_logs, Message},
+    handlers::{
+        http::{
+            ingest::PostError,
+            kinesis::{flatten_kinesis_logs, Message},
+        },
+        EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY,
     },
-    metadata::{SchemaVersion, STREAM_INFO},
+    otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
+    parseable::PARSEABLE,
     storage::StreamType,
     utils::json::{convert_array_to_object, flatten::convert_to_array},
 };
+
+const IGNORE_HEADERS: [&str; 3] = [STREAM_NAME_HEADER_KEY, LOG_SOURCE_KEY, EXTRACT_LOG_KEY];
+const MAX_CUSTOM_FIELDS: usize = 10;
+const MAX_FIELD_VALUE_LENGTH: usize = 100;
 
 pub async fn flatten_and_push_logs(
     json: Value,
     stream_name: &str,
     log_source: &LogSource,
+    p_custom_fields: &HashMap<String, String>,
 ) -> Result<(), PostError> {
     match log_source {
         LogSource::Kinesis => {
+            //custom flattening required for Amazon Kinesis
             let message: Message = serde_json::from_value(json)?;
-            let json = flatten_kinesis_logs(message);
-            for record in json {
-                push_logs(stream_name, record, &LogSource::default()).await?;
+            for record in flatten_kinesis_logs(message) {
+                push_logs(stream_name, record, &LogSource::default(), p_custom_fields).await?;
             }
         }
-        LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
-            return Err(PostError::OtelNotSupported);
+        LogSource::OtelLogs => {
+            //custom flattening required for otel logs
+            let logs: LogsData = serde_json::from_value(json)?;
+            for record in flatten_otel_logs(&logs) {
+                push_logs(stream_name, record, log_source, p_custom_fields).await?;
+            }
         }
-        _ => {
-            push_logs(stream_name, json, log_source).await?;
+        LogSource::OtelTraces => {
+            //custom flattening required for otel traces
+            let traces: TracesData = serde_json::from_value(json)?;
+            for record in flatten_otel_traces(&traces) {
+                push_logs(stream_name, record, log_source, p_custom_fields).await?;
+            }
         }
+        LogSource::OtelMetrics => {
+            //custom flattening required for otel metrics
+            let metrics: MetricsData = serde_json::from_value(json)?;
+            for record in flatten_otel_metrics(metrics) {
+                push_logs(stream_name, record, log_source, p_custom_fields).await?;
+            }
+        }
+        _ => push_logs(stream_name, json, log_source, p_custom_fields).await?,
     }
+
     Ok(())
 }
 
-pub async fn push_logs(
+async fn push_logs(
     stream_name: &str,
     json: Value,
     log_source: &LogSource,
+    p_custom_fields: &HashMap<String, String>,
 ) -> Result<(), PostError> {
-    let time_partition = STREAM_INFO.get_time_partition(stream_name)?;
-    let time_partition_limit = STREAM_INFO.get_time_partition_limit(stream_name)?;
-    let static_schema_flag = STREAM_INFO.get_static_schema_flag(stream_name)?;
-    let custom_partition = STREAM_INFO.get_custom_partition(stream_name)?;
-    let schema_version = STREAM_INFO.get_schema_version(stream_name)?;
+    let stream = PARSEABLE.get_stream(stream_name)?;
+    let time_partition = stream.get_time_partition();
+    let time_partition_limit = PARSEABLE
+        .get_stream(stream_name)?
+        .get_time_partition_limit();
+    let static_schema_flag = stream.get_static_schema_flag();
+    let custom_partition = stream.get_custom_partition();
+    let schema_version = stream.get_schema_version();
+    let p_timestamp = Utc::now();
 
     let data = if time_partition.is_some() || custom_partition.is_some() {
         convert_array_to_object(
@@ -90,126 +125,140 @@ pub async fn push_logs(
         )?)?]
     };
 
-    for value in data {
-        let origin_size = serde_json::to_vec(&value).unwrap().len() as u64; // string length need not be the same as byte length
-        let parsed_timestamp = match time_partition.as_ref() {
-            Some(time_partition) => get_parsed_timestamp(&value, time_partition)?,
-            _ => Utc::now().naive_utc(),
-        };
-        let custom_partition_values = match custom_partition.as_ref() {
-            Some(custom_partition) => {
-                let custom_partitions = custom_partition.split(',').collect_vec();
-                get_custom_partition_values(&value, &custom_partitions)
-            }
-            None => HashMap::new(),
-        };
-        let schema = STREAM_INFO
-            .read()
-            .unwrap()
-            .get(stream_name)
-            .ok_or(PostError::StreamNotFound(stream_name.to_owned()))?
-            .schema
-            .clone();
-        let (rb, is_first_event) = into_event_batch(
-            value,
-            schema,
-            static_schema_flag,
-            time_partition.as_ref(),
-            schema_version,
-        )?;
-
-        Event {
-            rb,
-            stream_name: stream_name.to_owned(),
-            origin_format: "json",
-            origin_size,
-            is_first_event,
-            parsed_timestamp,
-            time_partition: time_partition.clone(),
-            custom_partition_values,
-            stream_type: StreamType::UserDefined,
-        }
-        .process()
-        .await?;
+    for json in data {
+        let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
+        let schema = PARSEABLE.get_stream(stream_name)?.get_schema_raw();
+        json::Event { json, p_timestamp }
+            .into_event(
+                stream_name.to_owned(),
+                origin_size,
+                &schema,
+                static_schema_flag,
+                custom_partition.as_ref(),
+                time_partition.as_ref(),
+                schema_version,
+                StreamType::UserDefined,
+                p_custom_fields,
+            )?
+            .process()?;
     }
     Ok(())
 }
 
-pub fn into_event_batch(
-    data: Value,
-    schema: HashMap<String, Arc<Field>>,
-    static_schema_flag: bool,
-    time_partition: Option<&String>,
-    schema_version: SchemaVersion,
-) -> Result<(arrow_array::RecordBatch, bool), PostError> {
-    let (rb, is_first) = json::Event { data }.into_recordbatch(
-        &schema,
-        static_schema_flag,
-        time_partition,
-        schema_version,
-    )?;
-    Ok((rb, is_first))
-}
+pub fn get_custom_fields_from_header(req: HttpRequest) -> HashMap<String, String> {
+    let user_agent = req
+        .headers()
+        .get(USER_AGENT)
+        .and_then(|a| a.to_str().ok())
+        .unwrap_or_default();
 
-pub fn get_custom_partition_values(
-    json: &Value,
-    custom_partition_list: &[&str],
-) -> HashMap<String, String> {
-    let mut custom_partition_values: HashMap<String, String> = HashMap::new();
-    for custom_partition_field in custom_partition_list {
-        let custom_partition_value = json.get(custom_partition_field.trim()).unwrap().to_owned();
-        let custom_partition_value = match custom_partition_value {
-            e @ Value::Number(_) | e @ Value::Bool(_) => e.to_string(),
-            Value::String(s) => s,
-            _ => "".to_string(),
-        };
-        custom_partition_values.insert(
-            custom_partition_field.trim().to_string(),
-            custom_partition_value,
-        );
+    let conn = req.connection_info().clone();
+
+    let source_ip = conn.realip_remote_addr().unwrap_or_default();
+    let mut p_custom_fields = HashMap::new();
+    p_custom_fields.insert(USER_AGENT_KEY.to_string(), user_agent.to_string());
+    p_custom_fields.insert(SOURCE_IP_KEY.to_string(), source_ip.to_string());
+
+    // Iterate through headers and add custom fields
+    for (header_name, header_value) in req.headers().iter() {
+        // Check if we've reached the maximum number of custom fields
+        if p_custom_fields.len() >= MAX_CUSTOM_FIELDS {
+            warn!(
+                "Maximum number of custom fields ({}) reached, ignoring remaining headers",
+                MAX_CUSTOM_FIELDS
+            );
+            break;
+        }
+
+        let header_name = header_name.as_str();
+        if header_name.starts_with("x-p-") && !IGNORE_HEADERS.contains(&header_name) {
+            if let Ok(value) = header_value.to_str() {
+                let key = header_name.trim_start_matches("x-p-");
+                if !key.is_empty() {
+                    // Truncate value if it exceeds the maximum length
+                    let truncated_value = if value.len() > MAX_FIELD_VALUE_LENGTH {
+                        warn!(
+                            "Header value for '{}' exceeds maximum length, truncating",
+                            header_name
+                        );
+                        &value[..MAX_FIELD_VALUE_LENGTH]
+                    } else {
+                        value
+                    };
+                    p_custom_fields.insert(key.to_string(), truncated_value.to_string());
+                } else {
+                    warn!(
+                        "Ignoring header with empty key after prefix: {}",
+                        header_name
+                    );
+                }
+            }
+        }
+
+        if header_name == LOG_SOURCE_KEY {
+            if let Ok(value) = header_value.to_str() {
+                p_custom_fields.insert(FORMAT_KEY.to_string(), value.to_string());
+            }
+        }
     }
-    custom_partition_values
-}
 
-fn get_parsed_timestamp(json: &Value, time_partition: &str) -> Result<NaiveDateTime, PostError> {
-    let current_time = json
-        .get(time_partition)
-        .ok_or_else(|| PostError::MissingTimePartition(time_partition.to_string()))?;
-    let parsed_time: DateTime<Utc> = serde_json::from_value(current_time.clone())?;
-
-    Ok(parsed_time.naive_utc())
+    p_custom_fields
 }
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
-    use serde_json::json;
-
     use super::*;
+    use actix_web::test::TestRequest;
 
     #[test]
-    fn parse_time_parition_from_value() {
-        let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
-        let parsed = get_parsed_timestamp(&json, "timestamp");
+    fn test_get_custom_fields_from_header_with_custom_fields() {
+        let req = TestRequest::default()
+            .insert_header((USER_AGENT, "TestUserAgent"))
+            .insert_header(("x-p-environment", "dev"))
+            .to_http_request();
 
-        let expected = NaiveDateTime::from_str("2025-05-15T15:30:00").unwrap();
-        assert_eq!(parsed.unwrap(), expected);
+        let custom_fields = get_custom_fields_from_header(req);
+
+        assert_eq!(custom_fields.get(USER_AGENT_KEY).unwrap(), "TestUserAgent");
+        assert_eq!(custom_fields.get("environment").unwrap(), "dev");
     }
 
     #[test]
-    fn time_parition_not_in_json() {
-        let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
-        let parsed = get_parsed_timestamp(&json, "timestamp");
+    fn test_get_custom_fields_from_header_with_ignored_headers() {
+        let req = TestRequest::default()
+            .insert_header((USER_AGENT, "TestUserAgent"))
+            .insert_header((STREAM_NAME_HEADER_KEY, "teststream"))
+            .to_http_request();
 
-        matches!(parsed, Err(PostError::MissingTimePartition(_)));
+        let custom_fields = get_custom_fields_from_header(req);
+
+        assert_eq!(custom_fields.get(USER_AGENT_KEY).unwrap(), "TestUserAgent");
+        assert!(!custom_fields.contains_key(STREAM_NAME_HEADER_KEY));
     }
 
     #[test]
-    fn time_parition_not_parseable_as_datetime() {
-        let json = json!({"timestamp": "2025-05-15T15:30:00Z"});
-        let parsed = get_parsed_timestamp(&json, "timestamp");
+    fn test_get_custom_fields_from_header_with_format_key() {
+        let req = TestRequest::default()
+            .insert_header((USER_AGENT, "TestUserAgent"))
+            .insert_header((LOG_SOURCE_KEY, "otel-logs"))
+            .to_http_request();
 
-        matches!(parsed, Err(PostError::SerdeError(_)));
+        let custom_fields = get_custom_fields_from_header(req);
+
+        assert_eq!(custom_fields.get(USER_AGENT_KEY).unwrap(), "TestUserAgent");
+        assert_eq!(custom_fields.get(FORMAT_KEY).unwrap(), "otel-logs");
+    }
+
+    #[test]
+    fn test_get_custom_fields_empty_header_after_prefix() {
+        let req = TestRequest::default()
+            .insert_header(("x-p-", "empty"))
+            .to_http_request();
+
+        let custom_fields = get_custom_fields_from_header(req);
+
+        assert_eq!(custom_fields.len(), 2);
+        assert_eq!(custom_fields.get(USER_AGENT_KEY).unwrap(), "");
+        assert_eq!(custom_fields.get(SOURCE_IP_KEY).unwrap(), "");
     }
 }

@@ -33,9 +33,9 @@ use crate::{
         STREAM_NAME_HEADER_KEY,
     },
     option::Mode,
+    parseable::PARSEABLE,
 };
 use crate::{
-    option::CONFIG,
     rbac::Users,
     rbac::{self, role::Action},
     utils::actix::extract_session_key,
@@ -246,7 +246,7 @@ where
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
         let username = req.match_info().get("username").unwrap_or("");
-        let is_root = username == CONFIG.options.username;
+        let is_root = username == PARSEABLE.options.username;
         let fut = self.service.call(req);
 
         Box::pin(async move {
@@ -300,7 +300,7 @@ where
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
         let path = req.path();
-        let mode = &CONFIG.options.mode;
+        let mode = &PARSEABLE.options.mode;
         // change error messages based on mode
         match mode {
             Mode::Query => {
@@ -350,6 +350,15 @@ where
             }
 
             Mode::All => {
+                let fut = self.service.call(req);
+
+                Box::pin(async move {
+                    let res = fut.await?;
+                    Ok(res)
+                })
+            }
+
+            Mode::Index => {
                 let fut = self.service.call(req);
 
                 Box::pin(async move {

@@ -42,6 +42,7 @@ use std::ops::Bound;
 use std::sync::Arc;
 use stream_schema_provider::collect_manifest_files;
 use sysinfo::System;
+use tokio::runtime::Runtime;
 
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
@@ -52,12 +53,30 @@ use crate::catalog::snapshot::Snapshot;
 use crate::catalog::Snapshot as CatalogSnapshot;
 use crate::event;
 use crate::handlers::http::query::QueryError;
-use crate::metadata::STREAM_INFO;
-use crate::option::{Mode, CONFIG};
+use crate::option::Mode;
+use crate::parseable::PARSEABLE;
 use crate::storage::{ObjectStorageProvider, ObjectStoreFormat, STREAM_ROOT_DIRECTORY};
 use crate::utils::time::TimeRange;
+
 pub static QUERY_SESSION: Lazy<SessionContext> =
-    Lazy::new(|| Query::create_session_context(CONFIG.storage()));
+    Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
+
+/// Dedicated multi-threaded runtime to run all queries on
+pub static QUERY_RUNTIME: Lazy<Runtime> =
+    Lazy::new(|| Runtime::new().expect("Runtime should be constructible"));
+
+/// This function executes a query on the dedicated runtime, ensuring that the query is not isolated to a single thread/CPU
+/// at a time and has access to the entire thread pool, enabling better concurrent processing, and thus quicker results.
+pub async fn execute(
+    query: Query,
+    stream_name: &str,
+) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
+    let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
+    QUERY_RUNTIME
+        .spawn(async move { query.execute(time_partition.as_ref()).await })
+        .await
+        .expect("The Join should have been successful")
+}
 
 // A query request by client
 #[derive(Debug)]
@@ -74,7 +93,7 @@ impl Query {
             .get_datafusion_runtime()
             .with_disk_manager(DiskManagerConfig::NewOs);
 
-        let (pool_size, fraction) = match CONFIG.options.query_memory_pool_size {
+        let (pool_size, fraction) = match PARSEABLE.options.query_memory_pool_size {
             Some(size) => (size, 1.),
             None => {
                 let mut system = System::new();
@@ -87,15 +106,14 @@ impl Query {
         let runtime_config = runtime_config.with_memory_limit(pool_size, fraction);
         let runtime = Arc::new(runtime_config.build().unwrap());
 
+        // All the config options are explained here -
+        // https://datafusion.apache.org/user-guide/configs.html
         let mut config = SessionConfig::default()
             .with_parquet_pruning(true)
             .with_prefer_existing_sort(true)
-            .with_round_robin_repartition(true);
-
-        // For more details refer https://datafusion.apache.org/user-guide/configs.html
-
-        // Reduce the number of rows read (if possible)
-        config.options_mut().execution.parquet.enable_page_index = true;
+            //batch size has been made configurable via environment variable
+            //default value is 20000
+            .with_batch_size(PARSEABLE.options.execution_batch_size);
 
         // Pushdown filters allows DF to push the filters as far down in the plan as possible
         // and thus, reducing the number of rows decoded
@@ -103,9 +121,14 @@ impl Query {
 
         // Reorder filters allows DF to decide the order of filters minimizing the cost of filter evaluation
         config.options_mut().execution.parquet.reorder_filters = true;
+        config.options_mut().execution.parquet.binary_as_string = true;
+        config
+            .options_mut()
+            .execution
+            .use_row_number_estimates_to_optimize_partitioning = true;
 
-        // Enable StringViewArray
-        // https://www.influxdata.com/blog/faster-queries-with-stringview-part-one-influxdb/
+        //adding this config as it improves query performance as explained here -
+        // https://github.com/apache/datafusion/pull/13101
         config
             .options_mut()
             .execution
@@ -136,12 +159,10 @@ impl Query {
 
     pub async fn execute(
         &self,
-        stream_name: String,
+        time_partition: Option<&String>,
     ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
-        let time_partition = STREAM_INFO.get_time_partition(&stream_name)?;
-
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan(&time_partition))
+            .execute_logical_plan(self.final_logical_plan(time_partition))
             .await?;
 
         let fields = df
@@ -157,21 +178,23 @@ impl Query {
         }
 
         let results = df.collect().await?;
+
         Ok((results, fields))
     }
 
-    pub async fn get_dataframe(&self, stream_name: String) -> Result<DataFrame, ExecuteError> {
-        let time_partition = STREAM_INFO.get_time_partition(&stream_name)?;
-
+    pub async fn get_dataframe(
+        &self,
+        time_partition: Option<&String>,
+    ) -> Result<DataFrame, ExecuteError> {
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan(&time_partition))
+            .execute_logical_plan(self.final_logical_plan(time_partition))
             .await?;
 
         Ok(df)
     }
 
     /// return logical plan with all time filters applied through
-    fn final_logical_plan(&self, time_partition: &Option<String>) -> LogicalPlan {
+    fn final_logical_plan(&self, time_partition: Option<&String>) -> LogicalPlan {
         // see https://github.com/apache/arrow-datafusion/pull/8400
         // this can be eliminated in later version of datafusion but with slight caveat
         // transform cannot modify stringified plans by itself
@@ -287,9 +310,10 @@ impl CountsRequest {
     /// get the sum of `num_rows` between the `startTime` and `endTime`,
     /// divide that by number of bins and return in a manner acceptable for the console
     pub async fn get_bin_density(&self) -> Result<Vec<CountsRecord>, QueryError> {
-        let time_partition = STREAM_INFO
-            .get_time_partition(&self.stream.clone())
+        let time_partition = PARSEABLE
+            .get_stream(&self.stream)
             .map_err(|err| anyhow::Error::msg(err.to_string()))?
+            .get_time_partition()
             .unwrap_or_else(|| event::DEFAULT_TIMESTAMP_KEY.to_owned());
 
         // get time range
@@ -424,7 +448,7 @@ pub async fn get_manifest_list(
     stream_name: &str,
     time_range: &TimeRange,
 ) -> Result<Vec<Manifest>, QueryError> {
-    let glob_storage = CONFIG.storage().get_object_store();
+    let glob_storage = PARSEABLE.storage.get_object_store();
 
     let object_store = QUERY_SESSION
         .state()
@@ -443,7 +467,7 @@ pub async fn get_manifest_list(
     let mut merged_snapshot: Snapshot = Snapshot::default();
 
     // get a list of manifests
-    if CONFIG.options.mode == Mode::Query {
+    if PARSEABLE.options.mode == Mode::Query {
         let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
         let obs = glob_storage
             .get_objects(
@@ -490,7 +514,7 @@ fn transform(
     plan: LogicalPlan,
     start_time: NaiveDateTime,
     end_time: NaiveDateTime,
-    time_partition: &Option<String>,
+    time_partition: Option<&String>,
 ) -> Transformed<LogicalPlan> {
     plan.transform(&|plan| match plan {
         LogicalPlan::TableScan(table) => {
@@ -548,7 +572,7 @@ fn transform(
 
 fn table_contains_any_time_filters(
     table: &datafusion::logical_expr::TableScan,
-    time_partition: &Option<String>,
+    time_partition: Option<&String>,
 ) -> bool {
     table
         .filters
@@ -562,8 +586,8 @@ fn table_contains_any_time_filters(
         })
         .any(|expr| {
             matches!(&*expr.left, Expr::Column(Column { name, .. })
-            if ((time_partition.is_some() && name == time_partition.as_ref().unwrap()) ||
-            (!time_partition.is_some() && name == event::DEFAULT_TIMESTAMP_KEY)))
+            if (time_partition.is_some_and(|field| field == name) ||
+            (time_partition.is_none() && name == event::DEFAULT_TIMESTAMP_KEY)))
         })
 }
 
@@ -614,7 +638,7 @@ pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
 }
 
 pub mod error {
-    use crate::{metadata::error::stream_info::MetadataError, storage::ObjectStorageError};
+    use crate::{parseable::StreamNotFound, storage::ObjectStorageError};
     use datafusion::error::DataFusionError;
 
     #[derive(Debug, thiserror::Error)]
@@ -623,8 +647,8 @@ pub mod error {
         ObjectStorage(#[from] ObjectStorageError),
         #[error("Query Execution failed due to error in datafusion: {0}")]
         Datafusion(#[from] DataFusionError),
-        #[error("Query Execution failed due to error in fetching metadata: {0}")]
-        Metadata(#[from] MetadataError),
+        #[error("{0}")]
+        StreamNotFound(#[from] StreamNotFound),
     }
 }
 

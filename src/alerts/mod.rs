@@ -24,10 +24,11 @@ use datafusion::common::tree_node::TreeNode;
 use http::StatusCode;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
+use serde::Serialize;
 use serde_json::Error as SerdeError;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
-use tokio::sync::oneshot::{Receiver, Sender};
+use tokio::sync::oneshot::{self, Receiver, Sender};
 use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tracing::{trace, warn};
@@ -36,7 +37,7 @@ use ulid::Ulid;
 pub mod alerts_utils;
 pub mod target;
 
-use crate::option::CONFIG;
+use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::map::SessionKey;
 use crate::storage;
@@ -330,7 +331,7 @@ pub struct RollingWindow {
     // should always be "now"
     pub eval_end: String,
     // x minutes (5m)
-    pub eval_frequency: u32,
+    pub eval_frequency: u64,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -513,17 +514,16 @@ impl AlertConfig {
 
         // for now proceed in a similar fashion as we do in query
         // TODO: in case of multiple table query does the selection of time partition make a difference? (especially when the tables don't have overlapping data)
-        let stream_name = if let Some(stream_name) = query.first_table_name() {
-            stream_name
-        } else {
+        let Some(stream_name) = query.first_table_name() else {
             return Err(AlertError::CustomError(format!(
                 "Table name not found in query- {}",
                 self.query
             )));
         };
 
+        let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
         let base_df = query
-            .get_dataframe(stream_name)
+            .get_dataframe(time_partition.as_ref())
             .await
             .map_err(|err| AlertError::CustomError(err.to_string()))?;
 
@@ -641,7 +641,7 @@ impl AlertConfig {
         columns
     }
 
-    pub fn get_eval_frequency(&self) -> u32 {
+    pub fn get_eval_frequency(&self) -> u64 {
         match &self.eval_type {
             EvalConfig::RollingWindow(rolling_window) => rolling_window.eval_frequency,
         }
@@ -650,8 +650,8 @@ impl AlertConfig {
     fn get_context(&self) -> Context {
         let deployment_instance = format!(
             "{}://{}",
-            CONFIG.options.get_scheme(),
-            CONFIG.options.address
+            PARSEABLE.options.get_scheme(),
+            PARSEABLE.options.address
         );
         let deployment_id = storage::StorageMetadata::global().deployment_id;
         let deployment_mode = storage::StorageMetadata::global().mode.to_string();
@@ -703,6 +703,10 @@ pub enum AlertError {
     CustomError(String),
     #[error("Invalid State Change: {0}")]
     InvalidStateChange(String),
+    #[error("{0}")]
+    StreamNotFound(#[from] StreamNotFound),
+    #[error("{0}")]
+    Anyhow(#[from] anyhow::Error),
 }
 
 impl actix_web::ResponseError for AlertError {
@@ -716,6 +720,8 @@ impl actix_web::ResponseError for AlertError {
             Self::DatafusionError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::CustomError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidStateChange(_) => StatusCode::BAD_REQUEST,
+            Self::StreamNotFound(_) => StatusCode::NOT_FOUND,
+            Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
@@ -728,15 +734,23 @@ impl actix_web::ResponseError for AlertError {
 
 impl Alerts {
     /// Loads alerts from disk, blocks
-    pub async fn load(&self) -> Result<(), AlertError> {
+    pub async fn load(&self) -> anyhow::Result<()> {
         let mut map = self.alerts.write().await;
-        let store = CONFIG.storage().get_object_store();
+        let store = PARSEABLE.storage.get_object_store();
 
         for alert in store.get_alerts().await.unwrap_or_default() {
-            let (handle, rx, tx) =
-                schedule_alert_task(alert.get_eval_frequency(), alert.clone()).await?;
+            let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
+            let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
+            let handle = schedule_alert_task(
+                alert.get_eval_frequency(),
+                alert.clone(),
+                inbox_rx,
+                outbox_tx,
+            )
+            .map_err(|e| anyhow::Error::msg(e.to_string()))?;
 
-            self.update_task(alert.id, handle, rx, tx).await;
+            self.update_task(alert.id, handle, outbox_rx, inbox_tx)
+                .await;
 
             map.insert(alert.id, alert);
         }
@@ -785,7 +799,7 @@ impl Alerts {
         new_state: AlertState,
         trigger_notif: Option<String>,
     ) -> Result<(), AlertError> {
-        let store = CONFIG.storage().get_object_store();
+        let store = PARSEABLE.storage.get_object_store();
 
         // read and modify alert
         let mut alert = self.get_alert_by_id(alert_id).await?;
@@ -865,4 +879,56 @@ impl Alerts {
 
         Ok(())
     }
+}
+
+#[derive(Debug, Serialize)]
+pub struct AlertsInfo {
+    total: u64,
+    silenced: u64,
+    resolved: u64,
+    triggered: u64,
+    low: u64,
+    medium: u64,
+    high: u64,
+    critical: u64,
+}
+
+// TODO: add RBAC
+pub async fn get_alerts_info() -> Result<AlertsInfo, AlertError> {
+    let alerts = ALERTS.alerts.read().await;
+    let mut total = 0;
+    let mut silenced = 0;
+    let mut resolved = 0;
+    let mut triggered = 0;
+    let mut low = 0;
+    let mut medium = 0;
+    let mut high = 0;
+    let mut critical = 0;
+
+    for (_, alert) in alerts.iter() {
+        total += 1;
+        match alert.state {
+            AlertState::Silenced => silenced += 1,
+            AlertState::Resolved => resolved += 1,
+            AlertState::Triggered => triggered += 1,
+        }
+
+        match alert.severity {
+            Severity::Low => low += 1,
+            Severity::Medium => medium += 1,
+            Severity::High => high += 1,
+            Severity::Critical => critical += 1,
+        }
+    }
+
+    Ok(AlertsInfo {
+        total,
+        silenced,
+        resolved,
+        triggered,
+        low,
+        medium,
+        high,
+        critical,
+    })
 }

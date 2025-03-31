@@ -23,7 +23,7 @@ use http::StatusCode;
 use itertools::Itertools;
 use serde_json::Value;
 
-use crate::{option::CONFIG, storage::STREAM_ROOT_DIRECTORY, HTTP_CLIENT};
+use crate::{parseable::PARSEABLE, storage::STREAM_ROOT_DIRECTORY, HTTP_CLIENT};
 
 use self::{cluster::get_ingestor_info, query::Query};
 
@@ -40,6 +40,8 @@ pub mod logstream;
 pub mod middleware;
 pub mod modal;
 pub mod oidc;
+pub mod prism_home;
+pub mod prism_logstream;
 pub mod query;
 pub mod rbac;
 pub mod role;
@@ -47,9 +49,14 @@ pub mod users;
 pub const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
 pub const API_BASE_PATH: &str = "api";
 pub const API_VERSION: &str = "v1";
+pub const PRISM_BASE_PATH: &str = "prism";
 
 pub fn base_path() -> String {
     format!("/{API_BASE_PATH}/{API_VERSION}")
+}
+
+pub fn prism_base_path() -> String {
+    format!("/{API_BASE_PATH}/{PRISM_BASE_PATH}/{API_VERSION}")
 }
 
 pub fn metrics_path() -> String {
@@ -57,7 +64,7 @@ pub fn metrics_path() -> String {
 }
 
 pub(crate) fn cross_origin_config() -> Cors {
-    if !CONFIG.options.cors || cfg!(debug_assertions) {
+    if !PARSEABLE.options.cors || cfg!(debug_assertions) {
         Cors::permissive().block_on_origin_mismatch(false)
     } else {
         Cors::default().block_on_origin_mismatch(false)
@@ -80,7 +87,7 @@ pub fn base_path_without_preceding_slash() -> String {
 pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Schema> {
     let path_prefix =
         relative_path::RelativePathBuf::from(format!("{}/{}", stream_name, STREAM_ROOT_DIRECTORY));
-    let store = CONFIG.storage().get_object_store();
+    let store = PARSEABLE.storage.get_object_store();
     let res: Vec<Schema> = store
         .get_objects(
             Some(&path_prefix),

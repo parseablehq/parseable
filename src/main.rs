@@ -1,3 +1,5 @@
+use std::process::exit;
+
 /*
  * Parseable Server (C) 2022 - 2024 Parseable, Inc.
  *
@@ -15,22 +17,19 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-
+#[cfg(feature = "kafka")]
+use parseable::connectors;
 use parseable::{
-    banner,
-    option::{Mode, CONFIG},
-    rbac, storage, AuditLogger, IngestServer, ParseableServer, QueryServer, Server,
+    banner, metrics, option::Mode, parseable::PARSEABLE, rbac, storage, AuditLogger, IngestServer,
+    ParseableServer, QueryServer, Server,
 };
 use tokio::signal::ctrl_c;
 use tokio::sync::oneshot;
-use tracing::info;
-use tracing_subscriber::EnvFilter;
-
-#[cfg(any(
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "macos", target_arch = "aarch64")
-))]
-use parseable::kafka;
+use tracing::Level;
+use tracing::{info, warn};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{fmt, EnvFilter, Registry};
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
@@ -44,29 +43,24 @@ async fn main() -> anyhow::Result<()> {
     AuditLogger::default().spawn_batcher(shutdown_rx).await;
 
     // these are empty ptrs so mem footprint should be minimal
-    let server: Box<dyn ParseableServer> = match CONFIG.options.mode {
+    let server: Box<dyn ParseableServer> = match &PARSEABLE.options.mode {
         Mode::Query => Box::new(QueryServer),
         Mode::Ingest => Box::new(IngestServer),
+        Mode::Index => {
+            println!("Indexing is an enterprise feature. Check out https://www.parseable.com/pricing to know more!");
+            exit(0)
+        }
         Mode::All => Box::new(Server),
     };
 
     // load metadata from persistence
     let parseable_json = server.load_metadata().await?;
     let metadata = storage::resolve_parseable_metadata(&parseable_json).await?;
-    banner::print(&CONFIG, &metadata).await;
+    banner::print(&PARSEABLE, &metadata).await;
     // initialize the rbac map
     rbac::map::init(&metadata);
     // keep metadata info in mem
     metadata.set_global();
-
-    #[cfg(any(
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "macos", target_arch = "aarch64")
-    ))]
-    // load kafka server
-    if CONFIG.options.mode != Mode::Query {
-        tokio::task::spawn(kafka::setup_integration());
-    }
 
     // Spawn a task to trigger graceful shutdown on appropriate signal
     let (server_shutdown_trigger, shutdown_rx) = oneshot::channel::<()>();
@@ -74,14 +68,52 @@ async fn main() -> anyhow::Result<()> {
         block_until_shutdown_signal().await;
 
         // Trigger graceful shutdown
-        println!("Received shutdown signal, notifying server to shut down...");
+        warn!("Received shutdown signal, notifying server to shut down...");
         server_shutdown_trigger.send(()).unwrap();
         logger_shutdown_trigger.send(()).unwrap();
     });
 
-    server.init(shutdown_rx).await?;
+    let prometheus = metrics::build_metrics_handler();
+    // Start servers
+    #[cfg(feature = "kafka")]
+    {
+        let parseable_server = server.init(&prometheus, shutdown_rx);
+        let connectors = connectors::init(&prometheus);
+
+        tokio::try_join!(parseable_server, connectors)?;
+    }
+
+    #[cfg(not(feature = "kafka"))]
+    {
+        let parseable_server = server.init(&prometheus, shutdown_rx);
+        parseable_server.await?;
+    }
 
     Ok(())
+}
+
+pub fn init_logger() {
+    let filter_layer = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+        let default_level = if cfg!(debug_assertions) {
+            Level::DEBUG
+        } else {
+            Level::WARN
+        };
+        EnvFilter::new(default_level.to_string())
+    });
+
+    let fmt_layer = fmt::layer()
+        .with_thread_names(true)
+        .with_thread_ids(true)
+        .with_line_number(true)
+        .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
+        .with_target(true)
+        .compact();
+
+    Registry::default()
+        .with(filter_layer)
+        .with(fmt_layer)
+        .init();
 }
 
 #[cfg(windows)]
