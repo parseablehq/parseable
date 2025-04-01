@@ -75,38 +75,6 @@ struct StorageMetrics {
     data: f64,
 }
 
-impl Default for Metrics {
-    fn default() -> Self {
-        // for now it is only for ingestor
-        let url = PARSEABLE.options.get_url(Mode::Ingest);
-        let address = format!(
-            "http://{}:{}",
-            url.domain()
-                .unwrap_or(url.host_str().expect("should have a host")),
-            url.port().unwrap_or_default()
-        );
-        Metrics {
-            address,
-            node_type: "ingestor".to_string(),
-            parseable_events_ingested: 0.0,
-            parseable_events_ingested_size: 0.0,
-            parseable_staging_files: 0.0,
-            process_resident_memory_bytes: 0.0,
-            parseable_storage_size: StorageMetrics::default(),
-            parseable_lifetime_events_ingested: 0.0,
-            parseable_lifetime_events_ingested_size: 0.0,
-            parseable_deleted_events_ingested: 0.0,
-            parseable_deleted_events_ingested_size: 0.0,
-            parseable_deleted_storage_size: StorageMetrics::default(),
-            parseable_lifetime_storage_size: StorageMetrics::default(),
-            event_type: "cluster-metrics".to_string(),
-            event_time: Utc::now().naive_utc(),
-            commit: "".to_string(),
-            staging: "".to_string(),
-        }
-    }
-}
-
 impl Metrics {
     fn new(address: String, node_type: String) -> Self {
         Metrics {
@@ -206,21 +174,25 @@ impl MetricType {
     }
 }
 impl Metrics {
-    pub async fn ingestor_prometheus_samples(
+    pub async fn from_prometheus_samples<T: Metadata>(
         samples: Vec<PromSample>,
-        ingestor_metadata: &IngestorMetadata,
+        metadata: &T,
     ) -> Result<Self, PostError> {
-        let mut metrics = Metrics::new(ingestor_metadata.domain_name.to_string());
+        let mut metrics = Metrics::new(
+            metadata.domain_name().to_string(),
+            metadata.node_type().to_string(),
+        );
 
         Self::build_metrics_from_samples(samples, &mut metrics)?;
 
         // Get additional metadata
-        let (commit_id, staging) = Self::from_about_api_response(ingestor_metadata.clone())
-            .await
-            .map_err(|err| {
-                error!("Fatal: failed to get ingestor info: {:?}", err);
-                PostError::Invalid(err.into())
-            })?;
+        let (commit_id, staging) =
+            Self::from_about_api_response(metadata)
+                .await
+                .map_err(|err| {
+                    error!("Fatal: failed to get ingestor info: {:?}", err);
+                    PostError::Invalid(err.into())
+                })?;
 
         metrics.commit = commit_id;
         metrics.staging = staging;
@@ -229,7 +201,10 @@ impl Metrics {
     }
 
     pub async fn querier_prometheus_metrics() -> Self {
-        let mut metrics = Metrics::new(get_url().to_string());
+        let mut metrics = Metrics::new(
+            PARSEABLE.options.get_url(Mode::Query).to_string(),
+            "querier".to_string(),
+        );
 
         let system_metrics = get_system_metrics().expect("Failed to get system metrics");
 
@@ -243,16 +218,16 @@ impl Metrics {
                 .insert(cpu_usage.name.clone(), cpu_usage.usage);
         }
 
-        let staging_disk_usage = get_volume_disk_usage(CONFIG.staging_dir())
+        let staging_disk_usage = get_volume_disk_usage(PARSEABLE.options.staging_dir())
             .expect("Failed to get staging volume disk usage");
 
         metrics.parseable_staging_disk_usage.total = staging_disk_usage.total;
         metrics.parseable_staging_disk_usage.used = staging_disk_usage.used;
         metrics.parseable_staging_disk_usage.available = staging_disk_usage.available;
 
-        if CONFIG.get_storage_mode_string() == "Local drive" {
+        if PARSEABLE.get_storage_mode_string() == "Local drive" {
             let data_disk_usage =
-                get_volume_disk_usage(Path::new(&CONFIG.storage().get_endpoint()))
+                get_volume_disk_usage(Path::new(&PARSEABLE.storage().get_endpoint()))
                     .expect("Failed to get data volume disk usage");
 
             metrics.parseable_data_disk_usage.total = data_disk_usage.total;
@@ -260,9 +235,9 @@ impl Metrics {
             metrics.parseable_data_disk_usage.available = data_disk_usage.available;
         }
 
-        if CONFIG.options.hot_tier_storage_path.is_some() {
+        if PARSEABLE.options.hot_tier_storage_path.is_some() {
             let hot_tier_disk_usage =
-                get_volume_disk_usage(CONFIG.hot_tier_dir().as_ref().unwrap())
+                get_volume_disk_usage(PARSEABLE.hot_tier_dir().as_ref().unwrap())
                     .expect("Failed to get hot tier volume disk usage");
 
             metrics.parseable_hot_tier_disk_usage.total = hot_tier_disk_usage.total;
@@ -271,7 +246,7 @@ impl Metrics {
         }
 
         metrics.commit = current().commit_hash;
-        metrics.staging = CONFIG.staging_dir().display().to_string();
+        metrics.staging = PARSEABLE.options.staging_dir().display().to_string();
 
         metrics
     }
@@ -425,72 +400,6 @@ impl Metrics {
             }
         }
         (events_ingested, ingestion_size, storage_size)
-    }
-    pub async fn from_prometheus_samples<T: Metadata>(
-        samples: Vec<PromSample>,
-        metadata: &T,
-    ) -> Result<Self, PostError> {
-        let mut prom_dress = Metrics::new(
-            metadata.domain_name().to_string(),
-            metadata.node_type().to_string(),
-        );
-        for sample in samples {
-            if let PromValue::Gauge(val) = sample.value {
-                match sample.metric.as_str() {
-                    "parseable_events_ingested" => prom_dress.parseable_events_ingested += val,
-                    "parseable_events_ingested_size" => {
-                        prom_dress.parseable_events_ingested_size += val
-                    }
-                    "parseable_lifetime_events_ingested" => {
-                        prom_dress.parseable_lifetime_events_ingested += val
-                    }
-                    "parseable_lifetime_events_ingested_size" => {
-                        prom_dress.parseable_lifetime_events_ingested_size += val
-                    }
-                    "parseable_events_deleted" => {
-                        prom_dress.parseable_deleted_events_ingested += val
-                    }
-                    "parseable_events_deleted_size" => {
-                        prom_dress.parseable_deleted_events_ingested_size += val
-                    }
-                    "parseable_staging_files" => prom_dress.parseable_staging_files += val,
-                    "process_resident_memory_bytes" => {
-                        prom_dress.process_resident_memory_bytes += val
-                    }
-                    "parseable_storage_size" => {
-                        if sample.labels.get("type").expect("type is present") == "staging" {
-                            prom_dress.parseable_storage_size.staging += val;
-                        }
-                        if sample.labels.get("type").expect("type is present") == "data" {
-                            prom_dress.parseable_storage_size.data += val;
-                        }
-                    }
-                    "parseable_lifetime_events_storage_size" => {
-                        if sample.labels.get("type").expect("type is present") == "data" {
-                            prom_dress.parseable_lifetime_storage_size.data += val;
-                        }
-                    }
-                    "parseable_deleted_events_storage_size" => {
-                        if sample.labels.get("type").expect("type is present") == "data" {
-                            prom_dress.parseable_deleted_storage_size.data += val;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        let (commit_id, staging) =
-            Self::from_about_api_response(metadata)
-                .await
-                .map_err(|err| {
-                    error!("Fatal: failed to get server info: {:?}", err);
-                    PostError::Invalid(err.into())
-                })?;
-
-        prom_dress.commit = commit_id;
-        prom_dress.staging = staging;
-
-        Ok(prom_dress)
     }
 
     pub async fn from_about_api_response<T: Metadata>(

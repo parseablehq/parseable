@@ -28,6 +28,7 @@ use relative_path::RelativePathBuf;
 use serde_json::Value;
 use tokio::sync::oneshot;
 
+use crate::metrics::init_system_metrics_scheduler;
 use crate::option::Mode;
 use crate::{
     analytics,
@@ -110,7 +111,7 @@ impl ParseableServer for IngestServer {
 
         // write the ingestor metadata to storage
         PARSEABLE.store_metadata(Mode::Ingest).await?;
-
+        init_system_metrics_scheduler().await?;
         // Ingestors shouldn't have to deal with OpenId auth flow
         let result = self.start(shutdown_rx, prometheus.clone(), None).await;
         // Cancel sync jobs

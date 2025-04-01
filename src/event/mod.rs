@@ -76,7 +76,6 @@ impl Event {
             &self.rb,
             self.parsed_timestamp,
             &self.custom_partition_values,
-            self.stream_type,
         )?;
 
         update_stats(
@@ -100,7 +99,6 @@ impl Event {
             &self.rb,
             self.parsed_timestamp,
             &self.custom_partition_values,
-            self.stream_type,
         )?;
 
         Ok(())

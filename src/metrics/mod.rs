@@ -26,7 +26,7 @@ use std::{path::Path, time::Duration};
 use sysinfo::{Disks, System};
 use tracing::{error, info};
 
-use crate::{handlers::http::metrics_path, option::CONFIG, stats::FullStats};
+use crate::{handlers::http::metrics_path, parseable::PARSEABLE, stats::FullStats};
 use actix_web::Responder;
 use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use error::MetricsError;
@@ -419,14 +419,14 @@ pub async fn collect_all_metrics() -> Result<(), MetricsError> {
 // Function to collect disk usage metrics
 async fn collect_disk_metrics() -> Result<(), MetricsError> {
     // collect staging volume metrics
-    collect_volume_disk_usage("staging", CONFIG.staging_dir())?;
+    collect_volume_disk_usage("staging", PARSEABLE.options.staging_dir())?;
     // Collect data volume metrics for local storage
-    if CONFIG.get_storage_mode_string() == "Local drive" {
-        collect_volume_disk_usage("data", Path::new(&CONFIG.storage().get_endpoint()))?;
+    if PARSEABLE.get_storage_mode_string() == "Local drive" {
+        collect_volume_disk_usage("data", Path::new(&PARSEABLE.storage().get_endpoint()))?;
     }
 
     // Collect hot tier volume metrics if configured
-    if let Some(hot_tier_dir) = CONFIG.hot_tier_dir() {
+    if let Some(hot_tier_dir) = PARSEABLE.hot_tier_dir() {
         collect_volume_disk_usage("hot_tier", hot_tier_dir)?;
     }
 
