@@ -338,7 +338,7 @@ impl QueryServer {
                 web::scope("/{ingestor}").service(
                     web::resource("").route(
                         web::delete()
-                            .to(cluster::remove_ingestor)
+                            .to(cluster::remove_node)
                             .authorize(Action::Deleteingestor),
                     ),
                 ),

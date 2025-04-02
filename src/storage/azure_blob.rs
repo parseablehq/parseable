@@ -644,7 +644,7 @@ impl ObjectStorage for BlobStore {
         Ok(())
     }
 
-    async fn try_delete_ingestor_meta(
+    async fn try_delete_node_meta(
         &self,
         ingestor_filename: String,
     ) -> Result<(), ObjectStorageError> {

@@ -201,7 +201,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         &self,
         stream_name: &str,
     ) -> Result<Vec<RelativePathBuf>, ObjectStorageError>;
-    async fn try_delete_ingestor_meta(
+    async fn try_delete_node_meta(
         &self,
         ingestor_filename: String,
     ) -> Result<(), ObjectStorageError>;
