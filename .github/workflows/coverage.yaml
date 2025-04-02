@@ -35,6 +35,8 @@ jobs:
         if: runner.os == 'Linux'
 
       - name: Check with clippy
+        env:
+          CMAKE_FLAGS: "-DCMAKE_POLICY_VERSION_MINIMUM=3.5"
         run: cargo hack clippy --verbose --each-feature --no-dev-deps -- -D warnings
 
       - name: Test default feature set
