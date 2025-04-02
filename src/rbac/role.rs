@@ -50,7 +50,7 @@ pub enum Action {
     QueryLLM,
     ListCluster,
     ListClusterMetrics,
-    Deleteingestor,
+    DeleteNode,
     All,
     GetAnalytics,
     ListDashboard,
@@ -128,7 +128,7 @@ impl RoleBuilder {
                 | Action::DeleteCorrelation
                 | Action::GetCorrelation
                 | Action::PutCorrelation
-                | Action::Deleteingestor
+                | Action::DeleteNode
                 | Action::PutHotTierEnabled
                 | Action::GetHotTierEnabled
                 | Action::DeleteHotTierEnabled
