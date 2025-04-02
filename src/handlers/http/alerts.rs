@@ -53,7 +53,8 @@ pub async fn post(
     // validate the incoming alert query
     // does the user have access to these tables or not?
     let session_key = extract_session_key_from_req(&req)?;
-    user_auth_for_query(&session_key, &alert.query).await?;
+    let query = format!("SELECT * FROM {}", alert.stream);
+    user_auth_for_query(&session_key, &query).await?;
 
     // create scheduled tasks
     let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
@@ -89,7 +90,8 @@ pub async fn get(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Responde
 
     let alert = ALERTS.get_alert_by_id(alert_id).await?;
     // validate that the user has access to the tables mentioned
-    user_auth_for_query(&session_key, &alert.query).await?;
+    let query = format!("SELECT * FROM {}", alert.stream);
+    user_auth_for_query(&session_key, &query).await?;
 
     Ok(web::Json(alert))
 }
@@ -103,7 +105,8 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
     let alert = ALERTS.get_alert_by_id(alert_id).await?;
 
     // validate that the user has access to the tables mentioned
-    user_auth_for_query(&session_key, &alert.query).await?;
+    let query = format!("SELECT * FROM {}", alert.stream);
+    user_auth_for_query(&session_key, &query).await?;
 
     let store = PARSEABLE.storage.get_object_store();
     let alert_path = alert_json_path(alert_id);
@@ -139,8 +142,9 @@ pub async fn modify(
 
     // validate that the user has access to the tables mentioned
     // in the old as well as the modified alert
-    user_auth_for_query(&session_key, &alert.query).await?;
-    user_auth_for_query(&session_key, &alert_request.query).await?;
+    let query = format!("SELECT * FROM {}", alert.stream);
+    user_auth_for_query(&session_key, &query).await?;
+    user_auth_for_query(&session_key, &alert_request.stream).await?;
 
     alert.modify(alert_request);
     alert.validate().await?;
@@ -185,7 +189,8 @@ pub async fn update_state(
     let alert = ALERTS.get_alert_by_id(alert_id).await?;
 
     // validate that the user has access to the tables mentioned
-    user_auth_for_query(&session_key, &alert.query).await?;
+    let query = format!("SELECT * FROM {}", alert.stream);
+    user_auth_for_query(&session_key, &query).await?;
 
     // get current state
     let current_state = ALERTS.get_state(alert_id).await?;
