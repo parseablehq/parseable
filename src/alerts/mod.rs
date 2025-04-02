@@ -390,7 +390,7 @@ pub struct AlertRequest {
     #[serde(default = "Severity::default")]
     pub severity: Severity,
     pub title: String,
-    pub query: String,
+    pub stream: String,
     pub alert_type: AlertType,
     pub aggregate_config: Aggregations,
     pub eval_type: EvalConfig,
@@ -404,7 +404,7 @@ impl From<AlertRequest> for AlertConfig {
             id: Ulid::new(),
             severity: val.severity,
             title: val.title,
-            query: val.query,
+            stream: val.stream,
             alert_type: val.alert_type,
             aggregate_config: val.aggregate_config,
             eval_type: val.eval_type,
@@ -422,7 +422,7 @@ pub struct AlertConfig {
     pub id: Ulid,
     pub severity: Severity,
     pub title: String,
-    pub query: String,
+    pub stream: String,
     pub alert_type: AlertType,
     pub aggregate_config: Aggregations,
     pub eval_type: EvalConfig,
@@ -435,7 +435,7 @@ pub struct AlertConfig {
 impl AlertConfig {
     pub fn modify(&mut self, alert: AlertRequest) {
         self.title = alert.title;
-        self.query = alert.query;
+        self.stream = alert.stream;
         self.alert_type = alert.alert_type;
         self.aggregate_config = alert.aggregate_config;
         self.eval_type = alert.eval_type;
@@ -480,27 +480,13 @@ impl AlertConfig {
         self.validate_configs()?;
 
         let session_state = QUERY_SESSION.state();
-        let raw_logical_plan = session_state.create_logical_plan(&self.query).await?;
+        let select_query = format!("SELECT * FROM {}", self.stream);
+
+        let raw_logical_plan = session_state.create_logical_plan(&select_query).await?;
 
         // create a visitor to extract the table names present in query
         let mut visitor = TableScanVisitor::default();
         let _ = raw_logical_plan.visit(&mut visitor);
-
-        let table = visitor.into_inner().first().unwrap().to_owned();
-
-        let lowercase = self.query.split(&table).collect_vec()[0].to_lowercase();
-
-        if lowercase
-            .strip_prefix(" ")
-            .unwrap_or(&lowercase)
-            .strip_suffix(" ")
-            .unwrap_or(&lowercase)
-            .ne("select * from")
-        {
-            return Err(AlertError::Metadata(
-                "Query needs to be select * from <logstream>",
-            ));
-        }
 
         // TODO: Filter tags should be taken care of!!!
         let time_range = TimeRange::parse_human_time("1m", "now")
@@ -517,7 +503,7 @@ impl AlertConfig {
         let Some(stream_name) = query.first_table_name() else {
             return Err(AlertError::CustomError(format!(
                 "Table name not found in query- {}",
-                self.query
+                select_query
             )));
         };
 
@@ -766,8 +752,8 @@ impl Alerts {
         let mut alerts: Vec<AlertConfig> = Vec::new();
         for (_, alert) in self.alerts.read().await.iter() {
             // filter based on whether the user can execute this query or not
-            let query = &alert.query;
-            if user_auth_for_query(&session, query).await.is_ok() {
+            let query = format!("SELECT * from {}", &alert.stream);
+            if user_auth_for_query(&session, &query).await.is_ok() {
                 alerts.push(alert.to_owned());
             }
         }

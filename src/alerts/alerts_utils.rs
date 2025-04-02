@@ -102,7 +102,8 @@ pub async fn evaluate_alert(alert: &AlertConfig) -> Result<(), AlertError> {
     trace!("RUNNING EVAL TASK FOR- {alert:?}");
 
     let query = prepare_query(alert).await?;
-    let base_df = execute_base_query(&query, &alert.query).await?;
+    let select_query = format!("SELECT * FROM {}", alert.stream);
+    let base_df = execute_base_query(&query, &select_query).await?;
     let agg_results = evaluate_aggregates(&alert.aggregate_config, &base_df).await?;
     let final_res = calculate_final_result(&alert.aggregate_config, &agg_results);
 
@@ -118,7 +119,8 @@ async fn prepare_query(alert: &AlertConfig) -> Result<crate::query::Query, Alert
     };
 
     let session_state = QUERY_SESSION.state();
-    let raw_logical_plan = session_state.create_logical_plan(&alert.query).await?;
+    let select_query = format!("SELECT * FROM {}", alert.stream);
+    let raw_logical_plan = session_state.create_logical_plan(&select_query).await?;
 
     let time_range = TimeRange::parse_human_time(start_time, end_time)
         .map_err(|err| AlertError::CustomError(err.to_string()))?;
