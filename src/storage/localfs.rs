@@ -466,7 +466,7 @@ impl ObjectStorage for LocalFS {
     fn get_bucket_name(&self) -> String {
         self.root
             .iter()
-            .last()
+            .next_back()
             .expect("can be unwrapped without checking as the path is absolute")
             .to_str()
             .expect("valid unicode")
