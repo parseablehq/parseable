@@ -18,19 +18,17 @@
 
 use arrow_array::{Float64Array, Int64Array, RecordBatch};
 use datafusion::{
-    common::tree_node::TreeNode,
-    functions_aggregate::{
+    common::tree_node::TreeNode, functions_aggregate::{
         count::count,
         expr_fn::avg,
         min_max::{max, min},
         sum::sum,
-    },
-    prelude::{col, lit, DataFrame, Expr},
+    }, logical_expr::{BinaryExpr, Operator}, prelude::{col, lit, DataFrame, Expr}
 };
 use tracing::trace;
 
 use crate::{
-    alerts::AggregateCondition,
+    alerts::LogicalOperator,
     parseable::PARSEABLE,
     query::{TableScanVisitor, QUERY_SESSION},
     rbac::{
@@ -42,8 +40,7 @@ use crate::{
 };
 
 use super::{
-    AggregateConfig, AggregateOperation, AggregateResult, Aggregations, AlertConfig, AlertError,
-    AlertOperator, AlertState, ConditionConfig, Conditions, ALERTS,
+    AggregateConfig, AggregateFunction, AggregateResult, Aggregates, AlertConfig, AlertError, AlertOperator, AlertState, ConditionConfig, Conditions, WhereConfigOperator, ALERTS
 };
 
 async fn get_tables_from_query(query: &str) -> Result<TableScanVisitor, AlertError> {
@@ -104,18 +101,16 @@ pub async fn evaluate_alert(alert: &AlertConfig) -> Result<(), AlertError> {
     let query = prepare_query(alert).await?;
     let select_query = format!("SELECT * FROM {}", alert.stream);
     let base_df = execute_base_query(&query, &select_query).await?;
-    let agg_results = evaluate_aggregates(&alert.aggregate_config, &base_df).await?;
-    let final_res = calculate_final_result(&alert.aggregate_config, &agg_results);
+    let agg_results = evaluate_aggregates(&alert.aggregates, &base_df).await?;
+    let final_res = calculate_final_result(&alert.aggregates, &agg_results);
 
     update_alert_state(alert, final_res, &agg_results).await?;
     Ok(())
 }
 
 async fn prepare_query(alert: &AlertConfig) -> Result<crate::query::Query, AlertError> {
-    let (start_time, end_time) = match &alert.eval_type {
-        super::EvalConfig::RollingWindow(rolling_window) => {
-            (&rolling_window.eval_start, &rolling_window.eval_end)
-        }
+    let (start_time, end_time) = match &alert.eval_config {
+        super::EvalConfig::RollingWindow(rolling_window) => (&rolling_window.eval_start, "now"),
     };
 
     let session_state = QUERY_SESSION.state();
@@ -148,15 +143,15 @@ async fn execute_base_query(
 }
 
 async fn evaluate_aggregates(
-    agg_config: &Aggregations,
+    agg_config: &Aggregates,
     base_df: &DataFrame,
 ) -> Result<Vec<AggregateResult>, AlertError> {
     let agg_filter_exprs = get_exprs(agg_config);
     let mut results = Vec::new();
 
     let conditions = match &agg_config.operator {
-        Some(_) => &agg_config.aggregate_conditions[0..2],
-        None => &agg_config.aggregate_conditions[0..1],
+        Some(_) => &agg_config.aggregate_config[0..2],
+        None => &agg_config.aggregate_config[0..1],
     };
 
     for ((agg_expr, filter), agg) in agg_filter_exprs.into_iter().zip(conditions) {
@@ -188,7 +183,7 @@ async fn evaluate_single_aggregate(
     let result = evaluate_condition(&agg.operator, final_value, agg.value);
 
     let message = if result {
-        agg.condition_config
+        agg.conditions
             .as_ref()
             .map(|config| config.generate_filter_message())
             .or(Some(String::default()))
@@ -208,18 +203,18 @@ fn evaluate_condition(operator: &AlertOperator, actual: f64, expected: f64) -> b
     match operator {
         AlertOperator::GreaterThan => actual > expected,
         AlertOperator::LessThan => actual < expected,
-        AlertOperator::EqualTo => actual == expected,
-        AlertOperator::NotEqualTo => actual != expected,
-        AlertOperator::GreaterThanEqualTo => actual >= expected,
-        AlertOperator::LessThanEqualTo => actual <= expected,
+        AlertOperator::Equal => actual == expected,
+        AlertOperator::NotEqual => actual != expected,
+        AlertOperator::GreaterThanOrEqual => actual >= expected,
+        AlertOperator::LessThanOrEqual => actual <= expected,
         _ => unreachable!(),
     }
 }
 
-fn calculate_final_result(agg_config: &Aggregations, results: &[AggregateResult]) -> bool {
+fn calculate_final_result(agg_config: &Aggregates, results: &[AggregateResult]) -> bool {
     match &agg_config.operator {
-        Some(AggregateCondition::And) => results.iter().all(|r| r.result),
-        Some(AggregateCondition::Or) => results.iter().any(|r| r.result),
+        Some(LogicalOperator::And) => results.iter().all(|r| r.result),
+        Some(LogicalOperator::Or) => results.iter().any(|r| r.result),
         None => results.first().is_some_and(|r| r.result),
     }
 }
@@ -252,7 +247,7 @@ fn format_alert_message(agg_results: &[AggregateResult]) -> String {
         if let Some(msg) = &result.message {
             message.extend([format!(
                 "|{}({}) WHERE ({}) {} {} (ActualValue: {})|",
-                result.config.agg,
+                result.config.aggregate_function,
                 result.config.column,
                 msg,
                 result.config.operator,
@@ -262,7 +257,7 @@ fn format_alert_message(agg_results: &[AggregateResult]) -> String {
         } else {
             message.extend([format!(
                 "|{}({}) {} {} (ActualValue: {})",
-                result.config.agg,
+                result.config.aggregate_function,
                 result.config.column,
                 result.config.operator,
                 result.config.value,
@@ -307,17 +302,17 @@ fn get_final_value(aggregated_rows: Vec<RecordBatch>) -> f64 {
 /// returns a tuple of (aggregate expressions, filter expressions)
 ///
 /// It calls get_filter_expr() to get filter expressions
-fn get_exprs(aggregate_config: &Aggregations) -> Vec<(Expr, Option<Expr>)> {
+fn get_exprs(aggregate_config: &Aggregates) -> Vec<(Expr, Option<Expr>)> {
     let mut agg_expr = Vec::new();
 
     match &aggregate_config.operator {
         Some(op) => match op {
-            AggregateCondition::And | AggregateCondition::Or => {
-                let agg1 = &aggregate_config.aggregate_conditions[0];
-                let agg2 = &aggregate_config.aggregate_conditions[1];
+            LogicalOperator::And | LogicalOperator::Or => {
+                let agg1 = &aggregate_config.aggregate_config[0];
+                let agg2 = &aggregate_config.aggregate_config[1];
 
                 for agg in [agg1, agg2] {
-                    let filter_expr = if let Some(where_clause) = &agg.condition_config {
+                    let filter_expr = if let Some(where_clause) = &agg.conditions {
                         let fe = get_filter_expr(where_clause);
 
                         trace!("filter_expr-\n{fe:?}");
@@ -333,9 +328,9 @@ fn get_exprs(aggregate_config: &Aggregations) -> Vec<(Expr, Option<Expr>)> {
             }
         },
         None => {
-            let agg = &aggregate_config.aggregate_conditions[0];
+            let agg = &aggregate_config.aggregate_config[0];
 
-            let filter_expr = if let Some(where_clause) = &agg.condition_config {
+            let filter_expr = if let Some(where_clause) = &agg.conditions {
                 let fe = get_filter_expr(where_clause);
 
                 trace!("filter_expr-\n{fe:?}");
@@ -355,11 +350,11 @@ fn get_exprs(aggregate_config: &Aggregations) -> Vec<(Expr, Option<Expr>)> {
 fn get_filter_expr(where_clause: &Conditions) -> Expr {
     match &where_clause.operator {
         Some(op) => match op {
-            AggregateCondition::And => {
+            LogicalOperator::And => {
                 let mut expr = Expr::Literal(datafusion::scalar::ScalarValue::Boolean(Some(true)));
 
-                let expr1 = &where_clause.conditions[0];
-                let expr2 = &where_clause.conditions[1];
+                let expr1 = &where_clause.condition_config[0];
+                let expr2 = &where_clause.condition_config[1];
 
                 for e in [expr1, expr2] {
                     let ex = match_alert_operator(e);
@@ -367,11 +362,11 @@ fn get_filter_expr(where_clause: &Conditions) -> Expr {
                 }
                 expr
             }
-            AggregateCondition::Or => {
+            LogicalOperator::Or => {
                 let mut expr = Expr::Literal(datafusion::scalar::ScalarValue::Boolean(Some(false)));
 
-                let expr1 = &where_clause.conditions[0];
-                let expr2 = &where_clause.conditions[1];
+                let expr1 = &where_clause.condition_config[0];
+                let expr2 = &where_clause.condition_config[1];
 
                 for e in [expr1, expr2] {
                     let ex = match_alert_operator(e);
@@ -381,7 +376,7 @@ fn get_filter_expr(where_clause: &Conditions) -> Expr {
             }
         },
         None => {
-            let expr = &where_clause.conditions[0];
+            let expr = &where_clause.condition_config[0];
             match_alert_operator(expr)
         }
     }
@@ -389,22 +384,62 @@ fn get_filter_expr(where_clause: &Conditions) -> Expr {
 
 fn match_alert_operator(expr: &ConditionConfig) -> Expr {
     match expr.operator {
-        AlertOperator::GreaterThan => col(&expr.column).gt(lit(&expr.value)),
-        AlertOperator::LessThan => col(&expr.column).lt(lit(&expr.value)),
-        AlertOperator::EqualTo => col(&expr.column).eq(lit(&expr.value)),
-        AlertOperator::NotEqualTo => col(&expr.column).not_eq(lit(&expr.value)),
-        AlertOperator::GreaterThanEqualTo => col(&expr.column).gt_eq(lit(&expr.value)),
-        AlertOperator::LessThanEqualTo => col(&expr.column).lt_eq(lit(&expr.value)),
-        AlertOperator::Like => col(&expr.column).like(lit(&expr.value)),
-        AlertOperator::NotLike => col(&expr.column).not_like(lit(&expr.value)),
+        WhereConfigOperator::Equal => col(&expr.column).eq(lit(&expr.value)),
+        WhereConfigOperator::NotEqual => col(&expr.column).not_eq(lit(&expr.value)),
+        WhereConfigOperator::LessThan => col(&expr.column).lt(lit(&expr.value)),
+        WhereConfigOperator::GreaterThan => col(&expr.column).gt(lit(&expr.value)),
+        WhereConfigOperator::LessThanOrEqual => col(&expr.column).lt_eq(lit(&expr.value)),
+        WhereConfigOperator::GreaterThanOrEqual => col(&expr.column).gt_eq(lit(&expr.value)),
+        WhereConfigOperator::IsNull => col(&expr.column).is_null(),
+        WhereConfigOperator::IsNotNull => col(&expr.column).is_not_null(),
+        WhereConfigOperator::ILike => col(&expr.column).ilike(lit(&expr.value)),
+        WhereConfigOperator::Contains => col(&expr.column).like(lit(&expr.value)),
+        WhereConfigOperator::BeginsWith => {
+            Expr::BinaryExpr(
+                BinaryExpr::new(
+                    Box::new(col(&expr.column)),
+                    Operator::RegexIMatch,
+                    Box::new(lit(format!("^{}", expr.value)))
+                )
+            )
+        },
+        WhereConfigOperator::EndsWith => {
+            Expr::BinaryExpr(
+                BinaryExpr::new(
+                    Box::new(col(&expr.column)),
+                    Operator::RegexIMatch,
+                    Box::new(lit(format!("{}$", expr.value)))
+                )
+            )
+        },
+        WhereConfigOperator::DoesNotContain => col(&expr.column).not_ilike(lit(&expr.value)),
+        WhereConfigOperator::DoesNotBeginWith => {
+            Expr::BinaryExpr(
+                BinaryExpr::new(
+                    Box::new(col(&expr.column)),
+                    Operator::RegexNotIMatch,
+                    Box::new(lit(format!("^{}", expr.value)))
+                )
+            )
+        },
+        WhereConfigOperator::DoesNotEndWith => {
+            Expr::BinaryExpr(
+                BinaryExpr::new(
+                    Box::new(col(&expr.column)),
+                    Operator::RegexNotIMatch,
+                    Box::new(lit(format!("{}$", expr.value)))
+                )
+            )
+        },
     }
 }
+
 fn match_aggregate_operation(agg: &AggregateConfig) -> Expr {
-    match agg.agg {
-        AggregateOperation::Avg => avg(col(&agg.column)),
-        AggregateOperation::Count => count(col(&agg.column)),
-        AggregateOperation::Min => min(col(&agg.column)),
-        AggregateOperation::Max => max(col(&agg.column)),
-        AggregateOperation::Sum => sum(col(&agg.column)),
+    match agg.aggregate_function {
+        AggregateFunction::Avg => avg(col(&agg.column)),
+        AggregateFunction::Count => count(col(&agg.column)),
+        AggregateFunction::Min => min(col(&agg.column)),
+        AggregateFunction::Max => max(col(&agg.column)),
+        AggregateFunction::Sum => sum(col(&agg.column)),
     }
 }

@@ -183,17 +183,17 @@ pub enum AlertOperator {
     #[serde(rename = "<")]
     LessThan,
     #[serde(rename = "=")]
-    EqualTo,
-    #[serde(rename = "<>")]
-    NotEqualTo,
+    Equal,
+    #[serde(rename = "!=")]
+    NotEqual,
     #[serde(rename = ">=")]
-    GreaterThanEqualTo,
+    GreaterThanOrEqual,
     #[serde(rename = "<=")]
-    LessThanEqualTo,
-    #[serde(rename = "like")]
-    Like,
-    #[serde(rename = "not like")]
-    NotLike,
+    LessThanOrEqual,
+    #[serde(rename = "is null")]
+    IsNull,
+    #[serde(rename = "is not null")]
+    IsNotNull,
 }
 
 impl Display for AlertOperator {
@@ -201,19 +201,106 @@ impl Display for AlertOperator {
         match self {
             AlertOperator::GreaterThan => write!(f, ">"),
             AlertOperator::LessThan => write!(f, "<"),
-            AlertOperator::EqualTo => write!(f, "="),
-            AlertOperator::NotEqualTo => write!(f, "<>"),
-            AlertOperator::GreaterThanEqualTo => write!(f, ">="),
-            AlertOperator::LessThanEqualTo => write!(f, "<="),
-            AlertOperator::Like => write!(f, "like"),
-            AlertOperator::NotLike => write!(f, "not like"),
+            AlertOperator::Equal => write!(f, "="),
+            AlertOperator::NotEqual => write!(f, "!="),
+            AlertOperator::GreaterThanOrEqual => write!(f, ">="),
+            AlertOperator::LessThanOrEqual => write!(f, "<="),
+            AlertOperator::IsNull => write!(f, "is null"),
+            AlertOperator::IsNotNull => write!(f, "is not null"),
         }
     }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub enum AggregateOperation {
+pub enum WhereConfigOperator {
+    #[serde(rename = "=")]
+    Equal,
+    #[serde(rename = "!=")]
+    NotEqual,
+    #[serde(rename = "<")]
+    LessThan,
+    #[serde(rename = ">")]
+    GreaterThan,
+    #[serde(rename = "<=")]
+    LessThanOrEqual,
+    #[serde(rename = ">=")]
+    GreaterThanOrEqual,
+    #[serde(rename = "is null")]
+    IsNull,
+    #[serde(rename = "is not null")]
+    IsNotNull,
+    #[serde(rename = "ilike")]
+    ILike,
+    #[serde(rename = "contains")]
+    Contains,
+    #[serde(rename = "begins with")]
+    BeginsWith,
+    #[serde(rename = "ends with")]
+    EndsWith,
+    #[serde(rename = "does not contain")]
+    DoesNotContain,
+    #[serde(rename = "does not begin with")]
+    DoesNotBeginWith,
+    #[serde(rename = "does not end with")]
+    DoesNotEndWith,
+}
+
+impl WhereConfigOperator {
+    /// Convert the enum value to its string representation
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Equal => "=",
+            Self::NotEqual => "!=",
+            Self::LessThan => "<",
+            Self::GreaterThan => ">",
+            Self::LessThanOrEqual => "<=",
+            Self::GreaterThanOrEqual => ">=",
+            Self::IsNull => "is null",
+            Self::IsNotNull => "is not null",
+            Self::ILike => "ilike",
+            Self::Contains => "contains",
+            Self::BeginsWith => "begins with",
+            Self::EndsWith => "ends with",
+            Self::DoesNotContain => "does not contain",
+            Self::DoesNotBeginWith => "does not begin with",
+            Self::DoesNotEndWith => "does not end with",
+        }
+    }
+
+    /// Parse a string to create the enum value
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "=" => Some(Self::Equal),
+            "!=" => Some(Self::NotEqual),
+            "<" => Some(Self::LessThan),
+            ">" => Some(Self::GreaterThan),
+            "<=" => Some(Self::LessThanOrEqual),
+            ">=" => Some(Self::GreaterThanOrEqual),
+            "is null" => Some(Self::IsNull),
+            "is not null" => Some(Self::IsNotNull),
+            "ilike" => Some(Self::ILike),
+            "contains" => Some(Self::Contains),
+            "begins with" => Some(Self::BeginsWith),
+            "ends with" => Some(Self::EndsWith),
+            "does not contain" => Some(Self::DoesNotContain),
+            "does not begin with" => Some(Self::DoesNotBeginWith),
+            "does not end with" => Some(Self::DoesNotEndWith),
+            _ => None,
+        }
+    }
+}
+
+impl Display for WhereConfigOperator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // We can reuse our as_str method to get the string representation
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub enum AggregateFunction {
     Avg,
     Count,
     Min,
@@ -221,14 +308,14 @@ pub enum AggregateOperation {
     Sum,
 }
 
-impl Display for AggregateOperation {
+impl Display for AggregateFunction {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AggregateOperation::Avg => write!(f, "Avg"),
-            AggregateOperation::Count => write!(f, "Count"),
-            AggregateOperation::Min => write!(f, "Min"),
-            AggregateOperation::Max => write!(f, "Max"),
-            AggregateOperation::Sum => write!(f, "Sum"),
+            AggregateFunction::Avg => write!(f, "Avg"),
+            AggregateFunction::Count => write!(f, "Count"),
+            AggregateFunction::Min => write!(f, "Min"),
+            AggregateFunction::Max => write!(f, "Max"),
+            AggregateFunction::Sum => write!(f, "Sum"),
         }
     }
 }
@@ -249,31 +336,24 @@ pub struct FilterConfig {
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct ConditionConfig {
     pub column: String,
-    pub operator: AlertOperator,
+    pub operator: WhereConfigOperator,
     pub value: String,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Conditions {
-    pub operator: Option<AggregateCondition>,
-    pub conditions: Vec<ConditionConfig>,
+    pub operator: Option<LogicalOperator>,
+    pub condition_config: Vec<ConditionConfig>,
 }
-
-// #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-// pub enum Conditions {
-//     AND((ConditionConfig, ConditionConfig)),
-//     OR((ConditionConfig, ConditionConfig)),
-//     Condition(ConditionConfig),
-// }
 
 impl Conditions {
     pub fn generate_filter_message(&self) -> String {
         match &self.operator {
             Some(op) => match op {
-                AggregateCondition::And | AggregateCondition::Or => {
-                    let expr1 = &self.conditions[0];
-                    let expr2 = &self.conditions[1];
+                LogicalOperator::And | LogicalOperator::Or => {
+                    let expr1 = &self.condition_config[0];
+                    let expr2 = &self.condition_config[1];
                     format!(
                         "[{} {} {} AND {} {} {}]",
                         expr1.column,
@@ -286,7 +366,7 @@ impl Conditions {
                 }
             },
             None => {
-                let expr = &self.conditions[0];
+                let expr = &self.condition_config[0];
                 format!("[{} {} {}]", expr.column, expr.operator, expr.value)
             }
         }
@@ -295,30 +375,31 @@ impl Conditions {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct GroupBy {
+    pub columns: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct AggregateConfig {
-    pub agg: AggregateOperation,
-    pub condition_config: Option<Conditions>,
+    pub aggregate_function: AggregateFunction,
+    pub conditions: Option<Conditions>,
+    pub group_by: Option<GroupBy>,
     pub column: String,
     pub operator: AlertOperator,
     pub value: f64,
 }
 
-// #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-// pub enum Aggregations {
-//     AND((AggregateConfig, AggregateConfig)),
-//     OR((AggregateConfig, AggregateConfig)),
-//     Single(AggregateConfig),
-// }
-
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
-pub struct Aggregations {
-    pub operator: Option<AggregateCondition>,
-    pub aggregate_conditions: Vec<AggregateConfig>,
+pub struct Aggregates {
+    pub operator: Option<LogicalOperator>,
+    pub aggregate_config: Vec<AggregateConfig>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-pub enum AggregateCondition {
+#[serde(rename_all = "camelCase")]
+pub enum LogicalOperator {
     And,
     Or,
 }
@@ -392,8 +473,8 @@ pub struct AlertRequest {
     pub title: String,
     pub stream: String,
     pub alert_type: AlertType,
-    pub aggregate_config: Aggregations,
-    pub eval_type: EvalConfig,
+    pub aggregates: Aggregates,
+    pub eval_config: EvalConfig,
     pub targets: Vec<Target>,
 }
 
@@ -406,8 +487,8 @@ impl From<AlertRequest> for AlertConfig {
             title: val.title,
             stream: val.stream,
             alert_type: val.alert_type,
-            aggregate_config: val.aggregate_config,
-            eval_type: val.eval_type,
+            aggregates: val.aggregates,
+            eval_config: val.eval_config,
             targets: val.targets,
             state: AlertState::default(),
         }
@@ -424,8 +505,8 @@ pub struct AlertConfig {
     pub title: String,
     pub stream: String,
     pub alert_type: AlertType,
-    pub aggregate_config: Aggregations,
-    pub eval_type: EvalConfig,
+    pub aggregates: Aggregates,
+    pub eval_config: EvalConfig,
     pub targets: Vec<Target>,
     // for new alerts, state should be resolved
     #[serde(default)]
@@ -437,8 +518,8 @@ impl AlertConfig {
         self.title = alert.title;
         self.stream = alert.stream;
         self.alert_type = alert.alert_type;
-        self.aggregate_config = alert.aggregate_config;
-        self.eval_type = alert.eval_type;
+        self.aggregates = alert.aggregates;
+        self.eval_config = alert.eval_config;
         self.targets = alert.targets;
         self.state = AlertState::default();
     }
@@ -446,12 +527,8 @@ impl AlertConfig {
     /// Validations
     pub async fn validate(&self) -> Result<(), AlertError> {
         // validate evalType
-        let eval_frequency = match &self.eval_type {
+        let eval_frequency = match &self.eval_config {
             EvalConfig::RollingWindow(rolling_window) => {
-                if rolling_window.eval_end != "now" {
-                    return Err(AlertError::Metadata("evalEnd should be now"));
-                }
-
                 if humantime::parse_duration(&rolling_window.eval_start).is_err() {
                     return Err(AlertError::Metadata(
                         "evalStart should be of type humantime",
@@ -530,7 +607,7 @@ impl AlertConfig {
             match &config.operator {
                 Some(_) => {
                     // only two aggregate conditions should be present
-                    if config.conditions.len() != 2 {
+                    if config.condition_config.len() != 2 {
                         return Err(AlertError::CustomError(
                             "While using AND/OR, two conditions must be used".to_string(),
                         ));
@@ -538,7 +615,7 @@ impl AlertConfig {
                 }
                 None => {
                     // only one aggregate condition should be present
-                    if config.conditions.len() != 1 {
+                    if config.condition_config.len() != 1 {
                         return Err(AlertError::CustomError(
                             "While not using AND/OR, one conditions must be used".to_string(),
                         ));
@@ -549,32 +626,32 @@ impl AlertConfig {
         }
 
         // validate aggregate config(s)
-        match &self.aggregate_config.operator {
+        match &self.aggregates.operator {
             Some(_) => {
                 // only two aggregate conditions should be present
-                if self.aggregate_config.aggregate_conditions.len() != 2 {
+                if self.aggregates.aggregate_config.len() != 2 {
                     return Err(AlertError::CustomError(
                         "While using AND/OR, two aggregateConditions must be used".to_string(),
                     ));
                 }
 
                 // validate condition config
-                let agg1 = &self.aggregate_config.aggregate_conditions[0];
-                let agg2 = &self.aggregate_config.aggregate_conditions[0];
+                let agg1 = &self.aggregates.aggregate_config[0];
+                let agg2 = &self.aggregates.aggregate_config[0];
 
-                validate_condition_config(&agg1.condition_config)?;
-                validate_condition_config(&agg2.condition_config)?;
+                validate_condition_config(&agg1.conditions)?;
+                validate_condition_config(&agg2.conditions)?;
             }
             None => {
                 // only one aggregate condition should be present
-                if self.aggregate_config.aggregate_conditions.len() != 1 {
+                if self.aggregates.aggregate_config.len() != 1 {
                     return Err(AlertError::CustomError(
                         "While not using AND/OR, one aggregateConditions must be used".to_string(),
                     ));
                 }
 
-                let agg = &self.aggregate_config.aggregate_conditions[0];
-                validate_condition_config(&agg.condition_config)?;
+                let agg = &self.aggregates.aggregate_config[0];
+                validate_condition_config(&agg.conditions)?;
             }
         }
         Ok(())
@@ -582,25 +659,25 @@ impl AlertConfig {
 
     fn get_agg_config_cols(&self) -> HashSet<&String> {
         let mut columns: HashSet<&String> = HashSet::new();
-        match &self.aggregate_config.operator {
+        match &self.aggregates.operator {
             Some(op) => match op {
-                AggregateCondition::And | AggregateCondition::Or => {
-                    let agg1 = &self.aggregate_config.aggregate_conditions[0];
-                    let agg2 = &self.aggregate_config.aggregate_conditions[1];
+                LogicalOperator::And | LogicalOperator::Or => {
+                    let agg1 = &self.aggregates.aggregate_config[0];
+                    let agg2 = &self.aggregates.aggregate_config[1];
 
                     columns.insert(&agg1.column);
                     columns.insert(&agg2.column);
 
-                    if let Some(condition) = &agg1.condition_config {
+                    if let Some(condition) = &agg1.conditions {
                         columns.extend(self.get_condition_cols(condition));
                     }
                 }
             },
             None => {
-                let agg = &self.aggregate_config.aggregate_conditions[0];
+                let agg = &self.aggregates.aggregate_config[0];
                 columns.insert(&agg.column);
 
-                if let Some(condition) = &agg.condition_config {
+                if let Some(condition) = &agg.conditions {
                     columns.extend(self.get_condition_cols(condition));
                 }
             }
@@ -612,15 +689,15 @@ impl AlertConfig {
         let mut columns: HashSet<&String> = HashSet::new();
         match &condition.operator {
             Some(op) => match op {
-                AggregateCondition::And | AggregateCondition::Or => {
-                    let c1 = &condition.conditions[0];
-                    let c2 = &condition.conditions[1];
+                LogicalOperator::And | LogicalOperator::Or => {
+                    let c1 = &condition.condition_config[0];
+                    let c2 = &condition.condition_config[1];
                     columns.insert(&c1.column);
                     columns.insert(&c2.column);
                 }
             },
             None => {
-                let c = &condition.conditions[0];
+                let c = &condition.condition_config[0];
                 columns.insert(&c.column);
             }
         }
@@ -628,7 +705,7 @@ impl AlertConfig {
     }
 
     pub fn get_eval_frequency(&self) -> u64 {
-        match &self.eval_type {
+        match &self.eval_config {
             EvalConfig::RollingWindow(rolling_window) => rolling_window.eval_frequency,
         }
     }
