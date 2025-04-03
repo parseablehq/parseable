@@ -33,6 +33,34 @@ jobs:
             pkg-config \
             build-essential
         if: runner.os == 'Linux'
+        
+      - name: Find and fix librdkafka CMakeLists.txt
+        run: |
+          # Download the package first so it's in the registry
+          cargo fetch
+          
+          # Find the rdkafka-sys package directory
+          RDKAFKA_SYS_DIR=$(find ~/.cargo/registry/src -name "rdkafka-sys-*" -type d | head -n 1)
+          echo "Found rdkafka-sys at: $RDKAFKA_SYS_DIR"
+          
+          # Find the librdkafka CMakeLists.txt file
+          CMAKE_FILE="$RDKAFKA_SYS_DIR/librdkafka/CMakeLists.txt"
+          
+          if [ -f "$CMAKE_FILE" ]; then
+            echo "Found CMakeLists.txt at: $CMAKE_FILE"
+            
+            # Make a backup of the original file
+            cp "$CMAKE_FILE" "$CMAKE_FILE.bak"
+            
+            # Replace the minimum required version
+            sed -i 's/cmake_minimum_required(VERSION 3.2)/cmake_minimum_required(VERSION 3.5)/' "$CMAKE_FILE"
+            
+            echo "Modified CMakeLists.txt - before and after comparison:"
+            diff "$CMAKE_FILE.bak" "$CMAKE_FILE" || true
+          else
+            echo "Could not find librdkafka CMakeLists.txt file!"
+            exit 1
+          fi
 
       - name: Check with clippy
         env:
