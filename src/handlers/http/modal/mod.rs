@@ -553,6 +553,7 @@ pub trait Metadata {
     fn domain_name(&self) -> &str;
     fn token(&self) -> &str;
     fn node_type(&self) -> &str;
+    fn file_path(&self) -> RelativePathBuf;
 }
 
 impl Metadata for IngestorMetadata {
@@ -566,6 +567,9 @@ impl Metadata for IngestorMetadata {
     fn node_type(&self) -> &str {
         "ingestor"
     }
+    fn file_path(&self) -> RelativePathBuf {
+        self.file_path()
+    }
 }
 
 impl Metadata for IndexerMetadata {
@@ -578,6 +582,9 @@ impl Metadata for IndexerMetadata {
     }
     fn node_type(&self) -> &str {
         "indexer"
+    }
+    fn file_path(&self) -> RelativePathBuf {
+        self.file_path()
     }
 }
 #[cfg(test)]

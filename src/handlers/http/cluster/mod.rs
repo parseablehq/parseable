@@ -20,6 +20,7 @@ pub mod utils;
 
 use futures::{future, stream, StreamExt};
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 
 use actix_web::http::header::{self, HeaderMap};
@@ -31,7 +32,7 @@ use clokwerk::{AsyncScheduler, Interval};
 use http::{header as http_header, StatusCode};
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
-use serde::de::Error;
+use serde::de::{DeserializeOwned, Error};
 use serde_json::error::Error as SerdeError;
 use serde_json::{to_vec, Value as JsonValue};
 use tracing::{error, info, warn};
@@ -45,7 +46,8 @@ use crate::rbac::role::model::DefaultPrivilege;
 use crate::rbac::user::User;
 use crate::stats::Stats;
 use crate::storage::{
-    ObjectStorageError, ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY, STREAM_ROOT_DIRECTORY,
+    ObjectStorage, ObjectStorageError, ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY,
+    STREAM_ROOT_DIRECTORY,
 };
 use crate::HTTP_CLIENT;
 
@@ -642,6 +644,9 @@ async fn fetch_nodes_info<T: Metadata>(
     nodes: Vec<T>,
 ) -> Result<Vec<utils::ClusterInfo>, StreamError> {
     let nodes_len = nodes.len();
+    if nodes_len == 0 {
+        return Ok(vec![]);
+    }
     let results = stream::iter(nodes)
         .map(|node| async move { fetch_node_info(&node).await })
         .buffer_unordered(nodes_len) // No concurrency limit
@@ -702,52 +707,71 @@ pub async fn get_indexer_info() -> anyhow::Result<IndexerMetadataArr> {
     Ok(arr)
 }
 
-pub async fn remove_ingestor(ingestor: Path<String>) -> Result<impl Responder, PostError> {
-    let domain_name = to_url_string(ingestor.into_inner());
+pub async fn remove_node(node_url: Path<String>) -> Result<impl Responder, PostError> {
+    let domain_name = to_url_string(node_url.into_inner());
 
     if check_liveness(&domain_name).await {
         return Err(PostError::Invalid(anyhow::anyhow!(
-            "The ingestor is currently live and cannot be removed"
+            "The node is currently live and cannot be removed"
         )));
     }
     let object_store = PARSEABLE.storage.get_object_store();
 
-    let ingestor_metadatas = object_store
-        .get_objects(
-            Some(&RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY)),
-            Box::new(|file_name| file_name.starts_with("ingestor")),
-        )
-        .await?;
+    // Delete ingestor metadata
+    let removed_ingestor =
+        remove_node_metadata::<IngestorMetadata>(&object_store, &domain_name).await?;
 
-    let ingestor_metadata = ingestor_metadatas
-        .iter()
-        .map(|elem| serde_json::from_slice::<IngestorMetadata>(elem).unwrap_or_default())
-        .collect_vec();
+    // Delete indexer metadata
+    let removed_indexer =
+        remove_node_metadata::<IndexerMetadata>(&object_store, &domain_name).await?;
 
-    let ingestor_metadata = ingestor_metadata
-        .iter()
-        .filter(|elem| elem.domain_name == domain_name)
-        .collect_vec();
-
-    let ingestor_meta_filename = ingestor_metadata[0].file_path().to_string();
-    let msg = match object_store
-        .try_delete_ingestor_meta(ingestor_meta_filename)
-        .await
-    {
-        Ok(_) => {
-            format!("Ingestor {} removed successfully", domain_name)
-        }
-        Err(err) => {
-            if matches!(err, ObjectStorageError::IoError(_)) {
-                format!("Ingestor {} is not found", domain_name)
-            } else {
-                format!("Error removing ingestor {}\n Reason: {}", domain_name, err)
-            }
-        }
+    let msg = if removed_ingestor || removed_indexer {
+        format!("node {} removed successfully", domain_name)
+    } else {
+        format!("node {} is not found", domain_name)
     };
 
     info!("{}", &msg);
     Ok((msg, StatusCode::OK))
+}
+
+// Helper function to remove a specific type of node metadata
+async fn remove_node_metadata<T: Metadata + DeserializeOwned + Default>(
+    object_store: &Arc<dyn ObjectStorage>,
+    domain_name: &str,
+) -> Result<bool, PostError> {
+    let node_type = T::default().node_type().to_string();
+
+    let metadatas = object_store
+        .get_objects(
+            Some(&RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY)),
+            Box::new(move |file_name| file_name.starts_with(&node_type)),
+        )
+        .await?;
+
+    let node_metadatas = metadatas
+        .iter()
+        .filter_map(|elem| match serde_json::from_slice::<T>(elem) {
+            Ok(meta) if meta.domain_name() == domain_name => Some(meta),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+
+    if node_metadatas.is_empty() {
+        return Ok(false);
+    }
+
+    let node_meta_filename = node_metadatas[0].file_path().to_string();
+    match object_store.try_delete_node_meta(node_meta_filename).await {
+        Ok(_) => Ok(true),
+        Err(err) => {
+            if matches!(err, ObjectStorageError::IoError(_)) {
+                Ok(false)
+            } else {
+                Err(PostError::ObjectStorageError(err))
+            }
+        }
+    }
 }
 
 /// Fetches metrics from a node (ingestor or indexer)
