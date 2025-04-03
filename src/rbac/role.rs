@@ -48,6 +48,10 @@ pub enum Action {
     ListRole,
     GetAbout,
     QueryLLM,
+    AddLLM,
+    DeleteLLM,
+    GetLLM,
+    ListLLM,
     ListCluster,
     ListClusterMetrics,
     Deleteingestor,
@@ -115,6 +119,10 @@ impl RoleBuilder {
                 | Action::DeleteUser
                 | Action::GetAbout
                 | Action::QueryLLM
+                | Action::AddLLM
+                | Action::DeleteLLM
+                | Action::GetLLM
+                | Action::ListLLM
                 | Action::PutRole
                 | Action::GetRole
                 | Action::DeleteRole
@@ -234,6 +242,8 @@ pub mod model {
                 Action::GetAlert,
                 Action::DeleteAlert,
                 Action::QueryLLM,
+                Action::GetLLM,
+                Action::ListLLM,
                 Action::CreateFilter,
                 Action::ListFilter,
                 Action::GetFilter,
@@ -276,6 +286,8 @@ pub mod model {
                 Action::DeleteDashboard,
                 Action::Ingest,
                 Action::QueryLLM,
+                Action::GetLLM,
+                Action::ListLLM,
                 Action::GetStreamInfo,
                 Action::GetFilter,
                 Action::ListFilter,
@@ -298,6 +310,8 @@ pub mod model {
                 Action::GetSchema,
                 Action::GetStats,
                 Action::QueryLLM,
+                Action::GetLLM,
+                Action::ListLLM,
                 Action::ListFilter,
                 Action::GetFilter,
                 Action::CreateFilter,
