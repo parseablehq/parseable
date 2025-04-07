@@ -901,7 +901,7 @@ pub fn schema_path(stream_name: &str) -> RelativePathBuf {
                 .ingestor_metadata
                 .as_ref()
                 .expect(INGESTOR_EXPECT)
-                .get_ingestor_id();
+                .get_node_id();
             let file_name = format!(".ingestor.{id}{SCHEMA_FILE_NAME}");
 
             RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, &file_name])
@@ -920,7 +920,7 @@ pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
                 .ingestor_metadata
                 .as_ref()
                 .expect(INGESTOR_EXPECT)
-                .get_ingestor_id();
+                .get_node_id();
             let file_name = format!(".ingestor.{id}{STREAM_METADATA_FILE_NAME}",);
             RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, &file_name])
         }
@@ -970,7 +970,7 @@ pub fn manifest_path(prefix: &str) -> RelativePathBuf {
                 .ingestor_metadata
                 .as_ref()
                 .expect(INGESTOR_EXPECT)
-                .get_ingestor_id();
+                .get_node_id();
             let manifest_file_name = format!("ingestor.{id}.{MANIFEST_FILE}");
             RelativePathBuf::from_iter([prefix, &manifest_file_name])
         }
