@@ -130,9 +130,6 @@ impl ParseableServer for QueryServer {
 
         tokio::spawn(airplane::server());
 
-        // write the querier metadata to storage
-        PARSEABLE.store_metadata(Mode::Query).await?;
-
         let result = self
             .start(shutdown_rx, prometheus.clone(), PARSEABLE.options.openid())
             .await?;
