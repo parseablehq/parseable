@@ -47,7 +47,10 @@ use crate::{
             cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME},
             ingest::PostError,
             logstream::error::{CreateStreamError, StreamError},
-            modal::{utils::logstream_utils::PutStreamHeaders, IndexerMetadata, IngestorMetadata},
+            modal::{
+                utils::logstream_utils::PutStreamHeaders, IndexerMetadata, IngestorMetadata,
+                NodeType,
+            },
         },
         STREAM_TYPE_KEY,
     },
@@ -143,11 +146,19 @@ impl Parseable {
         storage: Arc<dyn ObjectStorageProvider>,
     ) -> Self {
         let ingestor_metadata = match &options.mode {
-            Mode::Ingest => Some(IngestorMetadata::load(&options, storage.as_ref())),
+            Mode::Ingest => Some(IngestorMetadata::load(
+                &options,
+                storage.as_ref(),
+                NodeType::Ingestor,
+            )),
             _ => None,
         };
         let indexer_metadata = match &options.mode {
-            Mode::Index => Some(IndexerMetadata::load(&options, storage.as_ref())),
+            Mode::Index => Some(IndexerMetadata::load(
+                &options,
+                storage.as_ref(),
+                NodeType::Indexer,
+            )),
             _ => None,
         };
         Parseable {
@@ -184,7 +195,7 @@ impl Parseable {
             LogStreamMetadata::default(),
             self.ingestor_metadata
                 .as_ref()
-                .map(|meta| meta.get_ingestor_id()),
+                .map(|meta| meta.get_node_id()),
         )
     }
 
@@ -388,7 +399,7 @@ impl Parseable {
             metadata,
             self.ingestor_metadata
                 .as_ref()
-                .map(|meta| meta.get_ingestor_id()),
+                .map(|meta| meta.get_node_id()),
         );
 
         Ok(true)
@@ -693,7 +704,7 @@ impl Parseable {
                     metadata,
                     self.ingestor_metadata
                         .as_ref()
-                        .map(|meta| meta.get_ingestor_id()),
+                        .map(|meta| meta.get_node_id()),
                 );
             }
             Err(err) => {
