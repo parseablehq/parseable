@@ -25,7 +25,6 @@ use crate::handlers::http::{base_path, prism_base_path};
 use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::handlers::http::{rbac, role};
 use crate::hottier::HotTierManager;
-use crate::option::Mode;
 use crate::rbac::role::Action;
 use crate::{analytics, migration, storage, sync};
 use actix_web::web::{resource, ServiceConfig};
