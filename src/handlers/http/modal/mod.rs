@@ -218,6 +218,14 @@ impl NodeType {
             NodeType::Querier => "querier",
         }
     }
+
+    fn to_mode(&self) -> Mode {
+        match self {
+            NodeType::Ingestor => Mode::Ingest,
+            NodeType::Indexer => Mode::Index,
+            NodeType::Querier => Mode::Query,
+        }
+    }
 }
 
 impl fmt::Display for NodeType {
@@ -274,96 +282,119 @@ impl NodeMetadata {
         storage: &dyn ObjectStorageProvider,
         node_type: NodeType,
     ) -> Arc<Self> {
-        // all the files should be in the staging directory root
-        let entries = options
-            .staging_dir()
-            .read_dir()
-            .expect("Couldn't read from file");
-
-        let mode = match node_type {
-            NodeType::Ingestor => Mode::Ingest,
-            NodeType::Indexer => Mode::Index,
-            NodeType::Querier => Mode::Query,
-        };
-
-        let url = options.get_url(mode);
-        let port = url.port().unwrap_or(80).to_string();
-        let url = url.to_string();
-        let Options {
-            username, password, ..
-        } = options;
         let staging_path = options.staging_dir();
-        let flight_port = options.flight_port.to_string();
-        let type_str = node_type.as_str();
+        let node_type_str = node_type.as_str();
 
-        for entry in entries {
-            // the staging directory will have only one file with the node type in the name
-            // so the JSON Parse should not error unless the file is corrupted
-            let path = entry.expect("Should be a directory entry").path();
-            if !path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .is_some_and(|s| s.contains(type_str))
-            {
-                continue;
-            }
-
-            // get the metadata from staging
-            let bytes = std::fs::read(path).expect("File should be present");
-            let mut meta = Self::from_bytes(&bytes, options.flight_port)
-                .unwrap_or_else(|_| panic!("Extracted {} metadata", type_str));
-
-            // compare url endpoint and port, update
-            if meta.domain_name != url {
-                info!(
-                    "Domain Name was Updated. Old: {} New: {}",
-                    meta.domain_name, url
-                );
-                meta.domain_name = url;
-            }
-
-            if meta.port != port {
-                info!("Port was Updated. Old: {} New: {}", meta.port, port);
-                meta.port = port;
-            }
-
-            let token = format!(
-                "Basic {}",
-                BASE64_STANDARD.encode(format!("{username}:{password}"))
-            );
-            if meta.token != token {
-                // TODO: Update the message to be more informative with username and password
-                warn!(
-                    "Credentials were Updated. Tokens updated; Old: {} New: {}",
-                    meta.token, token
-                );
-                meta.token = token;
-            }
-
-            meta.node_type.clone_from(&node_type);
+        // Attempt to load metadata from staging
+        if let Some(mut meta) = Self::load_from_staging(staging_path, node_type_str, options) {
+            Self::update_metadata(&mut meta, options, node_type);
             meta.put_on_disk(staging_path)
-                .expect("Couldn't write to disk");
-
+                .expect("Couldn't write updated metadata to disk");
             return Arc::new(meta);
         }
 
-        let storage = storage.get_object_store();
-        let node_id = get_node_id();
+        // If no metadata is found in staging, create a new one
+        let meta = Self::create_new_metadata(options, storage, node_type);
+        meta.put_on_disk(staging_path)
+            .expect("Couldn't write new metadata to disk");
+        Arc::new(meta)
+    }
 
-        let meta = Self::new(
+    /// Load metadata from the staging directory
+    fn load_from_staging(
+        staging_path: &Path,
+        node_type_str: &str,
+        options: &Options,
+    ) -> Option<Self> {
+        let entries = staging_path
+            .read_dir()
+            .expect("Couldn't read from staging directory");
+
+        for entry in entries {
+            let path = entry.expect("Should be a directory entry").path();
+            if !Self::is_valid_metadata_file(&path, node_type_str) {
+                continue;
+            }
+
+            let bytes = std::fs::read(&path).expect("File should be present");
+            match Self::from_bytes(&bytes, options.flight_port) {
+                Ok(meta) => return Some(meta),
+                Err(e) => {
+                    error!("Failed to extract {} metadata: {}", node_type_str, e);
+                    return None;
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Check if a file is a valid metadata file for the given node type
+    fn is_valid_metadata_file(path: &Path, node_type_str: &str) -> bool {
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .map_or(false, |s| s.contains(node_type_str))
+    }
+
+    /// Update metadata fields if they differ from the current configuration
+    fn update_metadata(meta: &mut Self, options: &Options, node_type: NodeType) {
+        let url = options.get_url(node_type.to_mode());
+        let port = url.port().unwrap_or(80).to_string();
+        let url = url.to_string();
+
+        if meta.domain_name != url {
+            info!(
+                "Domain Name was Updated. Old: {} New: {}",
+                meta.domain_name, url
+            );
+            meta.domain_name = url;
+        }
+
+        if meta.port != port {
+            info!("Port was Updated. Old: {} New: {}", meta.port, port);
+            meta.port = port;
+        }
+
+        let token = Self::generate_token(&options.username, &options.password);
+        if meta.token != token {
+            warn!(
+                "Credentials were Updated. Tokens updated; Old: {} New: {}",
+                meta.token, token
+            );
+            meta.token = token;
+        }
+
+        meta.node_type = node_type;
+    }
+
+    /// Create a new metadata instance
+    fn create_new_metadata(
+        options: &Options,
+        storage: &dyn ObjectStorageProvider,
+        node_type: NodeType,
+    ) -> Self {
+        let url = options.get_url(node_type.to_mode());
+        let port = url.port().unwrap_or(80).to_string();
+        let url = url.to_string();
+
+        Self::new(
             port,
             url,
-            storage.get_bucket_name(),
-            username,
-            password,
-            node_id,
-            flight_port,
+            storage.get_object_store().get_bucket_name(),
+            &options.username,
+            &options.password,
+            get_node_id(),
+            options.flight_port.to_string(),
             node_type,
-        );
+        )
+    }
 
-        meta.put_on_disk(staging_path)
-            .expect("Should Be valid Json");
-        Arc::new(meta)
+    /// Generate a token from the username and password
+    fn generate_token(username: &str, password: &str) -> String {
+        format!(
+            "Basic {}",
+            BASE64_STANDARD.encode(format!("{username}:{password}"))
+        )
     }
 
     pub fn get_node_id(&self) -> String {
