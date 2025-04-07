@@ -340,7 +340,7 @@ impl NodeMetadata {
                 meta.token = token;
             }
 
-            meta.node_type = node_type.clone();
+            meta.node_type.clone_from(&node_type);
             meta.put_on_disk(staging_path)
                 .expect("Couldn't write to disk");
 
@@ -436,7 +436,7 @@ impl NodeMetadata {
         };
 
         let mut resource = Self::from_bytes(&bytes, PARSEABLE.options.flight_port)?;
-        resource.node_type = self.node_type.clone();
+        resource.node_type.clone_from(&self.node_type);
         let bytes = Bytes::from(serde_json::to_vec(&resource)?);
 
         resource.put_on_disk(PARSEABLE.options.staging_dir())?;
