@@ -16,7 +16,7 @@
  *
  */
 
-use std::{path::Path, sync::Arc};
+use std::{fmt, path::Path, sync::Arc};
 
 use actix_web::{middleware::from_fn, web::ServiceConfig, App, HttpServer};
 use actix_web_prometheus::PrometheusMetrics;
@@ -42,7 +42,7 @@ use crate::{
     parseable::PARSEABLE,
     storage::{ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY},
     users::{dashboards::DASHBOARDS, filters::FILTERS},
-    utils::{get_indexer_id, get_ingestor_id},
+    utils::get_node_id,
 };
 
 use super::{audit, cross_origin_config, health_check, API_BASE_PATH, API_VERSION};
@@ -202,8 +202,12 @@ pub async fn load_on_init() -> anyhow::Result<()> {
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, Default)]
 pub enum NodeType {
     #[default]
+    #[serde(rename = "ingestor")]
     Ingestor,
+    #[serde(rename = "indexer")]
     Indexer,
+    #[serde(rename = "querier")]
+    Querier,
 }
 
 impl NodeType {
@@ -211,6 +215,17 @@ impl NodeType {
         match self {
             NodeType::Ingestor => "ingestor",
             NodeType::Indexer => "indexer",
+            NodeType::Querier => "querier",
+        }
+    }
+}
+
+impl fmt::Display for NodeType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NodeType::Ingestor => write!(f, "ingestor"),
+            NodeType::Indexer => write!(f, "indexer"),
+            NodeType::Querier => write!(f, "querier"),
         }
     }
 }
@@ -224,7 +239,6 @@ pub struct NodeMetadata {
     pub token: String,
     pub node_id: String,
     pub flight_port: String,
-    #[serde(skip)]
     pub node_type: NodeType,
 }
 
@@ -269,6 +283,7 @@ impl NodeMetadata {
         let mode = match node_type {
             NodeType::Ingestor => Mode::Ingest,
             NodeType::Indexer => Mode::Index,
+            NodeType::Querier => Mode::Query,
         };
 
         let url = options.get_url(mode);
@@ -333,10 +348,7 @@ impl NodeMetadata {
         }
 
         let storage = storage.get_object_store();
-        let node_id = match node_type {
-            NodeType::Ingestor => get_ingestor_id(),
-            NodeType::Indexer => get_indexer_id(),
-        };
+        let node_id = get_node_id();
 
         let meta = Self::new(
             port,
@@ -383,6 +395,10 @@ impl NodeMetadata {
                         Value::String(DEFAULT_VERSION.to_string()),
                     );
                 }
+                json.insert(
+                    "node_type".to_string(),
+                    Value::String("ingestor".to_string()),
+                );
             } else if json.contains_key("indexer_id") {
                 // Migration: get indexer_id value, remove it, and add as node_id
                 if let Some(id) = json.remove("indexer_id") {
@@ -392,6 +408,10 @@ impl NodeMetadata {
                         Value::String(DEFAULT_VERSION.to_string()),
                     );
                 }
+                json.insert(
+                    "node_type".to_string(),
+                    Value::String("indexer".to_string()),
+                );
             }
         }
         // Determine node type and perform migration if needed
@@ -449,7 +469,7 @@ impl NodeMetadata {
 pub trait Metadata {
     fn domain_name(&self) -> &str;
     fn token(&self) -> &str;
-    fn node_type(&self) -> &str;
+    fn node_type(&self) -> &NodeType;
     fn file_path(&self) -> RelativePathBuf;
 }
 
@@ -462,8 +482,8 @@ impl Metadata for NodeMetadata {
         &self.token
     }
 
-    fn node_type(&self) -> &str {
-        self.node_type.as_str()
+    fn node_type(&self) -> &NodeType {
+        &self.node_type
     }
 
     fn file_path(&self) -> RelativePathBuf {
@@ -474,6 +494,7 @@ impl Metadata for NodeMetadata {
 // Type aliases for backward compatibility
 pub type IngestorMetadata = NodeMetadata;
 pub type IndexerMetadata = NodeMetadata;
+pub type QuerierMetadata = NodeMetadata;
 
 // Helper functions for creating specific node types
 pub fn create_ingestor_metadata(
@@ -531,6 +552,33 @@ pub fn load_indexer_metadata(
 ) -> Arc<NodeMetadata> {
     NodeMetadata::load(options, storage, NodeType::Indexer)
 }
+
+pub fn create_querier_metadata(
+    port: String,
+    domain_name: String,
+    bucket_name: String,
+    username: &str,
+    password: &str,
+    querier_id: String,
+    flight_port: String,
+) -> NodeMetadata {
+    NodeMetadata::new(
+        port,
+        domain_name,
+        bucket_name,
+        username,
+        password,
+        querier_id,
+        flight_port,
+        NodeType::Querier,
+    )
+}
+pub fn load_querier_metadata(
+    options: &Options,
+    storage: &dyn ObjectStorageProvider,
+) -> Arc<NodeMetadata> {
+    NodeMetadata::load(options, storage, NodeType::Querier)
+}
 #[cfg(test)]
 mod test {
     use actix_web::body::MessageBody;
@@ -554,7 +602,7 @@ mod test {
             NodeType::Ingestor,
         );
 
-        let rhs = serde_json::from_slice::<IngestorMetadata>(br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=", "ingestor_id": "ingestor_id","flight_port": "8002"}"#).unwrap();
+        let rhs = serde_json::from_slice::<IngestorMetadata>(br#"{"version":"v4","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","node_id": "ingestor_id","flight_port": "8002","node_type":"ingestor"}"#).unwrap();
 
         assert_eq!(rhs, lhs);
     }
@@ -587,7 +635,7 @@ mod test {
         );
 
         let lhs = Bytes::from(serde_json::to_vec(&im).unwrap());
-        let rhs = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","ingestor_id":"ingestor_id","flight_port":"8002"}"#
+        let rhs = br#"{"version":"v4","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","node_id":"ingestor_id","flight_port":"8002","node_type":"ingestor"}"#
                 .try_into_bytes()
                 .unwrap();
 
