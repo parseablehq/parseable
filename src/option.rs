@@ -23,6 +23,7 @@ pub enum Mode {
     Query,
     Ingest,
     Index,
+    Prism,
     #[default]
     All,
 }

@@ -43,6 +43,10 @@ async fn main() -> anyhow::Result<()> {
             println!("Indexing is an enterprise feature. Check out https://www.parseable.com/pricing to know more!");
             exit(0)
         }
+        Mode::Prism => {
+            println!("Prism is an enterprise feature. Check out https://www.parseable.com/pricing to know more!");
+            exit(0)
+        }
         Mode::All => Box::new(Server),
     };
 
