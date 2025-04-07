@@ -358,7 +358,7 @@ where
                 })
             }
 
-            Mode::Index => {
+            Mode::Index | Mode::Prism => {
                 let fut = self.service.call(req);
 
                 Box::pin(async move {

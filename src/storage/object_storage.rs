@@ -895,40 +895,36 @@ pub fn to_bytes(any: &(impl ?Sized + serde::Serialize)) -> Bytes {
 }
 
 pub fn schema_path(stream_name: &str) -> RelativePathBuf {
-    match &PARSEABLE.options.mode {
-        Mode::Ingest => {
-            let id = PARSEABLE
-                .ingestor_metadata
-                .as_ref()
-                .expect(INGESTOR_EXPECT)
-                .get_node_id();
-            let file_name = format!(".ingestor.{id}{SCHEMA_FILE_NAME}");
+    if PARSEABLE.options.mode == Mode::Ingest {
+        let id = PARSEABLE
+            .ingestor_metadata
+            .as_ref()
+            .expect(INGESTOR_EXPECT)
+            .get_node_id();
+        let file_name = format!(".ingestor.{id}{SCHEMA_FILE_NAME}");
 
-            RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, &file_name])
-        }
-        Mode::All | Mode::Query | Mode::Index => {
-            RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME])
-        }
+        RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, &file_name])
+    } else {
+        RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME])
     }
 }
 
 #[inline(always)]
 pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
-    match &PARSEABLE.options.mode {
-        Mode::Ingest => {
-            let id = PARSEABLE
-                .ingestor_metadata
-                .as_ref()
-                .expect(INGESTOR_EXPECT)
-                .get_node_id();
-            let file_name = format!(".ingestor.{id}{STREAM_METADATA_FILE_NAME}",);
-            RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, &file_name])
-        }
-        Mode::Query | Mode::All | Mode::Index => RelativePathBuf::from_iter([
+    if PARSEABLE.options.mode == Mode::Ingest {
+        let id = PARSEABLE
+            .ingestor_metadata
+            .as_ref()
+            .expect(INGESTOR_EXPECT)
+            .get_node_id();
+        let file_name = format!(".ingestor.{id}{STREAM_METADATA_FILE_NAME}",);
+        RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, &file_name])
+    } else {
+        RelativePathBuf::from_iter([
             stream_name,
             STREAM_ROOT_DIRECTORY,
             STREAM_METADATA_FILE_NAME,
-        ]),
+        ])
     }
 }
 

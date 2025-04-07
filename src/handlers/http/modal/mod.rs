@@ -230,11 +230,7 @@ impl NodeType {
 
 impl fmt::Display for NodeType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            NodeType::Ingestor => write!(f, "ingestor"),
-            NodeType::Indexer => write!(f, "indexer"),
-            NodeType::Querier => write!(f, "querier"),
-        }
+        write!(f, "{}", self.as_str())
     }
 }
 

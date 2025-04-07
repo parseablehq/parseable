@@ -282,6 +282,7 @@ impl Parseable {
             Mode::Query => "Distributed (Query)",
             Mode::Ingest => "Distributed (Ingest)",
             Mode::Index => "Distributed (Index)",
+            Mode::Prism => "Distributed (Prism)",
             Mode::All => "Standalone",
         }
     }
