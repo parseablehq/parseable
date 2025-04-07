@@ -18,12 +18,15 @@
 
 use arrow_array::{Float64Array, Int64Array, RecordBatch};
 use datafusion::{
-    common::tree_node::TreeNode, functions_aggregate::{
+    common::tree_node::TreeNode,
+    functions_aggregate::{
         count::count,
         expr_fn::avg,
         min_max::{max, min},
         sum::sum,
-    }, logical_expr::{BinaryExpr, Operator}, prelude::{col, lit, DataFrame, Expr}
+    },
+    logical_expr::{BinaryExpr, Literal, Operator},
+    prelude::{col, lit, DataFrame, Expr},
 };
 use tracing::trace;
 
@@ -40,7 +43,8 @@ use crate::{
 };
 
 use super::{
-    AggregateConfig, AggregateFunction, AggregateResult, Aggregates, AlertConfig, AlertError, AlertOperator, AlertState, ConditionConfig, Conditions, WhereConfigOperator, ALERTS
+    AggregateConfig, AggregateFunction, AggregateResult, Aggregates, AlertConfig, AlertError,
+    AlertOperator, AlertState, ConditionConfig, Conditions, WhereConfigOperator, ALERTS,
 };
 
 async fn get_tables_from_query(query: &str) -> Result<TableScanVisitor, AlertError> {
@@ -99,7 +103,7 @@ pub async fn evaluate_alert(alert: &AlertConfig) -> Result<(), AlertError> {
     trace!("RUNNING EVAL TASK FOR- {alert:?}");
 
     let query = prepare_query(alert).await?;
-    let select_query = format!("SELECT * FROM {}", alert.stream);
+    let select_query = alert.get_base_query();
     let base_df = execute_base_query(&query, &select_query).await?;
     let agg_results = evaluate_aggregates(&alert.aggregates, &base_df).await?;
     let final_res = calculate_final_result(&alert.aggregates, &agg_results);
@@ -114,7 +118,7 @@ async fn prepare_query(alert: &AlertConfig) -> Result<crate::query::Query, Alert
     };
 
     let session_state = QUERY_SESSION.state();
-    let select_query = format!("SELECT * FROM {}", alert.stream);
+    let select_query = alert.get_base_query();
     let raw_logical_plan = session_state.create_logical_plan(&select_query).await?;
 
     let time_range = TimeRange::parse_human_time(start_time, end_time)
@@ -186,7 +190,7 @@ async fn evaluate_single_aggregate(
         agg.conditions
             .as_ref()
             .map(|config| config.generate_filter_message())
-            .or(Some(String::default()))
+            .or(None)
     } else {
         None
     };
@@ -207,7 +211,6 @@ fn evaluate_condition(operator: &AlertOperator, actual: f64, expected: f64) -> b
         AlertOperator::NotEqual => actual != expected,
         AlertOperator::GreaterThanOrEqual => actual >= expected,
         AlertOperator::LessThanOrEqual => actual <= expected,
-        _ => unreachable!(),
     }
 }
 
@@ -225,8 +228,12 @@ async fn update_alert_state(
     agg_results: &[AggregateResult],
 ) -> Result<(), AlertError> {
     if final_res {
-        trace!("ALERT!!!!!!");
         let message = format_alert_message(agg_results);
+        let message = format!(
+            "{message}\nEvaluation Window: {}\nEvaluation Frequency: {}m",
+            alert.get_eval_window(),
+            alert.get_eval_frequency()
+        );
         ALERTS
             .update_state(alert.id, AlertState::Triggered, Some(message))
             .await
@@ -246,7 +253,7 @@ fn format_alert_message(agg_results: &[AggregateResult]) -> String {
     for result in agg_results {
         if let Some(msg) = &result.message {
             message.extend([format!(
-                "|{}({}) WHERE ({}) {} {} (ActualValue: {})|",
+                "\nCondition: {}({}) WHERE ({}) {} {}\nActualValue: {}\n",
                 result.config.aggregate_function,
                 result.config.column,
                 msg,
@@ -256,7 +263,7 @@ fn format_alert_message(agg_results: &[AggregateResult]) -> String {
             )]);
         } else {
             message.extend([format!(
-                "|{}({}) {} {} (ActualValue: {})",
+                "\nCondition: {}({}) {} {}\nActualValue: {}\n",
                 result.config.aggregate_function,
                 result.config.column,
                 result.config.operator,
@@ -383,63 +390,79 @@ fn get_filter_expr(where_clause: &Conditions) -> Expr {
 }
 
 fn match_alert_operator(expr: &ConditionConfig) -> Expr {
+    // the form accepts value as a string
+    // if it can be parsed as a number, then parse it
+    // else keep it as a string
+    let value = NumberOrString::from_string(expr.value.clone());
+
+    // for maintaining column case
+    let column = format!(r#""{}""#, expr.column);
     match expr.operator {
-        WhereConfigOperator::Equal => col(&expr.column).eq(lit(&expr.value)),
-        WhereConfigOperator::NotEqual => col(&expr.column).not_eq(lit(&expr.value)),
-        WhereConfigOperator::LessThan => col(&expr.column).lt(lit(&expr.value)),
-        WhereConfigOperator::GreaterThan => col(&expr.column).gt(lit(&expr.value)),
-        WhereConfigOperator::LessThanOrEqual => col(&expr.column).lt_eq(lit(&expr.value)),
-        WhereConfigOperator::GreaterThanOrEqual => col(&expr.column).gt_eq(lit(&expr.value)),
-        WhereConfigOperator::IsNull => col(&expr.column).is_null(),
-        WhereConfigOperator::IsNotNull => col(&expr.column).is_not_null(),
-        WhereConfigOperator::ILike => col(&expr.column).ilike(lit(&expr.value)),
-        WhereConfigOperator::Contains => col(&expr.column).like(lit(&expr.value)),
-        WhereConfigOperator::BeginsWith => {
-            Expr::BinaryExpr(
-                BinaryExpr::new(
-                    Box::new(col(&expr.column)),
-                    Operator::RegexIMatch,
-                    Box::new(lit(format!("^{}", expr.value)))
-                )
-            )
-        },
-        WhereConfigOperator::EndsWith => {
-            Expr::BinaryExpr(
-                BinaryExpr::new(
-                    Box::new(col(&expr.column)),
-                    Operator::RegexIMatch,
-                    Box::new(lit(format!("{}$", expr.value)))
-                )
-            )
-        },
-        WhereConfigOperator::DoesNotContain => col(&expr.column).not_ilike(lit(&expr.value)),
-        WhereConfigOperator::DoesNotBeginWith => {
-            Expr::BinaryExpr(
-                BinaryExpr::new(
-                    Box::new(col(&expr.column)),
-                    Operator::RegexNotIMatch,
-                    Box::new(lit(format!("^{}", expr.value)))
-                )
-            )
-        },
-        WhereConfigOperator::DoesNotEndWith => {
-            Expr::BinaryExpr(
-                BinaryExpr::new(
-                    Box::new(col(&expr.column)),
-                    Operator::RegexNotIMatch,
-                    Box::new(lit(format!("{}$", expr.value)))
-                )
-            )
-        },
+        WhereConfigOperator::Equal => col(column).eq(lit(value)),
+        WhereConfigOperator::NotEqual => col(column).not_eq(lit(value)),
+        WhereConfigOperator::LessThan => col(column).lt(lit(value)),
+        WhereConfigOperator::GreaterThan => col(column).gt(lit(value)),
+        WhereConfigOperator::LessThanOrEqual => col(column).lt_eq(lit(value)),
+        WhereConfigOperator::GreaterThanOrEqual => col(column).gt_eq(lit(value)),
+        WhereConfigOperator::IsNull => col(column).is_null(),
+        WhereConfigOperator::IsNotNull => col(column).is_not_null(),
+        WhereConfigOperator::ILike => col(column).ilike(lit(&expr.value)),
+        WhereConfigOperator::Contains => col(column).like(lit(&expr.value)),
+        WhereConfigOperator::BeginsWith => Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(col(column)),
+            Operator::RegexIMatch,
+            Box::new(lit(format!("^{}", expr.value))),
+        )),
+        WhereConfigOperator::EndsWith => Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(col(column)),
+            Operator::RegexIMatch,
+            Box::new(lit(format!("{}$", expr.value))),
+        )),
+        WhereConfigOperator::DoesNotContain => col(column).not_ilike(lit(&expr.value)),
+        WhereConfigOperator::DoesNotBeginWith => Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(col(column)),
+            Operator::RegexNotIMatch,
+            Box::new(lit(format!("^{}", expr.value))),
+        )),
+        WhereConfigOperator::DoesNotEndWith => Expr::BinaryExpr(BinaryExpr::new(
+            Box::new(col(column)),
+            Operator::RegexNotIMatch,
+            Box::new(lit(format!("{}$", expr.value))),
+        )),
     }
 }
 
 fn match_aggregate_operation(agg: &AggregateConfig) -> Expr {
+    // for maintaining column case
+    let column = format!(r#""{}""#, agg.column);
     match agg.aggregate_function {
-        AggregateFunction::Avg => avg(col(&agg.column)),
-        AggregateFunction::Count => count(col(&agg.column)),
-        AggregateFunction::Min => min(col(&agg.column)),
-        AggregateFunction::Max => max(col(&agg.column)),
-        AggregateFunction::Sum => sum(col(&agg.column)),
+        AggregateFunction::Avg => avg(col(column)),
+        AggregateFunction::Count => count(col(column)),
+        AggregateFunction::Min => min(col(column)),
+        AggregateFunction::Max => max(col(column)),
+        AggregateFunction::Sum => sum(col(column)),
+    }
+}
+
+enum NumberOrString {
+    Number(f64),
+    String(String),
+}
+
+impl Literal for NumberOrString {
+    fn lit(&self) -> Expr {
+        match self {
+            NumberOrString::Number(expr) => lit(*expr),
+            NumberOrString::String(expr) => lit(expr.clone()),
+        }
+    }
+}
+impl NumberOrString {
+    fn from_string(value: String) -> Self {
+        if let Ok(num) = value.parse::<f64>() {
+            NumberOrString::Number(num)
+        } else {
+            NumberOrString::String(value)
+        }
     }
 }

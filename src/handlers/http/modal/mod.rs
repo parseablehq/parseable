@@ -34,7 +34,6 @@ use tokio::sync::oneshot;
 use tracing::{error, info, warn};
 
 use crate::{
-    alerts::ALERTS,
     cli::Options,
     correlation::CORRELATIONS,
     oidc::Claims,
@@ -166,7 +165,7 @@ pub trait ParseableServer {
 
 pub async fn load_on_init() -> anyhow::Result<()> {
     // Run all loading operations concurrently
-    let (correlations_result, filters_result, dashboards_result, alerts_result) = future::join4(
+    let (correlations_result, filters_result, dashboards_result) = future::join3(
         async {
             CORRELATIONS
                 .load()
@@ -175,7 +174,6 @@ pub async fn load_on_init() -> anyhow::Result<()> {
         },
         async { FILTERS.load().await.context("Failed to load filters") },
         async { DASHBOARDS.load().await.context("Failed to load dashboards") },
-        async { ALERTS.load().await.context("Failed to load alerts") },
     )
     .await;
 
@@ -189,10 +187,6 @@ pub async fn load_on_init() -> anyhow::Result<()> {
     }
 
     if let Err(err) = dashboards_result {
-        error!("{err}");
-    }
-
-    if let Err(err) = alerts_result {
         error!("{err}");
     }
 

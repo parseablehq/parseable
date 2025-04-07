@@ -228,19 +228,16 @@ impl Server {
             .service(
                 web::resource("/{alert_id}")
                     .route(web::get().to(alerts::get).authorize(Action::GetAlert))
-                    .route(web::put().to(alerts::modify).authorize(Action::PutAlert))
+                    .route(
+                        web::put()
+                            .to(alerts::update_state)
+                            .authorize(Action::PutAlert),
+                    )
                     .route(
                         web::delete()
                             .to(alerts::delete)
                             .authorize(Action::DeleteAlert),
                     ),
-            )
-            .service(
-                web::resource("/{alert_id}/update_state").route(
-                    web::put()
-                        .to(alerts::update_state)
-                        .authorize(Action::PutAlert),
-                ),
             )
     }
 

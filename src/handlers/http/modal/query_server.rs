@@ -18,6 +18,7 @@
 
 use std::thread;
 
+use crate::alerts::ALERTS;
 use crate::handlers::airplane;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
@@ -33,7 +34,7 @@ use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::oneshot;
-use tracing::info;
+use tracing::{error, info};
 
 use crate::parseable::PARSEABLE;
 use crate::Server;
@@ -126,6 +127,17 @@ impl ParseableServer for QueryServer {
         // Run sync on a background thread
         let (cancel_tx, cancel_rx) = oneshot::channel();
         thread::spawn(|| sync::handler(cancel_rx));
+
+        // Run the alerts scheduler
+        tokio::spawn(async {
+            match ALERTS.load().await {
+                Ok(_) => info!("Alerts loaded successfully"),
+                Err(e) => {
+                    error!("Failed to load alerts: {}", e);
+                    // return Err(e);
+                }
+            };
+        });
 
         tokio::spawn(airplane::server());
 

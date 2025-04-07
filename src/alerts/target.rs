@@ -35,7 +35,7 @@ use super::ALERTS;
 use super::{AlertState, CallableTarget, Context};
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "camelCase")]
 #[serde(untagged)]
 pub enum Retry {
     Infinite,
@@ -49,7 +49,7 @@ impl Default for Retry {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "camelCase")]
 #[serde(try_from = "TargetVerifier")]
 pub struct Target {
     #[serde(flatten)]
@@ -186,7 +186,7 @@ pub struct RepeatVerifier {
 }
 
 #[derive(Debug, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "camelCase")]
 pub struct TargetVerifier {
     #[serde(flatten)]
     pub target: TargetType,
@@ -229,13 +229,15 @@ impl TryFrom<TargetVerifier> for Target {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "camelCase")]
 #[serde(tag = "type")]
 #[serde(deny_unknown_fields)]
 pub enum TargetType {
+    #[serde(rename = "slack")]
     Slack(SlackWebHook),
     #[serde(rename = "webhook")]
     Other(OtherWebHook),
+    #[serde(rename = "alertManager")]
     AlertManager(AlertManager),
 }
 
@@ -284,7 +286,7 @@ impl CallableTarget for SlackWebHook {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "camelCase")]
 pub struct OtherWebHook {
     endpoint: String,
     #[serde(default)]
@@ -322,6 +324,7 @@ impl CallableTarget for OtherWebHook {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AlertManager {
     endpoint: String,
     #[serde(default)]

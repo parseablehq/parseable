@@ -20,16 +20,17 @@ use actix_web::http::header::ContentType;
 use alerts_utils::user_auth_for_query;
 use async_trait::async_trait;
 use chrono::Utc;
-use datafusion::common::tree_node::TreeNode;
+use derive_more::derive::FromStr;
+use derive_more::FromStrError;
 use http::StatusCode;
-use itertools::Itertools;
 use once_cell::sync::Lazy;
 use serde::Serialize;
 use serde_json::Error as SerdeError;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
-use tokio::sync::oneshot::{self, Receiver, Sender};
-use tokio::sync::RwLock;
+use std::thread;
+use tokio::sync::oneshot::{Receiver, Sender};
+use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{trace, warn};
 use ulid::Ulid;
@@ -38,12 +39,10 @@ pub mod alerts_utils;
 pub mod target;
 
 use crate::parseable::{StreamNotFound, PARSEABLE};
-use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::map::SessionKey;
 use crate::storage;
 use crate::storage::ObjectStorageError;
-use crate::sync::schedule_alert_task;
-use crate::utils::time::TimeRange;
+use crate::sync::alert_runtime;
 
 use self::target::Target;
 
@@ -52,12 +51,27 @@ pub type ScheduledTaskHandlers = (JoinHandle<()>, Receiver<()>, Sender<()>);
 
 pub const CURRENT_ALERTS_VERSION: &str = "v1";
 
-pub static ALERTS: Lazy<Alerts> = Lazy::new(Alerts::default);
+pub static ALERTS: Lazy<Alerts> = Lazy::new(|| {
+    let (tx, rx) = mpsc::channel::<AlertTask>(1);
+    let alerts = Alerts {
+        alerts: RwLock::new(HashMap::new()),
+        sender: tx,
+    };
 
-#[derive(Debug, Default)]
+    thread::spawn(|| alert_runtime(rx));
+
+    alerts
+});
+
+#[derive(Debug)]
 pub struct Alerts {
     pub alerts: RwLock<HashMap<Ulid, AlertConfig>>,
-    pub scheduled_tasks: RwLock<HashMap<Ulid, ScheduledTaskHandlers>>,
+    pub sender: mpsc::Sender<AlertTask>,
+}
+
+pub enum AlertTask {
+    Create(AlertConfig),
+    Delete(Ulid),
 }
 
 #[derive(Default, Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -76,6 +90,7 @@ impl From<&str> for AlertVerison {
     }
 }
 
+#[derive(Debug)]
 pub struct AggregateResult {
     result: bool,
     message: Option<String>,
@@ -106,7 +121,7 @@ impl Context {
 
     fn default_alert_string(&self) -> String {
         format!(
-            "AlertName: {}, Triggered TimeStamp: {}, Severity: {}, Message: {}",
+            "AlertName: {}\nTriggered TimeStamp: {}\nSeverity: {}\n{}",
             self.alert_info.alert_name,
             Utc::now().to_rfc3339(),
             self.alert_info.severity,
@@ -190,10 +205,6 @@ pub enum AlertOperator {
     GreaterThanOrEqual,
     #[serde(rename = "<=")]
     LessThanOrEqual,
-    #[serde(rename = "is null")]
-    IsNull,
-    #[serde(rename = "is not null")]
-    IsNotNull,
 }
 
 impl Display for AlertOperator {
@@ -205,13 +216,11 @@ impl Display for AlertOperator {
             AlertOperator::NotEqual => write!(f, "!="),
             AlertOperator::GreaterThanOrEqual => write!(f, ">="),
             AlertOperator::LessThanOrEqual => write!(f, "<="),
-            AlertOperator::IsNull => write!(f, "is null"),
-            AlertOperator::IsNotNull => write!(f, "is not null"),
         }
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, FromStr)]
 #[serde(rename_all = "camelCase")]
 pub enum WhereConfigOperator {
     #[serde(rename = "=")]
@@ -265,28 +274,6 @@ impl WhereConfigOperator {
             Self::DoesNotContain => "does not contain",
             Self::DoesNotBeginWith => "does not begin with",
             Self::DoesNotEndWith => "does not end with",
-        }
-    }
-
-    /// Parse a string to create the enum value
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s {
-            "=" => Some(Self::Equal),
-            "!=" => Some(Self::NotEqual),
-            "<" => Some(Self::LessThan),
-            ">" => Some(Self::GreaterThan),
-            "<=" => Some(Self::LessThanOrEqual),
-            ">=" => Some(Self::GreaterThanOrEqual),
-            "is null" => Some(Self::IsNull),
-            "is not null" => Some(Self::IsNotNull),
-            "ilike" => Some(Self::ILike),
-            "contains" => Some(Self::Contains),
-            "begins with" => Some(Self::BeginsWith),
-            "ends with" => Some(Self::EndsWith),
-            "does not contain" => Some(Self::DoesNotContain),
-            "does not begin with" => Some(Self::DoesNotBeginWith),
-            "does not end with" => Some(Self::DoesNotEndWith),
-            _ => None,
         }
     }
 }
@@ -355,7 +342,7 @@ impl Conditions {
                     let expr1 = &self.condition_config[0];
                     let expr2 = &self.condition_config[1];
                     format!(
-                        "[{} {} {} AND {} {} {}]",
+                        "[{} {} {} {op} {} {} {}]",
                         expr1.column,
                         expr1.operator,
                         expr1.value,
@@ -404,6 +391,15 @@ pub enum LogicalOperator {
     Or,
 }
 
+impl Display for LogicalOperator {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LogicalOperator::And => write!(f, "AND"),
+            LogicalOperator::Or => write!(f, "OR"),
+        }
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct RollingWindow {
@@ -425,7 +421,7 @@ pub enum EvalConfig {
 #[serde(rename_all = "camelCase")]
 pub struct AlertEval {}
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Default)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Default, FromStr)]
 #[serde(rename_all = "camelCase")]
 pub enum AlertState {
     Triggered,
@@ -441,6 +437,46 @@ impl Display for AlertState {
             AlertState::Silenced => write!(f, "Silenced"),
             AlertState::Resolved => write!(f, "Resolved"),
         }
+    }
+}
+
+impl AlertState {
+    pub async fn update_state(
+        &self,
+        new_state: AlertState,
+        alert_id: Ulid,
+    ) -> Result<(), AlertError> {
+        match self {
+            AlertState::Triggered => {
+                if new_state == AlertState::Triggered {
+                    let msg = format!("Not allowed to manually go from Triggered to {new_state}");
+                    return Err(AlertError::InvalidStateChange(msg));
+                } else {
+                    // update state on disk and in memory
+                    ALERTS
+                        .update_state(alert_id, new_state, Some("".into()))
+                        .await?;
+                }
+            }
+            AlertState::Silenced => {
+                // from here, the user can only go to Resolved
+                if new_state == AlertState::Resolved {
+                    // update state on disk and in memory
+                    ALERTS
+                        .update_state(alert_id, new_state, Some("".into()))
+                        .await?;
+                } else {
+                    let msg = format!("Not allowed to manually go from Silenced to {new_state}");
+                    return Err(AlertError::InvalidStateChange(msg));
+                }
+            }
+            AlertState::Resolved => {
+                // user shouldn't logically be changing states if current state is Resolved
+                let msg = format!("Not allowed to go manually from Resolved to {new_state}");
+                return Err(AlertError::InvalidStateChange(msg));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -524,6 +560,10 @@ impl AlertConfig {
         self.state = AlertState::default();
     }
 
+    pub fn get_base_query(&self) -> String {
+        format!("SELECT * FROM \"{}\"", self.stream)
+    }
+
     /// Validations
     pub async fn validate(&self) -> Result<(), AlertError> {
         // validate evalType
@@ -553,48 +593,29 @@ impl AlertConfig {
             }
         }
 
-        // validate aggregateCnnfig and conditionConfig
+        // validate aggregateConfig and conditionConfig
         self.validate_configs()?;
 
-        let session_state = QUERY_SESSION.state();
-        let select_query = format!("SELECT * FROM {}", self.stream);
-
-        let raw_logical_plan = session_state.create_logical_plan(&select_query).await?;
-
-        // create a visitor to extract the table names present in query
-        let mut visitor = TableScanVisitor::default();
-        let _ = raw_logical_plan.visit(&mut visitor);
-
-        // TODO: Filter tags should be taken care of!!!
-        let time_range = TimeRange::parse_human_time("1m", "now")
-            .map_err(|err| AlertError::CustomError(err.to_string()))?;
-
-        let query = crate::query::Query {
-            raw_logical_plan,
-            time_range,
-            filter_tag: None,
-        };
-
-        // for now proceed in a similar fashion as we do in query
-        // TODO: in case of multiple table query does the selection of time partition make a difference? (especially when the tables don't have overlapping data)
-        let Some(stream_name) = query.first_table_name() else {
-            return Err(AlertError::CustomError(format!(
-                "Table name not found in query- {}",
-                select_query
-            )));
-        };
-
-        let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
-        let base_df = query
-            .get_dataframe(time_partition.as_ref())
-            .await
-            .map_err(|err| AlertError::CustomError(err.to_string()))?;
-
-        // now that we have base_df, verify that it has
-        // columns from aggregate config
+        // validate the presence of columns
         let columns = self.get_agg_config_cols();
 
-        base_df.select_columns(columns.iter().map(|c| c.as_str()).collect_vec().as_slice())?;
+        let schema = PARSEABLE.get_stream(&self.stream)?.get_schema();
+
+        let schema_columns = schema
+            .fields()
+            .iter()
+            .map(|f| f.name())
+            .collect::<HashSet<&String>>();
+
+        for col in columns {
+            if !schema_columns.contains(col) {
+                return Err(AlertError::CustomError(format!(
+                    "Column {} not found in stream {}",
+                    col, self.stream
+                )));
+            }
+        }
+
         Ok(())
     }
 
@@ -609,7 +630,7 @@ impl AlertConfig {
                     // only two aggregate conditions should be present
                     if config.condition_config.len() != 2 {
                         return Err(AlertError::CustomError(
-                            "While using AND/OR, two conditions must be used".to_string(),
+                            "While using AND/OR, only two conditions must be used".to_string(),
                         ));
                     }
                 }
@@ -617,7 +638,7 @@ impl AlertConfig {
                     // only one aggregate condition should be present
                     if config.condition_config.len() != 1 {
                         return Err(AlertError::CustomError(
-                            "While not using AND/OR, one conditions must be used".to_string(),
+                            "While not using AND/OR, only one condition must be used".to_string(),
                         ));
                     }
                 }
@@ -631,7 +652,8 @@ impl AlertConfig {
                 // only two aggregate conditions should be present
                 if self.aggregates.aggregate_config.len() != 2 {
                     return Err(AlertError::CustomError(
-                        "While using AND/OR, two aggregateConditions must be used".to_string(),
+                        "While using AND/OR, only two aggregate conditions must be used"
+                            .to_string(),
                     ));
                 }
 
@@ -646,7 +668,8 @@ impl AlertConfig {
                 // only one aggregate condition should be present
                 if self.aggregates.aggregate_config.len() != 1 {
                     return Err(AlertError::CustomError(
-                        "While not using AND/OR, one aggregateConditions must be used".to_string(),
+                        "While not using AND/OR, only one aggregate condition must be used"
+                            .to_string(),
                     ));
                 }
 
@@ -709,6 +732,14 @@ impl AlertConfig {
             EvalConfig::RollingWindow(rolling_window) => rolling_window.eval_frequency,
         }
     }
+    pub fn get_eval_window(&self) -> String {
+        match &self.eval_config {
+            EvalConfig::RollingWindow(rolling_window) => format!(
+                "Start={}\tEnd={}",
+                rolling_window.eval_start, rolling_window.eval_end
+            ),
+        }
+    }
 
     fn get_context(&self) -> Context {
         let deployment_instance = format!(
@@ -718,12 +749,6 @@ impl AlertConfig {
         );
         let deployment_id = storage::StorageMetadata::global().deployment_id;
         let deployment_mode = storage::StorageMetadata::global().mode.to_string();
-
-        // let additional_labels =
-        //     serde_json::to_value(rule).expect("rule is perfectly deserializable");
-        // let flatten_additional_labels =
-        //     utils::json::flatten::flatten_with_parent_prefix(additional_labels, "rule", "_")
-        //         .expect("can be flattened");
 
         Context::new(
             AlertInfo::new(
@@ -770,6 +795,10 @@ pub enum AlertError {
     StreamNotFound(#[from] StreamNotFound),
     #[error("{0}")]
     Anyhow(#[from] anyhow::Error),
+    #[error("No alert request body provided")]
+    InvalidAlertModifyRequest,
+    #[error("{0}")]
+    FromStrError(#[from] FromStrError),
 }
 
 impl actix_web::ResponseError for AlertError {
@@ -785,6 +814,8 @@ impl actix_web::ResponseError for AlertError {
             Self::InvalidStateChange(_) => StatusCode::BAD_REQUEST,
             Self::StreamNotFound(_) => StatusCode::NOT_FOUND,
             Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::InvalidAlertModifyRequest => StatusCode::BAD_REQUEST,
+            Self::FromStrError(_) => StatusCode::BAD_REQUEST,
         }
     }
 
@@ -802,19 +833,7 @@ impl Alerts {
         let store = PARSEABLE.storage.get_object_store();
 
         for alert in store.get_alerts().await.unwrap_or_default() {
-            let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
-            let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
-            let handle = schedule_alert_task(
-                alert.get_eval_frequency(),
-                alert.clone(),
-                inbox_rx,
-                outbox_tx,
-            )
-            .map_err(|e| anyhow::Error::msg(e.to_string()))?;
-
-            self.update_task(alert.id, handle, outbox_rx, inbox_tx)
-                .await;
-
+            self.sender.send(AlertTask::Create(alert.clone())).await?;
             map.insert(alert.id, alert);
         }
 
@@ -829,7 +848,7 @@ impl Alerts {
         let mut alerts: Vec<AlertConfig> = Vec::new();
         for (_, alert) in self.alerts.read().await.iter() {
             // filter based on whether the user can execute this query or not
-            let query = format!("SELECT * from {}", &alert.stream);
+            let query = alert.get_base_query();
             if user_auth_for_query(&session, &query).await.is_ok() {
                 alerts.push(alert.to_owned());
             }
@@ -914,31 +933,21 @@ impl Alerts {
         }
     }
 
-    /// Update the scheduled alert tasks in-memory map
-    pub async fn update_task(
-        &self,
-        id: Ulid,
-        handle: JoinHandle<()>,
-        rx: Receiver<()>,
-        tx: Sender<()>,
-    ) {
-        self.scheduled_tasks
-            .write()
+    /// Start a scheduled alert task
+    pub async fn start_task(&self, alert: AlertConfig) -> Result<(), AlertError> {
+        self.sender
+            .send(AlertTask::Create(alert))
             .await
-            .insert(id, (handle, rx, tx));
+            .map_err(|e| AlertError::CustomError(e.to_string()))?;
+        Ok(())
     }
 
     /// Remove a scheduled alert task
     pub async fn delete_task(&self, alert_id: Ulid) -> Result<(), AlertError> {
-        if self
-            .scheduled_tasks
-            .write()
+        self.sender
+            .send(AlertTask::Delete(alert_id))
             .await
-            .remove(&alert_id)
-            .is_none()
-        {
-            trace!("Alert task {alert_id} not found in hashmap");
-        }
+            .map_err(|e| AlertError::CustomError(e.to_string()))?;
 
         Ok(())
     }

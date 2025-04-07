@@ -16,8 +16,12 @@
  *
  */
 
+use std::str::FromStr;
+
 use crate::{
-    parseable::PARSEABLE, storage::object_storage::alert_json_path, sync::schedule_alert_task,
+    parseable::PARSEABLE,
+    storage::object_storage::alert_json_path,
+    // sync::schedule_alert_task,
     utils::actix::extract_session_key_from_req,
 };
 use actix_web::{
@@ -25,7 +29,6 @@ use actix_web::{
     HttpRequest, Responder,
 };
 use bytes::Bytes;
-use tokio::sync::oneshot;
 use ulid::Ulid;
 
 use crate::alerts::{
@@ -53,18 +56,8 @@ pub async fn post(
     // validate the incoming alert query
     // does the user have access to these tables or not?
     let session_key = extract_session_key_from_req(&req)?;
-    let query = format!("SELECT * FROM {}", alert.stream);
+    let query = alert.get_base_query();
     user_auth_for_query(&session_key, &query).await?;
-
-    // create scheduled tasks
-    let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
-    let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
-    let handle = schedule_alert_task(
-        alert.get_eval_frequency(),
-        alert.clone(),
-        inbox_rx,
-        outbox_tx,
-    )?;
 
     // now that we've validated that the user can run this query
     // move on to saving the alert in ObjectStore
@@ -76,9 +69,8 @@ pub async fn post(
     let alert_bytes = serde_json::to_vec(&alert)?;
     store.put_object(&path, Bytes::from(alert_bytes)).await?;
 
-    ALERTS
-        .update_task(alert.id, handle, outbox_rx, inbox_tx)
-        .await;
+    // start the task
+    ALERTS.start_task(alert.clone()).await?;
 
     Ok(web::Json(alert))
 }
@@ -90,7 +82,7 @@ pub async fn get(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Responde
 
     let alert = ALERTS.get_alert_by_id(alert_id).await?;
     // validate that the user has access to the tables mentioned
-    let query = format!("SELECT * FROM {}", alert.stream);
+    let query = alert.get_base_query();
     user_auth_for_query(&session_key, &query).await?;
 
     Ok(web::Json(alert))
@@ -105,19 +97,19 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
     let alert = ALERTS.get_alert_by_id(alert_id).await?;
 
     // validate that the user has access to the tables mentioned
-    let query = format!("SELECT * FROM {}", alert.stream);
+    let query = alert.get_base_query();
     user_auth_for_query(&session_key, &query).await?;
 
     let store = PARSEABLE.storage.get_object_store();
     let alert_path = alert_json_path(alert_id);
 
-    // delete from disk
+    // delete from Object Store
     store
         .delete_object(&alert_path)
         .await
         .map_err(AlertError::ObjectStorage)?;
 
-    // delete from disk and memory
+    // delete from memory
     ALERTS.delete(alert_id).await?;
 
     // delete the scheduled task
@@ -129,104 +121,42 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
 // PUT /alerts/{alert_id}
 /// first save on disk, then in memory
 /// then modify scheduled task
-pub async fn modify(
-    req: HttpRequest,
-    alert_id: Path<Ulid>,
-    Json(alert_request): Json<AlertRequest>,
-) -> Result<impl Responder, AlertError> {
-    let session_key = extract_session_key_from_req(&req)?;
-    let alert_id = alert_id.into_inner();
-
-    // check if alert id exists in map
-    let mut alert = ALERTS.get_alert_by_id(alert_id).await?;
-
-    // validate that the user has access to the tables mentioned
-    // in the old as well as the modified alert
-    let query = format!("SELECT * FROM {}", alert.stream);
-    user_auth_for_query(&session_key, &query).await?;
-    user_auth_for_query(&session_key, &alert_request.stream).await?;
-
-    alert.modify(alert_request);
-    alert.validate().await?;
-
-    // modify task
-    let (outbox_tx, outbox_rx) = oneshot::channel::<()>();
-    let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
-    let handle = schedule_alert_task(
-        alert.get_eval_frequency(),
-        alert.clone(),
-        inbox_rx,
-        outbox_tx,
-    )?;
-
-    // modify on disk
-    PARSEABLE
-        .storage
-        .get_object_store()
-        .put_alert(alert.id, &alert)
-        .await?;
-
-    // modify in memory
-    ALERTS.update(&alert).await;
-
-    ALERTS
-        .update_task(alert.id, handle, outbox_rx, inbox_tx)
-        .await;
-
-    Ok(web::Json(alert))
-}
-
-// PUT /alerts/{alert_id}/update_state
 pub async fn update_state(
     req: HttpRequest,
     alert_id: Path<Ulid>,
-    state: String,
 ) -> Result<impl Responder, AlertError> {
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
 
     // check if alert id exists in map
     let alert = ALERTS.get_alert_by_id(alert_id).await?;
-
     // validate that the user has access to the tables mentioned
-    let query = format!("SELECT * FROM {}", alert.stream);
+    let query = alert.get_base_query();
     user_auth_for_query(&session_key, &query).await?;
+
+    let query_string = req.query_string();
+
+    if query_string.is_empty() {
+        return Err(AlertError::InvalidStateChange(
+            "No query string provided".to_string(),
+        ));
+    }
+
+    let tokens = query_string.split('=').collect::<Vec<&str>>();
+    let state_key = tokens[0];
+    let state_value = tokens[1];
+    if state_key != "state" {
+        return Err(AlertError::InvalidStateChange(
+            "Invalid query parameter".to_string(),
+        ));
+    }
 
     // get current state
     let current_state = ALERTS.get_state(alert_id).await?;
 
-    let new_state: AlertState = serde_json::from_str(&state)?;
+    let new_state = AlertState::from_str(state_value)?;
 
-    match current_state {
-        AlertState::Triggered => {
-            if new_state == AlertState::Triggered {
-                let msg = format!("Not allowed to manually go from Triggered to {new_state}");
-                return Err(AlertError::InvalidStateChange(msg));
-            } else {
-                // update state on disk and in memory
-                ALERTS
-                    .update_state(alert_id, new_state, Some("".into()))
-                    .await?;
-            }
-        }
-        AlertState::Silenced => {
-            // from here, the user can only go to Resolved
-            if new_state == AlertState::Resolved {
-                // update state on disk and in memory
-                ALERTS
-                    .update_state(alert_id, new_state, Some("".into()))
-                    .await?;
-            } else {
-                let msg = format!("Not allowed to manually go from Silenced to {new_state}");
-                return Err(AlertError::InvalidStateChange(msg));
-            }
-        }
-        AlertState::Resolved => {
-            // user shouldn't logically be changing states if current state is Resolved
-            let msg = format!("Not allowed to go manually from Resolved to {new_state}");
-            return Err(AlertError::InvalidStateChange(msg));
-        }
-    }
-
-    Ok("")
+    current_state.update_state(new_state, alert_id).await?;
+    let alert = ALERTS.get_alert_by_id(alert_id).await?;
+    Ok(web::Json(alert))
 }
