@@ -306,12 +306,22 @@ impl NodeMetadata {
         node_type_str: &str,
         options: &Options,
     ) -> Option<Self> {
-        let entries = staging_path
-            .read_dir()
-            .expect("Couldn't read from staging directory");
+        let entries = match staging_path.read_dir() {
+            Ok(entries) => entries,
+            Err(e) => {
+                error!("Couldn't read from staging directory: {}", e);
+                return None;
+            }
+        };
 
         for entry in entries {
-            let path = entry.expect("Should be a directory entry").path();
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(e) => {
+                    error!("Error reading directory entry: {}", e);
+                    continue;
+                }
+            };
             if !Self::is_valid_metadata_file(&path, node_type_str) {
                 continue;
             }
@@ -417,32 +427,31 @@ impl NodeMetadata {
         let version = json.get("version").and_then(|version| version.as_str());
 
         if version == Some("v3") {
-            if json.contains_key("ingestor_id") {
-                // Migration: get ingestor_id value, remove it, and add as node_id
-                if let Some(id) = json.remove("ingestor_id") {
-                    json.insert("node_id".to_string(), id);
+            fn migrate_legacy_id(
+                json: &mut Map<String, Value>,
+                legacy_id_key: &str,
+                node_type_str: &str,
+            ) -> bool {
+                if json.contains_key(legacy_id_key) {
+                    if let Some(id) = json.remove(legacy_id_key) {
+                        json.insert("node_id".to_string(), id);
+                        json.insert(
+                            "version".to_string(),
+                            Value::String(DEFAULT_VERSION.to_string()),
+                        );
+                    }
                     json.insert(
-                        "version".to_string(),
-                        Value::String(DEFAULT_VERSION.to_string()),
+                        "node_type".to_string(),
+                        Value::String(node_type_str.to_string()),
                     );
+                    true
+                } else {
+                    false
                 }
-                json.insert(
-                    "node_type".to_string(),
-                    Value::String("ingestor".to_string()),
-                );
-            } else if json.contains_key("indexer_id") {
-                // Migration: get indexer_id value, remove it, and add as node_id
-                if let Some(id) = json.remove("indexer_id") {
-                    json.insert("node_id".to_string(), id);
-                    json.insert(
-                        "version".to_string(),
-                        Value::String(DEFAULT_VERSION.to_string()),
-                    );
-                }
-                json.insert(
-                    "node_type".to_string(),
-                    Value::String("indexer".to_string()),
-                );
+            }
+
+            if !migrate_legacy_id(&mut json, "ingestor_id", "ingestor") {
+                migrate_legacy_id(&mut json, "indexer_id", "indexer");
             }
         }
         // Determine node type and perform migration if needed
