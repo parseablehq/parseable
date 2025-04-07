@@ -36,6 +36,7 @@ use crate::{
         http::{
             base_path_without_preceding_slash,
             cluster::{self, utils::check_liveness},
+            modal::NodeMetadata,
         },
         STREAM_NAME_HEADER_KEY,
     },
@@ -228,7 +229,7 @@ async fn fetch_ingestors_metrics(
         // send analytics for ingest servers
 
         // ingestor infos should be valid here, if not some thing is wrong
-        let ingestor_infos = cluster::get_ingestor_info().await.unwrap();
+        let ingestor_infos: Vec<NodeMetadata> = cluster::get_node_info("ingestor").await.unwrap();
 
         for im in ingestor_infos {
             if !check_liveness(&im.domain_name).await {

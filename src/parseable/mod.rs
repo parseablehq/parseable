@@ -49,7 +49,7 @@ use crate::{
             logstream::error::{CreateStreamError, StreamError},
             modal::{
                 utils::logstream_utils::PutStreamHeaders, IndexerMetadata, IngestorMetadata,
-                NodeType,
+                NodeType, QuerierMetadata,
             },
         },
         STREAM_TYPE_KEY,
@@ -130,6 +130,8 @@ pub struct Parseable {
     /// Metadata and staging realting to each logstreams
     /// A globally shared mapping of `Streams` that parseable is aware of.
     pub streams: Streams,
+    /// Metadata associated only with a querier
+    pub querier_metadata: Option<Arc<QuerierMetadata>>,
     /// Metadata associated only with an ingestor
     pub ingestor_metadata: Option<Arc<IngestorMetadata>>,
     /// Metadata associated only with an indexer
@@ -161,12 +163,21 @@ impl Parseable {
             )),
             _ => None,
         };
+        let querier_metadata = match &options.mode {
+            Mode::Query => Some(QuerierMetadata::load(
+                &options,
+                storage.as_ref(),
+                NodeType::Querier,
+            )),
+            _ => None,
+        };
         Parseable {
             options: Arc::new(options),
             storage,
             streams: Streams::default(),
             ingestor_metadata,
             indexer_metadata,
+            querier_metadata,
             #[cfg(feature = "kafka")]
             kafka_config,
         }
@@ -275,69 +286,41 @@ impl Parseable {
         }
     }
 
-    // create the ingestor metadata and put the .ingestor.json file in the object store
     pub async fn store_metadata(&self, mode: Mode) -> anyhow::Result<()> {
-        match mode {
-            Mode::Ingest => {
-                let Some(meta) = self.ingestor_metadata.as_ref() else {
-                    return Ok(());
-                };
-                let storage_ingestor_metadata = meta.migrate().await?;
-                let store = self.storage.get_object_store();
+        // Get the appropriate metadata based on mode
+        let meta_ref = match mode {
+            Mode::Ingest => self.ingestor_metadata.as_ref(),
+            Mode::Index => self.indexer_metadata.as_ref(),
+            Mode::Query => self.querier_metadata.as_ref(),
+            _ => return Err(anyhow::anyhow!("Invalid mode")),
+        };
 
-                // use the id that was generated/found in the staging and
-                // generate the path for the object store
-                let path = meta.file_path();
+        let Some(meta) = meta_ref else {
+            return Ok(());
+        };
 
-                // we are considering that we can always get from object store
-                if let Some(mut store_data) = storage_ingestor_metadata {
-                    if store_data.domain_name != meta.domain_name {
-                        store_data.domain_name.clone_from(&meta.domain_name);
-                        store_data.port.clone_from(&meta.port);
+        // Get storage metadata
+        let storage_metadata = meta.migrate().await?;
+        let store = self.storage.get_object_store();
+        let path = meta.file_path();
 
-                        let resource = Bytes::from(serde_json::to_vec(&store_data)?);
+        // Process metadata and store it
+        if let Some(mut store_data) = storage_metadata {
+            // Update domain and port if needed
+            if store_data.domain_name != meta.domain_name {
+                store_data.domain_name.clone_from(&meta.domain_name);
+                store_data.port.clone_from(&meta.port);
 
-                        // if pushing to object store fails propagate the error
-                        store.put_object(&path, resource).await?;
-                    }
-                } else {
-                    let resource = serde_json::to_vec(&meta)?.into();
-
-                    store.put_object(&path, resource).await?;
-                }
-                Ok(())
+                let resource = Bytes::from(serde_json::to_vec(&store_data)?);
+                store.put_object(&path, resource).await?;
             }
-            Mode::Index => {
-                let Some(meta) = self.indexer_metadata.as_ref() else {
-                    return Ok(());
-                };
-                let storage_indexer_metadata = meta.migrate().await?;
-                let store = self.storage.get_object_store();
-
-                // use the id that was generated/found in the staging and
-                // generate the path for the object store
-                let path = meta.file_path();
-
-                // we are considering that we can always get from object store
-                if let Some(mut store_data) = storage_indexer_metadata {
-                    if store_data.domain_name != meta.domain_name {
-                        store_data.domain_name.clone_from(&meta.domain_name);
-                        store_data.port.clone_from(&meta.port);
-
-                        let resource = Bytes::from(serde_json::to_vec(&store_data)?);
-
-                        // if pushing to object store fails propagate the error
-                        store.put_object(&path, resource).await?;
-                    }
-                } else {
-                    let resource = serde_json::to_vec(&meta)?.into();
-
-                    store.put_object(&path, resource).await?;
-                }
-                Ok(())
-            }
-            _ => Err(anyhow::anyhow!("Invalid mode")),
+        } else {
+            // Store new metadata
+            let resource = serde_json::to_vec(&meta)?.into();
+            store.put_object(&path, resource).await?;
         }
+
+        Ok(())
     }
 
     /// list all streams from storage

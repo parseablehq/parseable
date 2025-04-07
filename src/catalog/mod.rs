@@ -28,7 +28,10 @@ use tracing::{error, info};
 
 use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
-    handlers::{self, http::base_path_without_preceding_slash},
+    handlers::{
+        self,
+        http::{base_path_without_preceding_slash, modal::NodeMetadata},
+    },
     metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE},
     option::Mode,
     parseable::PARSEABLE,
@@ -406,8 +409,8 @@ pub async fn get_first_event(
             }
         }
         Mode::Query => {
-            let ingestor_metadata =
-                handlers::http::cluster::get_ingestor_info()
+            let ingestor_metadata: Vec<NodeMetadata> =
+                handlers::http::cluster::get_node_info("ingestor")
                     .await
                     .map_err(|err| {
                         error!("Fatal: failed to get ingestor info: {:?}", err);

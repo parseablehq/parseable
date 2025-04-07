@@ -33,7 +33,8 @@ use futures_util::{Future, TryFutureExt};
 use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic_web::GrpcWebLayer;
 
-use crate::handlers::http::cluster::get_ingestor_info;
+use crate::handlers::http::cluster::get_node_info;
+use crate::handlers::http::modal::NodeMetadata;
 use crate::handlers::http::query::{into_query, update_schema_when_distributed};
 use crate::handlers::livetail::cross_origin_config;
 use crate::metrics::QUERY_EXECUTE_TIME;
@@ -179,7 +180,7 @@ impl FlightService for AirServiceImpl {
             })
             .to_string();
 
-            let ingester_metadatas = get_ingestor_info()
+            let ingester_metadatas: Vec<NodeMetadata> = get_node_info("ingestor")
                 .await
                 .map_err(|err| Status::failed_precondition(err.to_string()))?;
             let mut minute_result: Vec<RecordBatch> = vec![];

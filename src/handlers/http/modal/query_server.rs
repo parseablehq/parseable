@@ -25,6 +25,7 @@ use crate::handlers::http::{base_path, prism_base_path};
 use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::handlers::http::{rbac, role};
 use crate::hottier::HotTierManager;
+use crate::option::Mode;
 use crate::rbac::role::Action;
 use crate::{analytics, migration, storage, sync};
 use actix_web::web::{resource, ServiceConfig};
@@ -128,6 +129,9 @@ impl ParseableServer for QueryServer {
         thread::spawn(|| sync::handler(cancel_rx));
 
         tokio::spawn(airplane::server());
+
+        // write the querier metadata to storage
+        PARSEABLE.store_metadata(Mode::Query).await?;
 
         let result = self
             .start(shutdown_rx, prometheus.clone(), PARSEABLE.options.openid())

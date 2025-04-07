@@ -16,7 +16,10 @@
  *
  */
 
-use crate::{handlers::http::base_path_without_preceding_slash, HTTP_CLIENT};
+use crate::{
+    handlers::http::{base_path_without_preceding_slash, modal::NodeType},
+    HTTP_CLIENT,
+};
 use actix_web::http::header;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -55,7 +58,7 @@ pub struct ClusterInfo {
     storage_path: String,
     error: Option<String>,  // error message if the ingestor is not reachable
     status: Option<String>, // status message if the ingestor is reachable
-    node_type: String,
+    node_type: NodeType,
 }
 
 impl ClusterInfo {
@@ -66,7 +69,7 @@ impl ClusterInfo {
         storage_path: String,
         error: Option<String>,
         status: Option<String>,
-        node_type: &str,
+        node_type: &NodeType,
     ) -> Self {
         Self {
             domain_name: domain_name.to_string(),
@@ -75,7 +78,7 @@ impl ClusterInfo {
             storage_path,
             error,
             status,
-            node_type: node_type.to_string(),
+            node_type: node_type.clone(),
         }
     }
 }

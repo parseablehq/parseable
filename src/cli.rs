@@ -328,6 +328,14 @@ pub struct Options {
     )]
     pub indexer_endpoint: String,
 
+    #[arg(
+        long,
+        env = "P_QUERIER_ENDPOINT",
+        default_value = "",
+        help = "URL to connect to this specific querier. Default is the address of the server"
+    )]
+    pub querier_endpoint: String,
+
     #[command(flatten)]
     pub oidc: Option<OidcConfig>,
 
@@ -469,6 +477,20 @@ impl Options {
                     });
                 }
                 (&self.indexer_endpoint, "P_INDEXER_ENDPOINT")
+            }
+            Mode::Query => {
+                if self.querier_endpoint.is_empty() {
+                    return format!(
+                        "{}://{}",
+                        self.get_scheme(),
+                        self.address
+                    )
+                    .parse::<Url>() // if the value was improperly set, this will panic before hand
+                    .unwrap_or_else(|err| {
+                        panic!("{err}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.", self.address)
+                    });
+                }
+                (&self.querier_endpoint, "P_QUERIER_ENDPOINT")
             }
             _ => panic!("Invalid mode"),
         };
