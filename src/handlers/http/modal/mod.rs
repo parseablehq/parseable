@@ -333,7 +333,7 @@ impl NodeMetadata {
     fn is_valid_metadata_file(path: &Path, node_type_str: &str) -> bool {
         path.file_name()
             .and_then(|s| s.to_str())
-            .map_or(false, |s| s.contains(node_type_str))
+            .is_some_and(|s| s.contains(node_type_str))
     }
 
     /// Update metadata fields if they differ from the current configuration
