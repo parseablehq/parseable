@@ -325,6 +325,8 @@ Description: {0}"#
     Anyhow(#[from] anyhow::Error),
     #[error("Error: {0}")]
     StreamNotFound(#[from] StreamNotFound),
+    #[error("SerdeJsonError: {0}")]
+    SerdeJsonError(#[from] serde_json::Error),
 }
 
 impl actix_web::ResponseError for QueryError {
