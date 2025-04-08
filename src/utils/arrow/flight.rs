@@ -133,7 +133,8 @@ pub fn send_to_ingester(start: i64, end: i64) -> bool {
     );
     let time_filters =
         extract_primary_filter(&[Expr::BinaryExpr(ex1), Expr::BinaryExpr(ex2)], &None);
-    PARSEABLE.options.mode == Mode::Query && is_within_staging_window(&time_filters)
+    (PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism)
+        && is_within_staging_window(&time_filters)
 }
 
 fn lit_timestamp_milli(time: i64) -> Expr {
