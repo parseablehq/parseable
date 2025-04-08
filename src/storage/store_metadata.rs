@@ -148,7 +148,7 @@ pub async fn resolve_parseable_metadata(
                             })?;
                             overwrite_remote = true;
                     },
-                    Mode::Query => {
+                    Mode::Query | Mode::Prism => {
                         overwrite_remote = true;
                         metadata.server_mode = PARSEABLE.options.mode;
                         metadata.staging = PARSEABLE.options.staging_dir().to_path_buf();
@@ -159,7 +159,7 @@ pub async fn resolve_parseable_metadata(
                         metadata.server_mode = PARSEABLE.options.mode;
                         metadata.staging = PARSEABLE.options.staging_dir().to_path_buf();
                       },
-                    Mode::Index | Mode::Prism => {
+                    Mode::Index => {
                         // if index server is started fetch the metadata from remote
                         // update the server mode for local metadata
                         metadata.server_mode = PARSEABLE.options.mode;
@@ -175,7 +175,7 @@ pub async fn resolve_parseable_metadata(
             // new metadata needs to be set
             // if mode is query or all then both staging and remote
             match PARSEABLE.options.mode {
-                Mode::All | Mode::Query => overwrite_remote = true,
+                Mode::All | Mode::Query | Mode::Prism => overwrite_remote = true,
                 _ => (),
             }
             // else only staging
