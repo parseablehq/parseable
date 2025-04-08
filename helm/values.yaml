@@ -248,7 +248,11 @@ parseable:
         attachMetadata: {}
         scrapeClass: ""
         bodySizeLimit: {}
-
+  kafkaConnector:
+    bootstrapServers: "my-kafka.kafka.svc.cluster.local:9092"
+    enabled: false
+    consumerTopics: test-log-stream-0,test-log-stream-1
+    partitionListenerConcurrency: 2
 # Default values for Vector
 # See Vector helm documentation to learn more:
 # https://vector.dev/docs/setup/installation/package-managers/helm/

@@ -139,6 +139,14 @@ spec:
           {{- end }}
           - name: P_MODE
             value: "ingest"
+          {{- if .Values.parseable.kafkaConnector.enabled }}
+          - name: P_KAFKA_BOOTSTRAP_SERVERS
+            value: {{ .Values.parseable.kafkaConnector.bootstrapServers | quote }}
+          - name: P_KAFKA_CONSUMER_TOPICS
+            value: {{ .Values.parseable.kafkaConnector.consumerTopics | quote }}
+          - name: P_KAFKA_PARTITION_LISTENER_CONCURRENCY
+            value: {{ .Values.parseable.kafkaConnector.partitionListenerConcurrency | quote }}
+          {{- end }}
         ports:
           - containerPort: {{ .Values.parseable.highAvailability.ingestor.port }}
       {{- with .Values.readinessProbe }}

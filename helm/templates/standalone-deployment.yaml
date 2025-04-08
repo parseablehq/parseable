@@ -36,7 +36,7 @@ spec:
           imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
           # Uncomment to debug
           # command: [ "/bin/sh", "-c", "sleep 1000000" ]
-          args: ["/usr/bin/parseable", {{ if eq .Values.parseable.store "gcs-store" }}"s3-store"{{ else }}{{ .Values.parseable.store | quote }}{{ end }}]
+          args: [ "/usr/bin/parseable", {{ if eq .Values.parseable.store "gcs-store" }}"s3-store"{{ else }}{{ .Values.parseable.store | quote }}{{ end }}]
           env:
             - name: HOSTNAME
               valueFrom:
@@ -111,6 +111,16 @@ spec:
             {{- end }}
             {{- end }}
             {{- end }}
+
+            {{- if .Values.parseable.kafkaConnector.enabled }}
+            - name: P_KAFKA_BOOTSTRAP_SERVERS
+              value: {{ .Values.parseable.kafkaConnector.bootstrapServers | quote }}
+            - name: P_KAFKA_CONSUMER_TOPICS
+              value: {{ .Values.parseable.kafkaConnector.consumerTopics | quote }}
+            - name: P_KAFKA_PARTITION_LISTENER_CONCURRENCY
+              value: {{ .Values.parseable.kafkaConnector.partitionListenerConcurrency | quote }}
+            {{- end }}
+
           ports:
             - containerPort: 8000
           {{- with .Values.readinessProbe }}
