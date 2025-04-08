@@ -129,6 +129,7 @@ pub mod validation {
         match s {
             "query" => Ok(Mode::Query),
             "ingest" => Ok(Mode::Ingest),
+            "prism" => Ok(Mode::Prism),
             "all" => Ok(Mode::All),
             "index" => Ok(Mode::Index),
             _ => Err("Invalid MODE provided".to_string()),
