@@ -29,6 +29,7 @@ use http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
 use humantime_serde::re::humantime;
 use reqwest::ClientBuilder;
 use tracing::{error, trace, warn};
+use url::Url;
 
 use super::ALERTS;
 
@@ -255,9 +256,9 @@ fn default_client_builder() -> ClientBuilder {
     ClientBuilder::new()
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SlackWebHook {
-    endpoint: String,
+    endpoint: Url,
 }
 
 #[async_trait]
@@ -279,7 +280,7 @@ impl CallableTarget for SlackWebHook {
             }
         };
 
-        if let Err(e) = client.post(&self.endpoint).json(&alert).send().await {
+        if let Err(e) = client.post(self.endpoint.clone()).json(&alert).send().await {
             error!("Couldn't make call to webhook, error: {}", e)
         }
     }
@@ -288,7 +289,7 @@ impl CallableTarget for SlackWebHook {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OtherWebHook {
-    endpoint: String,
+    endpoint: Url,
     #[serde(default)]
     headers: HashMap<String, String>,
     #[serde(default)]
@@ -314,7 +315,7 @@ impl CallableTarget for OtherWebHook {
         };
 
         let request = client
-            .post(&self.endpoint)
+            .post(self.endpoint.clone())
             .headers((&self.headers).try_into().expect("valid_headers"));
 
         if let Err(e) = request.body(alert).send().await {
@@ -326,7 +327,7 @@ impl CallableTarget for OtherWebHook {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AlertManager {
-    endpoint: String,
+    endpoint: Url,
     #[serde(default)]
     skip_tls_check: bool,
     #[serde(flatten)]
@@ -404,7 +405,12 @@ impl CallableTarget for AlertManager {
             }
         };
 
-        if let Err(e) = client.post(&self.endpoint).json(&alerts).send().await {
+        if let Err(e) = client
+            .post(self.endpoint.clone())
+            .json(&alerts)
+            .send()
+            .await
+        {
             error!("Couldn't make call to alertmanager, error: {}", e)
         }
     }

@@ -32,7 +32,7 @@ use std::thread;
 use tokio::sync::oneshot::{Receiver, Sender};
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
-use tracing::{trace, warn};
+use tracing::{error, trace, warn};
 use ulid::Ulid;
 
 pub mod alerts_utils;
@@ -52,7 +52,7 @@ pub type ScheduledTaskHandlers = (JoinHandle<()>, Receiver<()>, Sender<()>);
 pub const CURRENT_ALERTS_VERSION: &str = "v1";
 
 pub static ALERTS: Lazy<Alerts> = Lazy::new(|| {
-    let (tx, rx) = mpsc::channel::<AlertTask>(1);
+    let (tx, rx) = mpsc::channel::<AlertTask>(10);
     let alerts = Alerts {
         alerts: RwLock::new(HashMap::new()),
         sender: tx,
@@ -659,7 +659,7 @@ impl AlertConfig {
 
                 // validate condition config
                 let agg1 = &self.aggregates.aggregate_config[0];
-                let agg2 = &self.aggregates.aggregate_config[0];
+                let agg2 = &self.aggregates.aggregate_config[1];
 
                 validate_condition_config(&agg1.conditions)?;
                 validate_condition_config(&agg2.conditions)?;
@@ -833,7 +833,20 @@ impl Alerts {
         let store = PARSEABLE.storage.get_object_store();
 
         for alert in store.get_alerts().await.unwrap_or_default() {
-            self.sender.send(AlertTask::Create(alert.clone())).await?;
+            match self.sender.send(AlertTask::Create(alert.clone())).await {
+                Ok(_) => {}
+                Err(e) => {
+                    warn!("Failed to create alert task: {e}\nRetrying...");
+                    // Retry sending the task
+                    match self.sender.send(AlertTask::Create(alert.clone())).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            error!("Failed to create alert task: {e}");
+                            continue;
+                        }
+                    }
+                }
+            };
             map.insert(alert.id, alert);
         }
 
