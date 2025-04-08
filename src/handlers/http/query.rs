@@ -329,6 +329,8 @@ Description: {0}"#
     SerdeJsonError(#[from] serde_json::Error),
     #[error("CustomError: {0}")]
     CustomError(String),
+    #[error("No available queriers found")]
+    NoAvailableQuerier,
 }
 
 impl actix_web::ResponseError for QueryError {
