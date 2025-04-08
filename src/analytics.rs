@@ -75,6 +75,10 @@ pub struct Report {
     commit_hash: String,
     active_ingestors: u64,
     inactive_ingestors: u64,
+    active_indexers: u64,
+    inactive_indexers: u64,
+    active_queries: u64,
+    inactive_queries: u64,
     stream_count: usize,
     total_events_count: u64,
     total_json_bytes: u64,
@@ -107,7 +111,28 @@ impl Report {
             mem_total = info.total_memory();
         }
         let ingestor_metrics = fetch_ingestors_metrics().await?;
+        let mut active_indexers = 0;
+        let mut inactive_indexers = 0;
+        let mut active_queries = 0;
+        let mut inactive_queries = 0;
 
+        let indexer_infos: Vec<NodeMetadata> = cluster::get_node_info("indexer").await?;
+        for indexer in indexer_infos {
+            if check_liveness(&indexer.domain_name).await {
+                active_indexers += 1;
+            } else {
+                inactive_indexers += 1;
+            }
+        }
+
+        let query_infos: Vec<NodeMetadata> = cluster::get_node_info("query").await?;
+        for query in query_infos {
+            if check_liveness(&query.domain_name).await {
+                active_queries += 1;
+            } else {
+                inactive_queries += 1;
+            }
+        }
         Ok(Self {
             deployment_id: storage::StorageMetadata::global().deployment_id,
             uptime: upt,
@@ -123,6 +148,10 @@ impl Report {
             commit_hash: current().commit_hash,
             active_ingestors: ingestor_metrics.0,
             inactive_ingestors: ingestor_metrics.1,
+            active_indexers,
+            inactive_indexers,
+            active_queries,
+            inactive_queries,
             stream_count: ingestor_metrics.2,
             total_events_count: ingestor_metrics.3,
             total_json_bytes: ingestor_metrics.4,
@@ -225,11 +254,11 @@ async fn fetch_ingestors_metrics(
     let mut vec = vec![];
     let mut active_ingestors = 0u64;
     let mut offline_ingestors = 0u64;
-    if PARSEABLE.options.mode == Mode::Query {
+    if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
         // send analytics for ingest servers
 
         // ingestor infos should be valid here, if not some thing is wrong
-        let ingestor_infos: Vec<NodeMetadata> = cluster::get_node_info("ingestor").await.unwrap();
+        let ingestor_infos: Vec<NodeMetadata> = cluster::get_node_info("ingestor").await?;
 
         for im in ingestor_infos {
             if !check_liveness(&im.domain_name).await {
