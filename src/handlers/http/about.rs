@@ -63,7 +63,8 @@ pub async fn about() -> Json<Value> {
     let commit = current_release.commit_hash;
     let deployment_id = meta.deployment_id.to_string();
     let mode = PARSEABLE.get_server_mode_string();
-    let staging = if PARSEABLE.options.mode == Mode::Query {
+    let staging = if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism
+    {
         "".to_string()
     } else {
         PARSEABLE.options.staging_dir().display().to_string()

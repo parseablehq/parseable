@@ -214,6 +214,7 @@ impl Parseable {
     pub async fn check_or_load_stream(&self, stream_name: &str) -> bool {
         !self.streams.contains(stream_name)
             && (self.options.mode != Mode::Query
+                || self.options.mode != Mode::Prism
                 || !self
                     .create_stream_and_schema_from_storage(stream_name)
                     .await
@@ -521,7 +522,7 @@ impl Parseable {
         let stream_in_memory_dont_update =
             self.streams.contains(stream_name) && !update_stream_flag;
         let stream_in_storage_only_for_query_node = !self.streams.contains(stream_name)     // check if stream in storage only if not in memory
-            && self.options.mode == Mode::Query                                                   // and running in query mode
+            && (self.options.mode == Mode::Query  || self.options.mode == Mode::Prism)                                                // and running in query mode
             && self
                 .create_stream_and_schema_from_storage(stream_name)
                 .await?;
