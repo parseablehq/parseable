@@ -202,7 +202,7 @@ pub async fn resolve_parseable_metadata(
     Ok(metadata)
 }
 
-fn determine_environment(
+pub fn determine_environment(
     staging_metadata: Option<StorageMetadata>,
     remote_metadata: Option<StorageMetadata>,
 ) -> EnvChange {
