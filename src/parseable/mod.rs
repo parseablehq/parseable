@@ -212,13 +212,14 @@ impl Parseable {
 
     /// Checks for the stream in memory, or loads it from storage when in distributed mode
     pub async fn check_or_load_stream(&self, stream_name: &str) -> bool {
-        !self.streams.contains(stream_name)
-            && (self.options.mode != Mode::Query
-                || self.options.mode != Mode::Prism
-                || !self
-                    .create_stream_and_schema_from_storage(stream_name)
-                    .await
-                    .unwrap_or_default())
+        if self.streams.contains(stream_name) {
+            return true;
+        }
+        (self.options.mode == Mode::Query || self.options.mode == Mode::Prism)
+            && self
+                .create_stream_and_schema_from_storage(stream_name)
+                .await
+                .unwrap_or_default()
     }
 
     // validate the storage, if the proper path for staging directory is provided
