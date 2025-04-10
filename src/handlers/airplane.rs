@@ -169,7 +169,7 @@ impl FlightService for AirServiceImpl {
             query.time_range.start.timestamp_millis(),
             query.time_range.end.timestamp_millis(),
         ) {
-            let sql = format!("select * from {}", &stream_name);
+            let sql = format!("select * from \"{}\"", &stream_name);
             let start_time = ticket.start_time.clone();
             let end_time = ticket.end_time.clone();
             let out_ticket = json!({
