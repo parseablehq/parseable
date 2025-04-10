@@ -217,7 +217,6 @@ parseable:
     fsGroupChangePolicy: "Always"
   nameOverride: ""
   fullnameOverride: ""
-  nodeSelector: {}
   affinity: {}
   podLabels:
     app: parseable
@@ -249,10 +248,53 @@ parseable:
         scrapeClass: ""
         bodySizeLimit: {}
   kafkaConnector:
-    bootstrapServers: "my-kafka.kafka.svc.cluster.local:9092"
     enabled: false
-    consumerTopics: test-log-stream-0,test-log-stream-1
-    partitionListenerConcurrency: 2
+    env:
+      # General Kafka Configuration
+      P_KAFKA_BOOTSTRAP_SERVERS: "my-kafka.kafka.svc.cluster.local:9092" # Comma-separated list of Kafka bootstrap servers
+      P_KAFKA_PARTITION_LISTENER_CONCURRENCY: "2" # Number of parallel threads for Kafka partition listeners
+      P_KAFKA_CONSUMER_TOPICS: "test-log-stream-0,test-log-stream-1"
+
+      # Default values. Change only if necessary.
+
+      # P_KAFKA_CLIENT_ID: "parseable-connect" # Client ID for Kafka connection
+      # P_CONNECTOR_BAD_DATA_POLICY: "fail" # Default Policy for handling bad data
+
+      # Consumer Configuration
+      # P_KAFKA_CONSUMER_GROUP_ID: "parseable-connect-cg"
+      # P_KAFKA_CONSUMER_BUFFER_SIZE: "10000"
+      # P_KAFKA_CONSUMER_BUFFER_TIMEOUT: "10000ms"
+      # P_KAFKA_CONSUMER_SESSION_TIMEOUT: "60000"
+      # P_KAFKA_CONSUMER_HEARTBEAT_INTERVAL: "3000"
+      # P_KAFKA_CONSUMER_PARTITION_STRATEGY: "roundrobin,range"
+      # P_KAFKA_CONSUMER_MAX_POLL_INTERVAL: "300000"
+      # P_KAFKA_CONSUMER_ENABLE_AUTO_OFFSET_STORE: "true"
+      # P_KAFKA_CONSUMER_AUTO_OFFSET_RESET: "earliest"
+      # P_KAFKA_CONSUMER_FETCH_MIN_BYTES: "1"
+      # P_KAFKA_CONSUMER_FETCH_MAX_BYTES: "52428800"
+      # P_KAFKA_CONSUMER_FETCH_MAX_WAIT: "500"
+      # P_KAFKA_CONSUMER_MAX_PARTITION_FETCH_BYTES: "1048576"
+      # P_KAFKA_CONSUMER_QUEUED_MIN_MESSAGES: "100000"
+      # P_KAFKA_CONSUMER_QUEUED_MAX_MESSAGES_KBYTES: "65536"
+      # P_KAFKA_CONSUMER_ENABLE_PARTITION_EOF: "false"
+      # P_KAFKA_CONSUMER_CHECK_CRCS: "false"
+      # P_KAFKA_CONSUMER_ISOLATION_LEVEL: "read_committed"
+      # P_KAFKA_CONSUMER_FETCH_MESSAGE_MAX_BYTES: "1048576"
+      # P_KAFKA_CONSUMER_STATS_INTERVAL: "10000"
+
+      # Security Configuration - commented out but available if needed
+      # P_KAFKA_SECURITY_PROTOCOL: "SSL" # Security protocol used for communication (e.g., SSL, SASL_SSL, SASL_PLAINTEXT)
+      # P_KAFKA_SSL_CA_LOCATION: "/etc/ssl/certs/ca-certificates.crt" # CA certificate file path
+      # P_KAFKA_SSL_CERTIFICATE_LOCATION: "/etc/ssl/certs/client-cert.pem" # Client certificate file path
+      # P_KAFKA_SSL_KEY_LOCATION: "/etc/ssl/private/client-key.pem" # Client key file path
+      # P_KAFKA_SSL_KEY_PASSWORD: "" # Password for the client key file
+
+      # Security Configuration with SASL_SSL example
+      # P_KAFKA_SECURITY_PROTOCOL: "SASL_SSL"
+      # P_KAFKA_SSL_CA_LOCATION: "/etc/ssl/certs/ca-certificates.crt"
+      # P_KAFKA_SASL_MECHANISM: "SCRAM-SHA-512"  # Can also be PLAIN, SCRAM-SHA-256, GSSAPI, etc.
+      # P_KAFKA_SASL_USERNAME: "kafka-user"
+
 # Default values for Vector
 # See Vector helm documentation to learn more:
 # https://vector.dev/docs/setup/installation/package-managers/helm/
