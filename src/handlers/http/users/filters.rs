@@ -21,7 +21,7 @@ use crate::{
     parseable::PARSEABLE,
     storage::{object_storage::filter_path, ObjectStorageError},
     users::filters::{Filter, CURRENT_FILTER_VERSION, FILTERS},
-    utils::{actix::extract_session_key_from_req, get_hash, get_user_from_request},
+    utils::{get_hash, get_user_from_request},
 };
 use actix_web::{
     http::header::ContentType,
@@ -33,10 +33,8 @@ use chrono::Utc;
 use http::StatusCode;
 use serde_json::Error as SerdeError;
 
-pub async fn list(req: HttpRequest) -> Result<impl Responder, FiltersError> {
-    let key =
-        extract_session_key_from_req(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
-    let filters = FILTERS.list_filters(&key).await;
+pub async fn list() -> Result<impl Responder, FiltersError> {
+    let filters = FILTERS.list_filters().await;
     Ok((web::Json(filters), StatusCode::OK))
 }
 

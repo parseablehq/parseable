@@ -104,7 +104,7 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
         get_alert_titles(key),
         get_correlation_titles(key),
         get_dashboard_titles(key),
-        get_filter_titles(key),
+        get_filter_titles(),
         get_alerts_info()
     );
 
@@ -258,9 +258,9 @@ async fn get_dashboard_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, Prism
     Ok(dashboard_titles)
 }
 
-async fn get_filter_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, PrismHomeError> {
+async fn get_filter_titles() -> Result<Vec<TitleAndId>, PrismHomeError> {
     let filter_titles = FILTERS
-        .list_filters(key)
+        .list_filters()
         .await
         .iter()
         .map(|filter| TitleAndId {

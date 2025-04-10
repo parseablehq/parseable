@@ -23,8 +23,8 @@ use tokio::sync::RwLock;
 
 use super::TimeFilter;
 use crate::{
-    alerts::alerts_utils::user_auth_for_query, migration::to_bytes, parseable::PARSEABLE,
-    rbac::map::SessionKey, storage::object_storage::filter_path, utils::get_hash,
+    migration::to_bytes, parseable::PARSEABLE, storage::object_storage::filter_path,
+    utils::get_hash,
 };
 
 pub static FILTERS: Lazy<Filters> = Lazy::new(Filters::default);
@@ -152,23 +152,8 @@ impl Filters {
             .cloned()
     }
 
-    pub async fn list_filters(&self, key: &SessionKey) -> Vec<Filter> {
-        let read = self.0.read().await;
-
-        let mut filters = Vec::new();
-
-        for f in read.iter() {
-            let query = if let Some(q) = &f.query.filter_query {
-                q
-            } else {
-                continue;
-            };
-
-            if (user_auth_for_query(key, query).await).is_ok() {
-                filters.push(f.clone())
-            }
-        }
-        filters
+    pub async fn list_filters(&self) -> Vec<Filter> {
+        self.0.read().await.iter().cloned().collect()
     }
 }
 
