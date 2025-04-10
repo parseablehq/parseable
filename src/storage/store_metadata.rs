@@ -130,12 +130,9 @@ pub async fn resolve_parseable_metadata(
         }
         EnvChange::NewStaging(mut metadata) => {
 
-            if metadata.server_mode==Mode::Prism {
-                Err("Starting Parseable OSS is not permitted when Parseable Enterprise is enabled. Please restart the server with different storage")
-            }
             // if server is started in ingest mode,we need to make sure that query mode has been started
             // i.e the metadata is updated to reflect the server mode = Query
-            else if metadata.server_mode== Mode::All && PARSEABLE.options.mode == Mode::Ingest {
+            if metadata.server_mode== Mode::All && PARSEABLE.options.mode == Mode::Ingest {
                 Err("Starting Ingest Mode is not allowed, Since Query Server has not been started yet")
             } else {
                 create_dir_all(PARSEABLE.options.staging_dir())?;
