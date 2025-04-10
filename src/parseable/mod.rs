@@ -211,6 +211,8 @@ impl Parseable {
     }
 
     /// Checks for the stream in memory, or loads it from storage when in distributed mode
+    /// return true if stream exists in memory or loaded from storage
+    /// return false if stream doesn't exist in memory and not loaded from storage
     pub async fn check_or_load_stream(&self, stream_name: &str) -> bool {
         if self.streams.contains(stream_name) {
             return true;
