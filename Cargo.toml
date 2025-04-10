@@ -138,8 +138,8 @@ arrow = "54.0.0"
 temp-dir = "0.1.14"
 
 [package.metadata.parseable_ui]
-assets-url = "https://parseable-prism-build.s3.us-east-2.amazonaws.com/v2.0.0/build.zip"
-assets-sha1 = "c74a27318100fab29ef07d433b2ad03f5a1185bf"
+assets-url = "https://parseable-prism-build.s3.us-east-2.amazonaws.com/v2.1.0/build.zip"
+assets-sha1 = "12c7314fcdaa034e5ad94c6a826a0cf402b62461"
 
 [features]
 debug = []
