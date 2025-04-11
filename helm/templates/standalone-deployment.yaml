@@ -36,7 +36,7 @@ spec:
           imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
           # Uncomment to debug
           # command: [ "/bin/sh", "-c", "sleep 1000000" ]
-          args: ["/usr/bin/parseable", {{ if eq .Values.parseable.store "gcs-store" }}"s3-store"{{ else }}{{ .Values.parseable.store | quote }}{{ end }}]
+          args: [ "/usr/bin/parseable", {{ if eq .Values.parseable.store "gcs-store" }}"s3-store"{{ else }}{{ .Values.parseable.store | quote }}{{ end }}]
           env:
             - name: HOSTNAME
               valueFrom:
@@ -68,6 +68,13 @@ spec:
               value: {{ .Values.parseable.auditLogging.p_username | quote }}
             - name: P_AUDIT_PASSWORD
               value: {{ .Values.parseable.auditLogging.p_password | quote }}
+            {{- end }}
+
+            {{- if .Values.parseable.kafkaConnector.enabled }}
+            {{- range $key, $value := .Values.parseable.kafkaConnector.env }}
+            - name: {{ $key }}
+              value: {{ tpl $value $ | quote }}
+            {{- end }}
             {{- end }}
 
             {{- if and .Values.parseable.s3ModeSecret .Values.parseable.s3ModeSecret.enabled }}
@@ -111,6 +118,8 @@ spec:
             {{- end }}
             {{- end }}
             {{- end }}
+
+
           ports:
             - containerPort: 8000
           {{- with .Values.readinessProbe }}
