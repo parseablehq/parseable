@@ -9,26 +9,26 @@ parseable:
   ## Please note that highAvailability is not supported in local mode
   highAvailability:
     enabled: false
-    ingestor: 
-      affinity: {}
+    ingestor:
+      affinity: { }
         # podAntiAffinity:
         #   requiredDuringSchedulingIgnoredDuringExecution:
         #   - labelSelector:
         #       matchLabels:
         #         app: parseable
-        #         component: ingestor
-        #     topologyKey: kubernetes.io/hostname
+      #         component: ingestor
+      #     topologyKey: kubernetes.io/hostname
       port: 8000
       extraLabels:
         app: parseable
-      podAnnotations: {}
-      nodeSelector: {}
-      tolerations: []
+      podAnnotations: { }
+      nodeSelector: { }
+      tolerations: [ ]
       labels:
         app: parseable
         component: ingestor
       count: 3
-      env: 
+      env:
         RUST_LOG: warn
       ## Use this endpoint to send events to ingestors
       ## Console (UI) is available on the other service (that points to the query pod)
@@ -85,8 +85,8 @@ parseable:
       storageClass: ""
       accessMode: ReadWriteOnce
       size: 5Gi
-  ## enabling the disk on querier adds the hot-tier.
-  ## local-store is not supported on hot-tier.
+    ## enabling the disk on querier adds the hot-tier.
+    ## local-store is not supported on hot-tier.
     querier:
       enabled: false
       storageClass: ""
@@ -155,8 +155,8 @@ parseable:
   serviceAccount:
     create: true
     name: "parseable"
-    annotations: {}
-  nodeSelector: {}
+    annotations: { }
+  nodeSelector: { }
   service:
     type: ClusterIP
     port: 80
@@ -164,7 +164,7 @@ parseable:
     httpGet:
       path: /api/v1/readiness
       port: 8000
-  toleration: []
+  toleration: [ ]
   resources:
     limits:
       cpu: 500m
@@ -181,9 +181,9 @@ parseable:
       repository: busybox
       tag: latest
       pullPolicy: IfNotPresent
-    command: []
-    args: []
-    env: 
+    command: [ ]
+    args: [ ]
+    env:
       RUST_LOG: warn
     ports: 8000
     volumeMounts:
@@ -217,36 +217,36 @@ parseable:
     fsGroupChangePolicy: "Always"
   nameOverride: ""
   fullnameOverride: ""
-  affinity: {}
+  affinity: { }
   podLabels:
     app: parseable
     component: query
-  tolerations: []
+  tolerations: [ ]
   ## Use this section to create ServiceMonitor object for
   ## this Parseable deployment. Read more on ServiceMonitor
   ## here: https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.ServiceMonitor
   metrics:
     serviceMonitor:
       enabled: false
-      labels: {}
+      labels: { }
       namespace: ""
       spec:
         jobLabel: ""
-        targetLabels: []
-        podTargetLabels: []
-        endpoints: []
-        selector: {}
-        namespaceSelector: {}
+        targetLabels: [ ]
+        podTargetLabels: [ ]
+        endpoints: [ ]
+        selector: { }
+        namespaceSelector: { }
         sampleLimit: 0
-        scrapeProtocols: []
+        scrapeProtocols: [ ]
         targetLimit: 0
         labelLimit: 0
         labelNameLengthLimit: 0
         labelValueLengthLimit: 0
         keepDroppedTargets: 0
-        attachMetadata: {}
+        attachMetadata: { }
         scrapeClass: ""
-        bodySizeLimit: {}
+        bodySizeLimit: { }
   kafkaConnector:
     enabled: false
     env:
@@ -254,13 +254,10 @@ parseable:
       P_KAFKA_BOOTSTRAP_SERVERS: "my-kafka.kafka.svc.cluster.local:9092" # Comma-separated list of Kafka bootstrap servers
       P_KAFKA_PARTITION_LISTENER_CONCURRENCY: "2" # Number of parallel threads for Kafka partition listeners
       P_KAFKA_CONSUMER_TOPICS: "test-log-stream-0,test-log-stream-1"
-
-      # Default values. Change only if necessary.
-
       # P_KAFKA_CLIENT_ID: "parseable-connect" # Client ID for Kafka connection
       # P_CONNECTOR_BAD_DATA_POLICY: "fail" # Default Policy for handling bad data
 
-      # Consumer Configuration
+      # Consumer Configurations. These config are Default Parseable KafkaConnector configs. Change only if necessary.
       # P_KAFKA_CONSUMER_GROUP_ID: "parseable-connect-cg"
       # P_KAFKA_CONSUMER_BUFFER_SIZE: "10000"
       # P_KAFKA_CONSUMER_BUFFER_TIMEOUT: "10000ms"
@@ -282,20 +279,37 @@ parseable:
       # P_KAFKA_CONSUMER_FETCH_MESSAGE_MAX_BYTES: "1048576"
       # P_KAFKA_CONSUMER_STATS_INTERVAL: "10000"
 
-      # Security Configuration - commented out but available if needed
-      # P_KAFKA_SECURITY_PROTOCOL: "SSL" # Security protocol used for communication (e.g., SSL, SASL_SSL, SASL_PLAINTEXT)
-      # P_KAFKA_SSL_CA_LOCATION: "/etc/ssl/certs/ca-certificates.crt" # CA certificate file path
-      # P_KAFKA_SSL_CERTIFICATE_LOCATION: "/etc/ssl/certs/client-cert.pem" # Client certificate file path
-      # P_KAFKA_SSL_KEY_LOCATION: "/etc/ssl/private/client-key.pem" # Client key file path
-      # P_KAFKA_SSL_KEY_PASSWORD: "" # Password for the client key file
+      # Security Configuration Options - By Default PLAINTEXT
 
-      # Security Configuration with SASL_SSL example
+      # Option 1: SSL Encryption Only
+      # P_KAFKA_SECURITY_PROTOCOL: "SSL"
+      # P_KAFKA_SSL_CA_LOCATION: "/etc/ssl/certs/ca-certificates.crt"
+      # P_KAFKA_SSL_CERTIFICATE_LOCATION: "/etc/ssl/certs/client-cert.pem"
+      # P_KAFKA_SSL_KEY_LOCATION: "/etc/ssl/private/client-key.pem"
+      # P_KAFKA_SSL_KEY_PASSWORD: "my-key-password" # Optional: only if key is password protected
+
+      # Option 2: SASL Authentication with SSL Encryption
       # P_KAFKA_SECURITY_PROTOCOL: "SASL_SSL"
       # P_KAFKA_SSL_CA_LOCATION: "/etc/ssl/certs/ca-certificates.crt"
-      # P_KAFKA_SASL_MECHANISM: "SCRAM-SHA-512"  # Can also be PLAIN, SCRAM-SHA-256, GSSAPI, etc.
+      # P_KAFKA_SASL_MECHANISM: "SCRAM-SHA-512" # Can also be PLAIN, SCRAM-SHA-256, or GSSAPI
       # P_KAFKA_SASL_USERNAME: "kafka-user"
+      # P_KAFKA_SASL_PASSWORD: "kafka-password"
 
-# Default values for Vector
+      # Option 3: SASL Authentication without Encryption
+      # P_KAFKA_SECURITY_PROTOCOL: "SASL_PLAINTEXT"
+      # P_KAFKA_SASL_MECHANISM: "PLAIN" # Can also be SCRAM-SHA-256, SCRAM-SHA-512, or GSSAPI
+      # P_KAFKA_SASL_USERNAME: "kafka-user"
+      # P_KAFKA_SASL_PASSWORD: "kafka-password"
+
+      # Option 4: OAuth Bearer Token Authentication (Not supported yet)
+      # P_KAFKA_SECURITY_PROTOCOL: "SASL_SSL"
+      # P_KAFKA_SASL_MECHANISM: "OAUTHBEARER"
+      # P_KAFKA_OAUTH_TOKEN_ENDPOINT: "https://oauth.example.com/token"
+      # P_KAFKA_OAUTH_CLIENT_ID: "kafka-client"
+      # P_KAFKA_OAUTH_CLIENT_SECRET: "client-secret"
+      # P_KAFKA_OAUTH_SCOPE: "kafka-access" # Optional: only if required by OAuth provider
+
+## Default values for Vector
 # See Vector helm documentation to learn more:
 # https://vector.dev/docs/setup/installation/package-managers/helm/
 vector:
@@ -305,7 +319,7 @@ vector:
   image:
     repository: timberio/vector
     pullPolicy: IfNotPresent
-    pullSecrets: []
+    pullSecrets: [ ]
     tag: ""
     sha: ""
   replicas: 1
@@ -318,7 +332,7 @@ vector:
     create: true
   serviceAccount:
     create: true
-    annotations: {}
+    annotations: { }
     name:
     automountToken: true
   podLabels:
@@ -330,13 +344,13 @@ vector:
   service:
     enabled: true
     type: "ClusterIP"
-    annotations: {}
-    topologyKeys: []
-    ports: []
+    annotations: { }
+    topologyKeys: [ ]
+    ports: [ ]
     externalTrafficPolicy: ""
     loadBalancerIP: ""
     ipFamilyPolicy: ""
-    ipFamilies: []
+    ipFamilies: [ ]
   serviceHeadless:
     enabled: true
   dnsPolicy: ClusterFirst
@@ -399,7 +413,7 @@ fluent-bit:
       tag: latest
   serviceAccount:
     create: true
-    annotations: {}
+    annotations: { }
     name:
   rbac:
     create: true
@@ -410,8 +424,8 @@ fluent-bit:
     type: ClusterIP
     port: 2020
     loadBalancerClass:
-    loadBalancerSourceRanges: []
-    labels: {}
+    loadBalancerSourceRanges: [ ]
+    labels: { }
   livenessProbe:
     httpGet:
       path: /
@@ -503,7 +517,7 @@ fluent-bit:
           Password {{ .Values.serverPassword }}
           Stream k8s-events 
 
-    upstream: {}
+    upstream: { }
 
     customParsers: |
       [PARSER]
