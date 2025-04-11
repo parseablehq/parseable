@@ -22,8 +22,11 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 
 use crate::{
-    alerts::alerts_utils::user_auth_for_query, migration::to_bytes, parseable::PARSEABLE,
-    rbac::map::SessionKey, storage::object_storage::dashboard_path, utils::get_hash,
+    migration::to_bytes,
+    parseable::PARSEABLE,
+    rbac::map::SessionKey,
+    storage::object_storage::dashboard_path,
+    utils::{get_hash, user_auth_for_query},
 };
 
 use super::TimeFilter;

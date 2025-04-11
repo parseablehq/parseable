@@ -40,7 +40,7 @@ use crate::{
     rbac::{map::SessionKey, Users},
     storage::ObjectStorageError,
     users::filters::FilterQuery,
-    utils::{get_hash, user_auth_for_query},
+    utils::{get_hash, user_auth_for_datasets},
 };
 
 pub static CORRELATIONS: Lazy<Correlations> = Lazy::new(Correlations::default);
@@ -87,7 +87,7 @@ impl Correlations {
                 .iter()
                 .map(|t| t.table_name.clone())
                 .collect_vec();
-            if user_auth_for_query(&permissions, tables).is_ok() {
+            if user_auth_for_datasets(&permissions, tables).is_ok() {
                 user_correlations.push(correlation.clone());
             }
         }
@@ -281,7 +281,7 @@ impl CorrelationConfig {
             .map(|t| t.table_name.clone())
             .collect_vec();
 
-        user_auth_for_query(&permissions, tables)?;
+        user_auth_for_datasets(&permissions, tables)?;
 
         // to validate table config, we need to check whether the mentioned fields
         // are present in the table or not

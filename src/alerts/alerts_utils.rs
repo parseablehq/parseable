@@ -18,7 +18,6 @@
 
 use arrow_array::{Float64Array, Int64Array, RecordBatch};
 use datafusion::{
-    common::tree_node::TreeNode,
     functions_aggregate::{
         count::count,
         expr_fn::avg,
@@ -31,62 +30,13 @@ use datafusion::{
 use tracing::trace;
 
 use crate::{
-    alerts::LogicalOperator,
-    parseable::PARSEABLE,
-    query::{TableScanVisitor, QUERY_SESSION},
-    rbac::{
-        map::SessionKey,
-        role::{Action, Permission},
-        Users,
-    },
-    utils::time::TimeRange,
+    alerts::LogicalOperator, parseable::PARSEABLE, query::QUERY_SESSION, utils::time::TimeRange,
 };
 
 use super::{
     AggregateConfig, AggregateFunction, AggregateResult, Aggregates, AlertConfig, AlertError,
     AlertOperator, AlertState, ConditionConfig, Conditions, WhereConfigOperator, ALERTS,
 };
-
-async fn get_tables_from_query(query: &str) -> Result<TableScanVisitor, AlertError> {
-    let session_state = QUERY_SESSION.state();
-    let raw_logical_plan = session_state.create_logical_plan(query).await?;
-
-    let mut visitor = TableScanVisitor::default();
-    let _ = raw_logical_plan.visit(&mut visitor);
-    Ok(visitor)
-}
-
-pub async fn user_auth_for_query(session_key: &SessionKey, query: &str) -> Result<(), AlertError> {
-    let tables = get_tables_from_query(query).await?;
-    let permissions = Users.get_permissions(session_key);
-
-    for table_name in tables.into_inner().iter() {
-        let mut authorized = false;
-
-        // in permission check if user can run query on the stream.
-        // also while iterating add any filter tags for this stream
-        for permission in permissions.iter() {
-            match permission {
-                Permission::Stream(Action::All, _) => {
-                    authorized = true;
-                    break;
-                }
-                Permission::StreamWithTag(Action::Query, ref stream, _)
-                    if stream == table_name || stream == "*" =>
-                {
-                    authorized = true;
-                }
-                _ => (),
-            }
-        }
-
-        if !authorized {
-            return Err(AlertError::Unauthorized);
-        }
-    }
-
-    Ok(())
-}
 
 /// accept the alert
 ///

@@ -49,7 +49,7 @@ use crate::storage::object_storage::commit_schema_to_storage;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::time::{TimeParseError, TimeRange};
-use crate::utils::user_auth_for_query;
+use crate::utils::user_auth_for_datasets;
 
 /// Query Request through http endpoint.
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -99,7 +99,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         .first_table_name()
         .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
 
-    user_auth_for_query(&permissions, &tables)?;
+    user_auth_for_datasets(&permissions, &tables)?;
 
     let time = Instant::now();
     // Intercept `count(*)`` queries and use the counts API
@@ -162,7 +162,7 @@ pub async fn get_counts(
     let permissions = Users.get_permissions(&creds);
 
     // does user have access to table?
-    user_auth_for_query(&permissions, &[counts_request.stream.clone()])?;
+    user_auth_for_datasets(&permissions, &[counts_request.stream.clone()])?;
 
     let records = counts_request.get_bin_density().await?;
 
