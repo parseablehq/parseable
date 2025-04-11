@@ -503,7 +503,7 @@ impl TableProvider for StandardTableProvider {
             .await?;
         };
         let mut merged_snapshot = Snapshot::default();
-        if PARSEABLE.options.mode == Mode::Query {
+        if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
             let path = RelativePathBuf::from_iter([&self.stream, STREAM_ROOT_DIRECTORY]);
             let obs = glob_storage
                 .get_objects(

@@ -54,13 +54,9 @@ use crate::HTTP_CLIENT;
 use super::base_path_without_preceding_slash;
 use super::ingest::PostError;
 use super::logstream::error::StreamError;
-use super::modal::{IndexerMetadata, IngestorMetadata, Metadata};
+use super::modal::{IndexerMetadata, IngestorMetadata, Metadata, NodeMetadata, QuerierMetadata};
 use super::rbac::RBACError;
 use super::role::RoleError;
-
-type IngestorMetadataArr = Vec<IngestorMetadata>;
-
-type IndexerMetadataArr = Vec<IndexerMetadata>;
 
 pub const INTERNAL_STREAM_NAME: &str = "pmeta";
 
@@ -77,7 +73,7 @@ pub async fn sync_streams_with_ingestors(
     for (key, value) in headers.iter() {
         reqwest_headers.insert(key.clone(), value.clone());
     }
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos: Vec<NodeMetadata> = get_node_info("ingestor").await.map_err(|err| {
         error!("Fatal: failed to get ingestor info: {:?}", err);
         StreamError::Anyhow(err)
     })?;
@@ -125,7 +121,7 @@ pub async fn sync_users_with_roles_with_ingestors(
     username: &String,
     role: &HashSet<String>,
 ) -> Result<(), RBACError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos: Vec<NodeMetadata> = get_node_info("ingestor").await.map_err(|err| {
         error!("Fatal: failed to get ingestor info: {:?}", err);
         RBACError::Anyhow(err)
     })?;
@@ -175,7 +171,7 @@ pub async fn sync_users_with_roles_with_ingestors(
 
 // forward the delete user request to all ingestors to keep them in sync
 pub async fn sync_user_deletion_with_ingestors(username: &String) -> Result<(), RBACError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos: Vec<NodeMetadata> = get_node_info("ingestor").await.map_err(|err| {
         error!("Fatal: failed to get ingestor info: {:?}", err);
         RBACError::Anyhow(err)
     })?;
@@ -222,7 +218,7 @@ pub async fn sync_user_creation_with_ingestors(
     user: User,
     role: &Option<HashSet<String>>,
 ) -> Result<(), RBACError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos: Vec<NodeMetadata> = get_node_info("ingestor").await.map_err(|err| {
         error!("Fatal: failed to get ingestor info: {:?}", err);
         RBACError::Anyhow(err)
     })?;
@@ -280,7 +276,7 @@ pub async fn sync_user_creation_with_ingestors(
 
 // forward the password reset request to all ingestors to keep them in sync
 pub async fn sync_password_reset_with_ingestors(username: &String) -> Result<(), RBACError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos: Vec<NodeMetadata> = get_node_info("ingestor").await.map_err(|err| {
         error!("Fatal: failed to get ingestor info: {:?}", err);
         RBACError::Anyhow(err)
     })?;
@@ -328,7 +324,7 @@ pub async fn sync_role_update_with_ingestors(
     name: String,
     privileges: Vec<DefaultPrivilege>,
 ) -> Result<(), RoleError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
+    let ingestor_infos: Vec<NodeMetadata> = get_node_info("ingestor").await.map_err(|err| {
         error!("Fatal: failed to get ingestor info: {:?}", err);
         RoleError::Anyhow(err)
     })?;
@@ -545,11 +541,23 @@ pub async fn send_retention_cleanup_request(
 
 pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
     // Get ingestor and indexer metadata concurrently
-    let (ingestor_result, indexer_result) =
-        future::join(get_ingestor_info(), get_indexer_info()).await;
+    let (querier_result, ingestor_result, indexer_result) = future::join3(
+        get_node_info("querier"),
+        get_node_info("ingestor"),
+        get_node_info("indexer"),
+    )
+    .await;
+
+    // Handle querier metadata result
+    let querier_metadata: Vec<NodeMetadata> = querier_result
+        .map_err(|err| {
+            error!("Fatal: failed to get querier info: {:?}", err);
+            PostError::Invalid(err)
+        })
+        .map_err(|err| StreamError::Anyhow(err.into()))?;
 
     // Handle ingestor metadata result
-    let ingestor_metadata = ingestor_result
+    let ingestor_metadata: Vec<NodeMetadata> = ingestor_result
         .map_err(|err| {
             error!("Fatal: failed to get ingestor info: {:?}", err);
             PostError::Invalid(err)
@@ -557,7 +565,7 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
         .map_err(|err| StreamError::Anyhow(err.into()))?;
 
     // Handle indexer metadata result
-    let indexer_metadata = indexer_result
+    let indexer_metadata: Vec<NodeMetadata> = indexer_result
         .map_err(|err| {
             error!("Fatal: failed to get indexer info: {:?}", err);
             PostError::Invalid(err)
@@ -565,7 +573,8 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
         .map_err(|err| StreamError::Anyhow(err.into()))?;
 
     // Fetch info for both node types concurrently
-    let (ingestor_infos, indexer_infos) = future::join(
+    let (querier_infos, ingestor_infos, indexer_infos) = future::join3(
+        fetch_nodes_info(querier_metadata),
         fetch_nodes_info(ingestor_metadata),
         fetch_nodes_info(indexer_metadata),
     )
@@ -573,6 +582,7 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
 
     // Combine results from both node types
     let mut infos = Vec::new();
+    infos.extend(querier_infos?);
     infos.extend(ingestor_infos?);
     infos.extend(indexer_infos?);
 
@@ -671,40 +681,22 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
     Ok(actix_web::HttpResponse::Ok().json(dresses))
 }
 
-pub async fn get_ingestor_info() -> anyhow::Result<IngestorMetadataArr> {
+pub async fn get_node_info<T: Metadata + DeserializeOwned>(prefix: &str) -> anyhow::Result<Vec<T>> {
     let store = PARSEABLE.storage.get_object_store();
-
     let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
-    let arr = store
+    let prefix_owned = prefix.to_string(); // Create an owned copy of the prefix
+
+    let metadata = store
         .get_objects(
             Some(&root_path),
-            Box::new(|file_name| file_name.starts_with("ingestor")),
+            Box::new(move |file_name| file_name.starts_with(&prefix_owned)), // Use the owned copy
         )
         .await?
         .iter()
-        // this unwrap will most definateley shoot me in the foot later
-        .map(|x| serde_json::from_slice::<IngestorMetadata>(x).unwrap_or_default())
-        .collect_vec();
+        .filter_map(|x| serde_json::from_slice::<T>(x).ok())
+        .collect();
 
-    Ok(arr)
-}
-
-pub async fn get_indexer_info() -> anyhow::Result<IndexerMetadataArr> {
-    let store = PARSEABLE.storage.get_object_store();
-
-    let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
-    let arr = store
-        .get_objects(
-            Some(&root_path),
-            Box::new(|file_name| file_name.starts_with("indexer")),
-        )
-        .await?
-        .iter()
-        // this unwrap will most definateley shoot me in the foot later
-        .map(|x| serde_json::from_slice::<IndexerMetadata>(x).unwrap_or_default())
-        .collect_vec();
-
-    Ok(arr)
+    Ok(metadata)
 }
 
 pub async fn remove_node(node_url: Path<String>) -> Result<impl Responder, PostError> {
@@ -725,7 +717,11 @@ pub async fn remove_node(node_url: Path<String>) -> Result<impl Responder, PostE
     let removed_indexer =
         remove_node_metadata::<IndexerMetadata>(&object_store, &domain_name).await?;
 
-    let msg = if removed_ingestor || removed_indexer {
+    // Delete querier metadata
+    let removed_querier =
+        remove_node_metadata::<QuerierMetadata>(&object_store, &domain_name).await?;
+
+    let msg = if removed_ingestor || removed_indexer || removed_querier {
         format!("node {} removed successfully", domain_name)
     } else {
         format!("node {} is not found", domain_name)
@@ -836,6 +832,9 @@ where
     T: Metadata + Send + Sync + 'static,
 {
     let nodes_len = nodes.len();
+    if nodes_len == 0 {
+        return Ok(vec![]);
+    }
     let results = stream::iter(nodes)
         .map(|node| async move { fetch_node_metrics(&node).await })
         .buffer_unordered(nodes_len) // No concurrency limit
@@ -858,23 +857,31 @@ where
 /// Main function to fetch all cluster metrics, parallelized and refactored
 async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
     // Get ingestor and indexer metadata concurrently
-    let (ingestor_result, indexer_result) =
-        future::join(get_ingestor_info(), get_indexer_info()).await;
+    let (querier_result, ingestor_result, indexer_result) = future::join3(
+        get_node_info("querier"),
+        get_node_info("ingestor"),
+        get_node_info("indexer"),
+    )
+    .await;
 
+    // Handle querier metadata result
+    let querier_metadata: Vec<NodeMetadata> = querier_result.map_err(|err| {
+        error!("Fatal: failed to get querier info: {:?}", err);
+        PostError::Invalid(err)
+    })?;
     // Handle ingestor metadata result
-    let ingestor_metadata = ingestor_result.map_err(|err| {
+    let ingestor_metadata: Vec<NodeMetadata> = ingestor_result.map_err(|err| {
         error!("Fatal: failed to get ingestor info: {:?}", err);
         PostError::Invalid(err)
     })?;
-
     // Handle indexer metadata result
-    let indexer_metadata = indexer_result.map_err(|err| {
+    let indexer_metadata: Vec<NodeMetadata> = indexer_result.map_err(|err| {
         error!("Fatal: failed to get indexer info: {:?}", err);
         PostError::Invalid(err)
     })?;
-
     // Fetch metrics from ingestors and indexers concurrently
-    let (ingestor_metrics, indexer_metrics) = future::join(
+    let (querier_metrics, ingestor_metrics, indexer_metrics) = future::join3(
+        fetch_nodes_metrics(querier_metadata),
         fetch_nodes_metrics(ingestor_metadata),
         fetch_nodes_metrics(indexer_metadata),
     )
@@ -882,6 +889,12 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
 
     // Combine all metrics
     let mut all_metrics = Vec::new();
+
+    // Add querier metrics
+    match querier_metrics {
+        Ok(metrics) => all_metrics.extend(metrics),
+        Err(err) => return Err(err),
+    }
 
     // Add ingestor metrics
     match ingestor_metrics {

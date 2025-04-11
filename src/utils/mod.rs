@@ -36,19 +36,10 @@ use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use datafusion::common::tree_node::TreeNode;
 use regex::Regex;
 use sha2::{Digest, Sha256};
-use tracing::debug;
 
-pub fn get_ingestor_id() -> String {
+pub fn get_node_id() -> String {
     let now = Utc::now().to_rfc3339();
     let id = get_hash(&now).to_string().split_at(15).0.to_string();
-    debug!("Ingestor ID: {id}");
-    id
-}
-
-pub fn get_indexer_id() -> String {
-    let now = Utc::now().to_rfc3339();
-    let id = get_hash(&now).to_string().split_at(15).0.to_string();
-    debug!("Indexer ID: {id}");
     id
 }
 
