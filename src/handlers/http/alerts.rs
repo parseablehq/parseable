@@ -22,7 +22,7 @@ use crate::{
     parseable::PARSEABLE,
     storage::object_storage::alert_json_path,
     // sync::schedule_alert_task,
-    utils::actix::extract_session_key_from_req,
+    utils::{actix::extract_session_key_from_req, user_auth_for_query},
 };
 use actix_web::{
     web::{self, Json, Path},
@@ -31,9 +31,7 @@ use actix_web::{
 use bytes::Bytes;
 use ulid::Ulid;
 
-use crate::alerts::{
-    alerts_utils::user_auth_for_query, AlertConfig, AlertError, AlertRequest, AlertState, ALERTS,
-};
+use crate::alerts::{AlertConfig, AlertError, AlertRequest, AlertState, ALERTS};
 
 // GET /alerts
 /// User needs at least a read access to the stream(s) that is being referenced in an alert

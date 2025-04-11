@@ -23,8 +23,11 @@ use tokio::sync::RwLock;
 
 use super::TimeFilter;
 use crate::{
-    alerts::alerts_utils::user_auth_for_query, migration::to_bytes, parseable::PARSEABLE,
-    rbac::map::SessionKey, storage::object_storage::filter_path, utils::get_hash,
+    migration::to_bytes,
+    parseable::PARSEABLE,
+    rbac::{map::SessionKey, Users},
+    storage::object_storage::filter_path,
+    utils::{get_hash, user_auth_for_datasets, user_auth_for_query},
 };
 
 pub static FILTERS: Lazy<Filters> = Lazy::new(Filters::default);
@@ -42,9 +45,27 @@ pub struct Filter {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct FilterQuery {
-    pub filter_type: String,
+    pub filter_type: FilterType,
     pub filter_query: Option<String>,
     pub filter_builder: Option<FilterBuilder>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum FilterType {
+    Filter,
+    SQL,
+    Search,
+}
+
+impl FilterType {
+    pub fn to_str(&self) -> &str {
+        match self {
+            FilterType::Filter => "filter",
+            FilterType::SQL => "sql",
+            FilterType::Search => "search",
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -163,9 +184,17 @@ impl Filters {
             } else {
                 continue;
             };
-
-            if (user_auth_for_query(key, query).await).is_ok() {
-                filters.push(f.clone())
+            let filter_type = &f.query.filter_type;
+            if *filter_type == FilterType::SQL || *filter_type == FilterType::Filter {
+                if (user_auth_for_query(key, query).await).is_ok() {
+                    filters.push(f.clone())
+                }
+            } else if *filter_type == FilterType::Search {
+                let dataset_name = &f.stream_name;
+                let permissions = Users.get_permissions(key);
+                if user_auth_for_datasets(&permissions, &[dataset_name.to_string()]).is_ok() {
+                    filters.push(f.clone())
+                }
             }
         }
         filters

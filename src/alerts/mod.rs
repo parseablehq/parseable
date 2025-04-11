@@ -17,7 +17,6 @@
  */
 
 use actix_web::http::header::ContentType;
-use alerts_utils::user_auth_for_query;
 use async_trait::async_trait;
 use chrono::Utc;
 use derive_more::derive::FromStr;
@@ -43,6 +42,7 @@ use crate::rbac::map::SessionKey;
 use crate::storage;
 use crate::storage::ObjectStorageError;
 use crate::sync::alert_runtime;
+use crate::utils::user_auth_for_query;
 
 use self::target::Target;
 
