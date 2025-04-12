@@ -82,7 +82,7 @@ impl SchemaDefinition {
     ///
     /// # Returns
     /// * `Some` - If all expected fields are already present in the object OR if extraction was successful
-    ///            Contains fields present in catch group
+    ///   Contains fields present in catch group
     /// * `None` - If extraction failed or no pattern was available and fields were missing
     pub fn check_or_extract(
         &self,

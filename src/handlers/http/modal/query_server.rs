@@ -333,13 +333,13 @@ impl QueryServer {
                         .authorize(Action::ListClusterMetrics),
                 ),
             )
-            // DELETE "/cluster/{ingestor_domain:port}" ==> Delete an ingestor from the cluster
+            // DELETE "/cluster/{node_domain:port}" ==> Delete a node from the cluster
             .service(
-                web::scope("/{ingestor}").service(
+                web::scope("/{node_url}").service(
                     web::resource("").route(
                         web::delete()
-                            .to(cluster::remove_ingestor)
-                            .authorize(Action::Deleteingestor),
+                            .to(cluster::remove_node)
+                            .authorize(Action::DeleteNode),
                     ),
                 ),
             )

@@ -25,7 +25,7 @@ use crate::utils::human_size::bytes_to_human_size;
 
 // Add more sql keywords here in lower case
 const DENIED_NAMES: &[&str] = &[
-    "select", "from", "where", "group", "by", "order", "limit", "offset", "join", "and",
+    "select", "from", "where", "group", "by", "order", "limit", "offset", "join", "and", "sql",
 ];
 
 const ALLOWED_SPECIAL_CHARS: &[char] = &['-', '_'];

@@ -139,6 +139,13 @@ spec:
           {{- end }}
           - name: P_MODE
             value: "ingest"
+          {{- if .Values.parseable.kafkaConnector.enabled }}
+            {{- range $key, $value := .Values.parseable.kafkaConnector.env }}
+          - name: {{ $key }}
+            value: {{ tpl $value $ | quote }}
+            {{- end }}
+          {{- end }}
+
         ports:
           - containerPort: {{ .Values.parseable.highAvailability.ingestor.port }}
       {{- with .Values.readinessProbe }}

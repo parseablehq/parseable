@@ -138,9 +138,9 @@ pub fn add_parseable_fields(
             field_names.insert(key.to_string());
 
             let value = p_custom_fields.get(key).unwrap();
-            columns.push(Arc::new(StringArray::from_iter_values(
-                std::iter::repeat(value).take(row_count),
-            )) as ArrayRef);
+            columns.push(Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+                value, row_count,
+            ))) as ArrayRef);
         }
     }
 

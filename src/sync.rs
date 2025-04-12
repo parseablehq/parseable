@@ -17,15 +17,16 @@
  */
 
 use chrono::{TimeDelta, Timelike};
+use std::collections::HashMap;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
-use tokio::sync::oneshot;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::{interval_at, sleep, Duration, Instant};
 use tokio::{select, task};
 use tracing::{error, info, trace, warn};
 
-use crate::alerts::{alerts_utils, AlertConfig, AlertError};
+use crate::alerts::{alerts_utils, AlertTask};
 use crate::parseable::PARSEABLE;
 use crate::{LOCAL_SYNC_INTERVAL, STORAGE_UPLOAD_INTERVAL};
 
@@ -227,49 +228,60 @@ pub fn local_sync() -> (
     (handle, outbox_rx, inbox_tx)
 }
 
-pub fn schedule_alert_task(
-    eval_frequency: u64,
-    alert: AlertConfig,
-    inbox_rx: oneshot::Receiver<()>,
-    outbox_tx: oneshot::Sender<()>,
-) -> Result<task::JoinHandle<()>, AlertError> {
-    let handle = tokio::task::spawn(async move {
-        info!("new alert task started for {alert:?}");
+/// A separate runtime for running all alert tasks
+#[tokio::main(flavor = "multi_thread")]
+pub async fn alert_runtime(mut rx: mpsc::Receiver<AlertTask>) -> Result<(), anyhow::Error> {
+    let mut alert_tasks = HashMap::new();
 
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
-            let mut sync_interval =
-                interval_at(next_minute(), Duration::from_secs(eval_frequency * 60));
-            let mut inbox_rx = AssertUnwindSafe(inbox_rx);
+    // this is the select! loop which will keep waiting for the alert task to finish or get cancelled
+    while let Some(task) = rx.recv().await {
+        match task {
+            AlertTask::Create(alert) => {
+                // check if the alert already exists
+                if alert_tasks.contains_key(&alert.id) {
+                    error!("Alert with id {} already exists", alert.id);
+                    continue;
+                }
 
-            loop {
-                select! {
-                    _ = sync_interval.tick() => {
-                        trace!("Flushing stage to disk...");
+                let alert = alert.clone();
+                let id = alert.id;
+                let handle = tokio::spawn(async move {
+                    let mut retry_counter = 0;
+                    let mut sleep_duration = alert.get_eval_frequency();
+                    loop {
                         match alerts_utils::evaluate_alert(&alert).await {
-                            Ok(_) => {}
-                            Err(err) => error!("Error while evaluation- {err}"),
+                            Ok(_) => {
+                                retry_counter = 0;
+                            }
+                            Err(err) => {
+                                warn!("Error while evaluation- {}\nRetrying after sleeping for 1 minute", err);
+                                sleep_duration = 1;
+                                retry_counter += 1;
+
+                                if retry_counter > 3 {
+                                    error!("Alert with id {} failed to evaluate after 3 retries with err- {}", id, err);
+                                    break;
+                                }
+                            }
                         }
-                    },
-                    res = &mut inbox_rx => {match res{
-                        Ok(_) => break,
-                        Err(_) => {
-                            warn!("Inbox channel closed unexpectedly");
-                            break;
-                        }}
+                        tokio::time::sleep(Duration::from_secs(sleep_duration * 60)).await;
                     }
+                });
+
+                // store the handle in the map, since it is not awaited, it will keep on running
+                alert_tasks.insert(id, handle);
+            }
+            AlertTask::Delete(ulid) => {
+                // check if the alert exists
+                if let Some(handle) = alert_tasks.remove(&ulid) {
+                    // cancel the task
+                    handle.abort();
+                    warn!("Alert with id {} deleted", ulid);
+                } else {
+                    error!("Alert with id {} does not exist", ulid);
                 }
             }
-        }));
-
-        match result {
-            Ok(future) => {
-                future.await;
-            }
-            Err(panic_error) => {
-                error!("Panic in scheduled alert task: {panic_error:?}");
-                let _ = outbox_tx.send(());
-            }
         }
-    });
-    Ok(handle)
+    }
+    Ok(())
 }

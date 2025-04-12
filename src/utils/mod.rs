@@ -26,11 +26,14 @@ pub mod uid;
 pub mod update;
 
 use crate::handlers::http::rbac::RBACError;
+use crate::query::{TableScanVisitor, QUERY_SESSION};
+use crate::rbac::map::SessionKey;
 use crate::rbac::role::{Action, Permission};
 use crate::rbac::Users;
 use actix::extract_session_key_from_req;
 use actix_web::HttpRequest;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use datafusion::common::tree_node::TreeNode;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 use tracing::debug;
@@ -82,7 +85,29 @@ pub fn get_hash(key: &str) -> String {
     result
 }
 
-pub fn user_auth_for_query(
+async fn get_tables_from_query(query: &str) -> Result<TableScanVisitor, actix_web::error::Error> {
+    let session_state = QUERY_SESSION.state();
+    let raw_logical_plan = session_state
+        .create_logical_plan(query)
+        .await
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Query error: {}", e)))?;
+
+    let mut visitor = TableScanVisitor::default();
+    let _ = raw_logical_plan.visit(&mut visitor);
+    Ok(visitor)
+}
+
+pub async fn user_auth_for_query(
+    session_key: &SessionKey,
+    query: &str,
+) -> Result<(), actix_web::error::Error> {
+    let tables = get_tables_from_query(query).await?;
+    let permissions = Users.get_permissions(session_key);
+    let tables = tables.into_inner();
+    user_auth_for_datasets(&permissions, &tables)
+}
+
+pub fn user_auth_for_datasets(
     permissions: &[Permission],
     tables: &[String],
 ) -> Result<(), actix_web::error::Error> {

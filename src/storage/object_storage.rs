@@ -201,10 +201,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         &self,
         stream_name: &str,
     ) -> Result<Vec<RelativePathBuf>, ObjectStorageError>;
-    async fn try_delete_ingestor_meta(
-        &self,
-        ingestor_filename: String,
-    ) -> Result<(), ObjectStorageError>;
+    async fn try_delete_node_meta(&self, node_filename: String) -> Result<(), ObjectStorageError>;
     /// Returns the amount of time taken by the `ObjectStore` to perform a get
     /// call.
     async fn get_latency(&self) -> Duration {

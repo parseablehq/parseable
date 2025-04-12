@@ -325,11 +325,8 @@ impl ObjectStorage for LocalFS {
         Ok(fs::remove_dir_all(path).await?)
     }
 
-    async fn try_delete_ingestor_meta(
-        &self,
-        ingestor_filename: String,
-    ) -> Result<(), ObjectStorageError> {
-        let path = self.root.join(ingestor_filename);
+    async fn try_delete_node_meta(&self, node_filename: String) -> Result<(), ObjectStorageError> {
+        let path = self.root.join(node_filename);
         Ok(fs::remove_file(path).await?)
     }
 
@@ -466,7 +463,7 @@ impl ObjectStorage for LocalFS {
     fn get_bucket_name(&self) -> String {
         self.root
             .iter()
-            .last()
+            .next_back()
             .expect("can be unwrapped without checking as the path is absolute")
             .to_str()
             .expect("valid unicode")

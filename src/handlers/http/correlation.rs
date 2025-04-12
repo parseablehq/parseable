@@ -23,7 +23,7 @@ use itertools::Itertools;
 
 use crate::rbac::Users;
 use crate::utils::actix::extract_session_key_from_req;
-use crate::utils::{get_hash, get_user_from_request, user_auth_for_query};
+use crate::utils::{get_hash, get_user_from_request, user_auth_for_datasets};
 
 use crate::correlation::{CorrelationConfig, CorrelationError, CORRELATIONS};
 
@@ -54,7 +54,7 @@ pub async fn get(
         .map(|t| t.table_name.clone())
         .collect_vec();
 
-    user_auth_for_query(&permissions, tables)?;
+    user_auth_for_datasets(&permissions, tables)?;
 
     Ok(web::Json(correlation))
 }

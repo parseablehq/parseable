@@ -44,7 +44,7 @@ use crate::utils::arrow::flight::{
     send_to_ingester,
 };
 use crate::utils::time::TimeRange;
-use crate::utils::user_auth_for_query;
+use crate::utils::user_auth_for_datasets;
 use arrow_flight::{
     flight_service_server::FlightService, Action, ActionType, Criteria, Empty, FlightData,
     FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse, PutResult, SchemaAsIpc,
@@ -169,7 +169,7 @@ impl FlightService for AirServiceImpl {
             query.time_range.start.timestamp_millis(),
             query.time_range.end.timestamp_millis(),
         ) {
-            let sql = format!("select * from {}", &stream_name);
+            let sql = format!("select * from \"{}\"", &stream_name);
             let start_time = ticket.start_time.clone();
             let end_time = ticket.end_time.clone();
             let out_ticket = json!({
@@ -211,7 +211,7 @@ impl FlightService for AirServiceImpl {
 
         let permissions = Users.get_permissions(&key);
 
-        user_auth_for_query(&permissions, &streams).map_err(|_| {
+        user_auth_for_datasets(&permissions, &streams).map_err(|_| {
             Status::permission_denied("User Does not have permission to access this")
         })?;
         let time = Instant::now();

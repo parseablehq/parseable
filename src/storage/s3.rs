@@ -727,11 +727,8 @@ impl ObjectStorage for S3 {
         Ok(())
     }
 
-    async fn try_delete_ingestor_meta(
-        &self,
-        ingestor_filename: String,
-    ) -> Result<(), ObjectStorageError> {
-        let file = RelativePathBuf::from(&ingestor_filename);
+    async fn try_delete_node_meta(&self, node_filename: String) -> Result<(), ObjectStorageError> {
+        let file = RelativePathBuf::from(&node_filename);
         match self.client.delete(&to_object_store_path(&file)).await {
             Ok(_) => Ok(()),
             Err(err) => {
@@ -741,7 +738,7 @@ impl ObjectStorage for S3 {
                     error!("Node does not exist");
                     Err(err.into())
                 } else {
-                    error!("Error deleting ingestor meta file: {:?}", err);
+                    error!("Error deleting node meta file: {:?}", err);
                     Err(err.into())
                 }
             }
