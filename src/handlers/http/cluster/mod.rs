@@ -540,7 +540,20 @@ pub async fn send_retention_cleanup_request(
 }
 
 pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
-    // Get ingestor and indexer metadata concurrently
+    let self_info = utils::ClusterInfo::new(
+        &PARSEABLE.options.address,
+        true,
+        PARSEABLE
+            .options
+            .staging_dir()
+            .to_string_lossy()
+            .to_string(),
+        PARSEABLE.storage.get_endpoint(),
+        None,
+        Some(String::from("200 OK")),
+        &PARSEABLE.options.mode.to_node_type(),
+    );
+    // Get querier, ingestor and indexer metadata concurrently
     let (querier_result, ingestor_result, indexer_result) = future::join3(
         get_node_info("querier"),
         get_node_info("ingestor"),
@@ -585,6 +598,7 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
     infos.extend(querier_infos?);
     infos.extend(ingestor_infos?);
     infos.extend(indexer_infos?);
+    infos.push(self_info);
 
     Ok(actix_web::HttpResponse::Ok().json(infos))
 }

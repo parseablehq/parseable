@@ -18,6 +18,8 @@
 use parquet::basic::{BrotliLevel, GzipLevel, ZstdLevel};
 use serde::{Deserialize, Serialize};
 
+use crate::handlers::http::modal::NodeType;
+
 #[derive(Debug, Default, Eq, PartialEq, Clone, Copy, Serialize, Deserialize)]
 pub enum Mode {
     Query,
@@ -40,6 +42,16 @@ impl Mode {
         }
 
         Ok(())
+    }
+
+    pub fn to_node_type(&self) -> NodeType {
+        match self {
+            Mode::Ingest => NodeType::Ingestor,
+            Mode::Index => NodeType::Indexer,
+            Mode::Query => NodeType::Querier,
+            Mode::Prism => NodeType::Prism,
+            Mode::All => NodeType::All,
+        }
     }
 }
 

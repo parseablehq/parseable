@@ -200,14 +200,14 @@ pub async fn load_on_init() -> anyhow::Result<()> {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
 pub enum NodeType {
     #[default]
-    #[serde(rename = "ingestor")]
     Ingestor,
-    #[serde(rename = "indexer")]
     Indexer,
-    #[serde(rename = "querier")]
     Querier,
+    Prism,
+    All,
 }
 
 impl NodeType {
@@ -216,6 +216,8 @@ impl NodeType {
             NodeType::Ingestor => "ingestor",
             NodeType::Indexer => "indexer",
             NodeType::Querier => "querier",
+            NodeType::Prism => "prism",
+            NodeType::All => "all",
         }
     }
 
@@ -224,6 +226,8 @@ impl NodeType {
             NodeType::Ingestor => Mode::Ingest,
             NodeType::Indexer => Mode::Index,
             NodeType::Querier => Mode::Query,
+            NodeType::Prism => Mode::Prism,
+            NodeType::All => Mode::All,
         }
     }
 }
@@ -532,89 +536,6 @@ pub type IngestorMetadata = NodeMetadata;
 pub type IndexerMetadata = NodeMetadata;
 pub type QuerierMetadata = NodeMetadata;
 
-// Helper functions for creating specific node types
-pub fn create_ingestor_metadata(
-    port: String,
-    domain_name: String,
-    bucket_name: String,
-    username: &str,
-    password: &str,
-    ingestor_id: String,
-    flight_port: String,
-) -> NodeMetadata {
-    NodeMetadata::new(
-        port,
-        domain_name,
-        bucket_name,
-        username,
-        password,
-        ingestor_id,
-        flight_port,
-        NodeType::Ingestor,
-    )
-}
-
-pub fn load_ingestor_metadata(
-    options: &Options,
-    storage: &dyn ObjectStorageProvider,
-) -> Arc<NodeMetadata> {
-    NodeMetadata::load(options, storage, NodeType::Ingestor)
-}
-
-pub fn create_indexer_metadata(
-    port: String,
-    domain_name: String,
-    bucket_name: String,
-    username: &str,
-    password: &str,
-    indexer_id: String,
-    flight_port: String,
-) -> NodeMetadata {
-    NodeMetadata::new(
-        port,
-        domain_name,
-        bucket_name,
-        username,
-        password,
-        indexer_id,
-        flight_port,
-        NodeType::Indexer,
-    )
-}
-
-pub fn load_indexer_metadata(
-    options: &Options,
-    storage: &dyn ObjectStorageProvider,
-) -> Arc<NodeMetadata> {
-    NodeMetadata::load(options, storage, NodeType::Indexer)
-}
-
-pub fn create_querier_metadata(
-    port: String,
-    domain_name: String,
-    bucket_name: String,
-    username: &str,
-    password: &str,
-    querier_id: String,
-    flight_port: String,
-) -> NodeMetadata {
-    NodeMetadata::new(
-        port,
-        domain_name,
-        bucket_name,
-        username,
-        password,
-        querier_id,
-        flight_port,
-        NodeType::Querier,
-    )
-}
-pub fn load_querier_metadata(
-    options: &Options,
-    storage: &dyn ObjectStorageProvider,
-) -> Arc<NodeMetadata> {
-    NodeMetadata::load(options, storage, NodeType::Querier)
-}
 #[cfg(test)]
 mod test {
     use actix_web::body::MessageBody;
