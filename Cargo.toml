@@ -1,10 +1,10 @@
 [package]
 name = "parseable"
-version = "2.0.0"
+version = "2.1.0"
 authors = ["Parseable Team <hi@parseable.com>"]
 edition = "2021"
 rust-version = "1.83.0"
-categories = ["logging", "observability", "log analytics"]
+categories = ["logs", "observability", "metrics", "traces"]
 build = "build.rs"
 
 [dependencies]
@@ -138,8 +138,8 @@ arrow = "54.0.0"
 temp-dir = "0.1.14"
 
 [package.metadata.parseable_ui]
-assets-url = "https://parseable-prism-build.s3.us-east-2.amazonaws.com/v2.1.0/build.zip"
-assets-sha1 = "12c7314fcdaa034e5ad94c6a826a0cf402b62461"
+assets-url = "https://parseable-prism-build.s3.us-east-2.amazonaws.com/v2.1.1/build.zip"
+assets-sha1 = "d7b7a920cfcbfd59725dce6ad9e3d8f354cf9bf8"
 
 [features]
 debug = []
