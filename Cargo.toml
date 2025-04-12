@@ -1,10 +1,10 @@
 [package]
 name = "parseable"
-version = "2.1.1"
+version = "2.1.0"
 authors = ["Parseable Team <hi@parseable.com>"]
 edition = "2021"
 rust-version = "1.83.0"
-categories = ["logging", "observability", "log analytics"]
+categories = ["logs", "observability", "metrics", "traces"]
 build = "build.rs"
 
 [dependencies]
