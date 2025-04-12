@@ -37,7 +37,9 @@ use serde_json::error::Error as SerdeError;
 use serde_json::{to_vec, Value as JsonValue};
 use tracing::{error, info, warn};
 use url::Url;
-use utils::{check_liveness, to_url_string, IngestionStats, QueriedStats, StorageStats};
+use utils::{
+    check_liveness, to_url_string, ClusterInfo, IngestionStats, QueriedStats, StorageStats,
+};
 
 use crate::handlers::http::ingest::ingest_internal_stream;
 use crate::metrics::prom_utils::Metrics;
@@ -540,8 +542,13 @@ pub async fn send_retention_cleanup_request(
 }
 
 pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
-    let self_info = utils::ClusterInfo::new(
-        &PARSEABLE.options.address,
+    let self_info = ClusterInfo::new(
+        format!(
+            "{}://{}",
+            PARSEABLE.options.get_scheme(),
+            PARSEABLE.options.address
+        )
+        .as_str(),
         true,
         PARSEABLE
             .options
