@@ -22,7 +22,7 @@ use arrow_schema::Schema;
 use cluster::get_node_info;
 use http::StatusCode;
 use itertools::Itertools;
-use modal::NodeMetadata;
+use modal::{NodeMetadata, NodeType};
 use serde_json::Value;
 
 use crate::{parseable::PARSEABLE, storage::STREAM_ROOT_DIRECTORY, HTTP_CLIENT};
@@ -110,7 +110,7 @@ pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Sch
 pub async fn send_query_request_to_ingestor(query: &Query) -> anyhow::Result<Vec<Value>> {
     // send the query request to the ingestor
     let mut res = vec![];
-    let ima: Vec<NodeMetadata> = get_node_info("ingestor").await?;
+    let ima: Vec<NodeMetadata> = get_node_info(NodeType::Ingestor).await?;
 
     for im in ima.iter() {
         let uri = format!(

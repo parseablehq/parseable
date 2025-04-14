@@ -41,7 +41,7 @@ use crate::{
             utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
         },
         logstream::{error::StreamError, get_stats_date},
-        modal::NodeMetadata,
+        modal::{NodeMetadata, NodeType},
     },
     hottier::HotTierManager,
     parseable::{StreamNotFound, PARSEABLE},
@@ -82,8 +82,9 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
         }
     }
 
-    let ingestor_metadata: Vec<NodeMetadata> =
-        cluster::get_node_info("ingestor").await.map_err(|err| {
+    let ingestor_metadata: Vec<NodeMetadata> = cluster::get_node_info(NodeType::Ingestor)
+        .await
+        .map_err(|err| {
             error!("Fatal: failed to get ingestor info: {:?}", err);
             err
         })?;

@@ -75,10 +75,11 @@ pub async fn sync_streams_with_ingestors(
     for (key, value) in headers.iter() {
         reqwest_headers.insert(key.clone(), value.clone());
     }
-    let ingestor_infos: Vec<NodeMetadata> = get_node_info("ingestor").await.map_err(|err| {
-        error!("Fatal: failed to get ingestor info: {:?}", err);
-        StreamError::Anyhow(err)
-    })?;
+    let ingestor_infos: Vec<NodeMetadata> =
+        get_node_info(NodeType::Ingestor).await.map_err(|err| {
+            error!("Fatal: failed to get ingestor info: {:?}", err);
+            StreamError::Anyhow(err)
+        })?;
 
     for ingestor in ingestor_infos {
         if !utils::check_liveness(&ingestor.domain_name).await {
@@ -123,10 +124,11 @@ pub async fn sync_users_with_roles_with_ingestors(
     username: &String,
     role: &HashSet<String>,
 ) -> Result<(), RBACError> {
-    let ingestor_infos: Vec<NodeMetadata> = get_node_info("ingestor").await.map_err(|err| {
-        error!("Fatal: failed to get ingestor info: {:?}", err);
-        RBACError::Anyhow(err)
-    })?;
+    let ingestor_infos: Vec<NodeMetadata> =
+        get_node_info(NodeType::Ingestor).await.map_err(|err| {
+            error!("Fatal: failed to get ingestor info: {:?}", err);
+            RBACError::Anyhow(err)
+        })?;
 
     let role = to_vec(&role.clone()).map_err(|err| {
         error!("Fatal: failed to serialize role: {:?}", err);
@@ -173,10 +175,11 @@ pub async fn sync_users_with_roles_with_ingestors(
 
 // forward the delete user request to all ingestors to keep them in sync
 pub async fn sync_user_deletion_with_ingestors(username: &String) -> Result<(), RBACError> {
-    let ingestor_infos: Vec<NodeMetadata> = get_node_info("ingestor").await.map_err(|err| {
-        error!("Fatal: failed to get ingestor info: {:?}", err);
-        RBACError::Anyhow(err)
-    })?;
+    let ingestor_infos: Vec<NodeMetadata> =
+        get_node_info(NodeType::Ingestor).await.map_err(|err| {
+            error!("Fatal: failed to get ingestor info: {:?}", err);
+            RBACError::Anyhow(err)
+        })?;
 
     for ingestor in ingestor_infos.iter() {
         if !utils::check_liveness(&ingestor.domain_name).await {
@@ -220,10 +223,11 @@ pub async fn sync_user_creation_with_ingestors(
     user: User,
     role: &Option<HashSet<String>>,
 ) -> Result<(), RBACError> {
-    let ingestor_infos: Vec<NodeMetadata> = get_node_info("ingestor").await.map_err(|err| {
-        error!("Fatal: failed to get ingestor info: {:?}", err);
-        RBACError::Anyhow(err)
-    })?;
+    let ingestor_infos: Vec<NodeMetadata> =
+        get_node_info(NodeType::Ingestor).await.map_err(|err| {
+            error!("Fatal: failed to get ingestor info: {:?}", err);
+            RBACError::Anyhow(err)
+        })?;
 
     let mut user = user.clone();
 
@@ -278,10 +282,11 @@ pub async fn sync_user_creation_with_ingestors(
 
 // forward the password reset request to all ingestors to keep them in sync
 pub async fn sync_password_reset_with_ingestors(username: &String) -> Result<(), RBACError> {
-    let ingestor_infos: Vec<NodeMetadata> = get_node_info("ingestor").await.map_err(|err| {
-        error!("Fatal: failed to get ingestor info: {:?}", err);
-        RBACError::Anyhow(err)
-    })?;
+    let ingestor_infos: Vec<NodeMetadata> =
+        get_node_info(NodeType::Ingestor).await.map_err(|err| {
+            error!("Fatal: failed to get ingestor info: {:?}", err);
+            RBACError::Anyhow(err)
+        })?;
 
     for ingestor in ingestor_infos.iter() {
         if !utils::check_liveness(&ingestor.domain_name).await {
@@ -326,10 +331,11 @@ pub async fn sync_role_update_with_ingestors(
     name: String,
     privileges: Vec<DefaultPrivilege>,
 ) -> Result<(), RoleError> {
-    let ingestor_infos: Vec<NodeMetadata> = get_node_info("ingestor").await.map_err(|err| {
-        error!("Fatal: failed to get ingestor info: {:?}", err);
-        RoleError::Anyhow(err)
-    })?;
+    let ingestor_infos: Vec<NodeMetadata> =
+        get_node_info(NodeType::Ingestor).await.map_err(|err| {
+            error!("Fatal: failed to get ingestor info: {:?}", err);
+            RoleError::Anyhow(err)
+        })?;
 
     for ingestor in ingestor_infos.iter() {
         if !utils::check_liveness(&ingestor.domain_name).await {
@@ -541,12 +547,13 @@ pub async fn send_retention_cleanup_request(
     Ok(first_event_at)
 }
 
+/// Fetches cluster information for all nodes (ingestor, indexer, and querier)
 pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
     // Get querier, ingestor and indexer metadata concurrently
     let (querier_result, ingestor_result, indexer_result) = future::join3(
-        get_node_info("querier"),
-        get_node_info("ingestor"),
-        get_node_info("indexer"),
+        get_node_info(NodeType::Querier),
+        get_node_info(NodeType::Ingestor),
+        get_node_info(NodeType::Indexer),
     )
     .await;
 
@@ -574,13 +581,14 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
         })
         .map_err(|err| StreamError::Anyhow(err.into()))?;
 
+    // Get self metadata
     let self_metadata = if let Some(metadata) = PARSEABLE.get_metadata() {
         vec![metadata]
     } else {
         vec![]
     };
 
-    // Fetch info for both node types concurrently
+    // Fetch info for all nodes concurrently
     let (querier_infos, ingestor_infos, indexer_infos, self_info) = future::join4(
         fetch_nodes_info(querier_metadata),
         fetch_nodes_info(ingestor_metadata),
@@ -589,7 +597,7 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
     )
     .await;
 
-    // Combine results from both node types
+    // Combine results from all node types
     let mut infos = Vec::new();
     infos.extend(self_info?);
     infos.extend(querier_infos?);
@@ -598,7 +606,9 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
     Ok(actix_web::HttpResponse::Ok().json(infos))
 }
 
-/// Fetches info for a single node (ingestor or indexer)
+/// Fetches info for a single node
+/// call the about endpoint of the node
+/// construct the ClusterInfo struct and return it
 async fn fetch_node_info<T: Metadata>(node: &T) -> Result<utils::ClusterInfo, StreamError> {
     let uri = Url::parse(&format!(
         "{}{}/about",
@@ -690,10 +700,15 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
     Ok(actix_web::HttpResponse::Ok().json(dresses))
 }
 
-pub async fn get_node_info<T: Metadata + DeserializeOwned>(prefix: &str) -> anyhow::Result<Vec<T>> {
+/// get node info for a specific node type
+/// this is used to get the node info for ingestor, indexer and querier
+/// it will return the metadata for all nodes of that type
+pub async fn get_node_info<T: Metadata + DeserializeOwned>(
+    node_type: NodeType,
+) -> anyhow::Result<Vec<T>> {
     let store = PARSEABLE.storage.get_object_store();
     let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
-    let prefix_owned = prefix.to_string(); // Create an owned copy of the prefix
+    let prefix_owned = node_type.to_string();
 
     let metadata = store
         .get_objects(
@@ -707,7 +722,11 @@ pub async fn get_node_info<T: Metadata + DeserializeOwned>(prefix: &str) -> anyh
 
     Ok(metadata)
 }
-
+/// remove a node from the cluster
+/// check liveness of the node
+/// if the node is live, return an error
+/// if the node is not live, remove the node from the cluster
+/// remove the node metadata from the object store
 pub async fn remove_node(node_url: Path<String>) -> Result<impl Responder, PostError> {
     let domain_name = to_url_string(node_url.into_inner());
 
@@ -745,7 +764,8 @@ pub async fn remove_node(node_url: Path<String>) -> Result<impl Responder, PostE
     )))
 }
 
-// Helper function to remove a specific type of node metadata
+/// Removes node metadata from the object store
+/// Returns true if the metadata was removed, false if it was not found
 async fn remove_node_metadata<T: Metadata + DeserializeOwned + Default>(
     object_store: &Arc<dyn ObjectStorage>,
     domain_name: &str,
@@ -783,7 +803,10 @@ async fn remove_node_metadata<T: Metadata + DeserializeOwned + Default>(
     }
 }
 
-/// Fetches metrics from a node (ingestor or indexer)
+/// Fetches metrics for a single node
+/// This function is used to fetch metrics from a single node
+/// It checks if the node is live and then fetches the metrics
+/// If the node is not live, it returns None
 async fn fetch_node_metrics<T>(node: &T) -> Result<Option<Metrics>, PostError>
 where
     T: Metadata + Send + Sync + 'static,
@@ -867,13 +890,16 @@ where
     Ok(metrics)
 }
 
-/// Main function to fetch all cluster metrics, parallelized and refactored
+/// Main function to fetch cluster metrics
+/// fetches node info for all nodes
+/// fetches metrics for all nodes
+/// combines all metrics into a single vector
 async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
     // Get ingestor and indexer metadata concurrently
     let (querier_result, ingestor_result, indexer_result) = future::join3(
-        get_node_info("querier"),
-        get_node_info("ingestor"),
-        get_node_info("indexer"),
+        get_node_info(NodeType::Querier),
+        get_node_info(NodeType::Ingestor),
+        get_node_info(NodeType::Indexer),
     )
     .await;
 

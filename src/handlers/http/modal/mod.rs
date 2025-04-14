@@ -199,6 +199,7 @@ pub async fn load_on_init() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// NodeType represents the type of node in the cluster
 #[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum NodeType {
@@ -531,7 +532,7 @@ impl Metadata for NodeMetadata {
     }
 }
 
-// Type aliases for backward compatibility
+// Aliases for different node types
 pub type IngestorMetadata = NodeMetadata;
 pub type IndexerMetadata = NodeMetadata;
 pub type QuerierMetadata = NodeMetadata;

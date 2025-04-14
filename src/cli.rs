@@ -447,6 +447,8 @@ impl Options {
         }
     }
 
+    /// get the address of the server
+    /// based on the mode
     pub fn get_url(&self, mode: Mode) -> Url {
         let endpoint = match mode {
             Mode::Ingest => self.get_endpoint(&self.ingestor_endpoint, "P_INGESTOR_ENDPOINT"),
@@ -458,6 +460,8 @@ impl Options {
         self.parse_endpoint(&endpoint)
     }
 
+    /// get the endpoint for the server
+    /// if env var is empty, use the address, else use the env var
     fn get_endpoint(&self, endpoint: &str, env_var: &str) -> String {
         if endpoint.is_empty() {
             self.address.to_string()
@@ -472,6 +476,9 @@ impl Options {
         }
     }
 
+    /// parse the endpoint to get the address and port
+    /// if the address is an env var, resolve it
+    /// if the port is an env var, resolve it
     fn parse_endpoint(&self, endpoint: &str) -> Url {
         let addr_parts: Vec<&str> = endpoint.split(':').collect();
 
@@ -488,6 +495,9 @@ impl Options {
         self.build_url(&format!("{}:{}", hostname, port))
     }
 
+    /// resolve the env var
+    /// if the env var is not set, panic
+    /// if the env var is set, return the value
     fn resolve_env_var(&self, value: &str) -> String {
         if let Some(env_var) = value.strip_prefix('$') {
             let resolved_value = env::var(env_var).unwrap_or_else(|_| {
@@ -510,6 +520,7 @@ impl Options {
         }
     }
 
+    /// build the url from the address
     fn build_url(&self, address: &str) -> Url {
         format!("{}://{}", self.get_scheme(), address)
             .parse::<Url>()

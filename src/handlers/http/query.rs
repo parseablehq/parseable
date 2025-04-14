@@ -172,6 +172,9 @@ pub async fn get_counts(
 }
 
 pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), EventError> {
+    // if the mode is query or prism, we need to update the schema in memory
+    // no need to commit schema to storage
+    // as the schema is read from memory everytime
     if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
         for table in tables {
             if let Ok(new_schema) = fetch_schema(table).await {
