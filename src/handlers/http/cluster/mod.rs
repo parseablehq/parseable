@@ -37,9 +37,7 @@ use serde_json::error::Error as SerdeError;
 use serde_json::{to_vec, Value as JsonValue};
 use tracing::{error, info, warn};
 use url::Url;
-use utils::{
-    check_liveness, to_url_string, ClusterInfo, IngestionStats, QueriedStats, StorageStats,
-};
+use utils::{check_liveness, to_url_string, IngestionStats, QueriedStats, StorageStats};
 
 use crate::handlers::http::ingest::ingest_internal_stream;
 use crate::metrics::prom_utils::Metrics;
@@ -542,24 +540,6 @@ pub async fn send_retention_cleanup_request(
 }
 
 pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
-    let self_info = ClusterInfo::new(
-        format!(
-            "{}://{}",
-            PARSEABLE.options.get_scheme(),
-            PARSEABLE.options.address
-        )
-        .as_str(),
-        true,
-        PARSEABLE
-            .options
-            .staging_dir()
-            .to_string_lossy()
-            .to_string(),
-        PARSEABLE.storage.get_endpoint(),
-        None,
-        Some(String::from("200 OK")),
-        &PARSEABLE.options.mode.to_node_type(),
-    );
     // Get querier, ingestor and indexer metadata concurrently
     let (querier_result, ingestor_result, indexer_result) = future::join3(
         get_node_info("querier"),
@@ -592,21 +572,27 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
         })
         .map_err(|err| StreamError::Anyhow(err.into()))?;
 
+    let self_metadata = if let Some(metadata) = PARSEABLE.get_metadata() {
+        vec![metadata]
+    } else {
+        vec![]
+    };
+
     // Fetch info for both node types concurrently
-    let (querier_infos, ingestor_infos, indexer_infos) = future::join3(
+    let (querier_infos, ingestor_infos, indexer_infos, self_info) = future::join4(
         fetch_nodes_info(querier_metadata),
         fetch_nodes_info(ingestor_metadata),
         fetch_nodes_info(indexer_metadata),
+        fetch_nodes_info(self_metadata),
     )
     .await;
 
     // Combine results from both node types
     let mut infos = Vec::new();
+    infos.extend(self_info?);
     infos.extend(querier_infos?);
     infos.extend(ingestor_infos?);
     infos.extend(indexer_infos?);
-    infos.push(self_info);
-
     Ok(actix_web::HttpResponse::Ok().json(infos))
 }
 
@@ -885,6 +871,12 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
     )
     .await;
 
+    let self_metadata = if let Some(metadata) = PARSEABLE.get_metadata() {
+        vec![metadata]
+    } else {
+        vec![]
+    };
+
     // Handle querier metadata result
     let querier_metadata: Vec<NodeMetadata> = querier_result.map_err(|err| {
         error!("Fatal: failed to get querier info: {:?}", err);
@@ -901,7 +893,8 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
         PostError::Invalid(err)
     })?;
     // Fetch metrics from ingestors and indexers concurrently
-    let (querier_metrics, ingestor_metrics, indexer_metrics) = future::join3(
+    let (self_metrics, querier_metrics, ingestor_metrics, indexer_metrics) = future::join4(
+        fetch_nodes_metrics(self_metadata),
         fetch_nodes_metrics(querier_metadata),
         fetch_nodes_metrics(ingestor_metadata),
         fetch_nodes_metrics(indexer_metadata),
@@ -910,6 +903,12 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
 
     // Combine all metrics
     let mut all_metrics = Vec::new();
+
+    // Add self metrics
+    match self_metrics {
+        Ok(metrics) => all_metrics.extend(metrics),
+        Err(err) => return Err(err),
+    }
 
     // Add querier metrics
     match querier_metrics {

@@ -49,7 +49,7 @@ use crate::{
             logstream::error::{CreateStreamError, StreamError},
             modal::{
                 utils::logstream_utils::PutStreamHeaders, IndexerMetadata, IngestorMetadata,
-                NodeType, QuerierMetadata,
+                Metadata, NodeMetadata, NodeType, PrismMetadata, QuerierMetadata,
             },
         },
         STREAM_TYPE_KEY,
@@ -130,6 +130,8 @@ pub struct Parseable {
     /// Metadata and staging realting to each logstreams
     /// A globally shared mapping of `Streams` that parseable is aware of.
     pub streams: Streams,
+    ///Metadata associated only with a prism
+    pub prism_metadata: Option<Arc<PrismMetadata>>,
     /// Metadata associated only with a querier
     pub querier_metadata: Option<Arc<QuerierMetadata>>,
     /// Metadata associated only with an ingestor
@@ -147,6 +149,14 @@ impl Parseable {
         #[cfg(feature = "kafka")] kafka_config: KafkaConfig,
         storage: Arc<dyn ObjectStorageProvider>,
     ) -> Self {
+        let prism_metadata = match &options.mode {
+            Mode::Prism => Some(PrismMetadata::load(
+                &options,
+                storage.as_ref(),
+                NodeType::Prism,
+            )),
+            _ => None,
+        };
         let ingestor_metadata = match &options.mode {
             Mode::Ingest => Some(IngestorMetadata::load(
                 &options,
@@ -175,6 +185,7 @@ impl Parseable {
             options: Arc::new(options),
             storage,
             streams: Streams::default(),
+            prism_metadata,
             ingestor_metadata,
             indexer_metadata,
             querier_metadata,
@@ -183,6 +194,28 @@ impl Parseable {
         }
     }
 
+    /// Get the metadata for the current node based on its mode.
+    pub fn get_metadata(&self) -> Option<NodeMetadata> {
+        let meta_ref = match self.options.mode {
+            Mode::Ingest => self.ingestor_metadata.as_ref(),
+            Mode::Index => self.indexer_metadata.as_ref(),
+            Mode::Query => self.querier_metadata.as_ref(),
+            _ => return None,
+        };
+
+        let meta = meta_ref?;
+        let node_metadata = NodeMetadata {
+            version: meta.version.clone(),
+            node_id: meta.node_id.clone(),
+            port: meta.port.clone(),
+            domain_name: meta.domain_name.clone(),
+            bucket_name: meta.bucket_name.clone(),
+            token: meta.token.clone(),
+            flight_port: meta.flight_port.clone(),
+            node_type: meta.node_type().clone(),
+        };
+        Some(node_metadata)
+    }
     /// Try to get the handle of a stream in staging, if it doesn't exist return `None`.
     pub fn get_stream(&self, stream_name: &str) -> Result<StreamRef, StreamNotFound> {
         self.streams

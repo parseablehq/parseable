@@ -535,6 +535,7 @@ impl Metadata for NodeMetadata {
 pub type IngestorMetadata = NodeMetadata;
 pub type IndexerMetadata = NodeMetadata;
 pub type QuerierMetadata = NodeMetadata;
+pub type PrismMetadata = NodeMetadata;
 
 #[cfg(test)]
 mod test {
