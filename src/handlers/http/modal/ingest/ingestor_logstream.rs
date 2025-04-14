@@ -72,7 +72,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     }
 
     // Delete from staging
-    let stream_dir = PARSEABLE.get_or_create_stream(&stream_name);
+    let stream_dir = PARSEABLE.get_stream(&stream_name)?;
     if fs::remove_dir_all(&stream_dir.data_path).is_err() {
         warn!(
             "failed to delete local data for stream {}. Clean {} manually",
