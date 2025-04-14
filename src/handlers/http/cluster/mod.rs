@@ -54,7 +54,9 @@ use crate::HTTP_CLIENT;
 use super::base_path_without_preceding_slash;
 use super::ingest::PostError;
 use super::logstream::error::StreamError;
-use super::modal::{IndexerMetadata, IngestorMetadata, Metadata, NodeMetadata, QuerierMetadata};
+use super::modal::{
+    IndexerMetadata, IngestorMetadata, Metadata, NodeMetadata, NodeType, QuerierMetadata,
+};
 use super::rbac::RBACError;
 use super::role::RoleError;
 
@@ -718,37 +720,41 @@ pub async fn remove_node(node_url: Path<String>) -> Result<impl Responder, PostE
 
     // Delete ingestor metadata
     let removed_ingestor =
-        remove_node_metadata::<IngestorMetadata>(&object_store, &domain_name).await?;
+        remove_node_metadata::<IngestorMetadata>(&object_store, &domain_name, NodeType::Ingestor)
+            .await?;
 
     // Delete indexer metadata
     let removed_indexer =
-        remove_node_metadata::<IndexerMetadata>(&object_store, &domain_name).await?;
+        remove_node_metadata::<IndexerMetadata>(&object_store, &domain_name, NodeType::Indexer)
+            .await?;
 
     // Delete querier metadata
     let removed_querier =
-        remove_node_metadata::<QuerierMetadata>(&object_store, &domain_name).await?;
+        remove_node_metadata::<QuerierMetadata>(&object_store, &domain_name, NodeType::Querier)
+            .await?;
 
-    let msg = if removed_ingestor || removed_indexer || removed_querier {
-        format!("node {} removed successfully", domain_name)
-    } else {
-        format!("node {} is not found", domain_name)
-    };
-
-    info!("{}", &msg);
-    Ok((msg, StatusCode::OK))
+    if removed_ingestor || removed_indexer || removed_querier {
+        return Ok((
+            format!("node {} removed successfully", domain_name),
+            StatusCode::OK,
+        ));
+    }
+    Err(PostError::Invalid(anyhow::anyhow!(
+        "node {} not found",
+        domain_name
+    )))
 }
 
 // Helper function to remove a specific type of node metadata
 async fn remove_node_metadata<T: Metadata + DeserializeOwned + Default>(
     object_store: &Arc<dyn ObjectStorage>,
     domain_name: &str,
+    node_type: NodeType,
 ) -> Result<bool, PostError> {
-    let node_type = T::default().node_type().to_string();
-
     let metadatas = object_store
         .get_objects(
             Some(&RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY)),
-            Box::new(move |file_name| file_name.starts_with(&node_type)),
+            Box::new(move |file_name| file_name.starts_with(&node_type.to_string())),
         )
         .await?;
 
