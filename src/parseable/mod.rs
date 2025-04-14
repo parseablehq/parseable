@@ -200,6 +200,7 @@ impl Parseable {
             Mode::Ingest => self.ingestor_metadata.as_ref(),
             Mode::Index => self.indexer_metadata.as_ref(),
             Mode::Query => self.querier_metadata.as_ref(),
+            Mode::Prism => self.prism_metadata.as_ref(),
             _ => return None,
         };
 
