@@ -492,7 +492,17 @@ impl Options {
                 }
                 (&self.querier_endpoint, "P_QUERIER_ENDPOINT")
             }
-            _ => panic!("Invalid mode"),
+            _ => {
+                return format!(
+                    "{}://{}",
+                    self.get_scheme(),
+                    self.address
+                )
+                .parse::<Url>() // if the value was improperly set, this will panic before hand
+                .unwrap_or_else(|err| {
+                    panic!("{err}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.", self.address)
+                });
+            }
         };
 
         if endpoint.starts_with("http") {
