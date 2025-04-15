@@ -67,9 +67,9 @@ const CLUSTER_METRICS_INTERVAL_SECONDS: Interval = clokwerk::Interval::Minutes(1
 
 pub async fn for_each_live_ingestor<F, Fut, E>(api_fn: F) -> Result<(), E>
 where
-    F: Fn(NodeMetadata) -> Fut + Clone,
-    Fut: Future<Output = Result<(), E>>,
-    E: From<anyhow::Error>,
+    F: Fn(NodeMetadata) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<(), E>> + Send,
+    E: From<anyhow::Error> + Send + Sync + 'static,
 {
     let ingestor_infos: Vec<NodeMetadata> =
         get_node_info(NodeType::Ingestor).await.map_err(|err| {
@@ -77,14 +77,25 @@ where
             E::from(err)
         })?;
 
-    // Process each live ingestor
+    let mut live_ingestors = Vec::new();
     for ingestor in ingestor_infos {
-        if !utils::check_liveness(&ingestor.domain_name).await {
+        if utils::check_liveness(&ingestor.domain_name).await {
+            live_ingestors.push(ingestor);
+        } else {
             warn!("Ingestor {} is not live", ingestor.domain_name);
-            continue;
         }
+    }
 
-        api_fn(ingestor).await?;
+    // Process all live ingestors in parallel
+    let results = futures::future::join_all(live_ingestors.into_iter().map(|ingestor| {
+        let api_fn = api_fn.clone();
+        async move { api_fn(ingestor).await }
+    }))
+    .await;
+
+    // collect results
+    for result in results {
+        result?;
     }
 
     Ok(())
