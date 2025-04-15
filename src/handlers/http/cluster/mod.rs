@@ -550,12 +550,21 @@ pub async fn send_retention_cleanup_request(
 /// Fetches cluster information for all nodes (ingestor, indexer, and querier)
 pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
     // Get querier, ingestor and indexer metadata concurrently
-    let (querier_result, ingestor_result, indexer_result) = future::join3(
+    let (prism_result, querier_result, ingestor_result, indexer_result) = future::join4(
+        get_node_info(NodeType::Prism),
         get_node_info(NodeType::Querier),
         get_node_info(NodeType::Ingestor),
         get_node_info(NodeType::Indexer),
     )
     .await;
+
+    // Handle prism metadata result
+    let prism_metadata: Vec<NodeMetadata> = prism_result
+        .map_err(|err| {
+            error!("Fatal: failed to get prism info: {:?}", err);
+            PostError::Invalid(err)
+        })
+        .map_err(|err| StreamError::Anyhow(err.into()))?;
 
     // Handle querier metadata result
     let querier_metadata: Vec<NodeMetadata> = querier_result
@@ -582,7 +591,8 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
         .map_err(|err| StreamError::Anyhow(err.into()))?;
 
     // Fetch info for all nodes concurrently
-    let (querier_infos, ingestor_infos, indexer_infos) = future::join3(
+    let (prism_infos, querier_infos, ingestor_infos, indexer_infos) = future::join4(
+        fetch_nodes_info(prism_metadata),
         fetch_nodes_info(querier_metadata),
         fetch_nodes_info(ingestor_metadata),
         fetch_nodes_info(indexer_metadata),
@@ -591,6 +601,7 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
 
     // Combine results from all node types
     let mut infos = Vec::new();
+    infos.extend(prism_infos?);
     infos.extend(querier_infos?);
     infos.extend(ingestor_infos?);
     infos.extend(indexer_infos?);
@@ -887,12 +898,19 @@ where
 /// combines all metrics into a single vector
 async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
     // Get ingestor and indexer metadata concurrently
-    let (querier_result, ingestor_result, indexer_result) = future::join3(
+    let (prism_result, querier_result, ingestor_result, indexer_result) = future::join4(
+        get_node_info(NodeType::Prism),
         get_node_info(NodeType::Querier),
         get_node_info(NodeType::Ingestor),
         get_node_info(NodeType::Indexer),
     )
     .await;
+
+    // Handle prism metadata result
+    let prism_metadata: Vec<NodeMetadata> = prism_result.map_err(|err| {
+        error!("Fatal: failed to get prism info: {:?}", err);
+        PostError::Invalid(err)
+    })?;
 
     // Handle querier metadata result
     let querier_metadata: Vec<NodeMetadata> = querier_result.map_err(|err| {
@@ -910,7 +928,8 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
         PostError::Invalid(err)
     })?;
     // Fetch metrics from ingestors and indexers concurrently
-    let (querier_metrics, ingestor_metrics, indexer_metrics) = future::join3(
+    let (prism_metrics, querier_metrics, ingestor_metrics, indexer_metrics) = future::join4(
+        fetch_nodes_metrics(prism_metadata),
         fetch_nodes_metrics(querier_metadata),
         fetch_nodes_metrics(ingestor_metadata),
         fetch_nodes_metrics(indexer_metadata),
@@ -919,6 +938,12 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
 
     // Combine all metrics
     let mut all_metrics = Vec::new();
+
+    // Add prism metrics
+    match prism_metrics {
+        Ok(metrics) => all_metrics.extend(metrics),
+        Err(err) => return Err(err),
+    }
 
     // Add querier metrics
     match querier_metrics {
