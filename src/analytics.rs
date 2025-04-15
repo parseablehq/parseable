@@ -287,10 +287,14 @@ async fn fetch_ingestors_metrics(
                 .send()
                 .await
                 .expect("should respond");
-
-            let data = serde_json::from_slice::<NodeMetrics>(&resp.bytes().await?)?;
-            vec.push(data);
-            active_ingestors += 1;
+            // check if the response is valid
+            if let Ok(data) = serde_json::from_slice::<NodeMetrics>(&resp.bytes().await?) {
+                active_ingestors += 1;
+                vec.push(data);
+            } else {
+                offline_ingestors += 1;
+                continue;
+            }
         }
 
         node_metrics.accumulate(&mut vec);
