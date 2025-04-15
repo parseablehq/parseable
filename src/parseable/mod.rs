@@ -620,11 +620,9 @@ impl Parseable {
                     SchemaVersion::V1, // New stream
                     log_source,
                 );
-                let ingestor_id = if let Some(ingestor_metadata) = INGESTOR_META.get() {
-                    Some(ingestor_metadata.get_node_id())
-                } else {
-                    None
-                };
+                let ingestor_id = INGESTOR_META
+                    .get()
+                    .map(|ingestor_metadata| ingestor_metadata.get_node_id());
 
                 // Gets write privileges only for creating the stream when it doesn't already exist.
                 self.streams.get_or_create(
