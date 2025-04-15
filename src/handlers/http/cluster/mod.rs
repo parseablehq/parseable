@@ -736,7 +736,15 @@ pub async fn get_node_info<T: Metadata + DeserializeOwned>(
         )
         .await?
         .iter()
-        .filter_map(|x| serde_json::from_slice::<T>(x).ok())
+        .filter_map(|x| {
+            match serde_json::from_slice::<T>(x) {
+                Ok(val) => Some(val),
+                Err(e) => {
+                    error!("Failed to parse node metadata: {:?}", e);
+                    None
+                }
+            }
+        })
         .collect();
 
     Ok(metadata)
