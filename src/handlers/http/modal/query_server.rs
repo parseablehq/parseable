@@ -16,6 +16,7 @@
  *
  */
 
+use std::sync::Arc;
 use std::thread;
 
 use crate::handlers::airplane;
@@ -42,7 +43,7 @@ use super::query::{querier_ingest, querier_logstream, querier_rbac, querier_role
 use super::{load_on_init, NodeType, OpenIdClient, ParseableServer, QuerierMetadata};
 
 pub struct QueryServer;
-pub static QUERIER_META: OnceCell<QuerierMetadata> = OnceCell::const_new();
+pub static QUERIER_META: OnceCell<Arc<QuerierMetadata>> = OnceCell::const_new();
 #[async_trait]
 impl ParseableServer for QueryServer {
     // configure the api routes

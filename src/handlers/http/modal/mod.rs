@@ -277,7 +277,7 @@ impl NodeMetadata {
         }
     }
 
-    pub async fn load_node_metadata(node_type: NodeType) -> anyhow::Result<Self> {
+    pub async fn load_node_metadata(node_type: NodeType) -> anyhow::Result<Arc<Self>> {
         let staging_path = PARSEABLE.options.staging_dir();
         let node_type_str = node_type.as_str();
 
@@ -310,7 +310,7 @@ impl NodeMetadata {
         mut meta: Self,
         staging_path: &Path,
         node_type: NodeType,
-    ) -> anyhow::Result<Self> {
+    ) -> anyhow::Result<Arc<Self>> {
         Self::update_metadata(&mut meta, &PARSEABLE.options, node_type);
         meta.put_on_disk(staging_path)
             .expect("Couldn't write updated metadata to disk");
@@ -320,11 +320,11 @@ impl NodeMetadata {
         let store = PARSEABLE.storage.get_object_store();
         store.put_object(&path, resource).await?;
 
-        Ok(meta)
+        Ok(Arc::new(meta))
     }
 
     /// Store new metadata
-    async fn store_new_metadata(meta: Self, staging_path: &Path) -> anyhow::Result<Self> {
+    async fn store_new_metadata(meta: Self, staging_path: &Path) -> anyhow::Result<Arc<Self>> {
         meta.put_on_disk(staging_path)
             .expect("Couldn't write new metadata to disk");
 
@@ -333,7 +333,7 @@ impl NodeMetadata {
         let store = PARSEABLE.storage.get_object_store();
         store.put_object(&path, resource).await?;
 
-        Ok(meta)
+        Ok(Arc::new(meta))
     }
 
     async fn load_from_storage(node_type: String) -> Vec<NodeMetadata> {

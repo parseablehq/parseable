@@ -16,6 +16,7 @@
  *
  */
 
+use std::sync::Arc;
 use std::thread;
 
 use actix_web::web;
@@ -54,7 +55,7 @@ use super::{
 };
 
 pub const INGESTOR_EXPECT: &str = "Ingestor Metadata should be set in ingestor mode";
-pub static INGESTOR_META: OnceCell<IngestorMetadata> = OnceCell::const_new();
+pub static INGESTOR_META: OnceCell<Arc<IngestorMetadata>> = OnceCell::const_new();
 pub struct IngestServer;
 
 #[async_trait]
