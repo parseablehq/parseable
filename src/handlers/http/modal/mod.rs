@@ -277,28 +277,92 @@ impl NodeMetadata {
         }
     }
 
-    /// Capture metadata information by either loading it from staging or starting fresh
-    pub fn load(
-        options: &Options,
-        storage: &dyn ObjectStorageProvider,
-        node_type: NodeType,
-    ) -> Arc<Self> {
-        let staging_path = options.staging_dir();
+    pub async fn load_node_metadata(node_type: NodeType) -> anyhow::Result<Self> {
+        let staging_path = PARSEABLE.options.staging_dir();
         let node_type_str = node_type.as_str();
 
         // Attempt to load metadata from staging
-        if let Some(mut meta) = Self::load_from_staging(staging_path, node_type_str, options) {
-            Self::update_metadata(&mut meta, options, node_type);
-            meta.put_on_disk(staging_path)
-                .expect("Couldn't write updated metadata to disk");
-            return Arc::new(meta);
+        if let Some(meta) = Self::load_from_staging(staging_path, node_type_str, &PARSEABLE.options)
+        {
+            return Self::process_and_store_metadata(meta, staging_path, node_type).await;
         }
 
-        // If no metadata is found in staging, create a new one
-        let meta = Self::create_new_metadata(options, storage, node_type);
+        // Attempt to load metadata from storage
+        let storage_metas = Self::load_from_storage(node_type_str.to_string()).await;
+        let url = PARSEABLE.options.get_url(node_type.to_mode());
+        let port = url.port().unwrap_or(80).to_string();
+        let url = url.to_string();
+
+        for storage_meta in storage_metas {
+            if storage_meta.domain_name == url && storage_meta.port == port {
+                return Self::process_and_store_metadata(storage_meta, staging_path, node_type)
+                    .await;
+            }
+        }
+
+        // If no metadata is found, create a new one
+        let meta = Self::create_new_metadata(&PARSEABLE.options, &*PARSEABLE.storage, node_type);
+        Self::store_new_metadata(meta, staging_path).await
+    }
+
+    /// Process and store metadata
+    async fn process_and_store_metadata(
+        mut meta: Self,
+        staging_path: &Path,
+        node_type: NodeType,
+    ) -> anyhow::Result<Self> {
+        Self::update_metadata(&mut meta, &PARSEABLE.options, node_type);
+        meta.put_on_disk(staging_path)
+            .expect("Couldn't write updated metadata to disk");
+
+        let path = meta.file_path();
+        let resource = serde_json::to_vec(&meta)?.into();
+        let store = PARSEABLE.storage.get_object_store();
+        store.put_object(&path, resource).await?;
+
+        Ok(meta)
+    }
+
+    /// Store new metadata
+    async fn store_new_metadata(meta: Self, staging_path: &Path) -> anyhow::Result<Self> {
         meta.put_on_disk(staging_path)
             .expect("Couldn't write new metadata to disk");
-        Arc::new(meta)
+
+        let path = meta.file_path();
+        let resource = serde_json::to_vec(&meta)?.into();
+        let store = PARSEABLE.storage.get_object_store();
+        store.put_object(&path, resource).await?;
+
+        Ok(meta)
+    }
+
+    async fn load_from_storage(node_type: String) -> Vec<NodeMetadata> {
+        let path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
+        let glob_storage = PARSEABLE.storage.get_object_store();
+        let obs = glob_storage
+            .get_objects(
+                Some(&path),
+                Box::new({
+                    let node_type = node_type.clone();
+                    move |file_name| file_name.contains(&node_type)
+                }),
+            )
+            .await;
+
+        let mut metadata = vec![];
+        if let Ok(obs) = obs {
+            for object in obs {
+                //convert to NodeMetadata
+                match serde_json::from_slice::<NodeMetadata>(&object) {
+                    Ok(node_metadata) => metadata.push(node_metadata),
+                    Err(e) => error!("Failed to deserialize NodeMetadata: {:?}", e),
+                }
+            }
+        } else {
+            error!("Couldn't read from storage");
+        }
+        // Return the metadata
+        metadata
     }
 
     /// Load metadata from the staging directory
@@ -465,30 +529,6 @@ impl NodeMetadata {
         let metadata: Self = serde_json::from_value(Value::Object(json))?;
 
         Ok(metadata)
-    }
-
-    pub async fn migrate(&self) -> anyhow::Result<Option<Self>> {
-        let imp = self.file_path();
-        let bytes = match PARSEABLE.storage.get_object_store().get_object(&imp).await {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                return Ok(None);
-            }
-        };
-
-        let mut resource = Self::from_bytes(&bytes, PARSEABLE.options.flight_port)?;
-        resource.node_type.clone_from(&self.node_type);
-        let bytes = Bytes::from(serde_json::to_vec(&resource)?);
-
-        resource.put_on_disk(PARSEABLE.options.staging_dir())?;
-
-        PARSEABLE
-            .storage
-            .get_object_store()
-            .put_object(&imp, bytes)
-            .await?;
-
-        Ok(Some(resource))
     }
 
     /// Puts the node info into the staging.

@@ -27,8 +27,9 @@ use bytes::Bytes;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
 use tokio::sync::oneshot;
+use tokio::sync::OnceCell;
 
-use crate::option::Mode;
+use crate::handlers::http::modal::NodeType;
 use crate::{
     analytics,
     handlers::{
@@ -46,13 +47,14 @@ use crate::{
     sync, Server,
 };
 
+use super::IngestorMetadata;
 use super::{
     ingest::{ingestor_logstream, ingestor_rbac, ingestor_role},
     OpenIdClient, ParseableServer,
 };
 
 pub const INGESTOR_EXPECT: &str = "Ingestor Metadata should be set in ingestor mode";
-
+pub static INGESTOR_META: OnceCell<IngestorMetadata> = OnceCell::const_new();
 pub struct IngestServer;
 
 #[async_trait]
@@ -98,6 +100,15 @@ impl ParseableServer for IngestServer {
         prometheus: &PrometheusMetrics,
         shutdown_rx: oneshot::Receiver<()>,
     ) -> anyhow::Result<()> {
+        // write the ingestor metadata to storage
+        INGESTOR_META
+            .get_or_init(|| async {
+                IngestorMetadata::load_node_metadata(NodeType::Ingestor)
+                    .await
+                    .expect("Ingestor Metadata should be set in ingestor mode")
+            })
+            .await;
+
         PARSEABLE.storage.register_store_metrics(prometheus);
 
         migration::run_migration(&PARSEABLE).await?;
@@ -107,9 +118,6 @@ impl ParseableServer for IngestServer {
         thread::spawn(|| sync::handler(cancel_rx));
 
         tokio::spawn(airplane::server());
-
-        // write the ingestor metadata to storage
-        PARSEABLE.store_metadata(Mode::Ingest).await?;
 
         // Ingestors shouldn't have to deal with OpenId auth flow
         let result = self.start(shutdown_rx, prometheus.clone(), None).await;

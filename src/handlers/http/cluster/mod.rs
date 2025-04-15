@@ -581,25 +581,16 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
         })
         .map_err(|err| StreamError::Anyhow(err.into()))?;
 
-    // Get self metadata
-    let self_metadata = if let Some(metadata) = PARSEABLE.get_metadata() {
-        vec![metadata]
-    } else {
-        vec![]
-    };
-
     // Fetch info for all nodes concurrently
-    let (querier_infos, ingestor_infos, indexer_infos, self_info) = future::join4(
+    let (querier_infos, ingestor_infos, indexer_infos) = future::join3(
         fetch_nodes_info(querier_metadata),
         fetch_nodes_info(ingestor_metadata),
         fetch_nodes_info(indexer_metadata),
-        fetch_nodes_info(self_metadata),
     )
     .await;
 
     // Combine results from all node types
     let mut infos = Vec::new();
-    infos.extend(self_info?);
     infos.extend(querier_infos?);
     infos.extend(ingestor_infos?);
     infos.extend(indexer_infos?);
@@ -903,12 +894,6 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
     )
     .await;
 
-    let self_metadata = if let Some(metadata) = PARSEABLE.get_metadata() {
-        vec![metadata]
-    } else {
-        vec![]
-    };
-
     // Handle querier metadata result
     let querier_metadata: Vec<NodeMetadata> = querier_result.map_err(|err| {
         error!("Fatal: failed to get querier info: {:?}", err);
@@ -925,8 +910,7 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
         PostError::Invalid(err)
     })?;
     // Fetch metrics from ingestors and indexers concurrently
-    let (self_metrics, querier_metrics, ingestor_metrics, indexer_metrics) = future::join4(
-        fetch_nodes_metrics(self_metadata),
+    let (querier_metrics, ingestor_metrics, indexer_metrics) = future::join3(
         fetch_nodes_metrics(querier_metadata),
         fetch_nodes_metrics(ingestor_metadata),
         fetch_nodes_metrics(indexer_metadata),
@@ -935,12 +919,6 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
 
     // Combine all metrics
     let mut all_metrics = Vec::new();
-
-    // Add self metrics
-    match self_metrics {
-        Ok(metrics) => all_metrics.extend(metrics),
-        Err(err) => return Err(err),
-    }
 
     // Add querier metrics
     match querier_metrics {

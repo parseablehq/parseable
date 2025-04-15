@@ -48,6 +48,7 @@ use crate::correlation::{CorrelationConfig, CorrelationError};
 use crate::event::format::LogSource;
 use crate::event::format::LogSourceEntry;
 use crate::handlers::http::modal::ingest_server::INGESTOR_EXPECT;
+use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::handlers::http::users::CORRELATION_DIR;
 use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
 use crate::metrics::storage::StorageMetrics;
@@ -896,10 +897,9 @@ pub fn to_bytes(any: &(impl ?Sized + serde::Serialize)) -> Bytes {
 
 pub fn schema_path(stream_name: &str) -> RelativePathBuf {
     if PARSEABLE.options.mode == Mode::Ingest {
-        let id = PARSEABLE
-            .ingestor_metadata
-            .as_ref()
-            .expect(INGESTOR_EXPECT)
+        let id = INGESTOR_META
+            .get()
+            .unwrap_or_else(|| panic!("{}", INGESTOR_EXPECT))
             .get_node_id();
         let file_name = format!(".ingestor.{id}{SCHEMA_FILE_NAME}");
 
@@ -912,10 +912,9 @@ pub fn schema_path(stream_name: &str) -> RelativePathBuf {
 #[inline(always)]
 pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
     if PARSEABLE.options.mode == Mode::Ingest {
-        let id = PARSEABLE
-            .ingestor_metadata
-            .as_ref()
-            .expect(INGESTOR_EXPECT)
+        let id = INGESTOR_META
+            .get()
+            .unwrap_or_else(|| panic!("{}", INGESTOR_EXPECT))
             .get_node_id();
         let file_name = format!(".ingestor.{id}{STREAM_METADATA_FILE_NAME}",);
         RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, &file_name])
@@ -962,10 +961,9 @@ pub fn alert_json_path(alert_id: Ulid) -> RelativePathBuf {
 pub fn manifest_path(prefix: &str) -> RelativePathBuf {
     match &PARSEABLE.options.mode {
         Mode::Ingest => {
-            let id = PARSEABLE
-                .ingestor_metadata
-                .as_ref()
-                .expect(INGESTOR_EXPECT)
+            let id = INGESTOR_META
+                .get()
+                .unwrap_or_else(|| panic!("{}", INGESTOR_EXPECT))
                 .get_node_id();
             let manifest_file_name = format!("ingestor.{id}.{MANIFEST_FILE}");
             RelativePathBuf::from_iter([prefix, &manifest_file_name])

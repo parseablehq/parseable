@@ -32,17 +32,17 @@ use actix_web::{web, Scope};
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use bytes::Bytes;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, OnceCell};
 use tracing::info;
 
 use crate::parseable::PARSEABLE;
 use crate::Server;
 
 use super::query::{querier_ingest, querier_logstream, querier_rbac, querier_role};
-use super::{load_on_init, OpenIdClient, ParseableServer};
+use super::{load_on_init, NodeType, OpenIdClient, ParseableServer, QuerierMetadata};
 
 pub struct QueryServer;
-
+pub static QUERIER_META: OnceCell<QuerierMetadata> = OnceCell::const_new();
 #[async_trait]
 impl ParseableServer for QueryServer {
     // configure the api routes
@@ -99,7 +99,14 @@ impl ParseableServer for QueryServer {
         shutdown_rx: oneshot::Receiver<()>,
     ) -> anyhow::Result<()> {
         PARSEABLE.storage.register_store_metrics(prometheus);
-
+        // write the ingestor metadata to storage
+        QUERIER_META
+            .get_or_init(|| async {
+                QuerierMetadata::load_node_metadata(NodeType::Querier)
+                    .await
+                    .expect("Querier Metadata should be set in ingestor mode")
+            })
+            .await;
         migration::run_migration(&PARSEABLE).await?;
 
         //create internal stream at server start

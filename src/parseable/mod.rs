@@ -47,10 +47,7 @@ use crate::{
             cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME},
             ingest::PostError,
             logstream::error::{CreateStreamError, StreamError},
-            modal::{
-                utils::logstream_utils::PutStreamHeaders, IndexerMetadata, IngestorMetadata,
-                Metadata, NodeMetadata, NodeType, PrismMetadata, QuerierMetadata,
-            },
+            modal::{ingest_server::INGESTOR_META, utils::logstream_utils::PutStreamHeaders},
         },
         STREAM_TYPE_KEY,
     },
@@ -130,14 +127,6 @@ pub struct Parseable {
     /// Metadata and staging realting to each logstreams
     /// A globally shared mapping of `Streams` that parseable is aware of.
     pub streams: Streams,
-    ///Metadata associated only with a prism
-    pub prism_metadata: Option<Arc<PrismMetadata>>,
-    /// Metadata associated only with a querier
-    pub querier_metadata: Option<Arc<QuerierMetadata>>,
-    /// Metadata associated only with an ingestor
-    pub ingestor_metadata: Option<Arc<IngestorMetadata>>,
-    /// Metadata associated only with an indexer
-    pub indexer_metadata: Option<Arc<IndexerMetadata>>,
     /// Used to configure the kafka connector
     #[cfg(feature = "kafka")]
     pub kafka_config: KafkaConfig,
@@ -149,73 +138,13 @@ impl Parseable {
         #[cfg(feature = "kafka")] kafka_config: KafkaConfig,
         storage: Arc<dyn ObjectStorageProvider>,
     ) -> Self {
-        let prism_metadata = match &options.mode {
-            Mode::Prism => Some(PrismMetadata::load(
-                &options,
-                storage.as_ref(),
-                NodeType::Prism,
-            )),
-            _ => None,
-        };
-        let ingestor_metadata = match &options.mode {
-            Mode::Ingest => Some(IngestorMetadata::load(
-                &options,
-                storage.as_ref(),
-                NodeType::Ingestor,
-            )),
-            _ => None,
-        };
-        let indexer_metadata = match &options.mode {
-            Mode::Index => Some(IndexerMetadata::load(
-                &options,
-                storage.as_ref(),
-                NodeType::Indexer,
-            )),
-            _ => None,
-        };
-        let querier_metadata = match &options.mode {
-            Mode::Query => Some(QuerierMetadata::load(
-                &options,
-                storage.as_ref(),
-                NodeType::Querier,
-            )),
-            _ => None,
-        };
         Parseable {
             options: Arc::new(options),
             storage,
             streams: Streams::default(),
-            prism_metadata,
-            ingestor_metadata,
-            indexer_metadata,
-            querier_metadata,
             #[cfg(feature = "kafka")]
             kafka_config,
         }
-    }
-
-    /// Get the metadata for the current node based on its mode.
-    pub fn get_metadata(&self) -> Option<NodeMetadata> {
-        let meta_ref = match self.options.mode {
-            Mode::Ingest => self.ingestor_metadata.as_ref(),
-            Mode::Index => self.indexer_metadata.as_ref(),
-            Mode::Query => self.querier_metadata.as_ref(),
-            Mode::Prism => self.prism_metadata.as_ref(),
-            _ => return None,
-        };
-
-        let meta = meta_ref?;
-        let node_metadata = NodeMetadata {
-            version: meta.version.clone(),
-            node_id: meta.node_id.clone(),
-            port: meta.port.clone(),
-            domain_name: meta.domain_name.clone(),
-            bucket_name: meta.bucket_name.clone(),
-            token: meta.token.clone(),
-            flight_port: meta.flight_port.clone(),
-            node_type: meta.node_type().clone(),
-        };
-        Some(node_metadata)
     }
     /// Try to get the handle of a stream in staging, if it doesn't exist return `None`.
     pub fn get_stream(&self, stream_name: &str) -> Result<StreamRef, StreamNotFound> {
@@ -233,14 +162,16 @@ impl Parseable {
             return staging;
         }
 
+        let ingestor_id = INGESTOR_META
+            .get()
+            .map(|ingestor_metadata| ingestor_metadata.get_node_id());
+
         // Gets write privileges only for creating the stream when it doesn't already exist.
         self.streams.get_or_create(
             self.options.clone(),
             stream_name.to_owned(),
             LogStreamMetadata::default(),
-            self.ingestor_metadata
-                .as_ref()
-                .map(|meta| meta.get_node_id()),
+            ingestor_id,
         )
     }
 
@@ -325,43 +256,6 @@ impl Parseable {
         }
     }
 
-    pub async fn store_metadata(&self, mode: Mode) -> anyhow::Result<()> {
-        // Get the appropriate metadata based on mode
-        let meta_ref = match mode {
-            Mode::Ingest => self.ingestor_metadata.as_ref(),
-            Mode::Index => self.indexer_metadata.as_ref(),
-            Mode::Query => self.querier_metadata.as_ref(),
-            _ => return Err(anyhow::anyhow!("Invalid mode")),
-        };
-
-        let Some(meta) = meta_ref else {
-            return Ok(());
-        };
-
-        // Get storage metadata
-        let storage_metadata = meta.migrate().await?;
-        let store = self.storage.get_object_store();
-        let path = meta.file_path();
-
-        // Process metadata and store it
-        if let Some(mut store_data) = storage_metadata {
-            // Update domain and port if needed
-            if store_data.domain_name != meta.domain_name {
-                store_data.domain_name.clone_from(&meta.domain_name);
-                store_data.port.clone_from(&meta.port);
-
-                let resource = Bytes::from(serde_json::to_vec(&store_data)?);
-                store.put_object(&path, resource).await?;
-            }
-        } else {
-            // Store new metadata
-            let resource = serde_json::to_vec(&meta)?.into();
-            store.put_object(&path, resource).await?;
-        }
-
-        Ok(())
-    }
-
     /// list all streams from storage
     /// if stream exists in storage, create stream and schema from storage
     /// and add it to the memory map
@@ -415,13 +309,16 @@ impl Parseable {
             schema_version,
             log_source,
         );
+        let ingestor_id = INGESTOR_META
+            .get()
+            .map(|ingestor_metadata| ingestor_metadata.get_node_id());
+
+        // Gets write privileges only for creating the stream when it doesn't already exist.
         self.streams.get_or_create(
             self.options.clone(),
-            stream_name.to_string(),
+            stream_name.to_owned(),
             metadata,
-            self.ingestor_metadata
-                .as_ref()
-                .map(|meta| meta.get_node_id()),
+            ingestor_id,
         );
 
         Ok(true)
@@ -723,13 +620,18 @@ impl Parseable {
                     SchemaVersion::V1, // New stream
                     log_source,
                 );
+                let ingestor_id = if let Some(ingestor_metadata) = INGESTOR_META.get() {
+                    Some(ingestor_metadata.get_node_id())
+                } else {
+                    None
+                };
+
+                // Gets write privileges only for creating the stream when it doesn't already exist.
                 self.streams.get_or_create(
                     self.options.clone(),
-                    stream_name.to_string(),
+                    stream_name.to_owned(),
                     metadata,
-                    self.ingestor_metadata
-                        .as_ref()
-                        .map(|meta| meta.get_node_id()),
+                    ingestor_id,
                 );
             }
             Err(err) => {
