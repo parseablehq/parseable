@@ -547,7 +547,7 @@ pub async fn send_retention_cleanup_request(
     Ok(first_event_at)
 }
 
-/// Fetches cluster information for all nodes (ingestor, indexer, and querier)
+/// Fetches cluster information for all nodes (ingestor, indexer, querier and prism)
 pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
     // Get querier, ingestor and indexer metadata concurrently
     let (prism_result, querier_result, ingestor_result, indexer_result) = future::join4(
@@ -703,7 +703,7 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
 }
 
 /// get node info for a specific node type
-/// this is used to get the node info for ingestor, indexer and querier
+/// this is used to get the node info for ingestor, indexer, querier and prism
 /// it will return the metadata for all nodes of that type
 pub async fn get_node_info<T: Metadata + DeserializeOwned>(
     node_type: NodeType,
@@ -754,7 +754,11 @@ pub async fn remove_node(node_url: Path<String>) -> Result<impl Responder, PostE
         remove_node_metadata::<QuerierMetadata>(&object_store, &domain_name, NodeType::Querier)
             .await?;
 
-    if removed_ingestor || removed_indexer || removed_querier {
+    // Delete prism metadata
+    let removed_prism =
+        remove_node_metadata::<NodeMetadata>(&object_store, &domain_name, NodeType::Prism).await?;
+
+    if removed_ingestor || removed_indexer || removed_querier || removed_prism {
         return Ok((
             format!("node {} removed successfully", domain_name),
             StatusCode::OK,
