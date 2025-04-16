@@ -17,7 +17,9 @@
  */
 
 use chrono::DateTime;
-use opentelemetry_proto::tonic::common::v1::{any_value::Value as OtelValue, AnyValue, KeyValue};
+use opentelemetry_proto::tonic::common::v1::{
+    any_value::Value as OtelValue, AnyValue, ArrayValue, KeyValue, KeyValueList,
+};
 use serde_json::{Map, Value};
 
 // Value can be one of types - String, Bool, Int, Double, ArrayValue, AnyValue, KeyValueList, Byte
@@ -39,40 +41,17 @@ pub fn collect_json_from_value(key: &String, value: OtelValue) -> Map<String, Va
             }
         }
         OtelValue::ArrayValue(array_val) => {
-            let values = &array_val.values;
-            for value in values {
-                let array_value_json = collect_json_from_anyvalue(key, value.clone());
-                for key in array_value_json.keys() {
-                    value_json.insert(
-                        format!(
-                            "{}_{}",
-                            key.to_owned(),
-                            value_to_string(array_value_json[key].to_owned())
-                        ),
-                        array_value_json[key].to_owned(),
-                    );
-                }
-            }
+            let json_array_value = collect_json_from_array_value(array_val);
+            // Convert the array to a JSON string
+            let json_array_string = serde_json::to_string(&json_array_value).unwrap();
+            // Insert the array into the result map
+            value_json.insert(key.to_string(), Value::String(json_array_string));
         }
         OtelValue::KvlistValue(kv_list_val) => {
-            for key_value in kv_list_val.values {
-                let value = key_value.value;
-                if value.is_some() {
-                    let value = value.unwrap();
-                    let key_value_json = collect_json_from_anyvalue(key, value.clone());
-
-                    for key in key_value_json.keys() {
-                        value_json.insert(
-                            format!(
-                                "{}_{}_{}",
-                                key.to_owned(),
-                                key_value.key,
-                                value_to_string(key_value_json[key].to_owned())
-                            ),
-                            key_value_json[key].to_owned(),
-                        );
-                    }
-                }
+            // Create a JSON object to store the key-value list
+            let kv_object = collect_json_from_key_value_list(kv_list_val);
+            for (key, value) in kv_object.iter() {
+                value_json.insert(key.clone(), value.clone());
             }
         }
         OtelValue::BytesValue(bytes_val) => {
@@ -84,6 +63,52 @@ pub fn collect_json_from_value(key: &String, value: OtelValue) -> Map<String, Va
     }
 
     value_json
+}
+
+fn collect_json_from_array_value(array_value: ArrayValue) -> Value {
+    let mut json_array = Vec::new();
+    for value in array_value.values {
+        if let Some(val) = &value.value {
+            match val {
+                OtelValue::StringValue(s) => json_array.push(Value::String(s.clone())),
+                OtelValue::BoolValue(b) => json_array.push(Value::Bool(*b)),
+                OtelValue::IntValue(i) => {
+                    json_array.push(Value::Number(serde_json::Number::from(*i)))
+                }
+                OtelValue::DoubleValue(d) => {
+                    if let Some(n) = serde_json::Number::from_f64(*d) {
+                        json_array.push(Value::Number(n));
+                    }
+                }
+                OtelValue::BytesValue(b) => {
+                    json_array.push(Value::String(String::from_utf8_lossy(b).to_string()));
+                }
+                OtelValue::ArrayValue(arr) => {
+                    // Recursively collect JSON from nested array values
+                    let nested_json = collect_json_from_array_value(arr.clone());
+                    json_array.push(nested_json);
+                }
+                OtelValue::KvlistValue(kv_list) => {
+                    // Recursively collect JSON from nested key-value lists
+                    let nested_json = collect_json_from_key_value_list(kv_list.clone());
+                    json_array.push(Value::Object(nested_json));
+                }
+            }
+        }
+    }
+    Value::Array(json_array)
+}
+
+fn collect_json_from_key_value_list(key_value_list: KeyValueList) -> Map<String, Value> {
+    let mut kv_list_json: Map<String, Value> = Map::new();
+    for key_value in key_value_list.values {
+        if let Some(val) = key_value.value {
+            let val = val.value.unwrap();
+            let json_value = collect_json_from_value(&key_value.key, val);
+            kv_list_json.extend(json_value);
+        }
+    }
+    kv_list_json
 }
 
 pub fn collect_json_from_anyvalue(key: &String, value: AnyValue) -> Map<String, Value> {
@@ -142,11 +167,23 @@ pub fn insert_bool_if_some(map: &mut Map<String, Value>, key: &str, option: &Opt
     }
 }
 
-pub fn insert_attributes(map: &mut Map<String, Value>, attributes: &Vec<KeyValue>) {
+pub fn insert_attributes(
+    map: &mut Map<String, Value>,
+    attributes: &Vec<KeyValue>,
+) -> Map<String, Value> {
     let attributes_json = flatten_attributes(attributes);
     for (key, value) in attributes_json {
         map.insert(key, value);
     }
+
+    let attributes_map = map.clone();
+    if attributes_map.contains_key("process.command_args") {
+        println!(
+            "attributes value in attributes_map: {:?}",
+            attributes_map["process.command_args"]
+        );
+    }
+    attributes_map
 }
 
 pub fn convert_epoch_nano_to_timestamp(epoch_ns: i64) -> String {

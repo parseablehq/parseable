@@ -193,25 +193,31 @@ fn flatten_histogram(histogram: &Histogram) -> Vec<Map<String, Value>> {
             Value::Number(data_point.count.into()),
         );
         insert_number_if_some(&mut data_point_json, "data_point_sum", &data_point.sum);
+        let data_point_bucket_counts = Value::Array(
+            data_point
+                .bucket_counts
+                .iter()
+                .map(|&count| Value::Number(count.into()))
+                .collect(),
+        );
+        let data_point_bucket_counts_string =
+            serde_json::to_string(&data_point_bucket_counts).unwrap();
         data_point_json.insert(
             "data_point_bucket_counts".to_string(),
-            Value::Array(
-                data_point
-                    .bucket_counts
-                    .iter()
-                    .map(|&count| Value::Number(count.into()))
-                    .collect(),
-            ),
+            Value::String(data_point_bucket_counts_string),
         );
+        let data_point_explicit_bounds = Value::Array(
+            data_point
+                .explicit_bounds
+                .iter()
+                .map(|bound| Value::Number(serde_json::Number::from_f64(*bound).unwrap()))
+                .collect(),
+        );
+        let data_point_explicit_bounds_string =
+            serde_json::to_string(&data_point_explicit_bounds).unwrap();
         data_point_json.insert(
             "data_point_explicit_bounds".to_string(),
-            Value::Array(
-                data_point
-                    .explicit_bounds
-                    .iter()
-                    .map(|bound| Value::String(bound.to_string()))
-                    .collect(),
-            ),
+            Value::String(data_point_explicit_bounds_string),
         );
         let exemplar_json = flatten_exemplar(&data_point.exemplars);
         for (key, value) in exemplar_json {
