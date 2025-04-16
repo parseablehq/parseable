@@ -167,23 +167,11 @@ pub fn insert_bool_if_some(map: &mut Map<String, Value>, key: &str, option: &Opt
     }
 }
 
-pub fn insert_attributes(
-    map: &mut Map<String, Value>,
-    attributes: &Vec<KeyValue>,
-) -> Map<String, Value> {
+pub fn insert_attributes(map: &mut Map<String, Value>, attributes: &Vec<KeyValue>) {
     let attributes_json = flatten_attributes(attributes);
     for (key, value) in attributes_json {
         map.insert(key, value);
     }
-
-    let attributes_map = map.clone();
-    if attributes_map.contains_key("process.command_args") {
-        println!(
-            "attributes value in attributes_map: {:?}",
-            attributes_map["process.command_args"]
-        );
-    }
-    attributes_map
 }
 
 pub fn convert_epoch_nano_to_timestamp(epoch_ns: i64) -> String {
