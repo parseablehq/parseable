@@ -77,8 +77,8 @@ pub struct Report {
     inactive_ingestors: u64,
     active_indexers: u64,
     inactive_indexers: u64,
-    active_queries: u64,
-    inactive_queries: u64,
+    active_queriers: u64,
+    inactive_queriers: u64,
     stream_count: usize,
     total_events_count: u64,
     total_json_bytes: u64,
@@ -113,8 +113,8 @@ impl Report {
         let ingestor_metrics = fetch_ingestors_metrics().await?;
         let mut active_indexers = 0;
         let mut inactive_indexers = 0;
-        let mut active_queries = 0;
-        let mut inactive_queries = 0;
+        let mut active_queriers = 0;
+        let mut inactive_queriers = 0;
 
         // check liveness of indexers
         // get the count of active and inactive indexers
@@ -132,9 +132,9 @@ impl Report {
         let query_infos: Vec<NodeMetadata> = cluster::get_node_info(NodeType::Querier).await?;
         for query in query_infos {
             if check_liveness(&query.domain_name).await {
-                active_queries += 1;
+                active_queriers += 1;
             } else {
-                inactive_queries += 1;
+                inactive_queriers += 1;
             }
         }
         Ok(Self {
@@ -154,8 +154,8 @@ impl Report {
             inactive_ingestors: ingestor_metrics.1,
             active_indexers,
             inactive_indexers,
-            active_queries,
-            inactive_queries,
+            active_queriers,
+            inactive_queriers,
             stream_count: ingestor_metrics.2,
             total_events_count: ingestor_metrics.3,
             total_json_bytes: ingestor_metrics.4,
