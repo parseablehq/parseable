@@ -28,7 +28,13 @@ use tracing::{error, info};
 
 use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
-    handlers::{self, http::base_path_without_preceding_slash},
+    handlers::{
+        self,
+        http::{
+            base_path_without_preceding_slash,
+            modal::{NodeMetadata, NodeType},
+        },
+    },
     metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE},
     option::Mode,
     parseable::PARSEABLE,
@@ -335,15 +341,19 @@ pub async fn remove_manifest_from_snapshot(
         meta.first_event_at = None;
         storage.put_snapshot(stream_name, meta.snapshot).await?;
     }
+
+    // retention is initiated from the querier
+    // request is forwarded to all ingestors to clean up their manifests
+    // no action required for the Index or Prism nodes
     match PARSEABLE.options.mode {
         Mode::All | Mode::Ingest => {
             Ok(get_first_event(storage.clone(), stream_name, Vec::new()).await?)
         }
         Mode::Query => Ok(get_first_event(storage, stream_name, dates).await?),
-        Mode::Index => Err(ObjectStorageError::UnhandledError(Box::new(
+        Mode::Index | Mode::Prism => Err(ObjectStorageError::UnhandledError(Box::new(
             std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
-                "Can't remove manifest from within Index server",
+                "Can't remove manifest from within Index or Prism server",
             ),
         ))),
     }
@@ -356,7 +366,6 @@ pub async fn get_first_event(
 ) -> Result<Option<String>, ObjectStorageError> {
     let mut first_event_at: String = String::default();
     match PARSEABLE.options.mode {
-        Mode::Index => unimplemented!(),
         Mode::All | Mode::Ingest => {
             // get current snapshot
             let stream_first_event = PARSEABLE.get_stream(stream_name)?.get_first_event();
@@ -406,8 +415,8 @@ pub async fn get_first_event(
             }
         }
         Mode::Query => {
-            let ingestor_metadata =
-                handlers::http::cluster::get_ingestor_info()
+            let ingestor_metadata: Vec<NodeMetadata> =
+                handlers::http::cluster::get_node_info(NodeType::Ingestor)
                     .await
                     .map_err(|err| {
                         error!("Fatal: failed to get ingestor info: {:?}", err);
@@ -437,6 +446,7 @@ pub async fn get_first_event(
             }
             first_event_at = ingestors_first_event_at.iter().min().unwrap().to_string();
         }
+        _ => {}
     }
 
     Ok(Some(first_event_at))

@@ -129,6 +129,7 @@ pub async fn resolve_parseable_metadata(
             Err("Could not start the server because staging directory indicates stale data from previous deployment, please choose an empty staging directory and restart the server")
         }
         EnvChange::NewStaging(mut metadata) => {
+
             // if server is started in ingest mode,we need to make sure that query mode has been started
             // i.e the metadata is updated to reflect the server mode = Query
             if metadata.server_mode== Mode::All && PARSEABLE.options.mode == Mode::Ingest {
@@ -148,7 +149,7 @@ pub async fn resolve_parseable_metadata(
                             })?;
                             overwrite_remote = true;
                     },
-                    Mode::Query => {
+                    Mode::Query | Mode::Prism => {
                         overwrite_remote = true;
                         metadata.server_mode = PARSEABLE.options.mode;
                         metadata.staging = PARSEABLE.options.staging_dir().to_path_buf();
@@ -175,7 +176,7 @@ pub async fn resolve_parseable_metadata(
             // new metadata needs to be set
             // if mode is query or all then both staging and remote
             match PARSEABLE.options.mode {
-                Mode::All | Mode::Query => overwrite_remote = true,
+                Mode::All | Mode::Query | Mode::Prism => overwrite_remote = true,
                 _ => (),
             }
             // else only staging
@@ -202,7 +203,7 @@ pub async fn resolve_parseable_metadata(
     Ok(metadata)
 }
 
-fn determine_environment(
+pub fn determine_environment(
     staging_metadata: Option<StorageMetadata>,
     remote_metadata: Option<StorageMetadata>,
 ) -> EnvChange {

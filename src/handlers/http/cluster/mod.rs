@@ -20,6 +20,7 @@ pub mod utils;
 
 use futures::{future, stream, StreamExt};
 use std::collections::HashSet;
+use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -54,17 +55,51 @@ use crate::HTTP_CLIENT;
 use super::base_path_without_preceding_slash;
 use super::ingest::PostError;
 use super::logstream::error::StreamError;
-use super::modal::{IndexerMetadata, IngestorMetadata, Metadata};
+use super::modal::{
+    IndexerMetadata, IngestorMetadata, Metadata, NodeMetadata, NodeType, QuerierMetadata,
+};
 use super::rbac::RBACError;
 use super::role::RoleError;
-
-type IngestorMetadataArr = Vec<IngestorMetadata>;
-
-type IndexerMetadataArr = Vec<IndexerMetadata>;
 
 pub const INTERNAL_STREAM_NAME: &str = "pmeta";
 
 const CLUSTER_METRICS_INTERVAL_SECONDS: Interval = clokwerk::Interval::Minutes(1);
+
+pub async fn for_each_live_ingestor<F, Fut, E>(api_fn: F) -> Result<(), E>
+where
+    F: Fn(NodeMetadata) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Result<(), E>> + Send,
+    E: From<anyhow::Error> + Send + Sync + 'static,
+{
+    let ingestor_infos: Vec<NodeMetadata> =
+        get_node_info(NodeType::Ingestor).await.map_err(|err| {
+            error!("Fatal: failed to get ingestor info: {:?}", err);
+            E::from(err)
+        })?;
+
+    let mut live_ingestors = Vec::new();
+    for ingestor in ingestor_infos {
+        if utils::check_liveness(&ingestor.domain_name).await {
+            live_ingestors.push(ingestor);
+        } else {
+            warn!("Ingestor {} is not live", ingestor.domain_name);
+        }
+    }
+
+    // Process all live ingestors in parallel
+    let results = futures::future::join_all(live_ingestors.into_iter().map(|ingestor| {
+        let api_fn = api_fn.clone();
+        async move { api_fn(ingestor).await }
+    }))
+    .await;
+
+    // collect results
+    for result in results {
+        result?;
+    }
+
+    Ok(())
+}
 
 // forward the create/update stream request to all ingestors to keep them in sync
 pub async fn sync_streams_with_ingestors(
@@ -77,68 +112,63 @@ pub async fn sync_streams_with_ingestors(
     for (key, value) in headers.iter() {
         reqwest_headers.insert(key.clone(), value.clone());
     }
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        error!("Fatal: failed to get ingestor info: {:?}", err);
-        StreamError::Anyhow(err)
-    })?;
 
-    for ingestor in ingestor_infos {
-        if !utils::check_liveness(&ingestor.domain_name).await {
-            warn!("Ingestor {} is not live", ingestor.domain_name);
-            continue;
-        }
-        let url = format!(
-            "{}{}/logstream/{}/sync",
-            ingestor.domain_name,
-            base_path_without_preceding_slash(),
-            stream_name
-        );
-        let res = HTTP_CLIENT
-            .put(url)
-            .headers(reqwest_headers.clone())
-            .header(header::AUTHORIZATION, &ingestor.token)
-            .body(body.clone())
-            .send()
-            .await
-            .map_err(|err| {
-                error!(
-                    "Fatal: failed to forward upsert stream request to ingestor: {}\n Error: {:?}",
-                    ingestor.domain_name, err
-                );
-                StreamError::Network(err)
-            })?;
+    let body_clone = body.clone();
+    let stream_name = stream_name.to_string();
+    let reqwest_headers_clone = reqwest_headers.clone();
 
-        if !res.status().is_success() {
-            error!(
-                "failed to forward upsert stream request to ingestor: {}\nResponse Returned: {:?}",
+    for_each_live_ingestor(
+        move |ingestor| {
+            let url = format!(
+                "{}{}/logstream/{}/sync",
                 ingestor.domain_name,
-                res.text().await
+                base_path_without_preceding_slash(),
+                stream_name
             );
-        }
-    }
+            let headers = reqwest_headers_clone.clone();
+            let body = body_clone.clone();
+            async move {
+                let res = HTTP_CLIENT
+                    .put(url)
+                    .headers(headers)
+                    .header(header::AUTHORIZATION, &ingestor.token)
+                    .body(body)
+                    .send()
+                    .await
+                    .map_err(|err| {
+                        error!(
+                            "Fatal: failed to forward upsert stream request to ingestor: {}\n Error: {:?}",
+                            ingestor.domain_name, err
+                        );
+                        StreamError::Network(err)
+                    })?;
 
-    Ok(())
+                if !res.status().is_success() {
+                    error!(
+                        "failed to forward upsert stream request to ingestor: {}\nResponse Returned: {:?}",
+                        ingestor.domain_name,
+                        res.text().await
+                    );
+                }
+                Ok(())
+            }
+        }
+    ).await
 }
 
 // forward the role update request to all ingestors to keep them in sync
 pub async fn sync_users_with_roles_with_ingestors(
-    username: &String,
+    username: &str,
     role: &HashSet<String>,
 ) -> Result<(), RBACError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        error!("Fatal: failed to get ingestor info: {:?}", err);
-        RBACError::Anyhow(err)
-    })?;
-
-    let role = to_vec(&role.clone()).map_err(|err| {
+    let role_data = to_vec(&role.clone()).map_err(|err| {
         error!("Fatal: failed to serialize role: {:?}", err);
         RBACError::SerdeError(err)
     })?;
-    for ingestor in ingestor_infos.iter() {
-        if !utils::check_liveness(&ingestor.domain_name).await {
-            warn!("Ingestor {} is not live", ingestor.domain_name);
-            continue;
-        }
+
+    let username = username.to_owned();
+
+    for_each_live_ingestor(move |ingestor| {
         let url = format!(
             "{}{}/user/{}/role/sync",
             ingestor.domain_name,
@@ -146,45 +176,43 @@ pub async fn sync_users_with_roles_with_ingestors(
             username
         );
 
-        let res = HTTP_CLIENT
-            .put(url)
-            .header(header::AUTHORIZATION, &ingestor.token)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(role.clone())
-            .send()
-            .await
-            .map_err(|err| {
+        let role_data = role_data.clone();
+
+        async move {
+            let res = HTTP_CLIENT
+                .put(url)
+                .header(header::AUTHORIZATION, &ingestor.token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(role_data)
+                .send()
+                .await
+                .map_err(|err| {
+                    error!(
+                        "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
+                        ingestor.domain_name, err
+                    );
+                    RBACError::Network(err)
+                })?;
+
+            if !res.status().is_success() {
                 error!(
-                    "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
-                    ingestor.domain_name, err
+                    "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
+                    ingestor.domain_name,
+                    res.text().await
                 );
-                RBACError::Network(err)
-            })?;
+            }
 
-        if !res.status().is_success() {
-            error!(
-                "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
-                ingestor.domain_name,
-                res.text().await
-            );
+            Ok(())
         }
-    }
-
-    Ok(())
+    })
+    .await
 }
 
 // forward the delete user request to all ingestors to keep them in sync
-pub async fn sync_user_deletion_with_ingestors(username: &String) -> Result<(), RBACError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        error!("Fatal: failed to get ingestor info: {:?}", err);
-        RBACError::Anyhow(err)
-    })?;
+pub async fn sync_user_deletion_with_ingestors(username: &str) -> Result<(), RBACError> {
+    let username = username.to_owned();
 
-    for ingestor in ingestor_infos.iter() {
-        if !utils::check_liveness(&ingestor.domain_name).await {
-            warn!("Ingestor {} is not live", ingestor.domain_name);
-            continue;
-        }
+    for_each_live_ingestor(move |ingestor| {
         let url = format!(
             "{}{}/user/{}/sync",
             ingestor.domain_name,
@@ -192,29 +220,32 @@ pub async fn sync_user_deletion_with_ingestors(username: &String) -> Result<(), 
             username
         );
 
-        let res = HTTP_CLIENT
-            .delete(url)
-            .header(header::AUTHORIZATION, &ingestor.token)
-            .send()
-            .await
-            .map_err(|err| {
+        async move {
+            let res = HTTP_CLIENT
+                .delete(url)
+                .header(header::AUTHORIZATION, &ingestor.token)
+                .send()
+                .await
+                .map_err(|err| {
+                    error!(
+                        "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
+                        ingestor.domain_name, err
+                    );
+                    RBACError::Network(err)
+                })?;
+
+            if !res.status().is_success() {
                 error!(
-                    "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
-                    ingestor.domain_name, err
+                    "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
+                    ingestor.domain_name,
+                    res.text().await
                 );
-                RBACError::Network(err)
-            })?;
+            }
 
-        if !res.status().is_success() {
-            error!(
-                "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
-                ingestor.domain_name,
-                res.text().await
-            );
+            Ok(())
         }
-    }
-
-    Ok(())
+    })
+    .await
 }
 
 // forward the create user request to all ingestors to keep them in sync
@@ -222,11 +253,6 @@ pub async fn sync_user_creation_with_ingestors(
     user: User,
     role: &Option<HashSet<String>>,
 ) -> Result<(), RBACError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        error!("Fatal: failed to get ingestor info: {:?}", err);
-        RBACError::Anyhow(err)
-    })?;
-
     let mut user = user.clone();
 
     if let Some(role) = role {
@@ -234,16 +260,14 @@ pub async fn sync_user_creation_with_ingestors(
     }
     let username = user.username();
 
-    let user = to_vec(&user).map_err(|err| {
+    let user_data = to_vec(&user).map_err(|err| {
         error!("Fatal: failed to serialize user: {:?}", err);
         RBACError::SerdeError(err)
     })?;
 
-    for ingestor in ingestor_infos.iter() {
-        if !utils::check_liveness(&ingestor.domain_name).await {
-            warn!("Ingestor {} is not live", ingestor.domain_name);
-            continue;
-        }
+    let username = username.to_string();
+
+    for_each_live_ingestor(move |ingestor| {
         let url = format!(
             "{}{}/user/{}/sync",
             ingestor.domain_name,
@@ -251,45 +275,43 @@ pub async fn sync_user_creation_with_ingestors(
             username
         );
 
-        let res = HTTP_CLIENT
-            .post(url)
-            .header(header::AUTHORIZATION, &ingestor.token)
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(user.clone())
-            .send()
-            .await
-            .map_err(|err| {
+        let user_data = user_data.clone();
+
+        async move {
+            let res = HTTP_CLIENT
+                .post(url)
+                .header(header::AUTHORIZATION, &ingestor.token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(user_data)
+                .send()
+                .await
+                .map_err(|err| {
+                    error!(
+                        "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
+                        ingestor.domain_name, err
+                    );
+                    RBACError::Network(err)
+                })?;
+
+            if !res.status().is_success() {
                 error!(
-                    "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
-                    ingestor.domain_name, err
+                    "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
+                    ingestor.domain_name,
+                    res.text().await
                 );
-                RBACError::Network(err)
-            })?;
+            }
 
-        if !res.status().is_success() {
-            error!(
-                "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
-                ingestor.domain_name,
-                res.text().await
-            );
+            Ok(())
         }
-    }
-
-    Ok(())
+    })
+    .await
 }
 
 // forward the password reset request to all ingestors to keep them in sync
-pub async fn sync_password_reset_with_ingestors(username: &String) -> Result<(), RBACError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        error!("Fatal: failed to get ingestor info: {:?}", err);
-        RBACError::Anyhow(err)
-    })?;
+pub async fn sync_password_reset_with_ingestors(username: &str) -> Result<(), RBACError> {
+    let username = username.to_owned();
 
-    for ingestor in ingestor_infos.iter() {
-        if !utils::check_liveness(&ingestor.domain_name).await {
-            warn!("Ingestor {} is not live", ingestor.domain_name);
-            continue;
-        }
+    for_each_live_ingestor(move |ingestor| {
         let url = format!(
             "{}{}/user/{}/generate-new-password/sync",
             ingestor.domain_name,
@@ -297,30 +319,33 @@ pub async fn sync_password_reset_with_ingestors(username: &String) -> Result<(),
             username
         );
 
-        let res = HTTP_CLIENT
-            .post(url)
-            .header(header::AUTHORIZATION, &ingestor.token)
-            .header(header::CONTENT_TYPE, "application/json")
-            .send()
-            .await
-            .map_err(|err| {
+        async move {
+            let res = HTTP_CLIENT
+                .post(url)
+                .header(header::AUTHORIZATION, &ingestor.token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .send()
+                .await
+                .map_err(|err| {
+                    error!(
+                        "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
+                        ingestor.domain_name, err
+                    );
+                    RBACError::Network(err)
+                })?;
+
+            if !res.status().is_success() {
                 error!(
-                    "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
-                    ingestor.domain_name, err
+                    "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
+                    ingestor.domain_name,
+                    res.text().await
                 );
-                RBACError::Network(err)
-            })?;
+            }
 
-        if !res.status().is_success() {
-            error!(
-                "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
-                ingestor.domain_name,
-                res.text().await
-            );
+            Ok(())
         }
-    }
-
-    Ok(())
+    })
+    .await
 }
 
 // forward the put role request to all ingestors to keep them in sync
@@ -328,16 +353,7 @@ pub async fn sync_role_update_with_ingestors(
     name: String,
     privileges: Vec<DefaultPrivilege>,
 ) -> Result<(), RoleError> {
-    let ingestor_infos = get_ingestor_info().await.map_err(|err| {
-        error!("Fatal: failed to get ingestor info: {:?}", err);
-        RoleError::Anyhow(err)
-    })?;
-
-    for ingestor in ingestor_infos.iter() {
-        if !utils::check_liveness(&ingestor.domain_name).await {
-            warn!("Ingestor {} is not live", ingestor.domain_name);
-            continue;
-        }
+    for_each_live_ingestor(move |ingestor| {
         let url = format!(
             "{}{}/role/{}/sync",
             ingestor.domain_name,
@@ -345,31 +361,36 @@ pub async fn sync_role_update_with_ingestors(
             name
         );
 
-        let res = HTTP_CLIENT
-            .put(url)
-            .header(header::AUTHORIZATION, &ingestor.token)
-            .header(header::CONTENT_TYPE, "application/json")
-            .json(&privileges)
-            .send()
-            .await
-            .map_err(|err| {
+        let privileges = privileges.clone();
+
+        async move {
+            let res = HTTP_CLIENT
+                .put(url)
+                .header(header::AUTHORIZATION, &ingestor.token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .json(&privileges)
+                .send()
+                .await
+                .map_err(|err| {
+                    error!(
+                        "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
+                        ingestor.domain_name, err
+                    );
+                    RoleError::Network(err)
+                })?;
+
+            if !res.status().is_success() {
                 error!(
-                    "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
-                    ingestor.domain_name, err
+                    "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
+                    ingestor.domain_name,
+                    res.text().await
                 );
-                RoleError::Network(err)
-            })?;
+            }
 
-        if !res.status().is_success() {
-            error!(
-                "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
-                ingestor.domain_name,
-                res.text().await
-            );
+            Ok(())
         }
-    }
-
-    Ok(())
+    })
+    .await
 }
 
 pub fn fetch_daily_stats_from_ingestors(
@@ -543,13 +564,35 @@ pub async fn send_retention_cleanup_request(
     Ok(first_event_at)
 }
 
+/// Fetches cluster information for all nodes (ingestor, indexer, querier and prism)
 pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
-    // Get ingestor and indexer metadata concurrently
-    let (ingestor_result, indexer_result) =
-        future::join(get_ingestor_info(), get_indexer_info()).await;
+    // Get querier, ingestor and indexer metadata concurrently
+    let (prism_result, querier_result, ingestor_result, indexer_result) = future::join4(
+        get_node_info(NodeType::Prism),
+        get_node_info(NodeType::Querier),
+        get_node_info(NodeType::Ingestor),
+        get_node_info(NodeType::Indexer),
+    )
+    .await;
+
+    // Handle prism metadata result
+    let prism_metadata: Vec<NodeMetadata> = prism_result
+        .map_err(|err| {
+            error!("Fatal: failed to get prism info: {:?}", err);
+            PostError::Invalid(err)
+        })
+        .map_err(|err| StreamError::Anyhow(err.into()))?;
+
+    // Handle querier metadata result
+    let querier_metadata: Vec<NodeMetadata> = querier_result
+        .map_err(|err| {
+            error!("Fatal: failed to get querier info: {:?}", err);
+            PostError::Invalid(err)
+        })
+        .map_err(|err| StreamError::Anyhow(err.into()))?;
 
     // Handle ingestor metadata result
-    let ingestor_metadata = ingestor_result
+    let ingestor_metadata: Vec<NodeMetadata> = ingestor_result
         .map_err(|err| {
             error!("Fatal: failed to get ingestor info: {:?}", err);
             PostError::Invalid(err)
@@ -557,29 +600,34 @@ pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
         .map_err(|err| StreamError::Anyhow(err.into()))?;
 
     // Handle indexer metadata result
-    let indexer_metadata = indexer_result
+    let indexer_metadata: Vec<NodeMetadata> = indexer_result
         .map_err(|err| {
             error!("Fatal: failed to get indexer info: {:?}", err);
             PostError::Invalid(err)
         })
         .map_err(|err| StreamError::Anyhow(err.into()))?;
 
-    // Fetch info for both node types concurrently
-    let (ingestor_infos, indexer_infos) = future::join(
+    // Fetch info for all nodes concurrently
+    let (prism_infos, querier_infos, ingestor_infos, indexer_infos) = future::join4(
+        fetch_nodes_info(prism_metadata),
+        fetch_nodes_info(querier_metadata),
         fetch_nodes_info(ingestor_metadata),
         fetch_nodes_info(indexer_metadata),
     )
     .await;
 
-    // Combine results from both node types
+    // Combine results from all node types
     let mut infos = Vec::new();
+    infos.extend(prism_infos?);
+    infos.extend(querier_infos?);
     infos.extend(ingestor_infos?);
     infos.extend(indexer_infos?);
-
     Ok(actix_web::HttpResponse::Ok().json(infos))
 }
 
-/// Fetches info for a single node (ingestor or indexer)
+/// Fetches info for a single node
+/// call the about endpoint of the node
+/// construct the ClusterInfo struct and return it
 async fn fetch_node_info<T: Metadata>(node: &T) -> Result<utils::ClusterInfo, StreamError> {
     let uri = Url::parse(&format!(
         "{}{}/about",
@@ -671,42 +719,41 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
     Ok(actix_web::HttpResponse::Ok().json(dresses))
 }
 
-pub async fn get_ingestor_info() -> anyhow::Result<IngestorMetadataArr> {
+/// get node info for a specific node type
+/// this is used to get the node info for ingestor, indexer, querier and prism
+/// it will return the metadata for all nodes of that type
+pub async fn get_node_info<T: Metadata + DeserializeOwned>(
+    node_type: NodeType,
+) -> anyhow::Result<Vec<T>> {
     let store = PARSEABLE.storage.get_object_store();
-
     let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
-    let arr = store
+    let prefix_owned = node_type.to_string();
+
+    let metadata = store
         .get_objects(
             Some(&root_path),
-            Box::new(|file_name| file_name.starts_with("ingestor")),
+            Box::new(move |file_name| file_name.starts_with(&prefix_owned)), // Use the owned copy
         )
         .await?
         .iter()
-        // this unwrap will most definateley shoot me in the foot later
-        .map(|x| serde_json::from_slice::<IngestorMetadata>(x).unwrap_or_default())
-        .collect_vec();
+        .filter_map(|x| {
+            match serde_json::from_slice::<T>(x) {
+                Ok(val) => Some(val),
+                Err(e) => {
+                    error!("Failed to parse node metadata: {:?}", e);
+                    None
+                }
+            }
+        })
+        .collect();
 
-    Ok(arr)
+    Ok(metadata)
 }
-
-pub async fn get_indexer_info() -> anyhow::Result<IndexerMetadataArr> {
-    let store = PARSEABLE.storage.get_object_store();
-
-    let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
-    let arr = store
-        .get_objects(
-            Some(&root_path),
-            Box::new(|file_name| file_name.starts_with("indexer")),
-        )
-        .await?
-        .iter()
-        // this unwrap will most definateley shoot me in the foot later
-        .map(|x| serde_json::from_slice::<IndexerMetadata>(x).unwrap_or_default())
-        .collect_vec();
-
-    Ok(arr)
-}
-
+/// remove a node from the cluster
+/// check liveness of the node
+/// if the node is live, return an error
+/// if the node is not live, remove the node from the cluster
+/// remove the node metadata from the object store
 pub async fn remove_node(node_url: Path<String>) -> Result<impl Responder, PostError> {
     let domain_name = to_url_string(node_url.into_inner());
 
@@ -719,33 +766,46 @@ pub async fn remove_node(node_url: Path<String>) -> Result<impl Responder, PostE
 
     // Delete ingestor metadata
     let removed_ingestor =
-        remove_node_metadata::<IngestorMetadata>(&object_store, &domain_name).await?;
+        remove_node_metadata::<IngestorMetadata>(&object_store, &domain_name, NodeType::Ingestor)
+            .await?;
 
     // Delete indexer metadata
     let removed_indexer =
-        remove_node_metadata::<IndexerMetadata>(&object_store, &domain_name).await?;
+        remove_node_metadata::<IndexerMetadata>(&object_store, &domain_name, NodeType::Indexer)
+            .await?;
 
-    let msg = if removed_ingestor || removed_indexer {
-        format!("node {} removed successfully", domain_name)
-    } else {
-        format!("node {} is not found", domain_name)
-    };
+    // Delete querier metadata
+    let removed_querier =
+        remove_node_metadata::<QuerierMetadata>(&object_store, &domain_name, NodeType::Querier)
+            .await?;
 
-    info!("{}", &msg);
-    Ok((msg, StatusCode::OK))
+    // Delete prism metadata
+    let removed_prism =
+        remove_node_metadata::<NodeMetadata>(&object_store, &domain_name, NodeType::Prism).await?;
+
+    if removed_ingestor || removed_indexer || removed_querier || removed_prism {
+        return Ok((
+            format!("node {} removed successfully", domain_name),
+            StatusCode::OK,
+        ));
+    }
+    Err(PostError::Invalid(anyhow::anyhow!(
+        "node {} not found",
+        domain_name
+    )))
 }
 
-// Helper function to remove a specific type of node metadata
+/// Removes node metadata from the object store
+/// Returns true if the metadata was removed, false if it was not found
 async fn remove_node_metadata<T: Metadata + DeserializeOwned + Default>(
     object_store: &Arc<dyn ObjectStorage>,
     domain_name: &str,
+    node_type: NodeType,
 ) -> Result<bool, PostError> {
-    let node_type = T::default().node_type().to_string();
-
     let metadatas = object_store
         .get_objects(
             Some(&RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY)),
-            Box::new(move |file_name| file_name.starts_with(&node_type)),
+            Box::new(move |file_name| file_name.starts_with(&node_type.to_string())),
         )
         .await?;
 
@@ -774,7 +834,10 @@ async fn remove_node_metadata<T: Metadata + DeserializeOwned + Default>(
     }
 }
 
-/// Fetches metrics from a node (ingestor or indexer)
+/// Fetches metrics for a single node
+/// This function is used to fetch metrics from a single node
+/// It checks if the node is live and then fetches the metrics
+/// If the node is not live, it returns None
 async fn fetch_node_metrics<T>(node: &T) -> Result<Option<Metrics>, PostError>
 where
     T: Metadata + Send + Sync + 'static,
@@ -836,6 +899,9 @@ where
     T: Metadata + Send + Sync + 'static,
 {
     let nodes_len = nodes.len();
+    if nodes_len == 0 {
+        return Ok(vec![]);
+    }
     let results = stream::iter(nodes)
         .map(|node| async move { fetch_node_metrics(&node).await })
         .buffer_unordered(nodes_len) // No concurrency limit
@@ -855,26 +921,45 @@ where
     Ok(metrics)
 }
 
-/// Main function to fetch all cluster metrics, parallelized and refactored
+/// Main function to fetch cluster metrics
+/// fetches node info for all nodes
+/// fetches metrics for all nodes
+/// combines all metrics into a single vector
 async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
     // Get ingestor and indexer metadata concurrently
-    let (ingestor_result, indexer_result) =
-        future::join(get_ingestor_info(), get_indexer_info()).await;
+    let (prism_result, querier_result, ingestor_result, indexer_result) = future::join4(
+        get_node_info(NodeType::Prism),
+        get_node_info(NodeType::Querier),
+        get_node_info(NodeType::Ingestor),
+        get_node_info(NodeType::Indexer),
+    )
+    .await;
 
+    // Handle prism metadata result
+    let prism_metadata: Vec<NodeMetadata> = prism_result.map_err(|err| {
+        error!("Fatal: failed to get prism info: {:?}", err);
+        PostError::Invalid(err)
+    })?;
+
+    // Handle querier metadata result
+    let querier_metadata: Vec<NodeMetadata> = querier_result.map_err(|err| {
+        error!("Fatal: failed to get querier info: {:?}", err);
+        PostError::Invalid(err)
+    })?;
     // Handle ingestor metadata result
-    let ingestor_metadata = ingestor_result.map_err(|err| {
+    let ingestor_metadata: Vec<NodeMetadata> = ingestor_result.map_err(|err| {
         error!("Fatal: failed to get ingestor info: {:?}", err);
         PostError::Invalid(err)
     })?;
-
     // Handle indexer metadata result
-    let indexer_metadata = indexer_result.map_err(|err| {
+    let indexer_metadata: Vec<NodeMetadata> = indexer_result.map_err(|err| {
         error!("Fatal: failed to get indexer info: {:?}", err);
         PostError::Invalid(err)
     })?;
-
     // Fetch metrics from ingestors and indexers concurrently
-    let (ingestor_metrics, indexer_metrics) = future::join(
+    let (prism_metrics, querier_metrics, ingestor_metrics, indexer_metrics) = future::join4(
+        fetch_nodes_metrics(prism_metadata),
+        fetch_nodes_metrics(querier_metadata),
         fetch_nodes_metrics(ingestor_metadata),
         fetch_nodes_metrics(indexer_metadata),
     )
@@ -882,6 +967,18 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
 
     // Combine all metrics
     let mut all_metrics = Vec::new();
+
+    // Add prism metrics
+    match prism_metrics {
+        Ok(metrics) => all_metrics.extend(metrics),
+        Err(err) => return Err(err),
+    }
+
+    // Add querier metrics
+    match querier_metrics {
+        Ok(metrics) => all_metrics.extend(metrics),
+        Err(err) => return Err(err),
+    }
 
     // Add ingestor metrics
     match ingestor_metrics {

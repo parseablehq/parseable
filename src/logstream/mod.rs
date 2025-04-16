@@ -27,7 +27,7 @@ use crate::{handlers::http::{logstream::error::StreamError, query::update_schema
 
 pub async fn get_stream_schema_helper(stream_name: &str) -> Result<Arc<Schema>, StreamError> {
     // Ensure parseable is aware of stream in distributed mode
-    if PARSEABLE.check_or_load_stream(&stream_name).await {
+    if !PARSEABLE.check_or_load_stream(&stream_name).await {
         return Err(StreamNotFound(stream_name.to_owned()).into());
     }
 
@@ -48,7 +48,7 @@ pub async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, Str
     // For query mode, if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if PARSEABLE.check_or_load_stream(&stream_name).await {
+    if !PARSEABLE.check_or_load_stream(&stream_name).await {
         return Err(StreamNotFound(stream_name.to_owned()).into());
     }
 

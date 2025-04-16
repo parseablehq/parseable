@@ -16,7 +16,7 @@
  *
  */
 
-use std::{path::Path, sync::Arc};
+use std::{fmt, path::Path, sync::Arc};
 
 use actix_web::{middleware::from_fn, web::ServiceConfig, App, HttpServer};
 use actix_web_prometheus::PrometheusMetrics;
@@ -42,7 +42,7 @@ use crate::{
     parseable::PARSEABLE,
     storage::{ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY},
     users::{dashboards::DASHBOARDS, filters::FILTERS},
-    utils::{get_indexer_id, get_ingestor_id},
+    utils::get_node_id,
 };
 
 use super::{audit, cross_origin_config, health_check, API_BASE_PATH, API_VERSION};
@@ -58,7 +58,7 @@ pub mod utils;
 pub type OpenIdClient = Arc<openid::Client<Discovered, Claims>>;
 
 // to be decided on what the Default version should be
-pub const DEFAULT_VERSION: &str = "v3";
+pub const DEFAULT_VERSION: &str = "v4";
 
 include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 
@@ -199,26 +199,69 @@ pub async fn load_on_init() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// NodeType represents the type of node in the cluster
+#[derive(Debug, Serialize, Deserialize, Clone, Eq, PartialEq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum NodeType {
+    #[default]
+    Ingestor,
+    Indexer,
+    Querier,
+    Prism,
+    All,
+}
+
+impl NodeType {
+    fn as_str(&self) -> &'static str {
+        match self {
+            NodeType::Ingestor => "ingestor",
+            NodeType::Indexer => "indexer",
+            NodeType::Querier => "querier",
+            NodeType::Prism => "prism",
+            NodeType::All => "all",
+        }
+    }
+
+    fn to_mode(&self) -> Mode {
+        match self {
+            NodeType::Ingestor => Mode::Ingest,
+            NodeType::Indexer => Mode::Index,
+            NodeType::Querier => Mode::Query,
+            NodeType::Prism => Mode::Prism,
+            NodeType::All => Mode::All,
+        }
+    }
+}
+
+impl fmt::Display for NodeType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Default, Clone, Eq, PartialEq)]
-pub struct IngestorMetadata {
+pub struct NodeMetadata {
     pub version: String,
     pub port: String,
     pub domain_name: String,
     pub bucket_name: String,
     pub token: String,
-    pub ingestor_id: String,
+    pub node_id: String,
     pub flight_port: String,
+    pub node_type: NodeType,
 }
 
-impl IngestorMetadata {
+impl NodeMetadata {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         port: String,
         domain_name: String,
         bucket_name: String,
         username: &str,
         password: &str,
-        ingestor_id: String,
+        node_id: String,
         flight_port: String,
+        node_type: NodeType,
     ) -> Self {
         let token = base64::prelude::BASE64_STANDARD.encode(format!("{username}:{password}"));
 
@@ -228,319 +271,274 @@ impl IngestorMetadata {
             version: DEFAULT_VERSION.to_string(),
             bucket_name,
             token: format!("Basic {token}"),
-            ingestor_id,
+            node_id,
             flight_port,
+            node_type,
         }
     }
 
-    /// Capture metadata information by either loading it from staging or starting fresh
-    pub fn load(options: &Options, storage: &dyn ObjectStorageProvider) -> Arc<Self> {
-        // all the files should be in the staging directory root
-        let entries = options
-            .staging_dir()
-            .read_dir()
-            .expect("Couldn't read from file");
-        let url = options.get_url(Mode::Ingest);
+    pub async fn load_node_metadata(node_type: NodeType) -> anyhow::Result<Arc<Self>> {
+        let staging_path = PARSEABLE.options.staging_dir();
+        let node_type_str = node_type.as_str();
+
+        // Attempt to load metadata from staging
+        if let Some(meta) = Self::load_from_staging(staging_path, node_type_str, &PARSEABLE.options)
+        {
+            return Self::process_and_store_metadata(meta, staging_path, node_type).await;
+        }
+
+        // Attempt to load metadata from storage
+        let storage_metas = Self::load_from_storage(node_type_str.to_string()).await;
+        let url = PARSEABLE.options.get_url(node_type.to_mode());
         let port = url.port().unwrap_or(80).to_string();
         let url = url.to_string();
-        let Options {
-            username, password, ..
-        } = options;
-        let staging_path = options.staging_dir();
-        let flight_port = options.flight_port.to_string();
 
-        for entry in entries {
-            // cause the staging directory will have only one file with ingestor in the name
-            // so the JSON Parse should not error unless the file is corrupted
-            let path = entry.expect("Should be a directory entry").path();
-            if !path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .is_some_and(|s| s.contains("ingestor"))
-            {
-                continue;
+        for storage_meta in storage_metas {
+            if storage_meta.domain_name == url && storage_meta.port == port {
+                return Self::process_and_store_metadata(storage_meta, staging_path, node_type)
+                    .await;
             }
-
-            // get the ingestor metadata from staging
-            let bytes = std::fs::read(path).expect("File should be present");
-            let mut meta =
-                Self::from_bytes(&bytes, options.flight_port).expect("Extracted ingestor metadata");
-
-            // compare url endpoint and port, update
-            if meta.domain_name != url {
-                info!(
-                    "Domain Name was Updated. Old: {} New: {}",
-                    meta.domain_name, url
-                );
-                meta.domain_name = url;
-            }
-
-            if meta.port != port {
-                info!("Port was Updated. Old: {} New: {}", meta.port, port);
-                meta.port = port;
-            }
-
-            let token = format!(
-                "Basic {}",
-                BASE64_STANDARD.encode(format!("{username}:{password}"))
-            );
-            if meta.token != token {
-                // TODO: Update the message to be more informative with username and password
-                warn!(
-                    "Credentials were Updated. Tokens updated; Old: {} New: {}",
-                    meta.token, token
-                );
-                meta.token = token;
-            }
-            meta.put_on_disk(staging_path)
-                .expect("Couldn't write to disk");
-
-            return Arc::new(meta);
         }
 
-        let storage = storage.get_object_store();
-        let meta = Self::new(
-            port,
-            url,
-            storage.get_bucket_name(),
-            username,
-            password,
-            get_ingestor_id(),
-            flight_port,
-        );
+        // If no metadata is found, create a new one
+        let meta = Self::create_new_metadata(&PARSEABLE.options, &*PARSEABLE.storage, node_type);
+        Self::store_new_metadata(meta, staging_path).await
+    }
 
+    /// Process and store metadata
+    async fn process_and_store_metadata(
+        mut meta: Self,
+        staging_path: &Path,
+        node_type: NodeType,
+    ) -> anyhow::Result<Arc<Self>> {
+        Self::update_metadata(&mut meta, &PARSEABLE.options, node_type);
         meta.put_on_disk(staging_path)
-            .expect("Should Be valid Json");
-        Arc::new(meta)
+            .expect("Couldn't write updated metadata to disk");
+
+        let path = meta.file_path();
+        let resource = serde_json::to_vec(&meta)?.into();
+        let store = PARSEABLE.storage.get_object_store();
+        store.put_object(&path, resource).await?;
+
+        Ok(Arc::new(meta))
     }
 
-    pub fn get_ingestor_id(&self) -> String {
-        self.ingestor_id.clone()
+    /// Store new metadata
+    async fn store_new_metadata(meta: Self, staging_path: &Path) -> anyhow::Result<Arc<Self>> {
+        meta.put_on_disk(staging_path)
+            .expect("Couldn't write new metadata to disk");
+
+        let path = meta.file_path();
+        let resource = serde_json::to_vec(&meta)?.into();
+        let store = PARSEABLE.storage.get_object_store();
+        store.put_object(&path, resource).await?;
+
+        Ok(Arc::new(meta))
     }
 
-    #[inline(always)]
-    pub fn file_path(&self) -> RelativePathBuf {
-        RelativePathBuf::from_iter([
-            PARSEABLE_ROOT_DIRECTORY,
-            &format!("ingestor.{}.json", self.get_ingestor_id()),
-        ])
+    async fn load_from_storage(node_type: String) -> Vec<NodeMetadata> {
+        let path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
+        let glob_storage = PARSEABLE.storage.get_object_store();
+        let obs = glob_storage
+            .get_objects(
+                Some(&path),
+                Box::new({
+                    let node_type = node_type.clone();
+                    move |file_name| file_name.contains(&node_type)
+                }),
+            )
+            .await;
+
+        let mut metadata = vec![];
+        if let Ok(obs) = obs {
+            for object in obs {
+                //convert to NodeMetadata
+                match serde_json::from_slice::<NodeMetadata>(&object) {
+                    Ok(node_metadata) => metadata.push(node_metadata),
+                    Err(e) => error!("Failed to deserialize NodeMetadata: {:?}", e),
+                }
+            }
+        } else {
+            error!("Couldn't read from storage");
+        }
+        // Return the metadata
+        metadata
     }
 
-    /// Updates json with `flight_port` field if not already present
-    fn from_bytes(bytes: &[u8], flight_port: u16) -> anyhow::Result<Self> {
-        let mut json: Map<String, Value> = serde_json::from_slice(bytes)?;
-        json.entry("flight_port")
-            .or_insert_with(|| Value::String(flight_port.to_string()));
-
-        Ok(serde_json::from_value(Value::Object(json))?)
-    }
-
-    pub async fn migrate(&self) -> anyhow::Result<Option<IngestorMetadata>> {
-        let imp = self.file_path();
-        let bytes = match PARSEABLE.storage.get_object_store().get_object(&imp).await {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                return Ok(None);
+    /// Load metadata from the staging directory
+    fn load_from_staging(
+        staging_path: &Path,
+        node_type_str: &str,
+        options: &Options,
+    ) -> Option<Self> {
+        let entries = match staging_path.read_dir() {
+            Ok(entries) => entries,
+            Err(e) => {
+                error!("Couldn't read from staging directory: {}", e);
+                return None;
             }
         };
 
-        let resource = Self::from_bytes(&bytes, PARSEABLE.options.flight_port)?;
-        let bytes = Bytes::from(serde_json::to_vec(&resource)?);
+        for entry in entries {
+            let path = match entry {
+                Ok(entry) => entry.path(),
+                Err(e) => {
+                    error!("Error reading directory entry: {}", e);
+                    continue;
+                }
+            };
+            if !Self::is_valid_metadata_file(&path, node_type_str) {
+                continue;
+            }
 
-        resource.put_on_disk(PARSEABLE.options.staging_dir())?;
+            let bytes = std::fs::read(&path).expect("File should be present");
+            match Self::from_bytes(&bytes, options.flight_port) {
+                Ok(meta) => return Some(meta),
+                Err(e) => {
+                    error!("Failed to extract {} metadata: {}", node_type_str, e);
+                    return None;
+                }
+            }
+        }
 
-        PARSEABLE
-            .storage
-            .get_object_store()
-            .put_object(&imp, bytes)
-            .await?;
-
-        Ok(Some(resource))
+        None
     }
 
-    /// Puts the ingestor info into the staging.
-    ///
-    /// This function takes the ingestor info as a parameter and stores it in staging.
-    /// # Parameters
-    ///
-    /// * `staging_path`: Staging root directory.
-    pub fn put_on_disk(&self, staging_path: &Path) -> anyhow::Result<()> {
-        let file_name = format!("ingestor.{}.json", self.ingestor_id);
-        let file_path = staging_path.join(file_name);
-
-        std::fs::write(file_path, serde_json::to_vec(&self)?)?;
-
-        Ok(())
+    /// Check if a file is a valid metadata file for the given node type
+    fn is_valid_metadata_file(path: &Path, node_type_str: &str) -> bool {
+        path.file_name()
+            .and_then(|s| s.to_str())
+            .is_some_and(|s| s.contains(node_type_str))
     }
-}
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone, Eq, PartialEq)]
-pub struct IndexerMetadata {
-    pub version: String,
-    pub port: String,
-    pub domain_name: String,
-    pub bucket_name: String,
-    pub token: String,
-    pub indexer_id: String,
-    pub flight_port: String,
-}
+    /// Update metadata fields if they differ from the current configuration
+    fn update_metadata(meta: &mut Self, options: &Options, node_type: NodeType) {
+        let url = options.get_url(node_type.to_mode());
+        let port = url.port().unwrap_or(80).to_string();
+        let url = url.to_string();
 
-impl IndexerMetadata {
-    pub fn new(
-        port: String,
-        domain_name: String,
-        bucket_name: String,
-        username: &str,
-        password: &str,
-        indexer_id: String,
-        flight_port: String,
+        if meta.domain_name != url {
+            info!(
+                "Domain Name was Updated. Old: {} New: {}",
+                meta.domain_name, url
+            );
+            meta.domain_name = url;
+        }
+
+        if meta.port != port {
+            info!("Port was Updated. Old: {} New: {}", meta.port, port);
+            meta.port = port;
+        }
+
+        let token = Self::generate_token(&options.username, &options.password);
+        if meta.token != token {
+            warn!(
+                "Credentials were Updated. Tokens updated; Old: {} New: {}",
+                meta.token, token
+            );
+            meta.token = token;
+        }
+
+        meta.node_type = node_type;
+    }
+
+    /// Create a new metadata instance
+    fn create_new_metadata(
+        options: &Options,
+        storage: &dyn ObjectStorageProvider,
+        node_type: NodeType,
     ) -> Self {
-        let token = base64::prelude::BASE64_STANDARD.encode(format!("{username}:{password}"));
-
-        Self {
-            port,
-            domain_name,
-            version: DEFAULT_VERSION.to_string(),
-            bucket_name,
-            token: format!("Basic {token}"),
-            indexer_id,
-            flight_port,
-        }
-    }
-
-    /// Capture metadata information by either loading it from staging or starting fresh
-    pub fn load(options: &Options, storage: &dyn ObjectStorageProvider) -> Arc<Self> {
-        // all the files should be in the staging directory root
-        let entries = options
-            .staging_dir()
-            .read_dir()
-            .expect("Couldn't read from file");
-        let url = options.get_url(Mode::Index);
+        let url = options.get_url(node_type.to_mode());
         let port = url.port().unwrap_or(80).to_string();
         let url = url.to_string();
-        let Options {
-            username, password, ..
-        } = options;
-        let staging_path = options.staging_dir();
-        let flight_port = options.flight_port.to_string();
 
-        for entry in entries {
-            // cause the staging directory will have only one file with indexer in the name
-            // so the JSON Parse should not error unless the file is corrupted
-            let path = entry.expect("Should be a directory entry").path();
-            if !path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .is_some_and(|s| s.contains("indexer"))
-            {
-                continue;
-            }
-
-            // get the indexer metadata from staging
-            let bytes = std::fs::read(path).expect("File should be present");
-            let mut meta =
-                Self::from_bytes(&bytes, options.flight_port).expect("Extracted indexer metadata");
-
-            // compare url endpoint and port, update
-            if meta.domain_name != url {
-                info!(
-                    "Domain Name was Updated. Old: {} New: {}",
-                    meta.domain_name, url
-                );
-                meta.domain_name = url;
-            }
-
-            if meta.port != port {
-                info!("Port was Updated. Old: {} New: {}", meta.port, port);
-                meta.port = port;
-            }
-
-            let token = format!(
-                "Basic {}",
-                BASE64_STANDARD.encode(format!("{username}:{password}"))
-            );
-            if meta.token != token {
-                // TODO: Update the message to be more informative with username and password
-                warn!(
-                    "Credentials were Updated. Tokens updated; Old: {} New: {}",
-                    meta.token, token
-                );
-                meta.token = token;
-            }
-            meta.put_on_disk(staging_path)
-                .expect("Couldn't write to disk");
-
-            return Arc::new(meta);
-        }
-
-        let storage = storage.get_object_store();
-        let meta = Self::new(
+        Self::new(
             port,
             url,
-            storage.get_bucket_name(),
-            username,
-            password,
-            get_indexer_id(),
-            flight_port,
-        );
-
-        meta.put_on_disk(staging_path)
-            .expect("Should Be valid Json");
-        Arc::new(meta)
+            storage.get_object_store().get_bucket_name(),
+            &options.username,
+            &options.password,
+            get_node_id(),
+            options.flight_port.to_string(),
+            node_type,
+        )
     }
 
-    pub fn get_indexer_id(&self) -> String {
-        self.indexer_id.clone()
+    /// Generate a token from the username and password
+    fn generate_token(username: &str, password: &str) -> String {
+        format!(
+            "Basic {}",
+            BASE64_STANDARD.encode(format!("{username}:{password}"))
+        )
+    }
+
+    pub fn get_node_id(&self) -> String {
+        self.node_id.clone()
     }
 
     #[inline(always)]
     pub fn file_path(&self) -> RelativePathBuf {
         RelativePathBuf::from_iter([
             PARSEABLE_ROOT_DIRECTORY,
-            &format!("indexer.{}.json", self.get_indexer_id()),
+            &format!("{}.{}.json", self.node_type.as_str(), self.get_node_id()),
         ])
     }
 
     /// Updates json with `flight_port` field if not already present
     fn from_bytes(bytes: &[u8], flight_port: u16) -> anyhow::Result<Self> {
         let mut json: Map<String, Value> = serde_json::from_slice(bytes)?;
+
+        // Check version
+        let version = json.get("version").and_then(|version| version.as_str());
+
+        if version == Some("v3") {
+            fn migrate_legacy_id(
+                json: &mut Map<String, Value>,
+                legacy_id_key: &str,
+                node_type_str: &str,
+            ) -> bool {
+                if json.contains_key(legacy_id_key) {
+                    if let Some(id) = json.remove(legacy_id_key) {
+                        json.insert("node_id".to_string(), id);
+                        json.insert(
+                            "version".to_string(),
+                            Value::String(DEFAULT_VERSION.to_string()),
+                        );
+                    }
+                    json.insert(
+                        "node_type".to_string(),
+                        Value::String(node_type_str.to_string()),
+                    );
+                    true
+                } else {
+                    false
+                }
+            }
+
+            if !migrate_legacy_id(&mut json, "ingestor_id", "ingestor") {
+                migrate_legacy_id(&mut json, "indexer_id", "indexer");
+            }
+        }
+        // Determine node type and perform migration if needed
+
+        // Add flight_port if missing
         json.entry("flight_port")
             .or_insert_with(|| Value::String(flight_port.to_string()));
 
-        Ok(serde_json::from_value(Value::Object(json))?)
+        // Parse the JSON to our struct
+        let metadata: Self = serde_json::from_value(Value::Object(json))?;
+
+        Ok(metadata)
     }
 
-    pub async fn migrate(&self) -> anyhow::Result<Option<IndexerMetadata>> {
-        let imp = self.file_path();
-        let bytes = match PARSEABLE.storage.get_object_store().get_object(&imp).await {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                return Ok(None);
-            }
-        };
-
-        let resource = Self::from_bytes(&bytes, PARSEABLE.options.flight_port)?;
-        let bytes = Bytes::from(serde_json::to_vec(&resource)?);
-
-        resource.put_on_disk(PARSEABLE.options.staging_dir())?;
-
-        PARSEABLE
-            .storage
-            .get_object_store()
-            .put_object(&imp, bytes)
-            .await?;
-
-        Ok(Some(resource))
-    }
-
-    /// Puts the indexer info into the staging.
+    /// Puts the node info into the staging.
     ///
-    /// This function takes the indexer info as a parameter and stores it in staging.
+    /// This function takes the node info as a parameter and stores it in staging.
     /// # Parameters
     ///
     /// * `staging_path`: Staging root directory.
     pub fn put_on_disk(&self, staging_path: &Path) -> anyhow::Result<()> {
-        let file_name = format!("indexer.{}.json", self.indexer_id);
+        let file_name = format!("{}.{}.json", self.node_type.as_str(), self.node_id);
         let file_path = staging_path.join(file_name);
 
         std::fs::write(file_path, serde_json::to_vec(&self)?)?;
@@ -552,11 +550,11 @@ impl IndexerMetadata {
 pub trait Metadata {
     fn domain_name(&self) -> &str;
     fn token(&self) -> &str;
-    fn node_type(&self) -> &str;
+    fn node_type(&self) -> &NodeType;
     fn file_path(&self) -> RelativePathBuf;
 }
 
-impl Metadata for IngestorMetadata {
+impl Metadata for NodeMetadata {
     fn domain_name(&self) -> &str {
         &self.domain_name
     }
@@ -564,34 +562,29 @@ impl Metadata for IngestorMetadata {
     fn token(&self) -> &str {
         &self.token
     }
-    fn node_type(&self) -> &str {
-        "ingestor"
+
+    fn node_type(&self) -> &NodeType {
+        &self.node_type
     }
+
     fn file_path(&self) -> RelativePathBuf {
         self.file_path()
     }
 }
 
-impl Metadata for IndexerMetadata {
-    fn domain_name(&self) -> &str {
-        &self.domain_name
-    }
+// Aliases for different node types
+pub type IngestorMetadata = NodeMetadata;
+pub type IndexerMetadata = NodeMetadata;
+pub type QuerierMetadata = NodeMetadata;
+pub type PrismMetadata = NodeMetadata;
 
-    fn token(&self) -> &str {
-        &self.token
-    }
-    fn node_type(&self) -> &str {
-        "indexer"
-    }
-    fn file_path(&self) -> RelativePathBuf {
-        self.file_path()
-    }
-}
 #[cfg(test)]
 mod test {
     use actix_web::body::MessageBody;
     use bytes::Bytes;
     use rstest::rstest;
+
+    use crate::handlers::http::modal::NodeType;
 
     use super::IngestorMetadata;
 
@@ -605,9 +598,10 @@ mod test {
             "admin",
             "ingestor_id".to_owned(),
             "8002".to_string(),
+            NodeType::Ingestor,
         );
 
-        let rhs = serde_json::from_slice::<IngestorMetadata>(br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=", "ingestor_id": "ingestor_id","flight_port": "8002"}"#).unwrap();
+        let rhs = serde_json::from_slice::<IngestorMetadata>(br#"{"version":"v4","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","node_id": "ingestor_id","flight_port": "8002","node_type":"ingestor"}"#).unwrap();
 
         assert_eq!(rhs, lhs);
     }
@@ -636,10 +630,11 @@ mod test {
             "admin",
             "ingestor_id".to_owned(),
             "8002".to_string(),
+            NodeType::Ingestor,
         );
 
         let lhs = Bytes::from(serde_json::to_vec(&im).unwrap());
-        let rhs = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","ingestor_id":"ingestor_id","flight_port":"8002"}"#
+        let rhs = br#"{"version":"v4","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","node_id":"ingestor_id","flight_port":"8002","node_type":"ingestor"}"#
                 .try_into_bytes()
                 .unwrap();
 

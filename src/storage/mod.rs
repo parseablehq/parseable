@@ -41,7 +41,7 @@ mod metrics_layer;
 pub mod object_storage;
 pub mod retention;
 mod s3;
-mod store_metadata;
+pub mod store_metadata;
 
 use self::retention::Retention;
 pub use azure_blob::AzureBlobConfig;

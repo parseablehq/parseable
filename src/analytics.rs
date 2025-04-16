@@ -36,6 +36,7 @@ use crate::{
         http::{
             base_path_without_preceding_slash,
             cluster::{self, utils::check_liveness},
+            modal::{NodeMetadata, NodeType},
         },
         STREAM_NAME_HEADER_KEY,
     },
@@ -74,6 +75,10 @@ pub struct Report {
     commit_hash: String,
     active_ingestors: u64,
     inactive_ingestors: u64,
+    active_indexers: u64,
+    inactive_indexers: u64,
+    active_queriers: u64,
+    inactive_queriers: u64,
     stream_count: usize,
     total_events_count: u64,
     total_json_bytes: u64,
@@ -106,7 +111,32 @@ impl Report {
             mem_total = info.total_memory();
         }
         let ingestor_metrics = fetch_ingestors_metrics().await?;
+        let mut active_indexers = 0;
+        let mut inactive_indexers = 0;
+        let mut active_queriers = 0;
+        let mut inactive_queriers = 0;
 
+        // check liveness of indexers
+        // get the count of active and inactive indexers
+        let indexer_infos: Vec<NodeMetadata> = cluster::get_node_info(NodeType::Indexer).await?;
+        for indexer in indexer_infos {
+            if check_liveness(&indexer.domain_name).await {
+                active_indexers += 1;
+            } else {
+                inactive_indexers += 1;
+            }
+        }
+
+        // check liveness of queriers
+        // get the count of active and inactive queriers
+        let query_infos: Vec<NodeMetadata> = cluster::get_node_info(NodeType::Querier).await?;
+        for query in query_infos {
+            if check_liveness(&query.domain_name).await {
+                active_queriers += 1;
+            } else {
+                inactive_queriers += 1;
+            }
+        }
         Ok(Self {
             deployment_id: storage::StorageMetadata::global().deployment_id,
             uptime: upt,
@@ -122,6 +152,10 @@ impl Report {
             commit_hash: current().commit_hash,
             active_ingestors: ingestor_metrics.0,
             inactive_ingestors: ingestor_metrics.1,
+            active_indexers,
+            inactive_indexers,
+            active_queriers,
+            inactive_queriers,
             stream_count: ingestor_metrics.2,
             total_events_count: ingestor_metrics.3,
             total_json_bytes: ingestor_metrics.4,
@@ -224,11 +258,14 @@ async fn fetch_ingestors_metrics(
     let mut vec = vec![];
     let mut active_ingestors = 0u64;
     let mut offline_ingestors = 0u64;
-    if PARSEABLE.options.mode == Mode::Query {
+
+    // for OSS, Query mode fetches the analytics report
+    // for Enterprise, Prism mode fetches the analytics report
+    if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
         // send analytics for ingest servers
 
         // ingestor infos should be valid here, if not some thing is wrong
-        let ingestor_infos = cluster::get_ingestor_info().await.unwrap();
+        let ingestor_infos: Vec<NodeMetadata> = cluster::get_node_info(NodeType::Ingestor).await?;
 
         for im in ingestor_infos {
             if !check_liveness(&im.domain_name).await {
@@ -250,10 +287,14 @@ async fn fetch_ingestors_metrics(
                 .send()
                 .await
                 .expect("should respond");
-
-            let data = serde_json::from_slice::<NodeMetrics>(&resp.bytes().await?)?;
-            vec.push(data);
-            active_ingestors += 1;
+            // check if the response is valid
+            if let Ok(data) = serde_json::from_slice::<NodeMetrics>(&resp.bytes().await?) {
+                active_ingestors += 1;
+                vec.push(data);
+            } else {
+                offline_ingestors += 1;
+                continue;
+            }
         }
 
         node_metrics.accumulate(&mut vec);

@@ -21,7 +21,6 @@ use serde_json::{json, Value};
 
 use crate::{
     about::{self, get_latest_release},
-    option::Mode,
     parseable::PARSEABLE,
     storage::StorageMetadata,
 };
@@ -63,11 +62,7 @@ pub async fn about() -> Json<Value> {
     let commit = current_release.commit_hash;
     let deployment_id = meta.deployment_id.to_string();
     let mode = PARSEABLE.get_server_mode_string();
-    let staging = if PARSEABLE.options.mode == Mode::Query {
-        "".to_string()
-    } else {
-        PARSEABLE.options.staging_dir().display().to_string()
-    };
+    let staging = PARSEABLE.options.staging_dir().display().to_string();
     let grpc_port = PARSEABLE.options.grpc_port;
 
     let store_endpoint = PARSEABLE.storage.get_endpoint();

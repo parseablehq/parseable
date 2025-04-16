@@ -45,7 +45,6 @@ use crate::query::{execute, CountsRequest, CountsResponse, Query as LogicalQuery
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
 use crate::response::{QueryResponse, TIME_ELAPSED_HEADER};
-use crate::storage::object_storage::commit_schema_to_storage;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::time::{TimeParseError, TimeRange};
@@ -173,12 +172,12 @@ pub async fn get_counts(
 }
 
 pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), EventError> {
-    if PARSEABLE.options.mode == Mode::Query {
+    // if the mode is query or prism, we need to update the schema in memory
+    // no need to commit schema to storage
+    // as the schema is read from memory everytime
+    if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
         for table in tables {
             if let Ok(new_schema) = fetch_schema(table).await {
-                // commit schema merges the schema internally and updates the schema in storage.
-                commit_schema_to_storage(table, new_schema.clone()).await?;
-
                 commit_schema(table, Arc::new(new_schema))?;
             }
         }
@@ -325,6 +324,12 @@ Description: {0}"#
     Anyhow(#[from] anyhow::Error),
     #[error("Error: {0}")]
     StreamNotFound(#[from] StreamNotFound),
+    #[error("SerdeJsonError: {0}")]
+    SerdeJsonError(#[from] serde_json::Error),
+    #[error("CustomError: {0}")]
+    CustomError(String),
+    #[error("No available queriers found")]
+    NoAvailableQuerier,
 }
 
 impl actix_web::ResponseError for QueryError {

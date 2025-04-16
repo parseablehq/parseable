@@ -328,6 +328,14 @@ pub struct Options {
     )]
     pub indexer_endpoint: String,
 
+    #[arg(
+        long,
+        env = "P_QUERIER_ENDPOINT",
+        default_value = "",
+        help = "URL to connect to this specific querier. Default is the address of the server"
+    )]
+    pub querier_endpoint: String,
+
     #[command(flatten)]
     pub oidc: Option<OidcConfig>,
 
@@ -439,83 +447,88 @@ impl Options {
         }
     }
 
-    /// TODO: refactor and document
+    /// get the address of the server
+    /// based on the mode
     pub fn get_url(&self, mode: Mode) -> Url {
-        let (endpoint, env_var) = match mode {
-            Mode::Ingest => {
-                if self.ingestor_endpoint.is_empty() {
-                    return format!(
-                        "{}://{}",
-                        self.get_scheme(),
-                        self.address
-                    )
-                    .parse::<Url>() // if the value was improperly set, this will panic before hand
-                    .unwrap_or_else(|err| {
-                        panic!("{err}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.", self.address)
-                    });
-                }
-                (&self.ingestor_endpoint, "P_INGESTOR_ENDPOINT")
-            }
-            Mode::Index => {
-                if self.indexer_endpoint.is_empty() {
-                    return format!(
-                        "{}://{}",
-                        self.get_scheme(),
-                        self.address
-                    )
-                    .parse::<Url>() // if the value was improperly set, this will panic before hand
-                    .unwrap_or_else(|err| {
-                        panic!("{err}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.", self.address)
-                    });
-                }
-                (&self.indexer_endpoint, "P_INDEXER_ENDPOINT")
-            }
-            _ => panic!("Invalid mode"),
+        let endpoint = match mode {
+            Mode::Ingest => self.get_endpoint(&self.ingestor_endpoint, "P_INGESTOR_ENDPOINT"),
+            Mode::Index => self.get_endpoint(&self.indexer_endpoint, "P_INDEXER_ENDPOINT"),
+            Mode::Query => self.get_endpoint(&self.querier_endpoint, "P_QUERIER_ENDPOINT"),
+            _ => return self.build_url(&self.address),
         };
 
-        if endpoint.starts_with("http") {
-            panic!("Invalid value `{}`, please set the environement variable `{env_var}` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.", endpoint);
-        }
+        self.parse_endpoint(&endpoint)
+    }
 
-        let addr_from_env = endpoint.split(':').collect::<Vec<&str>>();
-
-        if addr_from_env.len() != 2 {
-            panic!("Invalid value `{}`, please set the environement variable `{env_var}` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.", endpoint);
-        }
-
-        let mut hostname = addr_from_env[0].to_string();
-        let mut port = addr_from_env[1].to_string();
-
-        // if the env var value fits the pattern $VAR_NAME:$VAR_NAME
-        // fetch the value from the specified env vars
-        if hostname.starts_with('$') {
-            let var_hostname = hostname[1..].to_string();
-            hostname = env::var(&var_hostname).unwrap_or_default();
-
-            if hostname.is_empty() {
-                panic!("The environement variable `{}` is not set, please set as <ip address / DNS> without the scheme (e.g., 192.168.1.1 or example.com). Please refer to the documentation: https://logg.ing/env for more details.", var_hostname);
-            }
-            if hostname.starts_with("http") {
-                panic!("Invalid value `{}`, please set the environement variable `{}` to `<ip address / DNS>` without the scheme (e.g., 192.168.1.1 or example.com). Please refer to the documentation: https://logg.ing/env for more details.", hostname, var_hostname);
-            } else {
-                hostname = format!("{}://{}", self.get_scheme(), hostname);
-            }
-        }
-
-        if port.starts_with('$') {
-            let var_port = port[1..].to_string();
-            port = env::var(&var_port).unwrap_or_default();
-
-            if port.is_empty() {
+    /// get the endpoint for the server
+    /// if env var is empty, use the address, else use the env var
+    fn get_endpoint(&self, endpoint: &str, env_var: &str) -> String {
+        if endpoint.is_empty() {
+            self.address.to_string()
+        } else {
+            if endpoint.starts_with("http") {
                 panic!(
-                    "Port is not set in the environement variable `{}`. Please refer to the documentation: https://logg.ing/env for more details.",
-                    var_port
+                    "Invalid value `{}`, please set the environment variable `{}` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.",
+                    endpoint, env_var
                 );
             }
+            endpoint.to_string()
+        }
+    }
+
+    /// parse the endpoint to get the address and port
+    /// if the address is an env var, resolve it
+    /// if the port is an env var, resolve it
+    fn parse_endpoint(&self, endpoint: &str) -> Url {
+        let addr_parts: Vec<&str> = endpoint.split(':').collect();
+
+        if addr_parts.len() != 2 {
+            panic!(
+                "Invalid value `{}`, please set the environment variable to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.",
+                endpoint
+            );
         }
 
-        format!("{}://{}:{}", self.get_scheme(), hostname, port)
+        let hostname = self.resolve_env_var(addr_parts[0]);
+        let port = self.resolve_env_var(addr_parts[1]);
+
+        self.build_url(&format!("{}:{}", hostname, port))
+    }
+
+    /// resolve the env var
+    /// if the env var is not set, panic
+    /// if the env var is set, return the value
+    fn resolve_env_var(&self, value: &str) -> String {
+        if let Some(env_var) = value.strip_prefix('$') {
+            let resolved_value = env::var(env_var).unwrap_or_else(|_| {
+                panic!(
+                    "The environment variable `{}` is not set. Please set it to a valid value. Refer to the documentation: https://logg.ing/env for more details.",
+                    env_var
+                );
+            });
+
+            if resolved_value.starts_with("http") {
+                panic!(
+                    "Invalid value `{}`, please set the environment variable `{}` to `<ip address / DNS>` without the scheme (e.g., 192.168.1.1 or example.com). Please refer to the documentation: https://logg.ing/env for more details.",
+                    resolved_value, env_var
+                );
+            }
+
+            resolved_value
+        } else {
+            value.to_string()
+        }
+    }
+
+    /// build the url from the address
+    fn build_url(&self, address: &str) -> Url {
+        format!("{}://{}", self.get_scheme(), address)
             .parse::<Url>()
-            .expect("Valid URL")
+            .unwrap_or_else(|err| {
+                panic!(
+                    "{err}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.",
+                    address
+                );
+            })
     }
 }

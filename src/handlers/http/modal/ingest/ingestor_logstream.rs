@@ -16,6 +16,8 @@
  *
  */
 
+use std::fs;
+
 use actix_web::{
     web::{Json, Path},
     HttpRequest, Responder,
@@ -67,6 +69,16 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
             .unwrap_or(false)
     {
         return Err(StreamNotFound(stream_name.clone()).into());
+    }
+
+    // Delete from staging
+    let stream_dir = PARSEABLE.get_stream(&stream_name)?;
+    if fs::remove_dir_all(&stream_dir.data_path).is_err() {
+        warn!(
+            "failed to delete local data for stream {}. Clean {} manually",
+            stream_name,
+            stream_dir.data_path.to_string_lossy()
+        )
     }
 
     // Delete from memory
