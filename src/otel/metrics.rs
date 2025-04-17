@@ -82,7 +82,6 @@ fn flatten_exemplar(exemplars: &[Exemplar]) -> Map<String, Value> {
 /// and returns a `Vec` of `Map` of the flattened json
 /// this function is reused in all json objects that have number data points
 fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<Map<String, Value>> {
-    println!("data points: {:?}", data_points);
     data_points
         .iter()
         .map(|data_point| {
