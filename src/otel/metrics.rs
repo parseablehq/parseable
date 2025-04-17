@@ -82,6 +82,7 @@ fn flatten_exemplar(exemplars: &[Exemplar]) -> Map<String, Value> {
 /// and returns a `Vec` of `Map` of the flattened json
 /// this function is reused in all json objects that have number data points
 fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<Map<String, Value>> {
+    println!("data points: {:?}", data_points);
     data_points
         .iter()
         .map(|data_point| {
@@ -392,21 +393,26 @@ fn flatten_summary(summary: &Summary) -> Vec<Map<String, Value>> {
 pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<Map<String, Value>> {
     let mut data_points_json = Vec::new();
     let mut metric_json = Map::new();
-
+    let mut metric_type = String::default();
     match &metrics_record.data {
         Some(metric::Data::Gauge(gauge)) => {
+            metric_type = "gauge".to_string();
             data_points_json.extend(flatten_gauge(gauge));
         }
         Some(metric::Data::Sum(sum)) => {
+            metric_type = "sum".to_string();
             data_points_json.extend(flatten_sum(sum));
         }
         Some(metric::Data::Histogram(histogram)) => {
+            metric_type = "histogram".to_string();
             data_points_json.extend(flatten_histogram(histogram));
         }
         Some(metric::Data::ExponentialHistogram(exp_histogram)) => {
+            metric_type = "exponential_histogram".to_string();
             data_points_json.extend(flatten_exp_histogram(exp_histogram));
         }
         Some(metric::Data::Summary(summary)) => {
+            metric_type = "summary".to_string();
             data_points_json.extend(flatten_summary(summary));
         }
         None => {}
@@ -423,6 +429,7 @@ pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<Map<String, Value>
         "metric_unit".to_string(),
         Value::String(metrics_record.unit.clone()),
     );
+    metric_json.insert("metric_type".to_string(), Value::String(metric_type));
     insert_attributes(&mut metric_json, &metrics_record.metadata);
     for data_point_json in &mut data_points_json {
         for (key, value) in &metric_json {
