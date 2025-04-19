@@ -185,7 +185,7 @@ pub fn flatten_otel_logs(message: &LogsData) -> Vec<Value> {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("failed to serialise OTEL other_attributes: {e}");
-            String::new()
+            String::default()
         }
     };
     for log_record_json in &mut vec_otel_json {

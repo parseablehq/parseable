@@ -553,7 +553,7 @@ pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Value> {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("failed to serialise OTEL other_attributes: {e}");
-            String::new()
+            String::default()
         }
     };
     for metric_record_json in &mut vec_otel_json {
