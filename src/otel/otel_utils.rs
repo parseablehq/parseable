@@ -22,7 +22,7 @@ use opentelemetry_proto::tonic::common::v1::{
 };
 use serde_json::{Map, Value};
 
-const KNOWN_ATTRIBUTES_PREFIX: [&str; 3] = ["http", "url", "service"];
+const KNOWN_ATTRIBUTES_PREFIX: [&str; 6] = ["http", "url", "service", "os", "host", "telemetry"];
 
 // Value can be one of types - String, Bool, Int, Double, ArrayValue, AnyValue, KeyValueList, Byte
 pub fn collect_json_from_value(key: &String, value: OtelValue) -> Map<String, Value> {

@@ -35,7 +35,6 @@ pub const OTEL_LOG_KNOWN_FIELD_LIST: [&str; 6] = [
     "span_id",
     "trace_id",
 ];
-
 /// otel log event has severity number
 /// there is a mapping of severity number to severity text provided in proto
 /// this function fetches the severity text from the severity number
@@ -182,11 +181,17 @@ pub fn flatten_otel_logs(message: &LogsData) -> Vec<Value> {
         vec_otel_json.extend(vec_resource_logs_json);
     }
     // Add common attributes as one attribute in stringified array to each log record
+    let other_attributes = match serde_json::to_string(&other_attributes) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("failed to serialise OTEL other_attributes: {e}");
+            String::new()
+        }
+    };
     for log_record_json in &mut vec_otel_json {
-        let other_attributes = serde_json::to_string(&other_attributes).unwrap();
         log_record_json.insert(
             "other_attributes".to_string(),
-            Value::String(other_attributes),
+            Value::String(other_attributes.clone()),
         );
     }
     vec_otel_json.into_iter().map(Value::Object).collect()

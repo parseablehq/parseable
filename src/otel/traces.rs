@@ -126,12 +126,18 @@ pub fn flatten_otel_traces(message: &TracesData) -> Vec<Value> {
 
         vec_otel_json.extend(vec_resource_spans_json);
     }
-    // Add common attributes as one attribute in stringified array to each log record
-    for log_record_json in &mut vec_otel_json {
-        let other_attributes = serde_json::to_string(&other_attributes).unwrap();
-        log_record_json.insert(
+    // Add common attributes as one attribute in stringified array to each span record
+    let other_attributes = match serde_json::to_string(&other_attributes) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("failed to serialise OTEL other_attributes: {e}");
+            String::new()
+        }
+    };
+    for span_record_json in &mut vec_otel_json {
+        span_record_json.insert(
             "other_attributes".to_string(),
-            Value::String(other_attributes),
+            Value::String(other_attributes.clone()),
         );
     }
     vec_otel_json.into_iter().map(Value::Object).collect()
