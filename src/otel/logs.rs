@@ -56,7 +56,10 @@ fn flatten_severity(severity_number: i32) -> Map<String, Value> {
 /// this function flattens the `LogRecord` object
 /// and returns a `Map` of the flattened json
 /// this function is called recursively for each log record object in the otel logs
-pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
+pub fn flatten_log_record(
+    log_record: &LogRecord,
+    other_attributes: &mut Map<String, Value>,
+) -> Map<String, Value> {
     let mut log_record_json: Map<String, Value> = Map::new();
     log_record_json.insert(
         "time_unix_nano".to_string(),
@@ -80,7 +83,11 @@ pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
             log_record_json.insert(key.to_owned(), body_json[key].to_owned());
         }
     }
-    insert_attributes(&mut log_record_json, &log_record.attributes);
+    insert_attributes(
+        &mut log_record_json,
+        &log_record.attributes,
+        other_attributes,
+    );
     log_record_json.insert(
         "log_record_dropped_attributes_count".to_string(),
         Value::Number(log_record.dropped_attributes_count.into()),
@@ -104,7 +111,10 @@ pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
 
 /// this function flattens the `ScopeLogs` object
 /// and returns a `Vec` of `Map` of the flattened json
-fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<Map<String, Value>> {
+fn flatten_scope_log(
+    scope_log: &ScopeLogs,
+    other_attributes: &mut Map<String, Value>,
+) -> Vec<Map<String, Value>> {
     let mut vec_scope_log_json = Vec::new();
     let mut scope_log_json = Map::new();
 
@@ -114,7 +124,7 @@ fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<Map<String, Value>> {
             "scope_version".to_string(),
             Value::String(scope.version.clone()),
         );
-        insert_attributes(&mut scope_log_json, &scope.attributes);
+        insert_attributes(&mut scope_log_json, &scope.attributes, other_attributes);
         scope_log_json.insert(
             "scope_dropped_attributes_count".to_string(),
             Value::Number(scope.dropped_attributes_count.into()),
@@ -126,7 +136,7 @@ fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<Map<String, Value>> {
     );
 
     for log_record in &scope_log.log_records {
-        let log_record_json = flatten_log_record(log_record);
+        let log_record_json = flatten_log_record(log_record, other_attributes);
         let mut combined_json = scope_log_json.clone();
         combined_json.extend(log_record_json);
         vec_scope_log_json.push(combined_json);
@@ -139,11 +149,16 @@ fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<Map<String, Value>> {
 /// and returns a `Vec` of `Value::Object` of the flattened json
 pub fn flatten_otel_logs(message: &LogsData) -> Vec<Value> {
     let mut vec_otel_json = Vec::new();
+    let mut other_attributes = Map::new();
     for record in &message.resource_logs {
         let mut resource_log_json = Map::new();
 
         if let Some(resource) = &record.resource {
-            insert_attributes(&mut resource_log_json, &resource.attributes);
+            insert_attributes(
+                &mut resource_log_json,
+                &resource.attributes,
+                &mut other_attributes,
+            );
             resource_log_json.insert(
                 "resource_dropped_attributes_count".to_string(),
                 Value::Number(resource.dropped_attributes_count.into()),
@@ -152,7 +167,7 @@ pub fn flatten_otel_logs(message: &LogsData) -> Vec<Value> {
 
         let mut vec_resource_logs_json = Vec::new();
         for scope_log in &record.scope_logs {
-            vec_resource_logs_json.extend(flatten_scope_log(scope_log));
+            vec_resource_logs_json.extend(flatten_scope_log(scope_log, &mut other_attributes));
         }
         resource_log_json.insert(
             "schema_url".to_string(),
@@ -165,6 +180,19 @@ pub fn flatten_otel_logs(message: &LogsData) -> Vec<Value> {
 
         vec_otel_json.extend(vec_resource_logs_json);
     }
-
+    // Add common attributes as one attribute in stringified array to each log record
+    let other_attributes = match serde_json::to_string(&other_attributes) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("failed to serialise OTEL other_attributes: {e}");
+            String::default()
+        }
+    };
+    for log_record_json in &mut vec_otel_json {
+        log_record_json.insert(
+            "other_attributes".to_string(),
+            Value::String(other_attributes.clone()),
+        );
+    }
     vec_otel_json.into_iter().map(Value::Object).collect()
 }
