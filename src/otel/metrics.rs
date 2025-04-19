@@ -42,46 +42,51 @@ pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 5] = [
 fn flatten_exemplar(
     exemplars: &[Exemplar],
     other_attributes: &mut Map<String, Value>,
-) -> Map<String, Value> {
-    let mut exemplar_json = Map::new();
-    for exemplar in exemplars {
-        insert_attributes(
-            &mut exemplar_json,
-            &exemplar.filtered_attributes,
-            other_attributes,
-        );
-        exemplar_json.insert(
-            "exemplar_time_unix_nano".to_string(),
-            Value::String(convert_epoch_nano_to_timestamp(
-                exemplar.time_unix_nano as i64,
-            )),
-        );
-        exemplar_json.insert(
-            "exemplar_span_id".to_string(),
-            Value::String(hex::encode(&exemplar.span_id)),
-        );
-        exemplar_json.insert(
-            "exemplar_trace_id".to_string(),
-            Value::String(hex::encode(&exemplar.trace_id)),
-        );
-        if let Some(value) = &exemplar.value {
-            match value {
-                ExemplarValue::AsDouble(double_val) => {
-                    exemplar_json.insert(
-                        "exemplar_value".to_string(),
-                        Value::Number(serde_json::Number::from_f64(*double_val).unwrap()),
-                    );
-                }
-                ExemplarValue::AsInt(int_val) => {
-                    exemplar_json.insert(
-                        "exemplar_value".to_string(),
-                        Value::Number(serde_json::Number::from(*int_val)),
-                    );
+) -> Vec<Map<String, Value>> {
+    exemplars
+        .iter()
+        .map(|exemplar| {
+            let mut exemplar_json = Map::new();
+            insert_attributes(
+                &mut exemplar_json,
+                &exemplar.filtered_attributes,
+                other_attributes,
+            );
+            exemplar_json.insert(
+                "exemplar_time_unix_nano".to_string(),
+                Value::String(convert_epoch_nano_to_timestamp(
+                    exemplar.time_unix_nano as i64,
+                )),
+            );
+            exemplar_json.insert(
+                "exemplar_span_id".to_string(),
+                Value::String(hex::encode(&exemplar.span_id)),
+            );
+            exemplar_json.insert(
+                "exemplar_trace_id".to_string(),
+                Value::String(hex::encode(&exemplar.trace_id)),
+            );
+            if let Some(value) = &exemplar.value {
+                match value {
+                    ExemplarValue::AsDouble(double_val) => {
+                        exemplar_json.insert(
+                            "exemplar_value".to_string(),
+                            serde_json::Number::from_f64(*double_val)
+                                .map(Value::Number)
+                                .unwrap_or(Value::Null),
+                        );
+                    }
+                    ExemplarValue::AsInt(int_val) => {
+                        exemplar_json.insert(
+                            "exemplar_value".to_string(),
+                            Value::Number(serde_json::Number::from(*int_val)),
+                        );
+                    }
                 }
             }
-        }
-    }
-    exemplar_json
+            exemplar_json
+        })
+        .collect()
 }
 
 /// otel metrics event has json array for number data points
@@ -113,17 +118,20 @@ fn flatten_number_data_points(
                     data_point.time_unix_nano as i64,
                 )),
             );
-            let exemplar_json = flatten_exemplar(&data_point.exemplars, other_attributes);
-            for (key, value) in exemplar_json {
-                data_point_json.insert(key, value);
-            }
+            data_point_json.extend(
+                flatten_exemplar(&data_point.exemplars, other_attributes)
+                    .into_iter()
+                    .flatten(),
+            );
             data_point_json.extend(flatten_data_point_flags(data_point.flags));
             if let Some(value) = &data_point.value {
                 match value {
                     NumberDataPointValue::AsDouble(double_val) => {
                         data_point_json.insert(
                             "data_point_value".to_string(),
-                            Value::Number(serde_json::Number::from_f64(*double_val).unwrap()),
+                            serde_json::Number::from_f64(*double_val)
+                                .map(Value::Number)
+                                .unwrap_or(Value::Null),
                         );
                     }
                     NumberDataPointValue::AsInt(int_val) => {
@@ -232,17 +240,23 @@ fn flatten_histogram(
             data_point
                 .explicit_bounds
                 .iter()
-                .map(|bound| Value::Number(serde_json::Number::from_f64(*bound).unwrap()))
+                .map(|bound| {
+                    serde_json::Number::from_f64(*bound)
+                        .map(Value::Number)
+                        .unwrap_or(Value::Null)
+                })
                 .collect(),
         );
         data_point_json.insert(
             "data_point_explicit_bounds".to_string(),
             data_point_explicit_bounds,
         );
-        let exemplar_json = flatten_exemplar(&data_point.exemplars, other_attributes);
-        for (key, value) in exemplar_json {
-            data_point_json.insert(key.to_string(), value);
-        }
+        data_point_json.extend(
+            flatten_exemplar(&data_point.exemplars, other_attributes)
+                .into_iter()
+                .flatten(),
+        );
+
         data_point_json.extend(flatten_data_point_flags(data_point.flags));
         insert_number_if_some(&mut data_point_json, "min", &data_point.min);
         insert_number_if_some(&mut data_point_json, "max", &data_point.max);
@@ -332,10 +346,12 @@ fn flatten_exp_histogram(
                 data_point_json.insert(format!("negative_{}", key), value);
             }
         }
-        let exemplar_json = flatten_exemplar(&data_point.exemplars, other_attributes);
-        for (key, value) in exemplar_json {
-            data_point_json.insert(key, value);
-        }
+        data_point_json.extend(
+            flatten_exemplar(&data_point.exemplars, other_attributes)
+                .into_iter()
+                .flatten(),
+        );
+
         data_points_json.push(data_point_json);
     }
     let mut exp_histogram_json = Map::new();
@@ -384,7 +400,9 @@ fn flatten_summary(
         );
         data_point_json.insert(
             "data_point_sum".to_string(),
-            Value::Number(serde_json::Number::from_f64(data_point.sum).unwrap()),
+            serde_json::Number::from_f64(data_point.sum)
+                .map(Value::Number)
+                .unwrap_or(Value::Null),
         );
         data_point_json.insert(
             "data_point_quantile_values".to_string(),
@@ -397,16 +415,15 @@ fn flatten_summary(
                             vec![
                                 (
                                     "quantile",
-                                    Value::Number(
-                                        serde_json::Number::from_f64(quantile_value.quantile)
-                                            .unwrap(),
-                                    ),
+                                    serde_json::Number::from_f64(quantile_value.quantile)
+                                        .map(Value::Number)
+                                        .unwrap_or(Value::Null),
                                 ),
                                 (
                                     "value",
-                                    Value::Number(
-                                        serde_json::Number::from_f64(quantile_value.value).unwrap(),
-                                    ),
+                                    serde_json::Number::from_f64(quantile_value.value)
+                                        .map(Value::Number)
+                                        .unwrap_or(Value::Null),
                                 ),
                             ]
                             .into_iter()
