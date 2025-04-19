@@ -118,11 +118,14 @@ fn flatten_number_data_points(
                     data_point.time_unix_nano as i64,
                 )),
             );
-            data_point_json.extend(
-                flatten_exemplar(&data_point.exemplars, other_attributes)
-                    .into_iter()
-                    .flatten(),
-            );
+
+            let exemplar_json = flatten_exemplar(&data_point.exemplars, other_attributes);
+            for exemplar in exemplar_json {
+                for (key, value) in exemplar {
+                    data_point_json.insert(key, value);
+                }
+            }
+
             data_point_json.extend(flatten_data_point_flags(data_point.flags));
             if let Some(value) = &data_point.value {
                 match value {
@@ -251,11 +254,12 @@ fn flatten_histogram(
             "data_point_explicit_bounds".to_string(),
             data_point_explicit_bounds,
         );
-        data_point_json.extend(
-            flatten_exemplar(&data_point.exemplars, other_attributes)
-                .into_iter()
-                .flatten(),
-        );
+        let exemplar_json = flatten_exemplar(&data_point.exemplars, other_attributes);
+        for exemplar in exemplar_json {
+            for (key, value) in exemplar {
+                data_point_json.insert(key, value);
+            }
+        }
 
         data_point_json.extend(flatten_data_point_flags(data_point.flags));
         insert_number_if_some(&mut data_point_json, "min", &data_point.min);
@@ -346,11 +350,12 @@ fn flatten_exp_histogram(
                 data_point_json.insert(format!("negative_{}", key), value);
             }
         }
-        data_point_json.extend(
-            flatten_exemplar(&data_point.exemplars, other_attributes)
-                .into_iter()
-                .flatten(),
-        );
+        let exemplar_json = flatten_exemplar(&data_point.exemplars, other_attributes);
+        for exemplar in exemplar_json {
+            for (key, value) in exemplar {
+                data_point_json.insert(key, value);
+            }
+        }
 
         data_points_json.push(data_point_json);
     }
