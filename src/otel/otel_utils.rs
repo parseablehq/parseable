@@ -22,6 +22,8 @@ use opentelemetry_proto::tonic::common::v1::{
 };
 use serde_json::{Map, Value};
 
+const KNOWN_ATTRIBUTES_PREFIX: [&str; 3] = ["http", "url", "service"];
+
 // Value can be one of types - String, Bool, Int, Double, ArrayValue, AnyValue, KeyValueList, Byte
 pub fn collect_json_from_value(key: &String, value: OtelValue) -> Map<String, Value> {
     let mut value_json: Map<String, Value> = Map::new();
@@ -134,14 +136,24 @@ pub fn value_to_string(value: serde_json::Value) -> String {
     }
 }
 
-pub fn flatten_attributes(attributes: &Vec<KeyValue>) -> Map<String, Value> {
+pub fn flatten_attributes(
+    attributes: &Vec<KeyValue>,
+    other_attributes_json: &mut Map<String, Value>,
+) -> Map<String, Value> {
     let mut attributes_json: Map<String, Value> = Map::new();
     for attribute in attributes {
         let key = &attribute.key;
         let value = &attribute.value;
         let value_json = collect_json_from_values(value, &key.to_string());
         for key in value_json.keys() {
-            attributes_json.insert(key.to_owned(), value_json[key].to_owned());
+            if KNOWN_ATTRIBUTES_PREFIX
+                .iter()
+                .any(|prefix| key.starts_with(prefix))
+            {
+                attributes_json.insert(key.to_owned(), value_json[key].to_owned());
+            } else {
+                other_attributes_json.insert(key.to_owned(), value_json[key].to_owned());
+            }
         }
     }
     attributes_json
@@ -167,8 +179,12 @@ pub fn insert_bool_if_some(map: &mut Map<String, Value>, key: &str, option: &Opt
     }
 }
 
-pub fn insert_attributes(map: &mut Map<String, Value>, attributes: &Vec<KeyValue>) {
-    let attributes_json = flatten_attributes(attributes);
+pub fn insert_attributes(
+    map: &mut Map<String, Value>,
+    attributes: &Vec<KeyValue>,
+    other_attributes_json: &mut Map<String, Value>,
+) {
+    let attributes_json = flatten_attributes(attributes, other_attributes_json);
     for (key, value) in attributes_json {
         map.insert(key, value);
     }
