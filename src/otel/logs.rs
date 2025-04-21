@@ -56,11 +56,9 @@ fn flatten_severity(severity_number: i32) -> Map<String, Value> {
 /// this function flattens the `LogRecord` object
 /// and returns a `Map` of the flattened json
 /// this function is called recursively for each log record object in the otel logs
-pub fn flatten_log_record(
-    log_record: &LogRecord,
-    other_attributes: &mut Map<String, Value>,
-) -> Map<String, Value> {
+pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
     let mut log_record_json: Map<String, Value> = Map::new();
+    let mut other_attributes = Map::new();
     log_record_json.insert(
         "time_unix_nano".to_string(),
         Value::String(convert_epoch_nano_to_timestamp(
@@ -86,7 +84,7 @@ pub fn flatten_log_record(
     insert_attributes(
         &mut log_record_json,
         &log_record.attributes,
-        other_attributes,
+        &mut other_attributes,
     );
     log_record_json.insert(
         "log_record_dropped_attributes_count".to_string(),
@@ -106,25 +104,41 @@ pub fn flatten_log_record(
         Value::String(hex::encode(&log_record.trace_id)),
     );
 
+    // Add the `other_attributes` to the log record json
+    if !other_attributes.is_empty() {
+        let other_attributes = match serde_json::to_string(&other_attributes) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("failed to serialise OTEL other_attributes: {e}");
+                String::default()
+            }
+        };
+        log_record_json.insert(
+            "other_attributes".to_string(),
+            Value::String(other_attributes),
+        );
+    }
+
     log_record_json
 }
 
 /// this function flattens the `ScopeLogs` object
 /// and returns a `Vec` of `Map` of the flattened json
-fn flatten_scope_log(
-    scope_log: &ScopeLogs,
-    other_attributes: &mut Map<String, Value>,
-) -> Vec<Map<String, Value>> {
+fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<Map<String, Value>> {
     let mut vec_scope_log_json = Vec::new();
     let mut scope_log_json = Map::new();
-
+    let mut other_attributes = Map::new();
     if let Some(scope) = &scope_log.scope {
         scope_log_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
         scope_log_json.insert(
             "scope_version".to_string(),
             Value::String(scope.version.clone()),
         );
-        insert_attributes(&mut scope_log_json, &scope.attributes, other_attributes);
+        insert_attributes(
+            &mut scope_log_json,
+            &scope.attributes,
+            &mut other_attributes,
+        );
         scope_log_json.insert(
             "scope_dropped_attributes_count".to_string(),
             Value::Number(scope.dropped_attributes_count.into()),
@@ -136,10 +150,38 @@ fn flatten_scope_log(
     );
 
     for log_record in &scope_log.log_records {
-        let log_record_json = flatten_log_record(log_record, other_attributes);
+        let log_record_json = flatten_log_record(log_record);
         let mut combined_json = scope_log_json.clone();
         combined_json.extend(log_record_json);
         vec_scope_log_json.push(combined_json);
+    }
+
+    if !other_attributes.is_empty() {
+        let scope_other_attributes = match serde_json::to_string(&other_attributes) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("failed to serialise OTEL other_attributes: {e}");
+                String::default()
+            }
+        };
+        // append scope_other_attributes to each log record json
+        for scope_log_json in &mut vec_scope_log_json {
+            // fetch the other_attributes from the scope log json
+            if let Some(other_attributes) = scope_log_json.get("other_attributes") {
+                let other_attributes = other_attributes.as_str().unwrap_or_default();
+                // append the other_attributes to the scope log json
+                let other_attributes = format!("{other_attributes}, {scope_other_attributes}");
+                scope_log_json.insert(
+                    "other_attributes".to_string(),
+                    Value::String(other_attributes),
+                );
+            } else {
+                scope_log_json.insert(
+                    "other_attributes".to_string(),
+                    Value::String(scope_other_attributes.clone()),
+                );
+            }
+        }
     }
 
     vec_scope_log_json
@@ -149,10 +191,10 @@ fn flatten_scope_log(
 /// and returns a `Vec` of `Value::Object` of the flattened json
 pub fn flatten_otel_logs(message: &LogsData) -> Vec<Value> {
     let mut vec_otel_json = Vec::new();
-    let mut other_attributes = Map::new();
+
     for record in &message.resource_logs {
         let mut resource_log_json = Map::new();
-
+        let mut other_attributes = Map::new();
         if let Some(resource) = &record.resource {
             insert_attributes(
                 &mut resource_log_json,
@@ -167,7 +209,7 @@ pub fn flatten_otel_logs(message: &LogsData) -> Vec<Value> {
 
         let mut vec_resource_logs_json = Vec::new();
         for scope_log in &record.scope_logs {
-            vec_resource_logs_json.extend(flatten_scope_log(scope_log, &mut other_attributes));
+            vec_resource_logs_json.extend(flatten_scope_log(scope_log));
         }
         resource_log_json.insert(
             "schema_url".to_string(),
@@ -178,21 +220,36 @@ pub fn flatten_otel_logs(message: &LogsData) -> Vec<Value> {
             resource_logs_json.extend(resource_log_json.clone());
         }
 
-        vec_otel_json.extend(vec_resource_logs_json);
-    }
-    // Add common attributes as one attribute in stringified array to each log record
-    let other_attributes = match serde_json::to_string(&other_attributes) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!("failed to serialise OTEL other_attributes: {e}");
-            String::default()
+        if !other_attributes.is_empty() {
+            let resource_other_attributes = match serde_json::to_string(&other_attributes) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("failed to serialise OTEL other_attributes: {e}");
+                    String::default()
+                }
+            };
+            // append scope_other_attributes to each log record json
+            for resource_logs_json in &mut vec_resource_logs_json {
+                // fetch the other_attributes from the scope log json
+                if let Some(other_attributes) = resource_logs_json.get("other_attributes") {
+                    let other_attributes = other_attributes.as_str().unwrap_or_default();
+                    // append the other_attributes to the scope log json
+                    let other_attributes =
+                        format!("{other_attributes}, {resource_other_attributes}");
+                    resource_logs_json.insert(
+                        "other_attributes".to_string(),
+                        Value::String(other_attributes),
+                    );
+                } else {
+                    resource_logs_json.insert(
+                        "other_attributes".to_string(),
+                        Value::String(resource_other_attributes.clone()),
+                    );
+                }
+            }
         }
-    };
-    for log_record_json in &mut vec_otel_json {
-        log_record_json.insert(
-            "other_attributes".to_string(),
-            Value::String(other_attributes.clone()),
-        );
+
+        vec_otel_json.extend(vec_resource_logs_json);
     }
     vec_otel_json.into_iter().map(Value::Object).collect()
 }
