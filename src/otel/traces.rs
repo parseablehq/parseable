@@ -344,12 +344,16 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
     let links_other_attributes = fetch_attributes_from_json(&links_json);
     span_records_json.extend(links_json);
     if !other_attributes.is_empty() {
-        let other_attributes = fetch_attributes_string(&other_attributes);
+        let mut other_attributes = fetch_attributes_string(&other_attributes);
+        if !events_other_attributes.is_empty() {
+            other_attributes.push_str(&events_other_attributes);
+        }
+        if !links_other_attributes.is_empty() {
+            other_attributes.push_str(&links_other_attributes);
+        }
         span_record_json.insert(
             "other_attributes".to_string(),
-            Value::String(format!(
-                "{other_attributes} {events_other_attributes} {links_other_attributes}"
-            )),
+            Value::String(other_attributes),
         );
     } else {
         span_record_json.insert(
@@ -359,16 +363,13 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
             )),
         );
     }
-
     span_record_json.insert(
         "span_dropped_links_count".to_string(),
         Value::Number(span_record.dropped_links_count.into()),
     );
-
     if let Some(status) = &span_record.status {
         span_record_json.extend(flatten_status(status));
     }
-
     // if span_record.events is null, code should still flatten other elements in the span record - this is handled in the if block
     // else block handles the flattening the span record that includes events and links records in each span record
     if span_records_json.is_empty() {
@@ -380,6 +381,5 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
             }
         }
     }
-
     span_records_json
 }

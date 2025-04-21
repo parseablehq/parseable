@@ -45,7 +45,13 @@ pub fn collect_json_from_value(key: &String, value: OtelValue) -> Map<String, Va
         OtelValue::ArrayValue(array_val) => {
             let json_array_value = collect_json_from_array_value(array_val);
             // Convert the array to a JSON string
-            let json_array_string = serde_json::to_string(&json_array_value).unwrap();
+            let json_array_string = match serde_json::to_string(&json_array_value) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::warn!("failed to serialise array value: {e}");
+                    String::default()
+                }
+            };
             // Insert the array into the result map
             value_json.insert(key.to_string(), Value::String(json_array_string));
         }
@@ -105,9 +111,12 @@ fn collect_json_from_key_value_list(key_value_list: KeyValueList) -> Map<String,
     let mut kv_list_json: Map<String, Value> = Map::new();
     for key_value in key_value_list.values {
         if let Some(val) = key_value.value {
-            let val = val.value.unwrap();
-            let json_value = collect_json_from_value(&key_value.key, val);
-            kv_list_json.extend(json_value);
+            if let Some(val) = val.value {
+                let json_value = collect_json_from_value(&key_value.key, val);
+                kv_list_json.extend(json_value);
+            } else {
+                tracing::warn!("Key '{}' has no value in key-value list", key_value.key);
+            }
         }
     }
     kv_list_json
@@ -206,7 +215,7 @@ pub fn merge_attributes_in_json(
                 let other_attributes = json.get_mut("other_attributes").unwrap();
                 let other_attributes = other_attributes.as_str().unwrap_or_default();
                 // append the other_attributes to the scope log json
-                let other_attributes = format!("{other_attributes}, {attributes}");
+                let other_attributes = format!("{other_attributes} {attributes}");
                 json.insert(
                     "other_attributes".to_string(),
                     Value::String(other_attributes),
