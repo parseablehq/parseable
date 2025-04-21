@@ -194,3 +194,51 @@ pub fn convert_epoch_nano_to_timestamp(epoch_ns: i64) -> String {
     let dt = DateTime::from_timestamp_nanos(epoch_ns).naive_utc();
     dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
 }
+
+pub fn merge_attributes_in_json(
+    attributes: Map<String, Value>,
+    vec_json: &mut Vec<Map<String, Value>>,
+) {
+    if !attributes.is_empty() {
+        let attributes = fetch_attributes_string(&attributes);
+        for json in vec_json {
+            if json.contains_key("other_attributes") {
+                let other_attributes = json.get_mut("other_attributes").unwrap();
+                let other_attributes = other_attributes.as_str().unwrap_or_default();
+                // append the other_attributes to the scope log json
+                let other_attributes = format!("{other_attributes}, {attributes}");
+                json.insert(
+                    "other_attributes".to_string(),
+                    Value::String(other_attributes),
+                );
+            } else {
+                json.insert(
+                    "other_attributes".to_string(),
+                    Value::String(attributes.clone()),
+                );
+            }
+        }
+    }
+}
+
+pub fn fetch_attributes_from_json(json_arr: &Vec<Map<String, Value>>) -> String {
+    let mut combined_attributes = String::default();
+    for json in json_arr {
+        if let Some(other_attributes) = json.get("other_attributes") {
+            if let Some(other_attributes) = other_attributes.as_str() {
+                combined_attributes.push_str(other_attributes);
+            }
+        }
+    }
+    combined_attributes
+}
+
+pub fn fetch_attributes_string(attributes: &Map<String, Value>) -> String {
+    match serde_json::to_string(attributes) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("failed to serialise OTEL other_attributes: {e}");
+            String::default()
+        }
+    }
+}
