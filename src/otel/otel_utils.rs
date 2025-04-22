@@ -25,7 +25,7 @@ use serde_json::{Map, Value};
 /// Prefixes of attribute keys that should be preserved as individual fields in flattened output.
 /// Other attributes will be collected in a separate JSON object under `other_attributes`.
 const KNOWN_ATTRIBUTES_PREFIX: [&str; 6] = ["http", "url", "service", "os", "host", "telemetry"];
-
+pub const OTHER_ATTRIBUTES_KEY: &str = "other_attributes";
 // Value can be one of types - String, Bool, Int, Double, ArrayValue, AnyValue, KeyValueList, Byte
 pub fn collect_json_from_value(key: &String, value: OtelValue) -> Map<String, Value> {
     let mut value_json: Map<String, Value> = Map::new();
@@ -45,7 +45,7 @@ pub fn collect_json_from_value(key: &String, value: OtelValue) -> Map<String, Va
             }
         }
         OtelValue::ArrayValue(array_val) => {
-            let json_array_value = collect_json_from_array_value(array_val);
+            let json_array_value = collect_json_from_array_value(&array_val);
             // Convert the array to a JSON string
             let json_array_string = match serde_json::to_string(&json_array_value) {
                 Ok(s) => s,
@@ -78,9 +78,9 @@ pub fn collect_json_from_value(key: &String, value: OtelValue) -> Map<String, Va
 /// Recursively converts an ArrayValue into a JSON Value
 /// This handles nested array values and key-value lists by recursively
 /// converting them to JSON
-fn collect_json_from_array_value(array_value: ArrayValue) -> Value {
+fn collect_json_from_array_value(array_value: &ArrayValue) -> Value {
     let mut json_array = Vec::new();
-    for value in array_value.values {
+    for value in &array_value.values {
         if let Some(val) = &value.value {
             match val {
                 OtelValue::StringValue(s) => json_array.push(Value::String(s.clone())),
@@ -98,7 +98,7 @@ fn collect_json_from_array_value(array_value: ArrayValue) -> Value {
                 }
                 OtelValue::ArrayValue(arr) => {
                     // Recursively collect JSON from nested array values
-                    let nested_json = collect_json_from_array_value(arr.clone());
+                    let nested_json = collect_json_from_array_value(arr);
                     json_array.push(nested_json);
                 }
                 OtelValue::KvlistValue(kv_list) => {
@@ -162,14 +162,14 @@ pub fn flatten_attributes(
         let key = &attribute.key;
         let value = &attribute.value;
         let value_json = collect_json_from_values(value, &key.to_string());
-        for key in value_json.keys() {
+        for (attr_key, attr_val) in &value_json {
             if KNOWN_ATTRIBUTES_PREFIX
                 .iter()
-                .any(|prefix| key.starts_with(prefix))
+                .any(|prefix| attr_key.starts_with(prefix))
             {
-                attributes_json.insert(key.to_owned(), value_json[key].to_owned());
+                attributes_json.insert(attr_key.clone(), attr_val.clone());
             } else {
-                other_attributes_json.insert(key.to_owned(), value_json[key].to_owned());
+                other_attributes_json.insert(attr_key.clone(), attr_val.clone());
             }
         }
     }
@@ -219,36 +219,56 @@ pub fn merge_attributes_in_json(
     attributes: Map<String, Value>,
     vec_json: &mut Vec<Map<String, Value>>,
 ) {
-    if !attributes.is_empty() {
-        for json in vec_json {
-            if let Some(other_attrs) = json.get("other_attributes") {
-                if let Value::String(attrs_str) = other_attrs {
-                    if let Ok(mut existing_attrs) =
-                        serde_json::from_str::<Map<String, Value>>(attrs_str)
-                    {
-                        for (key, value) in attributes.clone() {
-                            existing_attrs.insert(key, value);
-                        }
-                        if let Ok(merged_str) = serde_json::to_string(&existing_attrs) {
-                            json.insert("other_attributes".to_string(), Value::String(merged_str));
-                        }
-                    } else if let Ok(attrs_str) = serde_json::to_string(&attributes) {
-                        json.insert("other_attributes".to_string(), Value::String(attrs_str));
-                    }
-                } else if let Value::Object(existing_attrs) = other_attrs {
-                    let mut merged_attrs = existing_attrs.clone();
-                    for (key, value) in attributes.clone() {
-                        merged_attrs.insert(key, value);
-                    }
-                    if let Ok(merged_str) = serde_json::to_string(&merged_attrs) {
-                        json.insert("other_attributes".to_string(), Value::String(merged_str));
-                    }
-                }
-            } else if let Ok(attrs_str) = serde_json::to_string(&attributes) {
-                json.insert("other_attributes".to_string(), Value::String(attrs_str));
+    if attributes.is_empty() {
+        return;
+    }
+
+    for json in vec_json {
+        let merged_attributes = match json.get(OTHER_ATTRIBUTES_KEY) {
+            Some(Value::String(attrs_str)) => {
+                merge_with_existing_attributes(&attributes, attrs_str)
             }
+            Some(Value::Object(existing_attrs)) => {
+                merge_with_existing_object(&attributes, existing_attrs)
+            }
+            _ => serialize_attributes(&attributes),
+        };
+
+        if let Some(merged_str) = merged_attributes {
+            json.insert(OTHER_ATTRIBUTES_KEY.to_string(), Value::String(merged_str));
         }
     }
+}
+
+/// Merge attributes with an existing JSON string of attributes
+fn merge_with_existing_attributes(
+    attributes: &Map<String, Value>,
+    attrs_str: &str,
+) -> Option<String> {
+    if let Ok(mut existing_attrs) = serde_json::from_str::<Map<String, Value>>(attrs_str) {
+        for (key, value) in attributes {
+            existing_attrs.insert(key.clone(), value.clone());
+        }
+        return serde_json::to_string(&existing_attrs).ok();
+    }
+    None
+}
+
+/// Merge attributes with an existing JSON object of attributes
+fn merge_with_existing_object(
+    attributes: &Map<String, Value>,
+    existing_attrs: &Map<String, Value>,
+) -> Option<String> {
+    let mut merged_attrs = existing_attrs.clone();
+    for (key, value) in attributes {
+        merged_attrs.insert(key.clone(), value.clone());
+    }
+    serde_json::to_string(&merged_attrs).ok()
+}
+
+/// Serialize attributes into a JSON string
+fn serialize_attributes(attributes: &Map<String, Value>) -> Option<String> {
+    serde_json::to_string(attributes).ok()
 }
 
 /// fetch `other_attributes` from array of JSON objects
@@ -258,7 +278,7 @@ pub fn fetch_attributes_from_json(json_arr: &Vec<Map<String, Value>>) -> Map<Str
     let mut merged_attributes = Map::new();
 
     for json in json_arr {
-        if let Some(Value::String(attrs_str)) = json.get("other_attributes") {
+        if let Some(Value::String(attrs_str)) = json.get(OTHER_ATTRIBUTES_KEY) {
             if let Ok(attrs) = serde_json::from_str::<Map<String, Value>>(attrs_str) {
                 for (key, value) in attrs {
                     merged_attributes.insert(key, value);
@@ -291,6 +311,6 @@ pub fn add_other_attributes_if_not_empty(
 ) {
     if !other_attributes.is_empty() {
         let attrs_str = fetch_attributes_string(other_attributes);
-        json.insert("other_attributes".to_string(), Value::String(attrs_str));
+        json.insert(OTHER_ATTRIBUTES_KEY.to_string(), Value::String(attrs_str));
     }
 }

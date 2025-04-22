@@ -88,7 +88,7 @@ fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<Map<String, Value>> {
         );
     }
     // Add the `other_attributes` to the scope span json
-    merge_attributes_in_json(other_attributes.clone(), &mut vec_scope_span_json);
+    merge_attributes_in_json(other_attributes, &mut vec_scope_span_json);
 
     vec_scope_span_json
 }
@@ -97,10 +97,10 @@ fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<Map<String, Value>> {
 /// and returns a `Vec` of `Value::Object` of the flattened json
 pub fn flatten_otel_traces(message: &TracesData) -> Vec<Value> {
     let mut vec_otel_json = Vec::new();
-    let mut other_attributes = Map::new();
+
     for record in &message.resource_spans {
         let mut resource_span_json = Map::new();
-
+        let mut other_attributes = Map::new();
         if let Some(resource) = &record.resource {
             insert_attributes(
                 &mut resource_span_json,
