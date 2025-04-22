@@ -24,8 +24,11 @@ use opentelemetry_proto::tonic::trace::v1::Status;
 use opentelemetry_proto::tonic::trace::v1::TracesData;
 use serde_json::{Map, Value};
 
+use super::otel_utils::add_other_attributes_if_not_empty;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
+use super::otel_utils::fetch_attributes_from_json;
 use super::otel_utils::insert_attributes;
+use super::otel_utils::merge_attributes_in_json;
 
 pub const OTEL_TRACES_KNOWN_FIELD_LIST: [&str; 15] = [
     "span_trace_id",
@@ -49,7 +52,7 @@ pub const OTEL_TRACES_KNOWN_FIELD_LIST: [&str; 15] = [
 fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<Map<String, Value>> {
     let mut vec_scope_span_json = Vec::new();
     let mut scope_span_json = Map::new();
-
+    let mut other_attributes = Map::new();
     for span in &scope_span.spans {
         let span_record_json = flatten_span_record(span);
         vec_scope_span_json.extend(span_record_json);
@@ -61,7 +64,11 @@ fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<Map<String, Value>> {
             "scope_version".to_string(),
             Value::String(scope.version.clone()),
         );
-        insert_attributes(&mut scope_span_json, &scope.attributes);
+        insert_attributes(
+            &mut scope_span_json,
+            &scope.attributes,
+            &mut other_attributes,
+        );
         scope_span_json.insert(
             "scope_dropped_attributes_count".to_string(),
             Value::Number(scope.dropped_attributes_count.into()),
@@ -80,6 +87,8 @@ fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<Map<String, Value>> {
             Value::String(scope_span.schema_url.clone()),
         );
     }
+    // Add the `other_attributes` to the scope span json
+    merge_attributes_in_json(other_attributes, &mut vec_scope_span_json);
 
     vec_scope_span_json
 }
@@ -91,9 +100,13 @@ pub fn flatten_otel_traces(message: &TracesData) -> Vec<Value> {
 
     for record in &message.resource_spans {
         let mut resource_span_json = Map::new();
-
+        let mut other_attributes = Map::new();
         if let Some(resource) = &record.resource {
-            insert_attributes(&mut resource_span_json, &resource.attributes);
+            insert_attributes(
+                &mut resource_span_json,
+                &resource.attributes,
+                &mut other_attributes,
+            );
             resource_span_json.insert(
                 "resource_dropped_attributes_count".to_string(),
                 Value::Number(resource.dropped_attributes_count.into()),
@@ -116,7 +129,8 @@ pub fn flatten_otel_traces(message: &TracesData) -> Vec<Value> {
                 resource_spans_json.insert(key.clone(), value.clone());
             }
         }
-
+        // Add the `other_attributes` to the resource span json
+        merge_attributes_in_json(other_attributes, &mut vec_resource_spans_json);
         vec_otel_json.extend(vec_resource_spans_json);
     }
 
@@ -131,6 +145,7 @@ fn flatten_events(events: &[Event]) -> Vec<Map<String, Value>> {
         .iter()
         .map(|event| {
             let mut event_json = Map::new();
+            let mut other_attributes = Map::new();
             event_json.insert(
                 "event_time_unix_nano".to_string(),
                 Value::String(
@@ -138,11 +153,13 @@ fn flatten_events(events: &[Event]) -> Vec<Map<String, Value>> {
                 ),
             );
             event_json.insert("event_name".to_string(), Value::String(event.name.clone()));
-            insert_attributes(&mut event_json, &event.attributes);
+            insert_attributes(&mut event_json, &event.attributes, &mut other_attributes);
             event_json.insert(
                 "event_dropped_attributes_count".to_string(),
                 Value::Number(event.dropped_attributes_count.into()),
             );
+
+            add_other_attributes_if_not_empty(&mut event_json, &other_attributes);
             event_json
         })
         .collect()
@@ -156,6 +173,7 @@ fn flatten_links(links: &[Link]) -> Vec<Map<String, Value>> {
         .iter()
         .map(|link| {
             let mut link_json = Map::new();
+            let mut other_attributes = Map::new();
             link_json.insert(
                 "link_span_id".to_string(),
                 Value::String(hex::encode(&link.span_id)),
@@ -165,11 +183,13 @@ fn flatten_links(links: &[Link]) -> Vec<Map<String, Value>> {
                 Value::String(hex::encode(&link.trace_id)),
             );
 
-            insert_attributes(&mut link_json, &link.attributes);
+            insert_attributes(&mut link_json, &link.attributes, &mut other_attributes);
             link_json.insert(
                 "link_dropped_attributes_count".to_string(),
                 Value::Number(link.dropped_attributes_count.into()),
             );
+
+            add_other_attributes_if_not_empty(&mut link_json, &other_attributes);
             link_json
         })
         .collect()
@@ -254,7 +274,7 @@ fn flatten_kind(kind: i32) -> Map<String, Value> {
 /// this function is called recursively for each span record object in the otel traces event
 fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
     let mut span_records_json = Vec::new();
-
+    let mut other_attributes = Map::new();
     let mut span_record_json = Map::new();
     span_record_json.insert(
         "span_trace_id".to_string(),
@@ -290,26 +310,47 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
             span_record.end_time_unix_nano as i64,
         )),
     );
-    insert_attributes(&mut span_record_json, &span_record.attributes);
+    insert_attributes(
+        &mut span_record_json,
+        &span_record.attributes,
+        &mut other_attributes,
+    );
     span_record_json.insert(
         "span_dropped_attributes_count".to_string(),
         Value::Number(span_record.dropped_attributes_count.into()),
     );
-    span_records_json.extend(flatten_events(&span_record.events));
+    let events_json = flatten_events(&span_record.events);
+    // fetch all other_attributes from the events_json
+    let events_other_attributes = fetch_attributes_from_json(&events_json);
+    span_records_json.extend(events_json);
     span_record_json.insert(
         "span_dropped_events_count".to_string(),
         Value::Number(span_record.dropped_events_count.into()),
     );
-    span_records_json.extend(flatten_links(&span_record.links));
+    let links_json = flatten_links(&span_record.links);
+    // fetch all other_attributes from the links_json
+    let links_other_attributes = fetch_attributes_from_json(&links_json);
+    span_records_json.extend(links_json);
+    // merge all other_attributes from the events_json and links_json
+    if !other_attributes.is_empty()
+        || !events_other_attributes.is_empty()
+        || !links_other_attributes.is_empty()
+    {
+        for (key, value) in &events_other_attributes {
+            other_attributes.insert(key.clone(), value.clone());
+        }
+        for (key, value) in &links_other_attributes {
+            other_attributes.insert(key.clone(), value.clone());
+        }
+        add_other_attributes_if_not_empty(&mut span_record_json, &other_attributes);
+    }
     span_record_json.insert(
         "span_dropped_links_count".to_string(),
         Value::Number(span_record.dropped_links_count.into()),
     );
-
     if let Some(status) = &span_record.status {
         span_record_json.extend(flatten_status(status));
     }
-
     // if span_record.events is null, code should still flatten other elements in the span record - this is handled in the if block
     // else block handles the flattening the span record that includes events and links records in each span record
     if span_records_json.is_empty() {
@@ -321,6 +362,5 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
             }
         }
     }
-
     span_records_json
 }
