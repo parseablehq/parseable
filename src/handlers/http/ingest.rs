@@ -18,37 +18,19 @@
 
 use std::collections::{HashMap, HashSet};
 
-use super::logstream::error::{CreateStreamError, StreamError};
-use super::modal::utils::ingest_utils::{flatten_and_push_logs, push_logs};
-use super::users::dashboards::DashboardError;
-use super::users::filters::FiltersError;
-use crate::event::format::{self, EventFormat, LogSource};
-use crate::event::{self, error::EventError};
-use crate::handlers::http::modal::utils::logstream_utils::create_stream_and_schema_from_storage;
-use crate::handlers::{LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
-use crate::metadata::error::stream_info::MetadataError;
-use crate::metadata::{SchemaVersion, STREAM_INFO};
-use crate::option::{Mode, CONFIG};
-use crate::otel::logs::flatten_otel_logs;
-use crate::otel::metrics::flatten_otel_metrics;
-use crate::otel::traces::flatten_otel_traces;
-use crate::storage::{ObjectStorageError, StreamType};
-use crate::utils::header_parsing::ParseHeaderError;
-use crate::utils::json::convert_array_to_object;
-use crate::utils::json::flatten::{convert_to_array, JsonFlattenError};
 use actix_web::web::{Json, Path};
 use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
 use arrow_array::RecordBatch;
+use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
 use serde_json::Value;
 
 use crate::event::error::EventError;
 use crate::event::format::known_schema::{self, KNOWN_SCHEMA_LIST};
-use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
+use crate::event::format::{LogSource, LogSourceEntry};
 use crate::event::{self, FORMAT_KEY, USER_AGENT_KEY};
 use crate::handlers::{EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
-use crate::metadata::SchemaVersion;
 use crate::option::Mode;
 use crate::otel::logs::OTEL_LOG_KNOWN_FIELD_LIST;
 use crate::otel::metrics::OTEL_METRICS_KNOWN_FIELD_LIST;
@@ -143,26 +125,11 @@ pub async fn ingest(
 }
 
 pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
-    let size: usize = body.len();
     let json: Value = serde_json::from_slice(&body)?;
-    let schema = PARSEABLE.get_stream(&stream_name)?.get_schema_raw();
     let mut p_custom_fields = HashMap::new();
     p_custom_fields.insert(USER_AGENT_KEY.to_string(), "parseable".to_string());
     p_custom_fields.insert(FORMAT_KEY.to_string(), LogSource::Pmeta.to_string());
-    // For internal streams, use old schema
-    format::json::Event::new(json)
-        .into_event(
-            stream_name,
-            size as u64,
-            &schema,
-            false,
-            None,
-            None,
-            SchemaVersion::V0,
-            StreamType::Internal,
-            &p_custom_fields,
-        )?
-        .process()?;
+    flatten_and_push_logs(json, &stream_name, &LogSource::Pmeta, &p_custom_fields).await?;
 
     Ok(())
 }

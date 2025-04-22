@@ -20,12 +20,13 @@ use std::sync::Arc;
 use std::thread;
 
 use crate::handlers::airplane;
-use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
+use crate::handlers::http::cluster::{self, init_cluster_metrics_scheduler};
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
 use crate::handlers::http::{base_path, prism_base_path};
 use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::handlers::http::{rbac, role};
 use crate::hottier::HotTierManager;
+use crate::metrics::init_system_metrics_scheduler;
 use crate::rbac::role::Action;
 use crate::{analytics, migration, storage, sync};
 use actix_web::web::{resource, ServiceConfig};
@@ -34,7 +35,6 @@ use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::{oneshot, OnceCell};
-use tracing::info;
 
 use crate::parseable::PARSEABLE;
 use crate::Server;
@@ -117,17 +117,15 @@ impl ParseableServer for QueryServer {
         // track all parquet files already in the data directory
         storage::retention::load_retention_from_global();
 
-        metrics::init_system_metrics_scheduler().await?;
-        cluster::init_cluster_metrics_scheduler().await?;
         // all internal data structures populated now.
         // start the analytics scheduler if enabled
         if PARSEABLE.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
 
-        if init_cluster_metrics_schedular().is_ok() {
-            info!("Cluster metrics scheduler started successfully");
-        }
+        init_system_metrics_scheduler().await?;
+        init_cluster_metrics_scheduler().await?;
+
         if let Some(hot_tier_manager) = HotTierManager::global() {
             hot_tier_manager.put_internal_stream_hot_tier().await?;
             hot_tier_manager.download_from_s3()?;
