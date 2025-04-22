@@ -31,6 +31,7 @@ use tokio::sync::oneshot;
 use tokio::sync::OnceCell;
 
 use crate::handlers::http::modal::NodeType;
+use crate::metrics::init_system_metrics_scheduler;
 use crate::{
     analytics,
     handlers::{
@@ -119,7 +120,7 @@ impl ParseableServer for IngestServer {
         thread::spawn(|| sync::handler(cancel_rx));
 
         tokio::spawn(airplane::server());
-
+        init_system_metrics_scheduler().await?;
         // Ingestors shouldn't have to deal with OpenId auth flow
         let result = self.start(shutdown_rx, prometheus.clone(), None).await;
         // Cancel sync jobs

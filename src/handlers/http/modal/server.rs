@@ -30,6 +30,7 @@ use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
 use crate::hottier::HotTierManager;
 use crate::metrics;
+use crate::metrics::init_system_metrics_scheduler;
 use crate::migration;
 use crate::storage;
 use crate::sync;
@@ -133,6 +134,8 @@ impl ParseableServer for Server {
         if PARSEABLE.options.send_analytics {
             analytics::init_analytics_scheduler()?;
         }
+
+        init_system_metrics_scheduler().await?;
 
         tokio::spawn(handlers::livetail::server());
         tokio::spawn(handlers::airplane::server());

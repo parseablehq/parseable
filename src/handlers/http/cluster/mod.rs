@@ -25,7 +25,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use actix_web::http::header::{self, HeaderMap};
-use actix_web::web::{Json, Path};
+use actix_web::web::Path;
 use actix_web::Responder;
 use bytes::Bytes;
 use chrono::Utc;
@@ -41,6 +41,7 @@ use url::Url;
 use utils::{check_liveness, to_url_string, IngestionStats, QueriedStats, StorageStats};
 
 use crate::handlers::http::ingest::ingest_internal_stream;
+use crate::metrics::collect_all_metrics;
 use crate::metrics::prom_utils::Metrics;
 use crate::parseable::PARSEABLE;
 use crate::rbac::role::model::DefaultPrivilege;
@@ -999,14 +1000,30 @@ pub async fn init_cluster_metrics_scheduler() -> Result<(), PostError> {
         .every(CLUSTER_METRICS_INTERVAL_SECONDS)
         .run(move || async {
             let result: Result<(), PostError> = async {
+                if let Err(err) = collect_all_metrics().await {
+                    error!("Error in capturing system metrics: {:#}", err);
+                }
                 let cluster_metrics = fetch_cluster_metrics().await;
                 if let Ok(metrics) = cluster_metrics {
-                    let json_value = serde_json::to_value(metrics)
-                        .map_err(|e| anyhow::anyhow!("Failed to serialize metrics: {}", e))?;
-
-                    ingest_internal_stream(INTERNAL_STREAM_NAME.to_string(), Json(json_value))
-                        .await
-                        .map_err(|e| anyhow::anyhow!("Failed to ingest metrics: {}", e))?;
+                    if !metrics.is_empty() {
+                        info!("Cluster metrics fetched successfully from all ingestors");
+                        if let Ok(metrics_bytes) = serde_json::to_vec(&metrics) {
+                            if matches!(
+                                ingest_internal_stream(
+                                    INTERNAL_STREAM_NAME.to_string(),
+                                    bytes::Bytes::from(metrics_bytes),
+                                )
+                                .await,
+                                Ok(())
+                            ) {
+                                info!("Cluster metrics successfully ingested into internal stream");
+                            } else {
+                                error!("Failed to ingest cluster metrics into internal stream");
+                            }
+                        } else {
+                            error!("Failed to serialize cluster metrics");
+                        }
+                    }
                 }
                 Ok(())
             }
