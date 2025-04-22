@@ -130,7 +130,7 @@ pub fn flatten_otel_traces(message: &TracesData) -> Vec<Value> {
             }
         }
         // Add the `other_attributes` to the resource span json
-        merge_attributes_in_json(other_attributes.clone(), &mut vec_resource_spans_json);
+        merge_attributes_in_json(other_attributes, &mut vec_resource_spans_json);
         vec_otel_json.extend(vec_resource_spans_json);
     }
 
