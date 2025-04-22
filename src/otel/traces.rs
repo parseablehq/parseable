@@ -24,9 +24,9 @@ use opentelemetry_proto::tonic::trace::v1::Status;
 use opentelemetry_proto::tonic::trace::v1::TracesData;
 use serde_json::{Map, Value};
 
+use super::otel_utils::add_other_attributes_if_not_empty;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::fetch_attributes_from_json;
-use super::otel_utils::fetch_attributes_string;
 use super::otel_utils::insert_attributes;
 use super::otel_utils::merge_attributes_in_json;
 
@@ -159,13 +159,7 @@ fn flatten_events(events: &[Event]) -> Vec<Map<String, Value>> {
                 Value::Number(event.dropped_attributes_count.into()),
             );
 
-            if !other_attributes.is_empty() {
-                let other_attributes = fetch_attributes_string(&other_attributes);
-                event_json.insert(
-                    "other_attributes".to_string(),
-                    Value::String(other_attributes),
-                );
-            }
+            add_other_attributes_if_not_empty(&mut event_json, &other_attributes);
             event_json
         })
         .collect()
@@ -195,13 +189,7 @@ fn flatten_links(links: &[Link]) -> Vec<Map<String, Value>> {
                 Value::Number(link.dropped_attributes_count.into()),
             );
 
-            if !other_attributes.is_empty() {
-                let other_attributes = fetch_attributes_string(&other_attributes);
-                link_json.insert(
-                    "other_attributes".to_string(),
-                    Value::String(other_attributes),
-                );
-            }
+            add_other_attributes_if_not_empty(&mut link_json, &other_attributes);
             link_json
         })
         .collect()
@@ -354,8 +342,7 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
         for (key, value) in &links_other_attributes {
             other_attributes.insert(key.clone(), value.clone());
         }
-        let attrs_str = fetch_attributes_string(&other_attributes);
-        span_record_json.insert("other_attributes".to_string(), Value::String(attrs_str));
+        add_other_attributes_if_not_empty(&mut span_record_json, &other_attributes);
     }
     span_record_json.insert(
         "span_dropped_links_count".to_string(),

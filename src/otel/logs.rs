@@ -23,9 +23,9 @@ use opentelemetry_proto::tonic::logs::v1::SeverityNumber;
 use serde_json::Map;
 use serde_json::Value;
 
+use super::otel_utils::add_other_attributes_if_not_empty;
 use super::otel_utils::collect_json_from_values;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
-use super::otel_utils::fetch_attributes_string;
 use super::otel_utils::insert_attributes;
 use super::otel_utils::merge_attributes_in_json;
 
@@ -107,13 +107,7 @@ pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
     );
 
     // Add the `other_attributes` to the log record json
-    if !other_attributes.is_empty() {
-        let other_attributes = fetch_attributes_string(&other_attributes);
-        log_record_json.insert(
-            "other_attributes".to_string(),
-            Value::String(other_attributes),
-        );
-    }
+    add_other_attributes_if_not_empty(&mut log_record_json, &other_attributes);
 
     log_record_json
 }

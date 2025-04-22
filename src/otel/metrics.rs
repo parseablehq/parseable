@@ -24,7 +24,7 @@ use opentelemetry_proto::tonic::metrics::v1::{
 use serde_json::{Map, Value};
 
 use super::otel_utils::{
-    convert_epoch_nano_to_timestamp, fetch_attributes_string, insert_attributes,
+    add_other_attributes_if_not_empty, convert_epoch_nano_to_timestamp, insert_attributes,
     insert_number_if_some, merge_attributes_in_json,
 };
 
@@ -83,13 +83,7 @@ fn flatten_exemplar(exemplars: &[Exemplar]) -> Vec<Map<String, Value>> {
                     }
                 }
             }
-            if !other_attributes.is_empty() {
-                let other_attributes = fetch_attributes_string(&other_attributes);
-                exemplar_json.insert(
-                    "other_attributes".to_string(),
-                    Value::String(other_attributes),
-                );
-            }
+            add_other_attributes_if_not_empty(&mut exemplar_json, &other_attributes);
             exemplar_json
         })
         .collect()
@@ -131,11 +125,8 @@ fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<Map<String
                         data_point_json.insert(key, value);
                     }
                 }
-            } else if !other_attributes.is_empty() {
-                data_point_json.insert(
-                    "other_attributes".to_string(),
-                    Value::String(fetch_attributes_string(&other_attributes)),
-                );
+            } else {
+                add_other_attributes_if_not_empty(&mut data_point_json, &other_attributes);
             }
 
             data_point_json.extend(flatten_data_point_flags(data_point.flags));
@@ -270,11 +261,8 @@ fn flatten_histogram(histogram: &Histogram) -> Vec<Map<String, Value>> {
                     data_point_json.insert(key, value);
                 }
             }
-        } else if !other_attributes.is_empty() {
-            data_point_json.insert(
-                "other_attributes".to_string(),
-                Value::String(fetch_attributes_string(&other_attributes)),
-            );
+        } else {
+            add_other_attributes_if_not_empty(&mut data_point_json, &other_attributes);
         }
 
         data_point_json.extend(flatten_data_point_flags(data_point.flags));
@@ -372,11 +360,8 @@ fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<Map<String
                     data_point_json.insert(key, value);
                 }
             }
-        } else if !other_attributes.is_empty() {
-            data_point_json.insert(
-                "other_attributes".to_string(),
-                Value::String(fetch_attributes_string(&other_attributes)),
-            );
+        } else {
+            add_other_attributes_if_not_empty(&mut data_point_json, &other_attributes);
         }
 
         data_points_json.push(data_point_json);
@@ -460,12 +445,7 @@ fn flatten_summary(summary: &Summary) -> Vec<Map<String, Value>> {
             ),
         );
 
-        if !other_attributes.is_empty() {
-            data_point_json.insert(
-                "other_attributes".to_string(),
-                Value::String(fetch_attributes_string(&other_attributes)),
-            );
-        }
+        add_other_attributes_if_not_empty(&mut data_point_json, &other_attributes);
 
         data_points_json.push(data_point_json);
     }

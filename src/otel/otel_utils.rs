@@ -22,6 +22,8 @@ use opentelemetry_proto::tonic::common::v1::{
 };
 use serde_json::{Map, Value};
 
+/// Prefixes of attribute keys that should be preserved as individual fields in flattened output.
+/// Other attributes will be collected in a separate JSON object under `other_attributes`.
 const KNOWN_ATTRIBUTES_PREFIX: [&str; 6] = ["http", "url", "service", "os", "host", "telemetry"];
 
 // Value can be one of types - String, Bool, Int, Double, ArrayValue, AnyValue, KeyValueList, Byte
@@ -73,6 +75,9 @@ pub fn collect_json_from_value(key: &String, value: OtelValue) -> Map<String, Va
     value_json
 }
 
+/// Recursively converts an ArrayValue into a JSON Value
+/// This handles nested array values and key-value lists by recursively
+/// converting them to JSON
 fn collect_json_from_array_value(array_value: ArrayValue) -> Value {
     let mut json_array = Vec::new();
     for value in array_value.values {
@@ -107,6 +112,9 @@ fn collect_json_from_array_value(array_value: ArrayValue) -> Value {
     Value::Array(json_array)
 }
 
+/// Recursively converts an OpenTelemetry KeyValueList into a JSON Map
+/// The function iterates through the key-value pairs in the list
+/// and collects their JSON representations into a single Map
 fn collect_json_from_key_value_list(key_value_list: KeyValueList) -> Map<String, Value> {
     let mut kv_list_json: Map<String, Value> = Map::new();
     for key_value in key_value_list.values {
@@ -271,5 +279,18 @@ pub fn fetch_attributes_string(attributes: &Map<String, Value>) -> String {
             tracing::warn!("failed to serialise OTEL other_attributes: {e}");
             String::default()
         }
+    }
+}
+
+/// add `other_attributes` to the JSON object
+/// if `other_attributes` is not empty
+/// and return the JSON object
+pub fn add_other_attributes_if_not_empty(
+    json: &mut Map<String, Value>,
+    other_attributes: &Map<String, Value>,
+) {
+    if !other_attributes.is_empty() {
+        let attrs_str = fetch_attributes_string(other_attributes);
+        json.insert("other_attributes".to_string(), Value::String(attrs_str));
     }
 }
