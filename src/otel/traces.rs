@@ -343,25 +343,19 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
     // fetch all other_attributes from the links_json
     let links_other_attributes = fetch_attributes_from_json(&links_json);
     span_records_json.extend(links_json);
-    if !other_attributes.is_empty() {
-        let mut other_attributes = fetch_attributes_string(&other_attributes);
-        if !events_other_attributes.is_empty() {
-            other_attributes.push_str(&events_other_attributes);
+    // merge all other_attributes from the events_json and links_json
+    if !other_attributes.is_empty()
+        || !events_other_attributes.is_empty()
+        || !links_other_attributes.is_empty()
+    {
+        for (key, value) in &events_other_attributes {
+            other_attributes.insert(key.clone(), value.clone());
         }
-        if !links_other_attributes.is_empty() {
-            other_attributes.push_str(&links_other_attributes);
+        for (key, value) in &links_other_attributes {
+            other_attributes.insert(key.clone(), value.clone());
         }
-        span_record_json.insert(
-            "other_attributes".to_string(),
-            Value::String(other_attributes),
-        );
-    } else {
-        span_record_json.insert(
-            "other_attributes".to_string(),
-            Value::String(format!(
-                "{events_other_attributes} {links_other_attributes}"
-            )),
-        );
+        let attrs_str = fetch_attributes_string(&other_attributes);
+        span_record_json.insert("other_attributes".to_string(), Value::String(attrs_str));
     }
     span_record_json.insert(
         "span_dropped_links_count".to_string(),

@@ -131,7 +131,7 @@ fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<Map<String
                         data_point_json.insert(key, value);
                     }
                 }
-            } else {
+            } else if !other_attributes.is_empty() {
                 data_point_json.insert(
                     "other_attributes".to_string(),
                     Value::String(fetch_attributes_string(&other_attributes)),
@@ -270,7 +270,7 @@ fn flatten_histogram(histogram: &Histogram) -> Vec<Map<String, Value>> {
                     data_point_json.insert(key, value);
                 }
             }
-        } else {
+        } else if !other_attributes.is_empty() {
             data_point_json.insert(
                 "other_attributes".to_string(),
                 Value::String(fetch_attributes_string(&other_attributes)),
@@ -372,7 +372,7 @@ fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<Map<String
                     data_point_json.insert(key, value);
                 }
             }
-        } else {
+        } else if !other_attributes.is_empty() {
             data_point_json.insert(
                 "other_attributes".to_string(),
                 Value::String(fetch_attributes_string(&other_attributes)),
@@ -459,6 +459,14 @@ fn flatten_summary(summary: &Summary) -> Vec<Map<String, Value>> {
                     .collect(),
             ),
         );
+
+        if !other_attributes.is_empty() {
+            data_point_json.insert(
+                "other_attributes".to_string(),
+                Value::String(fetch_attributes_string(&other_attributes)),
+            );
+        }
+
         data_points_json.push(data_point_json);
     }
     data_points_json
@@ -548,7 +556,7 @@ pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Value> {
         let mut vec_scope_metrics_json = Vec::new();
         for scope_metric in &record.scope_metrics {
             let mut scope_metrics_json = Map::new();
-            let mut other_attributes = Map::new();
+            let mut scope_other_attributes = Map::new();
             for metrics_record in &scope_metric.metrics {
                 vec_scope_metrics_json.extend(flatten_metrics_record(metrics_record));
             }
@@ -562,7 +570,7 @@ pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Value> {
                 insert_attributes(
                     &mut scope_metrics_json,
                     &scope.attributes,
-                    &mut other_attributes,
+                    &mut scope_other_attributes,
                 );
                 scope_metrics_json.insert(
                     "scope_dropped_attributes_count".to_string(),
@@ -579,7 +587,7 @@ pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Value> {
                     scope_metric_json.insert(key.clone(), value.clone());
                 }
             }
-            merge_attributes_in_json(other_attributes, &mut vec_scope_metrics_json);
+            merge_attributes_in_json(scope_other_attributes, &mut vec_scope_metrics_json);
         }
         resource_metrics_json.insert(
             "resource_metrics_schema_url".to_string(),

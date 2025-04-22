@@ -204,44 +204,66 @@ pub fn convert_epoch_nano_to_timestamp(epoch_ns: i64) -> String {
     dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
 }
 
+/// fetch `other_attributes` from array of JSON objects
+/// merge them with the provided attributes
+/// and return the merged array of JSON object
 pub fn merge_attributes_in_json(
     attributes: Map<String, Value>,
     vec_json: &mut Vec<Map<String, Value>>,
 ) {
     if !attributes.is_empty() {
-        let attributes = fetch_attributes_string(&attributes);
         for json in vec_json {
-            if json.contains_key("other_attributes") {
-                let other_attributes = json.get_mut("other_attributes").unwrap();
-                let other_attributes = other_attributes.as_str().unwrap_or_default();
-                // append the other_attributes to the scope log json
-                let other_attributes = format!("{other_attributes} {attributes}");
-                json.insert(
-                    "other_attributes".to_string(),
-                    Value::String(other_attributes),
-                );
-            } else {
-                json.insert(
-                    "other_attributes".to_string(),
-                    Value::String(attributes.clone()),
-                );
+            if let Some(other_attrs) = json.get("other_attributes") {
+                if let Value::String(attrs_str) = other_attrs {
+                    if let Ok(mut existing_attrs) =
+                        serde_json::from_str::<Map<String, Value>>(attrs_str)
+                    {
+                        for (key, value) in attributes.clone() {
+                            existing_attrs.insert(key, value);
+                        }
+                        if let Ok(merged_str) = serde_json::to_string(&existing_attrs) {
+                            json.insert("other_attributes".to_string(), Value::String(merged_str));
+                        }
+                    } else if let Ok(attrs_str) = serde_json::to_string(&attributes) {
+                        json.insert("other_attributes".to_string(), Value::String(attrs_str));
+                    }
+                } else if let Value::Object(existing_attrs) = other_attrs {
+                    let mut merged_attrs = existing_attrs.clone();
+                    for (key, value) in attributes.clone() {
+                        merged_attrs.insert(key, value);
+                    }
+                    if let Ok(merged_str) = serde_json::to_string(&merged_attrs) {
+                        json.insert("other_attributes".to_string(), Value::String(merged_str));
+                    }
+                }
+            } else if let Ok(attrs_str) = serde_json::to_string(&attributes) {
+                json.insert("other_attributes".to_string(), Value::String(attrs_str));
             }
         }
     }
 }
 
-pub fn fetch_attributes_from_json(json_arr: &Vec<Map<String, Value>>) -> String {
-    let mut combined_attributes = String::default();
+/// fetch `other_attributes` from array of JSON objects
+/// and merge them into a single map
+/// and return the merged map
+pub fn fetch_attributes_from_json(json_arr: &Vec<Map<String, Value>>) -> Map<String, Value> {
+    let mut merged_attributes = Map::new();
+
     for json in json_arr {
-        if let Some(other_attributes) = json.get("other_attributes") {
-            if let Some(other_attributes) = other_attributes.as_str() {
-                combined_attributes.push_str(other_attributes);
+        if let Some(Value::String(attrs_str)) = json.get("other_attributes") {
+            if let Ok(attrs) = serde_json::from_str::<Map<String, Value>>(attrs_str) {
+                for (key, value) in attrs {
+                    merged_attributes.insert(key, value);
+                }
             }
         }
     }
-    combined_attributes
+    merged_attributes
 }
 
+/// convert attributes map to a string
+/// and return the string
+/// if serialisation fails, return an empty string
 pub fn fetch_attributes_string(attributes: &Map<String, Value>) -> String {
     match serde_json::to_string(attributes) {
         Ok(s) => s,
