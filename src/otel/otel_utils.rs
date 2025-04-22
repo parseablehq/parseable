@@ -245,13 +245,18 @@ fn merge_with_existing_attributes(
     attributes: &Map<String, Value>,
     attrs_str: &str,
 ) -> Option<String> {
-    if let Ok(mut existing_attrs) = serde_json::from_str::<Map<String, Value>>(attrs_str) {
-        for (key, value) in attributes {
-            existing_attrs.insert(key.clone(), value.clone());
+    match serde_json::from_str::<Map<String, Value>>(attrs_str) {
+        Ok(mut existing_attrs) => {
+            for (key, value) in attributes {
+                existing_attrs.insert(key.clone(), value.clone());
+            }
+            serde_json::to_string(&existing_attrs).ok()
         }
-        return serde_json::to_string(&existing_attrs).ok();
+        Err(e) => {
+            tracing::warn!("failed to deserialize existing attributes: {e}");
+            None
+        }
     }
-    None
 }
 
 /// Merge attributes with an existing JSON object of attributes
