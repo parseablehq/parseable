@@ -16,7 +16,7 @@
  *
  */
 
-use chrono::{DateTime, NaiveDate, NaiveDateTime, TimeDelta, Timelike, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeDelta, TimeZone, Timelike, Utc};
 
 #[derive(Debug, thiserror::Error)]
 pub enum TimeParseError {
@@ -78,8 +78,8 @@ impl TimeRange {
     /// let range = TimeRange::parse_human_time("2023-01-01T12:00:00Z", "2023-01-01T15:00:00Z");
     /// ```
     pub fn parse_human_time(start_time: &str, end_time: &str) -> Result<Self, TimeParseError> {
-        let start: DateTime<Utc>;
-        let end: DateTime<Utc>;
+        let mut start: DateTime<Utc>;
+        let mut end: DateTime<Utc>;
 
         if end_time == "now" {
             end = Utc::now();
@@ -88,6 +88,11 @@ impl TimeRange {
             start = DateTime::parse_from_rfc3339(start_time)?.into();
             end = DateTime::parse_from_rfc3339(end_time)?.into();
         };
+
+        // Truncate seconds, milliseconds, and nanoseconds to zero
+        // to ensure that the time range is aligned to the minute
+        start = truncate_to_minute(start);
+        end = truncate_to_minute(end);
 
         if start > end {
             return Err(TimeParseError::StartTimeAfterEndTime);
@@ -285,6 +290,19 @@ impl TimeRange {
     pub fn contains(&self, time: DateTime<Utc>) -> bool {
         self.start <= time && self.end > time
     }
+}
+
+pub fn truncate_to_minute(dt: DateTime<Utc>) -> DateTime<Utc> {
+    // Get the date and time components we want to keep
+    let year = dt.year();
+    let month = dt.month();
+    let day = dt.day();
+    let hour = dt.hour();
+    let minute = dt.minute();
+
+    // Create a new DateTime with seconds, milliseconds, and nanoseconds set to 0
+    Utc.with_ymd_and_hms(year, month, day, hour, minute, 0)
+        .unwrap() // This should never fail with valid components
 }
 
 /// Represents a minute value (0-59) and provides methods for converting it to a slot range.
