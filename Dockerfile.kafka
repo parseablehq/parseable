@@ -35,9 +35,27 @@ RUN apt-get update && \
 WORKDIR /parseable
 COPY Cargo.toml Cargo.lock build.rs ./
 
-# Create a dummy main.rs to pre-cache dependencies
-RUN mkdir src && echo "fn main() {}" > src/main.rs && \
-    cargo build --release --features kafka && \
+# Fix librdkafka CMakeLists.txt before building
+RUN mkdir -p src && echo "fn main() {}" > src/main.rs && \
+    # Download the package so it's in the cargo registry
+    cargo fetch && \
+    # Find rdkafka-sys directory
+    RDKAFKA_SYS_DIR=$(find /usr/local/cargo/registry/src -name "rdkafka-sys-*" -type d | head -n 1) && \
+    echo "Found rdkafka-sys at: $RDKAFKA_SYS_DIR" && \
+    # Find the CMakeLists.txt file
+    CMAKE_FILE="$RDKAFKA_SYS_DIR/librdkafka/CMakeLists.txt" && \
+    if [ -f "$CMAKE_FILE" ]; then \
+    echo "Found CMakeLists.txt at: $CMAKE_FILE" && \
+    # Replace the minimum required version
+    sed -i 's/cmake_minimum_required(VERSION 3.2)/cmake_minimum_required(VERSION 3.5)/' "$CMAKE_FILE" && \
+    echo "Modified CMakeLists.txt to use CMake 3.5 minimum version"; \
+    else \
+    echo "Could not find librdkafka CMakeLists.txt file!" && \
+    exit 1; \
+    fi
+
+# Now build dependencies with the fixed CMakeLists.txt
+RUN cargo build --release --features kafka && \
     rm -rf src
 
 # Copy the actual source code
