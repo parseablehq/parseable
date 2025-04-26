@@ -147,6 +147,16 @@
           "classification_reason",
           "track_id"
         ]
+      },
+      {
+        "pattern": "^(?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z) (?<client_ip>[\\d\\.]+) (?<client_port>\\d+) (?<target_port>\\d+) (- ){7}(?<track_id>TID_[a-f0-9]+)$",
+        "fields": [
+          "timestamp",
+          "client_ip",
+          "client_port",
+          "target_port",
+          "track_id"
+        ]
       }
     ]
   },
