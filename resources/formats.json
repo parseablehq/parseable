@@ -109,6 +109,44 @@
           "classification_reason",
           "track_id"
         ]
+      },
+      {
+        "pattern": "^(?<type>http|https|h2|ws|wss) (?<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z) (?<elb>[^ ]+) (?<client_ip>[^:]+):(?<client_port>\\d+) (?<target_ip>[^ ]+) (?<request_processing_time>[^ ]+) (?<target_processing_time>[^ ]+) (?<response_processing_time>[^ ]+) (?<elb_status_code>[^ ]+) (?<target_status_code>[^ ]+) (?<received_bytes>[^ ]+) (?<sent_bytes>[^ ]+) (?<cs_method>[^ ]+) (?<cs_uri_whole>[^ ]+) (?<cs_version>[^ ]+) (?<user_agent>.*?) (?<ssl_cipher>[^ ]+) (?<ssl_protocol>[^ ]+) (?<target_group_arn>[^ ]+) (?<trace_id>[^ ]+) (?<domain_name>[^ ]+) (?<chosen_cert_arn>[^ ]+) (?<action_executed>[^ ]+) (?<request_creation_time>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{6}Z|[^ ]+) (?<redirect_url>[^ ]+) (?<redirect_proto>[^ ]+) (?<redirect_port>[^ ]+) (?<target_ip_port>[^ ]+|[^ ]*) (?<target_status_desc>[^ ]+|[^ ]*) (?<classification>[^ ]+|[^ ]*) (?<classification_reason>[^ ]+|[^ ]*) (?<track_id>TID_[a-f0-9]+)$",
+        "fields": [
+          "type",
+          "timestamp",
+          "elb",
+          "client_ip",
+          "client_port",
+          "target_ip",
+          "request_processing_time",
+          "target_processing_time",
+          "response_processing_time",
+          "elb_status_code",
+          "target_status_code",
+          "received_bytes",
+          "sent_bytes",
+          "cs_method",
+          "cs_uri_whole",
+          "cs_version",
+          "user_agent",
+          "ssl_cipher",
+          "ssl_protocol",
+          "target_group_arn",
+          "trace_id",
+          "domain_name",
+          "chosen_cert_arn",
+          "action_executed",
+          "request_creation_time",
+          "redirect_url",
+          "redirect_proto",
+          "redirect_port",
+          "target_ip_port",
+          "target_status_desc",
+          "classification",
+          "classification_reason",
+          "track_id"
+        ]
       }
     ]
   },
