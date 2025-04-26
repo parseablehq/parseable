@@ -102,7 +102,6 @@ jobs:
               pkg-config-aarch64-linux-gnu
           fi
 
-
       # macOS-specific dependencies
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
@@ -130,34 +129,6 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ matrix.target }}-kafka-${{ hashFiles('**/Cargo.lock') }}
-          
-      - name: Find and fix librdkafka CMakeLists.txt
-        run: |
-          # Download the package first so it's in the registry
-          cargo fetch
-          
-          # Find the rdkafka-sys package directory
-          RDKAFKA_SYS_DIR=$(find ~/.cargo/registry/src -name "rdkafka-sys-*" -type d | head -n 1)
-          echo "Found rdkafka-sys at: $RDKAFKA_SYS_DIR"
-          
-          # Find the librdkafka CMakeLists.txt file
-          CMAKE_FILE="$RDKAFKA_SYS_DIR/librdkafka/CMakeLists.txt"
-          
-          if [ -f "$CMAKE_FILE" ]; then
-            echo "Found CMakeLists.txt at: $CMAKE_FILE"
-            
-            # Make a backup of the original file
-            cp "$CMAKE_FILE" "$CMAKE_FILE.bak"
-            
-            # Replace the minimum required version
-            sed -i 's/cmake_minimum_required(VERSION 3.2)/cmake_minimum_required(VERSION 3.5)/' "$CMAKE_FILE"
-            
-            echo "Modified CMakeLists.txt - before and after comparison:"
-            diff "$CMAKE_FILE.bak" "$CMAKE_FILE" || true
-          else
-            echo "Could not find librdkafka CMakeLists.txt file!"
-            exit 1
-          fi
 
       - name: Build with Kafka
         uses: actions-rs/cargo@v1
@@ -174,3 +145,37 @@ jobs:
           OPENSSL_ROOT_DIR: "/usr/lib/aarch64-linux-gnu"
           OPENSSL_STATIC: "1"
           SASL2_STATIC: "0"
+        # Add the fix as a pre-run script right before cargo build runs
+        # This is a workaround since actions-rs/cargo doesn't support pre-commands
+        run: |
+          cargo fetch
+          
+          # Find the rdkafka-sys package directory
+          RDKAFKA_SYS_DIR=$(find ~/.cargo/registry/src -name "rdkafka-sys-*" -type d | head -n 1)
+          echo "Found rdkafka-sys at: $RDKAFKA_SYS_DIR"
+          
+          # Find the librdkafka CMakeLists.txt file
+          CMAKE_FILE="$RDKAFKA_SYS_DIR/librdkafka/CMakeLists.txt"
+          
+          if [ -f "$CMAKE_FILE" ]; then
+            echo "Found CMakeLists.txt at: $CMAKE_FILE"
+            
+            # Make a backup of the original file
+            cp "$CMAKE_FILE" "$CMAKE_FILE.bak"
+            
+            # Replace the minimum required version - with OS-specific syntax
+            if [ "${{ runner.os }}" == "macOS" ]; then
+              sed -i '' 's/cmake_minimum_required(VERSION 3.2)/cmake_minimum_required(VERSION 3.5)/' "$CMAKE_FILE"
+            else
+              sed -i 's/cmake_minimum_required(VERSION 3.2)/cmake_minimum_required(VERSION 3.5)/' "$CMAKE_FILE"
+            fi
+            
+            echo "Modified CMakeLists.txt - before and after comparison:"
+            diff "$CMAKE_FILE.bak" "$CMAKE_FILE" || true
+          else
+            echo "Could not find librdkafka CMakeLists.txt file!"
+            exit 1
+          fi
+          
+          # Now run the actual build
+          cargo build --target ${{ matrix.target }} --features kafka --release
