@@ -246,7 +246,7 @@ async fn get_dashboard_titles() -> Result<Vec<TitleAndId>, PrismHomeError> {
         .iter()
         .map(|dashboard| TitleAndId {
             title: dashboard.title.clone(),
-            id: dashboard.dashboard_id.to_string(),
+            id: dashboard.dashboard_id.as_ref().unwrap().to_string(),
         })
         .collect_vec();
 

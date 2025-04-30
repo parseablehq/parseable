@@ -34,22 +34,14 @@ pub struct Tile {
     #[serde(flatten)]
     pub other_fields: Option<serde_json::Map<String, Value>>,
 }
-
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
-pub struct Layout {
-    pub tile_id: Option<String>,
-    #[serde(flatten)]
-    pub other_fields: Option<serde_json::Map<String, Value>>,
-}
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Dashboard {
     pub version: Option<String>,
     pub title: String,
-    pub author: String,
-    pub dashboard_id: Ulid,
+    pub author: Option<String>,
+    pub dashboard_id: Option<Ulid>,
     pub modified: Option<DateTime<Utc>>,
     pub tiles: Vec<Tile>,
-    pub layout: Vec<Layout>,
 }
 
 #[derive(Default, Debug)]
@@ -87,7 +79,7 @@ impl Dashboards {
 
     pub async fn delete_dashboard(&self, dashboard_id: Ulid) {
         let mut s = self.0.write().await;
-        s.retain(|d| d.dashboard_id != dashboard_id);
+        s.retain(|d| *d.dashboard_id.as_ref().unwrap() != dashboard_id);
     }
 
     pub async fn get_dashboard(&self, dashboard_id: Ulid) -> Option<Dashboard> {
@@ -95,7 +87,7 @@ impl Dashboards {
             .read()
             .await
             .iter()
-            .find(|d| d.dashboard_id == dashboard_id)
+            .find(|d| *d.dashboard_id.as_ref().unwrap() == dashboard_id)
             .cloned()
     }
 

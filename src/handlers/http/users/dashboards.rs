@@ -48,7 +48,7 @@ pub async fn list() -> Result<impl Responder, DashboardError> {
             );
             map.insert(
                 "author".to_string(),
-                serde_json::Value::String(dashboard.author.clone()),
+                serde_json::Value::String(dashboard.author.as_ref().unwrap().clone()),
             );
             map.insert(
                 "modified".to_string(),
@@ -81,10 +81,10 @@ pub async fn post(
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
     let dashboard_id = Ulid::new();
-    dashboard.dashboard_id = dashboard_id;
+    dashboard.dashboard_id = Some(dashboard_id);
     dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
     dashboard.modified = Some(Utc::now());
-    dashboard.author = user_id.clone();
+    dashboard.author = Some(user_id.clone());
     for tile in dashboard.tiles.iter_mut() {
         tile.tile_id = Ulid::new();
     }
@@ -117,8 +117,8 @@ pub async fn update(
     if DASHBOARDS.get_dashboard(dashboard_id).await.is_none() {
         return Err(DashboardError::Metadata("Dashboard does not exist"));
     }
-    dashboard.dashboard_id = dashboard_id;
-    dashboard.author = user_id.clone();
+    dashboard.dashboard_id = Some(dashboard_id);
+    dashboard.author = Some(user_id.clone());
     dashboard.modified = Some(Utc::now());
     dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
     for tile in dashboard.tiles.iter_mut() {
