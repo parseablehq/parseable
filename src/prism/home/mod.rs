@@ -103,7 +103,7 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
         get_stream_titles(key),
         get_alert_titles(key),
         get_correlation_titles(key),
-        get_dashboard_titles(key),
+        get_dashboard_titles(),
         get_filter_titles(key),
         get_alerts_info()
     );
@@ -239,19 +239,14 @@ async fn get_correlation_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, Pri
     Ok(correlation_titles)
 }
 
-async fn get_dashboard_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, PrismHomeError> {
+async fn get_dashboard_titles() -> Result<Vec<TitleAndId>, PrismHomeError> {
     let dashboard_titles = DASHBOARDS
-        .list_dashboards(key)
+        .list_dashboards()
         .await
         .iter()
         .map(|dashboard| TitleAndId {
-            title: dashboard.name.clone(),
-            id: dashboard
-                .dashboard_id
-                .as_ref()
-                .ok_or_else(|| anyhow::Error::msg("Dashboard ID is null"))
-                .unwrap()
-                .clone(),
+            title: dashboard.title.clone(),
+            id: dashboard.dashboard_id.to_string(),
         })
         .collect_vec();
 

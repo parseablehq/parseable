@@ -21,7 +21,7 @@ use crate::{
     parseable::PARSEABLE,
     storage::{object_storage::dashboard_path, ObjectStorageError},
     users::dashboards::{Dashboard, CURRENT_DASHBOARD_VERSION, DASHBOARDS},
-    utils::{actix::extract_session_key_from_req, get_hash, get_user_from_request},
+    utils::{get_hash, get_user_from_request},
 };
 use actix_web::{
     http::header::ContentType,
@@ -29,31 +29,25 @@ use actix_web::{
     HttpRequest, HttpResponse, Responder,
 };
 use bytes::Bytes;
-use rand::distributions::DistString;
 
-use chrono::Utc;
 use http::StatusCode;
 use serde_json::Error as SerdeError;
+use ulid::Ulid;
 
-pub async fn list(req: HttpRequest) -> Result<impl Responder, DashboardError> {
-    let key =
-        extract_session_key_from_req(&req).map_err(|e| DashboardError::Custom(e.to_string()))?;
-    let dashboards = DASHBOARDS.list_dashboards(&key).await;
+pub async fn list() -> Result<impl Responder, DashboardError> {
+    let dashboards = DASHBOARDS.list_dashboards().await;
 
     Ok((web::Json(dashboards), StatusCode::OK))
 }
 
-pub async fn get(
-    req: HttpRequest,
-    dashboard_id: Path<String>,
-) -> Result<impl Responder, DashboardError> {
-    let user_id = get_user_from_request(&req)?;
-    let dashboard_id = dashboard_id.into_inner();
+pub async fn get(dashboard_id: Path<String>) -> Result<impl Responder, DashboardError> {
+    let dashboard_id = if let Ok(dashboard_id) = Ulid::from_string(&dashboard_id.into_inner()) {
+        dashboard_id
+    } else {
+        return Err(DashboardError::Metadata("Invalid dashboard ID"));
+    };
 
-    if let Some(dashboard) = DASHBOARDS
-        .get_dashboard(&dashboard_id, &get_hash(&user_id))
-        .await
-    {
+    if let Some(dashboard) = DASHBOARDS.get_dashboard(dashboard_id).await {
         return Ok((web::Json(dashboard), StatusCode::OK));
     }
 
@@ -66,20 +60,13 @@ pub async fn post(
 ) -> Result<impl Responder, DashboardError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
-    let dashboard_id = get_hash(Utc::now().timestamp_micros().to_string().as_str());
-    dashboard.dashboard_id = Some(dashboard_id.clone());
+    let dashboard_id = Ulid::new();
+    dashboard.dashboard_id = dashboard_id;
     dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
 
-    dashboard.user_id = Some(user_id.clone());
+    dashboard.author = user_id.clone();
     for tile in dashboard.tiles.iter_mut() {
-        tile.tile_id = Some(get_hash(
-            format!(
-                "{}{}",
-                rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 8),
-                Utc::now().timestamp_micros()
-            )
-            .as_str(),
-        ));
+        tile.tile_id = Ulid::new();
     }
     DASHBOARDS.update(&dashboard).await;
 
@@ -101,21 +88,21 @@ pub async fn update(
 ) -> Result<impl Responder, DashboardError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
-    let dashboard_id = dashboard_id.into_inner();
+    let dashboard_id = if let Ok(dashboard_id) = Ulid::from_string(&dashboard_id.into_inner()) {
+        dashboard_id
+    } else {
+        return Err(DashboardError::Metadata("Invalid dashboard ID"));
+    };
 
-    if DASHBOARDS
-        .get_dashboard(&dashboard_id, &user_id)
-        .await
-        .is_none()
-    {
+    if DASHBOARDS.get_dashboard(dashboard_id).await.is_none() {
         return Err(DashboardError::Metadata("Dashboard does not exist"));
     }
-    dashboard.dashboard_id = Some(dashboard_id.to_string());
-    dashboard.user_id = Some(user_id.clone());
+    dashboard.dashboard_id = dashboard_id;
+    dashboard.author = user_id.clone();
     dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
     for tile in dashboard.tiles.iter_mut() {
-        if tile.tile_id.is_none() {
-            tile.tile_id = Some(get_hash(Utc::now().timestamp_micros().to_string().as_str()));
+        if tile.tile_id.is_nil() {
+            tile.tile_id = Ulid::new();
         }
     }
     DASHBOARDS.update(&dashboard).await;
@@ -137,19 +124,19 @@ pub async fn delete(
 ) -> Result<HttpResponse, DashboardError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
-    let dashboard_id = dashboard_id.into_inner();
-    if DASHBOARDS
-        .get_dashboard(&dashboard_id, &user_id)
-        .await
-        .is_none()
-    {
+    let dashboard_id = if let Ok(dashboard_id) = Ulid::from_string(&dashboard_id.into_inner()) {
+        dashboard_id
+    } else {
+        return Err(DashboardError::Metadata("Invalid dashboard ID"));
+    };
+    if DASHBOARDS.get_dashboard(dashboard_id).await.is_none() {
         return Err(DashboardError::Metadata("Dashboard does not exist"));
     }
     let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
     let store = PARSEABLE.storage.get_object_store();
     store.delete_object(&path).await?;
 
-    DASHBOARDS.delete_dashboard(&dashboard_id).await;
+    DASHBOARDS.delete_dashboard(dashboard_id).await;
 
     Ok(HttpResponse::Ok().finish())
 }
