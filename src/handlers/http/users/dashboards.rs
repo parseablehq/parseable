@@ -50,6 +50,10 @@ pub async fn list() -> Result<impl Responder, DashboardError> {
                 "modified".to_string(),
                 serde_json::Value::String(dashboard.modified.unwrap().to_string()),
             );
+            map.insert(
+                "dashboard_id".to_string(),
+                serde_json::Value::String(dashboard.dashboard_id.unwrap().to_string()),
+            );
             map
         })
         .collect();
