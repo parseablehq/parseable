@@ -53,7 +53,7 @@ pub struct Dashboard {
     pub dashboard_id: Option<Ulid>,
     pub modified: Option<DateTime<Utc>>,
     dashboard_type: Option<DashboardType>,
-    pub tiles: Vec<Tile>,
+    pub tiles: Option<Vec<Tile>>,
 }
 
 #[derive(Default, Debug)]
@@ -88,18 +88,12 @@ impl Dashboards {
         user_id: &str,
         dashboard: &mut Dashboard,
     ) -> Result<(), DashboardError> {
-        let mut s = self.0.write().await;
         let dashboard_id = Ulid::new();
         dashboard.author = Some(user_id.to_string());
         dashboard.dashboard_id = Some(dashboard_id);
         dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
         dashboard.modified = Some(Utc::now());
         dashboard.dashboard_type = Some(DashboardType::Dashboard);
-        for tile in dashboard.tiles.iter_mut() {
-            tile.tile_id = Ulid::new();
-        }
-        s.push(dashboard.clone());
-
         let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
 
         let store = PARSEABLE.storage.get_object_store();
@@ -107,6 +101,9 @@ impl Dashboards {
         store
             .put_object(&path, Bytes::from(dashboard_bytes))
             .await?;
+
+        self.0.write().await.push(dashboard.clone());
+
         Ok(())
     }
 
@@ -116,20 +113,18 @@ impl Dashboards {
         dashboard_id: Ulid,
         dashboard: &mut Dashboard,
     ) -> Result<(), DashboardError> {
-        let mut s = self.0.write().await;
-        if self.get_dashboard(dashboard_id).await.is_none() {
+        if self
+            .get_dashboard_by_user(dashboard_id, user_id)
+            .await
+            .is_none()
+        {
             return Err(DashboardError::Metadata("Dashboard does not exist"));
         }
+        dashboard.author = Some(user_id.to_string());
         dashboard.dashboard_id = Some(dashboard_id);
-        dashboard.modified = Some(Utc::now());
         dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
-        for tile in dashboard.tiles.iter_mut() {
-            if tile.tile_id.is_nil() {
-                tile.tile_id = Ulid::new();
-            }
-        }
-        s.retain(|d| d.dashboard_id != dashboard.dashboard_id);
-        s.push(dashboard.clone());
+        dashboard.modified = Some(Utc::now());
+        dashboard.dashboard_type = Some(DashboardType::Dashboard);
 
         let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
 
@@ -138,6 +133,13 @@ impl Dashboards {
         store
             .put_object(&path, Bytes::from(dashboard_bytes))
             .await?;
+
+        self.0
+            .write()
+            .await
+            .retain(|d| d.dashboard_id != dashboard.dashboard_id);
+        self.0.write().await.push(dashboard.clone());
+
         Ok(())
     }
 
@@ -146,15 +148,21 @@ impl Dashboards {
         user_id: &str,
         dashboard_id: Ulid,
     ) -> Result<(), DashboardError> {
-        let mut s = self.0.write().await;
-
-        if self.get_dashboard(dashboard_id).await.is_none() {
+        if self
+            .get_dashboard_by_user(dashboard_id, user_id)
+            .await
+            .is_none()
+        {
             return Err(DashboardError::Metadata("Dashboard does not exist"));
         }
-        s.retain(|d| *d.dashboard_id.as_ref().unwrap() != dashboard_id);
+
         let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
         let store = PARSEABLE.storage.get_object_store();
         store.delete_object(&path).await?;
+        self.0
+            .write()
+            .await
+            .retain(|d| *d.dashboard_id.as_ref().unwrap() != dashboard_id);
 
         Ok(())
     }
@@ -165,6 +173,22 @@ impl Dashboards {
             .await
             .iter()
             .find(|d| *d.dashboard_id.as_ref().unwrap() == dashboard_id)
+            .cloned()
+    }
+
+    pub async fn get_dashboard_by_user(
+        &self,
+        dashboard_id: Ulid,
+        user_id: &str,
+    ) -> Option<Dashboard> {
+        self.0
+            .read()
+            .await
+            .iter()
+            .find(|d| {
+                *d.dashboard_id.as_ref().unwrap() == dashboard_id
+                    && d.author == Some(user_id.to_string())
+            })
             .cloned()
     }
 

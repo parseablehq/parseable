@@ -125,7 +125,7 @@ pub async fn delete(
 pub async fn add_tile(
     req: HttpRequest,
     dashboard_id: Path<String>,
-    Json(mut tile): Json<Tile>,
+    Json(tile): Json<Tile>,
 ) -> Result<impl Responder, DashboardError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
@@ -139,10 +139,7 @@ pub async fn add_tile(
         .get_dashboard(dashboard_id)
         .await
         .ok_or(DashboardError::Metadata("Dashboard does not exist"))?;
-    if tile.tile_id.is_nil() {
-        tile.tile_id = Ulid::new();
-    }
-    dashboard.tiles.push(tile.clone());
+    dashboard.tiles.as_mut().unwrap().push(tile.clone());
     DASHBOARDS
         .update(&user_id, dashboard_id, &mut dashboard)
         .await?;

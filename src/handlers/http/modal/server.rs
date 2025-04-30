@@ -241,7 +241,6 @@ impl Server {
             )
     }
 
-    // get the dashboards web scope
     pub fn get_dashboards_webscope() -> Scope {
         web::scope("/dashboards")
             .service(
@@ -258,29 +257,32 @@ impl Server {
                     ),
             )
             .service(
-                web::resource("/{dashboard_id}")
-                    .route(
-                        web::get()
-                            .to(dashboards::get)
-                            .authorize(Action::GetDashboard),
+                web::scope("/{dashboard_id}")
+                    .service(
+                        web::resource("")
+                            .route(
+                                web::get()
+                                    .to(dashboards::get)
+                                    .authorize(Action::GetDashboard),
+                            )
+                            .route(
+                                web::delete()
+                                    .to(dashboards::delete)
+                                    .authorize(Action::DeleteDashboard),
+                            )
+                            .route(
+                                web::put()
+                                    .to(dashboards::update)
+                                    .authorize(Action::CreateDashboard),
+                            ),
                     )
-                    .route(
-                        web::delete()
-                            .to(dashboards::delete)
-                            .authorize(Action::DeleteDashboard),
-                    )
-                    .route(
-                        web::put()
-                            .to(dashboards::update)
-                            .authorize(Action::CreateDashboard),
+                    .service(
+                        web::resource("/add_tile").route(
+                            web::put()
+                                .to(dashboards::add_tile)
+                                .authorize(Action::CreateDashboard),
+                        ),
                     ),
-            )
-            .service(
-                web::resource("/add_tile").route(
-                    web::post()
-                        .to(dashboards::add_tile)
-                        .authorize(Action::CreateDashboard),
-                ),
             )
     }
 
