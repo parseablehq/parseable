@@ -275,6 +275,13 @@ impl Server {
                             .authorize(Action::CreateDashboard),
                     ),
             )
+            .service(
+                web::resource("/add_tile").route(
+                    web::post()
+                        .to(dashboards::add_tile)
+                        .authorize(Action::CreateDashboard),
+                ),
+            )
     }
 
     // get the filters web scope

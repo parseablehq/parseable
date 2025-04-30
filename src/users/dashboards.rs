@@ -47,7 +47,7 @@ pub struct Dashboard {
     pub title: String,
     pub author: String,
     pub dashboard_id: Ulid,
-    pub modified: DateTime<Utc>,
+    pub modified: Option<DateTime<Utc>>,
     pub tiles: Vec<Tile>,
     pub layout: Vec<Layout>,
 }

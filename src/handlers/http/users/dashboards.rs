@@ -20,7 +20,7 @@ use crate::{
     handlers::http::rbac::RBACError,
     parseable::PARSEABLE,
     storage::{object_storage::dashboard_path, ObjectStorageError},
-    users::dashboards::{Dashboard, CURRENT_DASHBOARD_VERSION, DASHBOARDS},
+    users::dashboards::{Dashboard, Tile, CURRENT_DASHBOARD_VERSION, DASHBOARDS},
     utils::{get_hash, get_user_from_request},
 };
 use actix_web::{
@@ -30,13 +30,33 @@ use actix_web::{
 };
 use bytes::Bytes;
 
+use chrono::Utc;
 use http::StatusCode;
-use serde_json::Error as SerdeError;
+use serde_json::{Error as SerdeError, Map};
 use ulid::Ulid;
 
 pub async fn list() -> Result<impl Responder, DashboardError> {
     let dashboards = DASHBOARDS.list_dashboards().await;
-
+    //dashboards list should contain the title, author and modified date
+    let dashboards: Vec<Map<String, serde_json::Value>> = dashboards
+        .iter()
+        .map(|dashboard| {
+            let mut map = Map::new();
+            map.insert(
+                "title".to_string(),
+                serde_json::Value::String(dashboard.title.clone()),
+            );
+            map.insert(
+                "author".to_string(),
+                serde_json::Value::String(dashboard.author.clone()),
+            );
+            map.insert(
+                "modified".to_string(),
+                serde_json::Value::String(dashboard.modified.unwrap().to_string()),
+            );
+            map
+        })
+        .collect();
     Ok((web::Json(dashboards), StatusCode::OK))
 }
 
@@ -63,7 +83,7 @@ pub async fn post(
     let dashboard_id = Ulid::new();
     dashboard.dashboard_id = dashboard_id;
     dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
-
+    dashboard.modified = Some(Utc::now());
     dashboard.author = user_id.clone();
     for tile in dashboard.tiles.iter_mut() {
         tile.tile_id = Ulid::new();
@@ -99,6 +119,7 @@ pub async fn update(
     }
     dashboard.dashboard_id = dashboard_id;
     dashboard.author = user_id.clone();
+    dashboard.modified = Some(Utc::now());
     dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
     for tile in dashboard.tiles.iter_mut() {
         if tile.tile_id.is_nil() {
@@ -139,6 +160,42 @@ pub async fn delete(
     DASHBOARDS.delete_dashboard(dashboard_id).await;
 
     Ok(HttpResponse::Ok().finish())
+}
+
+pub async fn add_tile(
+    req: HttpRequest,
+    dashboard_id: Path<String>,
+    Json(mut tile): Json<Tile>,
+) -> Result<impl Responder, DashboardError> {
+    let mut user_id = get_user_from_request(&req)?;
+    user_id = get_hash(&user_id);
+    let dashboard_id = if let Ok(dashboard_id) = Ulid::from_string(&dashboard_id.into_inner()) {
+        dashboard_id
+    } else {
+        return Err(DashboardError::Metadata("Invalid dashboard ID"));
+    };
+
+    let mut dashboard = DASHBOARDS
+        .get_dashboard(dashboard_id)
+        .await
+        .ok_or(DashboardError::Metadata("Dashboard does not exist"))?;
+    if tile.tile_id.is_nil() {
+        tile.tile_id = Ulid::new();
+    }
+    dashboard.tiles.push(tile.clone());
+    dashboard.modified = Some(Utc::now());
+    dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
+    DASHBOARDS.update(&dashboard).await;
+
+    let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
+
+    let store = PARSEABLE.storage.get_object_store();
+    let dashboard_bytes = serde_json::to_vec(&dashboard)?;
+    store
+        .put_object(&path, Bytes::from(dashboard_bytes))
+        .await?;
+
+    Ok((web::Json(dashboard), StatusCode::OK))
 }
 
 #[derive(Debug, thiserror::Error)]
