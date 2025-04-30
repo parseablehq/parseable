@@ -18,9 +18,8 @@
 
 use crate::{
     handlers::http::rbac::RBACError,
-    parseable::PARSEABLE,
-    storage::{object_storage::dashboard_path, ObjectStorageError},
-    users::dashboards::{Dashboard, Tile, CURRENT_DASHBOARD_VERSION, DASHBOARDS},
+    storage::ObjectStorageError,
+    users::dashboards::{Dashboard, Tile, DASHBOARDS},
     utils::{get_hash, get_user_from_request},
 };
 use actix_web::{
@@ -28,9 +27,6 @@ use actix_web::{
     web::{self, Json, Path},
     HttpRequest, HttpResponse, Responder,
 };
-use bytes::Bytes;
-
-use chrono::Utc;
 use http::StatusCode;
 use serde_json::{Error as SerdeError, Map};
 use ulid::Ulid;
@@ -80,24 +76,9 @@ pub async fn post(
 ) -> Result<impl Responder, DashboardError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
-    let dashboard_id = Ulid::new();
-    dashboard.dashboard_id = Some(dashboard_id);
-    dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
-    dashboard.modified = Some(Utc::now());
     dashboard.author = Some(user_id.clone());
-    for tile in dashboard.tiles.iter_mut() {
-        tile.tile_id = Ulid::new();
-    }
-    DASHBOARDS.update(&dashboard).await;
 
-    let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
-
-    let store = PARSEABLE.storage.get_object_store();
-    let dashboard_bytes = serde_json::to_vec(&dashboard)?;
-    store
-        .put_object(&path, Bytes::from(dashboard_bytes))
-        .await?;
-
+    DASHBOARDS.create(&user_id, &mut dashboard).await?;
     Ok((web::Json(dashboard), StatusCode::OK))
 }
 
@@ -113,29 +94,11 @@ pub async fn update(
     } else {
         return Err(DashboardError::Metadata("Invalid dashboard ID"));
     };
-
-    if DASHBOARDS.get_dashboard(dashboard_id).await.is_none() {
-        return Err(DashboardError::Metadata("Dashboard does not exist"));
-    }
-    dashboard.dashboard_id = Some(dashboard_id);
     dashboard.author = Some(user_id.clone());
-    dashboard.modified = Some(Utc::now());
-    dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
-    for tile in dashboard.tiles.iter_mut() {
-        if tile.tile_id.is_nil() {
-            tile.tile_id = Ulid::new();
-        }
-    }
-    DASHBOARDS.update(&dashboard).await;
 
-    let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
-
-    let store = PARSEABLE.storage.get_object_store();
-    let dashboard_bytes = serde_json::to_vec(&dashboard)?;
-    store
-        .put_object(&path, Bytes::from(dashboard_bytes))
+    DASHBOARDS
+        .update(&user_id, dashboard_id, &mut dashboard)
         .await?;
-
     Ok((web::Json(dashboard), StatusCode::OK))
 }
 
@@ -150,14 +113,7 @@ pub async fn delete(
     } else {
         return Err(DashboardError::Metadata("Invalid dashboard ID"));
     };
-    if DASHBOARDS.get_dashboard(dashboard_id).await.is_none() {
-        return Err(DashboardError::Metadata("Dashboard does not exist"));
-    }
-    let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
-    let store = PARSEABLE.storage.get_object_store();
-    store.delete_object(&path).await?;
-
-    DASHBOARDS.delete_dashboard(dashboard_id).await;
+    DASHBOARDS.delete_dashboard(&user_id, dashboard_id).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -183,16 +139,8 @@ pub async fn add_tile(
         tile.tile_id = Ulid::new();
     }
     dashboard.tiles.push(tile.clone());
-    dashboard.modified = Some(Utc::now());
-    dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
-    DASHBOARDS.update(&dashboard).await;
-
-    let path = dashboard_path(&user_id, &format!("{}.json", dashboard_id));
-
-    let store = PARSEABLE.storage.get_object_store();
-    let dashboard_bytes = serde_json::to_vec(&dashboard)?;
-    store
-        .put_object(&path, Bytes::from(dashboard_bytes))
+    DASHBOARDS
+        .update(&user_id, dashboard_id, &mut dashboard)
         .await?;
 
     Ok((web::Json(dashboard), StatusCode::OK))

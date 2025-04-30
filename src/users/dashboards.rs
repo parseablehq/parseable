@@ -16,6 +16,7 @@
  *
  */
 
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -23,10 +24,20 @@ use serde_json::Value;
 use tokio::sync::RwLock;
 use ulid::Ulid;
 
-use crate::parseable::PARSEABLE;
+use crate::{
+    handlers::http::users::dashboards::DashboardError, parseable::PARSEABLE,
+    storage::object_storage::dashboard_path,
+};
 
 pub static DASHBOARDS: Lazy<Dashboards> = Lazy::new(Dashboards::default);
 pub const CURRENT_DASHBOARD_VERSION: &str = "v1";
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+pub enum DashboardType {
+    #[default]
+    Dashboard,
+    Report,
+}
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Tile {
@@ -41,6 +52,7 @@ pub struct Dashboard {
     pub author: Option<String>,
     pub dashboard_id: Option<Ulid>,
     pub modified: Option<DateTime<Utc>>,
+    dashboard_type: Option<DashboardType>,
     pub tiles: Vec<Tile>,
 }
 
@@ -71,15 +83,80 @@ impl Dashboards {
         Ok(())
     }
 
-    pub async fn update(&self, dashboard: &Dashboard) {
+    pub async fn create(
+        &self,
+        user_id: &str,
+        dashboard: &mut Dashboard,
+    ) -> Result<(), DashboardError> {
         let mut s = self.0.write().await;
-        s.retain(|d| d.dashboard_id != dashboard.dashboard_id);
+        let dashboard_id = Ulid::new();
+        dashboard.author = Some(user_id.to_string());
+        dashboard.dashboard_id = Some(dashboard_id);
+        dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
+        dashboard.modified = Some(Utc::now());
+        dashboard.dashboard_type = Some(DashboardType::Dashboard);
+        for tile in dashboard.tiles.iter_mut() {
+            tile.tile_id = Ulid::new();
+        }
         s.push(dashboard.clone());
+
+        let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
+
+        let store = PARSEABLE.storage.get_object_store();
+        let dashboard_bytes = serde_json::to_vec(&dashboard)?;
+        store
+            .put_object(&path, Bytes::from(dashboard_bytes))
+            .await?;
+        Ok(())
     }
 
-    pub async fn delete_dashboard(&self, dashboard_id: Ulid) {
+    pub async fn update(
+        &self,
+        user_id: &str,
+        dashboard_id: Ulid,
+        dashboard: &mut Dashboard,
+    ) -> Result<(), DashboardError> {
         let mut s = self.0.write().await;
+        if self.get_dashboard(dashboard_id).await.is_none() {
+            return Err(DashboardError::Metadata("Dashboard does not exist"));
+        }
+        dashboard.dashboard_id = Some(dashboard_id);
+        dashboard.modified = Some(Utc::now());
+        dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
+        for tile in dashboard.tiles.iter_mut() {
+            if tile.tile_id.is_nil() {
+                tile.tile_id = Ulid::new();
+            }
+        }
+        s.retain(|d| d.dashboard_id != dashboard.dashboard_id);
+        s.push(dashboard.clone());
+
+        let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
+
+        let store = PARSEABLE.storage.get_object_store();
+        let dashboard_bytes = serde_json::to_vec(&dashboard)?;
+        store
+            .put_object(&path, Bytes::from(dashboard_bytes))
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_dashboard(
+        &self,
+        user_id: &str,
+        dashboard_id: Ulid,
+    ) -> Result<(), DashboardError> {
+        let mut s = self.0.write().await;
+
+        if self.get_dashboard(dashboard_id).await.is_none() {
+            return Err(DashboardError::Metadata("Dashboard does not exist"));
+        }
         s.retain(|d| *d.dashboard_id.as_ref().unwrap() != dashboard_id);
+        let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
+        let store = PARSEABLE.storage.get_object_store();
+        store.delete_object(&path).await?;
+
+        Ok(())
     }
 
     pub async fn get_dashboard(&self, dashboard_id: Ulid) -> Option<Dashboard> {
