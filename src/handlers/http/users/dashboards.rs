@@ -19,7 +19,7 @@
 use crate::{
     handlers::http::rbac::RBACError,
     storage::ObjectStorageError,
-    users::dashboards::{Dashboard, Tile, DASHBOARDS},
+    users::dashboards::{validate_dashboard_id, Dashboard, Tile, DASHBOARDS},
     utils::{get_hash, get_user_from_request},
 };
 use actix_web::{
@@ -29,7 +29,6 @@ use actix_web::{
 };
 use http::StatusCode;
 use serde_json::{Error as SerdeError, Map};
-use ulid::Ulid;
 
 pub async fn list() -> Result<impl Responder, DashboardError> {
     let dashboards = DASHBOARDS.list_dashboards().await;
@@ -42,18 +41,24 @@ pub async fn list() -> Result<impl Responder, DashboardError> {
                 "title".to_string(),
                 serde_json::Value::String(dashboard.title.clone()),
             );
-            map.insert(
-                "author".to_string(),
-                serde_json::Value::String(dashboard.author.as_ref().unwrap().clone()),
-            );
-            map.insert(
-                "modified".to_string(),
-                serde_json::Value::String(dashboard.modified.unwrap().to_string()),
-            );
-            map.insert(
-                "dashboard_id".to_string(),
-                serde_json::Value::String(dashboard.dashboard_id.unwrap().to_string()),
-            );
+            if let Some(author) = &dashboard.author {
+                map.insert(
+                    "author".to_string(),
+                    serde_json::Value::String(author.to_string()),
+                );
+            }
+            if let Some(modified) = &dashboard.modified {
+                map.insert(
+                    "modified".to_string(),
+                    serde_json::Value::String(modified.to_string()),
+                );
+            }
+            if let Some(dashboard_id) = &dashboard.dashboard_id {
+                map.insert(
+                    "dashboard_id".to_string(),
+                    serde_json::Value::String(dashboard_id.to_string()),
+                );
+            }
             map
         })
         .collect();
@@ -61,11 +66,7 @@ pub async fn list() -> Result<impl Responder, DashboardError> {
 }
 
 pub async fn get(dashboard_id: Path<String>) -> Result<impl Responder, DashboardError> {
-    let dashboard_id = if let Ok(dashboard_id) = Ulid::from_string(&dashboard_id.into_inner()) {
-        dashboard_id
-    } else {
-        return Err(DashboardError::Metadata("Invalid dashboard ID"));
-    };
+    let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
 
     if let Some(dashboard) = DASHBOARDS.get_dashboard(dashboard_id).await {
         return Ok((web::Json(dashboard), StatusCode::OK));
@@ -78,6 +79,9 @@ pub async fn post(
     req: HttpRequest,
     Json(mut dashboard): Json<Dashboard>,
 ) -> Result<impl Responder, DashboardError> {
+    if dashboard.title.is_empty() {
+        return Err(DashboardError::Metadata("Title must be provided"));
+    }
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
     dashboard.author = Some(user_id.clone());
@@ -93,11 +97,15 @@ pub async fn update(
 ) -> Result<impl Responder, DashboardError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
-    let dashboard_id = if let Ok(dashboard_id) = Ulid::from_string(&dashboard_id.into_inner()) {
-        dashboard_id
-    } else {
-        return Err(DashboardError::Metadata("Invalid dashboard ID"));
-    };
+    let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
+
+    for tile in dashboard.tiles.as_ref().unwrap_or(&Vec::new()) {
+        if tile.tile_id.is_nil() {
+            return Err(DashboardError::Metadata(
+                "Tile ID must be provided by the client",
+            ));
+        }
+    }
     dashboard.author = Some(user_id.clone());
 
     DASHBOARDS
@@ -112,11 +120,7 @@ pub async fn delete(
 ) -> Result<HttpResponse, DashboardError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
-    let dashboard_id = if let Ok(dashboard_id) = Ulid::from_string(&dashboard_id.into_inner()) {
-        dashboard_id
-    } else {
-        return Err(DashboardError::Metadata("Invalid dashboard ID"));
-    };
+    let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
     DASHBOARDS.delete_dashboard(&user_id, dashboard_id).await?;
 
     Ok(HttpResponse::Ok().finish())
@@ -129,17 +133,20 @@ pub async fn add_tile(
 ) -> Result<impl Responder, DashboardError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
-    let dashboard_id = if let Ok(dashboard_id) = Ulid::from_string(&dashboard_id.into_inner()) {
-        dashboard_id
-    } else {
-        return Err(DashboardError::Metadata("Invalid dashboard ID"));
-    };
+    let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
+
+    if tile.tile_id.is_nil() {
+        return Err(DashboardError::Metadata(
+            "Tile ID must be provided by the client",
+        ));
+    }
 
     let mut dashboard = DASHBOARDS
         .get_dashboard_by_user(dashboard_id, &user_id)
         .await
-        .ok_or(DashboardError::Metadata("Dashboard does not exist"))?;
-    dashboard.tiles.as_mut().unwrap().push(tile.clone());
+        .ok_or(DashboardError::Unauthorized)?;
+    let tiles = dashboard.tiles.get_or_insert_with(Vec::new);
+    tiles.push(tile.clone());
     DASHBOARDS
         .update(&user_id, dashboard_id, &mut dashboard)
         .await?;
@@ -159,6 +166,8 @@ pub enum DashboardError {
     UserDoesNotExist(#[from] RBACError),
     #[error("Error: {0}")]
     Custom(String),
+    #[error("Unauthorized to access resource")]
+    Unauthorized,
 }
 
 impl actix_web::ResponseError for DashboardError {
@@ -169,6 +178,7 @@ impl actix_web::ResponseError for DashboardError {
             Self::Metadata(_) => StatusCode::BAD_REQUEST,
             Self::UserDoesNotExist(_) => StatusCode::NOT_FOUND,
             Self::Custom(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Unauthorized => StatusCode::UNAUTHORIZED,
         }
     }
 

@@ -118,7 +118,7 @@ impl Dashboards {
             .await
             .is_none()
         {
-            return Err(DashboardError::Metadata("Dashboard does not exist"));
+            return Err(DashboardError::Unauthorized);
         }
         dashboard.author = Some(user_id.to_string());
         dashboard.dashboard_id = Some(dashboard_id);
@@ -153,16 +153,17 @@ impl Dashboards {
             .await
             .is_none()
         {
-            return Err(DashboardError::Metadata("Dashboard does not exist"));
+            return Err(DashboardError::Unauthorized);
         }
 
         let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
         let store = PARSEABLE.storage.get_object_store();
         store.delete_object(&path).await?;
-        self.0
-            .write()
-            .await
-            .retain(|d| *d.dashboard_id.as_ref().unwrap() != dashboard_id);
+        self.0.write().await.retain(|d| {
+            d.dashboard_id
+                .as_ref()
+                .map_or(false, |id| *id == dashboard_id)
+        });
 
         Ok(())
     }
@@ -172,7 +173,11 @@ impl Dashboards {
             .read()
             .await
             .iter()
-            .find(|d| *d.dashboard_id.as_ref().unwrap() == dashboard_id)
+            .find(|d| {
+                d.dashboard_id
+                    .as_ref()
+                    .map_or(false, |id| *id == dashboard_id)
+            })
             .cloned()
     }
 
@@ -186,7 +191,9 @@ impl Dashboards {
             .await
             .iter()
             .find(|d| {
-                *d.dashboard_id.as_ref().unwrap() == dashboard_id
+                d.dashboard_id
+                    .as_ref()
+                    .map_or(false, |id| *id == dashboard_id)
                     && d.author == Some(user_id.to_string())
             })
             .cloned()
@@ -202,4 +209,8 @@ impl Dashboards {
         }
         dashboards
     }
+}
+
+pub fn validate_dashboard_id(dashboard_id: String) -> Result<Ulid, DashboardError> {
+    Ulid::from_string(&dashboard_id).map_err(|_| DashboardError::Metadata("Invalid dashboard ID"))
 }
