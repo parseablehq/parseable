@@ -136,7 +136,7 @@ pub async fn add_tile(
     };
 
     let mut dashboard = DASHBOARDS
-        .get_dashboard(dashboard_id)
+        .get_dashboard_by_user(dashboard_id, &user_id)
         .await
         .ok_or(DashboardError::Metadata("Dashboard does not exist"))?;
     dashboard.tiles.as_mut().unwrap().push(tile.clone());
