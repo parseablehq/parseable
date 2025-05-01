@@ -247,12 +247,12 @@ impl Server {
                 web::resource("")
                     .route(
                         web::post()
-                            .to(dashboards::post)
+                            .to(dashboards::create_dashboard)
                             .authorize(Action::CreateDashboard),
                     )
                     .route(
                         web::get()
-                            .to(dashboards::list)
+                            .to(dashboards::list_dashboards)
                             .authorize(Action::ListDashboard),
                     ),
             )
@@ -262,17 +262,17 @@ impl Server {
                         web::resource("")
                             .route(
                                 web::get()
-                                    .to(dashboards::get)
+                                    .to(dashboards::get_dashboard)
                                     .authorize(Action::GetDashboard),
                             )
                             .route(
                                 web::delete()
-                                    .to(dashboards::delete)
+                                    .to(dashboards::delete_dashboard)
                                     .authorize(Action::DeleteDashboard),
                             )
                             .route(
                                 web::put()
-                                    .to(dashboards::update)
+                                    .to(dashboards::update_dashboard)
                                     .authorize(Action::CreateDashboard),
                             ),
                     )

@@ -28,99 +28,86 @@ use actix_web::{
     HttpRequest, HttpResponse, Responder,
 };
 use http::StatusCode;
-use serde_json::{Error as SerdeError, Map};
+use serde_json::Error as SerdeError;
 
-pub async fn list() -> Result<impl Responder, DashboardError> {
+pub async fn list_dashboards() -> Result<impl Responder, DashboardError> {
     let dashboards = DASHBOARDS.list_dashboards().await;
-    //dashboards list should contain the title, author and modified date
-    let dashboards: Vec<Map<String, serde_json::Value>> = dashboards
+    let dashboard_summaries = dashboards
         .iter()
-        .map(|dashboard| {
-            let mut map = Map::new();
-            map.insert(
-                "title".to_string(),
-                serde_json::Value::String(dashboard.title.clone()),
-            );
-            if let Some(author) = &dashboard.author {
-                map.insert(
-                    "author".to_string(),
-                    serde_json::Value::String(author.to_string()),
-                );
-            }
-            if let Some(modified) = &dashboard.modified {
-                map.insert(
-                    "modified".to_string(),
-                    serde_json::Value::String(modified.to_string()),
-                );
-            }
-            if let Some(dashboard_id) = &dashboard.dashboard_id {
-                map.insert(
-                    "dashboard_id".to_string(),
-                    serde_json::Value::String(dashboard_id.to_string()),
-                );
-            }
-            map
-        })
-        .collect();
-    Ok((web::Json(dashboards), StatusCode::OK))
+        .map(|dashboard| dashboard.to_summary())
+        .collect::<Vec<_>>();
+
+    Ok((web::Json(dashboard_summaries), StatusCode::OK))
 }
 
-pub async fn get(dashboard_id: Path<String>) -> Result<impl Responder, DashboardError> {
+pub async fn get_dashboard(dashboard_id: Path<String>) -> Result<impl Responder, DashboardError> {
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
 
-    if let Some(dashboard) = DASHBOARDS.get_dashboard(dashboard_id).await {
-        return Ok((web::Json(dashboard), StatusCode::OK));
-    }
+    let dashboard = DASHBOARDS
+        .get_dashboard(dashboard_id)
+        .await
+        .ok_or_else(|| DashboardError::Metadata("Dashboard does not exist"))?;
 
-    Err(DashboardError::Metadata("Dashboard does not exist"))
+    Ok((web::Json(dashboard), StatusCode::OK))
 }
 
-pub async fn post(
+pub async fn create_dashboard(
     req: HttpRequest,
     Json(mut dashboard): Json<Dashboard>,
 ) -> Result<impl Responder, DashboardError> {
     if dashboard.title.is_empty() {
         return Err(DashboardError::Metadata("Title must be provided"));
     }
-    let mut user_id = get_user_from_request(&req)?;
-    user_id = get_hash(&user_id);
-    dashboard.author = Some(user_id.clone());
+
+    let user_id = get_hash(&get_user_from_request(&req)?);
 
     DASHBOARDS.create(&user_id, &mut dashboard).await?;
     Ok((web::Json(dashboard), StatusCode::OK))
 }
 
-pub async fn update(
+pub async fn update_dashboard(
     req: HttpRequest,
     dashboard_id: Path<String>,
     Json(mut dashboard): Json<Dashboard>,
 ) -> Result<impl Responder, DashboardError> {
-    let mut user_id = get_user_from_request(&req)?;
-    user_id = get_hash(&user_id);
+    let user_id = get_hash(&get_user_from_request(&req)?);
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
 
-    for tile in dashboard.tiles.as_ref().unwrap_or(&Vec::new()) {
-        if tile.tile_id.is_nil() {
-            return Err(DashboardError::Metadata(
-                "Tile ID must be provided by the client",
-            ));
+    // Validate all tiles have valid IDs
+    if let Some(tiles) = &dashboard.tiles {
+        if tiles.iter().any(|tile| tile.tile_id.is_nil()) {
+            return Err(DashboardError::Metadata("Tile ID must be provided"));
         }
     }
-    dashboard.author = Some(user_id.clone());
+
+    // Check if tile_id are unique
+    if let Some(tiles) = &dashboard.tiles {
+        let unique_tiles: Vec<_> = tiles
+            .iter()
+            .map(|tile| tile.tile_id)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+
+        if unique_tiles.len() != tiles.len() {
+            return Err(DashboardError::Metadata("Tile IDs must be unique"));
+        }
+    }
 
     DASHBOARDS
         .update(&user_id, dashboard_id, &mut dashboard)
         .await?;
+
     Ok((web::Json(dashboard), StatusCode::OK))
 }
 
-pub async fn delete(
+pub async fn delete_dashboard(
     req: HttpRequest,
     dashboard_id: Path<String>,
 ) -> Result<HttpResponse, DashboardError> {
-    let mut user_id = get_user_from_request(&req)?;
-    user_id = get_hash(&user_id);
+    let user_id = get_hash(&get_user_from_request(&req)?);
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
+
     DASHBOARDS.delete_dashboard(&user_id, dashboard_id).await?;
 
     Ok(HttpResponse::Ok().finish())
@@ -131,22 +118,26 @@ pub async fn add_tile(
     dashboard_id: Path<String>,
     Json(tile): Json<Tile>,
 ) -> Result<impl Responder, DashboardError> {
-    let mut user_id = get_user_from_request(&req)?;
-    user_id = get_hash(&user_id);
-    let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
-
     if tile.tile_id.is_nil() {
-        return Err(DashboardError::Metadata(
-            "Tile ID must be provided by the client",
-        ));
+        return Err(DashboardError::Metadata("Tile ID must be provided"));
     }
+
+    let user_id = get_hash(&get_user_from_request(&req)?);
+    let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
 
     let mut dashboard = DASHBOARDS
         .get_dashboard_by_user(dashboard_id, &user_id)
         .await
         .ok_or(DashboardError::Unauthorized)?;
+
     let tiles = dashboard.tiles.get_or_insert_with(Vec::new);
-    tiles.push(tile.clone());
+
+    // check if the tile already exists
+    if tiles.iter().any(|t| t.tile_id == tile.tile_id) {
+        return Err(DashboardError::Metadata("Tile already exists"));
+    }
+    tiles.push(tile);
+
     DASHBOARDS
         .update(&user_id, dashboard_id, &mut dashboard)
         .await?;
@@ -166,7 +157,7 @@ pub enum DashboardError {
     UserDoesNotExist(#[from] RBACError),
     #[error("Error: {0}")]
     Custom(String),
-    #[error("Unauthorized to access resource")]
+    #[error("Dashboard does not exist or is not accessible")]
     Unauthorized,
 }
 

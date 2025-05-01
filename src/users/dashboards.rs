@@ -56,6 +56,53 @@ pub struct Dashboard {
     pub tiles: Option<Vec<Tile>>,
 }
 
+impl Dashboard {
+    pub fn set_metadata(&mut self, user_id: &str, dashboard_id: Option<Ulid>) {
+        self.author = Some(user_id.to_string());
+        self.dashboard_id = dashboard_id.or_else(|| Some(Ulid::new()));
+        self.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
+        self.modified = Some(Utc::now());
+        self.dashboard_type = Some(DashboardType::Dashboard);
+    }
+
+    pub fn to_summary(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut map = serde_json::Map::new();
+
+        map.insert(
+            "title".to_string(),
+            serde_json::Value::String(self.title.clone()),
+        );
+
+        if let Some(author) = &self.author {
+            map.insert(
+                "author".to_string(),
+                serde_json::Value::String(author.to_string()),
+            );
+        }
+
+        if let Some(modified) = &self.modified {
+            map.insert(
+                "modified".to_string(),
+                serde_json::Value::String(modified.to_string()),
+            );
+        }
+
+        if let Some(dashboard_id) = &self.dashboard_id {
+            map.insert(
+                "dashboard_id".to_string(),
+                serde_json::Value::String(dashboard_id.to_string()),
+            );
+        }
+
+        map
+    }
+}
+
+pub fn validate_dashboard_id(dashboard_id: String) -> Result<Ulid, DashboardError> {
+    Ulid::from_string(&dashboard_id)
+        .map_err(|_| DashboardError::Metadata("Dashboard ID must be provided"))
+}
+
 #[derive(Default, Debug)]
 pub struct Dashboards(RwLock<Vec<Dashboard>>);
 
@@ -64,11 +111,13 @@ impl Dashboards {
         let mut this = vec![];
         let store = PARSEABLE.storage.get_object_store();
         let all_dashboards = store.get_all_dashboards().await.unwrap_or_default();
+
         for (_, dashboards) in all_dashboards {
             for dashboard in dashboards {
                 if dashboard.is_empty() {
                     continue;
                 }
+
                 let dashboard_value = serde_json::from_slice::<serde_json::Value>(&dashboard)?;
                 if let Ok(dashboard) = serde_json::from_value::<Dashboard>(dashboard_value) {
                     this.retain(|d: &Dashboard| d.dashboard_id != dashboard.dashboard_id);
@@ -83,17 +132,14 @@ impl Dashboards {
         Ok(())
     }
 
-    pub async fn create(
+    async fn save_dashboard(
         &self,
         user_id: &str,
-        dashboard: &mut Dashboard,
+        dashboard: &Dashboard,
     ) -> Result<(), DashboardError> {
-        let dashboard_id = Ulid::new();
-        dashboard.author = Some(user_id.to_string());
-        dashboard.dashboard_id = Some(dashboard_id);
-        dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
-        dashboard.modified = Some(Utc::now());
-        dashboard.dashboard_type = Some(DashboardType::Dashboard);
+        let dashboard_id = dashboard
+            .dashboard_id
+            .ok_or(DashboardError::Metadata("Dashboard ID must be provided"))?;
         let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
 
         let store = PARSEABLE.storage.get_object_store();
@@ -102,6 +148,17 @@ impl Dashboards {
             .put_object(&path, Bytes::from(dashboard_bytes))
             .await?;
 
+        Ok(())
+    }
+
+    pub async fn create(
+        &self,
+        user_id: &str,
+        dashboard: &mut Dashboard,
+    ) -> Result<(), DashboardError> {
+        dashboard.set_metadata(user_id, None);
+
+        self.save_dashboard(user_id, dashboard).await?;
         self.0.write().await.push(dashboard.clone());
 
         Ok(())
@@ -120,25 +177,13 @@ impl Dashboards {
         {
             return Err(DashboardError::Unauthorized);
         }
-        dashboard.author = Some(user_id.to_string());
-        dashboard.dashboard_id = Some(dashboard_id);
-        dashboard.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
-        dashboard.modified = Some(Utc::now());
-        dashboard.dashboard_type = Some(DashboardType::Dashboard);
 
-        let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
+        dashboard.set_metadata(user_id, Some(dashboard_id));
+        self.save_dashboard(user_id, dashboard).await?;
 
-        let store = PARSEABLE.storage.get_object_store();
-        let dashboard_bytes = serde_json::to_vec(&dashboard)?;
-        store
-            .put_object(&path, Bytes::from(dashboard_bytes))
-            .await?;
-
-        self.0
-            .write()
-            .await
-            .retain(|d| d.dashboard_id != dashboard.dashboard_id);
-        self.0.write().await.push(dashboard.clone());
+        let mut dashboards = self.0.write().await;
+        dashboards.retain(|d| d.dashboard_id != dashboard.dashboard_id);
+        dashboards.push(dashboard.clone());
 
         Ok(())
     }
@@ -159,10 +204,11 @@ impl Dashboards {
         let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
         let store = PARSEABLE.storage.get_object_store();
         store.delete_object(&path).await?;
+
         self.0.write().await.retain(|d| {
             d.dashboard_id
                 .as_ref()
-                .map_or(false, |id| *id == dashboard_id)
+                .map_or(true, |id| *id != dashboard_id)
         });
 
         Ok(())
@@ -200,17 +246,6 @@ impl Dashboards {
     }
 
     pub async fn list_dashboards(&self) -> Vec<Dashboard> {
-        let read = self.0.read().await;
-
-        let mut dashboards = Vec::new();
-
-        for d in read.iter() {
-            dashboards.push(d.clone());
-        }
-        dashboards
+        self.0.read().await.clone()
     }
-}
-
-pub fn validate_dashboard_id(dashboard_id: String) -> Result<Ulid, DashboardError> {
-    Ulid::from_string(&dashboard_id).map_err(|_| DashboardError::Metadata("Invalid dashboard ID"))
 }
