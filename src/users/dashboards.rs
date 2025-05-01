@@ -208,7 +208,7 @@ impl Dashboards {
         self.0.write().await.retain(|d| {
             d.dashboard_id
                 .as_ref()
-                .map_or(true, |id| *id != dashboard_id)
+                .is_some_and(|id| *id == dashboard_id)
         });
 
         Ok(())
@@ -222,7 +222,7 @@ impl Dashboards {
             .find(|d| {
                 d.dashboard_id
                     .as_ref()
-                    .map_or(false, |id| *id == dashboard_id)
+                    .is_some_and(|id| *id == dashboard_id)
             })
             .cloned()
     }
@@ -239,7 +239,7 @@ impl Dashboards {
             .find(|d| {
                 d.dashboard_id
                     .as_ref()
-                    .map_or(false, |id| *id == dashboard_id)
+                    .is_some_and(|id| *id == dashboard_id)
                     && d.author == Some(user_id.to_string())
             })
             .cloned()
