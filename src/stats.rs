@@ -19,7 +19,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use itertools::Itertools;
 use prometheus::core::Collector;
 use prometheus::proto::MetricFamily;
 use prometheus::IntGaugeVec;
@@ -199,16 +198,12 @@ fn delete_with_label_prefix(metrics: &IntGaugeVec, prefix: &[&str]) {
             .map(|l| (l.get_name(), l.get_value()))
             .collect();
 
-        let mut should_continue = false;
-        prefix.iter().for_each(|p| {
-            // label map doesn't have the key present in prefix, hence continue
-            if !label_map.values().contains(p) {
-                should_continue = true;
-            }
-        });
-        if !should_continue {
+        // Check if all prefix elements are present in label values
+        let all_prefixes_found = prefix.iter().all(|p| label_map.values().any(|v| v == p));
+
+        if all_prefixes_found {
             if let Err(err) = metrics.remove(&label_map) {
-                warn!("Error = {err}");
+                warn!("Error removing metric with labels {:?}: {err}", label_map);
             }
         }
     }
