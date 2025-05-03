@@ -33,15 +33,21 @@ pub static DASHBOARDS: Lazy<Dashboards> = Lazy::new(Dashboards::default);
 pub const CURRENT_DASHBOARD_VERSION: &str = "v1";
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+/// type of dashboard
+/// Dashboard is the default type
+/// Report is a type of dashboard that is used for reporting
 pub enum DashboardType {
+    /// Dashboard is the default type
     #[default]
     Dashboard,
+    /// Report is a type of dashboard that is used for reporting
     Report,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Tile {
     pub tile_id: Ulid,
+    /// all other fields are variable and can be added as needed
     #[serde(flatten)]
     pub other_fields: Option<serde_json::Map<String, Value>>,
 }
@@ -57,14 +63,22 @@ pub struct Dashboard {
 }
 
 impl Dashboard {
+    /// set metadata for the dashboard
+    /// add author, dashboard_id, version, modified, and dashboard_type
+    /// if dashboard_id is None, generate a new one
     pub fn set_metadata(&mut self, user_id: &str, dashboard_id: Option<Ulid>) {
         self.author = Some(user_id.to_string());
         self.dashboard_id = dashboard_id.or_else(|| Some(Ulid::new()));
         self.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
         self.modified = Some(Utc::now());
         self.dashboard_type = Some(DashboardType::Dashboard);
+        if self.tiles.is_none() {
+            self.tiles = Some(Vec::new());
+        }
     }
 
+    /// create a summary of the dashboard
+    /// used for listing dashboards
     pub fn to_summary(&self) -> serde_json::Map<String, serde_json::Value> {
         let mut map = serde_json::Map::new();
 
@@ -98,15 +112,21 @@ impl Dashboard {
     }
 }
 
+/// Validate the dashboard ID
+/// Check if the dashboard ID is a valid ULID
+/// If the dashboard ID is not valid, return an error
 pub fn validate_dashboard_id(dashboard_id: String) -> Result<Ulid, DashboardError> {
     Ulid::from_string(&dashboard_id)
-        .map_err(|_| DashboardError::Metadata("Dashboard ID must be provided"))
+        .map_err(|_| DashboardError::Metadata("Invalid dashboard ID format - must be a valid ULID"))
 }
 
 #[derive(Default, Debug)]
 pub struct Dashboards(RwLock<Vec<Dashboard>>);
 
 impl Dashboards {
+    /// Load all dashboards from the object store
+    /// and store them in memory
+    /// This function is called on server start
     pub async fn load(&self) -> anyhow::Result<()> {
         let mut this = vec![];
         let store = PARSEABLE.storage.get_object_store();
@@ -118,10 +138,21 @@ impl Dashboards {
                     continue;
                 }
 
-                let dashboard_value = serde_json::from_slice::<serde_json::Value>(&dashboard)?;
-                if let Ok(dashboard) = serde_json::from_value::<Dashboard>(dashboard_value) {
+                let dashboard_value = match serde_json::from_slice::<serde_json::Value>(&dashboard)
+                {
+                    Ok(value) => value,
+                    Err(err) => {
+                        tracing::warn!("Failed to parse dashboard JSON: {}", err);
+                        continue;
+                    }
+                };
+
+                if let Ok(dashboard) = serde_json::from_value::<Dashboard>(dashboard_value.clone())
+                {
                     this.retain(|d: &Dashboard| d.dashboard_id != dashboard.dashboard_id);
                     this.push(dashboard);
+                } else {
+                    tracing::warn!("Failed to deserialize dashboard: {:?}", dashboard_value);
                 }
             }
         }
@@ -132,6 +163,8 @@ impl Dashboards {
         Ok(())
     }
 
+    /// Save the dashboard to the object store
+    /// This function is called when creating or updating a dashboard
     async fn save_dashboard(
         &self,
         user_id: &str,
@@ -151,6 +184,9 @@ impl Dashboards {
         Ok(())
     }
 
+    /// Create a new dashboard
+    /// This function is called when creating a new dashboard
+    /// add dashboard in memory and save it to the object store
     pub async fn create(
         &self,
         user_id: &str,
@@ -164,19 +200,17 @@ impl Dashboards {
         Ok(())
     }
 
+    /// Update an existing dashboard
+    /// This function is called when updating a dashboard
+    /// update dashboard in memory and save it to the object store
     pub async fn update(
         &self,
         user_id: &str,
         dashboard_id: Ulid,
         dashboard: &mut Dashboard,
     ) -> Result<(), DashboardError> {
-        if self
-            .get_dashboard_by_user(dashboard_id, user_id)
-            .await
-            .is_none()
-        {
-            return Err(DashboardError::Unauthorized);
-        }
+        self.ensure_dashboard_ownership(dashboard_id, user_id)
+            .await?;
 
         dashboard.set_metadata(user_id, Some(dashboard_id));
         self.save_dashboard(user_id, dashboard).await?;
@@ -188,18 +222,16 @@ impl Dashboards {
         Ok(())
     }
 
+    /// Delete a dashboard
+    /// This function is called when deleting a dashboard
+    /// delete dashboard in memory and from the object store
     pub async fn delete_dashboard(
         &self,
         user_id: &str,
         dashboard_id: Ulid,
     ) -> Result<(), DashboardError> {
-        if self
-            .get_dashboard_by_user(dashboard_id, user_id)
-            .await
-            .is_none()
-        {
-            return Err(DashboardError::Unauthorized);
-        }
+        self.ensure_dashboard_ownership(dashboard_id, user_id)
+            .await?;
 
         let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
         let store = PARSEABLE.storage.get_object_store();
@@ -208,12 +240,14 @@ impl Dashboards {
         self.0.write().await.retain(|d| {
             d.dashboard_id
                 .as_ref()
-                .is_some_and(|id| *id == dashboard_id)
+                .map_or(true, |id| *id != dashboard_id)
         });
 
         Ok(())
     }
 
+    /// Get a dashboard by ID
+    /// fetch dashboard from memory
     pub async fn get_dashboard(&self, dashboard_id: Ulid) -> Option<Dashboard> {
         self.0
             .read()
@@ -227,6 +261,8 @@ impl Dashboards {
             .cloned()
     }
 
+    /// Get a dashboard by ID and user ID
+    /// fetch dashboard from memory
     pub async fn get_dashboard_by_user(
         &self,
         dashboard_id: Ulid,
@@ -245,7 +281,23 @@ impl Dashboards {
             .cloned()
     }
 
+    /// List all dashboards
+    /// fetch all dashboards from memory
     pub async fn list_dashboards(&self) -> Vec<Dashboard> {
         self.0.read().await.clone()
+    }
+
+    /// Ensure the user is the owner of the dashboard
+    /// This function is called when updating or deleting a dashboard
+    /// check if the user is the owner of the dashboard
+    /// if the user is not the owner, return an error
+    async fn ensure_dashboard_ownership(
+        &self,
+        dashboard_id: Ulid,
+        user_id: &str,
+    ) -> Result<Dashboard, DashboardError> {
+        self.get_dashboard_by_user(dashboard_id, user_id)
+            .await
+            .ok_or(DashboardError::Unauthorized)
     }
 }
