@@ -237,11 +237,10 @@ impl Dashboards {
         let store = PARSEABLE.storage.get_object_store();
         store.delete_object(&path).await?;
 
-        self.0.write().await.retain(|d| {
-            d.dashboard_id
-                .as_ref()
-                .map_or(true, |id| *id != dashboard_id)
-        });
+        self.0
+            .write()
+            .await
+            .retain(|d| d.dashboard_id.as_ref().is_none_or(|id| *id != dashboard_id));
 
         Ok(())
     }
