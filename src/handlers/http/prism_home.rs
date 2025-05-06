@@ -19,7 +19,7 @@
 use actix_web::{web, HttpRequest, Responder};
 
 use crate::{
-    prism::home::{generate_home_response, PrismHomeError},
+    prism::home::{generate_home_response, generate_home_search_response, PrismHomeError},
     utils::actix::extract_session_key_from_req,
 };
 
@@ -34,6 +34,15 @@ pub async fn home_api(req: HttpRequest) -> Result<impl Responder, PrismHomeError
         .map_err(|err| PrismHomeError::Anyhow(anyhow::Error::msg(err.to_string())))?;
 
     let res = generate_home_response(&key).await?;
+
+    Ok(web::Json(res))
+}
+
+pub async fn home_search(req: HttpRequest) -> Result<impl Responder, PrismHomeError> {
+    let key = extract_session_key_from_req(&req)
+        .map_err(|err| PrismHomeError::Anyhow(anyhow::Error::msg(err.to_string())))?;
+
+    let res = generate_home_search_response(&key).await?;
 
     Ok(web::Json(res))
 }

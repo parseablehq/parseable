@@ -23,7 +23,6 @@ use arrow_schema::Schema;
 use chrono::Utc;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 use tracing::warn;
 
 use crate::{
@@ -33,18 +32,15 @@ use crate::{
             utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
         },
         logstream::error::StreamError,
-        query::{into_query, update_schema_when_distributed, Query, QueryError},
+        query::{update_schema_when_distributed, QueryError},
     },
     hottier::{HotTierError, HotTierManager, StreamHotTier},
     parseable::{StreamNotFound, PARSEABLE},
-    query::{error::ExecuteError, execute, CountsRequest, CountsResponse, QUERY_SESSION},
+    query::{error::ExecuteError, CountsRequest, CountsResponse},
     rbac::{map::SessionKey, role::Action, Users},
     stats,
     storage::{retention::Retention, StreamInfo, StreamType},
-    utils::{
-        arrow::record_batches_to_json,
-        time::{TimeParseError, TimeRange},
-    },
+    utils::time::TimeParseError,
     validator::error::HotTierValidationError,
     LOCK_EXPECT,
 };
@@ -215,8 +211,6 @@ pub struct PrismDatasetResponse {
     hottier: Option<StreamHotTier>,
     /// Count of records in the specified time range
     counts: CountsResponse,
-    /// Collection of distinct values for source identifiers
-    distinct_sources: Value,
 }
 
 /// Request parameters for retrieving Prism dataset information.
@@ -322,15 +316,6 @@ impl PrismDatasetRequest {
         // Get counts
         let counts = self.get_counts(&stream).await?;
 
-        // Get distinct entries concurrently
-        let (ips_result, user_agents_result) = futures::join!(
-            self.get_distinct_entries(&stream, "p_src_ip"),
-            self.get_distinct_entries(&stream, "p_user_agent")
-        );
-
-        let ips = ips_result.ok();
-        let user_agents = user_agents_result.ok();
-
         Ok(PrismDatasetResponse {
             stream,
             info: info.info,
@@ -339,10 +324,6 @@ impl PrismDatasetRequest {
             retention: info.retention,
             hottier,
             counts,
-            distinct_sources: json!({
-                "ips": ips,
-                "user_agents": user_agents
-            }),
         })
     }
 
@@ -375,47 +356,6 @@ impl PrismDatasetRequest {
             fields: vec!["start_time".into(), "end_time".into(), "count".into()],
             records,
         })
-    }
-
-    /// Retrieves distinct values for a specific field in a stream.
-    ///
-    /// # Parameters
-    /// - `stream_name`: Name of the stream to query
-    /// - `field`: Field name to get distinct values for
-    ///
-    /// # Returns
-    /// - `Ok(Vec<String>)`: List of distinct values found for the field
-    /// - `Err(QueryError)`: If the query fails or field doesn't exist
-    async fn get_distinct_entries(
-        &self,
-        stream_name: &str,
-        field: &str,
-    ) -> Result<Vec<String>, QueryError> {
-        let query = Query {
-            query: format!("SELECT DISTINCT({field}) FROM \"{stream_name}\""),
-            start_time: "1h".to_owned(),
-            end_time: "now".to_owned(),
-            send_null: false,
-            filter_tags: None,
-            fields: true,
-        };
-        let time_range = TimeRange::parse_human_time("1h", "now")?;
-
-        let session_state = QUERY_SESSION.state();
-        let query = into_query(&query, &session_state, time_range).await?;
-        let (records, _) = execute(query, stream_name).await?;
-        let response = record_batches_to_json(&records)?;
-        // Extract field values from the JSON response
-        let values = response
-            .iter()
-            .flat_map(|row| {
-                row.get(field)
-                    .and_then(|s| s.as_str())
-                    .map(|s| s.to_string())
-            })
-            .collect();
-
-        Ok(values)
     }
 }
 

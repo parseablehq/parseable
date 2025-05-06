@@ -44,7 +44,7 @@ use crate::{
 type StreamMetadataResponse = Result<(String, Vec<ObjectStoreFormat>, DataSetType), PrismHomeError>;
 
 #[derive(Debug, Serialize, Default)]
-struct StreamInfo {
+struct StreamStats {
     // stream_count: u32,
     // log_source_count: u32,
     stats_summary: Stats,
@@ -79,40 +79,25 @@ struct DataSet {
 
 #[derive(Debug, Serialize)]
 pub struct HomeResponse {
-    alert_titles: Vec<TitleAndId>,
     alerts_info: AlertsInfo,
-    correlation_titles: Vec<TitleAndId>,
-    stream_info: StreamInfo,
     stats_details: Vec<DatedStats>,
-    stream_titles: Vec<String>,
     datasets: Vec<DataSet>,
-    dashboard_titles: Vec<TitleAndId>,
-    filter_titles: Vec<TitleAndId>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct HomeSearchResponse {
+    alerts: Vec<TitleAndId>,
+    correlations: Vec<TitleAndId>,
+    dashboards: Vec<TitleAndId>,
+    filters: Vec<TitleAndId>,
 }
 
 pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, PrismHomeError> {
     // Execute these operations concurrently
-    let (
-        stream_titles_result,
-        alert_titles_result,
-        correlation_titles_result,
-        dashboards_result,
-        filters_result,
-        alerts_info_result,
-    ) = tokio::join!(
-        get_stream_titles(key),
-        get_alert_titles(key),
-        get_correlation_titles(key),
-        get_dashboard_titles(key),
-        get_filter_titles(key),
-        get_alerts_info()
-    );
+    let (stream_titles_result, alerts_info_result) =
+        tokio::join!(get_stream_titles(key), get_alerts_info());
 
     let stream_titles = stream_titles_result?;
-    let alert_titles = alert_titles_result?;
-    let correlation_titles = correlation_titles_result?;
-    let dashboard_titles = dashboards_result?;
-    let filter_titles = filters_result?;
     let alerts_info = alerts_info_result?;
 
     // Generate dates for date-wise stats
@@ -161,7 +146,7 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
         futures::future::join_all(stats_futures).await;
 
     let mut stream_details = Vec::new();
-    let mut summary = StreamInfo::default();
+    let mut summary = StreamStats::default();
 
     for result in stats_results {
         match result {
@@ -179,104 +164,11 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
     }
 
     Ok(HomeResponse {
-        stream_info: summary,
         stats_details: stream_details,
-        stream_titles,
         datasets,
-        alert_titles,
-        correlation_titles,
-        dashboard_titles,
-        filter_titles,
         alerts_info,
     })
 }
-
-// Helper functions to split the work
-
-async fn get_stream_titles(key: &SessionKey) -> Result<Vec<String>, PrismHomeError> {
-    let stream_titles: Vec<String> = PARSEABLE
-        .storage
-        .get_object_store()
-        .list_streams()
-        .await
-        .map_err(|e| PrismHomeError::Anyhow(anyhow::Error::new(e)))?
-        .into_iter()
-        .filter(|logstream| {
-            Users.authorize(key.clone(), Action::ListStream, Some(logstream), None)
-                == crate::rbac::Response::Authorized
-        })
-        .sorted()
-        .collect_vec();
-
-    Ok(stream_titles)
-}
-
-async fn get_alert_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, PrismHomeError> {
-    let alert_titles = ALERTS
-        .list_alerts_for_user(key.clone())
-        .await?
-        .iter()
-        .map(|alert| TitleAndId {
-            title: alert.title.clone(),
-            id: alert.id.to_string(),
-        })
-        .collect_vec();
-
-    Ok(alert_titles)
-}
-
-async fn get_correlation_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, PrismHomeError> {
-    let correlation_titles = CORRELATIONS
-        .list_correlations(key)
-        .await?
-        .iter()
-        .map(|corr| TitleAndId {
-            title: corr.title.clone(),
-            id: corr.id.clone(),
-        })
-        .collect_vec();
-
-    Ok(correlation_titles)
-}
-
-async fn get_dashboard_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, PrismHomeError> {
-    let dashboard_titles = DASHBOARDS
-        .list_dashboards(key)
-        .await
-        .iter()
-        .map(|dashboard| TitleAndId {
-            title: dashboard.name.clone(),
-            id: dashboard
-                .dashboard_id
-                .as_ref()
-                .ok_or_else(|| anyhow::Error::msg("Dashboard ID is null"))
-                .unwrap()
-                .clone(),
-        })
-        .collect_vec();
-
-    Ok(dashboard_titles)
-}
-
-async fn get_filter_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, PrismHomeError> {
-    let filter_titles = FILTERS
-        .list_filters(key)
-        .await
-        .iter()
-        .map(|filter| TitleAndId {
-            title: filter.filter_name.clone(),
-            id: filter
-                .filter_id
-                .as_ref()
-                .ok_or_else(|| anyhow::Error::msg("Filter ID is null"))
-                .unwrap()
-                .clone(),
-        })
-        .collect_vec();
-
-    Ok(filter_titles)
-}
-
 async fn get_stream_metadata(
     stream: String,
 ) -> Result<(String, Vec<ObjectStoreFormat>, DataSetType), PrismHomeError> {
@@ -372,6 +264,114 @@ async fn get_stream_stats_for_date(
         querier_stats.ingestion + ingestor_stats.ingestion,
         querier_stats.storage + ingestor_stats.storage,
     ))
+}
+
+pub async fn generate_home_search_response(
+    key: &SessionKey,
+) -> Result<HomeSearchResponse, PrismHomeError> {
+    let (alert_titles, correlation_titles, dashboard_titles, filter_titles) = tokio::join!(
+        get_alert_titles(key),
+        get_correlation_titles(key),
+        get_dashboard_titles(key),
+        get_filter_titles(key)
+    );
+
+    let alerts = alert_titles?;
+    let correlations = correlation_titles?;
+    let dashboards = dashboard_titles?;
+    let filters = filter_titles?;
+
+    Ok(HomeSearchResponse {
+        alerts,
+        correlations,
+        dashboards,
+        filters,
+    })
+}
+
+// Helper functions to split the work
+async fn get_stream_titles(key: &SessionKey) -> Result<Vec<String>, PrismHomeError> {
+    let stream_titles: Vec<String> = PARSEABLE
+        .storage
+        .get_object_store()
+        .list_streams()
+        .await
+        .map_err(|e| PrismHomeError::Anyhow(anyhow::Error::new(e)))?
+        .into_iter()
+        .filter(|logstream| {
+            Users.authorize(key.clone(), Action::ListStream, Some(logstream), None)
+                == crate::rbac::Response::Authorized
+        })
+        .sorted()
+        .collect_vec();
+
+    Ok(stream_titles)
+}
+
+async fn get_alert_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, PrismHomeError> {
+    let alert_titles = ALERTS
+        .list_alerts_for_user(key.clone())
+        .await?
+        .iter()
+        .map(|alert| TitleAndId {
+            title: alert.title.clone(),
+            id: alert.id.to_string(),
+        })
+        .collect_vec();
+
+    Ok(alert_titles)
+}
+
+async fn get_correlation_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, PrismHomeError> {
+    let correlation_titles = CORRELATIONS
+        .list_correlations(key)
+        .await?
+        .iter()
+        .map(|corr| TitleAndId {
+            title: corr.title.clone(),
+            id: corr.id.clone(),
+        })
+        .collect_vec();
+
+    Ok(correlation_titles)
+}
+
+async fn get_dashboard_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, PrismHomeError> {
+    let dashboard_titles = DASHBOARDS
+        .list_dashboards(key)
+        .await
+        .iter()
+        .map(|dashboard| TitleAndId {
+            title: dashboard.name.clone(),
+            id: dashboard
+                .dashboard_id
+                .as_ref()
+                .ok_or_else(|| anyhow::Error::msg("Dashboard ID is null"))
+                .unwrap()
+                .clone(),
+        })
+        .collect_vec();
+
+    Ok(dashboard_titles)
+}
+
+async fn get_filter_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, PrismHomeError> {
+    let filter_titles = FILTERS
+        .list_filters(key)
+        .await
+        .iter()
+        .map(|filter| TitleAndId {
+            title: filter.filter_name.clone(),
+            id: filter
+                .filter_id
+                .as_ref()
+                .ok_or_else(|| anyhow::Error::msg("Filter ID is null"))
+                .unwrap()
+                .clone(),
+        })
+        .collect_vec();
+
+    Ok(filter_titles)
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -324,6 +324,7 @@ pub mod model {
                 Action::GetDashboard,
                 Action::CreateDashboard,
                 Action::DeleteDashboard,
+                Action::GetRetention,
                 Action::GetStreamInfo,
                 Action::GetUserRoles,
                 Action::GetAlert,
