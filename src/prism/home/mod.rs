@@ -36,19 +36,11 @@ use crate::{
     },
     parseable::PARSEABLE,
     rbac::{map::SessionKey, role::Action, Users},
-    stats::Stats,
     storage::{ObjectStorageError, ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
     users::{dashboards::DASHBOARDS, filters::FILTERS},
 };
 
 type StreamMetadataResponse = Result<(String, Vec<ObjectStoreFormat>, DataSetType), PrismHomeError>;
-
-#[derive(Debug, Serialize, Default)]
-struct StreamStats {
-    // stream_count: u32,
-    // log_source_count: u32,
-    stats_summary: Stats,
-}
 
 #[derive(Debug, Serialize, Default)]
 struct DatedStats {
@@ -146,14 +138,10 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
         futures::future::join_all(stats_futures).await;
 
     let mut stream_details = Vec::new();
-    let mut summary = StreamStats::default();
 
     for result in stats_results {
         match result {
             Ok(dated_stats) => {
-                summary.stats_summary.events += dated_stats.events;
-                summary.stats_summary.ingestion += dated_stats.ingestion_size;
-                summary.stats_summary.storage += dated_stats.storage_size;
                 stream_details.push(dated_stats);
             }
             Err(e) => {
