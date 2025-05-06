@@ -97,8 +97,7 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
         .map(|i| {
             Utc::now()
                 .checked_sub_signed(chrono::Duration::days(i))
-                .ok_or_else(|| anyhow::Error::msg("Date conversion failed"))
-                .unwrap()
+                .expect("Date conversion failed")
         })
         .map(|date| date.format("%Y-%m-%d").to_string())
         .collect_vec();
@@ -331,12 +330,7 @@ async fn get_dashboard_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, Prism
         .iter()
         .map(|dashboard| TitleAndId {
             title: dashboard.name.clone(),
-            id: dashboard
-                .dashboard_id
-                .as_ref()
-                .ok_or_else(|| anyhow::Error::msg("Dashboard ID is null"))
-                .unwrap()
-                .clone(),
+            id: dashboard.dashboard_id.as_ref().unwrap().clone(),
         })
         .collect_vec();
 
@@ -350,12 +344,7 @@ async fn get_filter_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, PrismHom
         .iter()
         .map(|filter| TitleAndId {
             title: filter.filter_name.clone(),
-            id: filter
-                .filter_id
-                .as_ref()
-                .ok_or_else(|| anyhow::Error::msg("Filter ID is null"))
-                .unwrap()
-                .clone(),
+            id: filter.filter_id.as_ref().unwrap().clone(),
         })
         .collect_vec();
 
