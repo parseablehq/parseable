@@ -16,6 +16,8 @@
  *
  */
 
+use std::collections::HashMap;
+
 use actix_web::{web, HttpRequest, Responder};
 
 use crate::{
@@ -43,19 +45,17 @@ pub async fn home_api(req: HttpRequest) -> Result<impl Responder, PrismHomeError
 pub async fn home_search(req: HttpRequest) -> Result<impl Responder, PrismHomeError> {
     let key = extract_session_key_from_req(&req)
         .map_err(|err| PrismHomeError::Anyhow(anyhow::Error::msg(err.to_string())))?;
-    let query_string = req.query_string();
-    if query_string.is_empty() {
+    let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
+        .map_err(|_| PrismHomeError::InvalidQueryParameter(HOME_SEARCH_QUERY_PARAM.to_string()))?;
+
+    if query_map.is_empty() {
         return Ok(web::Json(serde_json::json!({})));
     }
-    // Validate query string format
-    let query_parts: Vec<&str> = query_string.split('=').collect();
-    if query_parts.len() != 2 || query_parts[0] != HOME_SEARCH_QUERY_PARAM {
-        return Err(PrismHomeError::InvalidQueryParameter(
-            HOME_SEARCH_QUERY_PARAM.to_string(),
-        ));
-    }
 
-    let query_value = query_parts[1].to_lowercase();
+    let query_value = query_map
+        .get(HOME_SEARCH_QUERY_PARAM)
+        .ok_or_else(|| PrismHomeError::InvalidQueryParameter(HOME_SEARCH_QUERY_PARAM.to_string()))?
+        .to_lowercase();
     let res = generate_home_search_response(&key, &query_value).await?;
     let json_res = serde_json::to_value(res)
         .map_err(|err| PrismHomeError::Anyhow(anyhow::Error::msg(err.to_string())))?;
