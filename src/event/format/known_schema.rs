@@ -24,6 +24,8 @@ use serde::{Deserialize, Deserializer};
 use serde_json::{Map, Value};
 use tracing::error;
 
+use crate::event::FORMAT_VERIFY_KEY;
+
 /// Predefined JSON with known textual logging formats
 const FORMATS_JSON: &str = include_str!("../../../resources/formats.json");
 
@@ -120,11 +122,21 @@ impl SchemaDefinition {
                 }
             }
 
+            // add `P_FORMAT_VERIFY_KEY` to the object
+            obj.insert(
+                FORMAT_VERIFY_KEY.to_string(),
+                Value::String("true".to_string()),
+            );
+
             obj.extend(extracted_fields);
 
             return Some(format.fields.clone());
         }
-
+        // add `P_FORMAT_VERIFY_KEY` to the object
+        obj.insert(
+            FORMAT_VERIFY_KEY.to_string(),
+            Value::String("false".to_string()),
+        );
         None
     }
 }
@@ -180,6 +192,7 @@ impl EventProcessor {
     pub fn extract_from_inline_log(
         &self,
         json: &mut Value,
+        p_custom_fields: &mut HashMap<String, String>,
         log_source: &str,
         extract_log: Option<&str>,
     ) -> Result<HashSet<String>, Error> {
@@ -197,7 +210,8 @@ impl EventProcessor {
                     if let Some(known_fields) = schema.check_or_extract(event, extract_log) {
                         fields.extend(known_fields);
                     } else {
-                        return Err(Error::Unacceptable(log_source.to_owned()));
+                        // add `P_FORMAT_VERIFY_KEY` to the object
+                        p_custom_fields.insert(FORMAT_VERIFY_KEY.to_string(), "false".to_string());
                     }
                 }
             }
@@ -205,7 +219,8 @@ impl EventProcessor {
                 if let Some(known_fields) = schema.check_or_extract(event, extract_log) {
                     return Ok(known_fields);
                 } else {
-                    return Err(Error::Unacceptable(log_source.to_owned()));
+                    // add `P_FORMAT_VERIFY_KEY` to the object
+                    p_custom_fields.insert(FORMAT_VERIFY_KEY.to_string(), "false".to_string());
                 }
             }
             _ => unreachable!("We don't accept events of the form: {json}"),

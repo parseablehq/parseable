@@ -80,10 +80,15 @@ pub async fn ingest(
         return Err(PostError::OtelNotSupported);
     }
 
+    let mut p_custom_fields = get_custom_fields_from_header(&req);
+
     let fields = match &log_source {
-        LogSource::Custom(src) => {
-            KNOWN_SCHEMA_LIST.extract_from_inline_log(&mut json, src, extract_log)?
-        }
+        LogSource::Custom(src) => KNOWN_SCHEMA_LIST.extract_from_inline_log(
+            &mut json,
+            &mut p_custom_fields,
+            src,
+            extract_log,
+        )?,
         _ => HashSet::new(),
     };
 
@@ -113,7 +118,7 @@ pub async fn ingest(
     PARSEABLE
         .add_update_log_source(&stream_name, log_source_entry)
         .await?;
-    let p_custom_fields = get_custom_fields_from_header(req);
+
     flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
 
     Ok(HttpResponse::Ok().finish())
@@ -182,7 +187,7 @@ pub async fn handle_otel_logs_ingestion(
         .add_update_log_source(&stream_name, log_source_entry)
         .await?;
 
-    let p_custom_fields = get_custom_fields_from_header(req);
+    let p_custom_fields = get_custom_fields_from_header(&req);
 
     flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
 
@@ -240,7 +245,7 @@ pub async fn handle_otel_metrics_ingestion(
         .add_update_log_source(&stream_name, log_source_entry)
         .await?;
 
-    let p_custom_fields = get_custom_fields_from_header(req);
+    let p_custom_fields = get_custom_fields_from_header(&req);
 
     flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
 
@@ -299,7 +304,7 @@ pub async fn handle_otel_traces_ingestion(
         .add_update_log_source(&stream_name, log_source_entry)
         .await?;
 
-    let p_custom_fields = get_custom_fields_from_header(req);
+    let p_custom_fields = get_custom_fields_from_header(&req);
 
     flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
 
@@ -347,13 +352,18 @@ pub async fn post_event(
         .headers()
         .get(EXTRACT_LOG_KEY)
         .and_then(|h| h.to_str().ok());
-
+    let mut p_custom_fields = get_custom_fields_from_header(&req);
     match &log_source {
         LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
             return Err(PostError::OtelNotSupported)
         }
         LogSource::Custom(src) => {
-            KNOWN_SCHEMA_LIST.extract_from_inline_log(&mut json, src, extract_log)?;
+            KNOWN_SCHEMA_LIST.extract_from_inline_log(
+                &mut json,
+                &mut p_custom_fields,
+                src,
+                extract_log,
+            )?;
         }
         _ => {}
     }
@@ -370,7 +380,7 @@ pub async fn post_event(
             })
             .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
     }
-    let p_custom_fields = get_custom_fields_from_header(req);
+
     flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
 
     Ok(HttpResponse::Ok().finish())

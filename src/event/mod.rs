@@ -38,6 +38,7 @@ pub const DEFAULT_TIMESTAMP_KEY: &str = "p_timestamp";
 pub const USER_AGENT_KEY: &str = "p_user_agent";
 pub const SOURCE_IP_KEY: &str = "p_src_ip";
 pub const FORMAT_KEY: &str = "p_format";
+pub const FORMAT_VERIFY_KEY: &str = "p_format_verified";
 
 #[derive(Clone)]
 pub struct Event {

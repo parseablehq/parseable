@@ -59,23 +59,12 @@ pub async fn retention_cleanup(
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
-    // if the stream not found in memory map,
-    //check if it exists in the storage
-    //create stream and schema from storage
-    if !PARSEABLE.streams.contains(&stream_name)
-        && !PARSEABLE
-            .create_stream_and_schema_from_storage(&stream_name)
-            .await
-            .unwrap_or(false)
-    {
-        return Err(StreamNotFound(stream_name.clone()).into());
-    }
 
     // Delete from staging
     let stream_dir = PARSEABLE.get_stream(&stream_name)?;
-    if fs::remove_dir_all(&stream_dir.data_path).is_err() {
+    if let Err(err) = fs::remove_dir_all(&stream_dir.data_path) {
         warn!(
-            "failed to delete local data for stream {}. Clean {} manually",
+            "failed to delete local data for stream {} with error {err}. Clean {} manually",
             stream_name,
             stream_dir.data_path.to_string_lossy()
         )

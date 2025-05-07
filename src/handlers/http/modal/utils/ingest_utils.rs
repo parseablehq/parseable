@@ -145,7 +145,7 @@ async fn push_logs(
     Ok(())
 }
 
-pub fn get_custom_fields_from_header(req: HttpRequest) -> HashMap<String, String> {
+pub fn get_custom_fields_from_header(req: &HttpRequest) -> HashMap<String, String> {
     let user_agent = req
         .headers()
         .get(USER_AGENT)
@@ -217,7 +217,7 @@ mod tests {
             .insert_header(("x-p-environment", "dev"))
             .to_http_request();
 
-        let custom_fields = get_custom_fields_from_header(req);
+        let custom_fields = get_custom_fields_from_header(&req);
 
         assert_eq!(custom_fields.get(USER_AGENT_KEY).unwrap(), "TestUserAgent");
         assert_eq!(custom_fields.get("environment").unwrap(), "dev");
@@ -230,7 +230,7 @@ mod tests {
             .insert_header((STREAM_NAME_HEADER_KEY, "teststream"))
             .to_http_request();
 
-        let custom_fields = get_custom_fields_from_header(req);
+        let custom_fields = get_custom_fields_from_header(&req);
 
         assert_eq!(custom_fields.get(USER_AGENT_KEY).unwrap(), "TestUserAgent");
         assert!(!custom_fields.contains_key(STREAM_NAME_HEADER_KEY));
@@ -243,7 +243,7 @@ mod tests {
             .insert_header((LOG_SOURCE_KEY, "otel-logs"))
             .to_http_request();
 
-        let custom_fields = get_custom_fields_from_header(req);
+        let custom_fields = get_custom_fields_from_header(&req);
 
         assert_eq!(custom_fields.get(USER_AGENT_KEY).unwrap(), "TestUserAgent");
         assert_eq!(custom_fields.get(FORMAT_KEY).unwrap(), "otel-logs");
@@ -255,7 +255,7 @@ mod tests {
             .insert_header(("x-p-", "empty"))
             .to_http_request();
 
-        let custom_fields = get_custom_fields_from_header(req);
+        let custom_fields = get_custom_fields_from_header(&req);
 
         assert_eq!(custom_fields.len(), 2);
         assert_eq!(custom_fields.get(USER_AGENT_KEY).unwrap(), "");
