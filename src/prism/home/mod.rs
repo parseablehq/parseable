@@ -51,12 +51,6 @@ struct DatedStats {
 }
 
 #[derive(Debug, Serialize)]
-struct TitleAndId {
-    title: String,
-    id: String,
-}
-
-#[derive(Debug, Serialize)]
 enum DataSetType {
     Logs,
     Metrics,
@@ -77,11 +71,24 @@ pub struct HomeResponse {
 }
 
 #[derive(Debug, Serialize)]
+pub enum ResourceType {
+    Alert,
+    Correlation,
+    Dashboard,
+    Filter,
+    DataSet,
+}
+
+#[derive(Debug, Serialize)]
+pub struct Resource {
+    id: String,
+    name: String,
+    resource_type: ResourceType,
+}
+
+#[derive(Debug, Serialize)]
 pub struct HomeSearchResponse {
-    alerts: Vec<TitleAndId>,
-    correlations: Vec<TitleAndId>,
-    dashboards: Vec<TitleAndId>,
-    filters: Vec<TitleAndId>,
+    resources: Vec<Resource>,
 }
 
 pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, PrismHomeError> {
@@ -255,25 +262,37 @@ async fn get_stream_stats_for_date(
 
 pub async fn generate_home_search_response(
     key: &SessionKey,
+    query_value: &str,
 ) -> Result<HomeSearchResponse, PrismHomeError> {
-    let (alert_titles, correlation_titles, dashboard_titles, filter_titles) = tokio::join!(
-        get_alert_titles(key),
-        get_correlation_titles(key),
-        get_dashboard_titles(key),
-        get_filter_titles(key)
+    let mut resources = Vec::new();
+    let (alert_titles, correlation_titles, dashboard_titles, filter_titles, stream_titles) = tokio::join!(
+        get_alert_titles(key, query_value),
+        get_correlation_titles(key, query_value),
+        get_dashboard_titles(key, query_value),
+        get_filter_titles(key, query_value),
+        get_stream_titles(key)
     );
 
     let alerts = alert_titles?;
+    resources.extend(alerts);
     let correlations = correlation_titles?;
+    resources.extend(correlations);
     let dashboards = dashboard_titles?;
+    resources.extend(dashboards);
     let filters = filter_titles?;
+    resources.extend(filters);
+    let stream_titles = stream_titles?;
 
-    Ok(HomeSearchResponse {
-        alerts,
-        correlations,
-        dashboards,
-        filters,
-    })
+    for title in stream_titles {
+        if title.to_lowercase().contains(query_value) {
+            resources.push(Resource {
+                id: title.clone(),
+                name: title,
+                resource_type: ResourceType::DataSet,
+            });
+        }
+    }
+    Ok(HomeSearchResponse { resources })
 }
 
 // Helper functions to split the work
@@ -295,59 +314,108 @@ async fn get_stream_titles(key: &SessionKey) -> Result<Vec<String>, PrismHomeErr
     Ok(stream_titles)
 }
 
-async fn get_alert_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, PrismHomeError> {
-    let alert_titles = ALERTS
+async fn get_alert_titles(
+    key: &SessionKey,
+    query_value: &str,
+) -> Result<Vec<Resource>, PrismHomeError> {
+    let alerts = ALERTS
         .list_alerts_for_user(key.clone())
         .await?
         .iter()
-        .map(|alert| TitleAndId {
-            title: alert.title.clone(),
-            id: alert.id.to_string(),
+        .filter_map(|alert| {
+            if alert.title.to_lowercase().contains(query_value)
+                || alert.id.to_string().to_lowercase().contains(query_value)
+            {
+                Some(Resource {
+                    id: alert.id.to_string(),
+                    name: alert.title.clone(),
+                    resource_type: ResourceType::Alert,
+                })
+            } else {
+                None
+            }
         })
         .collect_vec();
 
-    Ok(alert_titles)
+    Ok(alerts)
 }
 
-async fn get_correlation_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, PrismHomeError> {
-    let correlation_titles = CORRELATIONS
+async fn get_correlation_titles(
+    key: &SessionKey,
+    query_value: &str,
+) -> Result<Vec<Resource>, PrismHomeError> {
+    let correlations = CORRELATIONS
         .list_correlations(key)
         .await?
         .iter()
-        .map(|corr| TitleAndId {
-            title: corr.title.clone(),
-            id: corr.id.clone(),
+        .filter_map(|correlation| {
+            if correlation.title.to_lowercase().contains(query_value)
+                || correlation.id.to_lowercase().contains(query_value)
+            {
+                Some(Resource {
+                    id: correlation.id.to_string(),
+                    name: correlation.title.clone(),
+                    resource_type: ResourceType::Correlation,
+                })
+            } else {
+                None
+            }
         })
         .collect_vec();
 
-    Ok(correlation_titles)
+    Ok(correlations)
 }
 
-async fn get_dashboard_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, PrismHomeError> {
+async fn get_dashboard_titles(
+    key: &SessionKey,
+    query_value: &str,
+) -> Result<Vec<Resource>, PrismHomeError> {
     let dashboard_titles = DASHBOARDS
         .list_dashboards(key)
         .await
         .iter()
-        .map(|dashboard| TitleAndId {
-            title: dashboard.name.clone(),
-            id: dashboard.dashboard_id.as_ref().unwrap().clone(),
+        .filter_map(|dashboard| {
+            let dashboard_id = dashboard.dashboard_id.as_ref().unwrap().clone();
+            if dashboard.name.to_lowercase().contains(query_value)
+                || dashboard_id.to_lowercase().contains(query_value)
+            {
+                Some(Resource {
+                    id: dashboard_id,
+                    name: dashboard.name.clone(),
+                    resource_type: ResourceType::Dashboard,
+                })
+            } else {
+                None
+            }
         })
         .collect_vec();
 
     Ok(dashboard_titles)
 }
 
-async fn get_filter_titles(key: &SessionKey) -> Result<Vec<TitleAndId>, PrismHomeError> {
+async fn get_filter_titles(
+    key: &SessionKey,
+    query_value: &str,
+) -> Result<Vec<Resource>, PrismHomeError> {
     let filter_titles = FILTERS
         .list_filters(key)
         .await
         .iter()
-        .map(|filter| TitleAndId {
-            title: filter.filter_name.clone(),
-            id: filter.filter_id.as_ref().unwrap().clone(),
+        .filter_map(|filter| {
+            let filter_id = filter.filter_id.as_ref().unwrap().clone();
+            if filter.filter_name.to_lowercase().contains(query_value)
+                || filter_id.to_lowercase().contains(query_value)
+            {
+                Some(Resource {
+                    id: filter_id,
+                    name: filter.filter_name.clone(),
+                    resource_type: ResourceType::Filter,
+                })
+            } else {
+                None
+            }
         })
         .collect_vec();
-
     Ok(filter_titles)
 }
 
@@ -363,6 +431,8 @@ pub enum PrismHomeError {
     StreamError(#[from] StreamError),
     #[error("ObjectStorageError: {0}")]
     ObjectStorageError(#[from] ObjectStorageError),
+    #[error("Invalid query parameter: {0}")]
+    InvalidQueryParameter(String),
 }
 
 impl actix_web::ResponseError for PrismHomeError {
@@ -373,6 +443,7 @@ impl actix_web::ResponseError for PrismHomeError {
             PrismHomeError::CorrelationError(e) => e.status_code(),
             PrismHomeError::StreamError(e) => e.status_code(),
             PrismHomeError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PrismHomeError::InvalidQueryParameter(_) => StatusCode::BAD_REQUEST,
         }
     }
 
