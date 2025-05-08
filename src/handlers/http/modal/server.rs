@@ -148,8 +148,10 @@ impl ParseableServer for Server {
 }
 
 impl Server {
-    pub fn get_prism_home() -> Resource {
-        web::resource("/home").route(web::get().to(http::prism_home::home_api))
+    pub fn get_prism_home() -> Scope {
+        web::scope("/home")
+            .service(web::resource("").route(web::get().to(http::prism_home::home_api)))
+            .service(web::resource("/search").route(web::get().to(http::prism_home::home_search)))
     }
 
     pub fn get_prism_logstream() -> Scope {
