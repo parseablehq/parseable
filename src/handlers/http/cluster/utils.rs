@@ -18,7 +18,7 @@
 
 use crate::{
     handlers::http::{base_path_without_preceding_slash, modal::NodeType},
-    HTTP_CLIENT,
+    INTRA_CLUSTER_CLIENT,
 };
 use actix_web::http::header;
 use chrono::{DateTime, Utc};
@@ -188,7 +188,7 @@ pub async fn check_liveness(domain_name: &str) -> bool {
         }
     };
 
-    let req = HTTP_CLIENT
+    let req = INTRA_CLUSTER_CLIENT
         .get(uri)
         .header(header::CONTENT_TYPE, "application/json")
         .send()

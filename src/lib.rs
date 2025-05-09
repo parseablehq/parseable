@@ -82,9 +82,24 @@ pub static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
         .brotli(true) // brotli compress for all requests
         .use_rustls_tls() // use only the rustls backend
         .http1_only() // use only http/1.1
-        //allow invalid certificates for connecting other nodes in the cluster
-        //required when querier/prism server tries to connect to other nodes via IP address directly
-        //but the certificate is valid for a specific domain name
+        .build()
+        .expect("Construction of client shouldn't fail")
+});
+
+//separate client is created for intra cluster communication
+//allow invalid certificates for connecting other nodes in the cluster
+//required when querier/prism server tries to connect to other nodes via IP address directly
+//but the certificate is valid for a specific domain name
+pub static INTRA_CLUSTER_CLIENT: Lazy<Client> = Lazy::new(|| {
+    ClientBuilder::new()
+        .connect_timeout(Duration::from_secs(3)) // set a timeout of 3s for each connection setup
+        .timeout(Duration::from_secs(30)) // set a timeout of 30s for each request
+        .pool_idle_timeout(Duration::from_secs(90)) // set a timeout of 90s for each idle connection
+        .pool_max_idle_per_host(32) // max 32 idle connections per host
+        .gzip(true) // gzip compress for all requests
+        .brotli(true) // brotli compress for all requests
+        .use_rustls_tls() // use only the rustls backend
+        .http1_only() // use only http/1.1
         .danger_accept_invalid_certs(true)
         .build()
         .expect("Construction of client shouldn't fail")

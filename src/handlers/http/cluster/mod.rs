@@ -50,7 +50,7 @@ use crate::storage::{
     ObjectStorage, ObjectStorageError, ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY,
     STREAM_ROOT_DIRECTORY,
 };
-use crate::HTTP_CLIENT;
+use crate::INTRA_CLUSTER_CLIENT;
 
 use super::base_path_without_preceding_slash;
 use super::ingest::PostError;
@@ -128,7 +128,7 @@ pub async fn sync_streams_with_ingestors(
             let headers = reqwest_headers_clone.clone();
             let body = body_clone.clone();
             async move {
-                let res = HTTP_CLIENT
+                let res = INTRA_CLUSTER_CLIENT
                     .put(url)
                     .headers(headers)
                     .header(header::AUTHORIZATION, &ingestor.token)
@@ -179,7 +179,7 @@ pub async fn sync_users_with_roles_with_ingestors(
         let role_data = role_data.clone();
 
         async move {
-            let res = HTTP_CLIENT
+            let res = INTRA_CLUSTER_CLIENT
                 .put(url)
                 .header(header::AUTHORIZATION, &ingestor.token)
                 .header(header::CONTENT_TYPE, "application/json")
@@ -221,7 +221,7 @@ pub async fn sync_user_deletion_with_ingestors(username: &str) -> Result<(), RBA
         );
 
         async move {
-            let res = HTTP_CLIENT
+            let res = INTRA_CLUSTER_CLIENT
                 .delete(url)
                 .header(header::AUTHORIZATION, &ingestor.token)
                 .send()
@@ -278,7 +278,7 @@ pub async fn sync_user_creation_with_ingestors(
         let user_data = user_data.clone();
 
         async move {
-            let res = HTTP_CLIENT
+            let res = INTRA_CLUSTER_CLIENT
                 .post(url)
                 .header(header::AUTHORIZATION, &ingestor.token)
                 .header(header::CONTENT_TYPE, "application/json")
@@ -320,7 +320,7 @@ pub async fn sync_password_reset_with_ingestors(username: &str) -> Result<(), RB
         );
 
         async move {
-            let res = HTTP_CLIENT
+            let res = INTRA_CLUSTER_CLIENT
                 .post(url)
                 .header(header::AUTHORIZATION, &ingestor.token)
                 .header(header::CONTENT_TYPE, "application/json")
@@ -364,7 +364,7 @@ pub async fn sync_role_update_with_ingestors(
         let privileges = privileges.clone();
 
         async move {
-            let res = HTTP_CLIENT
+            let res = INTRA_CLUSTER_CLIENT
                 .put(url)
                 .header(header::AUTHORIZATION, &ingestor.token)
                 .header(header::CONTENT_TYPE, "application/json")
@@ -491,7 +491,7 @@ pub async fn send_stream_delete_request(
     if !utils::check_liveness(&ingestor.domain_name).await {
         return Ok(());
     }
-    let resp = HTTP_CLIENT
+    let resp = INTRA_CLUSTER_CLIENT
         .delete(url)
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, ingestor.token)
@@ -529,7 +529,7 @@ pub async fn send_retention_cleanup_request(
     if !utils::check_liveness(&ingestor.domain_name).await {
         return Ok(first_event_at);
     }
-    let resp = HTTP_CLIENT
+    let resp = INTRA_CLUSTER_CLIENT
         .post(url)
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::AUTHORIZATION, ingestor.token)
@@ -636,7 +636,7 @@ async fn fetch_node_info<T: Metadata>(node: &T) -> Result<utils::ClusterInfo, St
     ))
     .expect("should always be a valid url");
 
-    let resp = HTTP_CLIENT
+    let resp = INTRA_CLUSTER_CLIENT
         .get(uri)
         .header(header::AUTHORIZATION, node.token().to_owned())
         .header(header::CONTENT_TYPE, "application/json")
@@ -855,7 +855,7 @@ where
     }
 
     // Fetch metrics
-    let res = HTTP_CLIENT
+    let res = INTRA_CLUSTER_CLIENT
         .get(uri)
         .header(header::AUTHORIZATION, node.token())
         .header(header::CONTENT_TYPE, "application/json")
