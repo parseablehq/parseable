@@ -82,6 +82,10 @@ pub static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
         .brotli(true) // brotli compress for all requests
         .use_rustls_tls() // use only the rustls backend
         .http1_only() // use only http/1.1
+        //allow invalid certificates for connecting other nodes in the cluster
+        //required when querier/prism server tries to connect to other nodes via IP address directly
+        //but the certificate is valid for a specific domain name
+        .danger_accept_invalid_certs(true)
         .build()
         .expect("Construction of client shouldn't fail")
 });
