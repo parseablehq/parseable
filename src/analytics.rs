@@ -43,7 +43,7 @@ use crate::{
     option::Mode,
     parseable::PARSEABLE,
     stats::{self, Stats},
-    storage, HTTP_CLIENT,
+    storage, HTTP_CLIENT, INTRA_CLUSTER_CLIENT,
 };
 
 const ANALYTICS_SERVER_URL: &str = "https://analytics.parseable.io:80";
@@ -280,7 +280,7 @@ async fn fetch_ingestors_metrics(
             ))
             .expect("Should be a valid URL");
 
-            let resp = HTTP_CLIENT
+            let resp = INTRA_CLUSTER_CLIENT
                 .get(uri)
                 .header(header::AUTHORIZATION, im.token.clone())
                 .header(header::CONTENT_TYPE, "application/json")

@@ -207,6 +207,18 @@ pub struct Options {
     )]
     pub trusted_ca_certs_path: Option<PathBuf>,
 
+    /// Allows invalid TLS certificates for intra-cluster communication.
+    /// This is needed when nodes connect to each other via IP addresses
+    /// which don't match the domain names in their certificates.
+    /// SECURITY NOTE: Only enable this for trusted internal networks.
+    #[arg(
+        long,
+        env = "P_TLS_SKIP_VERIFY",
+        value_name = "bool",
+        default_value = "false"
+    )]
+    pub tls_skip_verify: bool,
+
     // Storage configuration
     #[arg(
         long,
