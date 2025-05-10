@@ -101,7 +101,7 @@ pub static INTRA_CLUSTER_CLIENT: Lazy<Client> = Lazy::new(|| {
         .brotli(true) // brotli compress for all requests
         .use_rustls_tls() // use only the rustls backend
         .http1_only() // use only http/1.1
-        .danger_accept_invalid_certs(PARSEABLE.options.skip_tls)
+        .danger_accept_invalid_certs(PARSEABLE.options.tls_skip_verify)
         .build()
         .expect("Construction of client shouldn't fail")
 });

@@ -217,7 +217,7 @@ pub struct Options {
         value_name = "bool",
         default_value = "false"
     )]
-    pub skip_tls: bool,
+    pub tls_skip_verify: bool,
 
     // Storage configuration
     #[arg(
