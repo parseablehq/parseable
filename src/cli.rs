@@ -207,6 +207,15 @@ pub struct Options {
     )]
     pub trusted_ca_certs_path: Option<PathBuf>,
 
+    /// Set client to skip tls verification
+    #[arg(
+        long,
+        env = "P_TLS_SKIP_VERIFY",
+        value_name = "bool",
+        default_value = "false"
+    )]
+    pub skip_tls: bool,
+
     // Storage configuration
     #[arg(
         long,

@@ -56,6 +56,7 @@ pub use handlers::http::modal::{
     ingest_server::IngestServer, query_server::QueryServer, server::Server, ParseableServer,
 };
 use once_cell::sync::Lazy;
+use parseable::PARSEABLE;
 use reqwest::{Client, ClientBuilder};
 
 // It is very unlikely that panic will occur when dealing with locks.
@@ -100,7 +101,7 @@ pub static INTRA_CLUSTER_CLIENT: Lazy<Client> = Lazy::new(|| {
         .brotli(true) // brotli compress for all requests
         .use_rustls_tls() // use only the rustls backend
         .http1_only() // use only http/1.1
-        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_certs(PARSEABLE.options.skip_tls)
         .build()
         .expect("Construction of client shouldn't fail")
 });
