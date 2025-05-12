@@ -368,6 +368,14 @@ pub struct Options {
 
     #[arg(long, env = "P_MS_CLARITY_TAG", help = "Tag for MS Clarity")]
     pub ms_clarity_tag: Option<String>,
+
+    #[arg(
+        long,
+        env = "P_OTEL_ATTRIBUTES_ALLOWED_LIMIT",
+        default_value = "200",
+        help = "allowed limit for otel attributes"
+    )]
+    pub otel_attributes_allowed_limit: usize,
 }
 
 #[derive(Parser, Debug)]

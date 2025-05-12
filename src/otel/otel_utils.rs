@@ -22,10 +22,6 @@ use opentelemetry_proto::tonic::common::v1::{
 };
 use serde_json::{Map, Value};
 
-/// Prefixes of attribute keys that should be preserved as individual fields in flattened output.
-/// Other attributes will be collected in a separate JSON object under `other_attributes`.
-const KNOWN_ATTRIBUTES_PREFIX: [&str; 6] = ["http", "url", "service", "os", "host", "telemetry"];
-pub const OTHER_ATTRIBUTES_KEY: &str = "other_attributes";
 // Value can be one of types - String, Bool, Int, Double, ArrayValue, AnyValue, KeyValueList, Byte
 pub fn collect_json_from_value(key: &String, value: OtelValue) -> Map<String, Value> {
     let mut value_json: Map<String, Value> = Map::new();
@@ -153,24 +149,14 @@ pub fn value_to_string(value: serde_json::Value) -> String {
     }
 }
 
-pub fn flatten_attributes(
-    attributes: &Vec<KeyValue>,
-    other_attributes_json: &mut Map<String, Value>,
-) -> Map<String, Value> {
+pub fn flatten_attributes(attributes: &Vec<KeyValue>) -> Map<String, Value> {
     let mut attributes_json: Map<String, Value> = Map::new();
     for attribute in attributes {
         let key = &attribute.key;
         let value = &attribute.value;
         let value_json = collect_json_from_values(value, &key.to_string());
         for (attr_key, attr_val) in &value_json {
-            if KNOWN_ATTRIBUTES_PREFIX
-                .iter()
-                .any(|prefix| attr_key.starts_with(prefix))
-            {
-                attributes_json.insert(attr_key.clone(), attr_val.clone());
-            } else {
-                other_attributes_json.insert(attr_key.clone(), attr_val.clone());
-            }
+            attributes_json.insert(attr_key.clone(), attr_val.clone());
         }
     }
     attributes_json
@@ -196,12 +182,8 @@ pub fn insert_bool_if_some(map: &mut Map<String, Value>, key: &str, option: &Opt
     }
 }
 
-pub fn insert_attributes(
-    map: &mut Map<String, Value>,
-    attributes: &Vec<KeyValue>,
-    other_attributes_json: &mut Map<String, Value>,
-) {
-    let attributes_json = flatten_attributes(attributes, other_attributes_json);
+pub fn insert_attributes(map: &mut Map<String, Value>, attributes: &Vec<KeyValue>) {
+    let attributes_json = flatten_attributes(attributes);
     for (key, value) in attributes_json {
         map.insert(key, value);
     }
@@ -212,110 +194,8 @@ pub fn convert_epoch_nano_to_timestamp(epoch_ns: i64) -> String {
     dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
 }
 
-/// fetch `other_attributes` from array of JSON objects
-/// merge them with the provided attributes
-/// and return the merged array of JSON object
-pub fn merge_attributes_in_json(
-    attributes: Map<String, Value>,
-    vec_json: &mut Vec<Map<String, Value>>,
-) {
-    if attributes.is_empty() {
-        return;
-    }
-
-    for json in vec_json {
-        let merged_attributes = match json.get(OTHER_ATTRIBUTES_KEY) {
-            Some(Value::String(attrs_str)) => {
-                merge_with_existing_attributes(&attributes, attrs_str)
-            }
-            Some(Value::Object(existing_attrs)) => {
-                merge_with_existing_object(&attributes, existing_attrs)
-            }
-            _ => serialize_attributes(&attributes),
-        };
-
-        if let Some(merged_str) = merged_attributes {
-            json.insert(OTHER_ATTRIBUTES_KEY.to_string(), Value::String(merged_str));
-        }
-    }
-}
-
-/// Merge attributes with an existing JSON string of attributes
-fn merge_with_existing_attributes(
-    attributes: &Map<String, Value>,
-    attrs_str: &str,
-) -> Option<String> {
-    match serde_json::from_str::<Map<String, Value>>(attrs_str) {
-        Ok(mut existing_attrs) => {
-            for (key, value) in attributes {
-                existing_attrs.insert(key.clone(), value.clone());
-            }
-            serde_json::to_string(&existing_attrs).ok()
-        }
-        Err(e) => {
-            tracing::warn!("failed to deserialize existing attributes: {e}");
-            None
-        }
-    }
-}
-
-/// Merge attributes with an existing JSON object of attributes
-fn merge_with_existing_object(
-    attributes: &Map<String, Value>,
-    existing_attrs: &Map<String, Value>,
-) -> Option<String> {
-    let mut merged_attrs = existing_attrs.clone();
-    for (key, value) in attributes {
-        merged_attrs.insert(key.clone(), value.clone());
-    }
-    serde_json::to_string(&merged_attrs).ok()
-}
-
-/// Serialize attributes into a JSON string
-fn serialize_attributes(attributes: &Map<String, Value>) -> Option<String> {
-    serde_json::to_string(attributes).ok()
-}
-
-/// fetch `other_attributes` from array of JSON objects
-/// and merge them into a single map
-/// and return the merged map
-pub fn fetch_attributes_from_json(json_arr: &Vec<Map<String, Value>>) -> Map<String, Value> {
-    let mut merged_attributes = Map::new();
-
-    for json in json_arr {
-        if let Some(Value::String(attrs_str)) = json.get(OTHER_ATTRIBUTES_KEY) {
-            if let Ok(attrs) = serde_json::from_str::<Map<String, Value>>(attrs_str) {
-                for (key, value) in attrs {
-                    merged_attributes.insert(key, value);
-                }
-            }
-        }
-    }
-    merged_attributes
-}
-
-/// convert attributes map to a string
-/// and return the string
-/// if serialisation fails, return an empty string
-pub fn fetch_attributes_string(attributes: &Map<String, Value>) -> String {
-    match serde_json::to_string(attributes) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!("failed to serialise OTEL other_attributes: {e}");
-            String::default()
-        }
-    }
-}
-
-/// add `other_attributes` to the JSON object
-/// if `other_attributes` is not empty
-/// and return the JSON object
-pub fn add_other_attributes_if_not_empty(
-    json: &mut Map<String, Value>,
-    other_attributes: &Map<String, Value>,
-) {
-    if !other_attributes.is_empty() {
-        let attrs_str = fetch_attributes_string(other_attributes);
-        json.insert(OTHER_ATTRIBUTES_KEY.to_string(), Value::String(attrs_str));
-    }
+#[derive(Debug, thiserror::Error)]
+pub enum OtelError {
+    #[error("Ingestion failed because the attributes count {0} exceeded the threshold of {1}")]
+    AttributeCountExceeded(usize, usize),
 }

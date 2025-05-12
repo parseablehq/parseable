@@ -65,21 +65,24 @@ pub async fn flatten_and_push_logs(
         LogSource::OtelLogs => {
             //custom flattening required for otel logs
             let logs: LogsData = serde_json::from_value(json)?;
-            for record in flatten_otel_logs(&logs) {
+            let records = flatten_otel_logs(&logs)?;
+            for record in records {
                 push_logs(stream_name, record, log_source, p_custom_fields).await?;
             }
         }
         LogSource::OtelTraces => {
             //custom flattening required for otel traces
             let traces: TracesData = serde_json::from_value(json)?;
-            for record in flatten_otel_traces(&traces) {
+            let records = flatten_otel_traces(&traces)?;
+            for record in records {
                 push_logs(stream_name, record, log_source, p_custom_fields).await?;
             }
         }
         LogSource::OtelMetrics => {
             //custom flattening required for otel metrics
             let metrics: MetricsData = serde_json::from_value(json)?;
-            for record in flatten_otel_metrics(metrics) {
+            let records = flatten_otel_metrics(metrics)?;
+            for record in records {
                 push_logs(stream_name, record, log_source, p_custom_fields).await?;
             }
         }
