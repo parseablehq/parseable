@@ -373,6 +373,7 @@ pub struct Options {
         long,
         env = "P_OTEL_ATTRIBUTES_ALLOWED_LIMIT",
         default_value = "200",
+        value_parser = validation::validate_otel_attributes_allowed_limit,
         help = "allowed limit for otel attributes"
     )]
     pub otel_attributes_allowed_limit: usize,

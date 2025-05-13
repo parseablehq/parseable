@@ -173,4 +173,19 @@ pub mod validation {
             Err("Invalid value for max disk usage. It should be given as 90.0 for 90%".to_string())
         }
     }
+
+    pub fn validate_otel_attributes_allowed_limit(s: &str) -> Result<usize, String> {
+        if let Ok(size) = s.parse::<usize>() {
+            if (1..=200).contains(&size) {
+                Ok(size)
+            } else {
+                Err(format!(
+                    "Invalid value for size. It should be between 1 and {}",
+                    200
+                ))
+            }
+        } else {
+            Err("Invalid value for size. It should be given as integer value".to_string())
+        }
+    }
 }
