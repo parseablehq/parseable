@@ -32,7 +32,7 @@ use super::otel_utils::{
     convert_epoch_nano_to_timestamp, insert_attributes, insert_number_if_some,
 };
 
-pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 35] = [
+pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 34] = [
     "metric_name",
     "metric_description",
     "metric_unit",
@@ -63,11 +63,10 @@ pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 35] = [
     "metric_type",
     "scope_name",
     "scope_version",
-    "scope_metrics_schema_url",
+    "scope_schema_url",
     "scope_dropped_attributes_count",
     "resource_dropped_attributes_count",
     "resource_schema_url",
-    "resource_metrics_schema_url",
 ];
 
 /// otel metrics event has json array for exemplar
@@ -544,7 +543,7 @@ pub fn flatten_otel_metrics(message: MetricsData) -> Result<Vec<Value>, OtelErro
             }
 
             scope_metrics_json.insert(
-                "scope_metrics_schema_url".to_string(),
+                "scope_schema_url".to_string(),
                 Value::String(scope_metric.schema_url.clone()),
             );
 
@@ -556,7 +555,7 @@ pub fn flatten_otel_metrics(message: MetricsData) -> Result<Vec<Value>, OtelErro
         }
 
         resource_metrics_json.insert(
-            "resource_metrics_schema_url".to_string(),
+            "resource_schema_url".to_string(),
             Value::String(record.schema_url.clone()),
         );
 
@@ -566,8 +565,8 @@ pub fn flatten_otel_metrics(message: MetricsData) -> Result<Vec<Value>, OtelErro
             }
 
             let attribute_count = resource_metric_json
-                .keys()
-                .filter(|key| !known_fields.contains(key.as_str()))
+                .iter()
+                .filter(|(key, _)| !known_fields.contains(key.as_str()))
                 .count();
 
             // Check if the number of attributes exceeds the allowed limit

@@ -32,7 +32,7 @@ use crate::parseable::PARSEABLE;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
 
-pub const OTEL_TRACES_KNOWN_FIELD_LIST: [&str; 31] = [
+pub const OTEL_TRACES_KNOWN_FIELD_LIST: [&str; 30] = [
     "scope_name",
     "scope_version",
     "scope_schema_url",
@@ -43,7 +43,6 @@ pub const OTEL_TRACES_KNOWN_FIELD_LIST: [&str; 31] = [
     "span_span_id",
     "span_name",
     "span_parent_span_id",
-    "flags",
     "name",
     "span_kind",
     "span_kind_description",
@@ -96,7 +95,7 @@ fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<Map<String, Value>> {
 
     for span_json in &mut vec_scope_span_json {
         span_json.insert(
-            "schema_url".to_string(),
+            "scope_schema_url".to_string(),
             Value::String(scope_span.schema_url.clone()),
         );
     }
@@ -127,7 +126,7 @@ pub fn flatten_otel_traces(message: &TracesData) -> Result<Vec<Value>, OtelError
         }
 
         resource_span_json.insert(
-            "schema_url".to_string(),
+            "resource_schema_url".to_string(),
             Value::String(record.schema_url.clone()),
         );
 
@@ -137,8 +136,8 @@ pub fn flatten_otel_traces(message: &TracesData) -> Result<Vec<Value>, OtelError
             }
 
             let attribute_count = resource_spans_json
-                .keys()
-                .filter(|key| !known_fields.contains(key.as_str()))
+                .iter()
+                .filter(|(key, _)| !known_fields.contains(key.as_str()))
                 .count();
 
             // Check if the number of attributes exceeds the allowed limit

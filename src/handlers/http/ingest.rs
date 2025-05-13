@@ -498,7 +498,7 @@ impl actix_web::ResponseError for PostError {
             PostError::MissingTimePartition(_) => StatusCode::BAD_REQUEST,
             PostError::KnownFormat(_) => StatusCode::BAD_REQUEST,
             PostError::IncorrectLogFormat(_) => StatusCode::BAD_REQUEST,
-            PostError::OtelError(_) => StatusCode::EXPECTATION_FAILED,
+            PostError::OtelError(_) => StatusCode::BAD_REQUEST,
         }
     }
 

@@ -20,6 +20,7 @@ use chrono::DateTime;
 use opentelemetry_proto::tonic::common::v1::{
     any_value::Value as OtelValue, AnyValue, ArrayValue, KeyValue, KeyValueList,
 };
+use serde::Serialize;
 use serde_json::{Map, Value};
 
 // Value can be one of types - String, Bool, Int, Double, ArrayValue, AnyValue, KeyValueList, Byte
@@ -149,7 +150,7 @@ pub fn value_to_string(value: serde_json::Value) -> String {
     }
 }
 
-pub fn flatten_attributes(attributes: &Vec<KeyValue>) -> Map<String, Value> {
+pub fn flatten_attributes(attributes: &[KeyValue]) -> Map<String, Value> {
     let mut attributes_json: Map<String, Value> = Map::new();
     for attribute in attributes {
         let key = &attribute.key;
@@ -182,7 +183,7 @@ pub fn insert_bool_if_some(map: &mut Map<String, Value>, key: &str, option: &Opt
     }
 }
 
-pub fn insert_attributes(map: &mut Map<String, Value>, attributes: &Vec<KeyValue>) {
+pub fn insert_attributes(map: &mut Map<String, Value>, attributes: &[KeyValue]) {
     let attributes_json = flatten_attributes(attributes);
     for (key, value) in attributes_json {
         map.insert(key, value);
@@ -194,7 +195,7 @@ pub fn convert_epoch_nano_to_timestamp(epoch_ns: i64) -> String {
     dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, thiserror::Error, Serialize)]
 pub enum OtelError {
     #[error("Ingestion failed because the attributes count {0} exceeded the threshold of {1}")]
     AttributeCountExceeded(usize, usize),

@@ -37,7 +37,7 @@ pub const OTEL_LOG_KNOWN_FIELD_LIST: [&str; 16] = [
     "scope_log_schema_url",
     "scope_dropped_attributes_count",
     "resource_dropped_attributes_count",
-    "resource_schema_url",
+    "schema_url",
     "time_unix_nano",
     "observed_time_unix_nano",
     "severity_number",
@@ -178,8 +178,8 @@ pub fn flatten_otel_logs(message: &LogsData) -> Result<Vec<Value>, OtelError> {
             resource_logs_json.extend(resource_log_json.clone());
 
             let attribute_count = resource_logs_json
-                .keys()
-                .filter(|key| !known_fields.contains(key.as_str()))
+                .iter()
+                .filter(|(key, _)| !known_fields.contains(key.as_str()))
                 .count();
             // Check if the number of attributes exceeds the allowed limit
             if attribute_count > PARSEABLE.options.otel_attributes_allowed_limit {
