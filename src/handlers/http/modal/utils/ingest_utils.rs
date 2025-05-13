@@ -221,7 +221,7 @@ fn verify_dataset_fields_count(stream_name: &str) -> Result<(), PostError> {
     if fields_count > dataset_fields_warn_threshold as usize {
         tracing::warn!(
             "Fields count {0} for dataset {1} has exceeded the warning threshold of {2} fields, Parseable recommends creating a new dataset.",
-            dataset_fields_warn_threshold,
+            fields_count,
             stream_name,
             dataset_fields_warn_threshold);
     }
