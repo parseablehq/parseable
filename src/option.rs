@@ -95,8 +95,8 @@ pub mod validation {
 
     use super::{Compression, Mode};
 
-    // Maximum allowed otel attributes per event
-    const OTEL_ATTRIBUTES_ALLOWED_LIMIT: usize = 200;
+    // Maximum allowed count for fields in a dataset
+    const DATASET_FIELDS_ALLOWED_LIMIT: usize = 250;
 
     pub fn file_path(s: &str) -> Result<PathBuf, String> {
         if s.is_empty() {
@@ -177,18 +177,18 @@ pub mod validation {
         }
     }
 
-    pub fn validate_otel_attributes_allowed_limit(s: &str) -> Result<usize, String> {
+    pub fn validate_dataset_fields_allowed_limit(s: &str) -> Result<usize, String> {
         if let Ok(size) = s.parse::<usize>() {
-            if (1..=OTEL_ATTRIBUTES_ALLOWED_LIMIT).contains(&size) {
+            if (1..=DATASET_FIELDS_ALLOWED_LIMIT).contains(&size) {
                 Ok(size)
             } else {
                 Err(format!(
-                    "Invalid value for P_OTEL_ATTRIBUTES_ALLOWED_LIMIT. It should be between 1 and {}",
-                    OTEL_ATTRIBUTES_ALLOWED_LIMIT
+                    "Invalid value for P_DATASET_FIELDS_ALLOWED_LIMIT. It should be between 1 and {}",
+                    DATASET_FIELDS_ALLOWED_LIMIT
                 ))
             }
         } else {
-            Err("Invalid value for P_OTEL_ATTRIBUTES_ALLOWED_LIMIT. It should be given as integer value".to_string())
+            Err("Invalid value for P_DATASET_FIELDS_ALLOWED_LIMIT. It should be given as integer value".to_string())
         }
     }
 }

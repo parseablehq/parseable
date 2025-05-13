@@ -15,15 +15,9 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-
-use std::collections::HashSet;
-
-use crate::parseable::PARSEABLE;
-
 use super::otel_utils::collect_json_from_values;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
-use super::otel_utils::OtelError;
 use opentelemetry_proto::tonic::logs::v1::LogRecord;
 use opentelemetry_proto::tonic::logs::v1::LogsData;
 use opentelemetry_proto::tonic::logs::v1::ScopeLogs;
@@ -150,10 +144,8 @@ fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<Map<String, Value>> {
 
 /// this function performs the custom flattening of the otel logs
 /// and returns a `Vec` of `Value::Object` of the flattened json
-pub fn flatten_otel_logs(message: &LogsData) -> Result<Vec<Value>, OtelError> {
+pub fn flatten_otel_logs(message: &LogsData) -> Vec<Value> {
     let mut vec_otel_json = Vec::new();
-    let known_fields: HashSet<&str> = OTEL_LOG_KNOWN_FIELD_LIST.iter().cloned().collect();
-
     for record in &message.resource_logs {
         let mut resource_log_json = Map::new();
         if let Some(resource) = &record.resource {
@@ -177,26 +169,9 @@ pub fn flatten_otel_logs(message: &LogsData) -> Result<Vec<Value>, OtelError> {
         for resource_logs_json in &mut vec_resource_logs_json {
             resource_logs_json.extend(resource_log_json.clone());
 
-            let attribute_count = resource_logs_json
-                .iter()
-                .filter(|(key, _)| !known_fields.contains(key.as_str()))
-                .count();
-            // Check if the number of attributes exceeds the allowed limit
-            if attribute_count > PARSEABLE.options.otel_attributes_allowed_limit {
-                tracing::error!(
-                    "OTEL logs ingestion failed because the number of attributes ({}) exceeded the threshold of {}",
-                    attribute_count,
-                    PARSEABLE.options.otel_attributes_allowed_limit
-                );
-                return Err(OtelError::AttributeCountExceeded(
-                    attribute_count,
-                    PARSEABLE.options.otel_attributes_allowed_limit,
-                ));
-            }
-
             vec_otel_json.push(Value::Object(resource_logs_json.clone()));
         }
     }
 
-    Ok(vec_otel_json)
+    vec_otel_json
 }

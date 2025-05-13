@@ -15,18 +15,12 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-
-use std::collections::HashSet;
-
 use opentelemetry_proto::tonic::metrics::v1::number_data_point::Value as NumberDataPointValue;
 use opentelemetry_proto::tonic::metrics::v1::{
     exemplar::Value as ExemplarValue, exponential_histogram_data_point::Buckets, metric, Exemplar,
     ExponentialHistogram, Gauge, Histogram, Metric, MetricsData, NumberDataPoint, Sum, Summary,
 };
 use serde_json::{Map, Value};
-
-use crate::otel::otel_utils::OtelError;
-use crate::parseable::PARSEABLE;
 
 use super::otel_utils::{
     convert_epoch_nano_to_timestamp, insert_attributes, insert_number_if_some,
@@ -507,10 +501,8 @@ pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<Map<String, Value>
 
 /// this function performs the custom flattening of the otel metrics
 /// and returns a `Vec` of `Value::Object` of the flattened json
-pub fn flatten_otel_metrics(message: MetricsData) -> Result<Vec<Value>, OtelError> {
+pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Value> {
     let mut vec_otel_json = Vec::new();
-    let known_fields: HashSet<&str> = OTEL_METRICS_KNOWN_FIELD_LIST.iter().cloned().collect();
-
     for record in &message.resource_metrics {
         let mut resource_metrics_json = Map::new();
         if let Some(resource) = &record.resource {
@@ -564,29 +556,11 @@ pub fn flatten_otel_metrics(message: MetricsData) -> Result<Vec<Value>, OtelErro
                 resource_metric_json.insert(key.clone(), value.clone());
             }
 
-            let attribute_count = resource_metric_json
-                .iter()
-                .filter(|(key, _)| !known_fields.contains(key.as_str()))
-                .count();
-
-            // Check if the number of attributes exceeds the allowed limit
-            if attribute_count > PARSEABLE.options.otel_attributes_allowed_limit {
-                tracing::error!(
-                    "OTEL metrics ingestion failed because the number of attributes ({}) exceeded the threshold of {}",
-                    attribute_count,
-                    PARSEABLE.options.otel_attributes_allowed_limit
-                );
-                return Err(OtelError::AttributeCountExceeded(
-                    attribute_count,
-                    PARSEABLE.options.otel_attributes_allowed_limit,
-                ));
-            }
-
             vec_otel_json.push(Value::Object(resource_metric_json.clone()));
         }
     }
 
-    Ok(vec_otel_json)
+    vec_otel_json
 }
 
 /// otel metrics event has json object for aggregation temporality

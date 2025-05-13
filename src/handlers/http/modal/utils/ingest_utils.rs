@@ -54,6 +54,24 @@ pub async fn flatten_and_push_logs(
     log_source: &LogSource,
     p_custom_fields: &HashMap<String, String>,
 ) -> Result<(), PostError> {
+    // fetch the storage schema for the stream
+    let schema = PARSEABLE.get_stream(stream_name)?.get_schema();
+    //fetch the fields count from the schema
+    let fields_count = schema.fields().len();
+    if fields_count > PARSEABLE.options.dataset_fields_allowed_limit {
+        tracing::error!(
+            "Ingestion failed for dataset {0} as fields count {1} exceeds the limit {2}, Parseable recommends creating a new dataset.",
+            stream_name,
+            fields_count,
+            PARSEABLE.options.dataset_fields_allowed_limit);
+        // Return an error if the fields count exceeds the limit
+        return Err(PostError::FieldsLimitExceeded(
+            stream_name.to_string(),
+            fields_count,
+            PARSEABLE.options.dataset_fields_allowed_limit,
+        ));
+    }
+
     match log_source {
         LogSource::Kinesis => {
             //custom flattening required for Amazon Kinesis
@@ -65,24 +83,21 @@ pub async fn flatten_and_push_logs(
         LogSource::OtelLogs => {
             //custom flattening required for otel logs
             let logs: LogsData = serde_json::from_value(json)?;
-            let records = flatten_otel_logs(&logs)?;
-            for record in records {
+            for record in flatten_otel_logs(&logs) {
                 push_logs(stream_name, record, log_source, p_custom_fields).await?;
             }
         }
         LogSource::OtelTraces => {
             //custom flattening required for otel traces
             let traces: TracesData = serde_json::from_value(json)?;
-            let records = flatten_otel_traces(&traces)?;
-            for record in records {
+            for record in flatten_otel_traces(&traces) {
                 push_logs(stream_name, record, log_source, p_custom_fields).await?;
             }
         }
         LogSource::OtelMetrics => {
             //custom flattening required for otel metrics
             let metrics: MetricsData = serde_json::from_value(json)?;
-            let records = flatten_otel_metrics(metrics)?;
-            for record in records {
+            for record in flatten_otel_metrics(metrics) {
                 push_logs(stream_name, record, log_source, p_custom_fields).await?;
             }
         }

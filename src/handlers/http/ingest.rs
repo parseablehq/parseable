@@ -35,7 +35,6 @@ use crate::metadata::SchemaVersion;
 use crate::option::Mode;
 use crate::otel::logs::OTEL_LOG_KNOWN_FIELD_LIST;
 use crate::otel::metrics::OTEL_METRICS_KNOWN_FIELD_LIST;
-use crate::otel::otel_utils::OtelError;
 use crate::otel::traces::OTEL_TRACES_KNOWN_FIELD_LIST;
 use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::storage::{ObjectStorageError, StreamType};
@@ -468,8 +467,8 @@ pub enum PostError {
     KnownFormat(#[from] known_schema::Error),
     #[error("Ingestion is not allowed to stream {0} as it is already associated with a different OTEL format")]
     IncorrectLogFormat(String),
-    #[error("OtelError: {0}")]
-    OtelError(#[from] OtelError),
+    #[error("Ingestion failed for dataset {0} as fields count {1} exceeds the limit {2}, Parseable recommends creating a new dataset.")]
+    FieldsLimitExceeded(String, usize, usize),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -498,7 +497,7 @@ impl actix_web::ResponseError for PostError {
             PostError::MissingTimePartition(_) => StatusCode::BAD_REQUEST,
             PostError::KnownFormat(_) => StatusCode::BAD_REQUEST,
             PostError::IncorrectLogFormat(_) => StatusCode::BAD_REQUEST,
-            PostError::OtelError(_) => StatusCode::BAD_REQUEST,
+            PostError::FieldsLimitExceeded(_, _, _) => StatusCode::BAD_REQUEST,
         }
     }
 

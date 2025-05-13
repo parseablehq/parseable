@@ -371,12 +371,12 @@ pub struct Options {
 
     #[arg(
         long,
-        env = "P_OTEL_ATTRIBUTES_ALLOWED_LIMIT",
-        default_value = "200",
-        value_parser = validation::validate_otel_attributes_allowed_limit,
-        help = "allowed limit for otel attributes"
+        env = "P_DATASET_FIELDS_ALLOWED_LIMIT",
+        default_value = "250",
+        value_parser = validation::validate_dataset_fields_allowed_limit,
+        help = "allowed limit for fields count in a dataset"
     )]
-    pub otel_attributes_allowed_limit: usize,
+    pub dataset_fields_allowed_limit: usize,
 }
 
 #[derive(Parser, Debug)]

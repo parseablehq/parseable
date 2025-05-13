@@ -20,7 +20,6 @@ use chrono::DateTime;
 use opentelemetry_proto::tonic::common::v1::{
     any_value::Value as OtelValue, AnyValue, ArrayValue, KeyValue, KeyValueList,
 };
-use serde::Serialize;
 use serde_json::{Map, Value};
 
 // Value can be one of types - String, Bool, Int, Double, ArrayValue, AnyValue, KeyValueList, Byte
@@ -193,10 +192,4 @@ pub fn insert_attributes(map: &mut Map<String, Value>, attributes: &[KeyValue]) 
 pub fn convert_epoch_nano_to_timestamp(epoch_ns: i64) -> String {
     let dt = DateTime::from_timestamp_nanos(epoch_ns).naive_utc();
     dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
-}
-
-#[derive(Debug, thiserror::Error, Serialize)]
-pub enum OtelError {
-    #[error("Ingestion failed because the attributes count {0} exceeded the threshold of {1}")]
-    AttributeCountExceeded(usize, usize),
 }
