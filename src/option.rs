@@ -95,6 +95,9 @@ pub mod validation {
 
     use super::{Compression, Mode};
 
+    // Maximum allowed otel attributes per event
+    const OTEL_ATTRIBUTES_ALLOWED_LIMIT: usize = 200;
+
     pub fn file_path(s: &str) -> Result<PathBuf, String> {
         if s.is_empty() {
             return Err("empty path".to_owned());
@@ -176,16 +179,16 @@ pub mod validation {
 
     pub fn validate_otel_attributes_allowed_limit(s: &str) -> Result<usize, String> {
         if let Ok(size) = s.parse::<usize>() {
-            if (1..=200).contains(&size) {
+            if (1..=OTEL_ATTRIBUTES_ALLOWED_LIMIT).contains(&size) {
                 Ok(size)
             } else {
                 Err(format!(
-                    "Invalid value for size. It should be between 1 and {}",
-                    200
+                    "Invalid value for P_OTEL_ATTRIBUTES_ALLOWED_LIMIT. It should be between 1 and {}",
+                    OTEL_ATTRIBUTES_ALLOWED_LIMIT
                 ))
             }
         } else {
-            Err("Invalid value for size. It should be given as integer value".to_string())
+            Err("Invalid value for P_OTEL_ATTRIBUTES_ALLOWED_LIMIT. It should be given as integer value".to_string())
         }
     }
 }
