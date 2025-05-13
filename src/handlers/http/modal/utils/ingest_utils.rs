@@ -47,6 +47,8 @@ use crate::{
 const IGNORE_HEADERS: [&str; 3] = [STREAM_NAME_HEADER_KEY, LOG_SOURCE_KEY, EXTRACT_LOG_KEY];
 const MAX_CUSTOM_FIELDS: usize = 10;
 const MAX_FIELD_VALUE_LENGTH: usize = 100;
+// Maximum allowed count for fields in a dataset
+pub const DATASET_FIELDS_ALLOWED_LIMIT: usize = 250;
 
 pub async fn flatten_and_push_logs(
     json: Value,
@@ -54,23 +56,8 @@ pub async fn flatten_and_push_logs(
     log_source: &LogSource,
     p_custom_fields: &HashMap<String, String>,
 ) -> Result<(), PostError> {
-    // fetch the storage schema for the stream
-    let schema = PARSEABLE.get_stream(stream_name)?.get_schema();
-    //fetch the fields count from the schema
-    let fields_count = schema.fields().len();
-    if fields_count > PARSEABLE.options.dataset_fields_allowed_limit {
-        tracing::error!(
-            "Ingestion failed for dataset {0} as fields count {1} exceeds the limit {2}, Parseable recommends creating a new dataset.",
-            stream_name,
-            fields_count,
-            PARSEABLE.options.dataset_fields_allowed_limit);
-        // Return an error if the fields count exceeds the limit
-        return Err(PostError::FieldsLimitExceeded(
-            stream_name.to_string(),
-            fields_count,
-            PARSEABLE.options.dataset_fields_allowed_limit,
-        ));
-    }
+    // Verify the dataset fields count
+    verify_dataset_fields_count(stream_name)?;
 
     match log_source {
         LogSource::Kinesis => {
@@ -221,6 +208,39 @@ pub fn get_custom_fields_from_header(req: &HttpRequest) -> HashMap<String, Strin
     }
 
     p_custom_fields
+}
+
+fn verify_dataset_fields_count(stream_name: &str) -> Result<(), PostError> {
+    let fields_count = PARSEABLE
+        .get_stream(stream_name)?
+        .get_schema()
+        .fields()
+        .len();
+    let dataset_fields_warn_threshold = 0.8 * DATASET_FIELDS_ALLOWED_LIMIT as f64;
+    // Check if the fields count exceeds the warn threshold
+    if fields_count > dataset_fields_warn_threshold as usize {
+        tracing::warn!(
+            "Fields count {0} for dataset {1} has exceeded the warning threshold of {2} fields, Parseable recommends creating a new dataset.",
+            dataset_fields_warn_threshold,
+            stream_name,
+            dataset_fields_warn_threshold);
+    }
+    // Check if the fields count exceeds the limit
+    // Return an error if the fields count exceeds the limit
+    if fields_count > PARSEABLE.options.dataset_fields_allowed_limit {
+        tracing::error!(
+            "Ingestion has been stopped for dataset {0} as fields count {1} exceeds the allowed limit of {2}, Please create a new dataset.",
+            stream_name,
+            fields_count,
+            PARSEABLE.options.dataset_fields_allowed_limit);
+        // Return an error if the fields count exceeds the limit
+        return Err(PostError::FieldsLimitExceeded(
+            stream_name.to_string(),
+            fields_count,
+            PARSEABLE.options.dataset_fields_allowed_limit,
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

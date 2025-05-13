@@ -91,12 +91,10 @@ pub mod validation {
         path::{Path, PathBuf},
     };
 
+    use crate::handlers::http::modal::utils::ingest_utils::DATASET_FIELDS_ALLOWED_LIMIT;
     use path_clean::PathClean;
 
     use super::{Compression, Mode};
-
-    // Maximum allowed count for fields in a dataset
-    const DATASET_FIELDS_ALLOWED_LIMIT: usize = 250;
 
     pub fn file_path(s: &str) -> Result<PathBuf, String> {
         if s.is_empty() {
