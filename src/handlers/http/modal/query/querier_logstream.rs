@@ -36,11 +36,10 @@ use crate::{
     handlers::http::{
         base_path_without_preceding_slash,
         cluster::{
-            self, fetch_daily_stats_from_ingestors, fetch_stats_from_ingestors,
-            sync_streams_with_ingestors,
+            self, fetch_daily_stats, fetch_stats_from_ingestors, sync_streams_with_ingestors,
             utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
         },
-        logstream::{error::StreamError, get_stats_date},
+        logstream::error::StreamError,
         modal::{NodeMetadata, NodeType},
     },
     hottier::HotTierManager,
@@ -154,8 +153,6 @@ pub async fn get_stats(
         }
 
         if !date_value.is_empty() {
-            let querier_stats = get_stats_date(&stream_name, date_value).await?;
-
             // this function requires all the ingestor stream jsons
             let path = RelativePathBuf::from_iter([&stream_name, STREAM_ROOT_DIRECTORY]);
             let obs = PARSEABLE
@@ -163,13 +160,11 @@ pub async fn get_stats(
                 .get_object_store()
                 .get_objects(
                     Some(&path),
-                    Box::new(|file_name| {
-                        file_name.starts_with(".ingestor") && file_name.ends_with("stream.json")
-                    }),
+                    Box::new(|file_name| file_name.ends_with("stream.json")),
                 )
                 .await?;
 
-            let mut ingestor_stream_jsons = Vec::new();
+            let mut stream_jsons = Vec::new();
             for ob in obs {
                 let stream_metadata: ObjectStoreFormat = match serde_json::from_slice(&ob) {
                     Ok(d) => d,
@@ -178,16 +173,15 @@ pub async fn get_stats(
                         continue;
                     }
                 };
-                ingestor_stream_jsons.push(stream_metadata);
+                stream_jsons.push(stream_metadata);
             }
 
-            let ingestor_stats =
-                fetch_daily_stats_from_ingestors(date_value, &ingestor_stream_jsons)?;
+            let stats = fetch_daily_stats(date_value, &stream_jsons)?;
 
             let total_stats = Stats {
-                events: querier_stats.events + ingestor_stats.events,
-                ingestion: querier_stats.ingestion + ingestor_stats.ingestion,
-                storage: querier_stats.storage + ingestor_stats.storage,
+                events: stats.events,
+                ingestion: stats.ingestion,
+                storage: stats.storage,
             };
             let stats = serde_json::to_value(total_stats)?;
 
