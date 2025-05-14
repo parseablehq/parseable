@@ -467,7 +467,7 @@ pub enum PostError {
     KnownFormat(#[from] known_schema::Error),
     #[error("Ingestion is not allowed to stream {0} as it is already associated with a different OTEL format")]
     IncorrectLogFormat(String),
-    #[error("Ingestion has been stoppped for dataset {0} as fields count {1} exceeds the allowed limit of {2}, Please create a new dataset.")]
+    #[error("Failed to ingest events in dataset {0}. Total number of fields {1} exceeds the permissible limit of {2}. We recommend creating a new dataset beyond {2} for better query performance.")]
     FieldsLimitExceeded(String, usize, usize),
 }
 
