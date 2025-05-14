@@ -35,6 +35,7 @@ use crate::{
 pub const DEFAULT_USERNAME: &str = "admin";
 pub const DEFAULT_PASSWORD: &str = "admin";
 
+pub const DATASET_FIELD_COUNT_LIMIT: usize = 250;
 #[derive(Parser)]
 #[command(
     name = "parseable",
@@ -371,10 +372,10 @@ pub struct Options {
 
     #[arg(
         long,
-        env = "P_DATASET_FIELDS_ALLOWED_LIMIT",
-        default_value = "250",
+        env = "P_DATASET_FIELD_COUNT_LIMIT",
+        default_value_t = DATASET_FIELD_COUNT_LIMIT,
         value_parser = validation::validate_dataset_fields_allowed_limit,
-        help = "allowed limit for fields count in a dataset"
+        help = "total number of fields recommended in a dataset"
     )]
     pub dataset_fields_allowed_limit: usize,
 }

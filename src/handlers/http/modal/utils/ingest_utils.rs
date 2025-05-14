@@ -47,8 +47,6 @@ use crate::{
 const IGNORE_HEADERS: [&str; 3] = [STREAM_NAME_HEADER_KEY, LOG_SOURCE_KEY, EXTRACT_LOG_KEY];
 const MAX_CUSTOM_FIELDS: usize = 10;
 const MAX_FIELD_VALUE_LENGTH: usize = 100;
-// Maximum allowed count for fields in a dataset
-pub const DATASET_FIELDS_ALLOWED_LIMIT: usize = 250;
 
 pub async fn flatten_and_push_logs(
     json: Value,
@@ -216,29 +214,27 @@ fn verify_dataset_fields_count(stream_name: &str) -> Result<(), PostError> {
         .get_schema()
         .fields()
         .len();
-    let dataset_fields_warn_threshold = 0.8 * DATASET_FIELDS_ALLOWED_LIMIT as f64;
+    let dataset_fields_warn_threshold = 0.8 * PARSEABLE.options.dataset_fields_allowed_limit as f64;
     // Check if the fields count exceeds the warn threshold
     if fields_count > dataset_fields_warn_threshold as usize {
         tracing::warn!(
-            "Fields count {0} for dataset {1} has exceeded the warning threshold of {2} fields, Parseable recommends creating a new dataset.",
-            fields_count,
+            "Total fields in dataset {0} has reached the warning threshold of {1}. Ingestion will not be possible after reaching {2} fields. We recommend creating a new dataset.",
             stream_name,
-            dataset_fields_warn_threshold);
+            dataset_fields_warn_threshold,
+            PARSEABLE.options.dataset_fields_allowed_limit
+            );
     }
     // Check if the fields count exceeds the limit
     // Return an error if the fields count exceeds the limit
     if fields_count > PARSEABLE.options.dataset_fields_allowed_limit {
-        tracing::error!(
-            "Ingestion has been stopped for dataset {0} as fields count {1} exceeds the allowed limit of {2}, Please create a new dataset.",
-            stream_name,
-            fields_count,
-            PARSEABLE.options.dataset_fields_allowed_limit);
-        // Return an error if the fields count exceeds the limit
-        return Err(PostError::FieldsLimitExceeded(
+        let error = PostError::FieldsCountLimitExceeded(
             stream_name.to_string(),
             fields_count,
             PARSEABLE.options.dataset_fields_allowed_limit,
-        ));
+        );
+        tracing::error!("{}", error);
+        // Return an error if the fields count exceeds the limit
+        return Err(error);
     }
     Ok(())
 }
