@@ -220,7 +220,7 @@ async fn stats_for_date(
     // Process each stream concurrently
     let stream_stats_futures = stream_wise_meta
         .values()
-        .map(|meta| get_stream_stats_for_date(date.clone(), meta.clone()));
+        .map(|meta| get_stream_stats_for_date(date.clone(), meta));
 
     let stream_stats_results = futures::future::join_all(stream_stats_futures).await;
 
@@ -244,9 +244,9 @@ async fn stats_for_date(
 
 async fn get_stream_stats_for_date(
     date: String,
-    meta: Vec<ObjectStoreFormat>,
+    meta: &[ObjectStoreFormat],
 ) -> Result<(u64, u64, u64), PrismHomeError> {
-    let stats = fetch_daily_stats(&date, &meta)?;
+    let stats = fetch_daily_stats(&date, meta)?;
 
     Ok((stats.events, stats.ingestion, stats.storage))
 }

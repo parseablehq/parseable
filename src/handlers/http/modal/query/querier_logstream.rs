@@ -44,7 +44,7 @@ use crate::{
     },
     hottier::HotTierManager,
     parseable::{StreamNotFound, PARSEABLE},
-    stats::{self, Stats},
+    stats,
     storage::{ObjectStoreFormat, StreamType, STREAM_ROOT_DIRECTORY},
 };
 
@@ -178,12 +178,7 @@ pub async fn get_stats(
 
             let stats = fetch_daily_stats(date_value, &stream_jsons)?;
 
-            let total_stats = Stats {
-                events: stats.events,
-                ingestion: stats.ingestion,
-                storage: stats.storage,
-            };
-            let stats = serde_json::to_value(total_stats)?;
+            let stats = serde_json::to_value(stats)?;
 
             return Ok((web::Json(stats), StatusCode::OK));
         }
