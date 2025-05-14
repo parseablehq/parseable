@@ -467,6 +467,8 @@ pub enum PostError {
     KnownFormat(#[from] known_schema::Error),
     #[error("Ingestion is not allowed to stream {0} as it is already associated with a different OTEL format")]
     IncorrectLogFormat(String),
+    #[error("Failed to ingest events in dataset {0}. Total number of fields {1} exceeds the permissible limit of {2}. We recommend creating a new dataset beyond {2} for better query performance.")]
+    FieldsCountLimitExceeded(String, usize, usize),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -495,6 +497,7 @@ impl actix_web::ResponseError for PostError {
             PostError::MissingTimePartition(_) => StatusCode::BAD_REQUEST,
             PostError::KnownFormat(_) => StatusCode::BAD_REQUEST,
             PostError::IncorrectLogFormat(_) => StatusCode::BAD_REQUEST,
+            PostError::FieldsCountLimitExceeded(_, _, _) => StatusCode::BAD_REQUEST,
         }
     }
 

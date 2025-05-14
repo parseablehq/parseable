@@ -91,6 +91,7 @@ pub mod validation {
         path::{Path, PathBuf},
     };
 
+    use crate::cli::DATASET_FIELD_COUNT_LIMIT;
     use path_clean::PathClean;
 
     use super::{Compression, Mode};
@@ -171,6 +172,21 @@ pub mod validation {
             }
         } else {
             Err("Invalid value for max disk usage. It should be given as 90.0 for 90%".to_string())
+        }
+    }
+
+    pub fn validate_dataset_fields_allowed_limit(s: &str) -> Result<usize, String> {
+        if let Ok(size) = s.parse::<usize>() {
+            if (1..=DATASET_FIELD_COUNT_LIMIT).contains(&size) {
+                Ok(size)
+            } else {
+                Err(format!(
+                    "Invalid value for P_DATASET_FIELD_COUNT_LIMIT. It should be between 1 and {}",
+                    DATASET_FIELD_COUNT_LIMIT
+                ))
+            }
+        } else {
+            Err("Invalid value for P_DATASET_FIELD_COUNT_LIMIT. It should be given as integer value".to_string())
         }
     }
 }

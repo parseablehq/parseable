@@ -15,7 +15,6 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-
 use opentelemetry_proto::tonic::metrics::v1::number_data_point::Value as NumberDataPointValue;
 use opentelemetry_proto::tonic::metrics::v1::{
     exemplar::Value as ExemplarValue, exponential_histogram_data_point::Buckets, metric, Exemplar,
@@ -24,16 +23,44 @@ use opentelemetry_proto::tonic::metrics::v1::{
 use serde_json::{Map, Value};
 
 use super::otel_utils::{
-    add_other_attributes_if_not_empty, convert_epoch_nano_to_timestamp, insert_attributes,
-    insert_number_if_some, merge_attributes_in_json,
+    convert_epoch_nano_to_timestamp, insert_attributes, insert_number_if_some,
 };
 
-pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 5] = [
+pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 34] = [
     "metric_name",
     "metric_description",
     "metric_unit",
     "start_time_unix_nano",
     "time_unix_nano",
+    "exemplar_time_unix_nano",
+    "exemplar_span_id",
+    "exemplar_trace_id",
+    "exemplar_value",
+    "data_point_value",
+    "data_point_count",
+    "data_point_sum",
+    "data_point_bucket_counts",
+    "data_point_explicit_bounds",
+    "data_point_scale",
+    "data_point_zero_count",
+    "data_point_flags",
+    "data_point_flags_description",
+    "positive_offset",
+    "positive_bucket_count",
+    "negative_offset",
+    "negative_bucket_count",
+    "quantile",
+    "value",
+    "is_monotonic",
+    "aggregation_temporality",
+    "aggregation_temporality_description",
+    "metric_type",
+    "scope_name",
+    "scope_version",
+    "scope_schema_url",
+    "scope_dropped_attributes_count",
+    "resource_dropped_attributes_count",
+    "resource_schema_url",
 ];
 
 /// otel metrics event has json array for exemplar
@@ -45,12 +72,7 @@ fn flatten_exemplar(exemplars: &[Exemplar]) -> Vec<Map<String, Value>> {
         .iter()
         .map(|exemplar| {
             let mut exemplar_json = Map::new();
-            let mut other_attributes = Map::new();
-            insert_attributes(
-                &mut exemplar_json,
-                &exemplar.filtered_attributes,
-                &mut other_attributes,
-            );
+            insert_attributes(&mut exemplar_json, &exemplar.filtered_attributes);
             exemplar_json.insert(
                 "exemplar_time_unix_nano".to_string(),
                 Value::String(convert_epoch_nano_to_timestamp(
@@ -83,7 +105,6 @@ fn flatten_exemplar(exemplars: &[Exemplar]) -> Vec<Map<String, Value>> {
                     }
                 }
             }
-            add_other_attributes_if_not_empty(&mut exemplar_json, &other_attributes);
             exemplar_json
         })
         .collect()
@@ -98,12 +119,7 @@ fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<Map<String
         .iter()
         .map(|data_point| {
             let mut data_point_json = Map::new();
-            let mut other_attributes = Map::new();
-            insert_attributes(
-                &mut data_point_json,
-                &data_point.attributes,
-                &mut other_attributes,
-            );
+            insert_attributes(&mut data_point_json, &data_point.attributes);
             data_point_json.insert(
                 "start_time_unix_nano".to_string(),
                 Value::String(convert_epoch_nano_to_timestamp(
@@ -117,16 +133,13 @@ fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<Map<String
                 )),
             );
 
-            let mut exemplar_json = flatten_exemplar(&data_point.exemplars);
+            let exemplar_json = flatten_exemplar(&data_point.exemplars);
             if !exemplar_json.is_empty() {
-                merge_attributes_in_json(other_attributes, &mut exemplar_json);
                 for exemplar in exemplar_json {
                     for (key, value) in exemplar {
                         data_point_json.insert(key, value);
                     }
                 }
-            } else {
-                add_other_attributes_if_not_empty(&mut data_point_json, &other_attributes);
             }
 
             data_point_json.extend(flatten_data_point_flags(data_point.flags));
@@ -204,12 +217,7 @@ fn flatten_histogram(histogram: &Histogram) -> Vec<Map<String, Value>> {
     let mut data_points_json = Vec::new();
     for data_point in &histogram.data_points {
         let mut data_point_json = Map::new();
-        let mut other_attributes = Map::new();
-        insert_attributes(
-            &mut data_point_json,
-            &data_point.attributes,
-            &mut other_attributes,
-        );
+        insert_attributes(&mut data_point_json, &data_point.attributes);
         data_point_json.insert(
             "start_time_unix_nano".to_string(),
             Value::String(convert_epoch_nano_to_timestamp(
@@ -253,16 +261,13 @@ fn flatten_histogram(histogram: &Histogram) -> Vec<Map<String, Value>> {
             "data_point_explicit_bounds".to_string(),
             data_point_explicit_bounds,
         );
-        let mut exemplar_json = flatten_exemplar(&data_point.exemplars);
+        let exemplar_json = flatten_exemplar(&data_point.exemplars);
         if !exemplar_json.is_empty() {
-            merge_attributes_in_json(other_attributes, &mut exemplar_json);
             for exemplar in exemplar_json {
                 for (key, value) in exemplar {
                     data_point_json.insert(key, value);
                 }
             }
-        } else {
-            add_other_attributes_if_not_empty(&mut data_point_json, &other_attributes);
         }
 
         data_point_json.extend(flatten_data_point_flags(data_point.flags));
@@ -309,12 +314,7 @@ fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<Map<String
     let mut data_points_json = Vec::new();
     for data_point in &exp_histogram.data_points {
         let mut data_point_json = Map::new();
-        let mut other_attributes = Map::new();
-        insert_attributes(
-            &mut data_point_json,
-            &data_point.attributes,
-            &mut other_attributes,
-        );
+        insert_attributes(&mut data_point_json, &data_point.attributes);
         data_point_json.insert(
             "start_time_unix_nano".to_string(),
             Value::String(convert_epoch_nano_to_timestamp(
@@ -352,16 +352,13 @@ fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<Map<String
                 data_point_json.insert(format!("negative_{}", key), value);
             }
         }
-        let mut exemplar_json = flatten_exemplar(&data_point.exemplars);
+        let exemplar_json = flatten_exemplar(&data_point.exemplars);
         if !exemplar_json.is_empty() {
-            merge_attributes_in_json(other_attributes, &mut exemplar_json);
             for exemplar in exemplar_json {
                 for (key, value) in exemplar {
                     data_point_json.insert(key, value);
                 }
             }
-        } else {
-            add_other_attributes_if_not_empty(&mut data_point_json, &other_attributes);
         }
 
         data_points_json.push(data_point_json);
@@ -386,12 +383,7 @@ fn flatten_summary(summary: &Summary) -> Vec<Map<String, Value>> {
     let mut data_points_json = Vec::new();
     for data_point in &summary.data_points {
         let mut data_point_json = Map::new();
-        let mut other_attributes = Map::new();
-        insert_attributes(
-            &mut data_point_json,
-            &data_point.attributes,
-            &mut other_attributes,
-        );
+        insert_attributes(&mut data_point_json, &data_point.attributes);
         data_point_json.insert(
             "start_time_unix_nano".to_string(),
             Value::String(convert_epoch_nano_to_timestamp(
@@ -445,8 +437,6 @@ fn flatten_summary(summary: &Summary) -> Vec<Map<String, Value>> {
             ),
         );
 
-        add_other_attributes_if_not_empty(&mut data_point_json, &other_attributes);
-
         data_points_json.push(data_point_json);
     }
     data_points_json
@@ -460,7 +450,6 @@ fn flatten_summary(summary: &Summary) -> Vec<Map<String, Value>> {
 pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<Map<String, Value>> {
     let mut data_points_json = Vec::new();
     let mut metric_json = Map::new();
-    let mut other_attributes = Map::new();
     let mut metric_type = String::default();
     match &metrics_record.data {
         Some(metric::Data::Gauge(gauge)) => {
@@ -498,11 +487,7 @@ pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<Map<String, Value>
         Value::String(metrics_record.unit.clone()),
     );
     metric_json.insert("metric_type".to_string(), Value::String(metric_type));
-    insert_attributes(
-        &mut metric_json,
-        &metrics_record.metadata,
-        &mut other_attributes,
-    );
+    insert_attributes(&mut metric_json, &metrics_record.metadata);
     for data_point_json in &mut data_points_json {
         for (key, value) in &metric_json {
             data_point_json.insert(key.clone(), value.clone());
@@ -511,7 +496,6 @@ pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<Map<String, Value>
     if data_points_json.is_empty() {
         data_points_json.push(metric_json);
     }
-    merge_attributes_in_json(other_attributes, &mut data_points_json);
     data_points_json
 }
 
@@ -521,25 +505,21 @@ pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Value> {
     let mut vec_otel_json = Vec::new();
     for record in &message.resource_metrics {
         let mut resource_metrics_json = Map::new();
-        let mut other_attributes = Map::new();
         if let Some(resource) = &record.resource {
-            insert_attributes(
-                &mut resource_metrics_json,
-                &resource.attributes,
-                &mut other_attributes,
-            );
+            insert_attributes(&mut resource_metrics_json, &resource.attributes);
             resource_metrics_json.insert(
                 "resource_dropped_attributes_count".to_string(),
                 Value::Number(resource.dropped_attributes_count.into()),
             );
         }
+
         let mut vec_scope_metrics_json = Vec::new();
         for scope_metric in &record.scope_metrics {
             let mut scope_metrics_json = Map::new();
-            let mut scope_other_attributes = Map::new();
             for metrics_record in &scope_metric.metrics {
                 vec_scope_metrics_json.extend(flatten_metrics_record(metrics_record));
             }
+
             if let Some(scope) = &scope_metric.scope {
                 scope_metrics_json
                     .insert("scope_name".to_string(), Value::String(scope.name.clone()));
@@ -547,18 +527,15 @@ pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Value> {
                     "scope_version".to_string(),
                     Value::String(scope.version.clone()),
                 );
-                insert_attributes(
-                    &mut scope_metrics_json,
-                    &scope.attributes,
-                    &mut scope_other_attributes,
-                );
+                insert_attributes(&mut scope_metrics_json, &scope.attributes);
                 scope_metrics_json.insert(
                     "scope_dropped_attributes_count".to_string(),
                     Value::Number(scope.dropped_attributes_count.into()),
                 );
             }
+
             scope_metrics_json.insert(
-                "scope_metrics_schema_url".to_string(),
+                "scope_schema_url".to_string(),
                 Value::String(scope_metric.schema_url.clone()),
             );
 
@@ -567,21 +544,23 @@ pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Value> {
                     scope_metric_json.insert(key.clone(), value.clone());
                 }
             }
-            merge_attributes_in_json(scope_other_attributes, &mut vec_scope_metrics_json);
         }
+
         resource_metrics_json.insert(
-            "resource_metrics_schema_url".to_string(),
+            "resource_schema_url".to_string(),
             Value::String(record.schema_url.clone()),
         );
+
         for resource_metric_json in &mut vec_scope_metrics_json {
             for (key, value) in &resource_metrics_json {
                 resource_metric_json.insert(key.clone(), value.clone());
             }
+
+            vec_otel_json.push(Value::Object(resource_metric_json.clone()));
         }
-        merge_attributes_in_json(other_attributes, &mut vec_scope_metrics_json);
-        vec_otel_json.extend(vec_scope_metrics_json);
     }
-    vec_otel_json.into_iter().map(Value::Object).collect()
+
+    vec_otel_json
 }
 
 /// otel metrics event has json object for aggregation temporality
