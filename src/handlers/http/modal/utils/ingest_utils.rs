@@ -218,8 +218,9 @@ fn verify_dataset_fields_count(stream_name: &str) -> Result<(), PostError> {
     // Check if the fields count exceeds the warn threshold
     if fields_count > dataset_fields_warn_threshold as usize {
         tracing::warn!(
-            "Total fields in dataset {0} has reached the warning threshold of {1}. Ingestion will not be possible after reaching {2} fields. We recommend creating a new dataset.",
+            "Dataset {0} has {1} fields, which exceeds the warning threshold of {2}. Ingestion will not be possible after reaching {3} fields. We recommend creating a new dataset.",
             stream_name,
+            fields_count,
             dataset_fields_warn_threshold as usize,
             PARSEABLE.options.dataset_fields_allowed_limit
             );
