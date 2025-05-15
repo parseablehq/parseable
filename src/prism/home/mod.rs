@@ -30,10 +30,7 @@ use crate::{
     alerts::{get_alerts_info, AlertError, AlertsInfo, ALERTS},
     correlation::{CorrelationError, CORRELATIONS},
     event::format::LogSource,
-    handlers::http::{
-        cluster::fetch_daily_stats_from_ingestors,
-        logstream::{error::StreamError, get_stats_date},
-    },
+    handlers::http::{cluster::fetch_daily_stats, logstream::error::StreamError},
     parseable::PARSEABLE,
     rbac::{map::SessionKey, role::Action, Users},
     storage::{ObjectStorageError, ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
@@ -221,9 +218,9 @@ async fn stats_for_date(
     };
 
     // Process each stream concurrently
-    let stream_stats_futures = stream_wise_meta.iter().map(|(stream, meta)| {
-        get_stream_stats_for_date(stream.clone(), date.clone(), meta.clone())
-    });
+    let stream_stats_futures = stream_wise_meta
+        .values()
+        .map(|meta| get_stream_stats_for_date(date.clone(), meta));
 
     let stream_stats_results = futures::future::join_all(stream_stats_futures).await;
 
@@ -246,18 +243,12 @@ async fn stats_for_date(
 }
 
 async fn get_stream_stats_for_date(
-    stream: String,
     date: String,
-    meta: Vec<ObjectStoreFormat>,
+    meta: &[ObjectStoreFormat],
 ) -> Result<(u64, u64, u64), PrismHomeError> {
-    let querier_stats = get_stats_date(&stream, &date).await?;
-    let ingestor_stats = fetch_daily_stats_from_ingestors(&date, &meta)?;
+    let stats = fetch_daily_stats(&date, meta)?;
 
-    Ok((
-        querier_stats.events + ingestor_stats.events,
-        querier_stats.ingestion + ingestor_stats.ingestion,
-        querier_stats.storage + ingestor_stats.storage,
-    ))
+    Ok((stats.events, stats.ingestion, stats.storage))
 }
 
 pub async fn generate_home_search_response(

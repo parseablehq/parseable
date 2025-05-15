@@ -393,7 +393,7 @@ pub async fn sync_role_update_with_ingestors(
     .await
 }
 
-pub fn fetch_daily_stats_from_ingestors(
+pub fn fetch_daily_stats(
     date: &str,
     stream_meta_list: &[ObjectStoreFormat],
 ) -> Result<Stats, StreamError> {

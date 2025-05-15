@@ -524,6 +524,8 @@ pub mod error {
         HotTierValidation(#[from] HotTierValidationError),
         #[error("{0}")]
         HotTierError(#[from] HotTierError),
+        #[error("Invalid query parameter: {0}")]
+        InvalidQueryParameter(String),
     }
 
     impl actix_web::ResponseError for StreamError {
@@ -559,6 +561,7 @@ pub mod error {
                 StreamError::HotTierNotEnabled(_) => StatusCode::FORBIDDEN,
                 StreamError::HotTierValidation(_) => StatusCode::BAD_REQUEST,
                 StreamError::HotTierError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                StreamError::InvalidQueryParameter(_) => StatusCode::BAD_REQUEST,
             }
         }
 
