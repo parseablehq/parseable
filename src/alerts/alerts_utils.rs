@@ -19,7 +19,7 @@
 use arrow_array::{Float64Array, Int64Array, RecordBatch};
 use datafusion::{
     functions_aggregate::{
-        count::count,
+        count::{count, count_distinct},
         expr_fn::avg,
         min_max::{max, min},
         sum::sum,
@@ -387,6 +387,7 @@ fn match_aggregate_operation(agg: &AggregateConfig) -> Expr {
     let column = format!(r#""{}""#, agg.column);
     match agg.aggregate_function {
         AggregateFunction::Avg => avg(col(column)),
+        AggregateFunction::CountDistinct => count_distinct(col(column)),
         AggregateFunction::Count => count(col(column)),
         AggregateFunction::Min => min(col(column)),
         AggregateFunction::Max => max(col(column)),
