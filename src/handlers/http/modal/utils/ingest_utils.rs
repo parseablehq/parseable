@@ -54,6 +54,9 @@ pub async fn flatten_and_push_logs(
     log_source: &LogSource,
     p_custom_fields: &HashMap<String, String>,
 ) -> Result<(), PostError> {
+    // Verify the dataset fields count
+    verify_dataset_fields_count(stream_name)?;
+
     match log_source {
         LogSource::Kinesis => {
             //custom flattening required for Amazon Kinesis
@@ -203,6 +206,38 @@ pub fn get_custom_fields_from_header(req: &HttpRequest) -> HashMap<String, Strin
     }
 
     p_custom_fields
+}
+
+fn verify_dataset_fields_count(stream_name: &str) -> Result<(), PostError> {
+    let fields_count = PARSEABLE
+        .get_stream(stream_name)?
+        .get_schema()
+        .fields()
+        .len();
+    let dataset_fields_warn_threshold = 0.8 * PARSEABLE.options.dataset_fields_allowed_limit as f64;
+    // Check if the fields count exceeds the warn threshold
+    if fields_count > dataset_fields_warn_threshold as usize {
+        tracing::warn!(
+            "Dataset {0} has {1} fields, which exceeds the warning threshold of {2}. Ingestion will not be possible after reaching {3} fields. We recommend creating a new dataset.",
+            stream_name,
+            fields_count,
+            dataset_fields_warn_threshold as usize,
+            PARSEABLE.options.dataset_fields_allowed_limit
+            );
+    }
+    // Check if the fields count exceeds the limit
+    // Return an error if the fields count exceeds the limit
+    if fields_count > PARSEABLE.options.dataset_fields_allowed_limit {
+        let error = PostError::FieldsCountLimitExceeded(
+            stream_name.to_string(),
+            fields_count,
+            PARSEABLE.options.dataset_fields_allowed_limit,
+        );
+        tracing::error!("{}", error);
+        // Return an error if the fields count exceeds the limit
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

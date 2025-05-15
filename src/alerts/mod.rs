@@ -290,6 +290,7 @@ impl Display for WhereConfigOperator {
 pub enum AggregateFunction {
     Avg,
     Count,
+    CountDistinct,
     Min,
     Max,
     Sum,
@@ -300,6 +301,7 @@ impl Display for AggregateFunction {
         match self {
             AggregateFunction::Avg => write!(f, "Avg"),
             AggregateFunction::Count => write!(f, "Count"),
+            AggregateFunction::CountDistinct => write!(f, "CountDistinct"),
             AggregateFunction::Min => write!(f, "Min"),
             AggregateFunction::Max => write!(f, "Max"),
             AggregateFunction::Sum => write!(f, "Sum"),
