@@ -46,10 +46,9 @@ use crate::query::error::ExecuteError;
 use crate::query::{execute_stream, CountsRequest, CountsResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
-use crate::response::TIME_ELAPSED_HEADER;
+use crate::response::{QueryResponse, TIME_ELAPSED_HEADER};
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
-use crate::utils::arrow::record_batches_to_json;
 use crate::utils::time::{TimeParseError, TimeRange};
 use crate::utils::user_auth_for_datasets;
 use futures_core::Stream as CoreStream;
@@ -141,14 +140,16 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         match batch_result {
             Ok(batch) => {
                 // convert record batch to JSON
-                let json = record_batches_to_json(&[batch])
-                    .map_err(actix_web::error::ErrorInternalServerError)?;
-                // // Serialize to JSON string
-                // let json = serde_json::to_value(&json)
-                //     .map_err(actix_web::error::ErrorInternalServerError)?;
-                let response = json!({
-                    "fields": fields,
-                    "records": json,
+                let response = QueryResponse {
+                    records: vec![batch],
+                    fields: fields.clone(),
+                    fill_null: query_request.send_null,
+                    with_fields: query_request.fields,
+                }
+                .to_http()
+                .unwrap_or_else(|e| {
+                    error!("Failed to parse record batch into JSON: {}", e);
+                    json!({})
                 });
                 Ok(Bytes::from(response.to_string()))
             }
