@@ -98,10 +98,10 @@ impl FlightService for FlightServiceImpl {
     }
 
     async fn do_get(&self, req: Request<Ticket>) -> Result<Response<Self::DoGetStream>, Status> {
-        let key = extract_session_key(req.metadata())?;
+        let key = extract_session_key(req.metadata()).map_err(|e| *e)?;
         let ticket: serde_json::Value = serde_json::from_slice(&req.into_inner().ticket)
             .map_err(|err| Status::internal(err.to_string()))?;
-        let stream = extract_stream(&ticket)?;
+        let stream = extract_stream(&ticket).map_err(|e| *e)?;
         info!("livetail requested for stream {}", stream);
         match Users.authorize(key, rbac::role::Action::Query, Some(stream), None) {
             rbac::Response::Authorized => (),
@@ -232,16 +232,16 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
     }
 }
 
-pub fn extract_stream(body: &serde_json::Value) -> Result<&str, Status> {
+pub fn extract_stream(body: &serde_json::Value) -> Result<&str, Box<Status>> {
     body.as_object()
-        .ok_or(Status::invalid_argument("expected object in request body"))?
+        .ok_or_else(|| Box::new(Status::invalid_argument("expected object in request body")))?
         .get("stream")
-        .ok_or(Status::invalid_argument("stream key value is not provided"))?
+        .ok_or_else(|| Box::new(Status::invalid_argument("stream key value is not provided")))?
         .as_str()
-        .ok_or(Status::invalid_argument("stream key value is invalid"))
+        .ok_or_else(|| Box::new(Status::invalid_argument("stream key value is invalid")))
 }
 
-pub fn extract_session_key(headers: &MetadataMap) -> Result<SessionKey, Status> {
+pub fn extract_session_key(headers: &MetadataMap) -> Result<SessionKey, Box<Status>> {
     // Extract username and password from the request using basic auth extractor.
     let basic = extract_basic_auth(headers).map(|creds| SessionKey::BasicAuth {
         username: creds.user_id,
@@ -261,7 +261,9 @@ pub fn extract_session_key(headers: &MetadataMap) -> Result<SessionKey, Status> 
         return Ok(SessionKey::SessionId(session));
     }
 
-    Err(Status::unauthenticated("No authentication method supplied"))
+    Err(Box::new(Status::unauthenticated(
+        "No authentication method supplied",
+    )))
 }
 
 fn extract_basic_auth(header: &MetadataMap) -> Option<Credentials> {

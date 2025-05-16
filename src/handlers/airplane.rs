@@ -126,9 +126,11 @@ impl FlightService for AirServiceImpl {
     }
 
     async fn do_get(&self, req: Request<Ticket>) -> Result<Response<Self::DoGetStream>, Status> {
-        let key = extract_session_key(req.metadata())?;
+        let key = extract_session_key(req.metadata())
+            .map_err(|e| Status::unauthenticated(e.to_string()))?;
 
-        let ticket = get_query_from_ticket(&req)?;
+        let ticket =
+            get_query_from_ticket(&req).map_err(|e| Status::invalid_argument(e.to_string()))?;
 
         info!("query requested to airplane: {:?}", ticket);
 
@@ -246,7 +248,7 @@ impl FlightService for AirServiceImpl {
             .observe(time);
 
         // Airplane takes off 🛫
-        out
+        out.map_err(|e| *e)
     }
 
     async fn do_put(
