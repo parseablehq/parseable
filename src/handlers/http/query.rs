@@ -28,7 +28,7 @@ use futures::StreamExt;
 use futures_util::Future;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -43,7 +43,7 @@ use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::Mode;
 use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::query::error::ExecuteError;
-use crate::query::{execute_stream, CountsRequest, CountsResponse, Query as LogicalQuery};
+use crate::query::{execute, execute_stream, CountsRequest, CountsResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
 use crate::response::{QueryResponse, TIME_ELAPSED_HEADER};
@@ -51,7 +51,6 @@ use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::time::{TimeParseError, TimeRange};
 use crate::utils::user_auth_for_datasets;
-use futures_core::Stream as CoreStream;
 /// Query Request through http endpoint.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -64,6 +63,8 @@ pub struct Query {
     #[serde(skip)]
     pub fields: bool,
     #[serde(skip)]
+    pub streaming: bool,
+    #[serde(skip)]
     pub filter_tags: Option<Vec<String>>,
 }
 
@@ -75,7 +76,6 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     {
         Ok(raw_logical_plan) => raw_logical_plan,
         Err(_) => {
-            //if logical plan creation fails, create streams and try again
             create_streams_for_querier().await;
             session_state
                 .create_logical_plan(&query_request.query)
@@ -85,10 +85,8 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
 
-    // Create a visitor to extract the table names present in query
     let mut visitor = TableScanVisitor::default();
     let _ = raw_logical_plan.visit(&mut visitor);
-
     let tables = visitor.into_inner();
     update_schema_when_distributed(&tables).await?;
     let query: LogicalQuery = into_query(&query_request, &session_state, time_range).await?;
@@ -103,65 +101,118 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     user_auth_for_datasets(&permissions, &tables)?;
 
     let time = Instant::now();
-    // Intercept `count(*)`` queries and use the counts API
+
     if let Some(column_name) = query.is_logical_plan_count_without_filters() {
-        let counts_req = CountsRequest {
-            stream: table_name.clone(),
-            start_time: query_request.start_time.clone(),
-            end_time: query_request.end_time.clone(),
-            num_bins: 1,
-        };
-        let count_records = counts_req.get_bin_density().await?;
-        // NOTE: this should not panic, since there is atleast one bin, always
-        let count = count_records[0].count;
-        let response = if query_request.fields {
-            json!({
-                "fields": [&column_name],
-                "records": [json!({column_name: count})]
-            })
-        } else {
-            Value::Array(vec![json!({column_name: count})])
-        };
-
-        let total_time = format!("{:?}", time.elapsed());
-        let time = time.elapsed().as_secs_f64();
-
-        QUERY_EXECUTE_TIME
-            .with_label_values(&[&table_name])
-            .observe(time);
-
-        return Ok(HttpResponse::Ok()
-            .insert_header((TIME_ELAPSED_HEADER, total_time.as_str()))
-            .json(response));
+        return handle_count_query(&query_request, &table_name, column_name, time).await;
     }
-    let (records_stream, fields) = execute_stream(query, &table_name).await?;
+
+    if !query_request.streaming {
+        return handle_non_streaming_query(query, &table_name, &query_request, time).await;
+    }
+
+    handle_streaming_query(query, &table_name, &query_request, time).await
+}
+
+async fn handle_count_query(
+    query_request: &Query,
+    table_name: &str,
+    column_name: &str,
+    time: Instant,
+) -> Result<HttpResponse, QueryError> {
+    let counts_req = CountsRequest {
+        stream: table_name.to_string(),
+        start_time: query_request.start_time.clone(),
+        end_time: query_request.end_time.clone(),
+        num_bins: 1,
+    };
+    let count_records = counts_req.get_bin_density().await?;
+    let count = count_records[0].count;
+    let response = if query_request.fields {
+        json!({
+            "fields": [column_name],
+            "records": [json!({column_name: count})]
+        })
+    } else {
+        serde_json::Value::Array(vec![json!({column_name: count})])
+    };
+
+    let total_time = format!("{:?}", time.elapsed());
+    let time = time.elapsed().as_secs_f64();
+
+    QUERY_EXECUTE_TIME
+        .with_label_values(&[table_name])
+        .observe(time);
+
+    Ok(HttpResponse::Ok()
+        .insert_header((TIME_ELAPSED_HEADER, total_time.as_str()))
+        .json(response))
+}
+
+async fn handle_non_streaming_query(
+    query: LogicalQuery,
+    table_name: &str,
+    query_request: &Query,
+    time: Instant,
+) -> Result<HttpResponse, QueryError> {
+    let (records, fields) = execute(query, table_name).await?;
+    let total_time = format!("{:?}", time.elapsed());
+    let time = time.elapsed().as_secs_f64();
+
+    QUERY_EXECUTE_TIME
+        .with_label_values(&[table_name])
+        .observe(time);
+    let response = QueryResponse {
+        records,
+        fields,
+        fill_null: query_request.send_null,
+        with_fields: query_request.fields,
+    }
+    .to_http()?;
+    Ok(HttpResponse::Ok()
+        .insert_header((TIME_ELAPSED_HEADER, total_time.as_str()))
+        .json(response))
+}
+
+async fn handle_streaming_query(
+    query: LogicalQuery,
+    table_name: &str,
+    query_request: &Query,
+    time: Instant,
+) -> Result<HttpResponse, QueryError> {
+    let (records_stream, fields) = execute_stream(query, table_name).await?;
     let fields = fields.clone();
-    let stream = records_stream.map(move |batch_result| {
-        match batch_result {
-            Ok(batch) => {
-                // convert record batch to JSON
-                let response = QueryResponse {
-                    records: vec![batch],
-                    fields: fields.clone(),
-                    fill_null: query_request.send_null,
-                    with_fields: query_request.fields,
-                }
-                .to_http()
-                .unwrap_or_else(|e| {
-                    error!("Failed to parse record batch into JSON: {}", e);
-                    json!({})
-                });
-                Ok(Bytes::from(format!("{}\n", response.to_string())))
+    let total_time = format!("{:?}", time.elapsed());
+    let time = time.elapsed().as_secs_f64();
+    QUERY_EXECUTE_TIME
+        .with_label_values(&[table_name])
+        .observe(time);
+
+    let send_null = query_request.send_null;
+    let with_fields = query_request.fields;
+
+    let stream = records_stream.map(move |batch_result| match batch_result {
+        Ok(batch) => {
+            let response = QueryResponse {
+                records: vec![batch],
+                fields: fields.clone(),
+                fill_null: send_null,
+                with_fields,
             }
-            Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
+            .to_http()
+            .unwrap_or_else(|e| {
+                error!("Failed to parse record batch into JSON: {}", e);
+                json!({})
+            });
+            Ok(Bytes::from(format!("{}\n", response)))
         }
+        Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
     });
 
-    let boxed_stream =
-        Box::pin(stream) as Pin<Box<dyn CoreStream<Item = Result<Bytes, actix_web::Error>> + Send>>;
+    let boxed_stream = Box::pin(stream);
 
     Ok(HttpResponse::Ok()
         .content_type("application/json")
+        .insert_header((TIME_ELAPSED_HEADER, total_time.as_str()))
         .streaming(boxed_stream))
 }
 
@@ -234,6 +285,10 @@ impl FromRequest for Query {
                 query.send_null = params.get("sendNull").cloned().unwrap_or(false);
             }
 
+            if !query.streaming {
+                query.streaming = params.get("streaming").cloned().unwrap_or(false);
+            }
+
             Ok(query)
         };
 
@@ -297,6 +352,7 @@ fn transform_query_for_ingestor(query: &Query) -> Option<Query> {
         send_null: query.send_null,
         start_time: start_time.to_rfc3339(),
         end_time: end_time.to_rfc3339(),
+        streaming: query.streaming,
     };
 
     Some(q)
