@@ -151,7 +151,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
                     error!("Failed to parse record batch into JSON: {}", e);
                     json!({})
                 });
-                Ok(Bytes::from(response.to_string()))
+                Ok(Bytes::from(format!("{}\n", response.to_string())))
             }
             Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
         }
