@@ -19,10 +19,12 @@
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, HttpResponse, Responder};
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
+use futures::StreamExt;
 use futures_util::Future;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -41,15 +43,16 @@ use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::Mode;
 use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::query::error::ExecuteError;
-use crate::query::{execute, CountsRequest, CountsResponse, Query as LogicalQuery};
+use crate::query::{execute_stream, CountsRequest, CountsResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
-use crate::response::{QueryResponse, TIME_ELAPSED_HEADER};
+use crate::response::TIME_ELAPSED_HEADER;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
+use crate::utils::arrow::record_batches_to_json;
 use crate::utils::time::{TimeParseError, TimeRange};
 use crate::utils::user_auth_for_datasets;
-
+use futures_core::Stream as CoreStream;
 /// Query Request through http endpoint.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -132,25 +135,33 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
             .insert_header((TIME_ELAPSED_HEADER, total_time.as_str()))
             .json(response));
     }
+    let (records_stream, fields) = execute_stream(query, &table_name).await?;
+    let fields = fields.clone();
+    let stream = records_stream.map(move |batch_result| {
+        match batch_result {
+            Ok(batch) => {
+                // convert record batch to JSON
+                let json = record_batches_to_json(&[batch])
+                    .map_err(actix_web::error::ErrorInternalServerError)?;
+                // // Serialize to JSON string
+                // let json = serde_json::to_value(&json)
+                //     .map_err(actix_web::error::ErrorInternalServerError)?;
+                let response = json!({
+                    "fields": fields,
+                    "records": json,
+                });
+                Ok(Bytes::from(response.to_string()))
+            }
+            Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
+        }
+    });
 
-    let (records, fields) = execute(query, &table_name).await?;
-    let total_time = format!("{:?}", time.elapsed());
-    let response = QueryResponse {
-        records,
-        fields,
-        fill_null: query_request.send_null,
-        with_fields: query_request.fields,
-        total_time,
-    }
-    .to_http()?;
+    let boxed_stream =
+        Box::pin(stream) as Pin<Box<dyn CoreStream<Item = Result<Bytes, actix_web::Error>> + Send>>;
 
-    let time = time.elapsed().as_secs_f64();
-
-    QUERY_EXECUTE_TIME
-        .with_label_values(&[&table_name])
-        .observe(time);
-
-    Ok(response)
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .streaming(boxed_stream))
 }
 
 pub async fn get_counts(

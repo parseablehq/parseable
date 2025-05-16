@@ -27,7 +27,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::error::DataFusionError;
 use datafusion::execution::disk_manager::DiskManagerConfig;
-use datafusion::execution::SessionStateBuilder;
+use datafusion::execution::{SendableRecordBatchStream, SessionStateBuilder};
 use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
     Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
@@ -74,6 +74,17 @@ pub async fn execute(
     let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
     QUERY_RUNTIME
         .spawn(async move { query.execute(time_partition.as_ref()).await })
+        .await
+        .expect("The Join should have been successful")
+}
+
+pub async fn execute_stream(
+    query: Query,
+    stream_name: &str,
+) -> Result<(SendableRecordBatchStream, Vec<String>), ExecuteError> {
+    let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
+    QUERY_RUNTIME
+        .spawn(async move { query.execute_stream(time_partition.as_ref()).await })
         .await
         .expect("The Join should have been successful")
 }
@@ -180,6 +191,26 @@ impl Query {
         let results = df.collect().await?;
 
         Ok((results, fields))
+    }
+
+    // execute stream
+    pub async fn execute_stream(
+        &self,
+        time_partition: Option<&String>,
+    ) -> Result<(SendableRecordBatchStream, Vec<String>), ExecuteError> {
+        let df = QUERY_SESSION
+            .execute_logical_plan(self.final_logical_plan(time_partition))
+            .await?;
+        let fields = df
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name())
+            .cloned()
+            .collect_vec();
+        let stream = df.execute_stream().await?;
+
+        Ok((stream, fields))
     }
 
     pub async fn get_dataframe(
