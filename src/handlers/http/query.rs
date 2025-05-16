@@ -150,6 +150,10 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         .with_label_values(&[&table_name])
         .observe(time);
 
+    #[cfg(target_os = "linux")]
+    unsafe {
+        libc::malloc_trim(0);
+    }
     Ok(response)
 }
 
