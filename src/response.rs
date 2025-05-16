@@ -22,8 +22,6 @@ use itertools::Itertools;
 use serde_json::{json, Value};
 use tracing::info;
 
-pub const TIME_ELAPSED_HEADER: &str = "p-time-elapsed";
-
 pub struct QueryResponse {
     pub records: Vec<RecordBatch>,
     pub fields: Vec<String>,
@@ -32,7 +30,7 @@ pub struct QueryResponse {
 }
 
 impl QueryResponse {
-    pub fn to_http(&self) -> Result<Value, QueryError> {
+    pub fn to_json(&self) -> Result<Value, QueryError> {
         info!("{}", "Returning query results");
         let mut json_records = record_batches_to_json(&self.records)?;
 

@@ -16,6 +16,8 @@
  *
  */
 
+use crate::event::error::EventError;
+use crate::handlers::http::fetch_schema;
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{FromRequest, HttpRequest, HttpResponse, Responder};
@@ -24,7 +26,8 @@ use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
-use futures::StreamExt;
+use futures::stream::once;
+use futures::{future, Stream, StreamExt};
 use futures_util::Future;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
@@ -35,9 +38,6 @@ use std::sync::Arc;
 use std::time::Instant;
 use tracing::error;
 
-use crate::event::error::EventError;
-use crate::handlers::http::fetch_schema;
-
 use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::Mode;
@@ -46,11 +46,13 @@ use crate::query::error::ExecuteError;
 use crate::query::{execute, execute_stream, CountsRequest, CountsResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
-use crate::response::{QueryResponse, TIME_ELAPSED_HEADER};
+use crate::response::QueryResponse;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::time::{TimeParseError, TimeRange};
 use crate::utils::user_auth_for_datasets;
+
+const TIME_ELAPSED_HEADER: &str = "p-time-elapsed";
 /// Query Request through http endpoint.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -167,7 +169,7 @@ async fn handle_non_streaming_query(
         fill_null: query_request.send_null,
         with_fields: query_request.fields,
     }
-    .to_http()?;
+    .to_json()?;
     Ok(HttpResponse::Ok()
         .insert_header((TIME_ELAPSED_HEADER, total_time.as_str()))
         .json(response))
@@ -190,30 +192,65 @@ async fn handle_streaming_query(
     let send_null = query_request.send_null;
     let with_fields = query_request.fields;
 
-    let stream = records_stream.map(move |batch_result| match batch_result {
-        Ok(batch) => {
-            let response = QueryResponse {
-                records: vec![batch],
-                fields: fields.clone(),
-                fill_null: send_null,
-                with_fields,
-            }
-            .to_http()
-            .unwrap_or_else(|e| {
-                error!("Failed to parse record batch into JSON: {}", e);
-                json!({})
-            });
-            Ok(Bytes::from(format!("{}\n", response)))
-        }
-        Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
-    });
+    let stream = if with_fields {
+        // send the fields as an initial chunk
+        let fields_json = serde_json::json!({
+            "fields": fields
+        })
+        .to_string();
 
-    let boxed_stream = Box::pin(stream);
+        // stream the records without fields
+        let records_stream = records_stream.map(move |batch_result| match batch_result {
+            Ok(batch) => {
+                let response = QueryResponse {
+                    records: vec![batch],
+                    fields: Vec::new(),
+                    fill_null: send_null,
+                    with_fields: false,
+                }
+                .to_json()
+                .unwrap_or_else(|e| {
+                    error!("Failed to parse record batch into JSON: {}", e);
+                    json!({})
+                });
+                Ok(Bytes::from(format!("{}\n", response)))
+            }
+            Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
+        });
+
+        // Combine the initial fields chunk with the records stream
+        let fields_chunk = once(future::ok::<_, actix_web::Error>(Bytes::from(format!(
+            "{}\n",
+            fields_json
+        ))));
+        Box::pin(fields_chunk.chain(records_stream))
+            as Pin<Box<dyn Stream<Item = Result<Bytes, actix_web::Error>>>>
+    } else {
+        let stream = records_stream.map(move |batch_result| match batch_result {
+            Ok(batch) => {
+                let response = QueryResponse {
+                    records: vec![batch],
+                    fields: fields.clone(),
+                    fill_null: send_null,
+                    with_fields,
+                }
+                .to_json()
+                .unwrap_or_else(|e| {
+                    error!("Failed to parse record batch into JSON: {}", e);
+                    json!({})
+                });
+                Ok(Bytes::from(format!("{}\n", response)))
+            }
+            Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
+        });
+
+        Box::pin(stream) as Pin<Box<dyn Stream<Item = Result<Bytes, actix_web::Error>>>>
+    };
 
     Ok(HttpResponse::Ok()
-        .content_type("application/json")
+        .content_type("application/x-ndjson")
         .insert_header((TIME_ELAPSED_HEADER, total_time.as_str()))
-        .streaming(boxed_stream))
+        .streaming(stream))
 }
 
 pub async fn get_counts(
