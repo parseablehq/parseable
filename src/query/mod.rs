@@ -20,10 +20,10 @@ mod filter_optimizer;
 mod listing_table_builder;
 pub mod stream_schema_provider;
 
+use actix_web::Either;
 use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
-
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::error::DataFusionError;
 use datafusion::execution::disk_manager::DiskManagerConfig;
@@ -70,21 +70,17 @@ pub static QUERY_RUNTIME: Lazy<Runtime> =
 pub async fn execute(
     query: Query,
     stream_name: &str,
-) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
+    is_streaming: bool,
+) -> Result<
+    (
+        Either<Vec<RecordBatch>, SendableRecordBatchStream>,
+        Vec<String>,
+    ),
+    ExecuteError,
+> {
     let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
     QUERY_RUNTIME
-        .spawn(async move { query.execute(time_partition.as_ref()).await })
-        .await
-        .expect("The Join should have been successful")
-}
-
-pub async fn execute_stream(
-    query: Query,
-    stream_name: &str,
-) -> Result<(SendableRecordBatchStream, Vec<String>), ExecuteError> {
-    let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
-    QUERY_RUNTIME
-        .spawn(async move { query.execute_stream(time_partition.as_ref()).await })
+        .spawn(async move { query.execute(time_partition.as_ref(), is_streaming).await })
         .await
         .expect("The Join should have been successful")
 }
@@ -168,10 +164,20 @@ impl Query {
         SessionContext::new_with_state(state)
     }
 
+    /// this function returns the result of the query
+    /// if streaming is true, it returns a stream
+    /// if streaming is false, it returns a vector of record batches
     pub async fn execute(
         &self,
         time_partition: Option<&String>,
-    ) -> Result<(Vec<RecordBatch>, Vec<String>), ExecuteError> {
+        is_streaming: bool,
+    ) -> Result<
+        (
+            Either<Vec<RecordBatch>, SendableRecordBatchStream>,
+            Vec<String>,
+        ),
+        ExecuteError,
+    > {
         let df = QUERY_SESSION
             .execute_logical_plan(self.final_logical_plan(time_partition))
             .await?;
@@ -184,33 +190,17 @@ impl Query {
             .cloned()
             .collect_vec();
 
-        if fields.is_empty() {
-            return Ok((vec![], fields));
+        if fields.is_empty() && !is_streaming {
+            return Ok((Either::Left(vec![]), fields));
         }
 
-        let results = df.collect().await?;
+        let results = if !is_streaming {
+            Either::Left(df.collect().await?)
+        } else {
+            Either::Right(df.execute_stream().await?)
+        };
 
         Ok((results, fields))
-    }
-
-    // execute stream
-    pub async fn execute_stream(
-        &self,
-        time_partition: Option<&String>,
-    ) -> Result<(SendableRecordBatchStream, Vec<String>), ExecuteError> {
-        let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan(time_partition))
-            .await?;
-        let fields = df
-            .schema()
-            .fields()
-            .iter()
-            .map(|f| f.name())
-            .cloned()
-            .collect_vec();
-        let stream = df.execute_stream().await?;
-
-        Ok((stream, fields))
     }
 
     pub async fn get_dataframe(

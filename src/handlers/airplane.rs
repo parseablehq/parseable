@@ -219,9 +219,18 @@ impl FlightService for AirServiceImpl {
         })?;
         let time = Instant::now();
 
-        let (records, _) = execute(query, &stream_name)
+        let (records, _) = execute(query, &stream_name, false)
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
+
+        let records = match records {
+            actix_web::Either::Left(rbs) => rbs,
+            actix_web::Either::Right(_) => {
+                return Err(Status::failed_precondition(
+                    "Expected batch results, got stream",
+                ))
+            }
+        };
 
         /*
         * INFO: No returning the schema with the data.
