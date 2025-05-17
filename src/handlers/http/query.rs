@@ -21,6 +21,7 @@ use crate::handlers::http::fetch_schema;
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{Either, FromRequest, HttpRequest, HttpResponse, Responder};
+use arrow_array::RecordBatch;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
@@ -248,7 +249,6 @@ async fn handle_streaming_query(
         }
         Either::Right(stream) => stream,
     };
-    let fields = fields.clone();
     let total_time = format!("{:?}", time.elapsed());
     let time = time.elapsed().as_secs_f64();
     QUERY_EXECUTE_TIME
@@ -266,22 +266,10 @@ async fn handle_streaming_query(
         .to_string();
 
         // stream the records without fields
-        let records_stream = records_stream.map(move |batch_result| match batch_result {
-            Ok(batch) => {
-                let response = QueryResponse {
-                    records: vec![batch],
-                    fields: Vec::new(),
-                    fill_null: send_null,
-                    with_fields: false,
-                }
-                .to_json()
-                .unwrap_or_else(|e| {
-                    error!("Failed to parse record batch into JSON: {}", e);
-                    json!({})
-                });
-                Ok(Bytes::from(format!("{}\n", response)))
-            }
-            Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
+        let mut batch_processor = create_batch_processor(send_null);
+        let records_stream = records_stream.map(move |batch_result| {
+            let batch_result = batch_result.map_err(QueryError::from);
+            batch_processor(batch_result)
         });
 
         // Combine the initial fields chunk with the records stream
@@ -292,24 +280,9 @@ async fn handle_streaming_query(
         Box::pin(fields_chunk.chain(records_stream))
             as Pin<Box<dyn Stream<Item = Result<Bytes, actix_web::Error>>>>
     } else {
-        let stream = records_stream.map(move |batch_result| match batch_result {
-            Ok(batch) => {
-                let response = QueryResponse {
-                    records: vec![batch],
-                    fields: fields.clone(),
-                    fill_null: send_null,
-                    with_fields,
-                }
-                .to_json()
-                .unwrap_or_else(|e| {
-                    error!("Failed to parse record batch into JSON: {}", e);
-                    json!({})
-                });
-                Ok(Bytes::from(format!("{}\n", response)))
-            }
-            Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
-        });
-
+        let mut batch_processor = create_batch_processor(send_null);
+        let stream = records_stream
+            .map(move |batch_result| batch_processor(batch_result.map_err(QueryError::from)));
         Box::pin(stream) as Pin<Box<dyn Stream<Item = Result<Bytes, actix_web::Error>>>>
     };
 
@@ -319,6 +292,27 @@ async fn handle_streaming_query(
         .streaming(stream))
 }
 
+fn create_batch_processor(
+    send_null: bool,
+) -> impl FnMut(Result<RecordBatch, QueryError>) -> Result<Bytes, actix_web::Error> {
+    move |batch_result| match batch_result {
+        Ok(batch) => {
+            let response = QueryResponse {
+                records: vec![batch],
+                fields: Vec::new(),
+                fill_null: send_null,
+                with_fields: false,
+            }
+            .to_json()
+            .map_err(|e| {
+                error!("Failed to parse record batch into JSON: {}", e);
+                actix_web::error::ErrorInternalServerError(e)
+            })?;
+            Ok(Bytes::from(format!("{}\n", response)))
+        }
+        Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
+    }
+}
 pub async fn get_counts(
     req: HttpRequest,
     counts_request: Json<CountsRequest>,
