@@ -41,9 +41,9 @@ use tonic::transport::{Channel, Uri};
 
 pub type DoGetStream = stream::BoxStream<'static, Result<FlightData, Status>>;
 
-pub fn get_query_from_ticket(req: &Request<Ticket>) -> Result<QueryJson, Status> {
+pub fn get_query_from_ticket(req: &Request<Ticket>) -> Result<QueryJson, Box<Status>> {
     serde_json::from_slice::<QueryJson>(&req.get_ref().ticket)
-        .map_err(|err| Status::internal(err.to_string()))
+        .map_err(|err| Box::new(Status::internal(err.to_string())))
 }
 
 pub async fn run_do_get_rpc(
@@ -141,7 +141,7 @@ fn lit_timestamp_milli(time: i64) -> Expr {
     Expr::Literal(ScalarValue::TimestampMillisecond(Some(time), None))
 }
 
-pub fn into_flight_data(records: Vec<RecordBatch>) -> Result<Response<DoGetStream>, Status> {
+pub fn into_flight_data(records: Vec<RecordBatch>) -> Result<Response<DoGetStream>, Box<Status>> {
     let input_stream = futures::stream::iter(records.into_iter().map(Ok));
     let write_options = IpcWriteOptions::default()
         .try_with_compression(Some(arrow_ipc::CompressionType(1)))

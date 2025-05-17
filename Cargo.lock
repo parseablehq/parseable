@@ -3478,6 +3478,7 @@ dependencies = [
  "derive_more 1.0.0",
  "fs_extra",
  "futures",
+ "futures-core",
  "futures-util",
  "hex",
  "hostname",
