@@ -16,25 +16,28 @@
  *
  */
 
+use crate::event::error::EventError;
+use crate::handlers::http::fetch_schema;
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
-use actix_web::{FromRequest, HttpRequest, HttpResponse, Responder};
+use actix_web::{Either, FromRequest, HttpRequest, HttpResponse, Responder};
+use arrow_array::RecordBatch;
+use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
+use futures::stream::once;
+use futures::{future, Stream, StreamExt};
 use futures_util::Future;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::json;
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::error;
-
-use crate::event::error::EventError;
-use crate::handlers::http::fetch_schema;
 
 use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
@@ -44,12 +47,13 @@ use crate::query::error::ExecuteError;
 use crate::query::{execute, CountsRequest, CountsResponse, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
-use crate::response::{QueryResponse, TIME_ELAPSED_HEADER};
+use crate::response::QueryResponse;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::time::{TimeParseError, TimeRange};
 use crate::utils::user_auth_for_datasets;
 
+const TIME_ELAPSED_HEADER: &str = "p-time-elapsed";
 /// Query Request through http endpoint.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -62,6 +66,8 @@ pub struct Query {
     #[serde(skip)]
     pub fields: bool,
     #[serde(skip)]
+    pub streaming: bool,
+    #[serde(skip)]
     pub filter_tags: Option<Vec<String>>,
 }
 
@@ -73,7 +79,6 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     {
         Ok(raw_logical_plan) => raw_logical_plan,
         Err(_) => {
-            //if logical plan creation fails, create streams and try again
             create_streams_for_querier().await;
             session_state
                 .create_logical_plan(&query_request.query)
@@ -83,10 +88,8 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
 
-    // Create a visitor to extract the table names present in query
     let mut visitor = TableScanVisitor::default();
     let _ = raw_logical_plan.visit(&mut visitor);
-
     let tables = visitor.into_inner();
     update_schema_when_distributed(&tables).await?;
     let query: LogicalQuery = into_query(&query_request, &session_state, time_range).await?;
@@ -101,58 +104,215 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     user_auth_for_datasets(&permissions, &tables)?;
 
     let time = Instant::now();
-    // Intercept `count(*)`` queries and use the counts API
+
+    // if the query is `select count(*) from <dataset>`
+    // we use the `get_bin_density` method to get the count of records in the dataset
+    // instead of executing the query using datafusion
     if let Some(column_name) = query.is_logical_plan_count_without_filters() {
-        let counts_req = CountsRequest {
-            stream: table_name.clone(),
-            start_time: query_request.start_time.clone(),
-            end_time: query_request.end_time.clone(),
-            num_bins: 1,
-        };
-        let count_records = counts_req.get_bin_density().await?;
-        // NOTE: this should not panic, since there is atleast one bin, always
-        let count = count_records[0].count;
-        let response = if query_request.fields {
-            json!({
-                "fields": [&column_name],
-                "records": [json!({column_name: count})]
-            })
-        } else {
-            Value::Array(vec![json!({column_name: count})])
-        };
-
-        let total_time = format!("{:?}", time.elapsed());
-        let time = time.elapsed().as_secs_f64();
-
-        QUERY_EXECUTE_TIME
-            .with_label_values(&[&table_name])
-            .observe(time);
-
-        return Ok(HttpResponse::Ok()
-            .insert_header((TIME_ELAPSED_HEADER, total_time.as_str()))
-            .json(response));
+        return handle_count_query(&query_request, &table_name, column_name, time).await;
     }
 
-    let (records, fields) = execute(query, &table_name).await?;
+    // if the query request has streaming = false (default)
+    // we use datafusion's `execute` method to get the records
+    if !query_request.streaming {
+        return handle_non_streaming_query(query, &table_name, &query_request, time).await;
+    }
+
+    // if the query request has streaming = true
+    // we use datafusion's `execute_stream` method to get the records
+    handle_streaming_query(query, &table_name, &query_request, time).await
+}
+
+/// Handles count queries (e.g., `SELECT COUNT(*) FROM <dataset-name>`)
+///
+/// Instead of executing the query through DataFusion, this function uses the
+/// `CountsRequest::get_bin_density` method to quickly retrieve the count of records
+/// in the specified dataset and time range.
+///
+/// # Arguments
+/// - `query_request`: The original query request from the client.
+/// - `table_name`: The name of the table/dataset to count records in.
+/// - `column_name`: The column being counted (usually `*`).
+/// - `time`: The timer for measuring query execution time.
+///
+/// # Returns
+/// - `HttpResponse` with the count result as JSON, including fields if requested.
+async fn handle_count_query(
+    query_request: &Query,
+    table_name: &str,
+    column_name: &str,
+    time: Instant,
+) -> Result<HttpResponse, QueryError> {
+    let counts_req = CountsRequest {
+        stream: table_name.to_string(),
+        start_time: query_request.start_time.clone(),
+        end_time: query_request.end_time.clone(),
+        num_bins: 1,
+    };
+    let count_records = counts_req.get_bin_density().await?;
+    let count = count_records[0].count;
+    let response = if query_request.fields {
+        json!({
+            "fields": [column_name],
+            "records": [json!({column_name: count})]
+        })
+    } else {
+        serde_json::Value::Array(vec![json!({column_name: count})])
+    };
+
     let total_time = format!("{:?}", time.elapsed());
+    let time = time.elapsed().as_secs_f64();
+
+    QUERY_EXECUTE_TIME
+        .with_label_values(&[table_name])
+        .observe(time);
+
+    Ok(HttpResponse::Ok()
+        .insert_header((TIME_ELAPSED_HEADER, total_time.as_str()))
+        .json(response))
+}
+
+/// Handles standard (non-streaming) queries, returning all results in a single JSON response.
+///
+/// Executes the logical query using DataFusion's batch execution, collects all results,
+/// and serializes them into a single JSON object. The response includes the records,
+/// field names, and other metadata as specified in the query request.
+///
+/// # Arguments
+/// - `query`: The logical query to execute.
+/// - `table_name`: The name of the table/dataset being queried.
+/// - `query_request`: The original query request from the client.
+/// - `time`: The timer for measuring query execution time.
+///
+/// # Returns
+/// - `HttpResponse` with the full query result as a JSON object.
+async fn handle_non_streaming_query(
+    query: LogicalQuery,
+    table_name: &str,
+    query_request: &Query,
+    time: Instant,
+) -> Result<HttpResponse, QueryError> {
+    let (records, fields) = execute(query, table_name, query_request.streaming).await?;
+    let records = match records {
+        Either::Left(rbs) => rbs,
+        Either::Right(_) => {
+            return Err(QueryError::MalformedQuery(
+                "Expected batch results, got stream",
+            ))
+        }
+    };
+    let total_time = format!("{:?}", time.elapsed());
+    let time = time.elapsed().as_secs_f64();
+
+    QUERY_EXECUTE_TIME
+        .with_label_values(&[table_name])
+        .observe(time);
     let response = QueryResponse {
         records,
         fields,
         fill_null: query_request.send_null,
         with_fields: query_request.fields,
-        total_time,
     }
-    .to_http()?;
-
-    let time = time.elapsed().as_secs_f64();
-
-    QUERY_EXECUTE_TIME
-        .with_label_values(&[&table_name])
-        .observe(time);
-
-    Ok(response)
+    .to_json()?;
+    Ok(HttpResponse::Ok()
+        .insert_header((TIME_ELAPSED_HEADER, total_time.as_str()))
+        .json(response))
 }
 
+/// Handles streaming queries, returning results as newline-delimited JSON (NDJSON).
+///
+/// Executes the logical query using DataFusion's streaming execution. If the `fields`
+/// flag is set, the first chunk of the response contains the field names as a JSON object.
+/// Each subsequent chunk contains a record batch as a JSON object, separated by newlines.
+/// This allows clients to start processing results before the entire query completes.
+///
+/// # Arguments
+/// - `query`: The logical query to execute.
+/// - `table_name`: The name of the table/dataset being queried.
+/// - `query_request`: The original query request from the client.
+/// - `time`: The timer for measuring query execution time.
+///
+/// # Returns
+/// - `HttpResponse` streaming the query results as NDJSON, optionally prefixed with the fields array.
+async fn handle_streaming_query(
+    query: LogicalQuery,
+    table_name: &str,
+    query_request: &Query,
+    time: Instant,
+) -> Result<HttpResponse, QueryError> {
+    let (records_stream, fields) = execute(query, table_name, query_request.streaming).await?;
+    let records_stream = match records_stream {
+        Either::Left(_) => {
+            return Err(QueryError::MalformedQuery(
+                "Expected stream results, got batch",
+            ))
+        }
+        Either::Right(stream) => stream,
+    };
+    let total_time = format!("{:?}", time.elapsed());
+    let time = time.elapsed().as_secs_f64();
+    QUERY_EXECUTE_TIME
+        .with_label_values(&[table_name])
+        .observe(time);
+
+    let send_null = query_request.send_null;
+    let with_fields = query_request.fields;
+
+    let stream = if with_fields {
+        // send the fields json as an initial chunk
+        let fields_json = serde_json::json!({
+            "fields": fields
+        })
+        .to_string();
+
+        // stream the records without fields
+        let mut batch_processor = create_batch_processor(send_null);
+        let records_stream = records_stream.map(move |batch_result| {
+            let batch_result = batch_result.map_err(QueryError::from);
+            batch_processor(batch_result)
+        });
+
+        // Combine the initial fields chunk with the records stream
+        let fields_chunk = once(future::ok::<_, actix_web::Error>(Bytes::from(format!(
+            "{}\n",
+            fields_json
+        ))));
+        Box::pin(fields_chunk.chain(records_stream))
+            as Pin<Box<dyn Stream<Item = Result<Bytes, actix_web::Error>>>>
+    } else {
+        let mut batch_processor = create_batch_processor(send_null);
+        let stream = records_stream
+            .map(move |batch_result| batch_processor(batch_result.map_err(QueryError::from)));
+        Box::pin(stream) as Pin<Box<dyn Stream<Item = Result<Bytes, actix_web::Error>>>>
+    };
+
+    Ok(HttpResponse::Ok()
+        .content_type("application/x-ndjson")
+        .insert_header((TIME_ELAPSED_HEADER, total_time.as_str()))
+        .streaming(stream))
+}
+
+fn create_batch_processor(
+    send_null: bool,
+) -> impl FnMut(Result<RecordBatch, QueryError>) -> Result<Bytes, actix_web::Error> {
+    move |batch_result| match batch_result {
+        Ok(batch) => {
+            let response = QueryResponse {
+                records: vec![batch],
+                fields: Vec::new(),
+                fill_null: send_null,
+                with_fields: false,
+            }
+            .to_json()
+            .map_err(|e| {
+                error!("Failed to parse record batch into JSON: {}", e);
+                actix_web::error::ErrorInternalServerError(e)
+            })?;
+            Ok(Bytes::from(format!("{}\n", response)))
+        }
+        Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
+    }
+}
 pub async fn get_counts(
     req: HttpRequest,
     counts_request: Json<CountsRequest>,
@@ -222,6 +382,10 @@ impl FromRequest for Query {
                 query.send_null = params.get("sendNull").cloned().unwrap_or(false);
             }
 
+            if !query.streaming {
+                query.streaming = params.get("streaming").cloned().unwrap_or(false);
+            }
+
             Ok(query)
         };
 
@@ -285,6 +449,7 @@ fn transform_query_for_ingestor(query: &Query) -> Option<Query> {
         send_null: query.send_null,
         start_time: start_time.to_rfc3339(),
         end_time: end_time.to_rfc3339(),
+        streaming: query.streaming,
     };
 
     Some(q)

@@ -16,7 +16,7 @@
  *
  */
 
-use std::{io::ErrorKind, sync::Arc};
+use std::sync::Arc;
 
 use chrono::{DateTime, Local, NaiveTime, Utc};
 use column::Column;
@@ -259,10 +259,7 @@ async fn create_manifest(
         .date_naive()
         .and_time(
             NaiveTime::from_num_seconds_from_midnight_opt(23 * 3600 + 59 * 60 + 59, 999_999_999)
-                .ok_or(IOError::new(
-                    ErrorKind::Other,
-                    "Failed to create upper bound for manifest",
-                ))?,
+                .ok_or(IOError::other("Failed to create upper bound for manifest"))?,
         )
         .and_utc();
 
