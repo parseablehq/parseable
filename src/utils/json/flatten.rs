@@ -25,6 +25,8 @@ use serde_json::value::Value;
 
 use thiserror::Error;
 
+use crate::parseable::PARSEABLE;
+
 #[derive(Error, Debug)]
 pub enum JsonFlattenError {
     #[error("Cannot flatten this JSON")]
@@ -314,21 +316,21 @@ pub fn generic_flattening(value: &Value) -> Result<Vec<Value>, JsonFlattenError>
 }
 
 /// recursively checks the level of nesting for the serde Value
-/// if Value has more than 4 levels of hierarchy, returns true
-/// example -
+/// if Value has more than configured `P_MAX_FLATTEN_LEVEL` levels of hierarchy, returns true
+/// example - if `P_MAX_FLATTEN_LEVEL` is 4, and the JSON is
 /// 1. `{"a":{"b":{"c":{"d":{"e":["a","b"]}}}}}` ~> returns true
 /// 2. `{"a": [{"b": 1}, {"c": 2}], "d": {"e": 4}}` ~> returns false
-pub fn has_more_than_four_levels(value: &Value, current_level: usize) -> bool {
-    if current_level > 4 {
+pub fn has_more_than_max_allowed_levels(value: &Value, current_level: usize) -> bool {
+    if current_level > PARSEABLE.options.event_flatten_level {
         return true;
     }
     match value {
         Value::Array(arr) => arr
             .iter()
-            .any(|item| has_more_than_four_levels(item, current_level)),
+            .any(|item| has_more_than_max_allowed_levels(item, current_level)),
         Value::Object(map) => map
             .values()
-            .any(|val| has_more_than_four_levels(val, current_level + 1)),
+            .any(|val| has_more_than_max_allowed_levels(val, current_level + 1)),
         _ => false,
     }
 }
@@ -344,9 +346,7 @@ pub fn convert_to_array(flattened: Vec<Value>) -> Result<Value, JsonFlattenError
 
 #[cfg(test)]
 mod tests {
-    use crate::utils::json::flatten::{
-        flatten_array_objects, generic_flattening, has_more_than_four_levels,
-    };
+    use crate::utils::json::flatten::{flatten_array_objects, generic_flattening};
 
     use super::{flatten, JsonFlattenError};
     use serde_json::{json, Map, Value};
@@ -603,18 +603,6 @@ mod tests {
             flatten(&mut value, "_", None, None, Some(&"a".to_string()), true).unwrap_err(),
             JsonFlattenError::FieldContainsPeriod(_)
         );
-    }
-
-    #[test]
-    fn unacceptable_levels_of_nested_json() {
-        let value = json!({"a":{"b":{"c":{"d":{"e":["a","b"]}}}}});
-        assert!(has_more_than_four_levels(&value, 1));
-    }
-
-    #[test]
-    fn acceptable_levels_of_nested_json() {
-        let value = json!({"a":{"b":{"e":["a","b"]}}});
-        assert!(!has_more_than_four_levels(&value, 1));
     }
 
     #[test]

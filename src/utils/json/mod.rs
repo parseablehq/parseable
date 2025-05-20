@@ -19,7 +19,7 @@
 use std::fmt;
 use std::num::NonZeroU32;
 
-use flatten::{convert_to_array, generic_flattening, has_more_than_four_levels};
+use flatten::{convert_to_array, generic_flattening, has_more_than_max_allowed_levels};
 use serde::de::Visitor;
 use serde_json;
 use serde_json::Value;
@@ -43,7 +43,7 @@ pub fn flatten_json_body(
 ) -> Result<Value, anyhow::Error> {
     // Flatten the json body only if new schema and has less than 4 levels of nesting
     let mut nested_value = if schema_version == SchemaVersion::V1
-        && !has_more_than_four_levels(&body, 1)
+        && !has_more_than_max_allowed_levels(&body, 1)
         && matches!(
             log_source,
             LogSource::Json | LogSource::Custom(_) | LogSource::Kinesis

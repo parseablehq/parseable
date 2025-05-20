@@ -62,7 +62,7 @@ pub async fn flatten_and_push_logs(
             //custom flattening required for Amazon Kinesis
             let message: Message = serde_json::from_value(json)?;
             for record in flatten_kinesis_logs(message) {
-                push_logs(stream_name, record, &LogSource::default(), p_custom_fields).await?;
+                push_logs(stream_name, record, log_source, p_custom_fields).await?;
             }
         }
         LogSource::OtelLogs => {

@@ -378,6 +378,16 @@ pub struct Options {
         help = "total number of fields recommended in a dataset"
     )]
     pub dataset_fields_allowed_limit: usize,
+
+    // maximum level of flattening allowed for events
+    // this is to prevent nested list type fields from getting created
+    #[arg(
+        long,
+        env = "P_MAX_FLATTEN_LEVEL",
+        default_value = "10",
+        help = "Maximum level of flattening allowed for events"
+    )]
+    pub event_flatten_level: usize,
 }
 
 #[derive(Parser, Debug)]
