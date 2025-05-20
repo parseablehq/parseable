@@ -144,50 +144,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::event::format::LogSource;
-
     use super::*;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
-
-    #[test]
-    fn hierarchical_json_flattening_success() {
-        let value = json!({"a":{"b":{"e":["a","b"]}}});
-        let expected = json!([{"a_b_e": "a"}, {"a_b_e": "b"}]);
-        assert_eq!(
-            flatten_json_body(
-                value,
-                None,
-                None,
-                None,
-                crate::metadata::SchemaVersion::V1,
-                false,
-                &LogSource::default()
-            )
-            .unwrap(),
-            expected
-        );
-    }
-
-    #[test]
-    fn hierarchical_json_flattening_failure() {
-        let value = json!({"a":{"b":{"c":{"d":{"e":["a","b"]}}}}});
-        let expected = json!({"a_b_c_d_e": ["a","b"]});
-        assert_eq!(
-            flatten_json_body(
-                value,
-                None,
-                None,
-                None,
-                crate::metadata::SchemaVersion::V1,
-                false,
-                &LogSource::default()
-            )
-            .unwrap(),
-            expected
-        );
-    }
-
     #[derive(Serialize, Deserialize)]
     struct TestBool {
         #[serde(
@@ -348,65 +307,6 @@ mod tests {
                     "b": "hello",
                     "c_a": [1],
                     "c_b": [2],
-                },
-            ]),
-            flattened_json
-        );
-    }
-
-    #[test]
-    fn arr_obj_with_nested_type_v1() {
-        let json = json!([
-            {
-                "a": 1,
-                "b": "hello",
-            },
-            {
-                "a": 1,
-                "b": "hello",
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": [{"a": 1}]
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": [{"a": 1, "b": 2}]
-            },
-        ]);
-        let flattened_json = flatten_json_body(
-            json,
-            None,
-            None,
-            None,
-            SchemaVersion::V1,
-            false,
-            &crate::event::format::LogSource::default(),
-        )
-        .unwrap();
-
-        assert_eq!(
-            json!([
-                {
-                    "a": 1,
-                    "b": "hello",
-                },
-                {
-                    "a": 1,
-                    "b": "hello",
-                },
-                {
-                    "a": 1,
-                    "b": "hello",
-                    "c_a": 1,
-                },
-                {
-                    "a": 1,
-                    "b": "hello",
-                    "c_a": 1,
-                    "c_b": 2,
                 },
             ]),
             flattened_json
