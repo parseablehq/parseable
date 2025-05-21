@@ -276,19 +276,31 @@ pub fn generic_flattening(value: &Value) -> Result<Vec<Value>, JsonFlattenError>
             let results = map
                 .iter()
                 .fold(vec![Map::new()], |results, (key, val)| match val {
-                    Value::Array(arr) => arr
-                        .iter()
-                        .flat_map(|flatten_item| {
-                            generic_flattening(flatten_item).unwrap_or_default()
-                        })
-                        .flat_map(|flattened_item| {
-                            results.iter().map(move |result| {
-                                let mut new_obj = result.clone();
-                                new_obj.insert(key.clone(), flattened_item.clone());
-                                new_obj
-                            })
-                        })
-                        .collect(),
+                    Value::Array(arr) => {
+                        if arr.is_empty() {
+                            // Insert empty array for this key in all current results
+                            results
+                                .into_iter()
+                                .map(|mut result| {
+                                    result.insert(key.clone(), Value::Array(vec![]));
+                                    result
+                                })
+                                .collect()
+                        } else {
+                            arr.iter()
+                                .flat_map(|flatten_item| {
+                                    generic_flattening(flatten_item).unwrap_or_default()
+                                })
+                                .flat_map(|flattened_item| {
+                                    results.iter().map(move |result| {
+                                        let mut new_obj = result.clone();
+                                        new_obj.insert(key.clone(), flattened_item.clone());
+                                        new_obj
+                                    })
+                                })
+                                .collect()
+                        }
+                    }
                     Value::Object(_) => generic_flattening(val)
                         .unwrap_or_default()
                         .iter()
