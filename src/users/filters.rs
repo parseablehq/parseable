@@ -41,6 +41,9 @@ pub struct Filter {
     pub filter_id: Option<String>,
     pub query: FilterQuery,
     pub time_filter: Option<TimeFilter>,
+    /// all other fields are variable and can be added as needed
+    #[serde(flatten)]
+    pub other_fields: Option<serde_json::Map<String, Value>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
