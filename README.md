@@ -33,7 +33,7 @@ Get started with Parseable Docker with a single command:
 
 ```bash
 docker run -p 8000:8000 \
-  containers.parseable.com/parseable/parseable:latest \
+  parseable/parseable:latest \
   parseable local-store
 ```
 
