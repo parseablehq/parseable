@@ -3447,7 +3447,7 @@ dependencies = [
 
 [[package]]
 name = "parseable"
-version = "2.2.0"
+version = "2.3.0"
 dependencies = [
  "actix-cors",
  "actix-web",
@@ -3478,6 +3478,7 @@ dependencies = [
  "derive_more 1.0.0",
  "fs_extra",
  "futures",
+ "futures-core",
  "futures-util",
  "hex",
  "hostname",

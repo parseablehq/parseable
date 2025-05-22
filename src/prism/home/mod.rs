@@ -30,10 +30,7 @@ use crate::{
     alerts::{get_alerts_info, AlertError, AlertsInfo, ALERTS},
     correlation::{CorrelationError, CORRELATIONS},
     event::format::LogSource,
-    handlers::http::{
-        cluster::fetch_daily_stats_from_ingestors,
-        logstream::{error::StreamError, get_stats_date},
-    },
+    handlers::http::{cluster::fetch_daily_stats, logstream::error::StreamError},
     parseable::PARSEABLE,
     rbac::{map::SessionKey, role::Action, Users},
     storage::{ObjectStorageError, ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
@@ -221,9 +218,9 @@ async fn stats_for_date(
     };
 
     // Process each stream concurrently
-    let stream_stats_futures = stream_wise_meta.iter().map(|(stream, meta)| {
-        get_stream_stats_for_date(stream.clone(), date.clone(), meta.clone())
-    });
+    let stream_stats_futures = stream_wise_meta
+        .values()
+        .map(|meta| get_stream_stats_for_date(date.clone(), meta));
 
     let stream_stats_results = futures::future::join_all(stream_stats_futures).await;
 
@@ -246,18 +243,171 @@ async fn stats_for_date(
 }
 
 async fn get_stream_stats_for_date(
-    stream: String,
     date: String,
-    meta: Vec<ObjectStoreFormat>,
+    meta: &[ObjectStoreFormat],
 ) -> Result<(u64, u64, u64), PrismHomeError> {
-    let querier_stats = get_stats_date(&stream, &date).await?;
-    let ingestor_stats = fetch_daily_stats_from_ingestors(&date, &meta)?;
+    let stats = fetch_daily_stats(&date, meta)?;
 
-    Ok((
-        querier_stats.events + ingestor_stats.events,
-        querier_stats.ingestion + ingestor_stats.ingestion,
-        querier_stats.storage + ingestor_stats.storage,
-    ))
+    Ok((stats.events, stats.ingestion, stats.storage))
+}
+
+pub async fn generate_home_search_response(
+    key: &SessionKey,
+    query_value: &str,
+) -> Result<HomeSearchResponse, PrismHomeError> {
+    let mut resources = Vec::new();
+    let (alert_titles, correlation_titles, dashboard_titles, filter_titles, stream_titles) = tokio::join!(
+        get_alert_titles(key, query_value),
+        get_correlation_titles(key, query_value),
+        get_dashboard_titles(key, query_value),
+        get_filter_titles(key, query_value),
+        get_stream_titles(key)
+    );
+
+    let alerts = alert_titles?;
+    resources.extend(alerts);
+    let correlations = correlation_titles?;
+    resources.extend(correlations);
+    let dashboards = dashboard_titles?;
+    resources.extend(dashboards);
+    let filters = filter_titles?;
+    resources.extend(filters);
+    let stream_titles = stream_titles?;
+
+    for title in stream_titles {
+        if title.to_lowercase().contains(query_value) {
+            resources.push(Resource {
+                id: title.clone(),
+                name: title,
+                resource_type: ResourceType::DataSet,
+            });
+        }
+    }
+    Ok(HomeSearchResponse { resources })
+}
+
+// Helper functions to split the work
+async fn get_stream_titles(key: &SessionKey) -> Result<Vec<String>, PrismHomeError> {
+    let stream_titles: Vec<String> = PARSEABLE
+        .storage
+        .get_object_store()
+        .list_streams()
+        .await
+        .map_err(|e| PrismHomeError::Anyhow(anyhow::Error::new(e)))?
+        .into_iter()
+        .filter(|logstream| {
+            Users.authorize(key.clone(), Action::ListStream, Some(logstream), None)
+                == crate::rbac::Response::Authorized
+        })
+        .sorted()
+        .collect_vec();
+
+    Ok(stream_titles)
+}
+
+async fn get_alert_titles(
+    key: &SessionKey,
+    query_value: &str,
+) -> Result<Vec<Resource>, PrismHomeError> {
+    let alerts = ALERTS
+        .list_alerts_for_user(key.clone())
+        .await?
+        .iter()
+        .filter_map(|alert| {
+            if alert.title.to_lowercase().contains(query_value)
+                || alert.id.to_string().to_lowercase().contains(query_value)
+            {
+                Some(Resource {
+                    id: alert.id.to_string(),
+                    name: alert.title.clone(),
+                    resource_type: ResourceType::Alert,
+                })
+            } else {
+                None
+            }
+        })
+        .collect_vec();
+
+    Ok(alerts)
+}
+
+async fn get_correlation_titles(
+    key: &SessionKey,
+    query_value: &str,
+) -> Result<Vec<Resource>, PrismHomeError> {
+    let correlations = CORRELATIONS
+        .list_correlations(key)
+        .await?
+        .iter()
+        .filter_map(|correlation| {
+            if correlation.title.to_lowercase().contains(query_value)
+                || correlation.id.to_lowercase().contains(query_value)
+            {
+                Some(Resource {
+                    id: correlation.id.to_string(),
+                    name: correlation.title.clone(),
+                    resource_type: ResourceType::Correlation,
+                })
+            } else {
+                None
+            }
+        })
+        .collect_vec();
+
+    Ok(correlations)
+}
+
+async fn get_dashboard_titles(
+    key: &SessionKey,
+    query_value: &str,
+) -> Result<Vec<Resource>, PrismHomeError> {
+    let dashboard_titles = DASHBOARDS
+        .list_dashboards(key)
+        .await
+        .iter()
+        .filter_map(|dashboard| {
+            let dashboard_id = dashboard.dashboard_id.as_ref().unwrap().clone();
+            if dashboard.name.to_lowercase().contains(query_value)
+                || dashboard_id.to_lowercase().contains(query_value)
+            {
+                Some(Resource {
+                    id: dashboard_id,
+                    name: dashboard.name.clone(),
+                    resource_type: ResourceType::Dashboard,
+                })
+            } else {
+                None
+            }
+        })
+        .collect_vec();
+
+    Ok(dashboard_titles)
+}
+
+async fn get_filter_titles(
+    key: &SessionKey,
+    query_value: &str,
+) -> Result<Vec<Resource>, PrismHomeError> {
+    let filter_titles = FILTERS
+        .list_filters(key)
+        .await
+        .iter()
+        .filter_map(|filter| {
+            let filter_id = filter.filter_id.as_ref().unwrap().clone();
+            if filter.filter_name.to_lowercase().contains(query_value)
+                || filter_id.to_lowercase().contains(query_value)
+            {
+                Some(Resource {
+                    id: filter_id,
+                    name: filter.filter_name.clone(),
+                    resource_type: ResourceType::Filter,
+                })
+            } else {
+                None
+            }
+        })
+        .collect_vec();
+    Ok(filter_titles)
 }
 
 pub async fn generate_home_search_response(

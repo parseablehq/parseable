@@ -16,8 +16,10 @@
  *
  */
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
+use once_cell::sync::Lazy;
 use prometheus::core::Collector;
 use prometheus::proto::MetricFamily;
 use prometheus::IntGaugeVec;
@@ -171,15 +173,15 @@ pub fn delete_stats(stream_name: &str, format: &'static str) -> prometheus::Resu
     let event_labels = event_labels(stream_name, format);
     let storage_size_labels = storage_size_labels(stream_name);
 
-    EVENTS_INGESTED.remove_label_values(&event_labels)?;
-    EVENTS_INGESTED_SIZE.remove_label_values(&event_labels)?;
-    STORAGE_SIZE.remove_label_values(&storage_size_labels)?;
-    EVENTS_DELETED.remove_label_values(&event_labels)?;
-    EVENTS_DELETED_SIZE.remove_label_values(&event_labels)?;
-    DELETED_EVENTS_STORAGE_SIZE.remove_label_values(&storage_size_labels)?;
-    LIFETIME_EVENTS_INGESTED.remove_label_values(&event_labels)?;
-    LIFETIME_EVENTS_INGESTED_SIZE.remove_label_values(&event_labels)?;
-    LIFETIME_EVENTS_STORAGE_SIZE.remove_label_values(&storage_size_labels)?;
+    remove_label_values(&EVENTS_INGESTED, &event_labels);
+    remove_label_values(&EVENTS_INGESTED_SIZE, &event_labels);
+    remove_label_values(&STORAGE_SIZE, &storage_size_labels);
+    remove_label_values(&EVENTS_DELETED, &event_labels);
+    remove_label_values(&EVENTS_DELETED_SIZE, &event_labels);
+    remove_label_values(&DELETED_EVENTS_STORAGE_SIZE, &storage_size_labels);
+    remove_label_values(&LIFETIME_EVENTS_INGESTED, &event_labels);
+    remove_label_values(&LIFETIME_EVENTS_INGESTED_SIZE, &event_labels);
+    remove_label_values(&LIFETIME_EVENTS_STORAGE_SIZE, &storage_size_labels);
 
     delete_with_label_prefix(&EVENTS_INGESTED_DATE, &event_labels);
     delete_with_label_prefix(&EVENTS_INGESTED_SIZE_DATE, &event_labels);
@@ -188,15 +190,29 @@ pub fn delete_stats(stream_name: &str, format: &'static str) -> prometheus::Resu
     Ok(())
 }
 
+#[inline]
+fn remove_label_values(lazy_static: &Lazy<IntGaugeVec>, event_labels: &[&str]) {
+    if let Err(e) = lazy_static.remove_label_values(event_labels) {
+        warn!("Unable to delete labels- {event_labels:?}\nwith error- {e}");
+    }
+}
+
 fn delete_with_label_prefix(metrics: &IntGaugeVec, prefix: &[&str]) {
     let families: Vec<MetricFamily> = metrics.collect().into_iter().collect();
     for metric in families.iter().flat_map(|m| m.get_metric()) {
-        let label: Vec<&str> = metric.get_label().iter().map(|l| l.get_value()).collect();
-        if !label.starts_with(prefix) {
-            continue;
-        }
-        if let Err(err) = metrics.remove_label_values(&label) {
-            warn!("Error = {err}");
+        let label_map: HashMap<&str, &str> = metric
+            .get_label()
+            .iter()
+            .map(|l| (l.get_name(), l.get_value()))
+            .collect();
+
+        // Check if all prefix elements are present in label values
+        let all_prefixes_found = prefix.iter().all(|p| label_map.values().any(|v| v == p));
+
+        if all_prefixes_found {
+            if let Err(err) = metrics.remove(&label_map) {
+                warn!("Error removing metric with labels {:?}: {err}", label_map);
+            }
         }
     }
 }

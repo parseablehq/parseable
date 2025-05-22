@@ -21,7 +21,7 @@ use crate::handlers::http::ingest::PostError;
 use crate::handlers::http::modal::Metadata;
 use crate::option::Mode;
 use crate::parseable::PARSEABLE;
-use crate::HTTP_CLIENT;
+use crate::INTRA_CLUSTER_CLIENT;
 use actix_web::http::header;
 use chrono::NaiveDateTime;
 use chrono::Utc;
@@ -237,7 +237,7 @@ impl Metrics {
         .map_err(|err| {
             PostError::Invalid(anyhow::anyhow!("Invalid URL in Ingestor Metadata: {}", err))
         })?;
-        let res = HTTP_CLIENT
+        let res = INTRA_CLUSTER_CLIENT
             .get(uri)
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::AUTHORIZATION, metadata.token())

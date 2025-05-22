@@ -17,24 +17,20 @@
  */
 
 use crate::{handlers::http::query::QueryError, utils::arrow::record_batches_to_json};
-use actix_web::HttpResponse;
 use datafusion::arrow::record_batch::RecordBatch;
 use itertools::Itertools;
 use serde_json::{json, Value};
 use tracing::info;
-
-pub const TIME_ELAPSED_HEADER: &str = "p-time-elapsed";
 
 pub struct QueryResponse {
     pub records: Vec<RecordBatch>,
     pub fields: Vec<String>,
     pub fill_null: bool,
     pub with_fields: bool,
-    pub total_time: String,
 }
 
 impl QueryResponse {
-    pub fn to_http(&self) -> Result<HttpResponse, QueryError> {
+    pub fn to_json(&self) -> Result<Value, QueryError> {
         info!("{}", "Returning query results");
         let mut json_records = record_batches_to_json(&self.records)?;
 
@@ -58,8 +54,6 @@ impl QueryResponse {
             Value::Array(values)
         };
 
-        Ok(HttpResponse::Ok()
-            .insert_header((TIME_ELAPSED_HEADER, self.total_time.as_str()))
-            .json(response))
+        Ok(response)
     }
 }

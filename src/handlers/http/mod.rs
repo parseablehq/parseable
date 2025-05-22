@@ -25,7 +25,7 @@ use itertools::Itertools;
 use modal::{NodeMetadata, NodeType};
 use serde_json::Value;
 
-use crate::{parseable::PARSEABLE, storage::STREAM_ROOT_DIRECTORY, HTTP_CLIENT};
+use crate::{parseable::PARSEABLE, storage::STREAM_ROOT_DIRECTORY, INTRA_CLUSTER_CLIENT};
 
 use self::query::Query;
 
@@ -119,7 +119,7 @@ pub async fn send_query_request_to_ingestor(query: &Query) -> anyhow::Result<Vec
             base_path_without_preceding_slash(),
             "query"
         );
-        let reqw = HTTP_CLIENT
+        let reqw = INTRA_CLUSTER_CLIENT
             .post(uri)
             .json(query)
             .header(http::header::AUTHORIZATION, im.token.clone())
