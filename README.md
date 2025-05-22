@@ -17,23 +17,23 @@
 
 </div>
 
-Parseable is a disk **_less_**, cloud native database for logs, observability, security, and compliance. Parseable is built with focus on simplicity & resource efficiency. Parseable is useful for use cases where **complete data ownership, data security and privacy are paramount**.
+ParseableDB is a disk **_less_**, cloud native database for logs, observability, security, and compliance. ParseableDB is built with focus on simplicity & resource efficiency. It is useful for use cases where **complete data ownership, data security and privacy are paramount**.
 
-To experience Parseable UI, checkout [demo.parseable.com ↗︎](https://demo.parseable.com/login?q=eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJhZG1pbiJ9).
+To experience Prism(Parseable UI), checkout [demo.parseable.com ↗︎](https://demo.parseable.com/login?q=eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJhZG1pbiJ9).
 
 ## Quickstart :zap:
 
-### Run Parseable
+### Run ParseableDB
 
 <details>
 <summary><a href="https://www.parseable.com/docs/server/get-started/docker-quick-start">Docker Image</a></summary>
 <p>
 
-Get started with Parseable Docker with a single command:
+Get started with ParseableDB Docker with a single command:
 
 ```bash
 docker run -p 8000:8000 \
-  containers.parseable.com/parseable/parseable:latest \
+  parseable/parseable:latest \
   parseable local-store
 ```
 
@@ -44,7 +44,7 @@ docker run -p 8000:8000 \
 <summary><a href="https://www.parseable.com/docs/server/get-started/binary-quick-start">Executable Binary</a></summary>
 <p>
 
-Download and run the Parseable binary on your laptop:
+Download and run the ParseableDB binary on your laptop:
 
 - Linux or MacOS
 
@@ -63,7 +63,7 @@ powershell -c "irm https://logg.ing/install-windows | iex"
 
 ### Ingestion and query
 
-Once you have Parseable running, ingest data with the below command. This will send logs to the `demo` stream. You can see the logs in the dashboard.
+Once you have ParseableDB running, ingest data with the below command. This will send logs to the `demo` stream. You can see the logs in the dashboard.
 
 ```bash
 curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
@@ -79,16 +79,16 @@ curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
 ]'
 ```
 
-Access the Parseable UI at [http://localhost:8000 ↗︎](http://localhost:8000). You can login to the dashboard default credentials `admin`, `admin`.
+Access the UI at [http://localhost:8000 ↗︎](http://localhost:8000). You can login to the dashboard default credentials `admin`, `admin`.
 
 ## Getting started :bulb:
 
 For quickstart, refer the [quickstart section ↗︎](#quickstart-zap).
 
-This section elaborates available options to run Parseable in production or development environments.
+This section elaborates available options to run ParseableDB in production or development environments.
 
-- Distributed Parseable on Kubernetes: [Helm Installation](https://www.parseable.com/docs/server/installation/distributed/setup-distributed-parseable-on-kubernetes-via-helm).
-- Distributed Parseable on AWS EC2 / VMs / Linux: [Binary Installation](https://www.parseable.com/docs/server/installation/distributed/setup-systemd-service-for-distributed-parseable-server).
+- Distributed ParseableDB on Kubernetes: [Helm Installation](https://www.parseable.com/docs/server/installation/distributed/setup-distributed-parseable-on-kubernetes-via-helm).
+- Distributed ParseableDB on AWS EC2 / VMs / Linux: [Binary Installation](https://www.parseable.com/docs/server/installation/distributed/setup-systemd-service-for-distributed-parseable-server).
 
 ## Features :rocket:
 

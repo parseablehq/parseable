@@ -1,6 +1,6 @@
 parseable:
   image:
-    repository: containers.parseable.com/parseable/parseable
+    repository: parseable/parseable
     tag: "v2.3.0"
     pullPolicy: Always
   ## object store can be local-store, s3-store, blob-store or gcs-store.
