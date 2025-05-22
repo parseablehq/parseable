@@ -52,7 +52,6 @@ use crate::{
     },
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
-    option::Mode,
     storage::{object_storage::to_bytes, retention::Retention, StreamType},
     utils::time::{Minute, TimeRange},
     LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
@@ -130,33 +129,30 @@ impl Stream {
         record: &RecordBatch,
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
-        stream_type: StreamType,
     ) -> Result<(), StagingError> {
         let mut guard = self.writer.lock().unwrap();
-        if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
-            let filename =
-                self.filename_by_partition(schema_key, parsed_timestamp, custom_partition_values);
-            match guard.disk.get_mut(&filename) {
-                Some(writer) => {
-                    writer.write(record)?;
-                }
-                None => {
-                    // entry is not present thus we create it
-                    std::fs::create_dir_all(&self.data_path)?;
+        let filename =
+            self.filename_by_partition(schema_key, parsed_timestamp, custom_partition_values);
+        match guard.disk.get_mut(&filename) {
+            Some(writer) => {
+                writer.write(record)?;
+            }
+            None => {
+                // entry is not present thus we create it
+                std::fs::create_dir_all(&self.data_path)?;
 
-                    let range = TimeRange::granularity_range(
-                        parsed_timestamp.and_local_timezone(Utc).unwrap(),
-                        OBJECT_STORE_DATA_GRANULARITY,
-                    );
-                    let file_path = self.data_path.join(&filename);
-                    let mut writer = DiskWriter::try_new(file_path, &record.schema(), range)
-                        .expect("File and RecordBatch both are checked");
+                let range = TimeRange::granularity_range(
+                    parsed_timestamp.and_local_timezone(Utc).unwrap(),
+                    OBJECT_STORE_DATA_GRANULARITY,
+                );
+                let file_path = self.data_path.join(&filename);
+                let mut writer = DiskWriter::try_new(file_path, &record.schema(), range)
+                    .expect("File and RecordBatch both are checked");
 
-                    writer.write(record)?;
-                    guard.disk.insert(filename, writer);
-                }
-            };
-        }
+                writer.write(record)?;
+                guard.disk.insert(filename, writer);
+            }
+        };
 
         guard.mem.push(schema_key, record);
 
@@ -1048,15 +1044,7 @@ mod tests {
             ],
         )
         .unwrap();
-        staging
-            .push(
-                "abc",
-                &batch,
-                time,
-                &HashMap::new(),
-                StreamType::UserDefined,
-            )
-            .unwrap();
+        staging.push("abc", &batch, time, &HashMap::new()).unwrap();
         staging.flush(true);
     }
 
