@@ -40,7 +40,7 @@ use crate::{
 type StreamMetadataResponse = Result<(String, Vec<ObjectStoreFormat>, DataSetType), PrismHomeError>;
 
 #[derive(Debug, Serialize, Default)]
-struct DatedStats {
+pub struct DatedStats {
     date: String,
     events: u64,
     ingestion_size: u64,
@@ -55,16 +55,16 @@ enum DataSetType {
 }
 
 #[derive(Debug, Serialize)]
-struct DataSet {
+pub struct DataSet {
     title: String,
     dataset_type: DataSetType,
 }
 
 #[derive(Debug, Serialize)]
 pub struct HomeResponse {
-    alerts_info: AlertsInfo,
-    stats_details: Vec<DatedStats>,
-    datasets: Vec<DataSet>,
+    pub alerts_info: AlertsInfo,
+    pub stats_details: Vec<DatedStats>,
+    pub datasets: Vec<DataSet>,
 }
 
 #[derive(Debug, Serialize)]

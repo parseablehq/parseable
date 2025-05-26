@@ -51,7 +51,7 @@ pub struct AiPrompt {
 
 // Temperory type
 #[derive(Debug, serde::Serialize)]
-struct Field {
+pub struct Field {
     name: String,
     data_type: String,
 }
