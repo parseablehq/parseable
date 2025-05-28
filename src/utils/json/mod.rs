@@ -44,10 +44,8 @@ pub fn flatten_json_body(
     // Flatten the json body only if new schema and has less than 4 levels of nesting
     let mut nested_value = if schema_version == SchemaVersion::V1
         && !has_more_than_max_allowed_levels(&body, 1)
-        && matches!(
-            log_source,
-            LogSource::Json | LogSource::Custom(_) | LogSource::Kinesis
-        ) {
+        && matches!(log_source, LogSource::Json | LogSource::Custom(_))
+    {
         let flattened_json = generic_flattening(&body)?;
         convert_to_array(flattened_json)?
     } else {
