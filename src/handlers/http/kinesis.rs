@@ -63,17 +63,18 @@ pub async fn flatten_kinesis_logs(message: Message) -> Result<Vec<Value>, anyhow
     let mut vec_kinesis_json = Vec::new();
 
     for record in message.records.iter() {
-        let bytes = STANDARD.decode(record.data.clone()).unwrap();
+        let bytes = STANDARD.decode(record.data.clone())?;
         if let Ok(json_string) = String::from_utf8(bytes) {
-            let json: serde_json::Value = serde_json::from_str(&json_string).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&json_string)?;
+            // Check if the JSON has more than the allowed levels of nesting
+            // If it has less than or equal to the allowed levels, we flatten it.
+            // If it has more than the allowed levels, we just push it as is
+            // without flattening or modifying it.
             if !has_more_than_max_allowed_levels(&json, 1) {
                 let flattened_json_arr = generic_flattening(&json)?;
                 for flattened_json in flattened_json_arr {
                     let mut kinesis_json: Map<String, Value> =
-                        match serde_json::from_value(flattened_json) {
-                            Ok(value) => value,
-                            Err(error) => panic!("Failed to deserialize JSON: {}", error),
-                        };
+                        serde_json::from_value(flattened_json)?;
                     kinesis_json.insert(
                         "requestId".to_owned(),
                         Value::String(message.request_id.clone()),
@@ -85,7 +86,27 @@ pub async fn flatten_kinesis_logs(message: Message) -> Result<Vec<Value>, anyhow
 
                     vec_kinesis_json.push(Value::Object(kinesis_json));
                 }
+            } else {
+                // If the JSON has more than the allowed levels, we just push it as is
+                // without flattening or modifying it.
+                // This is a fallback to ensure we don't lose data.
+                tracing::warn!(
+                    "Kinesis log with requestId {} and timestamp {} has more than the allowed levels of nesting, skipping flattening for this record.",
+                    message.request_id, message.timestamp
+                );
+                vec_kinesis_json.push(json);
             }
+        } else {
+            tracing::error!(
+                "Failed to decode base64 data for kinesis log with requestId {} and timestamp {}",
+                message.request_id,
+                message.timestamp
+            );
+            return Err(anyhow::anyhow!(
+                "Failed to decode base64 data for record with requestId {} and timestamp {}",
+                message.request_id,
+                message.timestamp
+            ));
         }
     }
 
