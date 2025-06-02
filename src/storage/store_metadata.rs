@@ -117,9 +117,23 @@ pub async fn resolve_parseable_metadata(
     let mut overwrite_remote = false;
 
     let res = match check {
-        EnvChange::None(metadata) => {
+        EnvChange::None(mut metadata) => {
             // overwrite staging anyways so that it matches remote in case of any divergence
             overwrite_staging = true;
+            match PARSEABLE.options.mode {
+                Mode::All => {
+                    metadata.server_mode.standalone_after_distributed()?;
+                    overwrite_remote = true;
+                    metadata.server_mode = PARSEABLE.options.mode;
+                    metadata.staging = PARSEABLE.options.staging_dir().to_path_buf();
+                }
+                Mode::Query => {
+                    overwrite_remote = true;
+                    metadata.server_mode = PARSEABLE.options.mode;
+                    metadata.staging = PARSEABLE.options.staging_dir().to_path_buf();
+                }
+                _=> {}
+            }
             if PARSEABLE.options.mode ==  Mode::All {
                 metadata.server_mode.standalone_after_distributed()?;
             }
