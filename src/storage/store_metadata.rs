@@ -116,7 +116,7 @@ pub async fn resolve_parseable_metadata(
     let mut overwrite_staging = false;
     let mut overwrite_remote = false;
 
-    let res = match check {
+    let res: Result<StorageMetadata, &'static str> = match check {
         EnvChange::None(mut metadata) => {
             // overwrite staging anyways so that it matches remote in case of any divergence
             overwrite_staging = true;
@@ -124,13 +124,11 @@ pub async fn resolve_parseable_metadata(
                 Mode::All => {
                     metadata.server_mode.standalone_after_distributed()?;
                     overwrite_remote = true;
-                    metadata.server_mode = PARSEABLE.options.mode;
-                    metadata.staging = PARSEABLE.options.staging_dir().to_path_buf();
+                    update_metadata_mode_and_staging(&mut metadata);
                 }
                 Mode::Query => {
                     overwrite_remote = true;
-                    metadata.server_mode = PARSEABLE.options.mode;
-                    metadata.staging = PARSEABLE.options.staging_dir().to_path_buf();
+                    update_metadata_mode_and_staging(&mut metadata);
                 }
                 _=> {}
             }
@@ -143,46 +141,33 @@ pub async fn resolve_parseable_metadata(
             Err("Could not start the server because staging directory indicates stale data from previous deployment, please choose an empty staging directory and restart the server")
         }
         EnvChange::NewStaging(mut metadata) => {
-
-            // if server is started in ingest mode,we need to make sure that query mode has been started
-            // i.e the metadata is updated to reflect the server mode = Query
-            if metadata.server_mode== Mode::All && PARSEABLE.options.mode == Mode::Ingest {
-                Err("Starting Ingest Mode is not allowed, Since Query Server has not been started yet")
-            } else {
-                create_dir_all(PARSEABLE.options.staging_dir())?;
-                metadata.staging = PARSEABLE.options.staging_dir().canonicalize()?;
+            // If server is started in ingest mode, ensure query mode has been started
+            if metadata.server_mode == Mode::All && PARSEABLE.options.mode == Mode::Ingest {
+                return Err(ObjectStorageError::UnhandledError(format!(
+                    "Starting Ingest Mode is not allowed, Since Query Server has not been started yet. {}",
+                    JOIN_COMMUNITY
+                ).into()));
+            }
+            create_dir_all(PARSEABLE.options.staging_dir())?;
+            metadata.staging = PARSEABLE.options.staging_dir().canonicalize()?;
                 // this flag is set to true so that metadata is copied to staging
-                overwrite_staging = true;
-                // overwrite remote in all and query mode
-                // because staging dir has changed.
-                match PARSEABLE.options.mode {
-                    Mode::All => {
-                        metadata.server_mode.standalone_after_distributed()
-                            .map_err(|err| {
-                                ObjectStorageError::Custom(err.to_string())
-                            })?;
-                            overwrite_remote = true;
-                    },
-                    Mode::Query | Mode::Prism => {
+            overwrite_staging = true;
+            // overwrite remote in all and query mode
+            // because staging dir has changed.
+            match PARSEABLE.options.mode {
+                Mode::All => {
+                    metadata.server_mode.standalone_after_distributed()
+                        .map_err(|err| ObjectStorageError::Custom(err.to_string()))?;
+                    overwrite_remote = true;
+                }
+                Mode::Query | Mode::Prism | Mode::Ingest | Mode::Index => {
+                    update_metadata_mode_and_staging(&mut metadata);
+                    if matches!(PARSEABLE.options.mode, Mode::Query | Mode::Prism) {
                         overwrite_remote = true;
-                        metadata.server_mode = PARSEABLE.options.mode;
-                        metadata.staging = PARSEABLE.options.staging_dir().to_path_buf();
-                    },
-                    Mode::Ingest => {
-                        // if ingest server is started fetch the metadata from remote
-                        // update the server mode for local metadata
-                        metadata.server_mode = PARSEABLE.options.mode;
-                        metadata.staging = PARSEABLE.options.staging_dir().to_path_buf();
-                      },
-                    Mode::Index => {
-                        // if index server is started fetch the metadata from remote
-                        // update the server mode for local metadata
-                        metadata.server_mode = PARSEABLE.options.mode;
-                        metadata.staging = PARSEABLE.options.staging_dir().to_path_buf();
                     }
                 }
-                Ok(metadata)
             }
+            Ok(metadata)
         }
         EnvChange::CreateBoth => {
             create_dir_all(PARSEABLE.options.staging_dir())?;
@@ -215,6 +200,11 @@ pub async fn resolve_parseable_metadata(
     }
 
     Ok(metadata)
+}
+
+fn update_metadata_mode_and_staging(metadata: &mut StorageMetadata) {
+    metadata.server_mode = PARSEABLE.options.mode;
+    metadata.staging = PARSEABLE.options.staging_dir().to_path_buf();
 }
 
 pub fn determine_environment(
