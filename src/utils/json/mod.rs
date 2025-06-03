@@ -28,6 +28,7 @@ use crate::event::format::LogSource;
 use crate::metadata::SchemaVersion;
 
 pub mod flatten;
+pub mod strict;
 
 /// calls the function `flatten_json` which results Vec<Value> or Error
 /// in case when Vec<Value> is returned, converts the Vec<Value> to Value of Array
