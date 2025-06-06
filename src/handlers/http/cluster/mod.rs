@@ -41,6 +41,7 @@ use url::Url;
 use utils::{check_liveness, to_url_string, IngestionStats, QueriedStats, StorageStats};
 
 use crate::handlers::http::ingest::ingest_internal_stream;
+use crate::metrics::collect_all_metrics;
 use crate::metrics::prom_utils::Metrics;
 use crate::parseable::PARSEABLE;
 use crate::rbac::role::model::DefaultPrivilege;
@@ -867,7 +868,6 @@ where
             let text = res.text().await.map_err(PostError::NetworkError)?;
             let lines: Vec<Result<String, std::io::Error>> =
                 text.lines().map(|line| Ok(line.to_owned())).collect_vec();
-
             let sample = prometheus_parse::Scrape::parse(lines.into_iter())
                 .map_err(|err| PostError::CustomError(err.to_string()))?
                 .samples;
@@ -993,13 +993,16 @@ async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
     Ok(all_metrics)
 }
 
-pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
+pub async fn init_cluster_metrics_scheduler() -> Result<(), PostError> {
     info!("Setting up schedular for cluster metrics ingestion");
     let mut scheduler = AsyncScheduler::new();
     scheduler
         .every(CLUSTER_METRICS_INTERVAL_SECONDS)
         .run(move || async {
             let result: Result<(), PostError> = async {
+                if let Err(err) = collect_all_metrics().await {
+                    error!("Error in capturing system metrics: {:#}", err);
+                }
                 let cluster_metrics = fetch_cluster_metrics().await;
                 if let Ok(metrics) = cluster_metrics {
                     if !metrics.is_empty() {

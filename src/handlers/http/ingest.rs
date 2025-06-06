@@ -28,10 +28,9 @@ use serde_json::Value;
 
 use crate::event::error::EventError;
 use crate::event::format::known_schema::{self, KNOWN_SCHEMA_LIST};
-use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
+use crate::event::format::{LogSource, LogSourceEntry};
 use crate::event::{self, FORMAT_KEY, USER_AGENT_KEY};
 use crate::handlers::{EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
-use crate::metadata::SchemaVersion;
 use crate::option::Mode;
 use crate::otel::logs::OTEL_LOG_KNOWN_FIELD_LIST;
 use crate::otel::metrics::OTEL_METRICS_KNOWN_FIELD_LIST;
@@ -126,26 +125,11 @@ pub async fn ingest(
 }
 
 pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
-    let size: usize = body.len();
     let json: Value = serde_json::from_slice(&body)?;
-    let schema = PARSEABLE.get_stream(&stream_name)?.get_schema_raw();
     let mut p_custom_fields = HashMap::new();
     p_custom_fields.insert(USER_AGENT_KEY.to_string(), "parseable".to_string());
     p_custom_fields.insert(FORMAT_KEY.to_string(), LogSource::Pmeta.to_string());
-    // For internal streams, use old schema
-    format::json::Event::new(json)
-        .into_event(
-            stream_name,
-            size as u64,
-            &schema,
-            false,
-            None,
-            None,
-            SchemaVersion::V0,
-            StreamType::Internal,
-            &p_custom_fields,
-        )?
-        .process()?;
+    flatten_and_push_logs(json, &stream_name, &LogSource::Pmeta, &p_custom_fields).await?;
 
     Ok(())
 }
