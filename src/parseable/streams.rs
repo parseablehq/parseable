@@ -519,6 +519,7 @@ impl Stream {
         // if yes, then merge them and save
 
         if let Some(mut schema) = schema {
+            // calculate field stats for all user defined streams
             if self.get_stream_type() != StreamType::Internal {
                 if let Err(err) = self.calculate_field_stats(rbs, schema.clone().into()).await {
                     warn!(
@@ -731,6 +732,7 @@ impl Stream {
         let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
         for ref record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
             writer.write(record)?;
+                // Collect record batches for finding statistics later
                 record_batches.push(record.clone());
         }
         writer.close()?;
@@ -1023,6 +1025,9 @@ impl Stream {
         Ok(())
     }
 
+    /// Calculates field statistics for the stream and pushes them to the internal stats dataset.
+    /// This function creates a new internal stream for stats if it doesn't exist.
+    /// It collects statistics for each field in the stream
     async fn calculate_field_stats(
         &self,
         record_batches: Vec<RecordBatch>,
@@ -1064,6 +1069,9 @@ impl Stream {
         Ok(())
     }
 
+    /// Collects statistics for all fields in the stream.
+    /// Returns a vector of `FieldStat` for each field with non-zero count.
+    /// Uses `buffer_unordered` to run up to `MAX_CONCURRENT_FIELD_STATS` queries concurrently.
     async fn collect_all_field_stats(
         &self,
         ctx: &SessionContext,
@@ -1084,10 +1092,13 @@ impl Stream {
 
         futures::stream::iter(field_futures)
             .buffer_unordered(MAX_CONCURRENT_FIELD_STATS)
-            .filter_map(|x| async { x })
+            .filter_map(std::future::ready)
             .collect::<Vec<_>>()
             .await
     }
+
+    /// Calculates statistics for a single field in the stream.
+    /// Returns `None` if the count query returns 0.
     async fn calculate_single_field_stats(
         ctx: SessionContext,
         stream_name: String,
@@ -1122,6 +1133,9 @@ impl Stream {
         })
     }
 
+    /// Queries a single integer value from the DataFusion context.
+    /// Returns `None` if the query fails or returns no rows.
+    /// This is used for fetching record count for a field and distinct count.
     async fn query_single_i64(ctx: &SessionContext, sql: &str) -> Option<i64> {
         let df = ctx.sql(sql).await.ok()?;
         let batches = df.collect().await.ok()?;
@@ -1134,6 +1148,8 @@ impl Stream {
         Some(array.value(0))
     }
 
+    /// Helper function to format an Arrow value at a given index into a string.
+    /// Handles null values and different data types like String, Int64, Float64, Timestamp, Date32, and Boolean.
     fn format_arrow_value(array: &dyn Array, idx: usize) -> String {
         if array.is_null(idx) {
             return "NULL".to_string();
@@ -1164,6 +1180,9 @@ impl Stream {
         }
     }
 
+    /// This function is used to fetch distinct values and their counts for a field in the stream.
+    /// Returns a vector of `DistinctStat` containing distinct values and their counts.
+    /// The query groups by the field and orders by the count in descending order, limiting the results to `PARSEABLE.options.max_field_statistics`.
     async fn query_distinct_stats(
         ctx: &SessionContext,
         stream_name: &str,
