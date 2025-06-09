@@ -388,6 +388,15 @@ pub struct Options {
         help = "Maximum level of flattening allowed for events"
     )]
     pub event_flatten_level: usize,
+
+    // maximum limit to store the statistics for a field
+    #[arg(
+        long,
+        env = "P_MAX_FIELD_STATISTICS",
+        default_value = "50",
+        help = "Maximum number of field statistics to store"
+    )]
+    pub max_field_statistics: usize,
 }
 
 #[derive(Parser, Debug)]

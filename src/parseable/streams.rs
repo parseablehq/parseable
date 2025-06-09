@@ -26,13 +26,13 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use arrow_array::{Array, Float64Array, Int64Array, NullArray, StringArray};
+use arrow_array::{Array, Date32Array, Float64Array, Int64Array, NullArray, StringArray};
 use arrow_array::{BooleanArray, RecordBatch, TimestampMillisecondArray};
 use arrow_schema::{Field, Fields, Schema};
 use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
 use datafusion::{datasource::MemTable, prelude::SessionContext};
 use derive_more::{Deref, DerefMut};
-use futures::stream::{FuturesUnordered, StreamExt};
+use futures_util::StreamExt;
 use itertools::Itertools;
 use parquet::{
     arrow::ArrowWriter,
@@ -74,6 +74,8 @@ use super::{
     },
     LogStream, ARROW_FILE_EXTENSION,
 };
+
+const MAX_CONCURRENT_FIELD_STATS: usize = 10;
 
 #[derive(Serialize, Debug)]
 struct DistinctStat {
@@ -517,7 +519,7 @@ impl Stream {
         // if yes, then merge them and save
 
         if let Some(mut schema) = schema {
-            if !&self.stream_name.contains(INTERNAL_STREAM_NAME) {
+            if self.get_stream_type() != StreamType::Internal {
                 if let Err(err) = self.calculate_field_stats(rbs, schema.clone().into()).await {
                     warn!(
                         "Error calculating field stats for stream {}: {}",
@@ -1067,19 +1069,25 @@ impl Stream {
         ctx: &SessionContext,
         schema: &Arc<Schema>,
     ) -> Vec<FieldStat> {
-        let field_futures = schema.fields().iter().map(|field| {
+        // Collect field names into an owned Vec<String> to avoid lifetime issues
+        let field_names: Vec<String> = schema
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect();
+
+        let field_futures = field_names.into_iter().map(|field_name| {
             let ctx = ctx.clone();
             let stream_name = self.stream_name.clone();
-            let field_name = field.name().clone();
             async move { Self::calculate_single_field_stats(ctx, stream_name, field_name).await }
         });
 
-        FuturesUnordered::from_iter(field_futures)
+        futures::stream::iter(field_futures)
+            .buffer_unordered(MAX_CONCURRENT_FIELD_STATS)
             .filter_map(|x| async { x })
             .collect::<Vec<_>>()
             .await
     }
-
     async fn calculate_single_field_stats(
         ctx: SessionContext,
         stream_name: String,
@@ -1117,11 +1125,12 @@ impl Stream {
     async fn query_single_i64(ctx: &SessionContext, sql: &str) -> Option<i64> {
         let df = ctx.sql(sql).await.ok()?;
         let batches = df.collect().await.ok()?;
-        let array = batches
-            .first()?
-            .column(0)
-            .as_any()
-            .downcast_ref::<arrow_array::Int64Array>()?;
+        let batch = batches.first()?;
+        if batch.num_rows() == 0 {
+            return None;
+        }
+        let array = batch.column(0).as_any().downcast_ref::<Int64Array>()?;
+
         Some(array.value(0))
     }
 
@@ -1140,11 +1149,17 @@ impl Stream {
             DateTime::from_timestamp_millis(timestamp)
                 .map(|dt| dt.to_string())
                 .unwrap_or_else(|| "INVALID_TIMESTAMP".to_string())
+        } else if let Some(arr) = array.as_any().downcast_ref::<Date32Array>() {
+            return arr.value(idx).to_string();
         } else if let Some(arr) = array.as_any().downcast_ref::<BooleanArray>() {
             arr.value(idx).to_string()
         } else if array.as_any().downcast_ref::<NullArray>().is_some() {
             "NULL".to_string()
         } else {
+            warn!(
+                "Unsupported array type for statistics: {:?}",
+                array.data_type()
+            );
             "UNSUPPORTED".to_string()
         }
     }
@@ -1155,7 +1170,8 @@ impl Stream {
         field_name: &str,
     ) -> Vec<DistinctStat> {
         let sql = format!(
-        "select count(*) as distinct_count, \"{field_name}\" from \"{stream_name}\" where \"{field_name}\" is not null group by \"{field_name}\" order by distinct_count desc limit 50"
+        "select count(*) as distinct_count, \"{field_name}\" from \"{stream_name}\" where \"{field_name}\" is not null group by \"{field_name}\" order by distinct_count desc limit {}",
+        PARSEABLE.options.max_field_statistics
     );
         let mut distinct_stats = Vec::new();
         if let Ok(df) = ctx.sql(&sql).await {
