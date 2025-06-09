@@ -1026,11 +1026,11 @@ impl Stream {
         record_batches: Vec<RecordBatch>,
         schema: Arc<Schema>,
     ) -> Result<(), PostError> {
-        let dataset_meta = format!("{}_{INTERNAL_STREAM_NAME}", &self.stream_name);
+        let stats_dataset_name = format!("dataset_{INTERNAL_STREAM_NAME}");
         let log_source_entry = LogSourceEntry::new(LogSource::Json, HashSet::new());
         PARSEABLE
             .create_stream_if_not_exists(
-                &dataset_meta,
+                &stats_dataset_name,
                 StreamType::Internal,
                 vec![log_source_entry],
             )
@@ -1054,7 +1054,7 @@ impl Stream {
 
         flatten_and_push_logs(
             stats_value,
-            &dataset_meta,
+            &stats_dataset_name,
             &LogSource::Json,
             &HashMap::new(),
         )
