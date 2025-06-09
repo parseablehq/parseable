@@ -26,10 +26,13 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use arrow_array::RecordBatch;
+use arrow_array::{Array, Float64Array, Int64Array, NullArray, StringArray};
+use arrow_array::{BooleanArray, RecordBatch, TimestampMillisecondArray};
 use arrow_schema::{Field, Fields, Schema};
-use chrono::{NaiveDateTime, Timelike, Utc};
+use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
+use datafusion::{datasource::MemTable, prelude::SessionContext};
 use derive_more::{Deref, DerefMut};
+use futures::stream::{FuturesUnordered, StreamExt};
 use itertools::Itertools;
 use parquet::{
     arrow::ArrowWriter,
@@ -39,6 +42,7 @@ use parquet::{
     schema::types::ColumnPath,
 };
 use relative_path::RelativePathBuf;
+use serde::Serialize;
 use tokio::task::JoinSet;
 use tracing::{error, info, trace, warn};
 
@@ -48,10 +52,15 @@ use crate::{
         format::{LogSource, LogSourceEntry},
         DEFAULT_TIMESTAMP_KEY,
     },
+    handlers::http::{
+        cluster::INTERNAL_STREAM_NAME, ingest::PostError,
+        modal::utils::ingest_utils::flatten_and_push_logs,
+    },
     handlers::http::modal::{ingest_server::INGESTOR_META, query_server::QUERIER_META},
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
+    parseable::PARSEABLE,
     storage::{object_storage::to_bytes, retention::Retention, StreamType},
     utils::time::{Minute, TimeRange},
     LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
@@ -65,6 +74,26 @@ use super::{
     },
     LogStream, ARROW_FILE_EXTENSION,
 };
+
+#[derive(Serialize, Debug)]
+struct DistinctStat {
+    distinct_value: String,
+    count: i64,
+}
+
+#[derive(Serialize, Debug)]
+struct FieldStat {
+    field_name: String,
+    count: i64,
+    distinct_count: i64,
+    distinct_stats: Vec<DistinctStat>,
+}
+
+#[derive(Serialize, Debug)]
+struct DatasetStats {
+    dataset_name: String,
+    field_stats: Vec<FieldStat>,
+}
 
 const INPROCESS_DIR_PREFIX: &str = "processing_";
 
@@ -463,7 +492,7 @@ impl Stream {
     }
 
     /// Converts arrow files in staging into parquet files, does so only for past minutes when run with `!shutdown_signal`
-    pub fn prepare_parquet(
+    pub async fn prepare_parquet(
         &self,
         init_signal: bool,
         shutdown_signal: bool,
@@ -478,19 +507,24 @@ impl Stream {
 
         // read arrow files on disk
         // convert them to parquet
-        let schema = self
-            .convert_disk_files_to_parquet(
-                time_partition.as_ref(),
-                custom_partition.as_ref(),
+        let (schema, rbs) = self.convert_disk_files_to_parquet(
+            time_partition.as_ref(),
+            custom_partition.as_ref(),
                 init_signal,
-                shutdown_signal,
-            )
-            .inspect_err(|err| warn!("Error while converting arrow to parquet- {err:?}"))?;
-
+            shutdown_signal,
+        )?;
         // check if there is already a schema file in staging pertaining to this stream
         // if yes, then merge them and save
 
         if let Some(mut schema) = schema {
+            if !&self.stream_name.contains(INTERNAL_STREAM_NAME) {
+                if let Err(err) = self.calculate_field_stats(rbs, schema.clone().into()).await {
+                    warn!(
+                        "Error calculating field stats for stream {}: {}",
+                        self.stream_name, err
+                    );
+                }
+            }
             let static_schema_flag = self.get_static_schema_flag();
             if !static_schema_flag {
                 // schema is dynamic, read from staging and merge if present
@@ -627,7 +661,7 @@ impl Stream {
         custom_partition: Option<&String>,
         init_signal: bool,
         shutdown_signal: bool,
-    ) -> Result<Option<Schema>, StagingError> {
+    ) -> Result<(Option<Schema>, Vec<RecordBatch>), StagingError> {
         let mut schemas = Vec::new();
 
         let now = SystemTime::now();
@@ -636,11 +670,12 @@ impl Stream {
             self.arrow_files_grouped_exclude_time(now, group_minute, init_signal, shutdown_signal);
         if staging_files.is_empty() {
             self.reset_staging_metrics();
-            return Ok(None);
+            return Ok((None, Vec::new()));
         }
 
         self.update_staging_metrics(&staging_files);
 
+        let mut record_batches = Vec::new();
         for (parquet_path, arrow_files) in staging_files {
             let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
             if record_reader.readers.is_empty() {
@@ -658,6 +693,7 @@ impl Stream {
                 &schema,
                 &props,
                 time_partition,
+                &mut record_batches,
             )? {
                 continue;
             }
@@ -670,10 +706,10 @@ impl Stream {
         }
 
         if schemas.is_empty() {
-            return Ok(None);
+            return Ok((None, Vec::new()));
         }
 
-        Ok(Some(Schema::try_merge(schemas).unwrap()))
+        Ok((Some(Schema::try_merge(schemas).unwrap()), record_batches))
     }
 
     fn write_parquet_part_file(
@@ -683,6 +719,7 @@ impl Stream {
         schema: &Arc<Schema>,
         props: &WriterProperties,
         time_partition: Option<&String>,
+        record_batches: &mut Vec<RecordBatch>,
     ) -> Result<bool, StagingError> {
         let mut part_file = OpenOptions::new()
             .create(true)
@@ -692,6 +729,7 @@ impl Stream {
         let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
         for ref record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
             writer.write(record)?;
+                record_batches.push(record.clone());
         }
         writer.close()?;
 
@@ -958,7 +996,7 @@ impl Stream {
     }
 
     /// First flushes arrows onto disk and then converts the arrow into parquet
-    pub fn flush_and_convert(
+    pub async fn flush_and_convert(
         &self,
         init_signal: bool,
         shutdown_signal: bool,
@@ -972,7 +1010,8 @@ impl Stream {
         );
 
         let start_convert = Instant::now();
-        self.prepare_parquet(init_signal, shutdown_signal)?;
+
+        self.prepare_parquet(init_signal, shutdown_signal).await?;
         trace!(
             "Converting arrows to parquet on stream ({}) took: {}s",
             self.stream_name,
@@ -980,6 +1019,165 @@ impl Stream {
         );
 
         Ok(())
+    }
+
+    async fn calculate_field_stats(
+        &self,
+        record_batches: Vec<RecordBatch>,
+        schema: Arc<Schema>,
+    ) -> Result<(), PostError> {
+        let dataset_meta = format!("{}_{INTERNAL_STREAM_NAME}", &self.stream_name);
+        let log_source_entry = LogSourceEntry::new(LogSource::Json, HashSet::new());
+        PARSEABLE
+            .create_stream_if_not_exists(
+                &dataset_meta,
+                StreamType::Internal,
+                vec![log_source_entry],
+            )
+            .await?;
+        let mem_table = MemTable::try_new(schema.clone(), vec![record_batches])
+            .map_err(|e| PostError::Invalid(e.into()))?;
+        let ctx = SessionContext::new();
+        ctx.register_table(&self.stream_name, Arc::new(mem_table))
+            .map_err(|e| PostError::Invalid(e.into()))?;
+
+        let field_stats = self.collect_all_field_stats(&ctx, &schema).await;
+
+        let stats = DatasetStats {
+            dataset_name: self.stream_name.clone(),
+            field_stats,
+        };
+        if stats.field_stats.is_empty() {
+            return Ok(());
+        }
+        let stats_value = serde_json::to_value(&stats).map_err(|e| PostError::Invalid(e.into()))?;
+
+        flatten_and_push_logs(
+            stats_value,
+            &dataset_meta,
+            &LogSource::Json,
+            &HashMap::new(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn collect_all_field_stats(
+        &self,
+        ctx: &SessionContext,
+        schema: &Arc<Schema>,
+    ) -> Vec<FieldStat> {
+        let field_futures = schema.fields().iter().map(|field| {
+            let ctx = ctx.clone();
+            let stream_name = self.stream_name.clone();
+            let field_name = field.name().clone();
+            async move { Self::calculate_single_field_stats(ctx, stream_name, field_name).await }
+        });
+
+        FuturesUnordered::from_iter(field_futures)
+            .filter_map(|x| async { x })
+            .collect::<Vec<_>>()
+            .await
+    }
+
+    async fn calculate_single_field_stats(
+        ctx: SessionContext,
+        stream_name: String,
+        field_name: String,
+    ) -> Option<FieldStat> {
+        let count = Self::query_single_i64(
+            &ctx,
+            &format!(
+                "select count(\"{field_name}\") as count from \"{stream_name}\" where \"{field_name}\" is not null"
+            ),
+        )
+        .await?;
+        if count == 0 {
+            return None;
+        }
+
+        let distinct_count = Self::query_single_i64(
+            &ctx,
+            &format!(
+                "select COUNT(DISTINCT \"{field_name}\") as distinct_count from \"{stream_name}\""
+            ),
+        )
+        .await?;
+
+        let distinct_stats = Self::query_distinct_stats(&ctx, &stream_name, &field_name).await;
+
+        Some(FieldStat {
+            field_name,
+            count,
+            distinct_count,
+            distinct_stats,
+        })
+    }
+
+    async fn query_single_i64(ctx: &SessionContext, sql: &str) -> Option<i64> {
+        let df = ctx.sql(sql).await.ok()?;
+        let batches = df.collect().await.ok()?;
+        let array = batches
+            .first()?
+            .column(0)
+            .as_any()
+            .downcast_ref::<arrow_array::Int64Array>()?;
+        Some(array.value(0))
+    }
+
+    fn format_arrow_value(array: &dyn Array, idx: usize) -> String {
+        if array.is_null(idx) {
+            return "NULL".to_string();
+        }
+        if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
+            arr.value(idx).to_string()
+        } else if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
+            arr.value(idx).to_string()
+        } else if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
+            arr.value(idx).to_string()
+        } else if let Some(arr) = array.as_any().downcast_ref::<TimestampMillisecondArray>() {
+            let timestamp = arr.value(idx);
+            DateTime::from_timestamp_millis(timestamp)
+                .map(|dt| dt.to_string())
+                .unwrap_or_else(|| "INVALID_TIMESTAMP".to_string())
+        } else if let Some(arr) = array.as_any().downcast_ref::<BooleanArray>() {
+            arr.value(idx).to_string()
+        } else if array.as_any().downcast_ref::<NullArray>().is_some() {
+            "NULL".to_string()
+        } else {
+            "UNSUPPORTED".to_string()
+        }
+    }
+
+    async fn query_distinct_stats(
+        ctx: &SessionContext,
+        stream_name: &str,
+        field_name: &str,
+    ) -> Vec<DistinctStat> {
+        let sql = format!(
+        "select count(*) as distinct_count, \"{field_name}\" from \"{stream_name}\" where \"{field_name}\" is not null group by \"{field_name}\" order by distinct_count desc limit 50"
+    );
+        let mut distinct_stats = Vec::new();
+        if let Ok(df) = ctx.sql(&sql).await {
+            if let Ok(batches) = df.collect().await {
+                for rb in batches {
+                    let counts = rb
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .expect("Counts should be Int64Array");
+                    let values = rb.column(1).as_ref();
+                    for i in 0..rb.num_rows() {
+                        let value = Self::format_arrow_value(values, i);
+                        distinct_stats.push(DistinctStat {
+                            distinct_value: value,
+                            count: counts.value(i),
+                        });
+                    }
+                }
+            }
+        }
+        distinct_stats
     }
 }
 
@@ -1067,7 +1265,7 @@ impl Streams {
             .map(Arc::clone)
             .collect();
         for stream in streams {
-            joinset.spawn(async move { stream.flush_and_convert(init_signal, shutdown_signal) });
+            joinset.spawn(async move { stream.flush_and_convert(init_signal, shutdown_signal).await });
         }
     }
 }
@@ -1257,7 +1455,7 @@ mod tests {
             None,
         )
         .convert_disk_files_to_parquet(None, None, false, false)?;
-        assert!(result.is_none());
+        assert!(result.0.is_none());
         // Verify metrics were set to 0
         let staging_files = metrics::STAGING_FILES.with_label_values(&[&stream]).get();
         assert_eq!(staging_files, 0);
@@ -1338,8 +1536,8 @@ mod tests {
             .convert_disk_files_to_parquet(None, None, false, true)
             .unwrap();
 
-        assert!(result.is_some());
-        let result_schema = result.unwrap();
+        assert!(result.0.is_some());
+        let result_schema = result.0.unwrap();
         assert_eq!(result_schema.fields().len(), 3);
 
         // Verify parquet files were created and the arrow files deleted
@@ -1387,8 +1585,8 @@ mod tests {
             .convert_disk_files_to_parquet(None, None, false, true)
             .unwrap();
 
-        assert!(result.is_some());
-        let result_schema = result.unwrap();
+        assert!(result.0.is_some());
+        let result_schema = result.0.unwrap();
         assert_eq!(result_schema.fields().len(), 3);
 
         // Verify parquet files were created and the arrow files deleted
@@ -1441,8 +1639,8 @@ mod tests {
             .convert_disk_files_to_parquet(None, None, false, false)
             .unwrap();
 
-        assert!(result.is_some());
-        let result_schema = result.unwrap();
+        assert!(result.0.is_some());
+        let result_schema = result.0.unwrap();
         assert_eq!(result_schema.fields().len(), 3);
 
         // Verify parquet files were created and the arrow file left
