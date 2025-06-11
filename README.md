@@ -13,7 +13,7 @@
 [![Docs](https://img.shields.io/badge/stable%20docs-parseable.com%2Fdocs-brightgreen?style=flat&color=%2373DC8C&label=Docs)](https://logg.ing/docs)
 [![Build](https://img.shields.io/github/checks-status/parseablehq/parseable/main?style=flat&color=%2373DC8C&label=Checks)](https://github.com/parseablehq/parseable/actions)
 
-[Key Concepts](https://www.parseable.com/docs/concepts) | [Features](https://github.com/parseablehq/parseable#rocket-highlights) | [Documentation](https://www.parseable.com/docs) | [Demo](https://demo.parseable.com/login?q=eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJhZG1pbiJ9) | [FAQ](https://www.parseable.com/docs/faq)
+[Key Concepts](https://www.parseable.com/docs/key-concepts) | [Features](https://www.parseable.com/docs/features/alerts) | [Documentation](https://www.parseable.com/docs) | [Demo](https://demo.parseable.com/login?q=eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJhZG1pbiJ9) | [FAQ](https://www.parseable.com/docs/key-concepts/data-model#faq)
 
 </div>
 
@@ -26,7 +26,7 @@ To experience Prism(Parseable UI), checkout [demo.parseable.com ↗︎](https://
 ### Run ParseableDB
 
 <details>
-<summary><a href="https://www.parseable.com/docs/server/get-started/docker-quick-start">Docker Image</a></summary>
+<summary><a href="https://www.parseable.com/docs/quickstart/docker">Docker Image</a></summary>
 <p>
 
 Get started with ParseableDB Docker with a single command:
@@ -41,7 +41,7 @@ docker run -p 8000:8000 \
 </details>
 
 <details>
-<summary><a href="https://www.parseable.com/docs/server/get-started/binary-quick-start">Executable Binary</a></summary>
+<summary><a href="https://www.parseable.com/docs/quickstart/binary">Executable Binary</a></summary>
 <p>
 
 Download and run the ParseableDB binary on your laptop:
@@ -87,18 +87,17 @@ For quickstart, refer the [quickstart section ↗︎](#quickstart-zap).
 
 This section elaborates available options to run ParseableDB in production or development environments.
 
-- Distributed ParseableDB on Kubernetes: [Helm Installation](https://www.parseable.com/docs/server/installation/distributed/setup-distributed-parseable-on-kubernetes-via-helm).
-- Distributed ParseableDB on AWS EC2 / VMs / Linux: [Binary Installation](https://www.parseable.com/docs/server/installation/distributed/setup-systemd-service-for-distributed-parseable-server).
+- Distributed ParseableDB on Kubernetes: [Helm Installation](https://www.parseable.com/docs/installation/distributed/k8s-helm).
+- Distributed ParseableDB on AWS EC2 / VMs / Linux: [Binary Installation](https://www.parseable.com/docs/installation/distributed/linux).
 
 ## Features :rocket:
 
-- [High availability & Cluster mode ↗︎](https://www.parseable.com/docs/concepts/distributed-architecture)
-- [Hot Tier ↗︎](https://www.parseable.com/docs/features/tiering)
-- [Alerts ↗︎](https://www.parseable.com/docs/alerts)
-- [Role based access control ↗︎](https://www.parseable.com/docs/rbac)
-- [OAuth2 support ↗︎](https://www.parseable.com/docs/oidc)
-- [LLM integration ↗︎](https://www.parseable.com/docs/integrations/llm-based-sql-generation)
-- [OpenTelemetry support ↗︎](https://www.parseable.com/docs/opentelemetry)
+- [High availability & Cluster mode ↗︎](https://www.parseable.com/docs/key-concepts/high-availability)
+- [Smart cache ↗︎](https://www.parseable.com/docs/features/smart-cache)
+- [Alerts ↗︎](https://www.parseable.com/docs/features/alerts)
+- [Role based access control ↗︎](https://www.parseable.com/docs/features/rbac)
+- [OAuth2 support ↗︎](https://www.parseable.com/docs/features/oepnid)
+- [OpenTelemetry support ↗︎](https://www.parseable.com/docs/OpenTelemetry/logs)
 
 ## How do people use Parseable :bulb:
 
@@ -126,4 +125,4 @@ gh attestation verify PATH/TO/YOUR/PARSEABLE/ARTIFACT-BINARY -R parseablehq/pars
 
 <a href="https://github.com/parseablehq/parseable/graphs/contributors"><img src="https://contrib.rocks/image?repo=parseablehq/parseable" /></a>
 
-[Contribution guide ↗︎](https://www.parseable.com/docs/contributing)
+[Contribution guide ↗︎](https://github.com/parseablehq/parseable/blob/main/CONTRIBUTING.md)
