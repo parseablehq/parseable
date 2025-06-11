@@ -189,9 +189,8 @@ impl Filters {
             };
             let filter_type = &f.query.filter_type;
 
-            // if filter type is one of SQL or filter
-            // then check if the user has access to the dataset based on the query string
-            // if filter type is search then check if the user has access to the dataset based on the dataset name
+            // if filter type is SQL, check if the user has access to the dataset based on the query string
+            // if filter type is search or filter, check if the user has access to the dataset based on the dataset name
             if *filter_type == FilterType::SQL {
                 if (user_auth_for_query(key, query).await).is_ok() {
                     filters.push(f.clone())
