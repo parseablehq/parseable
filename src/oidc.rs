@@ -16,9 +16,9 @@
  *
  */
 
-use std::collections::HashMap;
-
 use openid::{Client, CompactJson, CustomClaims, Discovered, StandardClaims};
+use std::collections::HashMap;
+use ulid::Ulid;
 use url::Url;
 
 pub type DiscoveredClient = Client<Discovered, Claims>;
@@ -37,7 +37,7 @@ pub enum Origin {
 #[derive(Debug, Clone)]
 pub struct OpenidConfig {
     /// Client id
-    pub id: String,
+    pub id: Ulid,
     /// Client Secret
     pub secret: String,
     /// OP host address over which discovery can be done

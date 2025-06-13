@@ -25,6 +25,7 @@ use itertools::Itertools;
 use relative_path::RelativePathBuf;
 use serde::Serialize;
 use tracing::error;
+use ulid::Ulid;
 
 use crate::{
     alerts::{get_alerts_info, AlertError, AlertsInfo, ALERTS},
@@ -78,7 +79,7 @@ pub enum ResourceType {
 
 #[derive(Debug, Serialize)]
 pub struct Resource {
-    id: String,
+    id: Ulid,
     name: String,
     resource_type: ResourceType,
 }
@@ -277,7 +278,7 @@ pub async fn generate_home_search_response(
     for title in stream_titles {
         if title.to_lowercase().contains(query_value) {
             resources.push(Resource {
-                id: title.clone(),
+                id: Ulid::from_string(&title).unwrap_or_else(|_| Ulid::new()),
                 name: title,
                 resource_type: ResourceType::DataSet,
             });

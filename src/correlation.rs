@@ -17,6 +17,7 @@
  */
 
 use std::collections::{HashMap, HashSet};
+use ulid::Ulid;
 
 use actix_web::{http::header::ContentType, Error};
 use chrono::Utc;
@@ -207,8 +208,8 @@ pub enum CorrelationVersion {
     V1,
 }
 
-type CorrelationId = String;
-type UserId = String;
+type CorrelationId = Ulid;
+type UserId = Ulid;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

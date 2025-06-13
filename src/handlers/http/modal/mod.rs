@@ -32,6 +32,7 @@ use serde_json::{Map, Value};
 use ssl_acceptor::get_ssl_acceptor;
 use tokio::sync::oneshot;
 use tracing::{error, info, warn};
+use ulid::Ulid;
 
 use crate::{
     alerts::ALERTS,
@@ -246,7 +247,7 @@ pub struct NodeMetadata {
     pub domain_name: String,
     pub bucket_name: String,
     pub token: String,
-    pub node_id: String,
+    pub node_id: Ulid,
     pub flight_port: String,
     pub node_type: NodeType,
 }
@@ -259,7 +260,7 @@ impl NodeMetadata {
         bucket_name: String,
         username: &str,
         password: &str,
-        node_id: String,
+        node_id: lid,
         flight_port: String,
         node_type: NodeType,
     ) -> Self {

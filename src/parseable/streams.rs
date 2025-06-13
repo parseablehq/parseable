@@ -26,6 +26,7 @@ use std::{
     sync::{Arc, Mutex, RwLock},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
+use ulid::Ulid;
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Fields, Schema};
@@ -100,7 +101,7 @@ pub struct Stream {
     pub data_path: PathBuf,
     pub options: Arc<Options>,
     pub writer: Mutex<Writer>,
-    pub ingestor_id: Option<String>,
+    pub ingestor_id: Option<Ulid>,
 }
 
 impl Stream {
@@ -108,7 +109,7 @@ impl Stream {
         options: Arc<Options>,
         stream_name: impl Into<String>,
         metadata: LogStreamMetadata,
-        ingestor_id: Option<String>,
+        ingestor_id: Option<Ulid>,
     ) -> StreamRef {
         let stream_name = stream_name.into();
         let data_path = options.local_stream_data_path(&stream_name);
@@ -763,7 +764,7 @@ impl Streams {
         options: Arc<Options>,
         stream_name: String,
         metadata: LogStreamMetadata,
-        ingestor_id: Option<String>,
+        ingestor_id: Option<Ulid>,
     ) -> StreamRef {
         let mut guard = self.write().expect(LOCK_EXPECT);
         if let Some(stream) = guard.get(&stream_name) {
@@ -1332,7 +1333,7 @@ mod tests {
         let options = Arc::new(Options::default());
         let stream_name = String::from("concurrent_stream");
         let metadata = LogStreamMetadata::default();
-        let ingestor_id = Some(String::from("concurrent_ingestor"));
+        let ingestor_id = Some(Ulid::from_string("concurrent_ingestor").unwrap());
 
         // Barrier to synchronize threads
         let barrier = Arc::new(Barrier::new(2));

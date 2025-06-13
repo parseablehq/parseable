@@ -31,6 +31,7 @@ use actix_web::{
 use http::StatusCode;
 use itertools::Itertools;
 use tokio::sync::Mutex;
+use ulid::Ulid;
 
 use super::modal::utils::rbac_utils::{get_metadata, put_metadata};
 
@@ -39,7 +40,7 @@ static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[derive(serde::Serialize)]
 struct User {
-    id: String,
+    id: Ulid,
     method: String,
 }
 

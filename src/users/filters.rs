@@ -20,6 +20,7 @@ use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
+use ulid::Ulid;
 
 use super::TimeFilter;
 use crate::{
@@ -73,21 +74,21 @@ impl FilterType {
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct FilterBuilder {
-    pub id: String,
+    pub id: Ulid,
     pub combinator: String,
     pub rules: Vec<FilterRules>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct FilterRules {
-    pub id: String,
+    pub id: Ulid,
     pub combinator: String,
     pub rules: Vec<Rules>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct Rules {
-    pub id: String,
+    pub id: Ulid,
     pub field: String,
     pub value: String,
     pub operator: String,
