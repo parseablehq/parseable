@@ -4,6 +4,7 @@ use rdkafka::{ClientConfig, Offset};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
+use ulid::Ulid;
 
 #[derive(Debug, Clone, Parser)]
 pub struct KafkaConfig {
@@ -24,7 +25,7 @@ pub struct KafkaConfig {
         value_name = "client_id",
         help = "Client ID for Kafka connection"
     )]
-    pub client_id: String,
+    pub client_id: UsernameValidationError,
 
     #[arg(
         long = "partition-listener-concurrency",
@@ -76,7 +77,7 @@ pub struct ConsumerConfig {
         default_value_t = String::from("parseable-connect-cg"),
         help = "Consumer group ID"
     )]
-    pub group_id: String,
+    pub group_id: Ulid,
 
     // uses per partition stream micro-batch buffer size
     #[arg(
@@ -108,7 +109,7 @@ pub struct ConsumerConfig {
              default_value_t = format!("parseable-connect-cg-ii-{}", rand::random::<u8>()).to_string(),
         help = "Group instance ID for static membership"
     )]
-    pub group_instance_id: String,
+    pub group_instance_id: Ulid,
 
     #[arg(
         long = "consumer-partition-strategy",

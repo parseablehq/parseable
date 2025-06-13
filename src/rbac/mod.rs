@@ -29,13 +29,13 @@ use role::model::DefaultPrivilege;
 use serde::Serialize;
 use url::Url;
 
-use crate::rbac::map::{mut_sessions, mut_users, sessions, users};
-use crate::rbac::role::Action;
-use crate::rbac::user::User;
-
 use self::map::SessionKey;
 use self::role::{Permission, RoleBuilder};
 use self::user::UserType;
+use crate::rbac::map::{mut_sessions, mut_users, sessions, users};
+use crate::rbac::role::Action;
+use crate::rbac::user::User;
+use ulid::Ulid;
 
 #[derive(PartialEq)]
 pub enum Response {
@@ -176,7 +176,7 @@ impl Users {
 #[derive(Debug, Serialize, Clone)]
 pub struct UsersPrism {
     // username
-    pub id: String,
+    pub id: Ulid,
     // oaith or native
     pub method: String,
     // email only if method is oauth

@@ -18,7 +18,7 @@
 
 use clap::Parser;
 use std::{env, fs, path::PathBuf};
-
+use ulid::Ulid;
 use url::Url;
 
 #[cfg(feature = "kafka")]
@@ -399,7 +399,7 @@ pub struct OidcConfig {
         required = false,
         help = "Client id for OIDC provider"
     )]
-    pub client_id: String,
+    pub client_id: Ulid,
 
     #[arg(
         long = "oidc-client-secret",
