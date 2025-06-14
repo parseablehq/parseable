@@ -30,7 +30,7 @@ use arrow_ipc::{reader::StreamReader, root_as_message_unchecked, MessageHeader};
 use arrow_schema::Schema;
 use byteorder::{LittleEndian, ReadBytesExt};
 use itertools::kmerge_by;
-use tracing::{error, warn};
+use tracing::error;
 
 use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
@@ -85,20 +85,22 @@ impl MergedReverseRecordReader {
     pub fn try_new(file_paths: &[PathBuf]) -> Self {
         let mut readers = Vec::with_capacity(file_paths.len());
         for path in file_paths {
-            let Ok(file) = File::open(path) else {
-                warn!("Error when trying to read file: {path:?}");
-                continue;
-            };
-
-            let reader = match get_reverse_reader(file) {
-                Ok(r) => r,
+            match File::open(path) {
                 Err(err) => {
-                    error!("Invalid file detected, ignoring it: {path:?}; error = {err}");
+                    error!("Error when trying to read file: {path:?}; error = {err}");
                     continue;
                 }
-            };
-
-            readers.push(reader);
+                Ok(file) => {
+                    let reader = match get_reverse_reader(file) {
+                        Ok(r) => r,
+                        Err(err) => {
+                            error!("Invalid file detected, ignoring it: {path:?}; error = {err}");
+                            continue;
+                        }
+                    };
+                    readers.push(reader);
+                }
+            }
         }
 
         Self { readers }
