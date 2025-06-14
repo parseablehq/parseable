@@ -28,6 +28,7 @@ use tracing::{error, info, trace, warn};
 
 use crate::alerts::{alerts_utils, AlertTask};
 use crate::parseable::PARSEABLE;
+use crate::storage::object_storage::sync_all_streams;
 use crate::{LOCAL_SYNC_INTERVAL, STORAGE_UPLOAD_INTERVAL};
 
 // Calculates the instant that is the start of the next minute
@@ -75,7 +76,7 @@ where
 
 /// Flushes arrows onto disk every `LOCAL_SYNC_INTERVAL` seconds, packs arrows into parquet every
 /// `STORAGE_CONVERSION_INTERVAL` secondsand uploads them every `STORAGE_UPLOAD_INTERVAL` seconds.
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::main(flavor = "multi_thread")]
 pub async fn handler(mut cancel_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
     let (localsync_handler, mut localsync_outbox, localsync_inbox) = local_sync();
     let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
@@ -119,37 +120,43 @@ pub fn object_store_sync() -> (
     let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
 
     let handle = task::spawn(async move {
+        info!("Object store sync task started");
+        let mut inbox_rx = inbox_rx;
+
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
             let mut sync_interval = interval_at(next_minute(), STORAGE_UPLOAD_INTERVAL);
-
-            let mut inbox_rx = AssertUnwindSafe(inbox_rx);
+            let mut joinset = JoinSet::new();
 
             loop {
                 select! {
                     _ = sync_interval.tick() => {
                         trace!("Syncing Parquets to Object Store... ");
-                        if let Err(e) = monitor_task_duration(
-                            "object_store_sync",
-                            Duration::from_secs(15),
-                            || async {
-                                PARSEABLE
-                                    .storage
-                                    .get_object_store()
-                                    .upload_files_from_staging().await
-                            },
-                        )
-                        .await
-                        {
-                            warn!("failed to upload local data with object store. {e:?}");
+                        sync_all_streams(&mut joinset)
+                    },
+                    Some(res) = joinset.join_next(), if !joinset.is_empty() => {
+                        match res {
+                            Ok(Ok(_)) => info!("Successfully uploaded files to object store."),
+                            Ok(Err(err)) => warn!("Failed to upload files to object store. {err:?}"),
+                            Err(err) => error!("Issue joining object store sync task: {err}"),
                         }
                     },
-                    res = &mut inbox_rx => {match res{
-                        Ok(_) => break,
-                        Err(_) => {
-                            warn!("Inbox channel closed unexpectedly");
-                            break;
-                        }}
+                    res = &mut inbox_rx => {
+                        match res {
+                            Ok(_) => break,
+                            Err(_) => {
+                                warn!("Inbox channel closed unexpectedly");
+                                break;
+                            }
+                        }
                     }
+                }
+            }
+            // Drain remaining joinset tasks
+            while let Some(res) = joinset.join_next().await {
+                match res {
+                    Ok(Ok(_)) => info!("Successfully uploaded files to object store."),
+                    Ok(Err(err)) => warn!("Failed to upload files to object store. {err:?}"),
+                    Err(err) => error!("Issue joining object store sync task: {err}"),
                 }
             }
         }));
@@ -160,10 +167,10 @@ pub fn object_store_sync() -> (
             }
             Err(panic_error) => {
                 error!("Panic in object store sync task: {panic_error:?}");
-                let _ = outbox_tx.send(());
             }
         }
 
+        let _ = outbox_tx.send(());
         info!("Object store sync task ended");
     });
 
@@ -191,7 +198,7 @@ pub fn local_sync() -> (
                 select! {
                     // Spawns a flush+conversion task every `LOCAL_SYNC_INTERVAL` seconds
                     _ = sync_interval.tick() => {
-                        PARSEABLE.streams.flush_and_convert(&mut joinset, false)
+                        PARSEABLE.streams.flush_and_convert(&mut joinset, false, false)
                     },
                     // Joins and logs errors in spawned tasks
                     Some(res) = joinset.join_next(), if !joinset.is_empty() => {
@@ -210,6 +217,15 @@ pub fn local_sync() -> (
                     }
                 }
             }
+
+            // Drain remaining joinset tasks
+            while let Some(res) = joinset.join_next().await {
+                match res {
+                    Ok(Ok(_)) => info!("Successfully converted arrow files to parquet."),
+                    Ok(Err(err)) => warn!("Failed to convert arrow files to parquet. {err:?}"),
+                    Err(err) => error!("Issue joining flush+conversion task: {err}"),
+                }
+            }
         }));
 
         match result {
@@ -226,6 +242,32 @@ pub fn local_sync() -> (
     });
 
     (handle, outbox_rx, inbox_tx)
+}
+
+// local sync at the start of the server
+pub async fn sync_start() -> anyhow::Result<()> {
+    let mut local_sync_joinset = JoinSet::new();
+    PARSEABLE
+        .streams
+        .flush_and_convert(&mut local_sync_joinset, true, false);
+    while let Some(res) = local_sync_joinset.join_next().await {
+        match res {
+            Ok(Ok(_)) => info!("Successfully converted arrow files to parquet."),
+            Ok(Err(err)) => return Err(err.into()),
+            Err(err) => error!("Failed to join async task: {err}"),
+        }
+    }
+
+    let mut object_store_joinset = JoinSet::new();
+    sync_all_streams(&mut object_store_joinset);
+    while let Some(res) = object_store_joinset.join_next().await {
+        match res {
+            Ok(Ok(_)) => info!("Successfully synced all data to S3."),
+            Ok(Err(err)) => return Err(err.into()),
+            Err(err) => error!("Failed to join async task: {err}"),
+        }
+    }
+    Ok(())
 }
 
 /// A separate runtime for running all alert tasks
