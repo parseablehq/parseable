@@ -280,29 +280,32 @@ impl Server {
                     ),
             )
             .service(
-                web::resource("/{dashboard_id}")
-                    .route(
-                        web::get()
-                            .to(dashboards::get_dashboard)
-                            .authorize(Action::GetDashboard),
+                web::scope("/{dashboard_id}")
+                    .service(
+                        web::resource("")
+                            .route(
+                                web::get()
+                                    .to(dashboards::get_dashboard)
+                                    .authorize(Action::GetDashboard),
+                            )
+                            .route(
+                                web::delete()
+                                    .to(dashboards::delete_dashboard)
+                                    .authorize(Action::DeleteDashboard),
+                            )
+                            .route(
+                                web::put()
+                                    .to(dashboards::update_dashboard)
+                                    .authorize(Action::CreateDashboard),
+                            ),
                     )
-                    .route(
-                        web::delete()
-                            .to(dashboards::delete_dashboard)
-                            .authorize(Action::DeleteDashboard),
-                    )
-                    .route(
-                        web::put()
-                            .to(dashboards::update_dashboard)
-                            .authorize(Action::CreateDashboard),
+                    .service(
+                        web::resource("/add_tile").route(
+                            web::put()
+                                .to(dashboards::add_tile)
+                                .authorize(Action::CreateDashboard),
+                        ),
                     ),
-            )
-            .service(
-                web::resource("/add_tile").route(
-                    web::put()
-                        .to(dashboards::add_tile)
-                        .authorize(Action::CreateDashboard),
-                ),
             )
     }
 
