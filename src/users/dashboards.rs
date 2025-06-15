@@ -294,9 +294,10 @@ impl Dashboards {
         &self,
         dashboard_id: Ulid,
         user_id: &str,
-    ) -> Result<Dashboard, DashboardError> {
+    ) -> Result<(), DashboardError> {
         self.get_dashboard_by_user(dashboard_id, user_id)
             .await
-            .ok_or(DashboardError::Unauthorized)
+            .ok_or_else(|| DashboardError::Unauthorized)
+            .map(|_| ())
     }
 }
