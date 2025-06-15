@@ -339,6 +339,33 @@ fn get_filter_expr(where_clause: &Conditions) -> Expr {
     }
 }
 
+pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
+    match &where_clause.operator {
+        Some(op) => match op {
+            LogicalOperator::And => {
+                let mut exprs = vec![];
+                for condition in &where_clause.condition_config {
+                    let value = NumberOrString::from_string(condition.value.to_string());
+                    match value {
+                        NumberOrString::Number(val) => exprs.push(format!(
+                            "{} {} {}",
+                            condition.column, condition.operator, val
+                        )),
+                        NumberOrString::String(val) => exprs.push(format!(
+                            "{} {} '{}'",
+                            condition.column, condition.operator, val
+                        )),
+                    }
+                }
+
+                Ok(exprs.join(" AND "))
+            }
+            _ => Err(String::from("Invalid option 'or'")),
+        },
+        _ => Err(String::from("Invalid option 'null'")),
+    }
+}
+
 fn match_alert_operator(expr: &ConditionConfig) -> Expr {
     // the form accepts value as a string
     // if it can be parsed as a number, then parse it
