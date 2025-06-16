@@ -134,11 +134,7 @@ pub fn object_store_sync() -> (
                         sync_all_streams(&mut joinset)
                     },
                     Some(res) = joinset.join_next(), if !joinset.is_empty() => {
-                        match res {
-                            Ok(Ok(_)) => info!("Successfully uploaded files to object store."),
-                            Ok(Err(err)) => warn!("Failed to upload files to object store. {err:?}"),
-                            Err(err) => error!("Issue joining object store sync task: {err}"),
-                        }
+                        log_join_result(res, "object store sync");
                     },
                     res = &mut inbox_rx => {
                         match res {
@@ -153,11 +149,7 @@ pub fn object_store_sync() -> (
             }
             // Drain remaining joinset tasks
             while let Some(res) = joinset.join_next().await {
-                match res {
-                    Ok(Ok(_)) => info!("Successfully uploaded files to object store."),
-                    Ok(Err(err)) => warn!("Failed to upload files to object store. {err:?}"),
-                    Err(err) => error!("Issue joining object store sync task: {err}"),
-                }
+                log_join_result(res, "object store sync");
             }
         }));
 
@@ -202,11 +194,7 @@ pub fn local_sync() -> (
                     },
                     // Joins and logs errors in spawned tasks
                     Some(res) = joinset.join_next(), if !joinset.is_empty() => {
-                        match res {
-                            Ok(Ok(_)) => info!("Successfully converted arrow files to parquet."),
-                            Ok(Err(err)) => warn!("Failed to convert arrow files to parquet. {err:?}"),
-                            Err(err) => error!("Issue joining flush+conversion task: {err}"),
-                        }
+                        log_join_result(res, "flush and convert");
                     }
                     res = &mut inbox_rx => {match res{
                         Ok(_) => break,
@@ -220,11 +208,7 @@ pub fn local_sync() -> (
 
             // Drain remaining joinset tasks
             while let Some(res) = joinset.join_next().await {
-                match res {
-                    Ok(Ok(_)) => info!("Successfully converted arrow files to parquet."),
-                    Ok(Err(err)) => warn!("Failed to convert arrow files to parquet. {err:?}"),
-                    Err(err) => error!("Issue joining flush+conversion task: {err}"),
-                }
+                log_join_result(res, "flush and convert");
             }
         }));
 
@@ -251,23 +235,26 @@ pub async fn sync_start() -> anyhow::Result<()> {
         .streams
         .flush_and_convert(&mut local_sync_joinset, true, false);
     while let Some(res) = local_sync_joinset.join_next().await {
-        match res {
-            Ok(Ok(_)) => info!("Successfully converted arrow files to parquet."),
-            Ok(Err(err)) => return Err(err.into()),
-            Err(err) => error!("Failed to join async task: {err}"),
-        }
+        log_join_result(res, "flush and convert");
     }
 
     let mut object_store_joinset = JoinSet::new();
     sync_all_streams(&mut object_store_joinset);
     while let Some(res) = object_store_joinset.join_next().await {
-        match res {
-            Ok(Ok(_)) => info!("Successfully synced all data to S3."),
-            Ok(Err(err)) => return Err(err.into()),
-            Err(err) => error!("Failed to join async task: {err}"),
-        }
+        log_join_result(res, "object store sync");
     }
     Ok(())
+}
+
+fn log_join_result<T, E>(res: Result<Result<T, E>, tokio::task::JoinError>, context: &str)
+where
+    E: std::fmt::Debug,
+{
+    match res {
+        Ok(Ok(_)) => info!("Successfully completed {context}."),
+        Ok(Err(err)) => warn!("Failed to complete {context}. {err:?}"),
+        Err(err) => error!("Issue joining {context} task: {err}"),
+    }
 }
 
 /// A separate runtime for running all alert tasks

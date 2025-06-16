@@ -48,18 +48,26 @@ impl MergedRecordReader {
 
         for file in files {
             //remove empty files before reading
-            if file.metadata().unwrap().len() == 0 {
-                error!("Invalid file detected, removing it: {:?}", file);
-                remove_file(file).unwrap();
-            } else {
-                let Ok(reader) =
-                    StreamReader::try_new(BufReader::new(File::open(file).unwrap()), None)
-                else {
-                    error!("Invalid file detected, ignoring it: {:?}", file);
+            match file.metadata() {
+                Err(err) => {
+                    error!("Error when trying to read file: {file:?}; error = {err}");
                     continue;
-                };
+                }
+                Ok(metadata) if metadata.len() == 0 => {
+                    error!("Empty file detected, removing it: {:?}", file);
+                    remove_file(file).unwrap();
+                    continue;
+                }
+                Ok(_) => {
+                    let Ok(reader) =
+                        StreamReader::try_new(BufReader::new(File::open(file).unwrap()), None)
+                    else {
+                        error!("Invalid file detected, ignoring it: {:?}", file);
+                        continue;
+                    };
 
-                readers.push(reader);
+                    readers.push(reader);
+                }
             }
         }
 
