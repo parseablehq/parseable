@@ -74,7 +74,10 @@ fn arrow_path_to_parquet(
 ) -> Option<PathBuf> {
     let filename = path.file_stem()?.to_str()?;
     let (_, front) = filename.split_once('.')?;
-    assert!(front.contains('.'), "contains the delim `.`");
+    if !front.contains('.') {
+        warn!("Skipping unexpected arrow file without `.`: {}", filename);
+        return None;
+    }
     let filename_with_random_number = format!("{front}.{random_string}.parquet");
     let mut parquet_path = stream_staging_path.to_owned();
     parquet_path.push(filename_with_random_number);
