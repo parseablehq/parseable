@@ -46,6 +46,7 @@ use serde::Serialize;
 use tokio::task::JoinSet;
 use tracing::{error, info, trace, warn};
 
+use crate::utils::DATASET_STATS_STREAM_NAME;
 use crate::{
     cli::Options,
     event::{
@@ -71,7 +72,7 @@ use super::{
     },
     LogStream, ARROW_FILE_EXTENSION,
 };
-const DATASET_STATS_STREAM_NAME: &str = "pstats";
+
 const MAX_CONCURRENT_FIELD_STATS: usize = 10;
 
 #[derive(Serialize, Debug)]
