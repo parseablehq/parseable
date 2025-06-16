@@ -33,6 +33,7 @@ use crate::metrics;
 use crate::migration;
 use crate::storage;
 use crate::sync;
+use crate::sync::sync_start;
 
 use actix_web::web;
 use actix_web::web::resource;
@@ -121,6 +122,13 @@ impl ParseableServer for Server {
         load_on_init().await?;
 
         storage::retention::load_retention_from_global();
+
+        // local sync on init
+        tokio::spawn(async {
+            if let Err(e) = sync_start().await {
+                tracing::warn!("local sync on server start failed: {e}");
+            }
+        });
 
         if let Some(hot_tier_manager) = HotTierManager::global() {
             hot_tier_manager.download_from_s3()?;
