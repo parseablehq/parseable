@@ -17,6 +17,7 @@
  */
 
 use chrono::{TimeDelta, Timelike};
+use futures::FutureExt;
 use std::collections::HashMap;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
@@ -119,7 +120,7 @@ pub fn object_store_sync() -> (
         info!("Object store sync task started");
         let mut inbox_rx = inbox_rx;
 
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
+        let result = tokio::spawn(async move {
             let mut sync_interval = interval_at(next_minute(), STORAGE_UPLOAD_INTERVAL);
 
             loop {
@@ -153,11 +154,13 @@ pub fn object_store_sync() -> (
                     }
                 }
             }
-        }));
+        });
 
-        match result {
-            Ok(future) => {
-                future.await;
+        match AssertUnwindSafe(result).catch_unwind().await {
+            Ok(join_result) => {
+                if let Err(join_err) = join_result {
+                    error!("Panic in object store sync task: {join_err:?}");
+                }
             }
             Err(panic_error) => {
                 error!("Panic in object store sync task: {panic_error:?}");
@@ -184,12 +187,11 @@ pub fn local_sync() -> (
         info!("Local sync task started");
         let mut inbox_rx = inbox_rx;
 
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
+        let result = tokio::spawn(async move {
             let mut sync_interval = interval_at(next_minute(), LOCAL_SYNC_INTERVAL);
 
             loop {
                 select! {
-                    // Spawns a flush+conversion task every `LOCAL_SYNC_INTERVAL` seconds
                     _ = sync_interval.tick() => {
                         // Monitor the duration of flush_and_convert execution
                         monitor_task_duration(
@@ -217,11 +219,13 @@ pub fn local_sync() -> (
                     }
                 }
             }
-        }));
+        });
 
-        match result {
-            Ok(future) => {
-                future.await;
+        match AssertUnwindSafe(result).catch_unwind().await {
+            Ok(join_result) => {
+                if let Err(join_err) = join_result {
+                    error!("Panic in local sync task: {join_err:?}");
+                }
             }
             Err(panic_error) => {
                 error!("Panic in local sync task: {panic_error:?}");
