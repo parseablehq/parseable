@@ -129,7 +129,7 @@ impl ParseableServer for QueryServer {
         }
 
         // local sync on init
-        tokio::spawn(async {
+        let startup_sync_handle = tokio::spawn(async {
             if let Err(e) = sync_start().await {
                 tracing::warn!("local sync on server start failed: {e}");
             }
@@ -150,7 +150,9 @@ impl ParseableServer for QueryServer {
             .await?;
         // Cancel sync jobs
         cancel_tx.send(()).expect("Cancellation should not fail");
-
+        if let Err(join_err) = startup_sync_handle.await {
+            tracing::warn!("startup sync task panicked: {join_err}");
+        }
         Ok(result)
     }
 }

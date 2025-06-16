@@ -116,7 +116,7 @@ impl ParseableServer for IngestServer {
         migration::run_migration(&PARSEABLE).await?;
 
         // local sync on init
-        tokio::spawn(async {
+        let startup_sync_handle = tokio::spawn(async {
             if let Err(e) = sync_start().await {
                 tracing::warn!("local sync on server start failed: {e}");
             }
@@ -132,7 +132,9 @@ impl ParseableServer for IngestServer {
         let result = self.start(shutdown_rx, prometheus.clone(), None).await;
         // Cancel sync jobs
         cancel_tx.send(()).expect("Cancellation should not fail");
-
+        if let Err(join_err) = startup_sync_handle.await {
+            tracing::warn!("startup sync task panicked: {join_err}");
+        }
         result
     }
 }
