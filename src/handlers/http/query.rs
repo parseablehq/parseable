@@ -396,7 +396,7 @@ pub async fn get_counts(
             let records = json_records.into_iter().map(Value::Object).collect_vec();
 
             let res = json!({
-                "fields": vec!["start_time", "end_time", "count"],
+                "fields": vec!["start_time", "endTime", "count"],
                 "records": records,
             });
 
@@ -410,7 +410,7 @@ pub async fn get_counts(
 
     let records = body.get_bin_density().await?;
     let res = json!({
-        "fields": vec!["start_time", "end_time", "count"],
+        "fields": vec!["start_time", "endTime", "count"],
         "records": records,
     });
     Ok(web::Json(res))
