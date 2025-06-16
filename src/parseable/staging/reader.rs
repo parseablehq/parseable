@@ -30,7 +30,7 @@ use arrow_ipc::{reader::StreamReader, root_as_message_unchecked, MessageHeader};
 use arrow_schema::Schema;
 use byteorder::{LittleEndian, ReadBytesExt};
 use itertools::kmerge_by;
-use tracing::{error, warn};
+use tracing::error;
 
 use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
@@ -48,18 +48,26 @@ impl MergedRecordReader {
 
         for file in files {
             //remove empty files before reading
-            if file.metadata().unwrap().len() == 0 {
-                error!("Invalid file detected, removing it: {:?}", file);
-                remove_file(file).unwrap();
-            } else {
-                let Ok(reader) =
-                    StreamReader::try_new(BufReader::new(File::open(file).unwrap()), None)
-                else {
-                    error!("Invalid file detected, ignoring it: {:?}", file);
+            match file.metadata() {
+                Err(err) => {
+                    error!("Error when trying to read file: {file:?}; error = {err}");
                     continue;
-                };
+                }
+                Ok(metadata) if metadata.len() == 0 => {
+                    error!("Empty file detected, removing it: {:?}", file);
+                    remove_file(file).unwrap();
+                    continue;
+                }
+                Ok(_) => {
+                    let Ok(reader) =
+                        StreamReader::try_new(BufReader::new(File::open(file).unwrap()), None)
+                    else {
+                        error!("Invalid file detected, ignoring it: {:?}", file);
+                        continue;
+                    };
 
-                readers.push(reader);
+                    readers.push(reader);
+                }
             }
         }
 
@@ -85,20 +93,22 @@ impl MergedReverseRecordReader {
     pub fn try_new(file_paths: &[PathBuf]) -> Self {
         let mut readers = Vec::with_capacity(file_paths.len());
         for path in file_paths {
-            let Ok(file) = File::open(path) else {
-                warn!("Error when trying to read file: {path:?}");
-                continue;
-            };
-
-            let reader = match get_reverse_reader(file) {
-                Ok(r) => r,
+            match File::open(path) {
                 Err(err) => {
-                    error!("Invalid file detected, ignoring it: {path:?}; error = {err}");
+                    error!("Error when trying to read file: {path:?}; error = {err}");
                     continue;
                 }
-            };
-
-            readers.push(reader);
+                Ok(file) => {
+                    let reader = match get_reverse_reader(file) {
+                        Ok(r) => r,
+                        Err(err) => {
+                            error!("Invalid file detected, ignoring it: {path:?}; error = {err}");
+                            continue;
+                        }
+                    };
+                    readers.push(reader);
+                }
+            }
         }
 
         Self { readers }
