@@ -66,6 +66,8 @@ use super::{
     LogStream, ARROW_FILE_EXTENSION,
 };
 
+const INPROCESS_DIR_PREFIX: &str = "processing_";
+
 /// Returns the filename for parquet if provided arrows file path is valid as per our expectation
 fn arrow_path_to_parquet(
     stream_staging_path: &Path,
@@ -228,7 +230,12 @@ impl Stream {
         //iterate through all the inprocess_ directories and collect all arrow files
         dir.filter_map(|entry| {
             let path = entry.ok()?.path();
-            if path.is_dir() && path.file_name()?.to_str()?.starts_with("inprocess_") {
+            if path.is_dir()
+                && path
+                    .file_name()?
+                    .to_str()?
+                    .starts_with(INPROCESS_DIR_PREFIX)
+            {
                 Some(path)
             } else {
                 None
@@ -399,7 +406,7 @@ impl Stream {
     }
 
     fn inprocess_folder(base: &Path, minute: u128) -> PathBuf {
-        base.join(format!("inprocess_{}", minute))
+        base.join(format!("{INPROCESS_DIR_PREFIX}{minute}"))
     }
 
     pub fn parquet_files(&self) -> Vec<PathBuf> {
