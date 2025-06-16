@@ -31,6 +31,7 @@ use tokio::sync::oneshot;
 use tokio::sync::OnceCell;
 
 use crate::handlers::http::modal::NodeType;
+use crate::sync::sync_start;
 use crate::{
     analytics,
     handlers::{
@@ -113,6 +114,13 @@ impl ParseableServer for IngestServer {
         PARSEABLE.storage.register_store_metrics(prometheus);
 
         migration::run_migration(&PARSEABLE).await?;
+
+        // local sync on init
+        tokio::spawn(async {
+            if let Err(e) = sync_start().await {
+                tracing::warn!("local sync on server start failed: {e}");
+            }
+        });
 
         // Run sync on a background thread
         let (cancel_tx, cancel_rx) = oneshot::channel();
