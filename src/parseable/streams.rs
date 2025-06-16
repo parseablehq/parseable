@@ -1046,6 +1046,7 @@ impl Stream {
             .map_err(|e| PostError::Invalid(e.into()))?;
 
         let field_stats = self.collect_all_field_stats(&ctx, &schema).await;
+        drop(ctx);
 
         let stats = DatasetStats {
             dataset_name: self.stream_name.clone(),
