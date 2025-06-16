@@ -67,12 +67,16 @@ use super::{
 };
 
 /// Returns the filename for parquet if provided arrows file path is valid as per our expectation
-fn arrow_path_to_parquet(staging_path: &Path, path: &Path, random_string: &str) -> Option<PathBuf> {
+fn arrow_path_to_parquet(
+    stream_staging_path: &Path,
+    path: &Path,
+    random_string: &str,
+) -> Option<PathBuf> {
     let filename = path.file_stem()?.to_str()?;
     let (_, front) = filename.split_once('.')?;
     assert!(front.contains('.'), "contains the delim `.`");
     let filename_with_random_number = format!("{front}.{random_string}.parquet");
-    let mut parquet_path = staging_path.to_owned();
+    let mut parquet_path = stream_staging_path.to_owned();
     parquet_path.push(filename_with_random_number);
     Some(parquet_path)
 }
@@ -345,9 +349,10 @@ impl Stream {
             arrow_files.retain(|path| {
                 let creation = path
                     .metadata()
-                    .expect("Arrow file should exist on disk")
-                    .created()
-                    .expect("Creation time should be accessible");
+                    .ok()
+                    .and_then(|meta| meta.created().or_else(|_| meta.modified()).ok())
+                    .expect("Arrow file should have a valid creation or modified time");
+
                 // Compare if creation time is actually from previous minute
                 minute_from_system_time(creation) < minute_from_system_time(exclude)
             });
@@ -594,7 +599,7 @@ impl Stream {
             .values()
             .map(|v| {
                 v.iter()
-                    .map(|file| file.metadata().unwrap().len())
+                    .filter_map(|file| file.metadata().ok().map(|meta| meta.len()))
                     .sum::<u64>()
             })
             .sum::<u64>();
@@ -624,92 +629,129 @@ impl Stream {
             return Ok(None);
         }
 
-        //find sum of arrow files in staging directory for a stream
         self.update_staging_metrics(&staging_files);
 
-        // warn!("staging files-\n{staging_files:?}\n");
         for (parquet_path, arrow_files) in staging_files {
             let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
             if record_reader.readers.is_empty() {
                 continue;
             }
             let merged_schema = record_reader.merged_schema();
-
             let props = self.parquet_writer_props(&merged_schema, time_partition, custom_partition);
             schemas.push(merged_schema.clone());
             let schema = Arc::new(merged_schema);
-            let mut part_path = parquet_path.to_owned();
-            part_path.set_extension("part");
-            let mut part_file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&part_path)
-                .map_err(|_| StagingError::Create)?;
-            let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props))?;
-            for ref record in record_reader.merged_iter(schema, time_partition.cloned()) {
-                writer.write(record)?;
-            }
-            writer.close()?;
 
-            if part_file.metadata().expect("File was just created").len()
-                < parquet::file::FOOTER_SIZE as u64
-            {
-                error!(
-                    "Invalid parquet file {part_path:?} detected for stream {}, removing it",
-                    &self.stream_name
-                );
-                remove_file(part_path).expect("File should be removable if it is invalid");
+            let part_path = parquet_path.with_extension("part");
+            if !self.write_parquet_part_file(
+                &part_path,
+                record_reader,
+                &schema,
+                &props,
+                time_partition,
+            )? {
                 continue;
             }
-            trace!("Parquet file successfully constructed");
 
-            if let Err(e) = std::fs::rename(&part_path, &parquet_path) {
+            if let Err(e) = self.finalize_parquet_file(&part_path, &parquet_path) {
                 error!("Couldn't rename part file: {part_path:?} -> {parquet_path:?}, error = {e}");
             } else {
-                // delete the files that were grouped to create parquet file
-                for (i, file) in arrow_files.iter().enumerate() {
-                    match file.metadata() {
-                        Ok(meta) => {
-                            let file_size = meta.len();
-                            match remove_file(file) {
-                                Ok(_) => {
-                                    metrics::STORAGE_SIZE
-                                        .with_label_values(&[
-                                            "staging",
-                                            &self.stream_name,
-                                            ARROW_FILE_EXTENSION,
-                                        ])
-                                        .sub(file_size as i64);
-                                }
-                                Err(e) => {
-                                    warn!("Failed to delete file {}: {e}", file.display());
-                                }
-                            }
-                        }
-                        Err(err) => {
-                            warn!("File ({}) not found; Error = {err}", file.display());
-                        }
-                    }
-
-                    // After deleting the last file, try to remove the inprocess directory
-                    if i == arrow_files.len() - 1 {
-                        if let Some(parent_dir) = file.parent() {
-                            if let Err(err) = fs::remove_dir(parent_dir) {
-                                warn!(
-                                    "Failed to remove inprocess directory {}: {err}",
-                                    parent_dir.display()
-                                );
-                            }
-                        }
-                    }
-                }
+                self.cleanup_arrow_files_and_dir(&arrow_files);
             }
         }
+
         if schemas.is_empty() {
             return Ok(None);
         }
 
         Ok(Some(Schema::try_merge(schemas).unwrap()))
+    }
+
+    fn write_parquet_part_file(
+        &self,
+        part_path: &Path,
+        record_reader: MergedReverseRecordReader,
+        schema: &Arc<Schema>,
+        props: &WriterProperties,
+        time_partition: Option<&String>,
+    ) -> Result<bool, StagingError> {
+        let mut part_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(part_path)
+            .map_err(|_| StagingError::Create)?;
+        let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
+        for ref record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
+            writer.write(record)?;
+        }
+        writer.close()?;
+
+        if part_file.metadata().expect("File was just created").len()
+            < parquet::file::FOOTER_SIZE as u64
+        {
+            error!(
+                "Invalid parquet file {part_path:?} detected for stream {}, removing it",
+                &self.stream_name
+            );
+            remove_file(part_path).expect("File should be removable if it is invalid");
+            return Ok(false);
+        }
+        trace!("Parquet file successfully constructed");
+        Ok(true)
+    }
+
+    fn finalize_parquet_file(&self, part_path: &Path, parquet_path: &Path) -> std::io::Result<()> {
+        std::fs::rename(part_path, parquet_path)
+    }
+
+    fn cleanup_arrow_files_and_dir(&self, arrow_files: &[PathBuf]) {
+        for (i, file) in arrow_files.iter().enumerate() {
+            match file.metadata() {
+                Ok(meta) => {
+                    let file_size = meta.len();
+                    match remove_file(file) {
+                        Ok(_) => {
+                            metrics::STORAGE_SIZE
+                                .with_label_values(&[
+                                    "staging",
+                                    &self.stream_name,
+                                    ARROW_FILE_EXTENSION,
+                                ])
+                                .sub(file_size as i64);
+                        }
+                        Err(e) => {
+                            warn!("Failed to delete file {}: {e}", file.display());
+                        }
+                    }
+                }
+                Err(err) => {
+                    warn!("File ({}) not found; Error = {err}", file.display());
+                }
+            }
+
+            // After deleting the last file, try to remove the inprocess directory if empty
+            if i == arrow_files.len() - 1 {
+                if let Some(parent_dir) = file.parent() {
+                    match fs::read_dir(parent_dir) {
+                        Ok(mut entries) => {
+                            if entries.next().is_none() {
+                                if let Err(err) = fs::remove_dir(parent_dir) {
+                                    warn!(
+                                        "Failed to remove inprocess directory {}: {err}",
+                                        parent_dir.display()
+                                    );
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            warn!(
+                                "Failed to read inprocess directory {}: {err}",
+                                parent_dir.display()
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     pub fn updated_schema(&self, current_schema: Schema) -> Schema {

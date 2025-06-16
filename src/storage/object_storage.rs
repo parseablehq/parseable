@@ -883,7 +883,7 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
             let start = Instant::now();
             info!("Starting object_store_sync for stream- {stream_name}");
             let result = object_store.upload_files_from_staging(&stream_name).await;
-            if let Err(e) = result {
+            if let Err(ref e) = result {
                 error!("Failed to upload files from staging for stream {stream_name}: {e}");
             } else {
                 info!(
@@ -891,7 +891,7 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
                     start.elapsed().as_millis()
                 );
             }
-            Ok(())
+            result
         });
     }
 }
