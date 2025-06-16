@@ -26,7 +26,7 @@ use crate::{
 };
 
 const HOME_SEARCH_QUERY_PARAM: &str = "key";
-const HOME_QUERY_PARAM: &str = "includeInternal";
+pub const HOME_QUERY_PARAM: &str = "includeInternal";
 /// Fetches the data to populate Prism's home
 ///
 ///
