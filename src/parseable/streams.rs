@@ -52,11 +52,8 @@ use crate::{
         format::{LogSource, LogSourceEntry},
         DEFAULT_TIMESTAMP_KEY,
     },
-    handlers::http::{
-        cluster::INTERNAL_STREAM_NAME, ingest::PostError,
-        modal::utils::ingest_utils::flatten_and_push_logs,
-    },
     handlers::http::modal::{ingest_server::INGESTOR_META, query_server::QUERIER_META},
+    handlers::http::{ingest::PostError, modal::utils::ingest_utils::flatten_and_push_logs},
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
@@ -74,7 +71,7 @@ use super::{
     },
     LogStream, ARROW_FILE_EXTENSION,
 };
-
+const DATASET_STATS_STREAM_NAME: &str = "pstats";
 const MAX_CONCURRENT_FIELD_STATS: usize = 10;
 
 #[derive(Serialize, Debug)]
@@ -512,7 +509,7 @@ impl Stream {
         let (schema, rbs) = self.convert_disk_files_to_parquet(
             time_partition.as_ref(),
             custom_partition.as_ref(),
-                init_signal,
+            init_signal,
             shutdown_signal,
         )?;
         // check if there is already a schema file in staging pertaining to this stream
@@ -732,8 +729,8 @@ impl Stream {
         let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
         for ref record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
             writer.write(record)?;
-                // Collect record batches for finding statistics later
-                record_batches.push(record.clone());
+            // Collect record batches for finding statistics later
+            record_batches.push(record.clone());
         }
         writer.close()?;
 
@@ -1033,11 +1030,10 @@ impl Stream {
         record_batches: Vec<RecordBatch>,
         schema: Arc<Schema>,
     ) -> Result<(), PostError> {
-        let stats_dataset_name = format!("dataset_{INTERNAL_STREAM_NAME}");
         let log_source_entry = LogSourceEntry::new(LogSource::Json, HashSet::new());
         PARSEABLE
             .create_stream_if_not_exists(
-                &stats_dataset_name,
+                DATASET_STATS_STREAM_NAME,
                 StreamType::Internal,
                 vec![log_source_entry],
             )
@@ -1061,7 +1057,7 @@ impl Stream {
 
         flatten_and_push_logs(
             stats_value,
-            &stats_dataset_name,
+            DATASET_STATS_STREAM_NAME,
             &LogSource::Json,
             &HashMap::new(),
         )
@@ -1189,7 +1185,7 @@ impl Stream {
         field_name: &str,
     ) -> Vec<DistinctStat> {
         let sql = format!(
-        "select count(*) as distinct_count, \"{field_name}\" from \"{stream_name}\" where \"{field_name}\" is not null group by \"{field_name}\" order by distinct_count desc limit {}",
+        "select count(*) as distinct_count, \"{field_name}\" from \"{stream_name}\" group by \"{field_name}\" order by distinct_count desc limit {}",
         PARSEABLE.options.max_field_statistics
     );
         let mut distinct_stats = Vec::new();
@@ -1300,7 +1296,8 @@ impl Streams {
             .map(Arc::clone)
             .collect();
         for stream in streams {
-            joinset.spawn(async move { stream.flush_and_convert(init_signal, shutdown_signal).await });
+            joinset
+                .spawn(async move { stream.flush_and_convert(init_signal, shutdown_signal).await });
         }
     }
 }
