@@ -84,7 +84,6 @@ pub async fn handler(mut cancel_rx: oneshot::Receiver<()>) -> anyhow::Result<()>
     loop {
         select! {
             _ = &mut cancel_rx => {
-                // actix server finished .. stop other threads and stop the server
                 remote_sync_inbox.send(()).unwrap_or(());
                 localsync_inbox.send(()).unwrap_or(());
                 if let Err(e) = localsync_handler.await {
@@ -96,12 +95,9 @@ pub async fn handler(mut cancel_rx: oneshot::Receiver<()>) -> anyhow::Result<()>
                 return Ok(());
             },
             _ = &mut localsync_outbox => {
-                // crash the server if localsync fails for any reason
-                // panic!("Local Sync thread died. Server will fail now!")
                 return Err(anyhow::Error::msg("Failed to sync local data to drive. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
             },
             _ = &mut remote_sync_outbox => {
-                // remote_sync failed, this is recoverable by just starting remote_sync thread again
                 if let Err(e) = remote_sync_handler.await {
                     error!("Error joining remote_sync_handler: {e:?}");
                 }
@@ -125,16 +121,26 @@ pub fn object_store_sync() -> (
 
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
             let mut sync_interval = interval_at(next_minute(), STORAGE_UPLOAD_INTERVAL);
-            let mut joinset = JoinSet::new();
 
             loop {
                 select! {
                     _ = sync_interval.tick() => {
                         trace!("Syncing Parquets to Object Store... ");
-                        sync_all_streams(&mut joinset)
-                    },
-                    Some(res) = joinset.join_next(), if !joinset.is_empty() => {
-                        log_join_result(res, "object store sync");
+
+                        // Monitor the duration of sync_all_streams execution
+                        monitor_task_duration(
+                            "object_store_sync_all_streams",
+                            Duration::from_secs(15),
+                            || async {
+                                let mut joinset = JoinSet::new();
+                                sync_all_streams(&mut joinset);
+
+                                // Wait for all spawned tasks to complete
+                                while let Some(res) = joinset.join_next().await {
+                                    log_join_result(res, "object store sync");
+                                }
+                            }
+                        ).await;
                     },
                     res = &mut inbox_rx => {
                         match res {
@@ -146,10 +152,6 @@ pub fn object_store_sync() -> (
                         }
                     }
                 }
-            }
-            // Drain remaining joinset tasks
-            while let Some(res) = joinset.join_next().await {
-                log_join_result(res, "object store sync");
             }
         }));
 
@@ -184,31 +186,36 @@ pub fn local_sync() -> (
 
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
             let mut sync_interval = interval_at(next_minute(), LOCAL_SYNC_INTERVAL);
-            let mut joinset = JoinSet::new();
 
             loop {
                 select! {
                     // Spawns a flush+conversion task every `LOCAL_SYNC_INTERVAL` seconds
                     _ = sync_interval.tick() => {
-                        PARSEABLE.streams.flush_and_convert(&mut joinset, false, false)
+                        // Monitor the duration of flush_and_convert execution
+                        monitor_task_duration(
+                            "local_sync_flush_and_convert",
+                            Duration::from_secs(15),
+                            || async {
+                                let mut joinset = JoinSet::new();
+                                PARSEABLE.streams.flush_and_convert(&mut joinset, false, false);
+
+                                // Wait for all spawned tasks to complete
+                                while let Some(res) = joinset.join_next().await {
+                                    log_join_result(res, "flush and convert");
+                                }
+                            }
+                        ).await;
                     },
-                    // Joins and logs errors in spawned tasks
-                    Some(res) = joinset.join_next(), if !joinset.is_empty() => {
-                        log_join_result(res, "flush and convert");
-                    }
-                    res = &mut inbox_rx => {match res{
-                        Ok(_) => break,
-                        Err(_) => {
-                            warn!("Inbox channel closed unexpectedly");
-                            break;
-                        }}
+                    res = &mut inbox_rx => {
+                        match res {
+                            Ok(_) => break,
+                            Err(_) => {
+                                warn!("Inbox channel closed unexpectedly");
+                                break;
+                            }
+                        }
                     }
                 }
-            }
-
-            // Drain remaining joinset tasks
-            while let Some(res) = joinset.join_next().await {
-                log_join_result(res, "flush and convert");
             }
         }));
 
@@ -228,21 +235,34 @@ pub fn local_sync() -> (
     (handle, outbox_rx, inbox_tx)
 }
 
-// local sync at the start of the server
+// local and object store sync at the start of the server
 pub async fn sync_start() -> anyhow::Result<()> {
-    let mut local_sync_joinset = JoinSet::new();
-    PARSEABLE
-        .streams
-        .flush_and_convert(&mut local_sync_joinset, true, false);
-    while let Some(res) = local_sync_joinset.join_next().await {
-        log_join_result(res, "flush and convert");
-    }
+    // Monitor local sync duration at startup
+    monitor_task_duration("startup_local_sync", Duration::from_secs(15), || async {
+        let mut local_sync_joinset = JoinSet::new();
+        PARSEABLE
+            .streams
+            .flush_and_convert(&mut local_sync_joinset, true, false);
+        while let Some(res) = local_sync_joinset.join_next().await {
+            log_join_result(res, "flush and convert");
+        }
+    })
+    .await;
 
-    let mut object_store_joinset = JoinSet::new();
-    sync_all_streams(&mut object_store_joinset);
-    while let Some(res) = object_store_joinset.join_next().await {
-        log_join_result(res, "object store sync");
-    }
+    // Monitor object store sync duration at startup
+    monitor_task_duration(
+        "startup_object_store_sync",
+        Duration::from_secs(15),
+        || async {
+            let mut object_store_joinset = JoinSet::new();
+            sync_all_streams(&mut object_store_joinset);
+            while let Some(res) = object_store_joinset.join_next().await {
+                log_join_result(res, "object store sync");
+            }
+        },
+    )
+    .await;
+
     Ok(())
 }
 
