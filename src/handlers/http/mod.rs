@@ -36,6 +36,7 @@ pub mod cluster;
 pub mod correlation;
 pub mod health_check;
 pub mod ingest;
+pub mod resource_check;
 mod kinesis;
 pub mod llm;
 pub mod logstream;
