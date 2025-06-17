@@ -131,3 +131,22 @@ pub fn user_auth_for_datasets(
 
     Ok(())
 }
+
+/// A function to extract table names from a SQL string
+pub async fn extract_tables(sql: &str) -> Option<Vec<String>> {
+    let session_state = QUERY_SESSION.state();
+
+    // get the logical plan and extract the table name
+    let raw_logical_plan = match session_state.create_logical_plan(sql).await {
+        Ok(plan) => plan,
+        Err(_) => return None,
+    };
+
+    // create a visitor to extract the table name
+    let mut visitor = TableScanVisitor::default();
+    let _ = raw_logical_plan.visit(&mut visitor);
+
+    let tables = visitor.into_inner();
+
+    Some(tables)
+}

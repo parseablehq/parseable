@@ -1,4 +1,11 @@
-name: Release builds for Mac(64bit, Arm), Windows and Linux(64 bit, Arm)
+# This workflow builds Parseable for Linux, Mac, Windows and Docker
+# and publishes the artifacts to the GitHub release page.
+# It is triggered on push to tags that match the pattern vX.Y.Z
+# where X, Y, Z are integers (e.g., v1.0.0, v2.3.4).
+# It also creates a checksum file for the artifacts and publishes it to the release page.
+# It also builds and pushes a Docker image to Docker Hub with the same version tag.
+
+name: Release builds for Linux(64 bit, Arm), Mac(64bit, Arm), Windows and Docker
 
 on:
   push:
@@ -187,3 +194,38 @@ jobs:
           files: checksum.txt
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-push-docker-image:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          image: tonistiigi/binfmt:qemu-v8.1.5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: parseable/parseable
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: parseable/parseable:${{ github.ref_name }}
+          platforms: linux/amd64,linux/arm64

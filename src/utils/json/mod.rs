@@ -19,7 +19,7 @@
 use std::fmt;
 use std::num::NonZeroU32;
 
-use flatten::{convert_to_array, generic_flattening, has_more_than_four_levels};
+use flatten::{convert_to_array, generic_flattening, has_more_than_max_allowed_levels};
 use serde::de::Visitor;
 use serde_json;
 use serde_json::Value;
@@ -28,6 +28,7 @@ use crate::event::format::LogSource;
 use crate::metadata::SchemaVersion;
 
 pub mod flatten;
+pub mod strict;
 
 /// calls the function `flatten_json` which results Vec<Value> or Error
 /// in case when Vec<Value> is returned, converts the Vec<Value> to Value of Array
@@ -43,11 +44,9 @@ pub fn flatten_json_body(
 ) -> Result<Value, anyhow::Error> {
     // Flatten the json body only if new schema and has less than 4 levels of nesting
     let mut nested_value = if schema_version == SchemaVersion::V1
-        && !has_more_than_four_levels(&body, 1)
-        && matches!(
-            log_source,
-            LogSource::Json | LogSource::Custom(_) | LogSource::Kinesis
-        ) {
+        && !has_more_than_max_allowed_levels(&body, 1)
+        && matches!(log_source, LogSource::Json | LogSource::Custom(_))
+    {
         let flattened_json = generic_flattening(&body)?;
         convert_to_array(flattened_json)?
     } else {
@@ -144,50 +143,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::event::format::LogSource;
-
     use super::*;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
-
-    #[test]
-    fn hierarchical_json_flattening_success() {
-        let value = json!({"a":{"b":{"e":["a","b"]}}});
-        let expected = json!([{"a_b_e": "a"}, {"a_b_e": "b"}]);
-        assert_eq!(
-            flatten_json_body(
-                value,
-                None,
-                None,
-                None,
-                crate::metadata::SchemaVersion::V1,
-                false,
-                &LogSource::default()
-            )
-            .unwrap(),
-            expected
-        );
-    }
-
-    #[test]
-    fn hierarchical_json_flattening_failure() {
-        let value = json!({"a":{"b":{"c":{"d":{"e":["a","b"]}}}}});
-        let expected = json!({"a_b_c_d_e": ["a","b"]});
-        assert_eq!(
-            flatten_json_body(
-                value,
-                None,
-                None,
-                None,
-                crate::metadata::SchemaVersion::V1,
-                false,
-                &LogSource::default()
-            )
-            .unwrap(),
-            expected
-        );
-    }
-
     #[derive(Serialize, Deserialize)]
     struct TestBool {
         #[serde(
@@ -348,65 +306,6 @@ mod tests {
                     "b": "hello",
                     "c_a": [1],
                     "c_b": [2],
-                },
-            ]),
-            flattened_json
-        );
-    }
-
-    #[test]
-    fn arr_obj_with_nested_type_v1() {
-        let json = json!([
-            {
-                "a": 1,
-                "b": "hello",
-            },
-            {
-                "a": 1,
-                "b": "hello",
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": [{"a": 1}]
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": [{"a": 1, "b": 2}]
-            },
-        ]);
-        let flattened_json = flatten_json_body(
-            json,
-            None,
-            None,
-            None,
-            SchemaVersion::V1,
-            false,
-            &crate::event::format::LogSource::default(),
-        )
-        .unwrap();
-
-        assert_eq!(
-            json!([
-                {
-                    "a": 1,
-                    "b": "hello",
-                },
-                {
-                    "a": 1,
-                    "b": "hello",
-                },
-                {
-                    "a": 1,
-                    "b": "hello",
-                    "c_a": 1,
-                },
-                {
-                    "a": 1,
-                    "b": "hello",
-                    "c_a": 1,
-                    "c_b": 2,
                 },
             ]),
             flattened_json

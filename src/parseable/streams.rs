@@ -19,10 +19,9 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    fs::{remove_file, write, File, OpenOptions},
+    fs::{self, remove_file, write, File, OpenOptions},
     num::NonZeroU32,
     path::{Path, PathBuf},
-    process,
     sync::{Arc, Mutex, RwLock},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -39,7 +38,6 @@ use parquet::{
     format::SortingColumn,
     schema::types::ColumnPath,
 };
-use rand::distributions::DistString;
 use relative_path::RelativePathBuf;
 use tokio::task::JoinSet;
 use tracing::{error, info, trace, warn};
@@ -50,6 +48,7 @@ use crate::{
         format::{LogSource, LogSourceEntry},
         DEFAULT_TIMESTAMP_KEY,
     },
+    handlers::http::modal::{ingest_server::INGESTOR_META, query_server::QUERIER_META},
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
@@ -67,15 +66,23 @@ use super::{
     LogStream, ARROW_FILE_EXTENSION,
 };
 
+const INPROCESS_DIR_PREFIX: &str = "processing_";
+
 /// Returns the filename for parquet if provided arrows file path is valid as per our expectation
-fn arrow_path_to_parquet(path: &Path, random_string: &str) -> Option<PathBuf> {
+fn arrow_path_to_parquet(
+    stream_staging_path: &Path,
+    path: &Path,
+    random_string: &str,
+) -> Option<PathBuf> {
     let filename = path.file_stem()?.to_str()?;
     let (_, front) = filename.split_once('.')?;
-    assert!(front.contains('.'), "contains the delim `.`");
+    if !front.contains('.') {
+        warn!("Skipping unexpected arrow file without `.`: {}", filename);
+        return None;
+    }
     let filename_with_random_number = format!("{front}.{random_string}.parquet");
-    let mut parquet_path = path.to_owned();
-    parquet_path.set_file_name(filename_with_random_number);
-
+    let mut parquet_path = stream_staging_path.to_owned();
+    parquet_path.push(filename_with_random_number);
     Some(parquet_path)
 }
 
@@ -114,7 +121,7 @@ impl Stream {
         let data_path = options.local_stream_data_path(&stream_name);
 
         Arc::new(Self {
-            stream_name,
+            stream_name: stream_name.clone(),
             metadata: RwLock::new(metadata),
             data_path,
             options,
@@ -132,7 +139,16 @@ impl Stream {
         custom_partition_values: &HashMap<String, String>,
         stream_type: StreamType,
     ) -> Result<(), StagingError> {
-        let mut guard = self.writer.lock().unwrap();
+        let mut guard = match self.writer.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                error!(
+                    "Writer lock poisoned while ingesting data for stream {}",
+                    self.stream_name
+                );
+                poisoned.into_inner()
+            }
+        };
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
             let filename =
                 self.filename_by_partition(schema_key, parsed_timestamp, custom_partition_values);
@@ -191,17 +207,52 @@ impl Stream {
             return vec![];
         };
 
-        let paths = dir
-            .flatten()
+        dir.flatten()
             .map(|file| file.path())
             .filter(|file| {
                 file.extension()
                     .is_some_and(|ext| ext.eq(ARROW_FILE_EXTENSION))
             })
-            .sorted_by_key(|f| f.metadata().unwrap().modified().unwrap())
-            .collect();
+            .filter_map(|f| {
+                let modified = f.metadata().ok().and_then(|m| m.modified().ok());
+                modified.map(|modified_time| (f, modified_time))
+            })
+            .sorted_by_key(|(_, modified_time)| *modified_time)
+            .map(|(f, _)| f)
+            .collect()
+    }
 
-        paths
+    pub fn inprocess_arrow_files(&self) -> Vec<PathBuf> {
+        let Ok(dir) = self.data_path.read_dir() else {
+            return vec![];
+        };
+
+        //iterate through all the inprocess_ directories and collect all arrow files
+        dir.filter_map(|entry| {
+            let path = entry.ok()?.path();
+            if path.is_dir()
+                && path
+                    .file_name()?
+                    .to_str()?
+                    .starts_with(INPROCESS_DIR_PREFIX)
+            {
+                Some(path)
+            } else {
+                None
+            }
+        })
+        .flat_map(|dir| {
+            fs::read_dir(dir)
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter_map(|entry| entry.ok().map(|file| file.path()))
+        })
+        .filter(|file| {
+            file.extension()
+                .is_some_and(|ext| ext.eq(ARROW_FILE_EXTENSION))
+        })
+        .collect::<Vec<_>>()
     }
 
     /// Groups arrow files which are to be included in one parquet
@@ -212,44 +263,150 @@ impl Stream {
     pub fn arrow_files_grouped_exclude_time(
         &self,
         exclude: SystemTime,
+        group_minute: u128,
+        init_signal: bool,
         shutdown_signal: bool,
     ) -> HashMap<PathBuf, Vec<PathBuf>> {
-        let mut grouped_arrow_file: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
-        let mut arrow_files = self.arrow_files();
+        let random_string = self.get_node_id_string();
+        let inprocess_dir = Self::inprocess_folder(&self.data_path, group_minute);
 
-        // if the shutdown signal is false i.e. normal condition
-        // don't keep the ones for the current minute
+        let arrow_files = self.fetch_arrow_files_for_conversion(exclude, shutdown_signal);
+        if !arrow_files.is_empty() {
+            if let Err(e) = fs::create_dir_all(&inprocess_dir) {
+                error!("Failed to create inprocess directory: {e}");
+                return HashMap::new();
+            }
+
+            self.move_arrow_files(arrow_files, &inprocess_dir);
+        }
+        if init_signal {
+            // Group from all inprocess folders
+            return self.group_inprocess_arrow_files(&random_string);
+        }
+
+        self.group_single_inprocess_arrow_files(&inprocess_dir, &random_string)
+    }
+
+    /// Groups arrow files only from the specified inprocess folder
+    fn group_single_inprocess_arrow_files(
+        &self,
+        inprocess_dir: &Path,
+        random_string: &str,
+    ) -> HashMap<PathBuf, Vec<PathBuf>> {
+        let mut grouped: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+        let Ok(dir) = fs::read_dir(inprocess_dir) else {
+            return grouped;
+        };
+        for entry in dir.flatten() {
+            let path = entry.path();
+            if path
+                .extension()
+                .is_some_and(|ext| ext.eq(ARROW_FILE_EXTENSION))
+            {
+                if let Some(parquet_path) =
+                    arrow_path_to_parquet(&self.data_path, &path, random_string)
+                {
+                    grouped.entry(parquet_path).or_default().push(path);
+                } else {
+                    warn!("Unexpected arrow file: {}", path.display());
+                }
+            }
+        }
+        grouped
+    }
+
+    /// Returns the node id string for file naming.
+    fn get_node_id_string(&self) -> String {
+        match self.options.mode {
+            Mode::Query => QUERIER_META
+                .get()
+                .map(|querier_metadata| querier_metadata.get_node_id())
+                .expect("Querier metadata should be set"),
+            Mode::Ingest => INGESTOR_META
+                .get()
+                .map(|ingestor_metadata| ingestor_metadata.get_node_id())
+                .expect("Ingestor metadata should be set"),
+            _ => "000000000000000".to_string(),
+        }
+    }
+
+    /// Returns a mapping for inprocess arrow files (init_signal=true).
+    fn group_inprocess_arrow_files(&self, random_string: &str) -> HashMap<PathBuf, Vec<PathBuf>> {
+        let mut grouped: HashMap<PathBuf, Vec<PathBuf>> = HashMap::new();
+        for inprocess_file in self.inprocess_arrow_files() {
+            if let Some(parquet_path) =
+                arrow_path_to_parquet(&self.data_path, &inprocess_file, random_string)
+            {
+                grouped
+                    .entry(parquet_path)
+                    .or_default()
+                    .push(inprocess_file);
+            } else {
+                warn!("Unexpected arrow file: {}", inprocess_file.display());
+            }
+        }
+        grouped
+    }
+
+    /// Returns arrow files for conversion, filtering by time and removing invalid files.
+    fn fetch_arrow_files_for_conversion(
+        &self,
+        exclude: SystemTime,
+        shutdown_signal: bool,
+    ) -> Vec<PathBuf> {
+        let mut arrow_files = self.arrow_files();
         if !shutdown_signal {
             arrow_files.retain(|path| {
                 let creation = path
                     .metadata()
-                    .expect("Arrow file should exist on disk")
-                    .created()
-                    .expect("Creation time should be accessible");
+                    .ok()
+                    .and_then(|meta| meta.created().or_else(|_| meta.modified()).ok())
+                    .expect("Arrow file should have a valid creation or modified time");
+
                 // Compare if creation time is actually from previous minute
                 minute_from_system_time(creation) < minute_from_system_time(exclude)
             });
         }
+        arrow_files
+    }
 
-        let random_string =
-            rand::distributions::Alphanumeric.sample_string(&mut rand::thread_rng(), 15);
+    /// Moves eligible arrow files to the inprocess folder and groups them by parquet path.
+    fn move_arrow_files(&self, arrow_files: Vec<PathBuf>, inprocess_dir: &Path) {
         for arrow_file_path in arrow_files {
-            if arrow_file_path.metadata().unwrap().len() == 0 {
-                error!(
-                    "Invalid arrow file {:?} detected for stream {}, removing it",
-                    &arrow_file_path, self.stream_name
-                );
-                remove_file(&arrow_file_path).unwrap();
-            } else if let Some(key) = arrow_path_to_parquet(&arrow_file_path, &random_string) {
-                grouped_arrow_file
-                    .entry(key)
-                    .or_default()
-                    .push(arrow_file_path);
-            } else {
-                warn!("Unexpected arrows file: {}", arrow_file_path.display());
+            match arrow_file_path.metadata() {
+                Ok(meta) if meta.len() == 0 => {
+                    error!(
+                        "Invalid arrow file {:?} detected for stream {}, removing it",
+                        &arrow_file_path, self.stream_name
+                    );
+                    remove_file(&arrow_file_path).expect("File should be removed");
+                }
+                Ok(_) => {
+                    let new_path = inprocess_dir.join(
+                        arrow_file_path
+                            .file_name()
+                            .expect("Arrow file should have a name"),
+                    );
+                    if let Err(e) = fs::rename(&arrow_file_path, &new_path) {
+                        error!(
+                            "Failed to rename arrow file to inprocess directory: {} -> {}: {e}",
+                            arrow_file_path.display(),
+                            new_path.display()
+                        );
+                    }
+                }
+                Err(e) => {
+                    warn!(
+                        "Could not get metadata for arrow file {}: {e}",
+                        arrow_file_path.display()
+                    );
+                }
             }
         }
-        grouped_arrow_file
+    }
+
+    fn inprocess_folder(base: &Path, minute: u128) -> PathBuf {
+        base.join(format!("{INPROCESS_DIR_PREFIX}{minute}"))
     }
 
     pub fn parquet_files(&self) -> Vec<PathBuf> {
@@ -306,7 +463,11 @@ impl Stream {
     }
 
     /// Converts arrow files in staging into parquet files, does so only for past minutes when run with `!shutdown_signal`
-    pub fn prepare_parquet(&self, shutdown_signal: bool) -> Result<(), StagingError> {
+    pub fn prepare_parquet(
+        &self,
+        init_signal: bool,
+        shutdown_signal: bool,
+    ) -> Result<(), StagingError> {
         info!(
             "Starting arrow_conversion job for stream- {}",
             self.stream_name
@@ -321,6 +482,7 @@ impl Stream {
             .convert_disk_files_to_parquet(
                 time_partition.as_ref(),
                 custom_partition.as_ref(),
+                init_signal,
                 shutdown_signal,
             )
             .inspect_err(|err| warn!("Error while converting arrow to parquet- {err:?}"))?;
@@ -339,11 +501,6 @@ impl Stream {
 
                 let staging_schemas = self.get_schemas_if_present();
                 if let Some(mut staging_schemas) = staging_schemas {
-                    warn!(
-                        "Found {} schemas in staging for stream- {}",
-                        staging_schemas.len(),
-                        self.stream_name
-                    );
                     staging_schemas.push(schema);
                     schema = Schema::try_merge(staging_schemas)?;
                 }
@@ -367,7 +524,16 @@ impl Stream {
     }
 
     pub fn flush(&self, forced: bool) {
-        let mut writer = self.writer.lock().unwrap();
+        let mut writer = match self.writer.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => {
+                error!(
+                    "Writer lock poisoned while flushing data for stream {}",
+                    self.stream_name
+                );
+                poisoned.into_inner()
+            }
+        };
         // Flush memory
         writer.mem.clear();
         // Drop schema -> disk writer mapping, triggers flush to disk
@@ -421,6 +587,37 @@ impl Stream {
         props.set_sorting_columns(Some(sorting_column_vec)).build()
     }
 
+    fn reset_staging_metrics(&self) {
+        metrics::STAGING_FILES
+            .with_label_values(&[&self.stream_name])
+            .set(0);
+        metrics::STORAGE_SIZE
+            .with_label_values(&["staging", &self.stream_name, "arrows"])
+            .set(0);
+        metrics::STORAGE_SIZE
+            .with_label_values(&["staging", &self.stream_name, "parquet"])
+            .set(0);
+    }
+
+    fn update_staging_metrics(&self, staging_files: &HashMap<PathBuf, Vec<PathBuf>>) {
+        let total_arrow_files = staging_files.values().map(|v| v.len()).sum::<usize>();
+        metrics::STAGING_FILES
+            .with_label_values(&[&self.stream_name])
+            .set(total_arrow_files as i64);
+
+        let total_arrow_files_size = staging_files
+            .values()
+            .map(|v| {
+                v.iter()
+                    .filter_map(|file| file.metadata().ok().map(|meta| meta.len()))
+                    .sum::<u64>()
+            })
+            .sum::<u64>();
+        metrics::STORAGE_SIZE
+            .with_label_values(&["staging", &self.stream_name, "arrows"])
+            .set(total_arrow_files_size as i64);
+    }
+
     /// This function reads arrow files, groups their schemas
     ///
     /// converts them into parquet files and returns a merged schema
@@ -428,99 +625,47 @@ impl Stream {
         &self,
         time_partition: Option<&String>,
         custom_partition: Option<&String>,
+        init_signal: bool,
         shutdown_signal: bool,
     ) -> Result<Option<Schema>, StagingError> {
         let mut schemas = Vec::new();
 
         let now = SystemTime::now();
-        let staging_files = self.arrow_files_grouped_exclude_time(now, shutdown_signal);
+        let group_minute = minute_from_system_time(now) - 1;
+        let staging_files =
+            self.arrow_files_grouped_exclude_time(now, group_minute, init_signal, shutdown_signal);
         if staging_files.is_empty() {
-            metrics::STAGING_FILES
-                .with_label_values(&[&self.stream_name])
-                .set(0);
-            metrics::STORAGE_SIZE
-                .with_label_values(&["staging", &self.stream_name, "arrows"])
-                .set(0);
-            metrics::STORAGE_SIZE
-                .with_label_values(&["staging", &self.stream_name, "parquet"])
-                .set(0);
+            self.reset_staging_metrics();
+            return Ok(None);
         }
 
-        //find sum of arrow files in staging directory for a stream
-        let total_arrow_files = staging_files.values().map(|v| v.len()).sum::<usize>();
-        metrics::STAGING_FILES
-            .with_label_values(&[&self.stream_name])
-            .set(total_arrow_files as i64);
+        self.update_staging_metrics(&staging_files);
 
-        //find sum of file sizes of all arrow files in staging_files
-        let total_arrow_files_size = staging_files
-            .values()
-            .map(|v| {
-                v.iter()
-                    .map(|file| file.metadata().unwrap().len())
-                    .sum::<u64>()
-            })
-            .sum::<u64>();
-        metrics::STORAGE_SIZE
-            .with_label_values(&["staging", &self.stream_name, "arrows"])
-            .set(total_arrow_files_size as i64);
-
-        // warn!("staging files-\n{staging_files:?}\n");
         for (parquet_path, arrow_files) in staging_files {
             let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
             if record_reader.readers.is_empty() {
                 continue;
             }
             let merged_schema = record_reader.merged_schema();
-
             let props = self.parquet_writer_props(&merged_schema, time_partition, custom_partition);
             schemas.push(merged_schema.clone());
             let schema = Arc::new(merged_schema);
-            let mut part_path = parquet_path.to_owned();
-            part_path.set_extension("part");
-            let mut part_file = OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(&part_path)
-                .map_err(|_| StagingError::Create)?;
-            let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props))?;
-            for ref record in record_reader.merged_iter(schema, time_partition.cloned()) {
-                writer.write(record)?;
+
+            let part_path = parquet_path.with_extension("part");
+            if !self.write_parquet_part_file(
+                &part_path,
+                record_reader,
+                &schema,
+                &props,
+                time_partition,
+            )? {
+                continue;
             }
-            writer.close()?;
 
-            if part_file.metadata().expect("File was just created").len()
-                < parquet::file::FOOTER_SIZE as u64
-            {
-                error!(
-                    "Invalid parquet file {part_path:?} detected for stream {}, removing it",
-                    &self.stream_name
-                );
-                remove_file(part_path).unwrap();
+            if let Err(e) = self.finalize_parquet_file(&part_path, &parquet_path) {
+                error!("Couldn't rename part file: {part_path:?} -> {parquet_path:?}, error = {e}");
             } else {
-                trace!("Parquet file successfully constructed");
-                if let Err(e) = std::fs::rename(&part_path, &parquet_path) {
-                    error!(
-                        "Couldn't rename part file: {part_path:?} -> {parquet_path:?}, error = {e}"
-                    );
-                }
-
-                for file in arrow_files {
-                    let file_size = match file.metadata() {
-                        Ok(meta) => meta.len(),
-                        Err(err) => {
-                            warn!("File ({}) not found; Error = {err}", file.display());
-                            continue;
-                        }
-                    };
-                    if remove_file(&file).is_err() {
-                        error!("Failed to delete file. Unstable state");
-                        process::abort()
-                    }
-                    metrics::STORAGE_SIZE
-                        .with_label_values(&["staging", &self.stream_name, ARROW_FILE_EXTENSION])
-                        .sub(file_size as i64);
-                }
+                self.cleanup_arrow_files_and_dir(&arrow_files);
             }
         }
 
@@ -529,6 +674,94 @@ impl Stream {
         }
 
         Ok(Some(Schema::try_merge(schemas).unwrap()))
+    }
+
+    fn write_parquet_part_file(
+        &self,
+        part_path: &Path,
+        record_reader: MergedReverseRecordReader,
+        schema: &Arc<Schema>,
+        props: &WriterProperties,
+        time_partition: Option<&String>,
+    ) -> Result<bool, StagingError> {
+        let mut part_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(part_path)
+            .map_err(|_| StagingError::Create)?;
+        let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
+        for ref record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
+            writer.write(record)?;
+        }
+        writer.close()?;
+
+        if part_file.metadata().expect("File was just created").len()
+            < parquet::file::FOOTER_SIZE as u64
+        {
+            error!(
+                "Invalid parquet file {part_path:?} detected for stream {}, removing it",
+                &self.stream_name
+            );
+            remove_file(part_path).expect("File should be removable if it is invalid");
+            return Ok(false);
+        }
+        trace!("Parquet file successfully constructed");
+        Ok(true)
+    }
+
+    fn finalize_parquet_file(&self, part_path: &Path, parquet_path: &Path) -> std::io::Result<()> {
+        std::fs::rename(part_path, parquet_path)
+    }
+
+    fn cleanup_arrow_files_and_dir(&self, arrow_files: &[PathBuf]) {
+        for (i, file) in arrow_files.iter().enumerate() {
+            match file.metadata() {
+                Ok(meta) => {
+                    let file_size = meta.len();
+                    match remove_file(file) {
+                        Ok(_) => {
+                            metrics::STORAGE_SIZE
+                                .with_label_values(&[
+                                    "staging",
+                                    &self.stream_name,
+                                    ARROW_FILE_EXTENSION,
+                                ])
+                                .sub(file_size as i64);
+                        }
+                        Err(e) => {
+                            warn!("Failed to delete file {}: {e}", file.display());
+                        }
+                    }
+                }
+                Err(err) => {
+                    warn!("File ({}) not found; Error = {err}", file.display());
+                }
+            }
+
+            // After deleting the last file, try to remove the inprocess directory if empty
+            if i == arrow_files.len() - 1 {
+                if let Some(parent_dir) = file.parent() {
+                    match fs::read_dir(parent_dir) {
+                        Ok(mut entries) => {
+                            if entries.next().is_none() {
+                                if let Err(err) = fs::remove_dir(parent_dir) {
+                                    warn!(
+                                        "Failed to remove inprocess directory {}: {err}",
+                                        parent_dir.display()
+                                    );
+                                }
+                            }
+                        }
+                        Err(err) => {
+                            warn!(
+                                "Failed to read inprocess directory {}: {err}",
+                                parent_dir.display()
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     pub fn updated_schema(&self, current_schema: Schema) -> Schema {
@@ -725,7 +958,11 @@ impl Stream {
     }
 
     /// First flushes arrows onto disk and then converts the arrow into parquet
-    pub fn flush_and_convert(&self, shutdown_signal: bool) -> Result<(), StagingError> {
+    pub fn flush_and_convert(
+        &self,
+        init_signal: bool,
+        shutdown_signal: bool,
+    ) -> Result<(), StagingError> {
         let start_flush = Instant::now();
         self.flush(shutdown_signal);
         trace!(
@@ -735,7 +972,7 @@ impl Stream {
         );
 
         let start_convert = Instant::now();
-        self.prepare_parquet(shutdown_signal)?;
+        self.prepare_parquet(init_signal, shutdown_signal)?;
         trace!(
             "Converting arrows to parquet on stream ({}) took: {}s",
             self.stream_name,
@@ -820,6 +1057,7 @@ impl Streams {
     pub fn flush_and_convert(
         &self,
         joinset: &mut JoinSet<Result<(), StagingError>>,
+        init_signal: bool,
         shutdown_signal: bool,
     ) {
         let streams: Vec<Arc<Stream>> = self
@@ -829,7 +1067,7 @@ impl Streams {
             .map(Arc::clone)
             .collect();
         for stream in streams {
-            joinset.spawn(async move { stream.flush_and_convert(shutdown_signal) });
+            joinset.spawn(async move { stream.flush_and_convert(init_signal, shutdown_signal) });
         }
     }
 }
@@ -1018,7 +1256,7 @@ mod tests {
             LogStreamMetadata::default(),
             None,
         )
-        .convert_disk_files_to_parquet(None, None, false)?;
+        .convert_disk_files_to_parquet(None, None, false, false)?;
         assert!(result.is_none());
         // Verify metrics were set to 0
         let staging_files = metrics::STAGING_FILES.with_label_values(&[&stream]).get();
@@ -1097,7 +1335,7 @@ mod tests {
         // Start with a fresh staging
         let staging = Stream::new(options, stream_name, LogStreamMetadata::default(), None);
         let result = staging
-            .convert_disk_files_to_parquet(None, None, true)
+            .convert_disk_files_to_parquet(None, None, false, true)
             .unwrap();
 
         assert!(result.is_some());
@@ -1146,7 +1384,7 @@ mod tests {
         // Start with a fresh staging
         let staging = Stream::new(options, stream_name, LogStreamMetadata::default(), None);
         let result = staging
-            .convert_disk_files_to_parquet(None, None, true)
+            .convert_disk_files_to_parquet(None, None, false, true)
             .unwrap();
 
         assert!(result.is_some());
@@ -1200,7 +1438,7 @@ mod tests {
         // Start with a fresh staging
         let staging = Stream::new(options, stream_name, LogStreamMetadata::default(), None);
         let result = staging
-            .convert_disk_files_to_parquet(None, None, false)
+            .convert_disk_files_to_parquet(None, None, false, false)
             .unwrap();
 
         assert!(result.is_some());
@@ -1228,7 +1466,7 @@ mod tests {
         let file_path = create_test_file(&temp_dir, filename);
         let random_string = "random123";
 
-        let result = arrow_path_to_parquet(&file_path, random_string);
+        let result = arrow_path_to_parquet(&file_path, &file_path, random_string);
 
         assert!(result.is_some());
         let parquet_path = result.unwrap();
@@ -1253,7 +1491,7 @@ mod tests {
 
         let random_string = "random456";
 
-        let result = arrow_path_to_parquet(&file_path, random_string);
+        let result = arrow_path_to_parquet(&file_path, &file_path, random_string);
 
         assert!(result.is_some());
         let parquet_path = result.unwrap();
