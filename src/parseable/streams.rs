@@ -519,12 +519,19 @@ impl Stream {
         if let Some(mut schema) = schema {
             // calculate field stats for all user defined streams
             if self.get_stream_type() != StreamType::Internal {
-                if let Err(err) = self.calculate_field_stats(rbs, schema.clone().into()).await {
-                    warn!(
-                        "Error calculating field stats for stream {}: {}",
-                        self.stream_name, err
-                    );
-                }
+                let stats_schema = schema.clone();
+                let stream_name = self.stream_name.clone();
+                let stats_rbs = rbs.clone();
+                tokio::spawn(async move {
+                    if let Err(err) =
+                        calculate_field_stats(&stream_name, stats_rbs, stats_schema.into()).await
+                    {
+                        warn!(
+                            "Error calculating field stats for stream {}: {}",
+                            &stream_name, err
+                        );
+                    }
+                });
             }
             let static_schema_flag = self.get_static_schema_flag();
             if !static_schema_flag {
@@ -1022,196 +1029,195 @@ impl Stream {
 
         Ok(())
     }
+}
 
-    /// Calculates field statistics for the stream and pushes them to the internal stats dataset.
-    /// This function creates a new internal stream for stats if it doesn't exist.
-    /// It collects statistics for each field in the stream
-    async fn calculate_field_stats(
-        &self,
-        record_batches: Vec<RecordBatch>,
-        schema: Arc<Schema>,
-    ) -> Result<(), PostError> {
-        let log_source_entry = LogSourceEntry::new(LogSource::Json, HashSet::new());
-        PARSEABLE
-            .create_stream_if_not_exists(
-                DATASET_STATS_STREAM_NAME,
-                StreamType::Internal,
-                vec![log_source_entry],
-            )
-            .await?;
-        let mem_table = MemTable::try_new(schema.clone(), vec![record_batches])
-            .map_err(|e| PostError::Invalid(e.into()))?;
-        let ctx = SessionContext::new();
-        ctx.register_table(&self.stream_name, Arc::new(mem_table))
-            .map_err(|e| PostError::Invalid(e.into()))?;
-
-        let field_stats = self.collect_all_field_stats(&ctx, &schema).await;
-        drop(ctx);
-
-        let stats = DatasetStats {
-            dataset_name: self.stream_name.clone(),
-            field_stats,
-        };
-        if stats.field_stats.is_empty() {
-            return Ok(());
-        }
-        let stats_value = serde_json::to_value(&stats).map_err(|e| PostError::Invalid(e.into()))?;
-
-        flatten_and_push_logs(
-            stats_value,
+/// Calculates field statistics for the stream and pushes them to the internal stats dataset.
+/// This function creates a new internal stream for stats if it doesn't exist.
+/// It collects statistics for each field in the stream
+async fn calculate_field_stats(
+    stream_name: &str,
+    record_batches: Vec<RecordBatch>,
+    schema: Arc<Schema>,
+) -> Result<(), PostError> {
+    let log_source_entry = LogSourceEntry::new(LogSource::Json, HashSet::new());
+    PARSEABLE
+        .create_stream_if_not_exists(
             DATASET_STATS_STREAM_NAME,
-            &LogSource::Json,
-            &HashMap::new(),
+            StreamType::Internal,
+            vec![log_source_entry],
         )
         .await?;
-        Ok(())
+    let mem_table = MemTable::try_new(schema.clone(), vec![record_batches])
+        .map_err(|e| PostError::Invalid(e.into()))?;
+    let ctx = SessionContext::new();
+    ctx.register_table(stream_name, Arc::new(mem_table))
+        .map_err(|e| PostError::Invalid(e.into()))?;
+
+    let field_stats = collect_all_field_stats(stream_name, &ctx, &schema).await;
+    drop(ctx);
+
+    let stats = DatasetStats {
+        dataset_name: stream_name.to_string(),
+        field_stats,
+    };
+    if stats.field_stats.is_empty() {
+        return Ok(());
     }
+    let stats_value = serde_json::to_value(&stats).map_err(|e| PostError::Invalid(e.into()))?;
 
-    /// Collects statistics for all fields in the stream.
-    /// Returns a vector of `FieldStat` for each field with non-zero count.
-    /// Uses `buffer_unordered` to run up to `MAX_CONCURRENT_FIELD_STATS` queries concurrently.
-    async fn collect_all_field_stats(
-        &self,
-        ctx: &SessionContext,
-        schema: &Arc<Schema>,
-    ) -> Vec<FieldStat> {
-        // Collect field names into an owned Vec<String> to avoid lifetime issues
-        let field_names: Vec<String> = schema
-            .fields()
-            .iter()
-            .map(|field| field.name().clone())
-            .collect();
+    flatten_and_push_logs(
+        stats_value,
+        DATASET_STATS_STREAM_NAME,
+        &LogSource::Json,
+        &HashMap::new(),
+    )
+    .await?;
+    Ok(())
+}
 
-        let field_futures = field_names.into_iter().map(|field_name| {
-            let ctx = ctx.clone();
-            let stream_name = self.stream_name.clone();
-            async move { Self::calculate_single_field_stats(ctx, stream_name, field_name).await }
-        });
+/// Collects statistics for all fields in the stream.
+/// Returns a vector of `FieldStat` for each field with non-zero count.
+/// Uses `buffer_unordered` to run up to `MAX_CONCURRENT_FIELD_STATS` queries concurrently.
+async fn collect_all_field_stats(
+    stream_name: &str,
+    ctx: &SessionContext,
+    schema: &Arc<Schema>,
+) -> Vec<FieldStat> {
+    // Collect field names into an owned Vec<String> to avoid lifetime issues
+    let field_names: Vec<String> = schema
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect();
 
-        futures::stream::iter(field_futures)
-            .buffer_unordered(MAX_CONCURRENT_FIELD_STATS)
-            .filter_map(std::future::ready)
-            .collect::<Vec<_>>()
-            .await
-    }
+    let field_futures = field_names.into_iter().map(|field_name| {
+        let ctx = ctx.clone();
+        async move { calculate_single_field_stats(ctx, stream_name, &field_name).await }
+    });
 
-    /// Calculates statistics for a single field in the stream.
-    /// Returns `None` if the count query returns 0.
-    async fn calculate_single_field_stats(
-        ctx: SessionContext,
-        stream_name: String,
-        field_name: String,
-    ) -> Option<FieldStat> {
-        let count = Self::query_single_i64(
+    futures::stream::iter(field_futures)
+        .buffer_unordered(MAX_CONCURRENT_FIELD_STATS)
+        .filter_map(std::future::ready)
+        .collect::<Vec<_>>()
+        .await
+}
+
+/// Calculates statistics for a single field in the stream.
+/// Returns `None` if the count query returns 0.
+async fn calculate_single_field_stats(
+    ctx: SessionContext,
+    stream_name: &str,
+    field_name: &str,
+) -> Option<FieldStat> {
+    let count = query_single_i64(
             &ctx,
             &format!(
                 "select count(\"{field_name}\") as count from \"{stream_name}\" where \"{field_name}\" is not null"
             ),
         )
         .await?;
-        if count == 0 {
-            return None;
-        }
-
-        let distinct_count = Self::query_single_i64(
-            &ctx,
-            &format!(
-                "select COUNT(DISTINCT \"{field_name}\") as distinct_count from \"{stream_name}\""
-            ),
-        )
-        .await?;
-
-        let distinct_stats = Self::query_distinct_stats(&ctx, &stream_name, &field_name).await;
-
-        Some(FieldStat {
-            field_name,
-            count,
-            distinct_count,
-            distinct_stats,
-        })
+    if count == 0 {
+        return None;
     }
 
-    /// Queries a single integer value from the DataFusion context.
-    /// Returns `None` if the query fails or returns no rows.
-    /// This is used for fetching record count for a field and distinct count.
-    async fn query_single_i64(ctx: &SessionContext, sql: &str) -> Option<i64> {
-        let df = ctx.sql(sql).await.ok()?;
-        let batches = df.collect().await.ok()?;
-        let batch = batches.first()?;
-        if batch.num_rows() == 0 {
-            return None;
-        }
-        let array = batch.column(0).as_any().downcast_ref::<Int64Array>()?;
+    let distinct_count = query_single_i64(
+        &ctx,
+        &format!(
+            "select COUNT(DISTINCT \"{field_name}\") as distinct_count from \"{stream_name}\""
+        ),
+    )
+    .await?;
 
-        Some(array.value(0))
+    let distinct_stats = query_distinct_stats(&ctx, stream_name, field_name).await;
+
+    Some(FieldStat {
+        field_name: field_name.to_string(),
+        count,
+        distinct_count,
+        distinct_stats,
+    })
+}
+
+/// Queries a single integer value from the DataFusion context.
+/// Returns `None` if the query fails or returns no rows.
+/// This is used for fetching record count for a field and distinct count.
+async fn query_single_i64(ctx: &SessionContext, sql: &str) -> Option<i64> {
+    let df = ctx.sql(sql).await.ok()?;
+    let batches = df.collect().await.ok()?;
+    let batch = batches.first()?;
+    if batch.num_rows() == 0 {
+        return None;
     }
+    let array = batch.column(0).as_any().downcast_ref::<Int64Array>()?;
 
-    /// Helper function to format an Arrow value at a given index into a string.
-    /// Handles null values and different data types like String, Int64, Float64, Timestamp, Date32, and Boolean.
-    fn format_arrow_value(array: &dyn Array, idx: usize) -> String {
-        if array.is_null(idx) {
-            return "NULL".to_string();
-        }
-        if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
-            arr.value(idx).to_string()
-        } else if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
-            arr.value(idx).to_string()
-        } else if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
-            arr.value(idx).to_string()
-        } else if let Some(arr) = array.as_any().downcast_ref::<TimestampMillisecondArray>() {
-            let timestamp = arr.value(idx);
-            DateTime::from_timestamp_millis(timestamp)
-                .map(|dt| dt.to_string())
-                .unwrap_or_else(|| "INVALID_TIMESTAMP".to_string())
-        } else if let Some(arr) = array.as_any().downcast_ref::<Date32Array>() {
-            return arr.value(idx).to_string();
-        } else if let Some(arr) = array.as_any().downcast_ref::<BooleanArray>() {
-            arr.value(idx).to_string()
-        } else if array.as_any().downcast_ref::<NullArray>().is_some() {
-            "NULL".to_string()
-        } else {
-            warn!(
-                "Unsupported array type for statistics: {:?}",
-                array.data_type()
-            );
-            "UNSUPPORTED".to_string()
-        }
+    Some(array.value(0))
+}
+
+/// Helper function to format an Arrow value at a given index into a string.
+/// Handles null values and different data types like String, Int64, Float64, Timestamp, Date32, and Boolean.
+fn format_arrow_value(array: &dyn Array, idx: usize) -> String {
+    if array.is_null(idx) {
+        return "NULL".to_string();
     }
+    if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
+        arr.value(idx).to_string()
+    } else if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
+        arr.value(idx).to_string()
+    } else if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
+        arr.value(idx).to_string()
+    } else if let Some(arr) = array.as_any().downcast_ref::<TimestampMillisecondArray>() {
+        let timestamp = arr.value(idx);
+        DateTime::from_timestamp_millis(timestamp)
+            .map(|dt| dt.to_string())
+            .unwrap_or_else(|| "INVALID_TIMESTAMP".to_string())
+    } else if let Some(arr) = array.as_any().downcast_ref::<Date32Array>() {
+        return arr.value(idx).to_string();
+    } else if let Some(arr) = array.as_any().downcast_ref::<BooleanArray>() {
+        arr.value(idx).to_string()
+    } else if array.as_any().downcast_ref::<NullArray>().is_some() {
+        "NULL".to_string()
+    } else {
+        warn!(
+            "Unsupported array type for statistics: {:?}",
+            array.data_type()
+        );
+        "UNSUPPORTED".to_string()
+    }
+}
 
-    /// This function is used to fetch distinct values and their counts for a field in the stream.
-    /// Returns a vector of `DistinctStat` containing distinct values and their counts.
-    /// The query groups by the field and orders by the count in descending order, limiting the results to `PARSEABLE.options.max_field_statistics`.
-    async fn query_distinct_stats(
-        ctx: &SessionContext,
-        stream_name: &str,
-        field_name: &str,
-    ) -> Vec<DistinctStat> {
-        let sql = format!(
+/// This function is used to fetch distinct values and their counts for a field in the stream.
+/// Returns a vector of `DistinctStat` containing distinct values and their counts.
+/// The query groups by the field and orders by the count in descending order, limiting the results to `PARSEABLE.options.max_field_statistics`.
+async fn query_distinct_stats(
+    ctx: &SessionContext,
+    stream_name: &str,
+    field_name: &str,
+) -> Vec<DistinctStat> {
+    let sql = format!(
         "select count(*) as distinct_count, \"{field_name}\" from \"{stream_name}\" group by \"{field_name}\" order by distinct_count desc limit {}",
         PARSEABLE.options.max_field_statistics
     );
-        let mut distinct_stats = Vec::new();
-        if let Ok(df) = ctx.sql(&sql).await {
-            if let Ok(batches) = df.collect().await {
-                for rb in batches {
-                    let counts = rb
-                        .column(0)
-                        .as_any()
-                        .downcast_ref::<Int64Array>()
-                        .expect("Counts should be Int64Array");
-                    let values = rb.column(1).as_ref();
-                    for i in 0..rb.num_rows() {
-                        let value = Self::format_arrow_value(values, i);
-                        distinct_stats.push(DistinctStat {
-                            distinct_value: value,
-                            count: counts.value(i),
-                        });
-                    }
+    let mut distinct_stats = Vec::new();
+    if let Ok(df) = ctx.sql(&sql).await {
+        if let Ok(batches) = df.collect().await {
+            for rb in batches {
+                let counts = rb
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .expect("Counts should be Int64Array");
+                let values = rb.column(1).as_ref();
+                for i in 0..rb.num_rows() {
+                    let value = format_arrow_value(values, i);
+                    distinct_stats.push(DistinctStat {
+                        distinct_value: value,
+                        count: counts.value(i),
+                    });
                 }
             }
         }
-        distinct_stats
     }
+    distinct_stats
 }
 
 #[derive(Deref, DerefMut, Default)]
