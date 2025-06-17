@@ -24,7 +24,6 @@ use arrow_array::RecordBatch;
 use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
-use sysinfo::System;
 
 use crate::event::error::EventError;
 use crate::event::format::known_schema::{self, KNOWN_SCHEMA_LIST};
@@ -45,9 +44,6 @@ use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::{flatten_and_push_logs, get_custom_fields_from_header};
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
-
-const CPU_UTILIZATION_THRESHOLD: f32 = 90.0;
-const MEMORY_UTILIZATION_THRESHOLD: f32 = 90.0;
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
 // creates if stream does not exist
@@ -55,8 +51,6 @@ pub async fn ingest(
     req: HttpRequest,
     Json(json): Json<StrictValue>,
 ) -> Result<HttpResponse, PostError> {
-    check_resource_thresholds()?;
-
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
@@ -132,7 +126,6 @@ pub async fn ingest(
 }
 
 pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
-    check_resource_thresholds()?;
     let size: usize = body.len();
     let json: StrictValue = serde_json::from_slice(&body)?;
     let schema = PARSEABLE.get_stream(&stream_name)?.get_schema_raw();
@@ -164,7 +157,6 @@ pub async fn handle_otel_logs_ingestion(
     req: HttpRequest,
     Json(json): Json<StrictValue>,
 ) -> Result<HttpResponse, PostError> {
-    check_resource_thresholds()?;
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
@@ -231,7 +223,6 @@ pub async fn handle_otel_metrics_ingestion(
     req: HttpRequest,
     Json(json): Json<StrictValue>,
 ) -> Result<HttpResponse, PostError> {
-    check_resource_thresholds()?;
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
@@ -296,7 +287,6 @@ pub async fn handle_otel_traces_ingestion(
     req: HttpRequest,
     Json(json): Json<StrictValue>,
 ) -> Result<HttpResponse, PostError> {
-    check_resource_thresholds()?;
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
@@ -363,7 +353,6 @@ pub async fn post_event(
     stream_name: Path<String>,
     Json(json): Json<StrictValue>,
 ) -> Result<HttpResponse, PostError> {
-    check_resource_thresholds()?;
     let stream_name = stream_name.into_inner();
 
     let internal_stream_names = PARSEABLE.streams.list_internal_streams();
@@ -436,7 +425,6 @@ pub async fn push_logs_unchecked(
     batches: RecordBatch,
     stream_name: &str,
 ) -> Result<event::Event, PostError> {
-    check_resource_thresholds()?;
     let unchecked_event = event::Event {
         rb: batches,
         stream_name: stream_name.to_string(),
@@ -451,28 +439,6 @@ pub async fn push_logs_unchecked(
     unchecked_event.process_unchecked()?;
 
     Ok(unchecked_event)
-}
-
-fn check_resource_thresholds() -> Result<(), PostError> {
-    let mut sys = System::new_all();
-    sys.refresh_cpu_usage();
-    sys.refresh_memory();
-    let used_memory = sys.used_memory() as f32;
-    let total_memory = sys.total_memory() as f32;
-    if total_memory == 0.0 {
-        return Err(PostError::ServiceUnavailable("Unable to determine memory usage".to_string()));
-    }
-    let memory_usage = (used_memory / total_memory) * 100.0;
-    if memory_usage > MEMORY_UTILIZATION_THRESHOLD {
-        return Err(PostError::ServiceUnavailable(format!("Memory is over-utilized: {:.1}%", memory_usage)));
-    }
-
-    let cpu_usage = sys.global_cpu_usage();
-    if cpu_usage > CPU_UTILIZATION_THRESHOLD {
-        return Err(PostError::ServiceUnavailable(format!("CPU is over-utilized: {}%", cpu_usage)));
-    }
-
-    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
