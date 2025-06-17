@@ -1110,12 +1110,10 @@ async fn calculate_single_field_stats(
     field_name: &str,
 ) -> Option<FieldStat> {
     let count = query_single_i64(
-            &ctx,
-            &format!(
-                "select count(\"{field_name}\") as count from \"{stream_name}\" where \"{field_name}\" is not null"
-            ),
-        )
-        .await?;
+        &ctx,
+        &format!("select count(\"{field_name}\") as count from \"{stream_name}\""),
+    )
+    .await?;
     if count == 0 {
         return None;
     }
