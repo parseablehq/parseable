@@ -26,8 +26,8 @@ use actix_web::{
 use sysinfo::System;
 use tracing::warn;
 
-const CPU_UTILIZATION_THRESHOLD: f32 = 50.0;
-const MEMORY_UTILIZATION_THRESHOLD: f32 = 50.0;
+const CPU_UTILIZATION_THRESHOLD: f32 = 90.0;
+const MEMORY_UTILIZATION_THRESHOLD: f32 = 90.0;
 
 /// Middleware to check system resource utilization before processing requests
 /// Returns 503 Service Unavailable if CPU or memory usage exceeds thresholds
