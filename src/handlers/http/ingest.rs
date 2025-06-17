@@ -44,6 +44,7 @@ use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::{flatten_and_push_logs, get_custom_fields_from_header};
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
+
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
 // creates if stream does not exist
@@ -488,8 +489,6 @@ pub enum PostError {
     IncorrectLogFormat(String),
     #[error("Failed to ingest events in dataset {0}. Total number of fields {1} exceeds the permissible limit of {2}. We recommend creating a new dataset beyond {2} for better query performance.")]
     FieldsCountLimitExceeded(String, usize, usize),
-    #[error("Service Unavailable: Server over-utilized")]
-    ServiceUnavailable(String),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -519,7 +518,6 @@ impl actix_web::ResponseError for PostError {
             PostError::KnownFormat(_) => StatusCode::BAD_REQUEST,
             PostError::IncorrectLogFormat(_) => StatusCode::BAD_REQUEST,
             PostError::FieldsCountLimitExceeded(_, _, _) => StatusCode::BAD_REQUEST,
-            PostError::ServiceUnavailable(_) => StatusCode::SERVICE_UNAVAILABLE
         }
     }
 
