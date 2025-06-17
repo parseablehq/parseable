@@ -39,9 +39,7 @@ pub async fn home_api(req: HttpRequest) -> Result<impl Responder, PrismHomeError
     let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
         .map_err(|_| PrismHomeError::InvalidQueryParameter(HOME_QUERY_PARAM.to_string()))?;
 
-    let include_internal = query_map
-        .get(HOME_QUERY_PARAM)
-        .map_or(false, |v| v == "true");
+    let include_internal = query_map.get(HOME_QUERY_PARAM).is_some_and(|v| v == "true");
 
     let res = generate_home_response(&key, include_internal).await?;
 

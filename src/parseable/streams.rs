@@ -518,7 +518,9 @@ impl Stream {
 
         if let Some(mut schema) = schema {
             // calculate field stats for all user defined streams
-            if self.get_stream_type() != StreamType::Internal {
+            if self.get_stream_type() != StreamType::Internal
+                && PARSEABLE.options.collect_dataset_stats
+            {
                 let stats_schema = schema.clone();
                 let stream_name = self.stream_name.clone();
                 let stats_rbs = rbs.clone();
@@ -1199,11 +1201,10 @@ async fn query_distinct_stats(
     if let Ok(df) = ctx.sql(&sql).await {
         if let Ok(batches) = df.collect().await {
             for rb in batches {
-                let counts = rb
-                    .column(0)
-                    .as_any()
-                    .downcast_ref::<Int64Array>()
-                    .expect("Counts should be Int64Array");
+                let Some(counts) = rb.column(0).as_any().downcast_ref::<Int64Array>() else {
+                    warn!("Unexpected type for count column in stats query");
+                    continue;
+                };
                 let values = rb.column(1).as_ref();
                 for i in 0..rb.num_rows() {
                     let value = format_arrow_value(values, i);

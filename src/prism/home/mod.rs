@@ -127,7 +127,7 @@ pub async fn generate_home_response(
                 if !include_internal
                     && metadata
                         .iter()
-                        .any(|m| m.stream_type == StreamType::Internal)
+                        .all(|m| m.stream_type == StreamType::Internal)
                 {
                     continue;
                 }
