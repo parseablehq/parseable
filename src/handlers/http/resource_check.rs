@@ -67,7 +67,7 @@ pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
                     };
                     
                     // Log current resource usage every few checks for debugging
-                    info!("Current resource usage - CPU: {:.1}%, Memory: {:.1}% ({:.1}GiB/{:.1}GiB)", 
+                    info!("Current resource usage - CPU: {:.1}%, Memory: {:.1}% ({:.1}GB/{:.1}GB)", 
                           cpu_usage, memory_usage, 
                           used_memory / 1024.0 / 1024.0 / 1024.0, 
                           total_memory / 1024.0 / 1024.0 / 1024.0);
