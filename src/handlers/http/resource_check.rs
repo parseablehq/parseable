@@ -49,13 +49,13 @@ pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
                     trace!("Checking system resource utilization...");
                     
                     refresh_sys_info();
-                    let (used_memory, total_memory, cpu_usage) = {
+                    let (used_memory, total_memory, cpu_usage) = tokio::task::spawn_blocking(|| {
                         let sys = SYS_INFO.lock().unwrap();
                         let used_memory = sys.used_memory() as f32;
                         let total_memory = sys.total_memory() as f32;
                         let cpu_usage = sys.global_cpu_usage();
                         (used_memory, total_memory, cpu_usage)
-                    };
+                    }).await.unwrap();
                     
                     let mut resource_ok = true;
                     
@@ -67,7 +67,7 @@ pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
                     };
                     
                     // Log current resource usage every few checks for debugging
-                    info!("Current resource usage - CPU: {:.1}%, Memory: {:.1}% ({:.1}GB/{:.1}GB)", 
+                    info!("Current resource usage - CPU: {:.1}%, Memory: {:.1}% ({:.1}GiB/{:.1}GiB)", 
                           cpu_usage, memory_usage, 
                           used_memory / 1024.0 / 1024.0 / 1024.0, 
                           total_memory / 1024.0 / 1024.0 / 1024.0);
