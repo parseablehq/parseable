@@ -975,8 +975,9 @@ async fn calculate_field_stats(
         .expect("only parquet files are returned by iterator")
         .to_str()
         .expect("filename is valid string");
+    let random_suffix = Ulid::new().to_string();
     let parquet_file_name = str::replace(parquet_file_name, ".", "_");
-    let ctx_table_name = format!("{}_{}", stream_name, parquet_file_name);
+    let ctx_table_name = format!("{}_{}_{}", stream_name, parquet_file_name, random_suffix);
     ctx.register_parquet(
         &ctx_table_name,
         parquet_path.to_str().expect("valid path"),
