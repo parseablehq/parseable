@@ -16,6 +16,8 @@
  *
  */
 
+use std::sync::{atomic::AtomicBool, Arc, LazyLock};
+
 use actix_web::{
     body::MessageBody,
     dev::{ServiceRequest, ServiceResponse},
@@ -24,13 +26,12 @@ use actix_web::{
     middleware::Next,
 };
 use tokio::{select, time::{interval, Duration}};
-use tokio::sync::RwLock;
 use tracing::{warn, trace, info};
 
 use crate::analytics::{SYS_INFO, refresh_sys_info};
 use crate::parseable::PARSEABLE;
 
-static RESOURCE_CHECK_ENABLED: RwLock<bool> = RwLock::const_new(true);
+static RESOURCE_CHECK_ENABLED:LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
 
 /// Spawn a background task to monitor system resources
 pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
@@ -86,9 +87,9 @@ pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
                         resource_ok = false;
                     }
                     
-                    let previous_state = *RESOURCE_CHECK_ENABLED.read().await;
-                    *RESOURCE_CHECK_ENABLED.write().await = resource_ok;
-                    
+                    let previous_state = RESOURCE_CHECK_ENABLED.load(std::sync::atomic::Ordering::SeqCst);
+                    RESOURCE_CHECK_ENABLED.store(resource_ok, std::sync::atomic::Ordering::SeqCst);
+
                     // Log state changes
                     if previous_state != resource_ok {
                         if resource_ok {
@@ -114,8 +115,8 @@ pub async fn check_resource_utilization_middleware(
     next: Next<impl MessageBody>,
 ) -> Result<ServiceResponse<impl MessageBody>, Error> {
     
-    let resource_ok = *RESOURCE_CHECK_ENABLED.read().await;
-    
+    let resource_ok = RESOURCE_CHECK_ENABLED.load(std::sync::atomic::Ordering::SeqCst);
+
     if !resource_ok {
         let error_msg = "Server resources over-utilized";
         warn!("Rejecting request to {} due to resource constraints", req.path());
