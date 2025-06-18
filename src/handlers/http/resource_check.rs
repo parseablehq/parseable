@@ -23,51 +23,102 @@ use actix_web::{
     error::ErrorServiceUnavailable,
     middleware::Next,
 };
-use sysinfo::System;
-use tracing::warn;
+use tokio::{select, time::{interval, Duration}};
+use tokio::sync::RwLock;
+use tracing::{warn, trace, info};
 
-const CPU_UTILIZATION_THRESHOLD: f32 = 90.0;
-const MEMORY_UTILIZATION_THRESHOLD: f32 = 90.0;
+use crate::analytics::{SYS_INFO, refresh_sys_info};
+use crate::parseable::PARSEABLE;
+
+static RESOURCE_CHECK_ENABLED: RwLock<bool> = RwLock::const_new(true);
+
+/// Spawn a background task to monitor system resources
+pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
+    tokio::spawn(async move {
+        let mut check_interval = interval(Duration::from_secs(30));
+        let mut shutdown_rx = shutdown_rx;
+        
+        let cpu_threshold = PARSEABLE.options.cpu_utilization_threshold;
+        let memory_threshold = PARSEABLE.options.memory_utilization_threshold;
+        
+        info!("Resource monitor started with thresholds - CPU: {:.1}%, Memory: {:.1}%", 
+              cpu_threshold, memory_threshold);
+        loop {
+            select! {
+                _ = check_interval.tick() => {
+                    trace!("Checking system resource utilization...");
+                    
+                    refresh_sys_info();
+                    let (used_memory, total_memory, cpu_usage) = {
+                        let sys = SYS_INFO.lock().unwrap();
+                        let used_memory = sys.used_memory() as f32;
+                        let total_memory = sys.total_memory() as f32;
+                        let cpu_usage = sys.global_cpu_usage();
+                        (used_memory, total_memory, cpu_usage)
+                    };
+                    
+                    let mut resource_ok = true;
+                    
+                    // Calculate memory usage percentage
+                    let memory_usage = if total_memory > 0.0 {
+                        (used_memory / total_memory) * 100.0
+                    } else {
+                        0.0
+                    };
+                    
+                    // Log current resource usage every few checks for debugging
+                    info!("Current resource usage - CPU: {:.1}%, Memory: {:.1}% ({:.1}GB/{:.1}GB)", 
+                          cpu_usage, memory_usage, 
+                          used_memory / 1024.0 / 1024.0 / 1024.0, 
+                          total_memory / 1024.0 / 1024.0 / 1024.0);
+                    
+                    // Check memory utilization
+                    if memory_usage > memory_threshold {
+                        warn!("High memory usage detected: {:.1}% (threshold: {:.1}%)", 
+                              memory_usage, memory_threshold);
+                        resource_ok = false;
+                    }
+                    
+                    // Check CPU utilization
+                    if cpu_usage > cpu_threshold {
+                        warn!("High CPU usage detected: {:.1}% (threshold: {:.1}%)", 
+                              cpu_usage, cpu_threshold);
+                        resource_ok = false;
+                    }
+                    
+                    let previous_state = *RESOURCE_CHECK_ENABLED.read().await;
+                    *RESOURCE_CHECK_ENABLED.write().await = resource_ok;
+                    
+                    // Log state changes
+                    if previous_state != resource_ok {
+                        if resource_ok {
+                            info!("Resource utilization back to normal - requests will be accepted");
+                        } else {
+                            warn!("Resource utilization too high - requests will be rejected");
+                        }
+                    }
+                },
+                _ = &mut shutdown_rx => {
+                    trace!("Resource monitor shutting down");
+                    break;
+                }
+            }
+        }
+    });
+}
 
 /// Middleware to check system resource utilization before processing requests
-/// Returns 503 Service Unavailable if CPU or memory usage exceeds thresholds
+/// Returns 503 Service Unavailable if resources are over-utilized
 pub async fn check_resource_utilization_middleware(
     req: ServiceRequest,
     next: Next<impl MessageBody>,
 ) -> Result<ServiceResponse<impl MessageBody>, Error> {
     
-    let mut sys = System::new_all();
-    sys.refresh_cpu_usage();
-    sys.refresh_memory();
+    let resource_ok = *RESOURCE_CHECK_ENABLED.read().await;
     
-    let used_memory = sys.used_memory() as f32;
-    let total_memory = sys.total_memory() as f32;
-    
-    // Check memory utilization
-    if total_memory > 0.0 {
-        let memory_usage = (used_memory / total_memory) * 100.0;
-        if memory_usage > MEMORY_UTILIZATION_THRESHOLD {
-            let error_msg = format!("Memory is over-utilized: {:.1}%", memory_usage);
-            warn!(
-                "Rejecting request to {} due to high memory usage: {:.1}% (threshold: {:.1}%)", 
-                req.path(), 
-                memory_usage,
-                MEMORY_UTILIZATION_THRESHOLD
-            );
-            return Err(ErrorServiceUnavailable(error_msg));
-        }
-    }
-
-    // Check CPU utilization
-    let cpu_usage = sys.global_cpu_usage();
-    if cpu_usage > CPU_UTILIZATION_THRESHOLD {
-        let error_msg = format!("CPU is over-utilized: {:.1}%", cpu_usage);
-        warn!(
-            "Rejecting request to {} due to high CPU usage: {:.1}% (threshold: {:.1}%)", 
-            req.path(), 
-            cpu_usage,
-            CPU_UTILIZATION_THRESHOLD
-        );
+    if !resource_ok {
+        let error_msg = "Server resources over-utilized";
+        warn!("Rejecting request to {} due to resource constraints", req.path());
         return Err(ErrorServiceUnavailable(error_msg));
     }
 

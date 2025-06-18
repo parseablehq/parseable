@@ -317,6 +317,25 @@ pub struct Options {
     )]
     pub parquet_compression: Compression,
 
+    // Resource monitoring
+    #[arg(
+        long,
+        env = "P_CPU_THRESHOLD",
+        default_value = "80.0",
+        value_parser = validation::validate_percentage,
+        help = "CPU utilization threshold percentage (0.0-100.0) for resource monitoring"
+    )]
+    pub cpu_utilization_threshold: f32,
+
+    #[arg(
+        long,
+        env = "P_MEMORY_THRESHOLD", 
+        default_value = "80.0",
+        value_parser = validation::validate_percentage,
+        help = "Memory utilization threshold percentage (0.0-100.0) for resource monitoring"
+    )]
+    pub memory_utilization_threshold: f32,
+
     // Integration features
     #[arg(
         long,
