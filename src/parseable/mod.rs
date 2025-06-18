@@ -362,6 +362,11 @@ impl Parseable {
             return Ok(true);
         }
 
+        // validate custom partition if provided
+        if let Some(partition) = custom_partition {
+            validate_custom_partition(partition)?;
+        }
+
         // For distributed deployments, if the stream not found in memory map,
         //check if it exists in the storage
         //create stream and schema from storage

@@ -830,16 +830,6 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         let custom_partition = stream.get_custom_partition();
         let schema = stream.get_schema();
         for path in stream.parquet_files() {
-            if stream.get_stream_type() != StreamType::Internal
-                && PARSEABLE.options.collect_dataset_stats
-            {
-                if let Err(err) = calculate_field_stats(stream_name, &path, &schema).await {
-                    warn!(
-                        "Error calculating field stats for stream {}: {}",
-                        stream_name, err
-                    );
-                }
-            }
             let filename = path
                 .file_name()
                 .expect("only parquet files are returned by iterator")
@@ -889,6 +879,18 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             let manifest = catalog::create_from_parquet_file(absolute_path.clone(), &path)?;
             catalog::update_snapshot(store, stream_name, manifest).await?;
 
+            // If the stream is not internal and stats collection is enabled, calculate field stats
+            // before removing the parquet file
+            if stream.get_stream_type() != StreamType::Internal
+                && PARSEABLE.options.collect_dataset_stats
+            {
+                if let Err(err) = calculate_field_stats(stream_name, &path, &schema).await {
+                    warn!(
+                        "Error calculating field stats for stream {}: {}",
+                        stream_name, err
+                    );
+                }
+            }
             if let Err(e) = remove_file(path) {
                 warn!("Failed to remove staged file: {e}");
             }
@@ -968,7 +970,13 @@ async fn calculate_field_stats(
         )
         .await?;
     let ctx = SessionContext::new_with_state(QUERY_SESSION_STATE.clone());
-    let ctx_table_name = format!("{}_{}", stream_name, parquet_path.display());
+    let parquet_file_name = parquet_path
+        .file_name()
+        .expect("only parquet files are returned by iterator")
+        .to_str()
+        .expect("filename is valid string");
+    let parquet_file_name = str::replace(parquet_file_name, ".", "_");
+    let ctx_table_name = format!("{}_{}", stream_name, parquet_file_name);
     ctx.register_parquet(
         &ctx_table_name,
         parquet_path.to_str().expect("valid path"),
@@ -1062,81 +1070,118 @@ async fn calculate_single_field_stats(
 /// This is used for fetching record count for a field and distinct count.
 async fn query_single_i64(ctx: &SessionContext, sql: &str) -> Option<i64> {
     let df = ctx.sql(sql).await.ok()?;
-    let mut stream = df.execute_stream().await.ok()?;
-    let mut count = 0;
-    while let Some(batch_result) = stream.next().await {
-        let batch = batch_result.ok()?;
-        if batch.num_rows() == 0 {
-            return None;
-        }
-        let array = batch.column(0).as_any().downcast_ref::<Int64Array>()?;
-        count += array.value(0);
+    let batches = df.collect().await.ok()?;
+    let batch = batches.first()?;
+    if batch.num_rows() == 0 {
+        return None;
     }
-    Some(count)
+    let array = batch.column(0).as_any().downcast_ref::<Int64Array>()?;
+
+    Some(array.value(0))
 }
 
-/// Helper function to format an Arrow value at a given index into a string.
-/// Handles null values and different data types like String, Int64, Float64, Timestamp, Date32, and Boolean.
+macro_rules! try_downcast {
+    ($ty:ty, $arr:expr, $body:expr) => {
+        if let Some(arr) = $arr.as_any().downcast_ref::<$ty>() {
+            $body(arr)
+        } else {
+            warn!(
+                "Expected {} for {:?}, but found {:?}",
+                stringify!($ty),
+                $arr.data_type(),
+                $arr.data_type()
+            );
+            "UNSUPPORTED".to_string()
+        }
+    };
+}
+
+/// Function to format an Arrow value at a given index into a string.
+/// Handles null values and different data types by downcasting the array to the appropriate type.
 fn format_arrow_value(array: &dyn Array, idx: usize) -> String {
     if array.is_null(idx) {
         return "NULL".to_string();
     }
 
     match array.data_type() {
-        DataType::Utf8 => array
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap()
+        DataType::Utf8 => try_downcast!(StringArray, array, |arr: &StringArray| arr
             .value(idx)
-            .to_string(),
-        DataType::Utf8View => array
-            .as_any()
-            .downcast_ref::<StringViewArray>()
-            .unwrap()
+            .to_string()),
+        DataType::Utf8View => try_downcast!(StringViewArray, array, |arr: &StringViewArray| arr
             .value(idx)
-            .to_string(),
-        DataType::Binary => {
-            let arr = array.as_any().downcast_ref::<BinaryArray>().unwrap();
+            .to_string()),
+        DataType::Binary => try_downcast!(BinaryArray, array, |arr: &BinaryArray| {
             String::from_utf8_lossy(arr.value(idx)).to_string()
-        }
-        DataType::BinaryView => {
-            let arr = array.as_any().downcast_ref::<BinaryViewArray>().unwrap();
+        }),
+        DataType::BinaryView => try_downcast!(BinaryViewArray, array, |arr: &BinaryViewArray| {
             String::from_utf8_lossy(arr.value(idx)).to_string()
-        }
-        DataType::Int64 => array
-            .as_any()
-            .downcast_ref::<Int64Array>()
-            .unwrap()
+        }),
+        DataType::Int64 => try_downcast!(Int64Array, array, |arr: &Int64Array| arr
             .value(idx)
-            .to_string(),
-        DataType::Float64 => array
-            .as_any()
-            .downcast_ref::<Float64Array>()
-            .unwrap()
+            .to_string()),
+        DataType::Int32 => try_downcast!(
+            arrow_array::Int32Array,
+            array,
+            |arr: &arrow_array::Int32Array| arr.value(idx).to_string()
+        ),
+        DataType::Int16 => try_downcast!(
+            arrow_array::Int16Array,
+            array,
+            |arr: &arrow_array::Int16Array| arr.value(idx).to_string()
+        ),
+        DataType::Int8 => try_downcast!(
+            arrow_array::Int8Array,
+            array,
+            |arr: &arrow_array::Int8Array| arr.value(idx).to_string()
+        ),
+        DataType::UInt64 => try_downcast!(
+            arrow_array::UInt64Array,
+            array,
+            |arr: &arrow_array::UInt64Array| arr.value(idx).to_string()
+        ),
+        DataType::UInt32 => try_downcast!(
+            arrow_array::UInt32Array,
+            array,
+            |arr: &arrow_array::UInt32Array| arr.value(idx).to_string()
+        ),
+        DataType::UInt16 => try_downcast!(
+            arrow_array::UInt16Array,
+            array,
+            |arr: &arrow_array::UInt16Array| arr.value(idx).to_string()
+        ),
+        DataType::UInt8 => try_downcast!(
+            arrow_array::UInt8Array,
+            array,
+            |arr: &arrow_array::UInt8Array| arr.value(idx).to_string()
+        ),
+        DataType::Float64 => try_downcast!(Float64Array, array, |arr: &Float64Array| arr
             .value(idx)
-            .to_string(),
-        DataType::Timestamp(TimeUnit::Millisecond, _) => {
-            let arr = array
-                .as_any()
-                .downcast_ref::<TimestampMillisecondArray>()
-                .unwrap();
-            let timestamp = arr.value(idx);
-            DateTime::from_timestamp_millis(timestamp)
-                .map(|dt| dt.to_string())
-                .unwrap_or_else(|| "INVALID_TIMESTAMP".to_string())
-        }
-        DataType::Date32 => array
-            .as_any()
-            .downcast_ref::<Date32Array>()
-            .unwrap()
+            .to_string()),
+        DataType::Float32 => try_downcast!(
+            arrow_array::Float32Array,
+            array,
+            |arr: &arrow_array::Float32Array| arr.value(idx).to_string()
+        ),
+        DataType::Timestamp(TimeUnit::Millisecond, _) => try_downcast!(
+            TimestampMillisecondArray,
+            array,
+            |arr: &TimestampMillisecondArray| {
+                let timestamp = arr.value(idx);
+                chrono::DateTime::from_timestamp_millis(timestamp)
+                    .map(|dt| dt.to_string())
+                    .unwrap_or_else(|| "INVALID_TIMESTAMP".to_string())
+            }
+        ),
+        DataType::Date32 => try_downcast!(Date32Array, array, |arr: &Date32Array| arr
             .value(idx)
-            .to_string(),
-        DataType::Boolean => array
-            .as_any()
-            .downcast_ref::<BooleanArray>()
-            .unwrap()
+            .to_string()),
+        DataType::Boolean => try_downcast!(BooleanArray, array, |arr: &BooleanArray| if arr
             .value(idx)
-            .to_string(),
+        {
+            "true".to_string()
+        } else {
+            "false".to_string()
+        }),
         DataType::Null => "NULL".to_string(),
         _ => {
             warn!(
@@ -1162,20 +1207,20 @@ async fn query_distinct_stats(
     );
     let mut distinct_stats = Vec::new();
     if let Ok(df) = ctx.sql(&sql).await {
-        if let Ok(batches) = df.collect().await {
-            for rb in batches {
-                let Some(counts) = rb.column(0).as_any().downcast_ref::<Int64Array>() else {
-                    warn!("Unexpected type for count column in stats query");
-                    continue;
-                };
-                let values = rb.column(1).as_ref();
-                for i in 0..rb.num_rows() {
-                    let value = format_arrow_value(values, i);
-                    distinct_stats.push(DistinctStat {
-                        distinct_value: value,
-                        count: counts.value(i),
-                    });
-                }
+        let mut stream = df.execute_stream().await.expect("Failed to execute stream");
+        while let Some(batch_result) = stream.next().await {
+            let rb = batch_result.expect("Failed to execute stream");
+            let Some(counts) = rb.column(0).as_any().downcast_ref::<Int64Array>() else {
+                warn!("Unexpected type for count column in stats query");
+                continue;
+            };
+            let values = rb.column(1).as_ref();
+            for i in 0..rb.num_rows() {
+                let value = format_arrow_value(values, i);
+                distinct_stats.push(DistinctStat {
+                    distinct_value: value,
+                    count: counts.value(i),
+                });
             }
         }
     }
