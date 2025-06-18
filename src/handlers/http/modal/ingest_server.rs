@@ -21,6 +21,7 @@ use std::thread;
 
 use actix_web::web;
 use actix_web::Scope;
+use actix_web::middleware::from_fn;
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use base64::Engine;
@@ -67,7 +68,10 @@ impl ParseableServer for IngestServer {
             .service(
                 // Base path "{url}/api/v1"
                 web::scope(&base_path())
-                    .service(Server::get_ingest_factory())
+                    .service(
+                        Server::get_ingest_factory()
+                            .wrap(from_fn(resource_check::check_resource_utilization_middleware))
+                    )
                     .service(Self::logstream_api())
                     .service(Server::get_about_factory())
                     .service(Self::analytics_factory())
@@ -77,7 +81,10 @@ impl ParseableServer for IngestServer {
                     .service(Server::get_metrics_webscope())
                     .service(Server::get_readiness_factory()),
             )
-            .service(Server::get_ingest_otel_factory());
+            .service(
+                Server::get_ingest_otel_factory()
+                    .wrap(from_fn(resource_check::check_resource_utilization_middleware))
+            );
     }
 
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>> {
@@ -229,7 +236,8 @@ impl IngestServer {
                             web::post()
                                 .to(ingest::post_event)
                                 .authorize_for_stream(Action::Ingest),
-                        ),
+                        )
+                        .wrap(from_fn(resource_check::check_resource_utilization_middleware)),
                 )
                 .service(
                     web::resource("/sync")

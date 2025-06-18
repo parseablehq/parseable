@@ -45,7 +45,7 @@ use crate::{
     utils::get_node_id,
 };
 
-use super::{audit, cross_origin_config, health_check, resource_check, API_BASE_PATH, API_VERSION};
+use super::{audit, cross_origin_config, health_check, API_BASE_PATH, API_VERSION};
 
 pub mod ingest;
 pub mod ingest_server;
@@ -113,7 +113,6 @@ pub trait ParseableServer {
                 .wrap(prometheus.clone())
                 .configure(|config| Self::configure_routes(config, oidc_client.clone()))
                 .wrap(from_fn(health_check::check_shutdown_middleware))
-                .wrap(from_fn(resource_check::check_resource_utilization_middleware))
                 .wrap(from_fn(audit::audit_log_middleware))
                 .wrap(actix_web::middleware::Logger::default())
                 .wrap(actix_web::middleware::Compress::default())
