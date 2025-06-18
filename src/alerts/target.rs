@@ -27,13 +27,64 @@ use base64::Engine;
 use chrono::Utc;
 use http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
 use humantime_serde::re::humantime;
+use itertools::Itertools;
+use once_cell::sync::Lazy;
 use reqwest::ClientBuilder;
+use tokio::sync::RwLock;
 use tracing::{error, trace, warn};
+use ulid::Ulid;
 use url::Url;
+
+use crate::alerts::AlertError;
 
 use super::ALERTS;
 
 use super::{AlertState, CallableTarget, Context};
+
+pub static TARGETS: Lazy<TargetConfigs> = Lazy::new(|| TargetConfigs {
+    target_configs: RwLock::new(HashMap::new()),
+});
+
+#[derive(Debug)]
+pub struct TargetConfigs {
+    pub target_configs: RwLock<HashMap<Ulid, Target>>,
+}
+
+impl TargetConfigs {
+    pub async fn update(&self, target: Target) -> Result<(), AlertError> {
+        let id = target.id;
+        self.target_configs.write().await.insert(id, target);
+        Ok(())
+    }
+
+    pub async fn list(&self) -> Result<Vec<Target>, AlertError> {
+        let targets = self
+            .target_configs
+            .read()
+            .await
+            .iter()
+            .map(|(_, v)| v.clone())
+            .collect_vec();
+        Ok(targets)
+    }
+
+    pub async fn get_target_by_id(&self, target_id: Ulid) -> Result<Target, AlertError> {
+        self.target_configs
+            .read()
+            .await
+            .get(&target_id)
+            .ok_or(AlertError::InvalidTargetID(target_id.to_string()))
+            .cloned()
+    }
+
+    pub async fn delete(&self, target_id: Ulid) -> Result<Target, AlertError> {
+        self.target_configs
+            .write()
+            .await
+            .remove(&target_id)
+            .ok_or(AlertError::InvalidTargetID(target_id.to_string()))
+    }
+}
 
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,9 +108,16 @@ pub struct Target {
     pub target: TargetType,
     #[serde(default, rename = "repeat")]
     pub timeout: Timeout,
+    #[serde(default = "Ulid::new")]
+    pub id: Ulid,
 }
 
 impl Target {
+    pub async fn validate(&self) {
+        // just check for liveness
+        // what if the target is not live yet but is added by the user?
+    }
+
     pub fn call(&self, context: Context) {
         trace!("target.call context- {context:?}");
         let timeout = &self.timeout;
@@ -193,6 +251,8 @@ pub struct TargetVerifier {
     pub target: TargetType,
     #[serde(default)]
     pub repeat: Option<RepeatVerifier>,
+    #[serde(default = "Ulid::new")]
+    pub id: Ulid,
 }
 
 impl TryFrom<TargetVerifier> for Target {
@@ -225,6 +285,7 @@ impl TryFrom<TargetVerifier> for Target {
         Ok(Target {
             target: value.target,
             timeout,
+            id: value.id,
         })
     }
 }

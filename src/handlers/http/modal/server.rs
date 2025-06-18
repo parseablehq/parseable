@@ -26,6 +26,7 @@ use crate::handlers::http::base_path;
 use crate::handlers::http::health_check;
 use crate::handlers::http::prism_base_path;
 use crate::handlers::http::query;
+use crate::handlers::http::targets;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
 use crate::hottier::HotTierManager;
@@ -87,6 +88,7 @@ impl ParseableServer for Server {
                     .service(Self::get_roles_webscope())
                     .service(Self::get_counts_webscope())
                     .service(Self::get_alerts_webscope())
+                    .service(Self::get_targets_webscope())
                     .service(Self::get_metrics_webscope()),
             )
             .service(
@@ -248,6 +250,25 @@ impl Server {
                     .route(
                         web::delete()
                             .to(alerts::delete)
+                            .authorize(Action::DeleteAlert),
+                    ),
+            )
+    }
+
+    pub fn get_targets_webscope() -> Scope {
+        web::scope("/targets")
+            .service(
+                web::resource("")
+                    .route(web::get().to(targets::list).authorize(Action::GetAlert))
+                    .route(web::post().to(targets::post).authorize(Action::PutAlert)),
+            )
+            .service(
+                web::resource("/{target_id}")
+                    .route(web::get().to(targets::get).authorize(Action::GetAlert))
+                    .route(web::put().to(targets::update).authorize(Action::PutAlert))
+                    .route(
+                        web::delete()
+                            .to(targets::delete)
                             .authorize(Action::DeleteAlert),
                     ),
             )

@@ -37,6 +37,7 @@ use ulid::Ulid;
 pub mod alerts_utils;
 pub mod target;
 
+use crate::alerts::target::TARGETS;
 use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::rbac::map::SessionKey;
 use crate::storage;
@@ -513,23 +514,28 @@ pub struct AlertRequest {
     pub alert_type: AlertType,
     pub aggregates: Aggregates,
     pub eval_config: EvalConfig,
-    pub targets: Vec<Target>,
+    pub targets: Vec<Ulid>,
 }
 
-impl From<AlertRequest> for AlertConfig {
-    fn from(val: AlertRequest) -> AlertConfig {
-        AlertConfig {
+impl AlertRequest {
+    pub async fn into(self) -> Result<AlertConfig, AlertError> {
+        let mut targets = Vec::new();
+        for id in self.targets {
+            targets.push(TARGETS.get_target_by_id(id).await?);
+        }
+        let config = AlertConfig {
             version: AlertVerison::from(CURRENT_ALERTS_VERSION),
             id: Ulid::new(),
-            severity: val.severity,
-            title: val.title,
-            stream: val.stream,
-            alert_type: val.alert_type,
-            aggregates: val.aggregates,
-            eval_config: val.eval_config,
-            targets: val.targets,
+            severity: self.severity,
+            title: self.title,
+            stream: self.stream,
+            alert_type: self.alert_type,
+            aggregates: self.aggregates,
+            eval_config: self.eval_config,
+            targets,
             state: AlertState::default(),
-        }
+        };
+        Ok(config)
     }
 }
 
@@ -552,14 +558,20 @@ pub struct AlertConfig {
 }
 
 impl AlertConfig {
-    pub fn modify(&mut self, alert: AlertRequest) {
+    pub async fn modify(&mut self, alert: AlertRequest) -> Result<(), AlertError> {
+        let mut targets = Vec::new();
+        for id in alert.targets {
+            targets.push(TARGETS.get_target_by_id(id).await?);
+        }
+
         self.title = alert.title;
         self.stream = alert.stream;
         self.alert_type = alert.alert_type;
         self.aggregates = alert.aggregates;
         self.eval_config = alert.eval_config;
-        self.targets = alert.targets;
+        self.targets = targets;
         self.state = AlertState::default();
+        Ok(())
     }
 
     pub fn get_base_query(&self) -> String {
@@ -801,6 +813,8 @@ pub enum AlertError {
     InvalidAlertModifyRequest,
     #[error("{0}")]
     FromStrError(#[from] FromStrError),
+    #[error("Invalid Target ID- {0}")]
+    InvalidTargetID(String),
 }
 
 impl actix_web::ResponseError for AlertError {
@@ -818,6 +832,7 @@ impl actix_web::ResponseError for AlertError {
             Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::InvalidAlertModifyRequest => StatusCode::BAD_REQUEST,
             Self::FromStrError(_) => StatusCode::BAD_REQUEST,
+            Self::InvalidTargetID(_) => StatusCode::BAD_REQUEST,
         }
     }
 
