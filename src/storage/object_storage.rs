@@ -889,6 +889,16 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                         "Error calculating field stats for stream {}: {}",
                         stream_name, err
                     );
+                } else {
+                    let stats_stream = PARSEABLE
+                        .get_stream(DATASET_STATS_STREAM_NAME)
+                        .expect("Dataset stats stream should exist");
+                    if let Err(err) = stats_stream.flush_and_convert(false, false).await {
+                        warn!(
+                            "Error flushing dataset stats stream {}: {}",
+                            DATASET_STATS_STREAM_NAME, err
+                        );
+                    }
                 }
             }
             if let Err(e) = remove_file(path) {
@@ -965,7 +975,7 @@ async fn calculate_field_stats(
         .create_stream_if_not_exists(
             DATASET_STATS_STREAM_NAME,
             StreamType::Internal,
-            Some(&"dataset_name".to_string()),
+            Some(&"dataset_name".into()),
             vec![log_source_entry],
         )
         .await?;
@@ -1034,40 +1044,100 @@ async fn collect_all_field_stats(
         .await
 }
 
-/// Calculates statistics for a single field in the stream.
-/// Returns `None` if the count query returns 0.
+/// This function is used to fetch distinct values and their counts for a field in the stream.
+/// Returns a vector of `DistinctStat` containing distinct values and their counts.
+/// The query groups by the field and orders by the count in descending order, limiting the results to `PARSEABLE.options.max_field_statistics`.
 async fn calculate_single_field_stats(
     ctx: SessionContext,
     stream_name: &str,
     field_name: &str,
 ) -> Option<FieldStat> {
-    // Use the escaped field name in the SQL query to avoid issues with special characters
-    let escaped_field_name = field_name.replace('"', "\"\"");
-    let escaped_stream_name = stream_name.replace('"', "\"\"");
-    let count_distinct_sql = format!(
-        "select COUNT(\"{escaped_field_name}\") as count, COUNT(DISTINCT \"{escaped_field_name}\") as distinct_count from \"{escaped_stream_name}\" ");
+    let mut total_count = 0;
+    let mut distinct_count = 0;
+    let mut distinct_stats = Vec::new();
 
-    let df = ctx.sql(&count_distinct_sql).await.ok()?;
-    let batches = df.collect().await.ok()?;
-    let batch = batches.first()?;
-    if batch.num_rows() == 0 {
-        return None;
-    }
-    let count_array = batch.column(0).as_any().downcast_ref::<Int64Array>()?;
-    let distinct_count_array = batch.column(1).as_any().downcast_ref::<Int64Array>()?;
+    let combined_sql = get_stats_sql(stream_name, field_name);
+    if let Ok(df) = ctx.sql(&combined_sql).await {
+        let mut stream = match df.execute_stream().await {
+            Ok(stream) => stream,
+            Err(e) => {
+                warn!("Failed to execute distinct stats query: {e}");
+                return None; // Return empty if query fails
+            }
+        };
+        while let Some(batch_result) = stream.next().await {
+            let rb = match batch_result {
+                Ok(batch) => batch,
+                Err(e) => {
+                    warn!("Failed to fetch batch in distinct stats query: {e}");
+                    continue; // Skip this batch if there's an error
+                }
+            };
+            let total_count_array = rb.column(0).as_any().downcast_ref::<Int64Array>()?;
+            let distinct_count_array = rb.column(1).as_any().downcast_ref::<Int64Array>()?;
 
-    let count = count_array.value(0);
-    let distinct_count = distinct_count_array.value(0);
-    if distinct_count == 0 {
-        return None;
+            total_count = total_count_array.value(0);
+            distinct_count = distinct_count_array.value(0);
+
+            if distinct_count == 0 {
+                return None;
+            }
+
+            let field_value_array = rb.column(2).as_ref();
+            let value_count_array = rb.column(3).as_any().downcast_ref::<Int64Array>()?;
+
+            for i in 0..rb.num_rows() {
+                let value = format_arrow_value(field_value_array, i);
+                let count = value_count_array.value(i);
+
+                distinct_stats.push(DistinctStat {
+                    distinct_value: value,
+                    count,
+                });
+            }
+        }
     }
-    let distinct_stats = query_distinct_stats(&ctx, stream_name, field_name).await;
     Some(FieldStat {
         field_name: field_name.to_string(),
-        count,
+        count: total_count,
         distinct_count,
         distinct_stats,
     })
+}
+
+fn get_stats_sql(stream_name: &str, field_name: &str) -> String {
+    let escaped_field_name = field_name.replace('"', "\"\"");
+    let escaped_stream_name = stream_name.replace('"', "\"\"");
+
+    format!(
+        r#"
+        WITH field_groups AS (
+            SELECT 
+                "{escaped_field_name}" as field_value,
+                COUNT(*) as value_count
+            FROM "{escaped_stream_name}"
+            GROUP BY "{escaped_field_name}"
+        ),
+        field_summary AS (
+            SELECT 
+                field_value,
+                value_count,
+                SUM(value_count) OVER () as total_count,
+                COUNT(*) OVER () as distinct_count,
+                ROW_NUMBER() OVER (ORDER BY value_count DESC) as rn
+            FROM field_groups
+        )
+        SELECT 
+            total_count,
+            distinct_count,
+            field_value,
+            value_count
+        FROM field_summary 
+        WHERE rn <= {}
+        ORDER BY value_count DESC
+        "#,
+        PARSEABLE.options.max_field_statistics
+    )
 }
 
 macro_rules! try_downcast {
@@ -1181,55 +1251,6 @@ fn format_arrow_value(array: &dyn Array, idx: usize) -> String {
             "UNSUPPORTED".to_string()
         }
     }
-}
-
-/// This function is used to fetch distinct values and their counts for a field in the stream.
-/// Returns a vector of `DistinctStat` containing distinct values and their counts.
-/// The query groups by the field and orders by the count in descending order, limiting the results to `PARSEABLE.options.max_field_statistics`.
-async fn query_distinct_stats(
-    ctx: &SessionContext,
-    stream_name: &str,
-    field_name: &str,
-) -> Vec<DistinctStat> {
-    let escaped_field_name = field_name.replace('"', "\"\"");
-    let escaped_stream_name = stream_name.replace('"', "\"\"");
-
-    let sql = format!(
-        "select count(*) as distinct_count, \"{escaped_field_name}\" from \"{escaped_stream_name}\" group by \"{escaped_field_name}\" order by distinct_count desc limit {}",
-        PARSEABLE.options.max_field_statistics
-    );
-    let mut distinct_stats = Vec::new();
-    if let Ok(df) = ctx.sql(&sql).await {
-        let mut stream = match df.execute_stream().await {
-            Ok(stream) => stream,
-            Err(e) => {
-                warn!("Failed to execute distinct stats query: {e}");
-                return distinct_stats; // Return empty if query fails
-            }
-        };
-        while let Some(batch_result) = stream.next().await {
-            let rb = match batch_result {
-                Ok(batch) => batch,
-                Err(e) => {
-                    warn!("Failed to fetch batch in distinct stats query: {e}");
-                    continue; // Skip this batch if there's an error
-                }
-            };
-            let Some(counts) = rb.column(0).as_any().downcast_ref::<Int64Array>() else {
-                warn!("Unexpected type for count column in stats query");
-                continue;
-            };
-            let values = rb.column(1).as_ref();
-            for i in 0..rb.num_rows() {
-                let value = format_arrow_value(values, i);
-                distinct_stats.push(DistinctStat {
-                    distinct_value: value,
-                    count: counts.value(i),
-                });
-            }
-        }
-    }
-    distinct_stats
 }
 
 pub async fn commit_schema_to_storage(
