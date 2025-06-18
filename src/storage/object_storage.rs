@@ -28,16 +28,32 @@ use std::time::Duration;
 use std::time::Instant;
 
 use actix_web_prometheus::PrometheusMetrics;
+use arrow_array::Array;
+use arrow_array::BinaryArray;
+use arrow_array::BinaryViewArray;
+use arrow_array::BooleanArray;
+use arrow_array::Date32Array;
+use arrow_array::Float64Array;
+use arrow_array::Int64Array;
+use arrow_array::StringArray;
+use arrow_array::StringViewArray;
+use arrow_array::TimestampMillisecondArray;
+use arrow_schema::DataType;
 use arrow_schema::Schema;
+use arrow_schema::TimeUnit;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use datafusion::prelude::ParquetReadOptions;
+use datafusion::prelude::SessionContext;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
+use futures::StreamExt;
 use object_store::buffered::BufReader;
 use object_store::ObjectMeta;
 use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
+use serde::Serialize;
 use tokio::task::JoinSet;
 use tracing::info;
 use tracing::{error, warn};
@@ -48,8 +64,10 @@ use crate::catalog::{self, manifest::Manifest, snapshot::Snapshot};
 use crate::correlation::{CorrelationConfig, CorrelationError};
 use crate::event::format::LogSource;
 use crate::event::format::LogSourceEntry;
+use crate::handlers::http::ingest::PostError;
 use crate::handlers::http::modal::ingest_server::INGESTOR_EXPECT;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
+use crate::handlers::http::modal::utils::ingest_utils::flatten_and_push_logs;
 use crate::handlers::http::users::CORRELATION_DIR;
 use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
 use crate::metrics::storage::StorageMetrics;
@@ -57,7 +75,10 @@ use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE, STO
 use crate::option::Mode;
 use crate::parseable::LogStream;
 use crate::parseable::PARSEABLE;
+use crate::query::QUERY_SESSION_STATE;
 use crate::stats::FullStats;
+use crate::storage::StreamType;
+use crate::utils::DATASET_STATS_STREAM_NAME;
 
 use super::{
     retention::Retention, ObjectStorageError, ObjectStoreFormat, StorageMetadata,
@@ -807,7 +828,18 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
         let stream = PARSEABLE.get_or_create_stream(stream_name);
         let custom_partition = stream.get_custom_partition();
+        let schema = stream.get_schema();
         for path in stream.parquet_files() {
+            if stream.get_stream_type() != StreamType::Internal
+                && PARSEABLE.options.collect_dataset_stats
+            {
+                if let Err(err) = calculate_field_stats(stream_name, &path, &schema).await {
+                    warn!(
+                        "Error calculating field stats for stream {}: {}",
+                        stream_name, err
+                    );
+                }
+            }
             let filename = path
                 .file_name()
                 .expect("only parquet files are returned by iterator")
@@ -895,6 +927,261 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
         });
     }
 }
+
+const MAX_CONCURRENT_FIELD_STATS: usize = 10;
+
+#[derive(Serialize, Debug)]
+struct DistinctStat {
+    distinct_value: String,
+    count: i64,
+}
+
+#[derive(Serialize, Debug)]
+struct FieldStat {
+    field_name: String,
+    count: i64,
+    distinct_count: i64,
+    distinct_stats: Vec<DistinctStat>,
+}
+
+#[derive(Serialize, Debug)]
+struct DatasetStats {
+    dataset_name: String,
+    field_stats: Vec<FieldStat>,
+}
+
+/// Calculates field statistics for the stream and pushes them to the internal stats dataset.
+/// This function creates a new internal stream for stats if it doesn't exist.
+/// It collects statistics for each field in the stream
+async fn calculate_field_stats(
+    stream_name: &str,
+    parquet_path: &Path,
+    schema: &Schema,
+) -> Result<(), PostError> {
+    let log_source_entry = LogSourceEntry::new(LogSource::Json, HashSet::new());
+    PARSEABLE
+        .create_stream_if_not_exists(
+            DATASET_STATS_STREAM_NAME,
+            StreamType::Internal,
+            Some(&"dataset_name".to_string()),
+            vec![log_source_entry],
+        )
+        .await?;
+    let ctx = SessionContext::new_with_state(QUERY_SESSION_STATE.clone());
+    let ctx_table_name = format!("{}_{}", stream_name, parquet_path.display());
+    ctx.register_parquet(
+        &ctx_table_name,
+        parquet_path.to_str().expect("valid path"),
+        ParquetReadOptions::default(),
+    )
+    .await
+    .map_err(|e| PostError::Invalid(e.into()))?;
+    let field_stats = collect_all_field_stats(&ctx_table_name, &ctx, schema).await;
+    drop(ctx);
+
+    let stats = DatasetStats {
+        dataset_name: stream_name.to_string(),
+        field_stats,
+    };
+    if stats.field_stats.is_empty() {
+        return Ok(());
+    }
+    let stats_value =
+        serde_json::to_value(&stats).map_err(|e| ObjectStorageError::Invalid(e.into()))?;
+
+    flatten_and_push_logs(
+        stats_value,
+        DATASET_STATS_STREAM_NAME,
+        &LogSource::Json,
+        &HashMap::new(),
+    )
+    .await?;
+    Ok(())
+}
+
+/// Collects statistics for all fields in the stream.
+/// Returns a vector of `FieldStat` for each field with non-zero count.
+/// Uses `buffer_unordered` to run up to `MAX_CONCURRENT_FIELD_STATS` queries concurrently.
+async fn collect_all_field_stats(
+    stream_name: &str,
+    ctx: &SessionContext,
+    schema: &Schema,
+) -> Vec<FieldStat> {
+    // Collect field names into an owned Vec<String> to avoid lifetime issues
+    let field_names: Vec<String> = schema
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect();
+    let field_futures = field_names.into_iter().map(|field_name| {
+        let ctx = ctx.clone();
+        async move { calculate_single_field_stats(ctx, stream_name, &field_name).await }
+    });
+
+    futures::stream::iter(field_futures)
+        .buffer_unordered(MAX_CONCURRENT_FIELD_STATS)
+        .filter_map(std::future::ready)
+        .collect::<Vec<_>>()
+        .await
+}
+
+/// Calculates statistics for a single field in the stream.
+/// Returns `None` if the count query returns 0.
+async fn calculate_single_field_stats(
+    ctx: SessionContext,
+    stream_name: &str,
+    field_name: &str,
+) -> Option<FieldStat> {
+    let count = query_single_i64(
+        &ctx,
+        &format!("select count(\"{field_name}\") as count from \"{stream_name}\""),
+    )
+    .await?;
+    if count == 0 {
+        return None;
+    }
+
+    let distinct_count = query_single_i64(
+        &ctx,
+        &format!(
+            "select COUNT(DISTINCT \"{field_name}\") as distinct_count from \"{stream_name}\""
+        ),
+    )
+    .await?;
+    let distinct_stats = query_distinct_stats(&ctx, stream_name, field_name).await;
+    Some(FieldStat {
+        field_name: field_name.to_string(),
+        count,
+        distinct_count,
+        distinct_stats,
+    })
+}
+
+/// Queries a single integer value from the DataFusion context.
+/// Returns `None` if the query fails or returns no rows.
+/// This is used for fetching record count for a field and distinct count.
+async fn query_single_i64(ctx: &SessionContext, sql: &str) -> Option<i64> {
+    let df = ctx.sql(sql).await.ok()?;
+    let mut stream = df.execute_stream().await.ok()?;
+    let mut count = 0;
+    while let Some(batch_result) = stream.next().await {
+        let batch = batch_result.ok()?;
+        if batch.num_rows() == 0 {
+            return None;
+        }
+        let array = batch.column(0).as_any().downcast_ref::<Int64Array>()?;
+        count += array.value(0);
+    }
+    Some(count)
+}
+
+/// Helper function to format an Arrow value at a given index into a string.
+/// Handles null values and different data types like String, Int64, Float64, Timestamp, Date32, and Boolean.
+fn format_arrow_value(array: &dyn Array, idx: usize) -> String {
+    if array.is_null(idx) {
+        return "NULL".to_string();
+    }
+
+    match array.data_type() {
+        DataType::Utf8 => array
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(idx)
+            .to_string(),
+        DataType::Utf8View => array
+            .as_any()
+            .downcast_ref::<StringViewArray>()
+            .unwrap()
+            .value(idx)
+            .to_string(),
+        DataType::Binary => {
+            let arr = array.as_any().downcast_ref::<BinaryArray>().unwrap();
+            String::from_utf8_lossy(arr.value(idx)).to_string()
+        }
+        DataType::BinaryView => {
+            let arr = array.as_any().downcast_ref::<BinaryViewArray>().unwrap();
+            String::from_utf8_lossy(arr.value(idx)).to_string()
+        }
+        DataType::Int64 => array
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .value(idx)
+            .to_string(),
+        DataType::Float64 => array
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap()
+            .value(idx)
+            .to_string(),
+        DataType::Timestamp(TimeUnit::Millisecond, _) => {
+            let arr = array
+                .as_any()
+                .downcast_ref::<TimestampMillisecondArray>()
+                .unwrap();
+            let timestamp = arr.value(idx);
+            DateTime::from_timestamp_millis(timestamp)
+                .map(|dt| dt.to_string())
+                .unwrap_or_else(|| "INVALID_TIMESTAMP".to_string())
+        }
+        DataType::Date32 => array
+            .as_any()
+            .downcast_ref::<Date32Array>()
+            .unwrap()
+            .value(idx)
+            .to_string(),
+        DataType::Boolean => array
+            .as_any()
+            .downcast_ref::<BooleanArray>()
+            .unwrap()
+            .value(idx)
+            .to_string(),
+        DataType::Null => "NULL".to_string(),
+        _ => {
+            warn!(
+                "Unsupported array type for statistics: {:?}",
+                array.data_type()
+            );
+            "UNSUPPORTED".to_string()
+        }
+    }
+}
+
+/// This function is used to fetch distinct values and their counts for a field in the stream.
+/// Returns a vector of `DistinctStat` containing distinct values and their counts.
+/// The query groups by the field and orders by the count in descending order, limiting the results to `PARSEABLE.options.max_field_statistics`.
+async fn query_distinct_stats(
+    ctx: &SessionContext,
+    stream_name: &str,
+    field_name: &str,
+) -> Vec<DistinctStat> {
+    let sql = format!(
+        "select count(*) as distinct_count, \"{field_name}\" from \"{stream_name}\" group by \"{field_name}\" order by distinct_count desc limit {}",
+        PARSEABLE.options.max_field_statistics
+    );
+    let mut distinct_stats = Vec::new();
+    if let Ok(df) = ctx.sql(&sql).await {
+        if let Ok(batches) = df.collect().await {
+            for rb in batches {
+                let Some(counts) = rb.column(0).as_any().downcast_ref::<Int64Array>() else {
+                    warn!("Unexpected type for count column in stats query");
+                    continue;
+                };
+                let values = rb.column(1).as_ref();
+                for i in 0..rb.num_rows() {
+                    let value = format_arrow_value(values, i);
+                    distinct_stats.push(DistinctStat {
+                        distinct_value: value,
+                        count: counts.value(i),
+                    });
+                }
+            }
+        }
+    }
+    distinct_stats
+}
+
 pub async fn commit_schema_to_storage(
     stream_name: &str,
     schema: Schema,

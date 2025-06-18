@@ -27,7 +27,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::error::DataFusionError;
 use datafusion::execution::disk_manager::DiskManagerConfig;
-use datafusion::execution::{SendableRecordBatchStream, SessionStateBuilder};
+use datafusion::execution::{SendableRecordBatchStream, SessionState, SessionStateBuilder};
 use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
     Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
@@ -60,6 +60,9 @@ use crate::utils::time::TimeRange;
 
 pub static QUERY_SESSION: Lazy<SessionContext> =
     Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
+
+pub static QUERY_SESSION_STATE: Lazy<SessionState> =
+    Lazy::new(|| Query::create_session_state(PARSEABLE.storage()));
 
 /// Dedicated multi-threaded runtime to run all queries on
 pub static QUERY_RUNTIME: Lazy<Runtime> =
@@ -96,10 +99,28 @@ pub struct Query {
 impl Query {
     // create session context for this query
     pub fn create_session_context(storage: Arc<dyn ObjectStorageProvider>) -> SessionContext {
+        let state = Self::create_session_state(storage.clone());
+
+        let schema_provider = Arc::new(GlobalSchemaProvider {
+            storage: storage.get_object_store(),
+        });
+        state
+            .catalog_list()
+            .catalog(&state.config_options().catalog.default_catalog)
+            .expect("default catalog is provided by datafusion")
+            .register_schema(
+                &state.config_options().catalog.default_schema,
+                schema_provider,
+            )
+            .unwrap();
+
+        SessionContext::new_with_state(state)
+    }
+
+    fn create_session_state(storage: Arc<dyn ObjectStorageProvider>) -> SessionState {
         let runtime_config = storage
             .get_datafusion_runtime()
             .with_disk_manager(DiskManagerConfig::NewOs);
-
         let (pool_size, fraction) = match PARSEABLE.options.query_memory_pool_size {
             Some(size) => (size, 1.),
             None => {
@@ -142,26 +163,11 @@ impl Query {
             .parquet
             .schema_force_view_types = true;
 
-        let state = SessionStateBuilder::new()
+        SessionStateBuilder::new()
             .with_default_features()
             .with_config(config)
             .with_runtime_env(runtime)
-            .build();
-
-        let schema_provider = Arc::new(GlobalSchemaProvider {
-            storage: storage.get_object_store(),
-        });
-        state
-            .catalog_list()
-            .catalog(&state.config_options().catalog.default_catalog)
-            .expect("default catalog is provided by datafusion")
-            .register_schema(
-                &state.config_options().catalog.default_schema,
-                schema_provider,
-            )
-            .unwrap();
-
-        SessionContext::new_with_state(state)
+            .build()
     }
 
     /// this function returns the result of the query

@@ -72,6 +72,12 @@ pub const OBJECT_STORE_DATA_GRANULARITY: u32 = LOCAL_SYNC_INTERVAL.as_secs() as 
 /// Describes the duration at the end of which parquets are pushed into objectstore.
 pub const STORAGE_UPLOAD_INTERVAL: Duration = Duration::from_secs(30);
 
+/// Describes the duration during which local sync should be completed
+pub const LOCAL_SYNC_THRESHOLD: Duration = Duration::from_secs(30); // 30 secs
+
+/// Describes the duration during which object store sync should be completed
+pub const OBJECT_STORE_SYNC_THRESHOLD: Duration = Duration::from_secs(15); // 15 secs
+
 // A single HTTP client for all outgoing HTTP requests from the parseable server
 pub static HTTP_CLIENT: Lazy<Client> = Lazy::new(|| {
     ClientBuilder::new()

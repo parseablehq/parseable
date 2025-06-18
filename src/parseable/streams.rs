@@ -26,13 +26,10 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
-use arrow_array::{Array, Date32Array, Float64Array, Int64Array, NullArray, StringArray};
-use arrow_array::{BooleanArray, RecordBatch, TimestampMillisecondArray};
+use arrow_array::RecordBatch;
 use arrow_schema::{Field, Fields, Schema};
-use chrono::{DateTime, NaiveDateTime, Timelike, Utc};
-use datafusion::{datasource::MemTable, prelude::SessionContext};
-use derive_more::{Deref, DerefMut};
-use futures_util::StreamExt;
+use chrono::{NaiveDateTime, Timelike, Utc};
+use derive_more::derive::{Deref, DerefMut};
 use itertools::Itertools;
 use parquet::{
     arrow::ArrowWriter,
@@ -42,11 +39,9 @@ use parquet::{
     schema::types::ColumnPath,
 };
 use relative_path::RelativePathBuf;
-use serde::Serialize;
 use tokio::task::JoinSet;
 use tracing::{error, info, trace, warn};
 
-use crate::utils::DATASET_STATS_STREAM_NAME;
 use crate::{
     cli::Options,
     event::{
@@ -54,11 +49,9 @@ use crate::{
         DEFAULT_TIMESTAMP_KEY,
     },
     handlers::http::modal::{ingest_server::INGESTOR_META, query_server::QUERIER_META},
-    handlers::http::{ingest::PostError, modal::utils::ingest_utils::flatten_and_push_logs},
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
-    parseable::PARSEABLE,
     storage::{object_storage::to_bytes, retention::Retention, StreamType},
     utils::time::{Minute, TimeRange},
     LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
@@ -72,28 +65,6 @@ use super::{
     },
     LogStream, ARROW_FILE_EXTENSION,
 };
-
-const MAX_CONCURRENT_FIELD_STATS: usize = 10;
-
-#[derive(Serialize, Debug)]
-struct DistinctStat {
-    distinct_value: String,
-    count: i64,
-}
-
-#[derive(Serialize, Debug)]
-struct FieldStat {
-    field_name: String,
-    count: i64,
-    distinct_count: i64,
-    distinct_stats: Vec<DistinctStat>,
-}
-
-#[derive(Serialize, Debug)]
-struct DatasetStats {
-    dataset_name: String,
-    field_stats: Vec<FieldStat>,
-}
 
 const INPROCESS_DIR_PREFIX: &str = "processing_";
 
@@ -507,7 +478,7 @@ impl Stream {
 
         // read arrow files on disk
         // convert them to parquet
-        let (schema, rbs) = self.convert_disk_files_to_parquet(
+        let schema = self.convert_disk_files_to_parquet(
             time_partition.as_ref(),
             custom_partition.as_ref(),
             init_signal,
@@ -517,24 +488,6 @@ impl Stream {
         // if yes, then merge them and save
 
         if let Some(mut schema) = schema {
-            // calculate field stats for all user defined streams
-            if self.get_stream_type() != StreamType::Internal
-                && PARSEABLE.options.collect_dataset_stats
-            {
-                let stats_schema = schema.clone();
-                let stream_name = self.stream_name.clone();
-                let stats_rbs = rbs.clone();
-                tokio::spawn(async move {
-                    if let Err(err) =
-                        calculate_field_stats(&stream_name, stats_rbs, stats_schema.into()).await
-                    {
-                        warn!(
-                            "Error calculating field stats for stream {}: {}",
-                            &stream_name, err
-                        );
-                    }
-                });
-            }
             let static_schema_flag = self.get_static_schema_flag();
             if !static_schema_flag {
                 // schema is dynamic, read from staging and merge if present
@@ -671,7 +624,7 @@ impl Stream {
         custom_partition: Option<&String>,
         init_signal: bool,
         shutdown_signal: bool,
-    ) -> Result<(Option<Schema>, Vec<RecordBatch>), StagingError> {
+    ) -> Result<Option<Schema>, StagingError> {
         let mut schemas = Vec::new();
 
         let now = SystemTime::now();
@@ -680,7 +633,7 @@ impl Stream {
             self.arrow_files_grouped_exclude_time(now, group_minute, init_signal, shutdown_signal);
         if staging_files.is_empty() {
             self.reset_staging_metrics();
-            return Ok((None, Vec::new()));
+            return Ok(None);
         }
 
         self.update_staging_metrics(&staging_files);
@@ -716,10 +669,10 @@ impl Stream {
         }
 
         if schemas.is_empty() {
-            return Ok((None, Vec::new()));
+            return Ok(None);
         }
 
-        Ok((Some(Schema::try_merge(schemas).unwrap()), record_batches))
+        Ok(Some(Schema::try_merge(schemas).unwrap()))
     }
 
     fn write_parquet_part_file(
@@ -1033,192 +986,6 @@ impl Stream {
     }
 }
 
-/// Calculates field statistics for the stream and pushes them to the internal stats dataset.
-/// This function creates a new internal stream for stats if it doesn't exist.
-/// It collects statistics for each field in the stream
-async fn calculate_field_stats(
-    stream_name: &str,
-    record_batches: Vec<RecordBatch>,
-    schema: Arc<Schema>,
-) -> Result<(), PostError> {
-    let log_source_entry = LogSourceEntry::new(LogSource::Json, HashSet::new());
-    PARSEABLE
-        .create_stream_if_not_exists(
-            DATASET_STATS_STREAM_NAME,
-            StreamType::Internal,
-            vec![log_source_entry],
-        )
-        .await?;
-    let mem_table = MemTable::try_new(schema.clone(), vec![record_batches])
-        .map_err(|e| PostError::Invalid(e.into()))?;
-    let ctx = SessionContext::new();
-    ctx.register_table(stream_name, Arc::new(mem_table))
-        .map_err(|e| PostError::Invalid(e.into()))?;
-
-    let field_stats = collect_all_field_stats(stream_name, &ctx, &schema).await;
-    drop(ctx);
-
-    let stats = DatasetStats {
-        dataset_name: stream_name.to_string(),
-        field_stats,
-    };
-    if stats.field_stats.is_empty() {
-        return Ok(());
-    }
-    let stats_value = serde_json::to_value(&stats).map_err(|e| PostError::Invalid(e.into()))?;
-
-    flatten_and_push_logs(
-        stats_value,
-        DATASET_STATS_STREAM_NAME,
-        &LogSource::Json,
-        &HashMap::new(),
-    )
-    .await?;
-    Ok(())
-}
-
-/// Collects statistics for all fields in the stream.
-/// Returns a vector of `FieldStat` for each field with non-zero count.
-/// Uses `buffer_unordered` to run up to `MAX_CONCURRENT_FIELD_STATS` queries concurrently.
-async fn collect_all_field_stats(
-    stream_name: &str,
-    ctx: &SessionContext,
-    schema: &Arc<Schema>,
-) -> Vec<FieldStat> {
-    // Collect field names into an owned Vec<String> to avoid lifetime issues
-    let field_names: Vec<String> = schema
-        .fields()
-        .iter()
-        .map(|field| field.name().clone())
-        .collect();
-
-    let field_futures = field_names.into_iter().map(|field_name| {
-        let ctx = ctx.clone();
-        async move { calculate_single_field_stats(ctx, stream_name, &field_name).await }
-    });
-
-    futures::stream::iter(field_futures)
-        .buffer_unordered(MAX_CONCURRENT_FIELD_STATS)
-        .filter_map(std::future::ready)
-        .collect::<Vec<_>>()
-        .await
-}
-
-/// Calculates statistics for a single field in the stream.
-/// Returns `None` if the count query returns 0.
-async fn calculate_single_field_stats(
-    ctx: SessionContext,
-    stream_name: &str,
-    field_name: &str,
-) -> Option<FieldStat> {
-    let count = query_single_i64(
-        &ctx,
-        &format!("select count(\"{field_name}\") as count from \"{stream_name}\""),
-    )
-    .await?;
-    if count == 0 {
-        return None;
-    }
-
-    let distinct_count = query_single_i64(
-        &ctx,
-        &format!(
-            "select COUNT(DISTINCT \"{field_name}\") as distinct_count from \"{stream_name}\""
-        ),
-    )
-    .await?;
-
-    let distinct_stats = query_distinct_stats(&ctx, stream_name, field_name).await;
-
-    Some(FieldStat {
-        field_name: field_name.to_string(),
-        count,
-        distinct_count,
-        distinct_stats,
-    })
-}
-
-/// Queries a single integer value from the DataFusion context.
-/// Returns `None` if the query fails or returns no rows.
-/// This is used for fetching record count for a field and distinct count.
-async fn query_single_i64(ctx: &SessionContext, sql: &str) -> Option<i64> {
-    let df = ctx.sql(sql).await.ok()?;
-    let batches = df.collect().await.ok()?;
-    let batch = batches.first()?;
-    if batch.num_rows() == 0 {
-        return None;
-    }
-    let array = batch.column(0).as_any().downcast_ref::<Int64Array>()?;
-
-    Some(array.value(0))
-}
-
-/// Helper function to format an Arrow value at a given index into a string.
-/// Handles null values and different data types like String, Int64, Float64, Timestamp, Date32, and Boolean.
-fn format_arrow_value(array: &dyn Array, idx: usize) -> String {
-    if array.is_null(idx) {
-        return "NULL".to_string();
-    }
-    if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
-        arr.value(idx).to_string()
-    } else if let Some(arr) = array.as_any().downcast_ref::<Int64Array>() {
-        arr.value(idx).to_string()
-    } else if let Some(arr) = array.as_any().downcast_ref::<Float64Array>() {
-        arr.value(idx).to_string()
-    } else if let Some(arr) = array.as_any().downcast_ref::<TimestampMillisecondArray>() {
-        let timestamp = arr.value(idx);
-        DateTime::from_timestamp_millis(timestamp)
-            .map(|dt| dt.to_string())
-            .unwrap_or_else(|| "INVALID_TIMESTAMP".to_string())
-    } else if let Some(arr) = array.as_any().downcast_ref::<Date32Array>() {
-        return arr.value(idx).to_string();
-    } else if let Some(arr) = array.as_any().downcast_ref::<BooleanArray>() {
-        arr.value(idx).to_string()
-    } else if array.as_any().downcast_ref::<NullArray>().is_some() {
-        "NULL".to_string()
-    } else {
-        warn!(
-            "Unsupported array type for statistics: {:?}",
-            array.data_type()
-        );
-        "UNSUPPORTED".to_string()
-    }
-}
-
-/// This function is used to fetch distinct values and their counts for a field in the stream.
-/// Returns a vector of `DistinctStat` containing distinct values and their counts.
-/// The query groups by the field and orders by the count in descending order, limiting the results to `PARSEABLE.options.max_field_statistics`.
-async fn query_distinct_stats(
-    ctx: &SessionContext,
-    stream_name: &str,
-    field_name: &str,
-) -> Vec<DistinctStat> {
-    let sql = format!(
-        "select count(*) as distinct_count, \"{field_name}\" from \"{stream_name}\" group by \"{field_name}\" order by distinct_count desc limit {}",
-        PARSEABLE.options.max_field_statistics
-    );
-    let mut distinct_stats = Vec::new();
-    if let Ok(df) = ctx.sql(&sql).await {
-        if let Ok(batches) = df.collect().await {
-            for rb in batches {
-                let Some(counts) = rb.column(0).as_any().downcast_ref::<Int64Array>() else {
-                    warn!("Unexpected type for count column in stats query");
-                    continue;
-                };
-                let values = rb.column(1).as_ref();
-                for i in 0..rb.num_rows() {
-                    let value = format_arrow_value(values, i);
-                    distinct_stats.push(DistinctStat {
-                        distinct_value: value,
-                        count: counts.value(i),
-                    });
-                }
-            }
-        }
-    }
-    distinct_stats
-}
-
 #[derive(Deref, DerefMut, Default)]
 pub struct Streams(RwLock<HashMap<String, StreamRef>>);
 
@@ -1494,7 +1261,7 @@ mod tests {
             None,
         )
         .convert_disk_files_to_parquet(None, None, false, false)?;
-        assert!(result.0.is_none());
+        assert!(result.is_none());
         // Verify metrics were set to 0
         let staging_files = metrics::STAGING_FILES.with_label_values(&[&stream]).get();
         assert_eq!(staging_files, 0);
@@ -1575,8 +1342,8 @@ mod tests {
             .convert_disk_files_to_parquet(None, None, false, true)
             .unwrap();
 
-        assert!(result.0.is_some());
-        let result_schema = result.0.unwrap();
+        assert!(result.is_some());
+        let result_schema = result.unwrap();
         assert_eq!(result_schema.fields().len(), 3);
 
         // Verify parquet files were created and the arrow files deleted
@@ -1624,8 +1391,8 @@ mod tests {
             .convert_disk_files_to_parquet(None, None, false, true)
             .unwrap();
 
-        assert!(result.0.is_some());
-        let result_schema = result.0.unwrap();
+        assert!(result.is_some());
+        let result_schema = result.unwrap();
         assert_eq!(result_schema.fields().len(), 3);
 
         // Verify parquet files were created and the arrow files deleted
@@ -1678,8 +1445,8 @@ mod tests {
             .convert_disk_files_to_parquet(None, None, false, false)
             .unwrap();
 
-        assert!(result.0.is_some());
-        let result_schema = result.0.unwrap();
+        assert!(result.is_some());
+        let result_schema = result.unwrap();
         assert_eq!(result_schema.fields().len(), 3);
 
         // Verify parquet files were created and the arrow file left
