@@ -1041,22 +1041,26 @@ async fn calculate_single_field_stats(
     stream_name: &str,
     field_name: &str,
 ) -> Option<FieldStat> {
-    let count = query_single_i64(
-        &ctx,
-        &format!("select count(\"{field_name}\") as count from \"{stream_name}\""),
-    )
-    .await?;
-    if count == 0 {
+    // Use the escaped field name in the SQL query to avoid issues with special characters
+    let escaped_field_name = field_name.replace('"', "\"\"");
+    let escaped_stream_name = stream_name.replace('"', "\"\"");
+    let count_distinct_sql = format!(
+        "select COUNT(\"{escaped_field_name}\") as count, COUNT(DISTINCT \"{escaped_field_name}\") as distinct_count from \"{escaped_stream_name}\" ");
+
+    let df = ctx.sql(&count_distinct_sql).await.ok()?;
+    let batches = df.collect().await.ok()?;
+    let batch = batches.first()?;
+    if batch.num_rows() == 0 {
         return None;
     }
+    let count_array = batch.column(0).as_any().downcast_ref::<Int64Array>()?;
+    let distinct_count_array = batch.column(1).as_any().downcast_ref::<Int64Array>()?;
 
-    let distinct_count = query_single_i64(
-        &ctx,
-        &format!(
-            "select COUNT(DISTINCT \"{field_name}\") as distinct_count from \"{stream_name}\""
-        ),
-    )
-    .await?;
+    let count = count_array.value(0);
+    let distinct_count = distinct_count_array.value(0);
+    if distinct_count == 0 {
+        return None;
+    }
     let distinct_stats = query_distinct_stats(&ctx, stream_name, field_name).await;
     Some(FieldStat {
         field_name: field_name.to_string(),
@@ -1064,21 +1068,6 @@ async fn calculate_single_field_stats(
         distinct_count,
         distinct_stats,
     })
-}
-
-/// Queries a single integer value from the DataFusion context.
-/// Returns `None` if the query fails or returns no rows.
-/// This is used for fetching record count for a field and distinct count.
-async fn query_single_i64(ctx: &SessionContext, sql: &str) -> Option<i64> {
-    let df = ctx.sql(sql).await.ok()?;
-    let batches = df.collect().await.ok()?;
-    let batch = batches.first()?;
-    if batch.num_rows() == 0 {
-        return None;
-    }
-    let array = batch.column(0).as_any().downcast_ref::<Int64Array>()?;
-
-    Some(array.value(0))
 }
 
 macro_rules! try_downcast {
@@ -1202,15 +1191,30 @@ async fn query_distinct_stats(
     stream_name: &str,
     field_name: &str,
 ) -> Vec<DistinctStat> {
+    let escaped_field_name = field_name.replace('"', "\"\"");
+    let escaped_stream_name = stream_name.replace('"', "\"\"");
+
     let sql = format!(
-        "select count(*) as distinct_count, \"{field_name}\" from \"{stream_name}\" group by \"{field_name}\" order by distinct_count desc limit {}",
+        "select count(*) as distinct_count, \"{escaped_field_name}\" from \"{escaped_stream_name}\" group by \"{escaped_field_name}\" order by distinct_count desc limit {}",
         PARSEABLE.options.max_field_statistics
     );
     let mut distinct_stats = Vec::new();
     if let Ok(df) = ctx.sql(&sql).await {
-        let mut stream = df.execute_stream().await.expect("Failed to execute stream");
+        let mut stream = match df.execute_stream().await {
+            Ok(stream) => stream,
+            Err(e) => {
+                warn!("Failed to execute distinct stats query: {e}");
+                return distinct_stats; // Return empty if query fails
+            }
+        };
         while let Some(batch_result) = stream.next().await {
-            let rb = batch_result.expect("Failed to execute stream");
+            let rb = match batch_result {
+                Ok(batch) => batch,
+                Err(e) => {
+                    warn!("Failed to fetch batch in distinct stats query: {e}");
+                    continue; // Skip this batch if there's an error
+                }
+            };
             let Some(counts) = rb.column(0).as_any().downcast_ref::<Int64Array>() else {
                 warn!("Unexpected type for count column in stats query");
                 continue;
