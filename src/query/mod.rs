@@ -445,6 +445,7 @@ impl CountsRequest {
 
     /// This function will get executed only if self.conditions is some
     pub async fn get_df_sql(&self) -> Result<String, QueryError> {
+        // unwrap because we have asserted that it is some
         let count_conditions = self.conditions.as_ref().unwrap();
 
         let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
@@ -453,20 +454,20 @@ impl CountsRequest {
 
         let date_bin = if dur.num_minutes() <= 60 * 10 {
             // date_bin 1 minute
-            format!("CAST(DATE_BIN('1 minute', {}.p_timestamp, TIMESTAMP '2025-01-01T00:00:00.000Z') AS TEXT) as start_time, DATE_BIN('1 minute', p_timestamp, TIMESTAMP '2025-01-01T00:00:00.000Z') + INTERVAL '1 minute' as end_time", self.stream)
+            format!("CAST(DATE_BIN('1 minute', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 minute', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 minute' as end_time", self.stream)
         } else if dur.num_minutes() > 60 * 10 && dur.num_minutes() < 60 * 240 {
             // date_bin 1 hour
-            String::from("CAST(DATE_BIN('1 hour', p_timestamp, TIMESTAMP '2025-01-01T00:00:00.000Z') AS TEXT) as start_time, DATE_BIN('1 hour', p_timestamp, TIMESTAMP '2025-01-01T00:00:00.000Z') + INTERVAL '1 hour' as end_time")
+            format!("CAST(DATE_BIN('1 hour', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 hour', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 hour' as end_time", self.stream)
         } else {
             // date_bin 1 day
-            String::from("CAST(DATE_BIN('1 day', p_timestamp, TIMESTAMP '2025-01-01T00:00:00.000Z') AS TEXT) as start_time, DATE_BIN('1 day', p_timestamp, TIMESTAMP '2025-01-01T00:00:00.000Z') + INTERVAL '1 day' as end_time")
+            format!("CAST(DATE_BIN('1 day', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 day', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 day' as end_time", self.stream)
         };
 
         let query = if let Some(conditions) = &count_conditions.conditions {
             let f = get_filter_string(conditions).map_err(QueryError::CustomError)?;
-            format!("SELECT {date_bin}, COUNT(*) as count FROM {} WHERE {} GROUP BY end_time,start_time ORDER BY end_time",self.stream,f)
+            format!("SELECT {date_bin}, COUNT(*) as count FROM \"{}\" WHERE {} GROUP BY end_time,start_time ORDER BY end_time",self.stream,f)
         } else {
-            format!("SELECT {date_bin}, COUNT(*) as count FROM {} GROUP BY end_time,start_time ORDER BY end_time",self.stream)
+            format!("SELECT {date_bin}, COUNT(*) as count FROM \"{}\" GROUP BY end_time,start_time ORDER BY end_time",self.stream)
         };
         Ok(query)
     }
