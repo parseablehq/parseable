@@ -47,6 +47,8 @@ use tokio::runtime::Runtime;
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
 pub use self::stream_schema_provider::PartialTimeFilter;
+use crate::alerts::alerts_utils::get_filter_string;
+use crate::alerts::Conditions;
 use crate::catalog::column::{Int64Type, TypedStatistics};
 use crate::catalog::manifest::Manifest;
 use crate::catalog::snapshot::Snapshot;
@@ -303,7 +305,7 @@ impl Query {
 }
 
 /// Record of counts for a given time bin.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Deserialize)]
 pub struct CountsRecord {
     /// Start time of the bin
     pub start_time: String,
@@ -318,6 +320,15 @@ struct TimeBounds {
     end: DateTime<Utc>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CountConditions {
+    /// Optional conditions for filters
+    pub conditions: Option<Conditions>,
+    /// GroupBy columns
+    pub group_by: Option<Vec<String>>,
+}
+
 /// Request for counts, received from API/SQL query.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -330,6 +341,8 @@ pub struct CountsRequest {
     pub end_time: String,
     /// Number of bins to divide the time range into
     pub num_bins: u64,
+    /// Conditions
+    pub conditions: Option<CountConditions>,
 }
 
 impl CountsRequest {
@@ -434,6 +447,35 @@ impl CountsRequest {
         }
 
         bounds
+    }
+
+    /// This function will get executed only if self.conditions is some
+    pub async fn get_df_sql(&self) -> Result<String, QueryError> {
+        // unwrap because we have asserted that it is some
+        let count_conditions = self.conditions.as_ref().unwrap();
+
+        let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
+
+        let dur = time_range.end.signed_duration_since(time_range.start);
+
+        let date_bin = if dur.num_minutes() <= 60 * 10 {
+            // date_bin 1 minute
+            format!("CAST(DATE_BIN('1 minute', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 minute', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 minute' as end_time", self.stream)
+        } else if dur.num_minutes() > 60 * 10 && dur.num_minutes() < 60 * 240 {
+            // date_bin 1 hour
+            format!("CAST(DATE_BIN('1 hour', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 hour', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 hour' as end_time", self.stream)
+        } else {
+            // date_bin 1 day
+            format!("CAST(DATE_BIN('1 day', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 day', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 day' as end_time", self.stream)
+        };
+
+        let query = if let Some(conditions) = &count_conditions.conditions {
+            let f = get_filter_string(conditions).map_err(QueryError::CustomError)?;
+            format!("SELECT {date_bin}, COUNT(*) as count FROM \"{}\" WHERE {} GROUP BY end_time,start_time ORDER BY end_time",self.stream,f)
+        } else {
+            format!("SELECT {date_bin}, COUNT(*) as count FROM \"{}\" GROUP BY end_time,start_time ORDER BY end_time",self.stream)
+        };
+        Ok(query)
     }
 }
 
