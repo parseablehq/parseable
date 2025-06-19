@@ -336,7 +336,6 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
     span_records_json
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,13 +359,21 @@ mod tests {
             KeyValue {
                 key: "service.name".to_string(),
                 value: Some(AnyValue {
-                    value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue("test-service".to_string())),
+                    value: Some(
+                        opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                            "test-service".to_string(),
+                        ),
+                    ),
                 }),
             },
             KeyValue {
                 key: "http.method".to_string(),
                 value: Some(AnyValue {
-                    value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue("GET".to_string())),
+                    value: Some(
+                        opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue(
+                            "GET".to_string(),
+                        ),
+                    ),
                 }),
             },
         ]
@@ -398,7 +405,8 @@ mod tests {
             assert_eq!(
                 result.get("span_status_description").unwrap(),
                 &Value::String(expected_description.to_string()),
-                "Status description should match expected value for code {}", code
+                "Status description should match expected value for code {}",
+                code
             );
             assert_eq!(
                 result.get("span_status_message").unwrap(),
@@ -432,7 +440,8 @@ mod tests {
             assert_eq!(
                 result.get("span_kind_description").unwrap(),
                 &Value::String(expected_description.to_string()),
-                "Span kind description should match expected value for kind {}", kind
+                "Span kind description should match expected value for kind {}",
+                kind
             );
         }
     }
@@ -459,7 +468,8 @@ mod tests {
             assert_eq!(
                 result.get("span_flags_description").unwrap(),
                 &Value::String(expected_description.to_string()),
-                "Span flags description should match expected value for flags {}", flags
+                "Span flags description should match expected value for flags {}",
+                flags
             );
         }
     }
@@ -488,7 +498,10 @@ mod tests {
 
         // Check first event
         let first_event = &result[0];
-        assert!(first_event.contains_key("event_time_unix_nano"), "Should contain timestamp");
+        assert!(
+            first_event.contains_key("event_time_unix_nano"),
+            "Should contain timestamp"
+        );
         assert_eq!(
             first_event.get("event_name").unwrap(),
             &Value::String("request.start".to_string()),
@@ -499,7 +512,10 @@ mod tests {
             &Value::Number(2.into()),
             "Dropped attributes count should be preserved"
         );
-        assert!(first_event.contains_key("service.name"), "Should contain flattened attributes");
+        assert!(
+            first_event.contains_key("service.name"),
+            "Should contain flattened attributes"
+        );
 
         // Check second event
         let second_event = &result[1];
@@ -518,16 +534,14 @@ mod tests {
     #[test]
     fn test_flatten_links_structure() {
         // Test that links are properly flattened with all expected fields
-        let links = vec![
-            Link {
-                trace_id: sample_trace_id(),
-                span_id: sample_span_id(),
-                trace_state: "state1".to_string(),
-                attributes: sample_attributes(),
-                dropped_attributes_count: 1,
-                flags: 0,
-            },
-        ];
+        let links = vec![Link {
+            trace_id: sample_trace_id(),
+            span_id: sample_span_id(),
+            trace_state: "state1".to_string(),
+            attributes: sample_attributes(),
+            dropped_attributes_count: 1,
+            flags: 0,
+        }];
 
         let result = flatten_links(&links);
 
@@ -549,7 +563,10 @@ mod tests {
             &Value::Number(1.into()),
             "Dropped attributes count should be preserved"
         );
-        assert!(link.contains_key("service.name"), "Should contain flattened attributes");
+        assert!(
+            link.contains_key("service.name"),
+            "Should contain flattened attributes"
+        );
     }
 
     #[test]
@@ -611,12 +628,30 @@ mod tests {
                 &Value::String("SPAN_KIND_SERVER".to_string()),
                 "All records should contain span kind description"
             );
-            assert!(record.contains_key("span_trace_id"), "Should contain trace ID");
-            assert!(record.contains_key("span_span_id"), "Should contain span ID");
-            assert!(record.contains_key("span_start_time_unix_nano"), "Should contain start time");
-            assert!(record.contains_key("span_end_time_unix_nano"), "Should contain end time");
-            assert!(record.contains_key("service.name"), "Should contain span attributes");
-            assert!(record.contains_key("span_status_code"), "Should contain status");
+            assert!(
+                record.contains_key("span_trace_id"),
+                "Should contain trace ID"
+            );
+            assert!(
+                record.contains_key("span_span_id"),
+                "Should contain span ID"
+            );
+            assert!(
+                record.contains_key("span_start_time_unix_nano"),
+                "Should contain start time"
+            );
+            assert!(
+                record.contains_key("span_end_time_unix_nano"),
+                "Should contain end time"
+            );
+            assert!(
+                record.contains_key("service.name"),
+                "Should contain span attributes"
+            );
+            assert!(
+                record.contains_key("span_status_code"),
+                "Should contain status"
+            );
         }
 
         // One record should be an event, one should be a link
@@ -650,7 +685,11 @@ mod tests {
 
         let result = flatten_span_record(&span);
 
-        assert_eq!(result.len(), 1, "Should have exactly one record for span without events/links");
+        assert_eq!(
+            result.len(),
+            1,
+            "Should have exactly one record for span without events/links"
+        );
 
         let record = &result[0];
         assert_eq!(
@@ -658,9 +697,18 @@ mod tests {
             &Value::String("simple-span".to_string()),
             "Should contain span name"
         );
-        assert!(!record.contains_key("event_name"), "Should not contain event fields");
-        assert!(!record.contains_key("link_trace_id"), "Should not contain link fields");
-        assert!(!record.contains_key("span_status_code"), "Should not contain status when none provided");
+        assert!(
+            !record.contains_key("event_name"),
+            "Should not contain event fields"
+        );
+        assert!(
+            !record.contains_key("link_trace_id"),
+            "Should not contain link fields"
+        );
+        assert!(
+            !record.contains_key("span_status_code"),
+            "Should not contain status when none provided"
+        );
     }
 
     #[test]
@@ -705,10 +753,16 @@ mod tests {
                 assert_eq!(hex_span_id, "12345678", "Span ID should be lowercase hex");
             }
             if let Some(Value::String(hex_parent_span_id)) = record.get("span_parent_span_id") {
-                assert_eq!(hex_parent_span_id, "87654321", "Parent span ID should be lowercase hex");
+                assert_eq!(
+                    hex_parent_span_id, "87654321",
+                    "Parent span ID should be lowercase hex"
+                );
             }
             if let Some(Value::String(link_trace_id)) = record.get("link_trace_id") {
-                assert_eq!(link_trace_id, "ffabcdef", "Link trace ID should be lowercase hex");
+                assert_eq!(
+                    link_trace_id, "ffabcdef",
+                    "Link trace ID should be lowercase hex"
+                );
             }
         }
     }
@@ -823,15 +877,36 @@ mod tests {
     fn test_known_field_list_completeness() {
         // Test that the OTEL_TRACES_KNOWN_FIELD_LIST contains all expected fields
         let expected_fields = [
-            "scope_name", "scope_version", "scope_schema_url", "scope_dropped_attributes_count",
-            "resource_schema_url", "resource_dropped_attributes_count",
-            "span_trace_id", "span_span_id", "span_name", "span_parent_span_id", "name",
-            "span_kind", "span_kind_description", "span_start_time_unix_nano", "span_end_time_unix_nano",
-            "event_name", "event_time_unix_nano", "event_dropped_attributes_count",
-            "link_span_id", "link_trace_id", "link_dropped_attributes_count",
-            "span_dropped_events_count", "span_dropped_links_count", "span_dropped_attributes_count",
-            "span_trace_state", "span_flags", "span_flags_description",
-            "span_status_code", "span_status_description", "span_status_message",
+            "scope_name",
+            "scope_version",
+            "scope_schema_url",
+            "scope_dropped_attributes_count",
+            "resource_schema_url",
+            "resource_dropped_attributes_count",
+            "span_trace_id",
+            "span_span_id",
+            "span_name",
+            "span_parent_span_id",
+            "name",
+            "span_kind",
+            "span_kind_description",
+            "span_start_time_unix_nano",
+            "span_end_time_unix_nano",
+            "event_name",
+            "event_time_unix_nano",
+            "event_dropped_attributes_count",
+            "link_span_id",
+            "link_trace_id",
+            "link_dropped_attributes_count",
+            "span_dropped_events_count",
+            "span_dropped_links_count",
+            "span_dropped_attributes_count",
+            "span_trace_state",
+            "span_flags",
+            "span_flags_description",
+            "span_status_code",
+            "span_status_description",
+            "span_status_message",
         ];
 
         assert_eq!(

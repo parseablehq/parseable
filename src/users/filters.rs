@@ -180,25 +180,19 @@ impl Filters {
         let read = self.0.read().await;
 
         let mut filters = Vec::new();
-
+        let permissions = Users.get_permissions(key);
         for f in read.iter() {
-            let query = if let Some(q) = &f.query.filter_query {
-                q
-            } else {
-                continue;
-            };
+            let query: &str = f.query.filter_query.as_deref().unwrap_or("");
             let filter_type = &f.query.filter_type;
 
-            // if filter type is one of SQL or filter
-            // then check if the user has access to the dataset based on the query string
-            // if filter type is search then check if the user has access to the dataset based on the dataset name
-            if *filter_type == FilterType::SQL || *filter_type == FilterType::Filter {
+            // if filter type is SQL, check if the user has access to the dataset based on the query string
+            // if filter type is search or filter, check if the user has access to the dataset based on the dataset name
+            if *filter_type == FilterType::SQL {
                 if (user_auth_for_query(key, query).await).is_ok() {
                     filters.push(f.clone())
                 }
-            } else if *filter_type == FilterType::Search {
+            } else if *filter_type == FilterType::Search || *filter_type == FilterType::Filter {
                 let dataset_name = &f.stream_name;
-                let permissions = Users.get_permissions(key);
                 if user_auth_for_datasets(&permissions, &[dataset_name.to_string()]).is_ok() {
                     filters.push(f.clone())
                 }

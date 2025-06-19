@@ -27,6 +27,7 @@ use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::handlers::http::{rbac, role};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
+use crate::sync::sync_start;
 use crate::{analytics, migration, storage, sync};
 use actix_web::web::{resource, ServiceConfig};
 use actix_web::{web, Scope};
@@ -126,6 +127,13 @@ impl ParseableServer for QueryServer {
         if init_cluster_metrics_schedular().is_ok() {
             info!("Cluster metrics scheduler started successfully");
         }
+
+        // local sync on init
+        let startup_sync_handle = tokio::spawn(async {
+            if let Err(e) = sync_start().await {
+                tracing::warn!("local sync on server start failed: {e}");
+            }
+        });
         if let Some(hot_tier_manager) = HotTierManager::global() {
             hot_tier_manager.put_internal_stream_hot_tier().await?;
             hot_tier_manager.download_from_s3()?;
@@ -142,7 +150,9 @@ impl ParseableServer for QueryServer {
             .await?;
         // Cancel sync jobs
         cancel_tx.send(()).expect("Cancellation should not fail");
-
+        if let Err(join_err) = startup_sync_handle.await {
+            tracing::warn!("startup sync task panicked: {join_err}");
+        }
         Ok(result)
     }
 }
