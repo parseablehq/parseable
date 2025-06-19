@@ -320,6 +320,15 @@ pub struct Options {
     // Resource monitoring
     #[arg(
         long,
+        env = "P_RESOURCE_CHECK_INTERVAL",
+        default_value = "30",
+        value_parser = validation::validate_seconds,
+        help = "Resource monitoring check interval in seconds"
+    )]
+    pub resource_check_interval: u64,
+
+    #[arg(
+        long,
         env = "P_CPU_THRESHOLD",
         default_value = "80.0",
         value_parser = validation::validate_percentage,

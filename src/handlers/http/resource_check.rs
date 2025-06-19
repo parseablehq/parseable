@@ -36,7 +36,8 @@ static RESOURCE_CHECK_ENABLED:LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::
 /// Spawn a background task to monitor system resources
 pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
     tokio::spawn(async move {
-        let mut check_interval = interval(Duration::from_secs(30));
+        let resource_check_interval = PARSEABLE.options.resource_check_interval;
+        let mut check_interval = interval(Duration::from_secs(resource_check_interval));
         let mut shutdown_rx = shutdown_rx;
         
         let cpu_threshold = PARSEABLE.options.cpu_utilization_threshold;

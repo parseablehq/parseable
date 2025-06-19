@@ -187,6 +187,13 @@ pub mod validation {
         }
     }
 
+    pub fn validate_seconds(s: &str) -> Result<u64, String> {
+        if let Ok(seconds) = s.parse::<u64>() {
+            Ok(seconds)
+        } else {
+            Err("Invalid value for seconds. It should be a positive integer".to_string())
+        }
+    }
     pub fn validate_dataset_fields_allowed_limit(s: &str) -> Result<usize, String> {
         if let Ok(size) = s.parse::<usize>() {
             if (1..=DATASET_FIELD_COUNT_LIMIT).contains(&size) {

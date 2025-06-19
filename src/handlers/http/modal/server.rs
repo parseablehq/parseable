@@ -73,7 +73,10 @@ impl ParseableServer for Server {
             .service(
                 web::scope(&base_path())
                     .service(Self::get_correlation_webscope())
-                    .service(Self::get_query_factory())
+                    .service(
+                        Self::get_query_factory()
+                            .wrap(from_fn(resource_check::check_resource_utilization_middleware))
+                    )
                     .service(
                         Self::get_ingest_factory()
                             .wrap(from_fn(resource_check::check_resource_utilization_middleware))
@@ -90,7 +93,10 @@ impl ParseableServer for Server {
                     .service(Self::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope())
                     .service(Self::get_roles_webscope())
-                    .service(Self::get_counts_webscope())
+                    .service(
+                        Self::get_counts_webscope()
+                            .wrap(from_fn(resource_check::check_resource_utilization_middleware))
+                    )
                     .service(Self::get_alerts_webscope())
                     .service(Self::get_metrics_webscope()),
             )
