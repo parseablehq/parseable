@@ -55,6 +55,7 @@ impl ParseableSinkProcessor {
             .create_stream_if_not_exists(
                 stream_name,
                 StreamType::UserDefined,
+                None,
                 vec![log_source_entry],
             )
             .await?;
