@@ -463,7 +463,7 @@ impl Stream {
     }
 
     /// Converts arrow files in staging into parquet files, does so only for past minutes when run with `!shutdown_signal`
-    pub async fn prepare_parquet(
+    pub fn prepare_parquet(
         &self,
         init_signal: bool,
         shutdown_signal: bool,
@@ -637,8 +637,6 @@ impl Stream {
         }
 
         self.update_staging_metrics(&staging_files);
-
-        let mut record_batches = Vec::new();
         for (parquet_path, arrow_files) in staging_files {
             let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
             if record_reader.readers.is_empty() {
@@ -656,7 +654,6 @@ impl Stream {
                 &schema,
                 &props,
                 time_partition,
-                &mut record_batches,
             )? {
                 continue;
             }
@@ -682,7 +679,6 @@ impl Stream {
         schema: &Arc<Schema>,
         props: &WriterProperties,
         time_partition: Option<&String>,
-        record_batches: &mut Vec<RecordBatch>,
     ) -> Result<bool, StagingError> {
         let mut part_file = OpenOptions::new()
             .create(true)
@@ -692,8 +688,6 @@ impl Stream {
         let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
         for ref record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
             writer.write(record)?;
-            // Collect record batches for finding statistics later
-            record_batches.push(record.clone());
         }
         writer.close()?;
 
@@ -960,7 +954,7 @@ impl Stream {
     }
 
     /// First flushes arrows onto disk and then converts the arrow into parquet
-    pub async fn flush_and_convert(
+    pub fn flush_and_convert(
         &self,
         init_signal: bool,
         shutdown_signal: bool,
@@ -975,7 +969,7 @@ impl Stream {
 
         let start_convert = Instant::now();
 
-        self.prepare_parquet(init_signal, shutdown_signal).await?;
+        self.prepare_parquet(init_signal, shutdown_signal)?;
         trace!(
             "Converting arrows to parquet on stream ({}) took: {}s",
             self.stream_name,
@@ -1070,8 +1064,7 @@ impl Streams {
             .map(Arc::clone)
             .collect();
         for stream in streams {
-            joinset
-                .spawn(async move { stream.flush_and_convert(init_signal, shutdown_signal).await });
+            joinset.spawn(async move { stream.flush_and_convert(init_signal, shutdown_signal) });
         }
     }
 }

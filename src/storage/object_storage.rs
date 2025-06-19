@@ -909,7 +909,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             // perform local sync for the `pstats` dataset
             task::spawn(async move {
                 if let Ok(stats_stream) = PARSEABLE.get_stream(DATASET_STATS_STREAM_NAME) {
-                    if let Err(err) = stats_stream.flush_and_convert(false, false).await {
+                    if let Err(err) = stats_stream.flush_and_convert(false, false) {
                         error!("Failed in local sync for dataset stats stream: {err}");
                     }
                 }
