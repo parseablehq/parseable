@@ -29,7 +29,7 @@ use std::{
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
-use derive_more::{Deref, DerefMut};
+use derive_more::derive::{Deref, DerefMut};
 use itertools::Itertools;
 use parquet::{
     arrow::ArrowWriter,
@@ -478,15 +478,12 @@ impl Stream {
 
         // read arrow files on disk
         // convert them to parquet
-        let schema = self
-            .convert_disk_files_to_parquet(
-                time_partition.as_ref(),
-                custom_partition.as_ref(),
-                init_signal,
-                shutdown_signal,
-            )
-            .inspect_err(|err| warn!("Error while converting arrow to parquet- {err:?}"))?;
-
+        let schema = self.convert_disk_files_to_parquet(
+            time_partition.as_ref(),
+            custom_partition.as_ref(),
+            init_signal,
+            shutdown_signal,
+        )?;
         // check if there is already a schema file in staging pertaining to this stream
         // if yes, then merge them and save
 
@@ -640,7 +637,6 @@ impl Stream {
         }
 
         self.update_staging_metrics(&staging_files);
-
         for (parquet_path, arrow_files) in staging_files {
             let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
             if record_reader.readers.is_empty() {
@@ -972,6 +968,7 @@ impl Stream {
         );
 
         let start_convert = Instant::now();
+
         self.prepare_parquet(init_signal, shutdown_signal)?;
         trace!(
             "Converting arrows to parquet on stream ({}) took: {}s",
