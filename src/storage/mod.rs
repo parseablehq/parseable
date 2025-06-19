@@ -32,8 +32,8 @@ use crate::{
 };
 
 use chrono::Utc;
-
 use std::fmt::Debug;
+use ulid::Ulid;
 
 mod azure_blob;
 mod localfs;
@@ -174,25 +174,25 @@ impl std::fmt::Display for StreamType {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Owner {
-    pub id: String,
+    pub id: Ulid,
     pub group: String,
 }
 
 impl Owner {
-    pub fn new(id: String, group: String) -> Self {
+    pub fn new(id: Ulid, group: String) -> Self {
         Self { id, group }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Permisssion {
-    pub id: String,
+    pub id: Ulid,
     pub group: String,
     pub access: Vec<String>,
 }
 
 impl Permisssion {
-    pub fn new(id: String) -> Self {
+    pub fn new(id: Ulid) -> Self {
         Self {
             id: id.clone(),
             group: id,

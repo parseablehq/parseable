@@ -20,6 +20,7 @@ use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::str;
+use ulid::Ulid;
 
 use crate::utils::json::flatten::{generic_flattening, has_more_than_max_allowed_levels};
 
@@ -27,7 +28,7 @@ use crate::utils::json::flatten::{generic_flattening, has_more_than_max_allowed_
 #[serde(rename_all = "camelCase")]
 pub struct Message {
     records: Vec<Data>,
-    request_id: String,
+    request_id: Ulid,
     timestamp: u64,
 }
 #[derive(Serialize, Deserialize, Debug)]

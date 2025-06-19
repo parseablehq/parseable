@@ -16,12 +16,12 @@
  *
  */
 
-use std::collections::HashSet;
-
 use argon2::{
     password_hash::{rand_core::OsRng, PasswordHasher, SaltString},
     Argon2, PasswordHash, PasswordVerifier,
 };
+use std::collections::HashSet;
+use ulid::Ulid;
 
 use rand::distributions::{Alphanumeric, DistString};
 
@@ -152,7 +152,7 @@ pub fn get_admin_user() -> User {
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OAuth {
-    pub userid: String,
+    pub userid: Ulid,
     pub user_info: UserInfo,
 }
 
