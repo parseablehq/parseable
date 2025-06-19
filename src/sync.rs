@@ -131,7 +131,7 @@ pub fn object_store_sync() -> (
                         // Monitor the duration of sync_all_streams execution
                         monitor_task_duration(
                             "object_store_sync_all_streams",
-                            Duration::from_secs(15),
+                            Duration::from_secs(PARSEABLE.options.object_store_sync_threshold),
                             || async {
                                 let mut joinset = JoinSet::new();
                                 sync_all_streams(&mut joinset);
@@ -196,7 +196,7 @@ pub fn local_sync() -> (
                         // Monitor the duration of flush_and_convert execution
                         monitor_task_duration(
                             "local_sync_flush_and_convert",
-                            Duration::from_secs(15),
+                            Duration::from_secs(PARSEABLE.options.local_sync_threshold),
                             || async {
                                 let mut joinset = JoinSet::new();
                                 PARSEABLE.streams.flush_and_convert(&mut joinset, false, false);
@@ -242,21 +242,25 @@ pub fn local_sync() -> (
 // local and object store sync at the start of the server
 pub async fn sync_start() -> anyhow::Result<()> {
     // Monitor local sync duration at startup
-    monitor_task_duration("startup_local_sync", Duration::from_secs(15), || async {
-        let mut local_sync_joinset = JoinSet::new();
-        PARSEABLE
-            .streams
-            .flush_and_convert(&mut local_sync_joinset, true, false);
-        while let Some(res) = local_sync_joinset.join_next().await {
-            log_join_result(res, "flush and convert");
-        }
-    })
+    monitor_task_duration(
+        "startup_local_sync",
+        Duration::from_secs(PARSEABLE.options.local_sync_threshold),
+        || async {
+            let mut local_sync_joinset = JoinSet::new();
+            PARSEABLE
+                .streams
+                .flush_and_convert(&mut local_sync_joinset, true, false);
+            while let Some(res) = local_sync_joinset.join_next().await {
+                log_join_result(res, "flush and convert");
+            }
+        },
+    )
     .await;
 
     // Monitor object store sync duration at startup
     monitor_task_duration(
         "startup_object_store_sync",
-        Duration::from_secs(15),
+        Duration::from_secs(PARSEABLE.options.object_store_sync_threshold),
         || async {
             let mut object_store_joinset = JoinSet::new();
             sync_all_streams(&mut object_store_joinset);

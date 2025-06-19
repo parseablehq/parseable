@@ -349,6 +349,7 @@ impl PrismDatasetRequest {
             start_time: "1h".to_owned(),
             end_time: "now".to_owned(),
             num_bins: 10,
+            conditions: None,
         };
 
         let records = count_request.get_bin_density().await?;

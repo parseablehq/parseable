@@ -27,7 +27,7 @@ use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
 use datafusion::error::DataFusionError;
 use datafusion::execution::disk_manager::DiskManagerConfig;
-use datafusion::execution::{SendableRecordBatchStream, SessionStateBuilder};
+use datafusion::execution::{SendableRecordBatchStream, SessionState, SessionStateBuilder};
 use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
     Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
@@ -47,6 +47,8 @@ use tokio::runtime::Runtime;
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
 pub use self::stream_schema_provider::PartialTimeFilter;
+use crate::alerts::alerts_utils::get_filter_string;
+use crate::alerts::Conditions;
 use crate::catalog::column::{Int64Type, TypedStatistics};
 use crate::catalog::manifest::Manifest;
 use crate::catalog::snapshot::Snapshot;
@@ -60,6 +62,9 @@ use crate::utils::time::TimeRange;
 
 pub static QUERY_SESSION: Lazy<SessionContext> =
     Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
+
+pub static QUERY_SESSION_STATE: Lazy<SessionState> =
+    Lazy::new(|| Query::create_session_state(PARSEABLE.storage()));
 
 /// Dedicated multi-threaded runtime to run all queries on
 pub static QUERY_RUNTIME: Lazy<Runtime> =
@@ -96,10 +101,28 @@ pub struct Query {
 impl Query {
     // create session context for this query
     pub fn create_session_context(storage: Arc<dyn ObjectStorageProvider>) -> SessionContext {
+        let state = Self::create_session_state(storage.clone());
+
+        let schema_provider = Arc::new(GlobalSchemaProvider {
+            storage: storage.get_object_store(),
+        });
+        state
+            .catalog_list()
+            .catalog(&state.config_options().catalog.default_catalog)
+            .expect("default catalog is provided by datafusion")
+            .register_schema(
+                &state.config_options().catalog.default_schema,
+                schema_provider,
+            )
+            .unwrap();
+
+        SessionContext::new_with_state(state)
+    }
+
+    fn create_session_state(storage: Arc<dyn ObjectStorageProvider>) -> SessionState {
         let runtime_config = storage
             .get_datafusion_runtime()
             .with_disk_manager(DiskManagerConfig::NewOs);
-
         let (pool_size, fraction) = match PARSEABLE.options.query_memory_pool_size {
             Some(size) => (size, 1.),
             None => {
@@ -142,26 +165,11 @@ impl Query {
             .parquet
             .schema_force_view_types = true;
 
-        let state = SessionStateBuilder::new()
+        SessionStateBuilder::new()
             .with_default_features()
             .with_config(config)
             .with_runtime_env(runtime)
-            .build();
-
-        let schema_provider = Arc::new(GlobalSchemaProvider {
-            storage: storage.get_object_store(),
-        });
-        state
-            .catalog_list()
-            .catalog(&state.config_options().catalog.default_catalog)
-            .expect("default catalog is provided by datafusion")
-            .register_schema(
-                &state.config_options().catalog.default_schema,
-                schema_provider,
-            )
-            .unwrap();
-
-        SessionContext::new_with_state(state)
+            .build()
     }
 
     /// this function returns the result of the query
@@ -297,7 +305,7 @@ impl Query {
 }
 
 /// Record of counts for a given time bin.
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Deserialize)]
 pub struct CountsRecord {
     /// Start time of the bin
     pub start_time: String,
@@ -312,6 +320,15 @@ struct TimeBounds {
     end: DateTime<Utc>,
 }
 
+#[derive(Debug, Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct CountConditions {
+    /// Optional conditions for filters
+    pub conditions: Option<Conditions>,
+    /// GroupBy columns
+    pub group_by: Option<Vec<String>>,
+}
+
 /// Request for counts, received from API/SQL query.
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -324,6 +341,8 @@ pub struct CountsRequest {
     pub end_time: String,
     /// Number of bins to divide the time range into
     pub num_bins: u64,
+    /// Conditions
+    pub conditions: Option<CountConditions>,
 }
 
 impl CountsRequest {
@@ -428,6 +447,35 @@ impl CountsRequest {
         }
 
         bounds
+    }
+
+    /// This function will get executed only if self.conditions is some
+    pub async fn get_df_sql(&self) -> Result<String, QueryError> {
+        // unwrap because we have asserted that it is some
+        let count_conditions = self.conditions.as_ref().unwrap();
+
+        let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
+
+        let dur = time_range.end.signed_duration_since(time_range.start);
+
+        let date_bin = if dur.num_minutes() <= 60 * 10 {
+            // date_bin 1 minute
+            format!("CAST(DATE_BIN('1 minute', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 minute', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 minute' as end_time", self.stream)
+        } else if dur.num_minutes() > 60 * 10 && dur.num_minutes() < 60 * 240 {
+            // date_bin 1 hour
+            format!("CAST(DATE_BIN('1 hour', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 hour', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 hour' as end_time", self.stream)
+        } else {
+            // date_bin 1 day
+            format!("CAST(DATE_BIN('1 day', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 day', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 day' as end_time", self.stream)
+        };
+
+        let query = if let Some(conditions) = &count_conditions.conditions {
+            let f = get_filter_string(conditions).map_err(QueryError::CustomError)?;
+            format!("SELECT {date_bin}, COUNT(*) as count FROM \"{}\" WHERE {} GROUP BY end_time,start_time ORDER BY end_time",self.stream,f)
+        } else {
+            format!("SELECT {date_bin}, COUNT(*) as count FROM \"{}\" GROUP BY end_time,start_time ORDER BY end_time",self.stream)
+        };
+        Ok(query)
     }
 }
 
