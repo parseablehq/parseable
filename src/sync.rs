@@ -17,6 +17,7 @@
  */
 
 use chrono::{TimeDelta, Timelike};
+use futures::FutureExt;
 use std::collections::HashMap;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
@@ -28,6 +29,7 @@ use tracing::{error, info, trace, warn};
 
 use crate::alerts::{alerts_utils, AlertTask};
 use crate::parseable::PARSEABLE;
+use crate::storage::object_storage::sync_all_streams;
 use crate::{LOCAL_SYNC_INTERVAL, STORAGE_UPLOAD_INTERVAL};
 
 // Calculates the instant that is the start of the next minute
@@ -75,7 +77,7 @@ where
 
 /// Flushes arrows onto disk every `LOCAL_SYNC_INTERVAL` seconds, packs arrows into parquet every
 /// `STORAGE_CONVERSION_INTERVAL` secondsand uploads them every `STORAGE_UPLOAD_INTERVAL` seconds.
-#[tokio::main(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::main(flavor = "multi_thread")]
 pub async fn handler(mut cancel_rx: oneshot::Receiver<()>) -> anyhow::Result<()> {
     let (localsync_handler, mut localsync_outbox, localsync_inbox) = local_sync();
     let (mut remote_sync_handler, mut remote_sync_outbox, mut remote_sync_inbox) =
@@ -83,7 +85,6 @@ pub async fn handler(mut cancel_rx: oneshot::Receiver<()>) -> anyhow::Result<()>
     loop {
         select! {
             _ = &mut cancel_rx => {
-                // actix server finished .. stop other threads and stop the server
                 remote_sync_inbox.send(()).unwrap_or(());
                 localsync_inbox.send(()).unwrap_or(());
                 if let Err(e) = localsync_handler.await {
@@ -95,12 +96,9 @@ pub async fn handler(mut cancel_rx: oneshot::Receiver<()>) -> anyhow::Result<()>
                 return Ok(());
             },
             _ = &mut localsync_outbox => {
-                // crash the server if localsync fails for any reason
-                // panic!("Local Sync thread died. Server will fail now!")
                 return Err(anyhow::Error::msg("Failed to sync local data to drive. Please restart the Parseable server.\n\nJoin us on Parseable Slack if the issue persists after restart : https://launchpass.com/parseable"))
             },
             _ = &mut remote_sync_outbox => {
-                // remote_sync failed, this is recoverable by just starting remote_sync thread again
                 if let Err(e) = remote_sync_handler.await {
                     error!("Error joining remote_sync_handler: {e:?}");
                 }
@@ -119,51 +117,57 @@ pub fn object_store_sync() -> (
     let (inbox_tx, inbox_rx) = oneshot::channel::<()>();
 
     let handle = task::spawn(async move {
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
-            let mut sync_interval = interval_at(next_minute(), STORAGE_UPLOAD_INTERVAL);
+        info!("Object store sync task started");
+        let mut inbox_rx = inbox_rx;
 
-            let mut inbox_rx = AssertUnwindSafe(inbox_rx);
+        let result = tokio::spawn(async move {
+            let mut sync_interval = interval_at(next_minute(), STORAGE_UPLOAD_INTERVAL);
 
             loop {
                 select! {
                     _ = sync_interval.tick() => {
                         trace!("Syncing Parquets to Object Store... ");
-                        if let Err(e) = monitor_task_duration(
-                            "object_store_sync",
+
+                        // Monitor the duration of sync_all_streams execution
+                        monitor_task_duration(
+                            "object_store_sync_all_streams",
                             Duration::from_secs(15),
                             || async {
-                                PARSEABLE
-                                    .storage
-                                    .get_object_store()
-                                    .upload_files_from_staging().await
-                            },
-                        )
-                        .await
-                        {
-                            warn!("failed to upload local data with object store. {e:?}");
-                        }
+                                let mut joinset = JoinSet::new();
+                                sync_all_streams(&mut joinset);
+
+                                // Wait for all spawned tasks to complete
+                                while let Some(res) = joinset.join_next().await {
+                                    log_join_result(res, "object store sync");
+                                }
+                            }
+                        ).await;
                     },
-                    res = &mut inbox_rx => {match res{
-                        Ok(_) => break,
-                        Err(_) => {
-                            warn!("Inbox channel closed unexpectedly");
-                            break;
-                        }}
+                    res = &mut inbox_rx => {
+                        match res {
+                            Ok(_) => break,
+                            Err(_) => {
+                                warn!("Inbox channel closed unexpectedly");
+                                break;
+                            }
+                        }
                     }
                 }
             }
-        }));
+        });
 
-        match result {
-            Ok(future) => {
-                future.await;
+        match AssertUnwindSafe(result).catch_unwind().await {
+            Ok(join_result) => {
+                if let Err(join_err) = join_result {
+                    error!("Panic in object store sync task: {join_err:?}");
+                }
             }
             Err(panic_error) => {
                 error!("Panic in object store sync task: {panic_error:?}");
-                let _ = outbox_tx.send(());
             }
         }
 
+        let _ = outbox_tx.send(());
         info!("Object store sync task ended");
     });
 
@@ -183,38 +187,45 @@ pub fn local_sync() -> (
         info!("Local sync task started");
         let mut inbox_rx = inbox_rx;
 
-        let result = std::panic::catch_unwind(AssertUnwindSafe(|| async move {
+        let result = tokio::spawn(async move {
             let mut sync_interval = interval_at(next_minute(), LOCAL_SYNC_INTERVAL);
-            let mut joinset = JoinSet::new();
 
             loop {
                 select! {
-                    // Spawns a flush+conversion task every `LOCAL_SYNC_INTERVAL` seconds
                     _ = sync_interval.tick() => {
-                        PARSEABLE.streams.flush_and_convert(&mut joinset, false)
+                        // Monitor the duration of flush_and_convert execution
+                        monitor_task_duration(
+                            "local_sync_flush_and_convert",
+                            Duration::from_secs(15),
+                            || async {
+                                let mut joinset = JoinSet::new();
+                                PARSEABLE.streams.flush_and_convert(&mut joinset, false, false);
+
+                                // Wait for all spawned tasks to complete
+                                while let Some(res) = joinset.join_next().await {
+                                    log_join_result(res, "flush and convert");
+                                }
+                            }
+                        ).await;
                     },
-                    // Joins and logs errors in spawned tasks
-                    Some(res) = joinset.join_next(), if !joinset.is_empty() => {
+                    res = &mut inbox_rx => {
                         match res {
-                            Ok(Ok(_)) => info!("Successfully converted arrow files to parquet."),
-                            Ok(Err(err)) => warn!("Failed to convert arrow files to parquet. {err:?}"),
-                            Err(err) => error!("Issue joining flush+conversion task: {err}"),
+                            Ok(_) => break,
+                            Err(_) => {
+                                warn!("Inbox channel closed unexpectedly");
+                                break;
+                            }
                         }
-                    }
-                    res = &mut inbox_rx => {match res{
-                        Ok(_) => break,
-                        Err(_) => {
-                            warn!("Inbox channel closed unexpectedly");
-                            break;
-                        }}
                     }
                 }
             }
-        }));
+        });
 
-        match result {
-            Ok(future) => {
-                future.await;
+        match AssertUnwindSafe(result).catch_unwind().await {
+            Ok(join_result) => {
+                if let Err(join_err) = join_result {
+                    error!("Panic in local sync task: {join_err:?}");
+                }
             }
             Err(panic_error) => {
                 error!("Panic in local sync task: {panic_error:?}");
@@ -226,6 +237,48 @@ pub fn local_sync() -> (
     });
 
     (handle, outbox_rx, inbox_tx)
+}
+
+// local and object store sync at the start of the server
+pub async fn sync_start() -> anyhow::Result<()> {
+    // Monitor local sync duration at startup
+    monitor_task_duration("startup_local_sync", Duration::from_secs(15), || async {
+        let mut local_sync_joinset = JoinSet::new();
+        PARSEABLE
+            .streams
+            .flush_and_convert(&mut local_sync_joinset, true, false);
+        while let Some(res) = local_sync_joinset.join_next().await {
+            log_join_result(res, "flush and convert");
+        }
+    })
+    .await;
+
+    // Monitor object store sync duration at startup
+    monitor_task_duration(
+        "startup_object_store_sync",
+        Duration::from_secs(15),
+        || async {
+            let mut object_store_joinset = JoinSet::new();
+            sync_all_streams(&mut object_store_joinset);
+            while let Some(res) = object_store_joinset.join_next().await {
+                log_join_result(res, "object store sync");
+            }
+        },
+    )
+    .await;
+
+    Ok(())
+}
+
+fn log_join_result<T, E>(res: Result<Result<T, E>, tokio::task::JoinError>, context: &str)
+where
+    E: std::fmt::Debug,
+{
+    match res {
+        Ok(Ok(_)) => info!("Successfully completed {context}."),
+        Ok(Err(err)) => warn!("Failed to complete {context}. {err:?}"),
+        Err(err) => error!("Issue joining {context} task: {err}"),
+    }
 }
 
 /// A separate runtime for running all alert tasks
