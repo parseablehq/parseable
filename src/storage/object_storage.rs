@@ -16,17 +16,6 @@
  *
  */
 
-use std::collections::BTreeMap;
-use std::collections::HashMap;
-use std::collections::HashSet;
-use std::fmt::Debug;
-use std::fs::{remove_file, File};
-use std::num::NonZeroU32;
-use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
-use std::time::Instant;
-
 use actix_web_prometheus::PrometheusMetrics;
 use arrow_array::Array;
 use arrow_array::BinaryArray;
@@ -54,6 +43,17 @@ use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
 use serde::Serialize;
+use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::fmt::Debug;
+use std::fs::{remove_file, File};
+use std::num::NonZeroU32;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
+use std::time::Instant;
+use tokio::task;
 use tokio::task::JoinSet;
 use tracing::info;
 use tracing::{error, warn};
@@ -825,7 +825,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             return Ok(());
         }
         info!("Starting object_store_sync for stream- {stream_name}");
-
+        let mut stats_calculated = false;
         let stream = PARSEABLE.get_or_create_stream(stream_name);
         let custom_partition = stream.get_custom_partition();
         let schema = stream.get_schema();
@@ -849,7 +849,6 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             let stream_relative_path = format!("{stream_name}/{file_suffix}");
 
             // Try uploading the file, handle potential errors without breaking the loop
-            // if let Err(e) = self.upload_multipart(key, path)
             if let Err(e) = self
                 .upload_multipart(&RelativePathBuf::from(&stream_relative_path), &path)
                 .await
@@ -879,26 +878,17 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             let manifest = catalog::create_from_parquet_file(absolute_path.clone(), &path)?;
             catalog::update_snapshot(store, stream_name, manifest).await?;
 
-            // If the stream is not internal and stats collection is enabled, calculate field stats
-            // before removing the parquet file
-            if stream.get_stream_type() != StreamType::Internal
-                && PARSEABLE.options.collect_dataset_stats
-            {
-                if let Err(err) = calculate_field_stats(stream_name, &path, &schema).await {
-                    warn!(
+            // If stats collection is enabled, calculate field stats
+            if stream_name != DATASET_STATS_STREAM_NAME && PARSEABLE.options.collect_dataset_stats {
+                let max_field_statistics = PARSEABLE.options.max_field_statistics;
+                match calculate_field_stats(stream_name, &path, &schema, max_field_statistics).await
+                {
+                    Ok(stats) if stats => stats_calculated = true,
+                    Err(err) => warn!(
                         "Error calculating field stats for stream {}: {}",
                         stream_name, err
-                    );
-                } else {
-                    let stats_stream = PARSEABLE
-                        .get_stream(DATASET_STATS_STREAM_NAME)
-                        .expect("Dataset stats stream should exist");
-                    if let Err(err) = stats_stream.flush_and_convert(false, false).await {
-                        warn!(
-                            "Error flushing dataset stats stream {}: {}",
-                            DATASET_STATS_STREAM_NAME, err
-                        );
-                    }
+                    ),
+                    _ => {}
                 }
             }
             if let Err(e) = remove_file(path) {
@@ -913,6 +903,17 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             if let Err(e) = remove_file(path) {
                 warn!("Failed to remove staged file: {e}");
             }
+        }
+
+        if stats_calculated {
+            // perform local sync for the `pstats` dataset
+            task::spawn(async move {
+                if let Ok(stats_stream) = PARSEABLE.get_stream(DATASET_STATS_STREAM_NAME) {
+                    if let Err(err) = stats_stream.flush_and_convert(false, false).await {
+                        error!("Failed in local sync for dataset stats stream: {err}");
+                    }
+                }
+            });
         }
 
         Ok(())
@@ -969,7 +970,32 @@ async fn calculate_field_stats(
     stream_name: &str,
     parquet_path: &Path,
     schema: &Schema,
-) -> Result<(), PostError> {
+    max_field_statistics: usize,
+) -> Result<bool, PostError> {
+    let ctx = SessionContext::new_with_state(QUERY_SESSION_STATE.clone());
+
+    let table_name = Ulid::new().to_string();
+    ctx.register_parquet(
+        &table_name,
+        parquet_path.to_str().expect("valid path"),
+        ParquetReadOptions::default(),
+    )
+    .await
+    .map_err(|e| PostError::Invalid(e.into()))?;
+    let field_stats =
+        collect_all_field_stats(&table_name, &ctx, schema, max_field_statistics).await;
+    drop(ctx);
+    let mut stats_calculated = false;
+    let stats = DatasetStats {
+        dataset_name: stream_name.to_string(),
+        field_stats,
+    };
+    if stats.field_stats.is_empty() {
+        return Ok(stats_calculated);
+    }
+    stats_calculated = true;
+    let stats_value =
+        serde_json::to_value(&stats).map_err(|e| ObjectStorageError::Invalid(e.into()))?;
     let log_source_entry = LogSourceEntry::new(LogSource::Json, HashSet::new());
     PARSEABLE
         .create_stream_if_not_exists(
@@ -979,35 +1005,6 @@ async fn calculate_field_stats(
             vec![log_source_entry],
         )
         .await?;
-    let ctx = SessionContext::new_with_state(QUERY_SESSION_STATE.clone());
-    let parquet_file_name = parquet_path
-        .file_name()
-        .expect("only parquet files are returned by iterator")
-        .to_str()
-        .expect("filename is valid string");
-    let random_suffix = Ulid::new().to_string();
-    let parquet_file_name = str::replace(parquet_file_name, ".", "_");
-    let ctx_table_name = format!("{}_{}_{}", stream_name, parquet_file_name, random_suffix);
-    ctx.register_parquet(
-        &ctx_table_name,
-        parquet_path.to_str().expect("valid path"),
-        ParquetReadOptions::default(),
-    )
-    .await
-    .map_err(|e| PostError::Invalid(e.into()))?;
-    let field_stats = collect_all_field_stats(&ctx_table_name, &ctx, schema).await;
-    drop(ctx);
-
-    let stats = DatasetStats {
-        dataset_name: stream_name.to_string(),
-        field_stats,
-    };
-    if stats.field_stats.is_empty() {
-        return Ok(());
-    }
-    let stats_value =
-        serde_json::to_value(&stats).map_err(|e| ObjectStorageError::Invalid(e.into()))?;
-
     flatten_and_push_logs(
         stats_value,
         DATASET_STATS_STREAM_NAME,
@@ -1015,7 +1012,7 @@ async fn calculate_field_stats(
         &HashMap::new(),
     )
     .await?;
-    Ok(())
+    Ok(stats_calculated)
 }
 
 /// Collects statistics for all fields in the stream.
@@ -1025,6 +1022,7 @@ async fn collect_all_field_stats(
     stream_name: &str,
     ctx: &SessionContext,
     schema: &Schema,
+    max_field_statistics: usize,
 ) -> Vec<FieldStat> {
     // Collect field names into an owned Vec<String> to avoid lifetime issues
     let field_names: Vec<String> = schema
@@ -1034,7 +1032,9 @@ async fn collect_all_field_stats(
         .collect();
     let field_futures = field_names.into_iter().map(|field_name| {
         let ctx = ctx.clone();
-        async move { calculate_single_field_stats(ctx, stream_name, &field_name).await }
+        async move {
+            calculate_single_field_stats(ctx, stream_name, &field_name, max_field_statistics).await
+        }
     });
 
     futures::stream::iter(field_futures)
@@ -1051,50 +1051,56 @@ async fn calculate_single_field_stats(
     ctx: SessionContext,
     stream_name: &str,
     field_name: &str,
+    max_field_statistics: usize,
 ) -> Option<FieldStat> {
     let mut total_count = 0;
     let mut distinct_count = 0;
     let mut distinct_stats = Vec::new();
 
-    let combined_sql = get_stats_sql(stream_name, field_name);
-    if let Ok(df) = ctx.sql(&combined_sql).await {
-        let mut stream = match df.execute_stream().await {
-            Ok(stream) => stream,
-            Err(e) => {
-                warn!("Failed to execute distinct stats query: {e}");
-                return None; // Return empty if query fails
-            }
-        };
-        while let Some(batch_result) = stream.next().await {
-            let rb = match batch_result {
-                Ok(batch) => batch,
+    let combined_sql = get_stats_sql(stream_name, field_name, max_field_statistics);
+    match ctx.sql(&combined_sql).await {
+        Ok(df) => {
+            let mut stream = match df.execute_stream().await {
+                Ok(stream) => stream,
                 Err(e) => {
-                    warn!("Failed to fetch batch in distinct stats query: {e}");
-                    continue; // Skip this batch if there's an error
+                    warn!("Failed to execute distinct stats query: {e}");
+                    return None; // Return empty if query fails
                 }
             };
-            let total_count_array = rb.column(0).as_any().downcast_ref::<Int64Array>()?;
-            let distinct_count_array = rb.column(1).as_any().downcast_ref::<Int64Array>()?;
+            while let Some(batch_result) = stream.next().await {
+                let rb = match batch_result {
+                    Ok(batch) => batch,
+                    Err(e) => {
+                        warn!("Failed to fetch batch in distinct stats query: {e}");
+                        continue; // Skip this batch if there's an error
+                    }
+                };
+                let total_count_array = rb.column(0).as_any().downcast_ref::<Int64Array>()?;
+                let distinct_count_array = rb.column(1).as_any().downcast_ref::<Int64Array>()?;
 
-            total_count = total_count_array.value(0);
-            distinct_count = distinct_count_array.value(0);
+                total_count = total_count_array.value(0);
+                distinct_count = distinct_count_array.value(0);
+                if distinct_count == 0 {
+                    return None;
+                }
 
-            if distinct_count == 0 {
-                return None;
+                let field_value_array = rb.column(2).as_ref();
+                let value_count_array = rb.column(3).as_any().downcast_ref::<Int64Array>()?;
+
+                for i in 0..rb.num_rows() {
+                    let value = format_arrow_value(field_value_array, i);
+                    let count = value_count_array.value(i);
+
+                    distinct_stats.push(DistinctStat {
+                        distinct_value: value,
+                        count,
+                    });
+                }
             }
-
-            let field_value_array = rb.column(2).as_ref();
-            let value_count_array = rb.column(3).as_any().downcast_ref::<Int64Array>()?;
-
-            for i in 0..rb.num_rows() {
-                let value = format_arrow_value(field_value_array, i);
-                let count = value_count_array.value(i);
-
-                distinct_stats.push(DistinctStat {
-                    distinct_value: value,
-                    count,
-                });
-            }
+        }
+        Err(e) => {
+            warn!("Failed to execute distinct stats query for field: {field_name}, error: {e}");
+            return None;
         }
     }
     Some(FieldStat {
@@ -1105,7 +1111,7 @@ async fn calculate_single_field_stats(
     })
 }
 
-fn get_stats_sql(stream_name: &str, field_name: &str) -> String {
+fn get_stats_sql(stream_name: &str, field_name: &str, max_field_statistics: usize) -> String {
     let escaped_field_name = field_name.replace('"', "\"\"");
     let escaped_stream_name = stream_name.replace('"', "\"\"");
 
@@ -1136,7 +1142,7 @@ fn get_stats_sql(stream_name: &str, field_name: &str) -> String {
         WHERE rn <= {}
         ORDER BY value_count DESC
         "#,
-        PARSEABLE.options.max_field_statistics
+        max_field_statistics
     )
 }
 
@@ -1344,5 +1350,533 @@ pub fn manifest_path(prefix: &str) -> RelativePathBuf {
             RelativePathBuf::from_iter([prefix, &manifest_file_name])
         }
         _ => RelativePathBuf::from_iter([prefix, MANIFEST_FILE]),
+    }
+}
+#[cfg(test)]
+mod tests {
+    use std::{fs::OpenOptions, sync::Arc};
+
+    use arrow_array::{
+        BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray, TimestampMillisecondArray,
+    };
+    use arrow_schema::{DataType, Field, Schema, TimeUnit};
+    use datafusion::prelude::{ParquetReadOptions, SessionContext};
+    use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
+    use temp_dir::TempDir;
+    use ulid::Ulid;
+
+    use crate::storage::object_storage::calculate_single_field_stats;
+
+    async fn create_test_parquet_with_data() -> (TempDir, std::path::PathBuf) {
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("test_data.parquet");
+        let schema = Arc::new(create_test_schema());
+
+        // Create test data with various patterns
+        let id_array = Int64Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        let name_array = StringArray::from(vec![
+            Some("Alice"),
+            Some("Bob"),
+            Some("Alice"),
+            Some("Charlie"),
+            Some("Alice"),
+            Some("Bob"),
+            Some("David"),
+            None,
+            Some("Eve"),
+            Some("Frank"),
+        ]);
+        let score_array = Float64Array::from(vec![
+            Some(95.5),
+            Some(87.2),
+            Some(95.5),
+            Some(78.9),
+            Some(92.1),
+            Some(88.8),
+            Some(91.0),
+            None,
+            Some(89.5),
+            Some(94.2),
+        ]);
+        let active_array = BooleanArray::from(vec![
+            Some(true),
+            Some(false),
+            Some(true),
+            Some(true),
+            Some(true),
+            Some(false),
+            Some(true),
+            None, // null value
+            Some(false),
+            Some(true),
+        ]);
+        let timestamp_array = TimestampMillisecondArray::from(vec![
+            Some(1640995200000),
+            Some(1640995260000),
+            Some(1640995200000),
+            Some(1640995320000),
+            Some(1640995380000),
+            Some(1640995440000),
+            Some(1640995500000),
+            None,
+            Some(1640995560000),
+            Some(1640995620000),
+        ]);
+        // Field with single value (all same)
+        let single_value_array = StringArray::from(vec![
+            Some("constant"),
+            Some("constant"),
+            Some("constant"),
+            Some("constant"),
+            Some("constant"),
+            Some("constant"),
+            Some("constant"),
+            Some("constant"),
+            Some("constant"),
+            Some("constant"),
+        ]);
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(id_array),
+                Arc::new(name_array),
+                Arc::new(score_array),
+                Arc::new(active_array),
+                Arc::new(timestamp_array),
+                Arc::new(single_value_array),
+            ],
+        )
+        .unwrap();
+        let props = WriterProperties::new();
+        let mut parquet_file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(file_path.clone())
+            .unwrap();
+        let mut writer =
+            ArrowWriter::try_new(&mut parquet_file, schema.clone(), Some(props.clone())).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        (temp_dir, file_path)
+    }
+
+    fn create_test_schema() -> Schema {
+        Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+            Field::new("score", DataType::Float64, true),
+            Field::new("active", DataType::Boolean, true),
+            Field::new(
+                "created_at",
+                DataType::Timestamp(TimeUnit::Millisecond, None),
+                true,
+            ),
+            Field::new("single_value", DataType::Utf8, true),
+        ])
+    }
+
+    #[tokio::test]
+    async fn test_calculate_single_field_stats_with_multiple_values() {
+        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
+
+        let random_suffix = Ulid::new().to_string();
+        let ctx = SessionContext::new();
+        ctx.register_parquet(
+            &random_suffix,
+            parquet_path.to_str().expect("valid path"),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        // Test name field with multiple distinct values and different frequencies
+        let result = calculate_single_field_stats(ctx.clone(), &random_suffix, "name", 50).await;
+        assert!(result.is_some());
+        let stats = result.unwrap();
+
+        assert_eq!(stats.field_name, "name");
+        assert_eq!(stats.count, 10);
+        assert_eq!(stats.distinct_count, 7);
+        assert_eq!(stats.distinct_stats.len(), 7);
+
+        // Verify ordering by count (descending)
+        assert!(stats.distinct_stats[0].count >= stats.distinct_stats[1].count);
+        assert!(stats.distinct_stats[1].count >= stats.distinct_stats[2].count);
+
+        // Verify specific counts
+        let alice_stat = stats
+            .distinct_stats
+            .iter()
+            .find(|s| s.distinct_value == "Alice");
+        assert!(alice_stat.is_some());
+        assert_eq!(alice_stat.unwrap().count, 3);
+
+        let bob_stat = stats
+            .distinct_stats
+            .iter()
+            .find(|s| s.distinct_value == "Bob");
+        assert!(bob_stat.is_some());
+        assert_eq!(bob_stat.unwrap().count, 2);
+
+        let charlie_stat = stats
+            .distinct_stats
+            .iter()
+            .find(|s| s.distinct_value == "Charlie");
+        assert!(charlie_stat.is_some());
+        assert_eq!(charlie_stat.unwrap().count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_single_field_stats_with_numeric_field() {
+        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
+
+        let ctx = SessionContext::new();
+        let table_name = ulid::Ulid::new().to_string();
+
+        ctx.register_parquet(
+            &table_name,
+            parquet_path.to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        // Test score field (Float64)
+        let result = calculate_single_field_stats(ctx.clone(), &table_name, "score", 50).await;
+
+        assert!(result.is_some());
+        let stats = result.unwrap();
+
+        assert_eq!(stats.field_name, "score");
+        assert_eq!(stats.count, 10);
+        assert_eq!(stats.distinct_count, 9);
+
+        // Verify that 95.5 appears twice (should be first due to highest count)
+        let highest_count_stat = &stats.distinct_stats[0];
+        assert_eq!(highest_count_stat.distinct_value, "95.5");
+        assert_eq!(highest_count_stat.count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_single_field_stats_with_boolean_field() {
+        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
+
+        let ctx = SessionContext::new();
+        let table_name = ulid::Ulid::new().to_string();
+        ctx.register_parquet(
+            &table_name,
+            parquet_path.to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        // Test active field (Boolean)
+        let result = calculate_single_field_stats(ctx.clone(), &table_name, "active", 50).await;
+
+        assert!(result.is_some());
+        let stats = result.unwrap();
+
+        assert_eq!(stats.field_name, "active");
+        assert_eq!(stats.count, 10);
+        assert_eq!(stats.distinct_count, 3);
+        assert_eq!(stats.distinct_stats.len(), 3);
+
+        assert_eq!(stats.distinct_stats[0].distinct_value, "true");
+        assert_eq!(stats.distinct_stats[0].count, 6);
+        assert_eq!(stats.distinct_stats[1].distinct_value, "false");
+        assert_eq!(stats.distinct_stats[1].count, 3);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_single_field_stats_with_timestamp_field() {
+        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
+
+        let ctx = SessionContext::new();
+        let table_name = ulid::Ulid::new().to_string();
+        ctx.register_parquet(
+            &table_name,
+            parquet_path.to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        // Test created_at field (Timestamp)
+        let result = calculate_single_field_stats(ctx.clone(), &table_name, "created_at", 50).await;
+
+        assert!(result.is_some());
+        let stats = result.unwrap();
+
+        assert_eq!(stats.field_name, "created_at");
+        assert_eq!(stats.count, 10);
+        assert_eq!(stats.distinct_count, 9);
+
+        // Verify that the duplicate timestamp appears twice
+        let duplicate_timestamp = &stats.distinct_stats[0];
+        assert_eq!(duplicate_timestamp.count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_single_field_stats_single_value_field() {
+        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
+
+        let ctx = SessionContext::new();
+        let table_name = ulid::Ulid::new().to_string();
+        ctx.register_parquet(
+            &table_name,
+            parquet_path.to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        // Test field with single distinct value
+        let result =
+            calculate_single_field_stats(ctx.clone(), &table_name, "single_value", 50).await;
+
+        assert!(result.is_some());
+        let stats = result.unwrap();
+
+        assert_eq!(stats.field_name, "single_value");
+        assert_eq!(stats.count, 10);
+        assert_eq!(stats.distinct_count, 1);
+        assert_eq!(stats.distinct_stats.len(), 1);
+        assert_eq!(stats.distinct_stats[0].distinct_value, "constant");
+        assert_eq!(stats.distinct_stats[0].count, 10);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_single_field_stats_nonexistent_table() {
+        let ctx = SessionContext::new();
+
+        // Test with non-existent table
+        let result =
+            calculate_single_field_stats(ctx.clone(), "non_existent_table", "field", 50).await;
+
+        // Should return None due to SQL execution failure
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_calculate_single_field_stats_nonexistent_field() {
+        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
+
+        let ctx = SessionContext::new();
+        let table_name = ulid::Ulid::new().to_string();
+        ctx.register_parquet(
+            &table_name,
+            parquet_path.to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        // Test with non-existent field
+        let result =
+            calculate_single_field_stats(ctx.clone(), &table_name, "non_existent_field", 50).await;
+
+        // Should return None due to SQL execution failure
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_calculate_single_field_stats_with_special_characters() {
+        // Create a schema with field names containing special characters
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("field with spaces", DataType::Utf8, true),
+            Field::new("field\"with\"quotes", DataType::Utf8, true),
+            Field::new("field'with'apostrophes", DataType::Utf8, true),
+        ]));
+
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("special_chars.parquet");
+
+        use parquet::arrow::AsyncArrowWriter;
+        use tokio::fs::File;
+
+        let space_array = StringArray::from(vec![Some("value1"), Some("value2"), Some("value1")]);
+        let quote_array = StringArray::from(vec![Some("quote1"), Some("quote2"), Some("quote1")]);
+        let apostrophe_array = StringArray::from(vec![Some("apos1"), Some("apos2"), Some("apos1")]);
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(space_array),
+                Arc::new(quote_array),
+                Arc::new(apostrophe_array),
+            ],
+        )
+        .unwrap();
+
+        let file = File::create(&file_path).await.unwrap();
+        let mut writer = AsyncArrowWriter::try_new(file, schema, None).unwrap();
+        writer.write(&batch).await.unwrap();
+        writer.close().await.unwrap();
+
+        let ctx = SessionContext::new();
+        let table_name = ulid::Ulid::new().to_string();
+        ctx.register_parquet(
+            &table_name,
+            file_path.to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        // Test field with spaces
+        let result =
+            calculate_single_field_stats(ctx.clone(), &table_name, "field with spaces", 50).await;
+        assert!(result.is_some());
+        let stats = result.unwrap();
+        assert_eq!(stats.field_name, "field with spaces");
+        assert_eq!(stats.count, 3);
+        assert_eq!(stats.distinct_count, 2);
+
+        // Test field with quotes
+        let result =
+            calculate_single_field_stats(ctx.clone(), &table_name, "field\"with\"quotes", 50).await;
+        assert!(result.is_some());
+        let stats = result.unwrap();
+        assert_eq!(stats.field_name, "field\"with\"quotes");
+        assert_eq!(stats.count, 3);
+        assert_eq!(stats.distinct_count, 2);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_single_field_stats_empty_table() {
+        // Create empty table
+        let schema = Arc::new(create_test_schema());
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("empty_data.parquet");
+
+        use parquet::arrow::AsyncArrowWriter;
+        use tokio::fs::File;
+
+        let file = File::create(&file_path).await.unwrap();
+        let mut writer = AsyncArrowWriter::try_new(file, schema.clone(), None).unwrap();
+
+        // Create empty batch
+        let empty_batch = RecordBatch::new_empty(schema.clone());
+        writer.write(&empty_batch).await.unwrap();
+        writer.close().await.unwrap();
+
+        let ctx = SessionContext::new();
+        let table_name = ulid::Ulid::new().to_string();
+        ctx.register_parquet(
+            &table_name,
+            file_path.to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        let result = calculate_single_field_stats(ctx.clone(), &table_name, "name", 50).await;
+        assert!(result.unwrap().distinct_stats.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_calculate_single_field_stats_streaming_behavior() {
+        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
+
+        let ctx = SessionContext::new();
+        let table_name = ulid::Ulid::new().to_string();
+        ctx.register_parquet(
+            &table_name,
+            parquet_path.to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        // Test that the function handles streaming properly by checking
+        // that all data is collected correctly across multiple batches
+        let result = calculate_single_field_stats(ctx.clone(), &table_name, "name", 50).await;
+
+        assert!(result.is_some());
+        let stats = result.unwrap();
+
+        // Verify that the streaming collected all the data
+        let total_distinct_count: i64 = stats.distinct_stats.iter().map(|s| s.count).sum();
+        assert_eq!(total_distinct_count, stats.count);
+
+        // Verify that distinct_stats are properly ordered by count
+        for i in 1..stats.distinct_stats.len() {
+            assert!(stats.distinct_stats[i - 1].count >= stats.distinct_stats[i].count);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_calculate_single_field_stats_large_dataset() {
+        // Create a larger dataset to test streaming behavior
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("category", DataType::Utf8, true),
+        ]));
+
+        let temp_dir = TempDir::new().unwrap();
+        let file_path = temp_dir.path().join("large_data.parquet");
+
+        use parquet::arrow::AsyncArrowWriter;
+        use tokio::fs::File;
+
+        // Create 1000 rows with 10 distinct categories
+        let ids: Vec<i64> = (0..1000).collect();
+        let categories: Vec<Option<&str>> = (0..1000)
+            .map(|i| {
+                Some(match i % 10 {
+                    0 => "cat_0",
+                    1 => "cat_1",
+                    2 => "cat_2",
+                    3 => "cat_3",
+                    4 => "cat_4",
+                    5 => "cat_5",
+                    6 => "cat_6",
+                    7 => "cat_7",
+                    8 => "cat_8",
+                    _ => "cat_9",
+                })
+            })
+            .collect();
+
+        let id_array = Int64Array::from(ids);
+        let category_array = StringArray::from(categories);
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(id_array), Arc::new(category_array)],
+        )
+        .unwrap();
+
+        let file = File::create(&file_path).await.unwrap();
+        let mut writer = AsyncArrowWriter::try_new(file, schema, None).unwrap();
+        writer.write(&batch).await.unwrap();
+        writer.close().await.unwrap();
+
+        let ctx = SessionContext::new();
+        let table_name = ulid::Ulid::new().to_string();
+        ctx.register_parquet(
+            &table_name,
+            file_path.to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        let result = calculate_single_field_stats(ctx.clone(), &table_name, "category", 50).await;
+
+        assert!(result.is_some());
+        let stats = result.unwrap();
+
+        assert_eq!(stats.count, 1000);
+        assert_eq!(stats.distinct_count, 10);
+        assert_eq!(stats.distinct_stats.len(), 10);
+
+        // Each category should appear 100 times
+        for distinct_stat in &stats.distinct_stats {
+            assert_eq!(distinct_stat.count, 100);
+        }
     }
 }

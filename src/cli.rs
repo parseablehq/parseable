@@ -419,7 +419,7 @@ pub struct Options {
     #[arg(
         long,
         env = "P_OBJECT_STORE_SYNC_THRESHOLD",
-        default_value = "60",
+        default_value = "15",
         help = "Object store sync threshold in seconds"
     )]
     pub object_store_sync_threshold: u64,
