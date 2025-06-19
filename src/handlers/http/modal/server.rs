@@ -367,13 +367,15 @@ impl Server {
                             .route(
                                 web::put()
                                     .to(logstream::put_stream)
-                                    .authorize_for_stream(Action::CreateStream),
+                                    .authorize_for_stream(Action::CreateStream)
+                                    .wrap(from_fn(resource_check::check_resource_utilization_middleware)),
                             )
                             // POST "/logstream/{logstream}" ==> Post logs to given log stream
                             .route(
                                 web::post()
                                     .to(ingest::post_event)
-                                    .authorize_for_stream(Action::Ingest),
+                                    .authorize_for_stream(Action::Ingest)
+                                    .wrap(from_fn(resource_check::check_resource_utilization_middleware)),
                             )
                             // DELETE "/logstream/{logstream}" ==> Delete log stream
                             .route(
@@ -381,9 +383,8 @@ impl Server {
                                     .to(logstream::delete)
                                     .authorize_for_stream(Action::DeleteStream),
                             )
-                            .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE))
-                            .wrap(from_fn(resource_check::check_resource_utilization_middleware)),
-                    )
+                            .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    ) 
                     .service(
                         // GET "/logstream/{logstream}/info" ==> Get info for given log stream
                         web::resource("/info").route(
