@@ -133,18 +133,12 @@ impl ParseableServer for IngestServer {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         thread::spawn(|| sync::handler(cancel_rx));
 
-        // Start resource monitor
-        let (resource_shutdown_tx, resource_shutdown_rx) = oneshot::channel();
-        resource_check::spawn_resource_monitor(resource_shutdown_rx);
-
         tokio::spawn(airplane::server());
 
         // Ingestors shouldn't have to deal with OpenId auth flow
         let result = self.start(shutdown_rx, prometheus.clone(), None).await;
         // Cancel sync jobs
         cancel_tx.send(()).expect("Cancellation should not fail");
-        // Shutdown resource monitor
-        let _ = resource_shutdown_tx.send(());
         if let Err(join_err) = startup_sync_handle.await {
             tracing::warn!("startup sync task panicked: {join_err}");
         }

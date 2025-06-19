@@ -45,7 +45,7 @@ use crate::{
     utils::get_node_id,
 };
 
-use super::{audit, cross_origin_config, health_check, API_BASE_PATH, API_VERSION};
+use super::{audit, cross_origin_config, health_check, resource_check, API_BASE_PATH, API_VERSION};
 
 pub mod ingest;
 pub mod ingest_server;
@@ -107,6 +107,10 @@ pub trait ParseableServer {
             &PARSEABLE.options.trusted_ca_certs_path,
         )?;
 
+        // Start resource monitor
+        let (resource_shutdown_tx, resource_shutdown_rx) = oneshot::channel();
+        resource_check::spawn_resource_monitor(resource_shutdown_rx);
+
         // fn that creates the app
         let create_app_fn = move || {
             App::new()
@@ -141,6 +145,9 @@ pub trait ParseableServer {
             let _ = shutdown_rx.await;
 
             health_check::shutdown().await;
+
+            // Shutdown resource monitor
+            let _ = resource_shutdown_tx.send(());
 
             // Initiate graceful shutdown
             info!("Graceful shutdown of HTTP server triggered");
