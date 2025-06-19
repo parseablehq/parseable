@@ -270,7 +270,7 @@ pub async fn generate_home_search_response(
     let (alert_titles, correlation_titles, dashboard_titles, filter_titles, stream_titles) = tokio::join!(
         get_alert_titles(key, query_value),
         get_correlation_titles(key, query_value),
-        get_dashboard_titles(key, query_value),
+        get_dashboard_titles(query_value),
         get_filter_titles(key, query_value),
         get_stream_titles(key)
     );
@@ -368,22 +368,20 @@ async fn get_correlation_titles(
     Ok(correlations)
 }
 
-async fn get_dashboard_titles(
-    key: &SessionKey,
-    query_value: &str,
-) -> Result<Vec<Resource>, PrismHomeError> {
+async fn get_dashboard_titles(query_value: &str) -> Result<Vec<Resource>, PrismHomeError> {
     let dashboard_titles = DASHBOARDS
-        .list_dashboards(key)
+        .list_dashboards()
         .await
         .iter()
         .filter_map(|dashboard| {
-            let dashboard_id = dashboard.dashboard_id.as_ref().unwrap().clone();
-            if dashboard.name.to_lowercase().contains(query_value)
+            let dashboard_id = *dashboard.dashboard_id.as_ref().unwrap();
+            let dashboard_id = dashboard_id.to_string();
+            if dashboard.title.to_lowercase().contains(query_value)
                 || dashboard_id.to_lowercase().contains(query_value)
             {
                 Some(Resource {
                     id: dashboard_id,
-                    name: dashboard.name.clone(),
+                    name: dashboard.title.clone(),
                     resource_type: ResourceType::Dashboard,
                 })
             } else {
