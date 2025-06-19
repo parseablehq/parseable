@@ -220,7 +220,7 @@ impl Display for AlertOperator {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, FromStr)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, FromStr, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum WhereConfigOperator {
     #[serde(rename = "=")]
@@ -326,7 +326,7 @@ pub struct FilterConfig {
 pub struct ConditionConfig {
     pub column: String,
     pub operator: WhereConfigOperator,
-    pub value: String,
+    pub value: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -343,20 +343,28 @@ impl Conditions {
                 LogicalOperator::And | LogicalOperator::Or => {
                     let expr1 = &self.condition_config[0];
                     let expr2 = &self.condition_config[1];
-                    format!(
-                        "[{} {} {} {op} {} {} {}]",
-                        expr1.column,
-                        expr1.operator,
-                        expr1.value,
-                        expr2.column,
-                        expr2.operator,
-                        expr2.value
-                    )
+                    let expr1_msg = if let Some(val) = &expr1.value {
+                        format!("{} {} {}", expr1.column, expr1.operator, val)
+                    } else {
+                        format!("{} {}", expr1.column, expr1.operator)
+                    };
+
+                    let expr2_msg = if let Some(val) = &expr2.value {
+                        format!("{} {} {}", expr2.column, expr2.operator, val)
+                    } else {
+                        format!("{} {}", expr2.column, expr2.operator)
+                    };
+
+                    format!("[{} {op} {}]", expr1_msg, expr2_msg)
                 }
             },
             None => {
                 let expr = &self.condition_config[0];
-                format!("[{} {} {}]", expr.column, expr.operator, expr.value)
+                if let Some(val) = &expr.value {
+                    format!("{} {} {}", expr.column, expr.operator, val)
+                } else {
+                    format!("{} {}", expr.column, expr.operator)
+                }
             }
         }
     }
@@ -643,6 +651,27 @@ impl AlertConfig {
                             "While not using AND/OR, only one condition must be used".to_string(),
                         ));
                     }
+                }
+            }
+
+            // validate that the value should be None in case of `is null` and `is not null`
+            for condition in config.condition_config.iter() {
+                let needs_no_value = matches!(
+                    condition.operator,
+                    WhereConfigOperator::IsNull | WhereConfigOperator::IsNotNull
+                );
+
+                if needs_no_value && condition.value.is_some() {
+                    return Err(AlertError::CustomError(
+                        "value must be null when operator is either `is null` or `is not null`"
+                            .into(),
+                    ));
+                }
+                if !needs_no_value && condition.value.as_ref().is_none_or(|v| v.trim().is_empty()) {
+                    return Err(AlertError::CustomError(
+                            "value must not be null when operator is neither `is null` nor `is not null`"
+                                .into(),
+                        ));
                 }
             }
             Ok(())

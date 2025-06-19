@@ -26,7 +26,7 @@ use crate::{
 };
 
 const HOME_SEARCH_QUERY_PARAM: &str = "key";
-
+pub const HOME_QUERY_PARAM: &str = "includeInternal";
 /// Fetches the data to populate Prism's home
 ///
 ///
@@ -36,8 +36,12 @@ const HOME_SEARCH_QUERY_PARAM: &str = "key";
 pub async fn home_api(req: HttpRequest) -> Result<impl Responder, PrismHomeError> {
     let key = extract_session_key_from_req(&req)
         .map_err(|err| PrismHomeError::Anyhow(anyhow::Error::msg(err.to_string())))?;
+    let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
+        .map_err(|_| PrismHomeError::InvalidQueryParameter(HOME_QUERY_PARAM.to_string()))?;
 
-    let res = generate_home_response(&key).await?;
+    let include_internal = query_map.get(HOME_QUERY_PARAM).is_some_and(|v| v == "true");
+
+    let res = generate_home_response(&key, include_internal).await?;
 
     Ok(web::Json(res))
 }
@@ -52,11 +56,12 @@ pub async fn home_search(req: HttpRequest) -> Result<impl Responder, PrismHomeEr
         return Ok(web::Json(serde_json::json!({})));
     }
 
-    let query_value = query_map
+    let query_key = query_map
         .get(HOME_SEARCH_QUERY_PARAM)
         .ok_or_else(|| PrismHomeError::InvalidQueryParameter(HOME_SEARCH_QUERY_PARAM.to_string()))?
         .to_lowercase();
-    let res = generate_home_search_response(&key, &query_value).await?;
+
+    let res = generate_home_search_response(&key, &query_key).await?;
     let json_res = serde_json::to_value(res)
         .map_err(|err| PrismHomeError::Anyhow(anyhow::Error::msg(err.to_string())))?;
 

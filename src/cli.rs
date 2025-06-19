@@ -388,6 +388,41 @@ pub struct Options {
         help = "Maximum level of flattening allowed for events"
     )]
     pub event_flatten_level: usize,
+
+    // maximum limit to store the statistics for a field
+    #[arg(
+        long,
+        env = "P_MAX_FIELD_STATISTICS",
+        default_value = "50",
+        help = "Maximum number of field statistics to store"
+    )]
+    pub max_field_statistics: usize,
+
+    // collect dataset stats
+    #[arg(
+        long,
+        env = "P_COLLECT_DATASET_STATS",
+        default_value = "false",
+        help = "Enable/Disable collecting dataset stats"
+    )]
+    pub collect_dataset_stats: bool,
+
+    // the duration during which local sync should be completed
+    #[arg(
+        long,
+        env = "P_LOCAL_SYNC_THRESHOLD",
+        default_value = "30",
+        help = "Local sync threshold in seconds"
+    )]
+    pub local_sync_threshold: u64,
+    // the duration during which object store sync should be completed
+    #[arg(
+        long,
+        env = "P_OBJECT_STORE_SYNC_THRESHOLD",
+        default_value = "15",
+        help = "Object store sync threshold in seconds"
+    )]
+    pub object_store_sync_threshold: u64,
 }
 
 #[derive(Parser, Debug)]

@@ -16,6 +16,8 @@
  *
  */
 
+use std::fmt::Display;
+
 use arrow_array::{Float64Array, Int64Array, RecordBatch};
 use datafusion::{
     functions_aggregate::{
@@ -339,46 +341,97 @@ fn get_filter_expr(where_clause: &Conditions) -> Expr {
     }
 }
 
+pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
+    match &where_clause.operator {
+        Some(op) => match op {
+            LogicalOperator::And => {
+                let mut exprs = vec![];
+                for condition in &where_clause.condition_config {
+                    if let Some(value) = &condition.value {
+                        // ad-hoc error check in case value is some and operator is either `is null` or `is not null`
+                        if condition.operator.eq(&WhereConfigOperator::IsNull)
+                            || condition.operator.eq(&WhereConfigOperator::IsNotNull)
+                        {
+                            return Err("value must be null when operator is either `is null` or `is not null`"
+                                .into());
+                        }
+                        let value = NumberOrString::from_string(value.to_owned());
+                        match value {
+                            NumberOrString::Number(val) => exprs.push(format!(
+                                "\"{}\" {} {}",
+                                condition.column, condition.operator, val
+                            )),
+                            NumberOrString::String(val) => exprs.push(format!(
+                                "\"{}\" {} '{}'",
+                                condition.column,
+                                condition.operator,
+                                val.replace('\'', "''")
+                            )),
+                        }
+                    } else {
+                        exprs.push(format!("\"{}\" {}", condition.column, condition.operator))
+                    }
+                }
+
+                Ok(exprs.join(" AND "))
+            }
+            _ => Err(String::from("Invalid option 'or', only 'and' is supported")),
+        },
+        _ => Err(String::from(
+            "Invalid option 'null', only 'and' is supported",
+        )),
+    }
+}
+
 fn match_alert_operator(expr: &ConditionConfig) -> Expr {
     // the form accepts value as a string
     // if it can be parsed as a number, then parse it
     // else keep it as a string
-    let value = NumberOrString::from_string(expr.value.clone());
+    if let Some(value) = &expr.value {
+        let value = NumberOrString::from_string(value.clone());
 
-    // for maintaining column case
-    let column = format!(r#""{}""#, expr.column);
-    match expr.operator {
-        WhereConfigOperator::Equal => col(column).eq(lit(value)),
-        WhereConfigOperator::NotEqual => col(column).not_eq(lit(value)),
-        WhereConfigOperator::LessThan => col(column).lt(lit(value)),
-        WhereConfigOperator::GreaterThan => col(column).gt(lit(value)),
-        WhereConfigOperator::LessThanOrEqual => col(column).lt_eq(lit(value)),
-        WhereConfigOperator::GreaterThanOrEqual => col(column).gt_eq(lit(value)),
-        WhereConfigOperator::IsNull => col(column).is_null(),
-        WhereConfigOperator::IsNotNull => col(column).is_not_null(),
-        WhereConfigOperator::ILike => col(column).ilike(lit(&expr.value)),
-        WhereConfigOperator::Contains => col(column).like(lit(&expr.value)),
-        WhereConfigOperator::BeginsWith => Expr::BinaryExpr(BinaryExpr::new(
-            Box::new(col(column)),
-            Operator::RegexIMatch,
-            Box::new(lit(format!("^{}", expr.value))),
-        )),
-        WhereConfigOperator::EndsWith => Expr::BinaryExpr(BinaryExpr::new(
-            Box::new(col(column)),
-            Operator::RegexIMatch,
-            Box::new(lit(format!("{}$", expr.value))),
-        )),
-        WhereConfigOperator::DoesNotContain => col(column).not_ilike(lit(&expr.value)),
-        WhereConfigOperator::DoesNotBeginWith => Expr::BinaryExpr(BinaryExpr::new(
-            Box::new(col(column)),
-            Operator::RegexNotIMatch,
-            Box::new(lit(format!("^{}", expr.value))),
-        )),
-        WhereConfigOperator::DoesNotEndWith => Expr::BinaryExpr(BinaryExpr::new(
-            Box::new(col(column)),
-            Operator::RegexNotIMatch,
-            Box::new(lit(format!("{}$", expr.value))),
-        )),
+        // for maintaining column case
+        let column = format!(r#""{}""#, expr.column);
+        match expr.operator {
+            WhereConfigOperator::Equal => col(column).eq(lit(value)),
+            WhereConfigOperator::NotEqual => col(column).not_eq(lit(value)),
+            WhereConfigOperator::LessThan => col(column).lt(lit(value)),
+            WhereConfigOperator::GreaterThan => col(column).gt(lit(value)),
+            WhereConfigOperator::LessThanOrEqual => col(column).lt_eq(lit(value)),
+            WhereConfigOperator::GreaterThanOrEqual => col(column).gt_eq(lit(value)),
+            WhereConfigOperator::ILike => col(column).ilike(lit(value)),
+            WhereConfigOperator::Contains => col(column).like(lit(value)),
+            WhereConfigOperator::BeginsWith => Expr::BinaryExpr(BinaryExpr::new(
+                Box::new(col(column)),
+                Operator::RegexIMatch,
+                Box::new(lit(format!("^{}", value))),
+            )),
+            WhereConfigOperator::EndsWith => Expr::BinaryExpr(BinaryExpr::new(
+                Box::new(col(column)),
+                Operator::RegexIMatch,
+                Box::new(lit(format!("{}$", value))),
+            )),
+            WhereConfigOperator::DoesNotContain => col(column).not_ilike(lit(value)),
+            WhereConfigOperator::DoesNotBeginWith => Expr::BinaryExpr(BinaryExpr::new(
+                Box::new(col(column)),
+                Operator::RegexNotIMatch,
+                Box::new(lit(format!("^{}", value))),
+            )),
+            WhereConfigOperator::DoesNotEndWith => Expr::BinaryExpr(BinaryExpr::new(
+                Box::new(col(column)),
+                Operator::RegexNotIMatch,
+                Box::new(lit(format!("{}$", value))),
+            )),
+            _ => unreachable!("value must not be null for operators other than `is null` and `is not null`. Should've been caught in validation")
+        }
+    } else {
+        // for maintaining column case
+        let column = format!(r#""{}""#, expr.column);
+        match expr.operator {
+            WhereConfigOperator::IsNull => col(column).is_null(),
+            WhereConfigOperator::IsNotNull => col(column).is_not_null(),
+            _ => unreachable!("value must be null for `is null` and `is not null`. Should've been caught in validation")
+        }
     }
 }
 
@@ -414,6 +467,15 @@ impl NumberOrString {
             NumberOrString::Number(num)
         } else {
             NumberOrString::String(value)
+        }
+    }
+}
+
+impl Display for NumberOrString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            NumberOrString::Number(v) => write!(f, "{v}"),
+            NumberOrString::String(v) => write!(f, "{v}"),
         }
     }
 }

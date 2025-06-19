@@ -33,7 +33,7 @@ use crate::{
     handlers::http::{cluster::fetch_daily_stats, logstream::error::StreamError},
     parseable::PARSEABLE,
     rbac::{map::SessionKey, role::Action, Users},
-    storage::{ObjectStorageError, ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
+    storage::{ObjectStorageError, ObjectStoreFormat, StreamType, STREAM_ROOT_DIRECTORY},
     users::{dashboards::DASHBOARDS, filters::FILTERS},
 };
 
@@ -88,7 +88,10 @@ pub struct HomeSearchResponse {
     resources: Vec<Resource>,
 }
 
-pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, PrismHomeError> {
+pub async fn generate_home_response(
+    key: &SessionKey,
+    include_internal: bool,
+) -> Result<HomeResponse, PrismHomeError> {
     // Execute these operations concurrently
     let (stream_titles_result, alerts_info_result) =
         tokio::join!(get_stream_titles(key), get_alerts_info());
@@ -120,6 +123,14 @@ pub async fn generate_home_response(key: &SessionKey) -> Result<HomeResponse, Pr
     for result in stream_metadata_results {
         match result {
             Ok((stream, metadata, dataset_type)) => {
+                // Skip internal streams if the flag is false
+                if !include_internal
+                    && metadata
+                        .iter()
+                        .all(|m| m.stream_type == StreamType::Internal)
+                {
+                    continue;
+                }
                 stream_wise_stream_json.insert(stream.clone(), metadata);
                 datasets.push(DataSet {
                     title: stream,

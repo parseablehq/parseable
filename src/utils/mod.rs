@@ -37,6 +37,8 @@ use datafusion::common::tree_node::TreeNode;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
+pub const DATASET_STATS_STREAM_NAME: &str = "pstats";
+
 pub fn get_node_id() -> String {
     let now = Utc::now().to_rfc3339();
     let id = get_hash(&now).to_string().split_at(15).0.to_string();

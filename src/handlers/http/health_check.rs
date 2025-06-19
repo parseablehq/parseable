@@ -56,12 +56,35 @@ pub async fn check_shutdown_middleware(
 
 // This function is called when the server is shutting down
 pub async fn shutdown() {
-    // Set the shutdown flag to true
-    let mut shutdown_flag = SIGNAL_RECEIVED.lock().await;
-    *shutdown_flag = true;
+    // Set shutdown flag to true
+    set_shutdown_flag().await;
 
     //sleep for 5 secs to allow any ongoing requests to finish
     tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+
+    // Perform sync operations
+    perform_sync_operations().await;
+
+    // If collect_dataset_stats is enabled, perform sync operations
+    // This is to ensure that all stats data is synced before the server shuts down
+    if PARSEABLE.options.collect_dataset_stats {
+        perform_sync_operations().await;
+    }
+}
+
+async fn set_shutdown_flag() {
+    let mut shutdown_flag = SIGNAL_RECEIVED.lock().await;
+    *shutdown_flag = true;
+}
+
+async fn perform_sync_operations() {
+    // Perform local sync
+    perform_local_sync().await;
+    // Perform object store sync
+    perform_object_store_sync().await;
+}
+
+async fn perform_local_sync() {
     let mut local_sync_joinset = JoinSet::new();
 
     // Sync staging
@@ -76,7 +99,9 @@ pub async fn shutdown() {
             Err(err) => error!("Failed to join async task: {err}"),
         }
     }
+}
 
+async fn perform_object_store_sync() {
     // Sync object store
     let mut object_store_joinset = JoinSet::new();
     sync_all_streams(&mut object_store_joinset);

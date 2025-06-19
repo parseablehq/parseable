@@ -100,6 +100,7 @@ pub async fn ingest(
         .create_stream_if_not_exists(
             &stream_name,
             StreamType::UserDefined,
+            None,
             vec![log_source_entry.clone()],
         )
         .await?;
@@ -183,6 +184,7 @@ pub async fn handle_otel_logs_ingestion(
         .create_stream_if_not_exists(
             &stream_name,
             StreamType::UserDefined,
+            None,
             vec![log_source_entry.clone()],
         )
         .await?;
@@ -248,6 +250,7 @@ pub async fn handle_otel_metrics_ingestion(
         .create_stream_if_not_exists(
             &stream_name,
             StreamType::UserDefined,
+            None,
             vec![log_source_entry.clone()],
         )
         .await?;
@@ -313,6 +316,7 @@ pub async fn handle_otel_traces_ingestion(
         .create_stream_if_not_exists(
             &stream_name,
             StreamType::UserDefined,
+            None,
             vec![log_source_entry.clone()],
         )
         .await?;
