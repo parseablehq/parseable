@@ -368,7 +368,6 @@ impl Server {
                                 web::put()
                                     .to(logstream::put_stream)
                                     .authorize_for_stream(Action::CreateStream)
-                                    .wrap(from_fn(resource_check::check_resource_utilization_middleware)),
                             )
                             // POST "/logstream/{logstream}" ==> Post logs to given log stream
                             .route(
