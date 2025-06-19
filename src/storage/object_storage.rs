@@ -972,19 +972,19 @@ async fn calculate_field_stats(
     schema: &Schema,
     max_field_statistics: usize,
 ) -> Result<bool, PostError> {
-    let ctx = SessionContext::new_with_state(QUERY_SESSION_STATE.clone());
+    let field_stats = {
+        let ctx = SessionContext::new_with_state(QUERY_SESSION_STATE.clone());
+        let table_name = Ulid::new().to_string();
+        ctx.register_parquet(
+            &table_name,
+            parquet_path.to_str().expect("valid path"),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .map_err(|e| PostError::Invalid(e.into()))?;
 
-    let table_name = Ulid::new().to_string();
-    ctx.register_parquet(
-        &table_name,
-        parquet_path.to_str().expect("valid path"),
-        ParquetReadOptions::default(),
-    )
-    .await
-    .map_err(|e| PostError::Invalid(e.into()))?;
-    let field_stats =
-        collect_all_field_stats(&table_name, &ctx, schema, max_field_statistics).await;
-    drop(ctx);
+        collect_all_field_stats(&table_name, &ctx, schema, max_field_statistics).await
+    };
     let mut stats_calculated = false;
     let stats = DatasetStats {
         dataset_name: stream_name.to_string(),
