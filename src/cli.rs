@@ -321,7 +321,7 @@ pub struct Options {
     #[arg(
         long,
         env = "P_RESOURCE_CHECK_INTERVAL",
-        default_value = "30",
+        default_value = "15",
         value_parser = validation::validate_seconds,
         help = "Resource monitoring check interval in seconds"
     )]
