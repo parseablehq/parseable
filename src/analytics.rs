@@ -95,9 +95,8 @@ pub struct Report {
 impl Report {
     pub async fn new() -> anyhow::Result<Self> {
         let mut upt: f64 = 0.0;
-        if let Ok(uptime) = uptime_lib::get() {
-            upt = uptime.as_secs_f64();
-        }
+        let uptime = uptime_lib::get().unwrap();
+        upt = uptime.as_secs_f64();
 
         refresh_sys_info();
         let mut os_version = "Unknown".to_string();
