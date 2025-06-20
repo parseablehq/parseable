@@ -71,14 +71,15 @@ pub fn get_latest_release() -> &'static Option<LatestRelease> {
 }
 
 // User Agent for Download API call
-// Format: Parseable/<UID>/<version>/<commit_hash> (<OS>; <Platform>)
-pub fn user_agent(uid: &Ulid) -> String {
+// Format: Parseable/<UID>/<version>/<commit_hash>/<send_analytics> (<OS>; <Platform>)
+pub fn user_agent(uid: &Ulid, send_analytics: bool) -> String {
     analytics::refresh_sys_info();
     format!(
-        "Parseable/{}/{}/{} ({:?}; {})",
+        "Parseable/{}/{}/{}/{} ({:?}; {})",
         uid,
         current().released_version,
         current().commit_hash,
+        send_analytics,
         System::name().unwrap_or_default(),
         platform()
     )

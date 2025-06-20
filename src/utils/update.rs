@@ -20,7 +20,6 @@ use std::time::Duration;
 
 use anyhow::anyhow;
 use chrono::{DateTime, Utc};
-use http::header;
 
 use crate::{about, parseable::PARSEABLE};
 
@@ -33,15 +32,9 @@ pub struct LatestRelease {
 }
 
 pub async fn get_latest(deployment_id: &uid::Uid) -> Result<LatestRelease, anyhow::Error> {
-    let send_analytics = PARSEABLE.options.send_analytics.to_string();
-    let mut headers = header::HeaderMap::new();
-    headers.insert(
-        "P_SEND_ANONYMOUS_USAGE_DATA",
-        header::HeaderValue::from_str(send_analytics.as_str()).expect("valid header value"),
-    );
+    let send_analytics = PARSEABLE.options.send_analytics;
     let agent = reqwest::ClientBuilder::new()
-        .user_agent(about::user_agent(deployment_id))
-        .default_headers(headers)
+        .user_agent(about::user_agent(deployment_id, send_analytics))
         .timeout(Duration::from_secs(8))
         .build()
         .expect("client can be built on this system");
