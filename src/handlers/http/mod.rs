@@ -47,6 +47,7 @@ pub mod prism_logstream;
 pub mod query;
 pub mod rbac;
 pub mod role;
+pub mod targets;
 pub mod users;
 pub const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
 pub const API_BASE_PATH: &str = "api";
