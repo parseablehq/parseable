@@ -347,7 +347,11 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
             LogicalOperator::And => {
                 let mut exprs = vec![];
                 for condition in &where_clause.condition_config {
-                    if let Some(value) = &condition.value {
+                    if condition
+                        .value
+                        .as_ref()
+                        .is_some_and(|v| !v.trim().is_empty())
+                    {
                         // ad-hoc error check in case value is some and operator is either `is null` or `is not null`
                         if condition.operator.eq(&WhereConfigOperator::IsNull)
                             || condition.operator.eq(&WhereConfigOperator::IsNotNull)
@@ -355,7 +359,9 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
                             return Err("value must be null when operator is either `is null` or `is not null`"
                                 .into());
                         }
-                        let value = NumberOrString::from_string(value.to_owned());
+                        let value = NumberOrString::from_string(
+                            condition.value.as_ref().unwrap().to_owned(),
+                        );
                         match value {
                             NumberOrString::Number(val) => exprs.push(format!(
                                 "\"{}\" {} {}",
@@ -387,7 +393,8 @@ fn match_alert_operator(expr: &ConditionConfig) -> Expr {
     // the form accepts value as a string
     // if it can be parsed as a number, then parse it
     // else keep it as a string
-    if let Some(value) = &expr.value {
+    if expr.value.as_ref().is_some_and(|v| !v.trim().is_empty()) {
+        let value = expr.value.as_ref().unwrap();
         let value = NumberOrString::from_string(value.clone());
 
         // for maintaining column case
