@@ -343,14 +343,24 @@ impl Conditions {
                 LogicalOperator::And | LogicalOperator::Or => {
                     let expr1 = &self.condition_config[0];
                     let expr2 = &self.condition_config[1];
-                    let expr1_msg = if let Some(val) = &expr1.value {
-                        format!("{} {} {}", expr1.column, expr1.operator, val)
+                    let expr1_msg = if expr1.value.as_ref().is_some_and(|v| !v.trim().is_empty()) {
+                        format!(
+                            "{} {} {}",
+                            expr1.column,
+                            expr1.operator,
+                            expr1.value.as_ref().unwrap()
+                        )
                     } else {
                         format!("{} {}", expr1.column, expr1.operator)
                     };
 
-                    let expr2_msg = if let Some(val) = &expr2.value {
-                        format!("{} {} {}", expr2.column, expr2.operator, val)
+                    let expr2_msg = if expr2.value.as_ref().is_some_and(|v| !v.trim().is_empty()) {
+                        format!(
+                            "{} {} {}",
+                            expr2.column,
+                            expr2.operator,
+                            expr2.value.as_ref().unwrap()
+                        )
                     } else {
                         format!("{} {}", expr2.column, expr2.operator)
                     };
@@ -661,7 +671,12 @@ impl AlertConfig {
                     WhereConfigOperator::IsNull | WhereConfigOperator::IsNotNull
                 );
 
-                if needs_no_value && condition.value.is_some() {
+                if needs_no_value
+                    && condition
+                        .value
+                        .as_ref()
+                        .is_some_and(|v| !v.trim().is_empty())
+                {
                     return Err(AlertError::CustomError(
                         "value must be null when operator is either `is null` or `is not null`"
                             .into(),
