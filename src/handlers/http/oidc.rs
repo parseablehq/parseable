@@ -176,18 +176,27 @@ pub async fn reply_login(
             }
         }
     }
+    
+    // Check if user already exists to preserve their existing roles
+    let existing_user = Users.get_user(&username);
     if !role_exists || group.is_empty() {
-        group = DEFAULT_ROLE
-            .lock()
-            .unwrap()
-            .clone()
-            .map(|role| HashSet::from([role]))
-            .unwrap_or_default();
+        group = if let Some(existing_user) = &existing_user {
+            // Preserve existing user roles instead of assigning default
+            existing_user.roles.clone()
+        } else {
+            // Only assign default role for new users
+            DEFAULT_ROLE
+                .lock()
+                .unwrap()
+                .clone()
+                .map(|role| HashSet::from([role]))
+                .unwrap_or_default()
+        };
     }
 
     // User may not exist
     // create a new one depending on state of metadata
-    let user = match (Users.get_user(&username), group) {
+    let user = match (existing_user, group) {
         (Some(user), group) => update_user_if_changed(user, group, user_info).await?,
         (None, group) => put_user(&username, group, user_info).await?,
     };
