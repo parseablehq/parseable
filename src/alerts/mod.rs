@@ -343,7 +343,7 @@ impl Conditions {
                 LogicalOperator::And | LogicalOperator::Or => {
                     let expr1 = &self.condition_config[0];
                     let expr2 = &self.condition_config[1];
-                    let expr1_msg = if expr1.value.as_ref().is_some_and(|v| !v.trim().is_empty()) {
+                    let expr1_msg = if expr1.value.as_ref().is_some_and(|v| !v.is_empty()) {
                         format!(
                             "{} {} {}",
                             expr1.column,
@@ -354,7 +354,7 @@ impl Conditions {
                         format!("{} {}", expr1.column, expr1.operator)
                     };
 
-                    let expr2_msg = if expr2.value.as_ref().is_some_and(|v| !v.trim().is_empty()) {
+                    let expr2_msg = if expr2.value.as_ref().is_some_and(|v| !v.is_empty()) {
                         format!(
                             "{} {} {}",
                             expr2.column,
@@ -671,18 +671,13 @@ impl AlertConfig {
                     WhereConfigOperator::IsNull | WhereConfigOperator::IsNotNull
                 );
 
-                if needs_no_value
-                    && condition
-                        .value
-                        .as_ref()
-                        .is_some_and(|v| !v.trim().is_empty())
-                {
+                if needs_no_value && condition.value.as_ref().is_some_and(|v| !v.is_empty()) {
                     return Err(AlertError::CustomError(
                         "value must be null when operator is either `is null` or `is not null`"
                             .into(),
                     ));
                 }
-                if !needs_no_value && condition.value.as_ref().is_none_or(|v| v.trim().is_empty()) {
+                if !needs_no_value && condition.value.as_ref().is_none_or(|v| v.is_empty()) {
                     return Err(AlertError::CustomError(
                             "value must not be null when operator is neither `is null` nor `is not null`"
                                 .into(),

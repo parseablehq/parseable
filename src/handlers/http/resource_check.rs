@@ -25,13 +25,17 @@ use actix_web::{
     error::ErrorServiceUnavailable,
     middleware::Next,
 };
-use tokio::{select, time::{interval, Duration}};
-use tracing::{warn, trace, info};
+use tokio::{
+    select,
+    time::{interval, Duration},
+};
+use tracing::{info, trace, warn};
 
-use crate::analytics::{SYS_INFO, refresh_sys_info};
+use crate::analytics::{refresh_sys_info, SYS_INFO};
 use crate::parseable::PARSEABLE;
 
-static RESOURCE_CHECK_ENABLED:LazyLock<Arc<AtomicBool>> = LazyLock::new(|| Arc::new(AtomicBool::new(false)));
+static RESOURCE_CHECK_ENABLED: LazyLock<Arc<AtomicBool>> =
+    LazyLock::new(|| Arc::new(AtomicBool::new(false)));
 
 /// Spawn a background task to monitor system resources
 pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
@@ -39,17 +43,19 @@ pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
         let resource_check_interval = PARSEABLE.options.resource_check_interval;
         let mut check_interval = interval(Duration::from_secs(resource_check_interval));
         let mut shutdown_rx = shutdown_rx;
-        
+
         let cpu_threshold = PARSEABLE.options.cpu_utilization_threshold;
         let memory_threshold = PARSEABLE.options.memory_utilization_threshold;
-        
-        info!("Resource monitor started with thresholds - CPU: {:.1}%, Memory: {:.1}%", 
-              cpu_threshold, memory_threshold);
+
+        info!(
+            "Resource monitor started with thresholds - CPU: {:.1}%, Memory: {:.1}%",
+            cpu_threshold, memory_threshold
+        );
         loop {
             select! {
                 _ = check_interval.tick() => {
                     trace!("Checking system resource utilization...");
-                    
+
                     refresh_sys_info();
                     let (used_memory, total_memory, cpu_usage) = tokio::task::spawn_blocking(|| {
                         let sys = SYS_INFO.lock().unwrap();
@@ -58,36 +64,36 @@ pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
                         let cpu_usage = sys.global_cpu_usage();
                         (used_memory, total_memory, cpu_usage)
                     }).await.unwrap();
-                    
+
                     let mut resource_ok = true;
-                    
+
                     // Calculate memory usage percentage
                     let memory_usage = if total_memory > 0.0 {
                         (used_memory / total_memory) * 100.0
                     } else {
                         0.0
                     };
-                    
+
                     // Log current resource usage every few checks for debugging
-                    info!("Current resource usage - CPU: {:.1}%, Memory: {:.1}% ({:.1}GB/{:.1}GB)", 
-                          cpu_usage, memory_usage, 
-                          used_memory / 1024.0 / 1024.0 / 1024.0, 
+                    info!("Current resource usage - CPU: {:.1}%, Memory: {:.1}% ({:.1}GB/{:.1}GB)",
+                          cpu_usage, memory_usage,
+                          used_memory / 1024.0 / 1024.0 / 1024.0,
                           total_memory / 1024.0 / 1024.0 / 1024.0);
-                    
+
                     // Check memory utilization
                     if memory_usage > memory_threshold {
-                        warn!("High memory usage detected: {:.1}% (threshold: {:.1}%)", 
+                        warn!("High memory usage detected: {:.1}% (threshold: {:.1}%)",
                               memory_usage, memory_threshold);
                         resource_ok = false;
                     }
-                    
+
                     // Check CPU utilization
                     if cpu_usage > cpu_threshold {
-                        warn!("High CPU usage detected: {:.1}% (threshold: {:.1}%)", 
+                        warn!("High CPU usage detected: {:.1}% (threshold: {:.1}%)",
                               cpu_usage, cpu_threshold);
                         resource_ok = false;
                     }
-                    
+
                     let previous_state = RESOURCE_CHECK_ENABLED.load(std::sync::atomic::Ordering::SeqCst);
                     RESOURCE_CHECK_ENABLED.store(resource_ok, std::sync::atomic::Ordering::SeqCst);
 
@@ -115,12 +121,14 @@ pub async fn check_resource_utilization_middleware(
     req: ServiceRequest,
     next: Next<impl MessageBody>,
 ) -> Result<ServiceResponse<impl MessageBody>, Error> {
-    
     let resource_ok = RESOURCE_CHECK_ENABLED.load(std::sync::atomic::Ordering::SeqCst);
 
     if !resource_ok {
         let error_msg = "Server resources over-utilized";
-        warn!("Rejecting request to {} due to resource constraints", req.path());
+        warn!(
+            "Rejecting request to {} due to resource constraints",
+            req.path()
+        );
         return Err(ErrorServiceUnavailable(error_msg));
     }
 
