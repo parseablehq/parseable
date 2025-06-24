@@ -54,10 +54,9 @@ impl ParseableServer for QueryServer {
             .service(
                 web::scope(&base_path())
                     .service(Server::get_correlation_webscope())
-                    .service(
-                        Server::get_query_factory()
-                            .wrap(from_fn(resource_check::check_resource_utilization_middleware))
-                    )
+                    .service(Server::get_query_factory().wrap(from_fn(
+                        resource_check::check_resource_utilization_middleware,
+                    )))
                     .service(Server::get_liveness_factory())
                     .service(Server::get_readiness_factory())
                     .service(Server::get_about_factory())
@@ -70,10 +69,9 @@ impl ParseableServer for QueryServer {
                     .service(Server::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope())
                     .service(Server::get_roles_webscope())
-                    .service(
-                        Server::get_counts_webscope()
-                            .wrap(from_fn(resource_check::check_resource_utilization_middleware))
-                    )
+                    .service(Server::get_counts_webscope().wrap(from_fn(
+                        resource_check::check_resource_utilization_middleware,
+                    )))
                     .service(Server::get_metrics_webscope())
                     .service(Server::get_alerts_webscope())
                     .service(Self::get_cluster_web_scope()),

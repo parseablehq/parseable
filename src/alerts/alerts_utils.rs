@@ -347,11 +347,7 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
             LogicalOperator::And => {
                 let mut exprs = vec![];
                 for condition in &where_clause.condition_config {
-                    if condition
-                        .value
-                        .as_ref()
-                        .is_some_and(|v| !v.trim().is_empty())
-                    {
+                    if condition.value.as_ref().is_some_and(|v| !v.is_empty()) {
                         // ad-hoc error check in case value is some and operator is either `is null` or `is not null`
                         if condition.operator.eq(&WhereConfigOperator::IsNull)
                             || condition.operator.eq(&WhereConfigOperator::IsNotNull)
@@ -359,21 +355,75 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
                             return Err("value must be null when operator is either `is null` or `is not null`"
                                 .into());
                         }
-                        let value = NumberOrString::from_string(
-                            condition.value.as_ref().unwrap().to_owned(),
-                        );
-                        match value {
-                            NumberOrString::Number(val) => exprs.push(format!(
-                                "\"{}\" {} {}",
-                                condition.column, condition.operator, val
-                            )),
-                            NumberOrString::String(val) => exprs.push(format!(
-                                "\"{}\" {} '{}'",
-                                condition.column,
-                                condition.operator,
-                                val.replace('\'', "''")
-                            )),
-                        }
+
+                        let value = condition.value.as_ref().unwrap();
+
+                        let operator_and_value = match condition.operator {
+                            WhereConfigOperator::Contains => {
+                                let escaped_value = value
+                                    .replace("'", "\\'")
+                                    .replace('%', "\\%")
+                                    .replace('_', "\\_");
+                                format!("LIKE '%{escaped_value}%'")
+                            }
+                            WhereConfigOperator::DoesNotContain => {
+                                let escaped_value = value
+                                    .replace("'", "\\'")
+                                    .replace('%', "\\%")
+                                    .replace('_', "\\_");
+                                format!("NOT LIKE '%{escaped_value}%'")
+                            }
+                            WhereConfigOperator::ILike => {
+                                let escaped_value = value
+                                    .replace("'", "\\'")
+                                    .replace('%', "\\%")
+                                    .replace('_', "\\_");
+                                format!("ILIKE '%{escaped_value}%'")
+                            }
+                            WhereConfigOperator::BeginsWith => {
+                                let escaped_value = value
+                                    .replace("'", "\\'")
+                                    .replace('%', "\\%")
+                                    .replace('_', "\\_");
+                                format!("LIKE '{escaped_value}%'")
+                            }
+                            WhereConfigOperator::DoesNotBeginWith => {
+                                let escaped_value = value
+                                    .replace("'", "\\'")
+                                    .replace('%', "\\%")
+                                    .replace('_', "\\_");
+                                format!("NOT LIKE '{escaped_value}%'")
+                            }
+                            WhereConfigOperator::EndsWith => {
+                                let escaped_value = value
+                                    .replace("'", "\\'")
+                                    .replace('%', "\\%")
+                                    .replace('_', "\\_");
+                                format!("LIKE '%{escaped_value}'")
+                            }
+                            WhereConfigOperator::DoesNotEndWith => {
+                                let escaped_value = value
+                                    .replace("'", "\\'")
+                                    .replace('%', "\\%")
+                                    .replace('_', "\\_");
+                                format!("NOT LIKE '%{escaped_value}'")
+                            }
+                            _ => {
+                                let value = match NumberOrString::from_string(value.to_owned()) {
+                                    NumberOrString::Number(val) => format!("{val}"),
+                                    NumberOrString::String(val) => {
+                                        format!(
+                                            "'{}'",
+                                            val.replace("'", "\\'")
+                                                .replace('%', "\\%")
+                                                .replace('_', "\\_")
+                                        )
+                                    }
+                                };
+                                format!("{} {}", condition.operator, value)
+                            }
+                        };
+                        exprs.push(format!("\"{}\" {}", condition.column, operator_and_value))
                     } else {
                         exprs.push(format!("\"{}\" {}", condition.column, condition.operator))
                     }
@@ -393,7 +443,7 @@ fn match_alert_operator(expr: &ConditionConfig) -> Expr {
     // the form accepts value as a string
     // if it can be parsed as a number, then parse it
     // else keep it as a string
-    if expr.value.as_ref().is_some_and(|v| !v.trim().is_empty()) {
+    if expr.value.as_ref().is_some_and(|v| !v.is_empty()) {
         let value = expr.value.as_ref().unwrap();
         let value = NumberOrString::from_string(value.clone());
 
