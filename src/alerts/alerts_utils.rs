@@ -364,60 +364,55 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
                                     .replace("'", "\\'")
                                     .replace('%', "\\%")
                                     .replace('_', "\\_");
-                                format!("LIKE '%{escaped_value}%'")
+                                format!("LIKE '%{escaped_value}%' ESCAPE '\\'")
                             }
                             WhereConfigOperator::DoesNotContain => {
                                 let escaped_value = value
                                     .replace("'", "\\'")
                                     .replace('%', "\\%")
                                     .replace('_', "\\_");
-                                format!("NOT LIKE '%{escaped_value}%'")
+                                format!("NOT LIKE '%{escaped_value}%' ESCAPE '\\'")
                             }
                             WhereConfigOperator::ILike => {
                                 let escaped_value = value
                                     .replace("'", "\\'")
                                     .replace('%', "\\%")
                                     .replace('_', "\\_");
-                                format!("ILIKE '%{escaped_value}%'")
+                                format!("ILIKE '%{escaped_value}%' ESCAPE '\\'")
                             }
                             WhereConfigOperator::BeginsWith => {
                                 let escaped_value = value
                                     .replace("'", "\\'")
                                     .replace('%', "\\%")
                                     .replace('_', "\\_");
-                                format!("LIKE '{escaped_value}%'")
+                                format!("LIKE '{escaped_value}%' ESCAPE '\\'")
                             }
                             WhereConfigOperator::DoesNotBeginWith => {
                                 let escaped_value = value
                                     .replace("'", "\\'")
                                     .replace('%', "\\%")
                                     .replace('_', "\\_");
-                                format!("NOT LIKE '{escaped_value}%'")
+                                format!("NOT LIKE '{escaped_value}%' ESCAPE '\\'")
                             }
                             WhereConfigOperator::EndsWith => {
                                 let escaped_value = value
                                     .replace("'", "\\'")
                                     .replace('%', "\\%")
                                     .replace('_', "\\_");
-                                format!("LIKE '%{escaped_value}'")
+                                format!("LIKE '%{escaped_value}' ESCAPE '\\'")
                             }
                             WhereConfigOperator::DoesNotEndWith => {
                                 let escaped_value = value
                                     .replace("'", "\\'")
                                     .replace('%', "\\%")
                                     .replace('_', "\\_");
-                                format!("NOT LIKE '%{escaped_value}'")
+                                format!("NOT LIKE '%{escaped_value}' ESCAPE '\\'")
                             }
                             _ => {
                                 let value = match NumberOrString::from_string(value.to_owned()) {
                                     NumberOrString::Number(val) => format!("{val}"),
                                     NumberOrString::String(val) => {
-                                        format!(
-                                            "'{}'",
-                                            val.replace("'", "\\'")
-                                                .replace('%', "\\%")
-                                                .replace('_', "\\_")
-                                        )
+                                        format!("'{}'", val)
                                     }
                                 };
                                 format!("{} {}", condition.operator, value)
