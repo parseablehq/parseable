@@ -459,8 +459,8 @@ pub fn partition_path(
     let lower = lower_bound.date_naive().format("%Y-%m-%d").to_string();
     let upper = upper_bound.date_naive().format("%Y-%m-%d").to_string();
     if lower == upper {
-        RelativePathBuf::from_iter([stream, &format!("date={}", lower)])
+        RelativePathBuf::from_iter([stream, &format!("date={lower}")])
     } else {
-        RelativePathBuf::from_iter([stream, &format!("date={}:{}", lower, upper)])
+        RelativePathBuf::from_iter([stream, &format!("date={lower}:{upper}")])
     }
 }

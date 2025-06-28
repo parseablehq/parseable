@@ -1139,10 +1139,9 @@ fn get_stats_sql(stream_name: &str, field_name: &str, max_field_statistics: usiz
             field_value,
             value_count
         FROM field_summary 
-        WHERE rn <= {}
+        WHERE rn <= {max_field_statistics}
         ORDER BY value_count DESC
-        "#,
-        max_field_statistics
+        "#
     )
 }
 

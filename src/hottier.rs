@@ -461,9 +461,7 @@ impl HotTierManager {
 
     /// get hot tier path for the stream and date
     pub fn get_stream_path_for_date(&self, stream: &str, date: &NaiveDate) -> PathBuf {
-        self.hot_tier_path
-            .join(stream)
-            .join(format!("date={}", date))
+        self.hot_tier_path.join(stream).join(format!("date={date}"))
     }
 
     /// Returns the list of manifest files present in hot tier directory for the stream
@@ -679,7 +677,7 @@ impl HotTierManager {
                         .to_string_lossy()
                         .trim_start_matches("minute=")
                         .to_string();
-                    let oldest_date_time = format!("{}T{}:{}:00.000Z", date, hour_str, minute_str);
+                    let oldest_date_time = format!("{date}T{hour_str}:{minute_str}:00.000Z");
                     return Ok(Some(oldest_date_time));
                 }
             }

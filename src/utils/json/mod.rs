@@ -111,8 +111,7 @@ impl Visitor<'_> for TrueFromStr {
         match s {
             "true" => Ok(true),
             other => Err(E::custom(format!(
-                r#"Expected value: "true", got: {}"#,
-                other
+                r#"Expected value: "true", got: {other}"#
             ))),
         }
     }

@@ -827,7 +827,7 @@ impl std::str::FromStr for SecurityProtocol {
             "SSL" => Ok(SecurityProtocol::Ssl),
             "SASL_SSL" => Ok(SecurityProtocol::SaslSsl),
             "SASL_PLAINTEXT" => Ok(SecurityProtocol::SaslPlaintext),
-            _ => Err(format!("Invalid security protocol: {}", s)),
+            _ => Err(format!("Invalid security protocol: {s}")),
         }
     }
 }
@@ -965,7 +965,7 @@ impl std::str::FromStr for SaslMechanism {
             "SCRAM-SHA-512" => Ok(SaslMechanism::ScramSha512),
             "GSSAPI" => Ok(SaslMechanism::Gssapi),
             "OAUTHBEARER" => Ok(SaslMechanism::OAuthBearer),
-            _ => Err(format!("Invalid SASL mechanism: {}", s)),
+            _ => Err(format!("Invalid SASL mechanism: {s}")),
         }
     }
 }
@@ -985,7 +985,7 @@ impl std::str::FromStr for Acks {
             "0" => Ok(Acks::None),
             "1" => Ok(Acks::Leader),
             "all" => Ok(Acks::All),
-            _ => Err(format!("Invalid acks value: {}", s)),
+            _ => Err(format!("Invalid acks value: {s}")),
         }
     }
 }

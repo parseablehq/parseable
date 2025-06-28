@@ -94,7 +94,7 @@ fn mask_string(input: Option<String>) -> Option<String> {
         };
 
         // mask to XXX for everything after the @ symbol
-        Some(format!("{}@XXX", masked_username))
+        Some(format!("{masked_username}@XXX"))
     } else {
         // mask all other strings with X
         Some("X".repeat(input.len()))

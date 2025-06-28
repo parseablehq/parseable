@@ -203,5 +203,5 @@ pub fn to_url_string(str: String) -> String {
         return str;
     }
 
-    format!("http://{}/", str)
+    format!("http://{str}/")
 }

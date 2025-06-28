@@ -240,7 +240,7 @@ fn redirect_to_oidc(
 }
 
 fn redirect_to_oidc_logout(mut logout_endpoint: Url, redirect: &Url) -> HttpResponse {
-    logout_endpoint.set_query(Some(&format!("post_logout_redirect_uri={}", redirect)));
+    logout_endpoint.set_query(Some(&format!("post_logout_redirect_uri={redirect}")));
     HttpResponse::TemporaryRedirect()
         .insert_header((header::CACHE_CONTROL, "no-store"))
         .insert_header((header::LOCATION, logout_endpoint.to_string()))

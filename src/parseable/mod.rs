@@ -726,8 +726,7 @@ impl Parseable {
                     {
                         return Err(CreateStreamError::Custom {
                             msg: format!(
-                                "time partition {} cannot be set as custom partition",
-                                partition
+                                "time partition {partition} cannot be set as custom partition"
                             ),
                             status: StatusCode::BAD_REQUEST,
                         });

@@ -67,11 +67,10 @@ impl From<&arrow_schema::Field> for Field {
 
 fn build_prompt(stream: &str, prompt: &str, schema_json: &str) -> String {
     format!(
-        r#"I have a table called {}.
-It has the columns:\n{}
-Based on this schema, generate valid SQL for the query: "{}"
-Generate only simple SQL as output. Also add comments in SQL syntax to explain your actions. Don't output anything else. If it is not possible to generate valid SQL, output an SQL comment saying so."#,
-        stream, schema_json, prompt
+        r#"I have a table called {stream}.
+It has the columns:\n{schema_json}
+Based on this schema, generate valid SQL for the query: "{prompt}"
+Generate only simple SQL as output. Also add comments in SQL syntax to explain your actions. Don't output anything else. If it is not possible to generate valid SQL, output an SQL comment saying so."#
     )
 }
 
