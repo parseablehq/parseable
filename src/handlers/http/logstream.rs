@@ -109,7 +109,15 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
     if !has_more_than_max_allowed_levels(&json, 1) {
         //perform generic flattening, return error if failed to flatten
         let mut flattened_json = match generic_flattening(&json) {
-            Ok(flattened) => convert_to_array(flattened).unwrap(),
+            Ok(flattened) => match convert_to_array(flattened) {
+                Ok(array) => array,
+                Err(e) => {
+                    return Err(StreamError::Custom {
+                        msg: format!("Failed to convert to array: {}", e),
+                        status: StatusCode::BAD_REQUEST,
+                    })
+                }
+            },
             Err(e) => {
                 return Err(StreamError::Custom {
                     msg: e.to_string(),
@@ -128,8 +136,15 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
             value @ Value::Object(_) => vec![value],
             _ => unreachable!("flatten would have failed beforehand"),
         };
-        let mut schema =
-            Arc::new(infer_json_schema_from_iterator(flattened_json_arr.iter().map(Ok)).unwrap());
+        let mut schema = match infer_json_schema_from_iterator(flattened_json_arr.iter().map(Ok)) {
+            Ok(schema) => Arc::new(schema),
+            Err(e) => {
+                return Err(StreamError::Custom {
+                    msg: format!("Failed to infer schema: {}", e),
+                    status: StatusCode::BAD_REQUEST,
+                })
+            }
+        };
         for flattened_json in flattened_json_arr {
             schema = override_data_type(schema, flattened_json, SchemaVersion::V1);
         }
@@ -137,7 +152,10 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
     } else {
         // error out if the JSON is heavily nested
         Err(StreamError::Custom {
-            msg: "heavily nested, cannot flatten this JSON".to_string(),
+            msg: format!(
+                "JSON is too deeply nested (exceeds level {}), cannot flatten",
+                PARSEABLE.options.event_flatten_level
+            ),
             status: StatusCode::BAD_REQUEST,
         })
     }

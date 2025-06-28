@@ -151,7 +151,7 @@ mod ui {
                 .expect("has segemnts")
                 .find(|v| v.starts_with('v'))
                 .expect("version segement");
-            println!("cargo:rustc-env=UI_VERSION={}", ui_version);
+            println!("cargo:rustc-env=UI_VERSION={ui_version}");
         }
 
         Ok(())
