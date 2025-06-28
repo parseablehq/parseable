@@ -163,8 +163,7 @@ fn handle_none_env(
 
 fn handle_new_remote_env() -> Result<(StorageMetadata, bool, bool), ObjectStorageError> {
     Err(ObjectStorageError::UnhandledError(format!(
-        "Could not start the server because staging directory indicates stale data from previous deployment, please choose an empty staging directory and restart the server. {}",
-        JOIN_COMMUNITY
+        "Could not start the server because staging directory indicates stale data from previous deployment, please choose an empty staging directory and restart the server. {JOIN_COMMUNITY}"
     ).into()))
 }
 
@@ -174,8 +173,7 @@ fn handle_new_staging_env(
     if metadata.server_mode == Mode::All && PARSEABLE.options.mode == Mode::Ingest {
         return Err(ObjectStorageError::UnhandledError(
             format!(
-            "Starting Ingest Mode is not allowed, Since Query Server has not been started yet. {}",
-            JOIN_COMMUNITY
+            "Starting Ingest Mode is not allowed, Since Query Server has not been started yet. {JOIN_COMMUNITY}"
         )
             .into(),
         ));

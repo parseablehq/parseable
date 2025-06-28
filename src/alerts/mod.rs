@@ -365,7 +365,7 @@ impl Conditions {
                         format!("{} {}", expr2.column, expr2.operator)
                     };
 
-                    format!("[{} {op} {}]", expr1_msg, expr2_msg)
+                    format!("[{expr1_msg} {op} {expr2_msg}]")
                 }
             },
             None => {

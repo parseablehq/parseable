@@ -113,7 +113,7 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
                 Ok(array) => array,
                 Err(e) => {
                     return Err(StreamError::Custom {
-                        msg: format!("Failed to convert to array: {}", e),
+                        msg: format!("Failed to convert to array: {e}"),
                         status: StatusCode::BAD_REQUEST,
                     })
                 }
@@ -140,7 +140,7 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
             Ok(schema) => Arc::new(schema),
             Err(e) => {
                 return Err(StreamError::Custom {
-                    msg: format!("Failed to infer schema: {}", e),
+                    msg: format!("Failed to infer schema: {e}"),
                     status: StatusCode::BAD_REQUEST,
                 })
             }

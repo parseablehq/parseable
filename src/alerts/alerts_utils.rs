@@ -88,7 +88,7 @@ async fn execute_base_query(
     original_query: &str,
 ) -> Result<DataFrame, AlertError> {
     let stream_name = query.first_table_name().ok_or_else(|| {
-        AlertError::CustomError(format!("Table name not found in query- {}", original_query))
+        AlertError::CustomError(format!("Table name not found in query- {original_query}"))
     })?;
 
     let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
@@ -412,7 +412,7 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
                                 let value = match NumberOrString::from_string(value.to_owned()) {
                                     NumberOrString::Number(val) => format!("{val}"),
                                     NumberOrString::String(val) => {
-                                        format!("'{}'", val)
+                                        format!("'{val}'")
                                     }
                                 };
                                 format!("{} {}", condition.operator, value)
@@ -456,23 +456,23 @@ fn match_alert_operator(expr: &ConditionConfig) -> Expr {
             WhereConfigOperator::BeginsWith => Expr::BinaryExpr(BinaryExpr::new(
                 Box::new(col(column)),
                 Operator::RegexIMatch,
-                Box::new(lit(format!("^{}", value))),
+                Box::new(lit(format!("^{value}"))),
             )),
             WhereConfigOperator::EndsWith => Expr::BinaryExpr(BinaryExpr::new(
                 Box::new(col(column)),
                 Operator::RegexIMatch,
-                Box::new(lit(format!("{}$", value))),
+                Box::new(lit(format!("{value}$"))),
             )),
             WhereConfigOperator::DoesNotContain => col(column).not_ilike(lit(value)),
             WhereConfigOperator::DoesNotBeginWith => Expr::BinaryExpr(BinaryExpr::new(
                 Box::new(col(column)),
                 Operator::RegexNotIMatch,
-                Box::new(lit(format!("^{}", value))),
+                Box::new(lit(format!("^{value}"))),
             )),
             WhereConfigOperator::DoesNotEndWith => Expr::BinaryExpr(BinaryExpr::new(
                 Box::new(col(column)),
                 Operator::RegexNotIMatch,
-                Box::new(lit(format!("{}$", value))),
+                Box::new(lit(format!("{value}$"))),
             )),
             _ => unreachable!("value must not be null for operators other than `is null` and `is not null`. Should've been caught in validation")
         }

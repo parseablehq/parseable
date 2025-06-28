@@ -563,8 +563,7 @@ impl Options {
         } else {
             if endpoint.starts_with("http") {
                 panic!(
-                    "Invalid value `{}`, please set the environment variable `{}` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.",
-                    endpoint, env_var
+                    "Invalid value `{endpoint}`, please set the environment variable `{env_var}` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.",
                 );
             }
             endpoint.to_string()
@@ -579,15 +578,14 @@ impl Options {
 
         if addr_parts.len() != 2 {
             panic!(
-                "Invalid value `{}`, please set the environment variable to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.",
-                endpoint
+                "Invalid value `{endpoint}`, please set the environment variable to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details."
             );
         }
 
         let hostname = self.resolve_env_var(addr_parts[0]);
         let port = self.resolve_env_var(addr_parts[1]);
 
-        self.build_url(&format!("{}:{}", hostname, port))
+        self.build_url(&format!("{hostname}:{port}"))
     }
 
     /// resolve the env var
@@ -597,15 +595,13 @@ impl Options {
         if let Some(env_var) = value.strip_prefix('$') {
             let resolved_value = env::var(env_var).unwrap_or_else(|_| {
                 panic!(
-                    "The environment variable `{}` is not set. Please set it to a valid value. Refer to the documentation: https://logg.ing/env for more details.",
-                    env_var
+                    "The environment variable `{env_var}` is not set. Please set it to a valid value. Refer to the documentation: https://logg.ing/env for more details."
                 );
             });
 
             if resolved_value.starts_with("http") {
                 panic!(
-                    "Invalid value `{}`, please set the environment variable `{}` to `<ip address / DNS>` without the scheme (e.g., 192.168.1.1 or example.com). Please refer to the documentation: https://logg.ing/env for more details.",
-                    resolved_value, env_var
+                    "Invalid value `{resolved_value}`, please set the environment variable `{env_var}` to `<ip address / DNS>` without the scheme (e.g., 192.168.1.1 or example.com). Please refer to the documentation: https://logg.ing/env for more details.",
                 );
             }
 
@@ -621,8 +617,7 @@ impl Options {
             .parse::<Url>()
             .unwrap_or_else(|err| {
                 panic!(
-                    "{err}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.",
-                    address
+                    "{err}, failed to parse `{address}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details."
                 );
             })
     }

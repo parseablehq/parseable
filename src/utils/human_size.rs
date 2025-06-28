@@ -39,7 +39,7 @@ pub fn bytes_to_human_size(bytes: u64) -> String {
     const PIB: u64 = TIB * 1024;
 
     if bytes < KIB {
-        format!("{} B", bytes)
+        format!("{bytes} B")
     } else if bytes < MIB {
         format!("{:.2} KB", bytes as f64 / KIB as f64)
     } else if bytes < GIB {

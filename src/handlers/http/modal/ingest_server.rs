@@ -322,7 +322,7 @@ async fn validate_credentials() -> anyhow::Result<()> {
             PARSEABLE.options.username, PARSEABLE.options.password
         ));
 
-        let token = format!("Basic {}", token);
+        let token = format!("Basic {token}");
 
         if check != token {
             return Err(anyhow::anyhow!("Credentials do not match with other ingestors. Please check your credentials and try again."));

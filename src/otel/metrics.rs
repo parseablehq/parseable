@@ -343,13 +343,13 @@ fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<Map<String
         if let Some(positive) = &data_point.positive {
             let positive_json = flatten_buckets(positive);
             for (key, value) in positive_json {
-                data_point_json.insert(format!("positive_{}", key), value);
+                data_point_json.insert(format!("positive_{key}"), value);
             }
         }
         if let Some(negative) = &data_point.negative {
             let negative_json = flatten_buckets(negative);
             for (key, value) in negative_json {
-                data_point_json.insert(format!("negative_{}", key), value);
+                data_point_json.insert(format!("negative_{key}"), value);
             }
         }
         let exemplar_json = flatten_exemplar(&data_point.exemplars);

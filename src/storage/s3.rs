@@ -765,7 +765,7 @@ impl ObjectStorage for S3 {
         let stream_json_check = FuturesUnordered::new();
 
         for dir in &dirs {
-            let key = format!("{}/{}", dir, STREAM_METADATA_FILE_NAME);
+            let key = format!("{dir}/{STREAM_METADATA_FILE_NAME}");
             let task = async move { self.client.head(&StorePath::from(key)).await.map(|_| ()) };
             stream_json_check.push(task);
         }

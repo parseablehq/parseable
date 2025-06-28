@@ -322,8 +322,7 @@ async fn handle_streaming_query(
 
         // Combine the initial fields chunk with the records stream
         let fields_chunk = once(future::ok::<_, actix_web::Error>(Bytes::from(format!(
-            "{}\n",
-            fields_json
+            "{fields_json}\n"
         ))));
         Box::pin(fields_chunk.chain(records_stream))
             as Pin<Box<dyn Stream<Item = Result<Bytes, actix_web::Error>>>>
@@ -356,7 +355,7 @@ fn create_batch_processor(
                 error!("Failed to parse record batch into JSON: {}", e);
                 actix_web::error::ErrorInternalServerError(e)
             })?;
-            Ok(Bytes::from(format!("{}\n", response)))
+            Ok(Bytes::from(format!("{response}\n")))
         }
         Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
     }

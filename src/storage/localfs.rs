@@ -452,7 +452,7 @@ impl ObjectStorage for LocalFS {
     fn query_prefixes(&self, prefixes: Vec<String>) -> Vec<ListingTableUrl> {
         prefixes
             .into_iter()
-            .filter_map(|prefix| ListingTableUrl::parse(format!("/{}", prefix)).ok())
+            .filter_map(|prefix| ListingTableUrl::parse(format!("/{prefix}")).ok())
             .collect()
     }
 

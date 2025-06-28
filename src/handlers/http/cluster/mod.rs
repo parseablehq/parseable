@@ -783,13 +783,12 @@ pub async fn remove_node(node_url: Path<String>) -> Result<impl Responder, PostE
 
     if removed_ingestor || removed_indexer || removed_querier || removed_prism {
         return Ok((
-            format!("node {} removed successfully", domain_name),
+            format!("node {domain_name} removed successfully"),
             StatusCode::OK,
         ));
     }
     Err(PostError::Invalid(anyhow::anyhow!(
-        "node {} not found",
-        domain_name
+        "node {domain_name} not found"
     )))
 }
 

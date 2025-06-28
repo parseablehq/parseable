@@ -200,8 +200,7 @@ pub mod validation {
                 Ok(size)
             } else {
                 Err(format!(
-                    "Invalid value for P_DATASET_FIELD_COUNT_LIMIT. It should be between 1 and {}",
-                    DATASET_FIELD_COUNT_LIMIT
+                    "Invalid value for P_DATASET_FIELD_COUNT_LIMIT. It should be between 1 and {DATASET_FIELD_COUNT_LIMIT}"
                 ))
             }
         } else {
