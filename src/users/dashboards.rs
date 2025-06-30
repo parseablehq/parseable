@@ -242,7 +242,7 @@ impl Dashboards {
         self.0
             .write()
             .await
-            .retain(|d| d.dashboard_id.map_or(true, |id| id != dashboard_id));
+            .retain(|d| d.dashboard_id != Some(dashboard_id));
 
         Ok(())
     }
