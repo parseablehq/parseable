@@ -79,6 +79,7 @@ use crate::parseable::PARSEABLE;
 use crate::query::QUERY_SESSION_STATE;
 use crate::stats::FullStats;
 use crate::storage::StreamType;
+use crate::storage::SETTINGS_ROOT_DIRECTORY;
 use crate::storage::TARGETS_ROOT_DIRECTORY;
 use crate::utils::DATASET_STATS_STREAM_NAME;
 
@@ -1360,8 +1361,12 @@ pub fn alert_json_path(alert_id: Ulid) -> RelativePathBuf {
 
 /// TODO: Needs to be updated for distributed mode
 #[inline(always)]
-pub fn target_json_path(target_id: Ulid) -> RelativePathBuf {
-    RelativePathBuf::from_iter([TARGETS_ROOT_DIRECTORY, &format!("{target_id}.json")])
+pub fn target_json_path(target_id: &Ulid) -> RelativePathBuf {
+    RelativePathBuf::from_iter([
+        SETTINGS_ROOT_DIRECTORY,
+        TARGETS_ROOT_DIRECTORY,
+        &format!("{target_id}.json"),
+    ])
 }
 
 #[inline(always)]
