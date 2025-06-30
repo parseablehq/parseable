@@ -173,7 +173,7 @@ impl Dashboards {
         let dashboard_id = dashboard
             .dashboard_id
             .ok_or(DashboardError::Metadata("Dashboard ID must be provided"))?;
-        let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
+        let path = dashboard_path(user_id, &format!("{dashboard_id}.json"));
 
         let store = PARSEABLE.storage.get_object_store();
         let dashboard_bytes = serde_json::to_vec(&dashboard)?;
@@ -233,7 +233,7 @@ impl Dashboards {
         self.ensure_dashboard_ownership(dashboard_id, user_id)
             .await?;
 
-        let path = dashboard_path(user_id, &format!("{}.json", dashboard_id));
+        let path = dashboard_path(user_id, &format!("{dashboard_id}.json"));
         let store = PARSEABLE.storage.get_object_store();
         store.delete_object(&path).await?;
 
