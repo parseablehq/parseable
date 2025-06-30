@@ -59,6 +59,7 @@ pub const STREAM_ROOT_DIRECTORY: &str = ".stream";
 pub const PARSEABLE_ROOT_DIRECTORY: &str = ".parseable";
 pub const SCHEMA_FILE_NAME: &str = ".schema";
 pub const ALERTS_ROOT_DIRECTORY: &str = ".alerts";
+pub const TARGETS_ROOT_DIRECTORY: &str = ".targets";
 pub const MANIFEST_FILE: &str = "manifest.json";
 
 // max concurrent request allowed for datafusion object store

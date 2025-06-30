@@ -45,8 +45,6 @@ use crate::storage::ObjectStorageError;
 use crate::sync::alert_runtime;
 use crate::utils::user_auth_for_query;
 
-use self::target::Target;
-
 // these types describe the scheduled task for an alert
 pub type ScheduledTaskHandlers = (JoinHandle<()>, Receiver<()>, Sender<()>);
 
@@ -519,10 +517,10 @@ pub struct AlertRequest {
 
 impl AlertRequest {
     pub async fn into(self) -> Result<AlertConfig, AlertError> {
-        let mut targets = Vec::new();
-        for id in self.targets {
-            targets.push(TARGETS.get_target_by_id(id).await?);
-        }
+        // let mut targets = Vec::new();
+        // for id in self.targets {
+        //     targets.push(TARGETS.get_target_by_id(id).await?);
+        // }
         let config = AlertConfig {
             version: AlertVerison::from(CURRENT_ALERTS_VERSION),
             id: Ulid::new(),
@@ -532,7 +530,7 @@ impl AlertRequest {
             alert_type: self.alert_type,
             aggregates: self.aggregates,
             eval_config: self.eval_config,
-            targets,
+            targets: self.targets,
             state: AlertState::default(),
         };
         Ok(config)
@@ -551,7 +549,7 @@ pub struct AlertConfig {
     pub alert_type: AlertType,
     pub aggregates: Aggregates,
     pub eval_config: EvalConfig,
-    pub targets: Vec<Target>,
+    pub targets: Vec<Ulid>,
     // for new alerts, state should be resolved
     #[serde(default)]
     pub state: AlertState,
@@ -559,17 +557,16 @@ pub struct AlertConfig {
 
 impl AlertConfig {
     pub async fn modify(&mut self, alert: AlertRequest) -> Result<(), AlertError> {
-        let mut targets = Vec::new();
-        for id in alert.targets {
-            targets.push(TARGETS.get_target_by_id(id).await?);
-        }
-
+        // let mut targets = Vec::new();
+        // for id in alert.targets {
+        //     targets.push(id);
+        // }
         self.title = alert.title;
         self.stream = alert.stream;
         self.alert_type = alert.alert_type;
         self.aggregates = alert.aggregates;
         self.eval_config = alert.eval_config;
-        self.targets = targets;
+        self.targets = alert.targets;
         self.state = AlertState::default();
         Ok(())
     }
@@ -593,7 +590,8 @@ impl AlertConfig {
         };
 
         // validate that target repeat notifs !> eval_frequency
-        for target in &self.targets {
+        for target_id in &self.targets {
+            let target = TARGETS.get_target_by_id(target_id).await?;
             match &target.timeout.times {
                 target::Retry::Infinite => {}
                 target::Retry::Finite(repeat) => {
@@ -779,7 +777,8 @@ impl AlertConfig {
     pub async fn trigger_notifications(&self, message: String) -> Result<(), AlertError> {
         let mut context = self.get_context();
         context.message = message;
-        for target in &self.targets {
+        for target_id in &self.targets {
+            let target = TARGETS.get_target_by_id(target_id).await?;
             trace!("Target (trigger_notifications)-\n{target:?}");
             target.call(context.clone());
         }

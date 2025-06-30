@@ -35,7 +35,7 @@ use tracing::{error, trace, warn};
 use ulid::Ulid;
 use url::Url;
 
-use crate::alerts::AlertError;
+use crate::{alerts::AlertError, parseable::PARSEABLE};
 
 use super::ALERTS;
 
@@ -51,6 +51,18 @@ pub struct TargetConfigs {
 }
 
 impl TargetConfigs {
+    /// Loads alerts from disk, blocks
+    pub async fn load(&self) -> anyhow::Result<()> {
+        let mut map = self.target_configs.write().await;
+        let store = PARSEABLE.storage.get_object_store();
+
+        for alert in store.get_targets().await.unwrap_or_default() {
+            map.insert(alert.id, alert);
+        }
+
+        Ok(())
+    }
+
     pub async fn update(&self, target: Target) -> Result<(), AlertError> {
         let id = target.id;
         self.target_configs.write().await.insert(id, target);
@@ -68,20 +80,20 @@ impl TargetConfigs {
         Ok(targets)
     }
 
-    pub async fn get_target_by_id(&self, target_id: Ulid) -> Result<Target, AlertError> {
+    pub async fn get_target_by_id(&self, target_id: &Ulid) -> Result<Target, AlertError> {
         self.target_configs
             .read()
             .await
-            .get(&target_id)
+            .get(target_id)
             .ok_or(AlertError::InvalidTargetID(target_id.to_string()))
             .cloned()
     }
 
-    pub async fn delete(&self, target_id: Ulid) -> Result<Target, AlertError> {
+    pub async fn delete(&self, target_id: &Ulid) -> Result<Target, AlertError> {
         self.target_configs
             .write()
             .await
-            .remove(&target_id)
+            .remove(target_id)
             .ok_or(AlertError::InvalidTargetID(target_id.to_string()))
     }
 }
