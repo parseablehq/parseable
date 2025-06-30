@@ -301,6 +301,13 @@ impl Server {
                     ),
             )
             .service(
+                web::resource("/list_tags").route(
+                    web::get()
+                        .to(dashboards::list_tags)
+                        .authorize(Action::ListDashboard),
+                ),
+            )
+            .service(
                 web::scope("/{dashboard_id}")
                     .service(
                         web::resource("")

@@ -145,6 +145,11 @@ pub async fn add_tile(
     Ok((web::Json(dashboard), StatusCode::OK))
 }
 
+pub async fn list_tags() -> Result<impl Responder, DashboardError> {
+    let tags = DASHBOARDS.list_tags().await;
+    Ok((web::Json(tags), StatusCode::OK))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DashboardError {
     #[error("Failed to connect to storage: {0}")]
