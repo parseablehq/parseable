@@ -71,7 +71,9 @@ impl Dashboard {
         self.dashboard_id = dashboard_id.or_else(|| Some(Ulid::new()));
         self.version = Some(CURRENT_DASHBOARD_VERSION.to_string());
         self.modified = Some(Utc::now());
-        self.dashboard_type = Some(DashboardType::Dashboard);
+        if self.dashboard_type.is_none() {
+            self.dashboard_type = Some(DashboardType::Dashboard);
+        }
         if self.tiles.is_none() {
             self.tiles = Some(Vec::new());
         }
@@ -240,7 +242,7 @@ impl Dashboards {
         self.0
             .write()
             .await
-            .retain(|d| d.dashboard_id.as_ref().is_none_or(|id| *id != dashboard_id));
+            .retain(|d| d.dashboard_id.map_or(true, |id| id != dashboard_id));
 
         Ok(())
     }
