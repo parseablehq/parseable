@@ -535,10 +535,10 @@ pub struct AlertRequest {
 
 impl AlertRequest {
     pub async fn into(self) -> Result<AlertConfig, AlertError> {
-        // let mut targets = Vec::new();
-        // for id in self.targets {
-        //     targets.push(TARGETS.get_target_by_id(id).await?);
-        // }
+        // Validate that all target IDs exist
+        for id in &self.targets {
+            TARGETS.get_target_by_id(id).await?;
+        }
         let config = AlertConfig {
             version: AlertVerison::from(CURRENT_ALERTS_VERSION),
             id: Ulid::new(),
@@ -575,10 +575,10 @@ pub struct AlertConfig {
 
 impl AlertConfig {
     pub async fn modify(&mut self, alert: AlertRequest) -> Result<(), AlertError> {
-        // let mut targets = Vec::new();
-        // for id in alert.targets {
-        //     targets.push(id);
-        // }
+        // Validate that all target IDs exist
+        for id in &alert.targets {
+            TARGETS.get_target_by_id(id).await?;
+        }
         self.title = alert.title;
         self.stream = alert.stream;
         self.alert_type = alert.alert_type;
@@ -853,6 +853,10 @@ pub enum AlertError {
     FromStrError(#[from] FromStrError),
     #[error("Invalid Target ID- {0}")]
     InvalidTargetID(String),
+    #[error("Target already exists")]
+    DuplicateTargetConfig,
+    #[error("Can't delete a Target which is being used")]
+    TargetInUse,
 }
 
 impl actix_web::ResponseError for AlertError {
@@ -871,6 +875,8 @@ impl actix_web::ResponseError for AlertError {
             Self::InvalidAlertModifyRequest => StatusCode::BAD_REQUEST,
             Self::FromStrError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidTargetID(_) => StatusCode::BAD_REQUEST,
+            Self::DuplicateTargetConfig => StatusCode::BAD_REQUEST,
+            Self::TargetInUse => StatusCode::CONFLICT,
         }
     }
 

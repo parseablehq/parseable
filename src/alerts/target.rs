@@ -24,6 +24,7 @@ use std::{
 
 use async_trait::async_trait;
 use base64::Engine;
+use bytes::Bytes;
 use chrono::Utc;
 use http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
 use humantime_serde::re::humantime;
@@ -35,7 +36,7 @@ use tracing::{error, trace, warn};
 use ulid::Ulid;
 use url::Url;
 
-use crate::{alerts::AlertError, parseable::PARSEABLE};
+use crate::{alerts::AlertError, parseable::PARSEABLE, storage::object_storage::target_json_path};
 
 use super::ALERTS;
 
@@ -65,7 +66,12 @@ impl TargetConfigs {
 
     pub async fn update(&self, target: Target) -> Result<(), AlertError> {
         let id = target.id;
-        self.target_configs.write().await.insert(id, target);
+        self.target_configs.write().await.insert(id, target.clone());
+        let path = target_json_path(&id);
+
+        let store = PARSEABLE.storage.get_object_store();
+        let target_bytes = serde_json::to_vec(&target)?;
+        store.put_object(&path, Bytes::from(target_bytes)).await?;
         Ok(())
     }
 
@@ -81,24 +87,38 @@ impl TargetConfigs {
     }
 
     pub async fn get_target_by_id(&self, target_id: &Ulid) -> Result<Target, AlertError> {
-        self.target_configs
+        let target = self
+            .target_configs
             .read()
             .await
             .get(target_id)
             .ok_or(AlertError::InvalidTargetID(target_id.to_string()))
-            .cloned()
+            .cloned()?;
+
+        Ok(target)
     }
 
     pub async fn delete(&self, target_id: &Ulid) -> Result<Target, AlertError> {
-        self.target_configs
+        // ensure that the target is not being used by any alert
+        for (_, alert) in ALERTS.alerts.read().await.iter() {
+            if alert.targets.contains(target_id) {
+                return Err(AlertError::TargetInUse);
+            }
+        }
+        let target = self
+            .target_configs
             .write()
             .await
             .remove(target_id)
-            .ok_or(AlertError::InvalidTargetID(target_id.to_string()))
+            .ok_or(AlertError::InvalidTargetID(target_id.to_string()))?;
+        let path = target_json_path(&target.id);
+        let store = PARSEABLE.storage.get_object_store();
+        store.delete_object(&path).await?;
+        Ok(target)
     }
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[serde(untagged)]
 pub enum Retry {
@@ -125,9 +145,19 @@ pub struct Target {
 }
 
 impl Target {
-    pub async fn validate(&self) {
+    pub async fn validate(&self) -> Result<(), AlertError> {
         // just check for liveness
         // what if the target is not live yet but is added by the user?
+        let targets = TARGETS.list().await?;
+        for target in targets {
+            if target.target == self.target
+                && target.timeout.interval == self.timeout.interval
+                && target.timeout.times == self.timeout.times
+            {
+                return Err(AlertError::DuplicateTargetConfig);
+            }
+        }
+        Ok(())
     }
 
     pub fn call(&self, context: Context) {
