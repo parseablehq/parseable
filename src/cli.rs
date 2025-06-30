@@ -317,6 +317,34 @@ pub struct Options {
     )]
     pub parquet_compression: Compression,
 
+    // Resource monitoring
+    #[arg(
+        long,
+        env = "P_RESOURCE_CHECK_INTERVAL",
+        default_value = "15",
+        value_parser = validation::validate_seconds,
+        help = "Resource monitoring check interval in seconds"
+    )]
+    pub resource_check_interval: u64,
+
+    #[arg(
+        long,
+        env = "P_CPU_THRESHOLD",
+        default_value = "80.0",
+        value_parser = validation::validate_percentage,
+        help = "CPU utilization threshold percentage (0.0-100.0) for resource monitoring"
+    )]
+    pub cpu_utilization_threshold: f32,
+
+    #[arg(
+        long,
+        env = "P_MEMORY_THRESHOLD", 
+        default_value = "80.0",
+        value_parser = validation::validate_percentage,
+        help = "Memory utilization threshold percentage (0.0-100.0) for resource monitoring"
+    )]
+    pub memory_utilization_threshold: f32,
+
     // Integration features
     #[arg(
         long,
@@ -388,6 +416,41 @@ pub struct Options {
         help = "Maximum level of flattening allowed for events"
     )]
     pub event_flatten_level: usize,
+
+    // maximum limit to store the statistics for a field
+    #[arg(
+        long,
+        env = "P_MAX_FIELD_STATISTICS",
+        default_value = "50",
+        help = "Maximum number of field statistics to store"
+    )]
+    pub max_field_statistics: usize,
+
+    // collect dataset stats
+    #[arg(
+        long,
+        env = "P_COLLECT_DATASET_STATS",
+        default_value = "false",
+        help = "Enable/Disable collecting dataset stats"
+    )]
+    pub collect_dataset_stats: bool,
+
+    // the duration during which local sync should be completed
+    #[arg(
+        long,
+        env = "P_LOCAL_SYNC_THRESHOLD",
+        default_value = "30",
+        help = "Local sync threshold in seconds"
+    )]
+    pub local_sync_threshold: u64,
+    // the duration during which object store sync should be completed
+    #[arg(
+        long,
+        env = "P_OBJECT_STORE_SYNC_THRESHOLD",
+        default_value = "15",
+        help = "Object store sync threshold in seconds"
+    )]
+    pub object_store_sync_threshold: u64,
 }
 
 #[derive(Parser, Debug)]
@@ -500,8 +563,7 @@ impl Options {
         } else {
             if endpoint.starts_with("http") {
                 panic!(
-                    "Invalid value `{}`, please set the environment variable `{}` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.",
-                    endpoint, env_var
+                    "Invalid value `{endpoint}`, please set the environment variable `{env_var}` to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.",
                 );
             }
             endpoint.to_string()
@@ -516,15 +578,14 @@ impl Options {
 
         if addr_parts.len() != 2 {
             panic!(
-                "Invalid value `{}`, please set the environment variable to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details.",
-                endpoint
+                "Invalid value `{endpoint}`, please set the environment variable to `<ip address / DNS>:<port>` without the scheme (e.g., 192.168.1.1:8000 or example.com:8000). Please refer to the documentation: https://logg.ing/env for more details."
             );
         }
 
         let hostname = self.resolve_env_var(addr_parts[0]);
         let port = self.resolve_env_var(addr_parts[1]);
 
-        self.build_url(&format!("{}:{}", hostname, port))
+        self.build_url(&format!("{hostname}:{port}"))
     }
 
     /// resolve the env var
@@ -534,15 +595,13 @@ impl Options {
         if let Some(env_var) = value.strip_prefix('$') {
             let resolved_value = env::var(env_var).unwrap_or_else(|_| {
                 panic!(
-                    "The environment variable `{}` is not set. Please set it to a valid value. Refer to the documentation: https://logg.ing/env for more details.",
-                    env_var
+                    "The environment variable `{env_var}` is not set. Please set it to a valid value. Refer to the documentation: https://logg.ing/env for more details."
                 );
             });
 
             if resolved_value.starts_with("http") {
                 panic!(
-                    "Invalid value `{}`, please set the environment variable `{}` to `<ip address / DNS>` without the scheme (e.g., 192.168.1.1 or example.com). Please refer to the documentation: https://logg.ing/env for more details.",
-                    resolved_value, env_var
+                    "Invalid value `{resolved_value}`, please set the environment variable `{env_var}` to `<ip address / DNS>` without the scheme (e.g., 192.168.1.1 or example.com). Please refer to the documentation: https://logg.ing/env for more details.",
                 );
             }
 
@@ -558,8 +617,7 @@ impl Options {
             .parse::<Url>()
             .unwrap_or_else(|err| {
                 panic!(
-                    "{err}, failed to parse `{}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details.",
-                    address
+                    "{err}, failed to parse `{address}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details."
                 );
             })
     }

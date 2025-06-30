@@ -66,11 +66,7 @@ pub async fn post(
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
     FILTERS.update(&filter).await;
 
-    let path = filter_path(
-        &user_id,
-        &filter.stream_name,
-        &format!("{}.json", filter_id),
-    );
+    let path = filter_path(&user_id, &filter.stream_name, &format!("{filter_id}.json"));
 
     let store = PARSEABLE.storage.get_object_store();
     let filter_bytes = serde_json::to_vec(&filter)?;
@@ -95,11 +91,7 @@ pub async fn update(
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
     FILTERS.update(&filter).await;
 
-    let path = filter_path(
-        &user_id,
-        &filter.stream_name,
-        &format!("{}.json", filter_id),
-    );
+    let path = filter_path(&user_id, &filter.stream_name, &format!("{filter_id}.json"));
 
     let store = PARSEABLE.storage.get_object_store();
     let filter_bytes = serde_json::to_vec(&filter)?;
@@ -120,11 +112,7 @@ pub async fn delete(
         .await
         .ok_or(FiltersError::Metadata("Filter does not exist"))?;
 
-    let path = filter_path(
-        &user_id,
-        &filter.stream_name,
-        &format!("{}.json", filter_id),
-    );
+    let path = filter_path(&user_id, &filter.stream_name, &format!("{filter_id}.json"));
     let store = PARSEABLE.storage.get_object_store();
     store.delete_object(&path).await?;
 

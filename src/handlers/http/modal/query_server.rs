@@ -22,13 +22,14 @@ use std::thread;
 use crate::handlers::airplane;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
-use crate::handlers::http::{base_path, prism_base_path};
+use crate::handlers::http::{base_path, prism_base_path, resource_check};
 use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::handlers::http::{rbac, role};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
 use crate::sync::sync_start;
 use crate::{analytics, migration, storage, sync};
+use actix_web::middleware::from_fn;
 use actix_web::web::{resource, ServiceConfig};
 use actix_web::{web, Scope};
 use actix_web_prometheus::PrometheusMetrics;
@@ -53,7 +54,9 @@ impl ParseableServer for QueryServer {
             .service(
                 web::scope(&base_path())
                     .service(Server::get_correlation_webscope())
-                    .service(Server::get_query_factory())
+                    .service(Server::get_query_factory().wrap(from_fn(
+                        resource_check::check_resource_utilization_middleware,
+                    )))
                     .service(Server::get_liveness_factory())
                     .service(Server::get_readiness_factory())
                     .service(Server::get_about_factory())
@@ -66,7 +69,9 @@ impl ParseableServer for QueryServer {
                     .service(Server::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope())
                     .service(Server::get_roles_webscope())
-                    .service(Server::get_counts_webscope())
+                    .service(Server::get_counts_webscope().wrap(from_fn(
+                        resource_check::check_resource_utilization_middleware,
+                    )))
                     .service(Server::get_metrics_webscope())
                     .service(Server::get_alerts_webscope())
                     .service(Server::get_targets_webscope())

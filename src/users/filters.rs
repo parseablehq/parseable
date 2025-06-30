@@ -134,7 +134,7 @@ impl Filters {
                             (user_id, stream_name, filter_id)
                         {
                             let path =
-                                filter_path(user_id, stream_name, &format!("{}.json", filter_id));
+                                filter_path(user_id, stream_name, &format!("{filter_id}.json"));
                             let filter_bytes = to_bytes(&filter_value);
                             store.put_object(&path, filter_bytes.clone()).await?;
                         }

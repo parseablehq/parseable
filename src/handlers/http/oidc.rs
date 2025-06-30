@@ -159,37 +159,48 @@ pub async fn reply_login(
         .clone()
         .expect("OIDC provider did not return a sub which is currently required.");
     let user_info: user::UserInfo = user_info.into();
-    let mut group: HashSet<String> = claims
+    let group: HashSet<String> = claims
         .other
         .remove("groups")
         .map(serde_json::from_value)
         .transpose()?
         .unwrap_or_default();
     let metadata = get_metadata().await?;
-    let mut role_exists = false;
+
+    // Find which OIDC groups match existing roles in Parseable
+    let mut valid_oidc_roles = HashSet::new();
     for role in metadata.roles.iter() {
         let role_name = role.0;
-        for group_name in group.iter() {
-            if group_name.eq(role_name) {
-                role_exists = true;
-                break;
-            }
+        if group.contains(role_name) {
+            valid_oidc_roles.insert(role_name.clone());
         }
     }
-    if !role_exists || group.is_empty() {
-        group = DEFAULT_ROLE
-            .lock()
-            .unwrap()
-            .clone()
-            .map(|role| HashSet::from([role]))
-            .unwrap_or_default();
-    }
 
-    // User may not exist
-    // create a new one depending on state of metadata
-    let user = match (Users.get_user(&username), group) {
-        (Some(user), group) => update_user_if_changed(user, group, user_info).await?,
-        (None, group) => put_user(&username, group, user_info).await?,
+    let existing_user = Users.get_user(&username);
+    let final_roles = match existing_user {
+        Some(ref user) => {
+            // For existing users: keep existing roles + add new valid OIDC roles
+            let mut roles = user.roles.clone();
+            roles.extend(valid_oidc_roles); // Add new matching roles
+            roles
+        }
+        None => {
+            // For new users: use valid OIDC roles, fallback to default if none
+            if valid_oidc_roles.is_empty() {
+                if let Some(default_role) = DEFAULT_ROLE.lock().unwrap().clone() {
+                    HashSet::from([default_role])
+                } else {
+                    HashSet::new()
+                }
+            } else {
+                valid_oidc_roles
+            }
+        }
+    };
+
+    let user = match (existing_user, final_roles) {
+        (Some(user), roles) => update_user_if_changed(user, roles, user_info).await?,
+        (None, roles) => put_user(&username, roles, user_info).await?,
     };
     let id = Ulid::new();
     Users.new_session(&user, SessionKey::SessionId(id));
@@ -229,7 +240,7 @@ fn redirect_to_oidc(
 }
 
 fn redirect_to_oidc_logout(mut logout_endpoint: Url, redirect: &Url) -> HttpResponse {
-    logout_endpoint.set_query(Some(&format!("post_logout_redirect_uri={}", redirect)));
+    logout_endpoint.set_query(Some(&format!("post_logout_redirect_uri={redirect}")));
     HttpResponse::TemporaryRedirect()
         .insert_header((header::CACHE_CONTROL, "no-store"))
         .insert_header((header::LOCATION, logout_endpoint.to_string()))

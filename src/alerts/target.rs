@@ -74,8 +74,8 @@ impl TargetConfigs {
             .target_configs
             .read()
             .await
-            .iter()
-            .map(|(_, v)| v.clone())
+            .values()
+            .cloned()
             .collect_vec();
         Ok(targets)
     }

@@ -247,7 +247,7 @@ impl BlobStore {
 
         if let Err(object_store::Error::NotFound { source, .. }) = &resp {
             return Err(ObjectStorageError::Custom(
-                format!("Failed to upload, error: {:?}", source).to_string(),
+                format!("Failed to upload, error: {source:?}").to_string(),
             ));
         }
 
@@ -682,7 +682,7 @@ impl ObjectStorage for BlobStore {
         let stream_json_check = FuturesUnordered::new();
 
         for dir in &dirs {
-            let key = format!("{}/{}", dir, STREAM_METADATA_FILE_NAME);
+            let key = format!("{dir}/{STREAM_METADATA_FILE_NAME}");
             let task = async move { self.client.head(&StorePath::from(key)).await.map(|_| ()) };
             stream_json_check.push(task);
         }

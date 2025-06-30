@@ -330,6 +330,7 @@ impl Parseable {
             .create_stream_if_not_exists(
                 INTERNAL_STREAM_NAME,
                 StreamType::Internal,
+                None,
                 vec![log_source_entry],
             )
             .await
@@ -354,10 +355,16 @@ impl Parseable {
         &self,
         stream_name: &str,
         stream_type: StreamType,
+        custom_partition: Option<&String>,
         log_source: Vec<LogSourceEntry>,
     ) -> Result<bool, PostError> {
         if self.streams.contains(stream_name) {
             return Ok(true);
+        }
+
+        // validate custom partition if provided
+        if let Some(partition) = custom_partition {
+            validate_custom_partition(partition)?;
         }
 
         // For distributed deployments, if the stream not found in memory map,
@@ -375,7 +382,7 @@ impl Parseable {
             stream_name.to_string(),
             "",
             None,
-            None,
+            custom_partition,
             false,
             Arc::new(Schema::empty()),
             stream_type,
@@ -719,8 +726,7 @@ impl Parseable {
                     {
                         return Err(CreateStreamError::Custom {
                             msg: format!(
-                                "time partition {} cannot be set as custom partition",
-                                partition
+                                "time partition {partition} cannot be set as custom partition"
                             ),
                             status: StatusCode::BAD_REQUEST,
                         });

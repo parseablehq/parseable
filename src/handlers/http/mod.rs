@@ -46,6 +46,7 @@ pub mod prism_home;
 pub mod prism_logstream;
 pub mod query;
 pub mod rbac;
+pub mod resource_check;
 pub mod role;
 pub mod targets;
 pub mod users;
@@ -89,7 +90,7 @@ pub fn base_path_without_preceding_slash() -> String {
 /// An `anyhow::Result` containing the `arrow_schema::Schema` for the specified stream.
 pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Schema> {
     let path_prefix =
-        relative_path::RelativePathBuf::from(format!("{}/{}", stream_name, STREAM_ROOT_DIRECTORY));
+        relative_path::RelativePathBuf::from(format!("{stream_name}/{STREAM_ROOT_DIRECTORY}"));
     let store = PARSEABLE.storage.get_object_store();
     let res: Vec<Schema> = store
         .get_objects(

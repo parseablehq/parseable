@@ -26,6 +26,7 @@ use crate::handlers::http::base_path;
 use crate::handlers::http::health_check;
 use crate::handlers::http::prism_base_path;
 use crate::handlers::http::query;
+use crate::handlers::http::resource_check;
 use crate::handlers::http::targets;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
@@ -36,6 +37,7 @@ use crate::storage;
 use crate::sync;
 use crate::sync::sync_start;
 
+use actix_web::middleware::from_fn;
 use actix_web::web;
 use actix_web::web::resource;
 use actix_web::Resource;
@@ -72,8 +74,12 @@ impl ParseableServer for Server {
             .service(
                 web::scope(&base_path())
                     .service(Self::get_correlation_webscope())
-                    .service(Self::get_query_factory())
-                    .service(Self::get_ingest_factory())
+                    .service(Self::get_query_factory().wrap(from_fn(
+                        resource_check::check_resource_utilization_middleware,
+                    )))
+                    .service(Self::get_ingest_factory().wrap(from_fn(
+                        resource_check::check_resource_utilization_middleware,
+                    )))
                     .service(Self::get_liveness_factory())
                     .service(Self::get_readiness_factory())
                     .service(Self::get_about_factory())
@@ -86,7 +92,9 @@ impl ParseableServer for Server {
                     .service(Self::get_oauth_webscope(oidc_client))
                     .service(Self::get_user_role_webscope())
                     .service(Self::get_roles_webscope())
-                    .service(Self::get_counts_webscope())
+                    .service(Self::get_counts_webscope().wrap(from_fn(
+                        resource_check::check_resource_utilization_middleware,
+                    )))
                     .service(Self::get_alerts_webscope())
                     .service(Self::get_targets_webscope())
                     .service(Self::get_metrics_webscope()),
@@ -97,7 +105,9 @@ impl ParseableServer for Server {
                     .service(Server::get_prism_logstream())
                     .service(Server::get_prism_datasets()),
             )
-            .service(Self::get_ingest_otel_factory())
+            .service(Self::get_ingest_otel_factory().wrap(from_fn(
+                resource_check::check_resource_utilization_middleware,
+            )))
             .service(Self::get_generated());
     }
 
@@ -380,7 +390,10 @@ impl Server {
                             .route(
                                 web::post()
                                     .to(ingest::post_event)
-                                    .authorize_for_stream(Action::Ingest),
+                                    .authorize_for_stream(Action::Ingest)
+                                    .wrap(from_fn(
+                                        resource_check::check_resource_utilization_middleware,
+                                    )),
                             )
                             // DELETE "/logstream/{logstream}" ==> Delete log stream
                             .route(

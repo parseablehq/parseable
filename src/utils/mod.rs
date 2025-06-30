@@ -37,6 +37,8 @@ use datafusion::common::tree_node::TreeNode;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
+pub const DATASET_STATS_STREAM_NAME: &str = "pstats";
+
 pub fn get_node_id() -> String {
     let now = Utc::now().to_rfc3339();
     let id = get_hash(&now).to_string().split_at(15).0.to_string();
@@ -51,8 +53,7 @@ pub fn extract_datetime(path: &str) -> Option<NaiveDateTime> {
         let minute_str = caps.get(3)?.as_str();
 
         let date = NaiveDate::parse_from_str(date_str, "%Y-%m-%d").ok()?;
-        let time =
-            NaiveTime::parse_from_str(&format!("{}:{}", hour_str, minute_str), "%H:%M").ok()?;
+        let time = NaiveTime::parse_from_str(&format!("{hour_str}:{minute_str}"), "%H:%M").ok()?;
         Some(NaiveDateTime::new(date, time))
     } else {
         None
@@ -81,7 +82,7 @@ async fn get_tables_from_query(query: &str) -> Result<TableScanVisitor, actix_we
     let raw_logical_plan = session_state
         .create_logical_plan(query)
         .await
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Query error: {}", e)))?;
+        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Query error: {e}")))?;
 
     let mut visitor = TableScanVisitor::default();
     let _ = raw_logical_plan.visit(&mut visitor);

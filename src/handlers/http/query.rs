@@ -18,6 +18,7 @@
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
+use crate::utils::arrow::record_batches_to_json;
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{Either, FromRequest, HttpRequest, HttpResponse, Responder};
@@ -31,8 +32,9 @@ use futures::stream::once;
 use futures::{future, Stream, StreamExt};
 use futures_util::Future;
 use http::StatusCode;
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -44,7 +46,7 @@ use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::option::Mode;
 use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::query::error::ExecuteError;
-use crate::query::{execute, CountsRequest, CountsResponse, Query as LogicalQuery};
+use crate::query::{execute, CountsRequest, Query as LogicalQuery};
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
@@ -193,6 +195,7 @@ async fn handle_count_query(
         start_time: query_request.start_time.clone(),
         end_time: query_request.end_time.clone(),
         num_bins: 1,
+        conditions: None,
     };
     let count_records = counts_req.get_bin_density().await?;
     let count = count_records[0].count;
@@ -319,8 +322,7 @@ async fn handle_streaming_query(
 
         // Combine the initial fields chunk with the records stream
         let fields_chunk = once(future::ok::<_, actix_web::Error>(Bytes::from(format!(
-            "{}\n",
-            fields_json
+            "{fields_json}\n"
         ))));
         Box::pin(fields_chunk.chain(records_stream))
             as Pin<Box<dyn Stream<Item = Result<Bytes, actix_web::Error>>>>
@@ -353,11 +355,12 @@ fn create_batch_processor(
                 error!("Failed to parse record batch into JSON: {}", e);
                 actix_web::error::ErrorInternalServerError(e)
             })?;
-            Ok(Bytes::from(format!("{}\n", response)))
+            Ok(Bytes::from(format!("{response}\n")))
         }
         Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
     }
 }
+
 pub async fn get_counts(
     req: HttpRequest,
     counts_request: Json<CountsRequest>,
@@ -365,15 +368,51 @@ pub async fn get_counts(
     let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);
 
+    let body = counts_request.into_inner();
+
     // does user have access to table?
-    user_auth_for_datasets(&permissions, &[counts_request.stream.clone()])?;
+    user_auth_for_datasets(&permissions, &[body.stream.clone()])?;
 
-    let records = counts_request.get_bin_density().await?;
+    // if the user has given a sql query (counts call with filters applied), then use this flow
+    // this could include filters or group by
+    if body.conditions.is_some() {
+        let sql = body.get_df_sql().await?;
 
-    Ok(web::Json(CountsResponse {
-        fields: vec!["start_time".into(), "end_time".into(), "count".into()],
-        records,
-    }))
+        let query_request = Query {
+            query: sql,
+            start_time: body.start_time,
+            end_time: body.end_time,
+            send_null: true,
+            fields: true,
+            streaming: false,
+            filter_tags: None,
+        };
+
+        let (records, _) = get_records_and_fields(&query_request, &req).await?;
+
+        if let Some(records) = records {
+            let json_records = record_batches_to_json(&records)?;
+            let records = json_records.into_iter().map(Value::Object).collect_vec();
+
+            let res = json!({
+                "fields": vec!["start_time", "endTime", "count"],
+                "records": records,
+            });
+
+            return Ok(web::Json(res));
+        } else {
+            return Err(QueryError::CustomError(
+                "No data returned for counts SQL".into(),
+            ));
+        }
+    }
+
+    let records = body.get_bin_density().await?;
+    let res = json!({
+        "fields": vec!["start_time", "endTime", "count"],
+        "records": records,
+    });
+    Ok(web::Json(res))
 }
 
 pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), EventError> {

@@ -95,7 +95,7 @@ impl FromStr for BadData {
             "drop" => Ok(BadData::Drop),
             "fail" => Ok(BadData::Fail),
             "dlt" => Ok(BadData::Dlt),
-            _ => Err(format!("Invalid bad data policy: {}", s)),
+            _ => Err(format!("Invalid bad data policy: {s}")),
         }
     }
 }
