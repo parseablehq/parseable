@@ -74,6 +74,7 @@ impl ParseableServer for QueryServer {
                     )))
                     .service(Server::get_metrics_webscope())
                     .service(Server::get_alerts_webscope())
+                    .service(Server::get_targets_webscope())
                     .service(Self::get_cluster_web_scope()),
             )
             .service(

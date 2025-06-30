@@ -48,7 +48,7 @@ pub async fn post(
     req: HttpRequest,
     Json(alert): Json<AlertRequest>,
 ) -> Result<impl Responder, AlertError> {
-    let alert: AlertConfig = alert.into();
+    let alert: AlertConfig = alert.into().await?;
     alert.validate().await?;
 
     // validate the incoming alert query
