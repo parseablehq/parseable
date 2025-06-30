@@ -16,6 +16,8 @@
  *
  */
 
+use std::collections::HashMap;
+
 use crate::{
     handlers::http::rbac::RBACError,
     storage::ObjectStorageError,
@@ -68,37 +70,83 @@ pub async fn create_dashboard(
 pub async fn update_dashboard(
     req: HttpRequest,
     dashboard_id: Path<String>,
-    Json(mut dashboard): Json<Dashboard>,
+    Json(dashboard): Json<Dashboard>,
 ) -> Result<impl Responder, DashboardError> {
     let user_id = get_hash(&get_user_from_request(&req)?);
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
+    let mut existing_dashboard = DASHBOARDS
+        .get_dashboard_by_user(dashboard_id, &user_id)
+        .await
+        .ok_or(DashboardError::Metadata(
+            "Dashboard does not exist or user is not authorized",
+        ))?;
 
-    // Validate all tiles have valid IDs
-    if let Some(tiles) = &dashboard.tiles {
-        if tiles.iter().any(|tile| tile.tile_id.is_nil()) {
-            return Err(DashboardError::Metadata("Tile ID must be provided"));
-        }
+    let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
+        .map_err(|_| DashboardError::InvalidQueryParameter)?;
+
+    // Validate: either query params OR body, not both
+    let has_query_params = !query_map.is_empty();
+    let has_body_update = dashboard.title != existing_dashboard.title || dashboard.tiles.is_some();
+
+    if has_query_params && has_body_update {
+        return Err(DashboardError::Metadata(
+            "Cannot use both query parameters and request body for updates",
+        ));
     }
 
-    // Check if tile_id are unique
-    if let Some(tiles) = &dashboard.tiles {
-        let unique_tiles: Vec<_> = tiles
-            .iter()
-            .map(|tile| tile.tile_id)
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect();
-
-        if unique_tiles.len() != tiles.len() {
-            return Err(DashboardError::Metadata("Tile IDs must be unique"));
+    let mut final_dashboard = if has_query_params {
+        // Apply partial updates from query parameters
+        if let Some(is_favorite) = query_map.get("is_favorite") {
+            existing_dashboard.is_favorite = Some(is_favorite == "true");
         }
-    }
+        if let Some(tags) = query_map.get("tags") {
+            let parsed_tags: Vec<String> = tags
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
+            existing_dashboard.tags = if parsed_tags.is_empty() {
+                None
+            } else {
+                Some(parsed_tags)
+            };
+        }
+        if let Some(rename_to) = query_map.get("rename_to") {
+            let trimmed = rename_to.trim();
+            if trimmed.is_empty() {
+                return Err(DashboardError::Metadata("Rename to cannot be empty"));
+            }
+            existing_dashboard.title = trimmed.to_string();
+        }
+        existing_dashboard
+    } else {
+        if let Some(tiles) = &dashboard.tiles {
+            if tiles.iter().any(|tile| tile.tile_id.is_nil()) {
+                return Err(DashboardError::Metadata("Tile ID must be provided"));
+            }
+
+            // Check if tile_id are unique
+            let unique_tiles: Vec<_> = tiles
+                .iter()
+                .map(|tile| tile.tile_id)
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .collect();
+
+            if unique_tiles.len() != tiles.len() {
+                return Err(DashboardError::Metadata("Tile IDs must be unique"));
+            }
+        }
+
+        dashboard
+    };
 
     DASHBOARDS
-        .update(&user_id, dashboard_id, &mut dashboard)
+        .update(&user_id, dashboard_id, &mut final_dashboard)
         .await?;
 
-    Ok((web::Json(dashboard), StatusCode::OK))
+    Ok((web::Json(final_dashboard), StatusCode::OK))
 }
 
 pub async fn delete_dashboard(
@@ -164,6 +212,8 @@ pub enum DashboardError {
     Custom(String),
     #[error("Dashboard does not exist or is not accessible")]
     Unauthorized,
+    #[error("Invalid query parameter")]
+    InvalidQueryParameter,
 }
 
 impl actix_web::ResponseError for DashboardError {
@@ -175,6 +225,7 @@ impl actix_web::ResponseError for DashboardError {
             Self::UserDoesNotExist(_) => StatusCode::NOT_FOUND,
             Self::Custom(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
+            Self::InvalidQueryParameter => StatusCode::BAD_REQUEST,
         }
     }
 

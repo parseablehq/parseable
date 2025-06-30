@@ -83,9 +83,7 @@ impl Dashboard {
         }
 
         // if is_favorite is None, set it to false, else set it to the current value
-        self.is_favorite = Some(
-            self.is_favorite.unwrap_or(false), // default to false if not set
-        );
+        self.is_favorite = self.is_favorite.or(Some(false));
     }
 
     /// create a summary of the dashboard
