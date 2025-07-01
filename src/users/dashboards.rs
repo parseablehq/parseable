@@ -354,7 +354,7 @@ impl Dashboards {
             .filter(|d| {
                 d.tags
                     .as_ref()
-                    .map_or(false, |tags| tags.contains(&tag.to_string()))
+                    .is_some_and(|tags| tags.contains(&tag.to_string()))
             })
             .cloned()
             .collect()
