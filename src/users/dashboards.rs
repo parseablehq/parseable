@@ -119,7 +119,7 @@ impl Dashboard {
 
         if let Some(dashboard_id) = &self.dashboard_id {
             map.insert(
-                "dashboard_id".to_string(),
+                "dashboardId".to_string(),
                 serde_json::Value::String(dashboard_id.to_string()),
             );
         }
@@ -136,7 +136,7 @@ impl Dashboard {
         }
 
         map.insert(
-            "is_favorite".to_string(),
+            "isFavorite".to_string(),
             serde_json::Value::Bool(self.is_favorite.unwrap_or(false)),
         );
 
