@@ -65,9 +65,18 @@ impl TargetConfigs {
     }
 
     pub async fn update(&self, target: Target) -> Result<(), AlertError> {
-        let id = target.id;
-        self.target_configs.write().await.insert(id, target.clone());
-        let path = target_json_path(&id);
+        let mut map = self.target_configs.write().await;
+        if map.values().any(|t| {
+            t.target == target.target
+                && t.timeout.interval == target.timeout.interval
+                && t.timeout.times == target.timeout.times
+                && t.id != target.id
+        }) {
+            return Err(AlertError::DuplicateTargetConfig);
+        }
+        map.insert(target.id, target.clone());
+
+        let path = target_json_path(&target.id);
 
         let store = PARSEABLE.storage.get_object_store();
         let target_bytes = serde_json::to_vec(&target)?;
@@ -146,21 +155,6 @@ pub struct Target {
 }
 
 impl Target {
-    pub async fn validate(&self) -> Result<(), AlertError> {
-        // just check for liveness
-        // what if the target is not live yet but is added by the user?
-        let targets = TARGETS.list().await?;
-        for target in targets {
-            if target.target == self.target
-                && target.timeout.interval == self.timeout.interval
-                && target.timeout.times == self.timeout.times
-            {
-                return Err(AlertError::DuplicateTargetConfig);
-            }
-        }
-        Ok(())
-    }
-
     pub fn call(&self, context: Context) {
         trace!("target.call context- {context:?}");
         let timeout = &self.timeout;
