@@ -86,10 +86,9 @@ pub async fn update_dashboard(
 
     // Validate: either query params OR body, not both
     let has_query_params = !query_map.is_empty();
-    let has_body_update = dashboard
-        .as_ref()
-        .map(|d| d.title != existing_dashboard.title || d.tiles.is_some())
-        .unwrap_or(false);
+    let has_body_update = dashboard.as_ref().map_or(false, |d| {
+        d.title != existing_dashboard.title || d.tiles.is_some()
+    });
 
     if has_query_params && has_body_update {
         return Err(DashboardError::Metadata(
