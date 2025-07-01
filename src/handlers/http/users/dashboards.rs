@@ -98,7 +98,7 @@ pub async fn update_dashboard(
 
     let mut final_dashboard = if has_query_params {
         // Apply partial updates from query parameters
-        if let Some(is_favorite) = query_map.get("is_favorite") {
+        if let Some(is_favorite) = query_map.get("isFavorite") {
             existing_dashboard.is_favorite = Some(is_favorite == "true");
         }
         if let Some(tags) = query_map.get("tags") {
@@ -114,7 +114,7 @@ pub async fn update_dashboard(
                 Some(parsed_tags)
             };
         }
-        if let Some(rename_to) = query_map.get("rename_to") {
+        if let Some(rename_to) = query_map.get("renameTo") {
             let trimmed = rename_to.trim();
             if trimmed.is_empty() {
                 return Err(DashboardError::Metadata("Rename to cannot be empty"));
