@@ -345,6 +345,21 @@ impl Dashboards {
         tags
     }
 
+    /// List dashboards by tag
+    /// This function returns a list of dashboards that have the specified tag
+    pub async fn list_dashboards_by_tag(&self, tag: &str) -> Vec<Dashboard> {
+        let dashboards = self.0.read().await;
+        dashboards
+            .iter()
+            .filter(|d| {
+                d.tags
+                    .as_ref()
+                    .map_or(false, |tags| tags.contains(&tag.to_string()))
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Ensure the user is the owner of the dashboard
     /// This function is called when updating or deleting a dashboard
     /// check if the user is the owner of the dashboard

@@ -204,6 +204,21 @@ pub async fn list_tags() -> Result<impl Responder, DashboardError> {
     Ok((web::Json(tags), StatusCode::OK))
 }
 
+pub async fn list_dashboards_by_tag(tag: Path<String>) -> Result<impl Responder, DashboardError> {
+    let tag = tag.into_inner();
+    if tag.is_empty() {
+        return Err(DashboardError::Metadata("Tag cannot be empty"));
+    }
+
+    let dashboards = DASHBOARDS.list_dashboards_by_tag(&tag).await;
+    let dashboard_summaries = dashboards
+        .iter()
+        .map(|dashboard| dashboard.to_summary())
+        .collect::<Vec<_>>();
+
+    Ok((web::Json(dashboard_summaries), StatusCode::OK))
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum DashboardError {
     #[error("Failed to connect to storage: {0}")]
