@@ -136,6 +136,7 @@ impl Default for Retry {
 #[serde(rename_all = "camelCase")]
 #[serde(try_from = "TargetVerifier")]
 pub struct Target {
+    pub name: String,
     #[serde(flatten)]
     pub target: TargetType,
     #[serde(default, rename = "repeat")]
@@ -289,6 +290,7 @@ pub struct RepeatVerifier {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TargetVerifier {
+    pub name: String,
     #[serde(flatten)]
     pub target: TargetType,
     #[serde(default)]
@@ -325,6 +327,7 @@ impl TryFrom<TargetVerifier> for Target {
         }
 
         Ok(Target {
+            name: value.name,
             target: value.target,
             timeout,
             id: value.id,
