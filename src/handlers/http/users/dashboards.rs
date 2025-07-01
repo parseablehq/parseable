@@ -70,7 +70,7 @@ pub async fn create_dashboard(
 pub async fn update_dashboard(
     req: HttpRequest,
     dashboard_id: Path<String>,
-    Json(dashboard): Json<Dashboard>,
+    dashboard: Option<Json<Dashboard>>,
 ) -> Result<impl Responder, DashboardError> {
     let user_id = get_hash(&get_user_from_request(&req)?);
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
@@ -86,7 +86,10 @@ pub async fn update_dashboard(
 
     // Validate: either query params OR body, not both
     let has_query_params = !query_map.is_empty();
-    let has_body_update = dashboard.title != existing_dashboard.title || dashboard.tiles.is_some();
+    let has_body_update = dashboard
+        .as_ref()
+        .map(|d| d.title != existing_dashboard.title || d.tiles.is_some())
+        .unwrap_or(false);
 
     if has_query_params && has_body_update {
         return Err(DashboardError::Metadata(
@@ -121,6 +124,9 @@ pub async fn update_dashboard(
         }
         existing_dashboard
     } else {
+        let dashboard = dashboard
+            .ok_or(DashboardError::Metadata("Request body is required"))?
+            .into_inner();
         if let Some(tiles) = &dashboard.tiles {
             if tiles.iter().any(|tile| tile.tile_id.is_nil()) {
                 return Err(DashboardError::Metadata("Tile ID must be provided"));
