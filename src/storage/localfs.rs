@@ -41,6 +41,7 @@ use crate::{
     metrics::storage::{azureblob::REQUEST_RESPONSE_TIME, StorageMetrics},
     option::validation,
     parseable::LogStream,
+    storage::SETTINGS_ROOT_DIRECTORY,
 };
 
 use super::{
@@ -336,6 +337,7 @@ impl ObjectStorage for LocalFS {
             PARSEABLE_ROOT_DIRECTORY,
             USERS_ROOT_DIR,
             ALERTS_ROOT_DIRECTORY,
+            SETTINGS_ROOT_DIRECTORY,
         ];
         let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
         let entries: Vec<DirEntry> = directories.try_collect().await?;
@@ -356,6 +358,7 @@ impl ObjectStorage for LocalFS {
             "lost+found",
             PARSEABLE_ROOT_DIRECTORY,
             ALERTS_ROOT_DIRECTORY,
+            SETTINGS_ROOT_DIRECTORY,
         ];
         let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
         let entries: Vec<DirEntry> = directories.try_collect().await?;
