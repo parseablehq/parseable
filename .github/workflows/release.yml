@@ -229,3 +229,25 @@ jobs:
           push: true
           tags: parseable/parseable:${{ github.ref_name }}
           platforms: linux/amd64,linux/arm64
+      
+      - name: Build and push kafka amd64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.kafka
+          push: true
+          tags: parseable/parseable:${{ github.ref_name }}-kafka-amd64
+          platforms: linux/amd64
+          build-args: |
+            LIB_DIR=x86_64-linux-gnu
+
+      - name: Build and push kafka arm64
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.kafka
+          push: true
+          tags: parseable/parseable:${{ github.ref_name }}-kafka-arm64
+          platforms: linux/arm64
+          build-args: |
+            LIB_DIR=aarch64-linux-gnu

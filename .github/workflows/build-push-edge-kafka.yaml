@@ -43,7 +43,7 @@ jobs:
           context: .
           file: ./Dockerfile.kafka
           push: true
-          tags: parseable/parseable:edge-kafka
+          tags: parseable/parseable:edge-kafka-amd64
           platforms: linux/amd64
           build-args: |
             LIB_DIR=x86_64-linux-gnu
@@ -54,7 +54,7 @@ jobs:
           context: .
           file: ./Dockerfile.kafka
           push: true
-          tags: parseable/parseable:edge-kafka
+          tags: parseable/parseable:edge-kafka-arm64
           platforms: linux/arm64
           build-args: |
             LIB_DIR=aarch64-linux-gnu
