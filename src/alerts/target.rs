@@ -24,18 +24,110 @@ use std::{
 
 use async_trait::async_trait;
 use base64::Engine;
+use bytes::Bytes;
 use chrono::Utc;
 use http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
 use humantime_serde::re::humantime;
+use itertools::Itertools;
+use once_cell::sync::Lazy;
 use reqwest::ClientBuilder;
+use tokio::sync::RwLock;
 use tracing::{error, trace, warn};
+use ulid::Ulid;
 use url::Url;
+
+use crate::{alerts::AlertError, parseable::PARSEABLE, storage::object_storage::target_json_path};
 
 use super::ALERTS;
 
 use super::{AlertState, CallableTarget, Context};
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+pub static TARGETS: Lazy<TargetConfigs> = Lazy::new(|| TargetConfigs {
+    target_configs: RwLock::new(HashMap::new()),
+});
+
+#[derive(Debug)]
+pub struct TargetConfigs {
+    pub target_configs: RwLock<HashMap<Ulid, Target>>,
+}
+
+impl TargetConfigs {
+    /// Loads alerts from disk, blocks
+    pub async fn load(&self) -> anyhow::Result<()> {
+        let mut map = self.target_configs.write().await;
+        let store = PARSEABLE.storage.get_object_store();
+
+        for alert in store.get_targets().await.unwrap_or_default() {
+            map.insert(alert.id, alert);
+        }
+
+        Ok(())
+    }
+
+    pub async fn update(&self, target: Target) -> Result<(), AlertError> {
+        let mut map = self.target_configs.write().await;
+        if map.values().any(|t| {
+            t.target == target.target
+                && t.timeout.interval == target.timeout.interval
+                && t.timeout.times == target.timeout.times
+                && t.id != target.id
+        }) {
+            return Err(AlertError::DuplicateTargetConfig);
+        }
+        map.insert(target.id, target.clone());
+
+        let path = target_json_path(&target.id);
+
+        let store = PARSEABLE.storage.get_object_store();
+        let target_bytes = serde_json::to_vec(&target)?;
+        store.put_object(&path, Bytes::from(target_bytes)).await?;
+        Ok(())
+    }
+
+    pub async fn list(&self) -> Result<Vec<Target>, AlertError> {
+        let targets = self
+            .target_configs
+            .read()
+            .await
+            .values()
+            .cloned()
+            .collect_vec();
+        Ok(targets)
+    }
+
+    pub async fn get_target_by_id(&self, target_id: &Ulid) -> Result<Target, AlertError> {
+        let target = self
+            .target_configs
+            .read()
+            .await
+            .get(target_id)
+            .ok_or(AlertError::InvalidTargetID(target_id.to_string()))
+            .cloned()?;
+
+        Ok(target)
+    }
+
+    pub async fn delete(&self, target_id: &Ulid) -> Result<Target, AlertError> {
+        // ensure that the target is not being used by any alert
+        for (_, alert) in ALERTS.alerts.read().await.iter() {
+            if alert.targets.contains(target_id) {
+                return Err(AlertError::TargetInUse);
+            }
+        }
+        let target = self
+            .target_configs
+            .write()
+            .await
+            .remove(target_id)
+            .ok_or(AlertError::InvalidTargetID(target_id.to_string()))?;
+        let path = target_json_path(&target.id);
+        let store = PARSEABLE.storage.get_object_store();
+        store.delete_object(&path).await?;
+        Ok(target)
+    }
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 #[serde(untagged)]
 pub enum Retry {
@@ -53,10 +145,13 @@ impl Default for Retry {
 #[serde(rename_all = "camelCase")]
 #[serde(try_from = "TargetVerifier")]
 pub struct Target {
+    pub name: String,
     #[serde(flatten)]
     pub target: TargetType,
     #[serde(default, rename = "repeat")]
     pub timeout: Timeout,
+    #[serde(default = "Ulid::new")]
+    pub id: Ulid,
 }
 
 impl Target {
@@ -189,10 +284,13 @@ pub struct RepeatVerifier {
 #[derive(Debug, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct TargetVerifier {
+    pub name: String,
     #[serde(flatten)]
     pub target: TargetType,
     #[serde(default)]
     pub repeat: Option<RepeatVerifier>,
+    #[serde(default = "Ulid::new")]
+    pub id: Ulid,
 }
 
 impl TryFrom<TargetVerifier> for Target {
@@ -223,8 +321,10 @@ impl TryFrom<TargetVerifier> for Target {
         }
 
         Ok(Target {
+            name: value.name,
             target: value.target,
             timeout,
+            id: value.id,
         })
     }
 }

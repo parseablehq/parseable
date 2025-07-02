@@ -59,6 +59,7 @@ use tracing::info;
 use tracing::{error, warn};
 use ulid::Ulid;
 
+use crate::alerts::target::Target;
 use crate::alerts::AlertConfig;
 use crate::catalog::{self, manifest::Manifest, snapshot::Snapshot};
 use crate::correlation::{CorrelationConfig, CorrelationError};
@@ -78,6 +79,8 @@ use crate::parseable::PARSEABLE;
 use crate::query::QUERY_SESSION_STATE;
 use crate::stats::FullStats;
 use crate::storage::StreamType;
+use crate::storage::SETTINGS_ROOT_DIRECTORY;
+use crate::storage::TARGETS_ROOT_DIRECTORY;
 use crate::utils::DATASET_STATS_STREAM_NAME;
 
 use super::{
@@ -441,6 +444,26 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             .collect();
 
         Ok(alerts)
+    }
+
+    async fn get_targets(&self) -> Result<Vec<Target>, ObjectStorageError> {
+        let targets_path =
+            RelativePathBuf::from_iter([SETTINGS_ROOT_DIRECTORY, TARGETS_ROOT_DIRECTORY]);
+        let targets = self
+            .get_objects(
+                Some(&targets_path),
+                Box::new(|file_name| file_name.ends_with(".json")),
+            )
+            .await?
+            .iter()
+            .filter_map(|bytes| {
+                serde_json::from_slice(bytes)
+                    .inspect_err(|err| warn!("Expected compatible json, error = {err}"))
+                    .ok()
+            })
+            .collect();
+
+        Ok(targets)
     }
 
     async fn upsert_stream_metadata(
@@ -1335,6 +1358,16 @@ pub fn parseable_json_path() -> RelativePathBuf {
 #[inline(always)]
 pub fn alert_json_path(alert_id: Ulid) -> RelativePathBuf {
     RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY, &format!("{alert_id}.json")])
+}
+
+/// TODO: Needs to be updated for distributed mode
+#[inline(always)]
+pub fn target_json_path(target_id: &Ulid) -> RelativePathBuf {
+    RelativePathBuf::from_iter([
+        SETTINGS_ROOT_DIRECTORY,
+        TARGETS_ROOT_DIRECTORY,
+        &format!("{target_id}.json"),
+    ])
 }
 
 #[inline(always)]
