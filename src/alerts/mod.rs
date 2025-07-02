@@ -37,14 +37,13 @@ use ulid::Ulid;
 pub mod alerts_utils;
 pub mod target;
 
+use crate::alerts::target::TARGETS;
 use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::rbac::map::SessionKey;
 use crate::storage;
 use crate::storage::ObjectStorageError;
 use crate::sync::alert_runtime;
 use crate::utils::user_auth_for_query;
-
-use self::target::Target;
 
 // these types describe the scheduled task for an alert
 pub type ScheduledTaskHandlers = (JoinHandle<()>, Receiver<()>, Sender<()>);
@@ -531,23 +530,28 @@ pub struct AlertRequest {
     pub alert_type: AlertType,
     pub aggregates: Aggregates,
     pub eval_config: EvalConfig,
-    pub targets: Vec<Target>,
+    pub targets: Vec<Ulid>,
 }
 
-impl From<AlertRequest> for AlertConfig {
-    fn from(val: AlertRequest) -> AlertConfig {
-        AlertConfig {
+impl AlertRequest {
+    pub async fn into(self) -> Result<AlertConfig, AlertError> {
+        // Validate that all target IDs exist
+        for id in &self.targets {
+            TARGETS.get_target_by_id(id).await?;
+        }
+        let config = AlertConfig {
             version: AlertVerison::from(CURRENT_ALERTS_VERSION),
             id: Ulid::new(),
-            severity: val.severity,
-            title: val.title,
-            stream: val.stream,
-            alert_type: val.alert_type,
-            aggregates: val.aggregates,
-            eval_config: val.eval_config,
-            targets: val.targets,
+            severity: self.severity,
+            title: self.title,
+            stream: self.stream,
+            alert_type: self.alert_type,
+            aggregates: self.aggregates,
+            eval_config: self.eval_config,
+            targets: self.targets,
             state: AlertState::default(),
-        }
+        };
+        Ok(config)
     }
 }
 
@@ -563,14 +567,18 @@ pub struct AlertConfig {
     pub alert_type: AlertType,
     pub aggregates: Aggregates,
     pub eval_config: EvalConfig,
-    pub targets: Vec<Target>,
+    pub targets: Vec<Ulid>,
     // for new alerts, state should be resolved
     #[serde(default)]
     pub state: AlertState,
 }
 
 impl AlertConfig {
-    pub fn modify(&mut self, alert: AlertRequest) {
+    pub async fn modify(&mut self, alert: AlertRequest) -> Result<(), AlertError> {
+        // Validate that all target IDs exist
+        for id in &alert.targets {
+            TARGETS.get_target_by_id(id).await?;
+        }
         self.title = alert.title;
         self.stream = alert.stream;
         self.alert_type = alert.alert_type;
@@ -578,6 +586,7 @@ impl AlertConfig {
         self.eval_config = alert.eval_config;
         self.targets = alert.targets;
         self.state = AlertState::default();
+        Ok(())
     }
 
     pub fn get_base_query(&self) -> String {
@@ -599,7 +608,8 @@ impl AlertConfig {
         };
 
         // validate that target repeat notifs !> eval_frequency
-        for target in &self.targets {
+        for target_id in &self.targets {
+            let target = TARGETS.get_target_by_id(target_id).await?;
             match &target.timeout.times {
                 target::Retry::Infinite => {}
                 target::Retry::Finite(repeat) => {
@@ -806,7 +816,8 @@ impl AlertConfig {
     pub async fn trigger_notifications(&self, message: String) -> Result<(), AlertError> {
         let mut context = self.get_context();
         context.message = message;
-        for target in &self.targets {
+        for target_id in &self.targets {
+            let target = TARGETS.get_target_by_id(target_id).await?;
             trace!("Target (trigger_notifications)-\n{target:?}");
             target.call(context.clone());
         }
@@ -840,6 +851,12 @@ pub enum AlertError {
     InvalidAlertModifyRequest,
     #[error("{0}")]
     FromStrError(#[from] FromStrError),
+    #[error("Invalid Target ID- {0}")]
+    InvalidTargetID(String),
+    #[error("Target already exists")]
+    DuplicateTargetConfig,
+    #[error("Can't delete a Target which is being used")]
+    TargetInUse,
 }
 
 impl actix_web::ResponseError for AlertError {
@@ -857,6 +874,9 @@ impl actix_web::ResponseError for AlertError {
             Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::InvalidAlertModifyRequest => StatusCode::BAD_REQUEST,
             Self::FromStrError(_) => StatusCode::BAD_REQUEST,
+            Self::InvalidTargetID(_) => StatusCode::BAD_REQUEST,
+            Self::DuplicateTargetConfig => StatusCode::BAD_REQUEST,
+            Self::TargetInUse => StatusCode::CONFLICT,
         }
     }
 
