@@ -27,10 +27,10 @@ use base64::Engine;
 use bytes::Bytes;
 use chrono::Utc;
 use http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
-use humantime_serde::re::humantime;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use reqwest::ClientBuilder;
+use serde_json::{json, Value};
 use tokio::sync::RwLock;
 use tracing::{error, trace, warn};
 use ulid::Ulid;
@@ -66,14 +66,6 @@ impl TargetConfigs {
 
     pub async fn update(&self, target: Target) -> Result<(), AlertError> {
         let mut map = self.target_configs.write().await;
-        if map.values().any(|t| {
-            t.target == target.target
-                && t.timeout.interval == target.timeout.interval
-                && t.timeout.times == target.timeout.times
-                && t.id != target.id
-        }) {
-            return Err(AlertError::DuplicateTargetConfig);
-        }
         map.insert(target.id, target.clone());
 
         let path = target_json_path(&target.id);
@@ -148,16 +140,84 @@ pub struct Target {
     pub name: String,
     #[serde(flatten)]
     pub target: TargetType,
-    #[serde(default, rename = "repeat")]
-    pub timeout: Timeout,
+    pub notification_config: Timeout,
     #[serde(default = "Ulid::new")]
     pub id: Ulid,
 }
 
 impl Target {
+    pub fn mask(self) -> Value {
+        match self.target {
+            TargetType::Slack(slack_web_hook) => {
+                let endpoint = slack_web_hook.endpoint.to_string();
+                let masked_endpoint = if endpoint.len() > 20 {
+                    format!("{}********", &endpoint[..20])
+                } else {
+                    "********".to_string()
+                };
+                json!({
+                   "name":self.name,
+                   "type":"slack",
+                   "endpoint":masked_endpoint,
+                   "notificationConfig":self.notification_config,
+                   "id":self.id
+                })
+            }
+            TargetType::Other(other_web_hook) => {
+                let endpoint = other_web_hook.endpoint.to_string();
+                let masked_endpoint = if endpoint.len() > 20 {
+                    format!("{}********", &endpoint[..20])
+                } else {
+                    "********".to_string()
+                };
+                json!({
+                    "name":self.name,
+                    "type":"webhook",
+                    "endpoint":masked_endpoint,
+                    "headers":other_web_hook.headers,
+                    "skipTlsCheck":other_web_hook.skip_tls_check,
+                    "notificationConfig":self.notification_config,
+                    "id":self.id
+                })
+            }
+            TargetType::AlertManager(alert_manager) => {
+                let endpoint = alert_manager.endpoint.to_string();
+                let masked_endpoint = if endpoint.len() > 20 {
+                    format!("{}********", &endpoint[..20])
+                } else {
+                    "********".to_string()
+                };
+                if let Some(auth) = alert_manager.auth {
+                    let password = "********";
+                    json!({
+                        "name":self.name,
+                        "type":"webhook",
+                        "endpoint":masked_endpoint,
+                        "username":auth.username,
+                        "password":password,
+                        "skipTlsCheck":alert_manager.skip_tls_check,
+                        "notificationConfig":self.notification_config,
+                        "id":self.id
+                    })
+                } else {
+                    json!({
+                        "name":self.name,
+                        "type":"webhook",
+                        "endpoint":masked_endpoint,
+                        "username":Value::Null,
+                        "password":Value::Null,
+                        "skipTlsCheck":alert_manager.skip_tls_check,
+                        "notificationConfig":self.notification_config,
+                        "id":self.id
+                    })
+                }
+            }
+        }
+    }
+
     pub fn call(&self, context: Context) {
         trace!("target.call context- {context:?}");
-        let timeout = &self.timeout;
+        let timeout = &self.notification_config;
         let resolves = context.alert_info.alert_state;
         let mut state = timeout.state.lock().unwrap();
         trace!("target.call state- {state:?}");
@@ -205,7 +265,7 @@ impl Target {
         let sleep_and_check_if_call =
             move |timeout_state: Arc<Mutex<TimeoutState>>, current_state: AlertState| {
                 async move {
-                    tokio::time::sleep(timeout).await;
+                    tokio::time::sleep(Duration::from_secs(timeout * 60)).await;
 
                     let mut state = timeout_state.lock().unwrap();
 
@@ -276,8 +336,8 @@ fn call_target(target: TargetType, context: Context) {
 }
 
 #[derive(Debug, serde::Deserialize)]
-pub struct RepeatVerifier {
-    interval: Option<String>,
+pub struct NotificationConfigVerifier {
+    interval: Option<u64>,
     times: Option<usize>,
 }
 
@@ -288,7 +348,7 @@ pub struct TargetVerifier {
     #[serde(flatten)]
     pub target: TargetType,
     #[serde(default)]
-    pub repeat: Option<RepeatVerifier>,
+    pub notification_config: Option<NotificationConfigVerifier>,
     #[serde(default = "Ulid::new")]
     pub id: Ulid,
 }
@@ -304,18 +364,14 @@ impl TryFrom<TargetVerifier> for Target {
             timeout.times = Retry::Infinite
         }
 
-        if let Some(repeat_config) = value.repeat {
-            let interval = repeat_config
-                .interval
-                .map(|ref interval| humantime::parse_duration(interval))
-                .transpose()
-                .map_err(|err| err.to_string())?;
+        if let Some(notification_config) = value.notification_config {
+            let interval = notification_config.interval.map(|ref interval| *interval);
 
             if let Some(interval) = interval {
                 timeout.interval = interval
             }
 
-            if let Some(times) = repeat_config.times {
+            if let Some(times) = notification_config.times {
                 timeout.times = Retry::Finite(times)
             }
         }
@@ -323,7 +379,7 @@ impl TryFrom<TargetVerifier> for Target {
         Ok(Target {
             name: value.name,
             target: value.target,
-            timeout,
+            notification_config: timeout,
             id: value.id,
         })
     }
@@ -518,8 +574,7 @@ impl CallableTarget for AlertManager {
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct Timeout {
-    #[serde(with = "humantime_serde")]
-    pub interval: Duration,
+    pub interval: u64,
     #[serde(default = "Retry::default")]
     pub times: Retry,
     #[serde(skip)]
@@ -529,7 +584,7 @@ pub struct Timeout {
 impl Default for Timeout {
     fn default() -> Self {
         Self {
-            interval: Duration::from_secs(60),
+            interval: 1,
             times: Retry::default(),
             state: Arc::<Mutex<TimeoutState>>::default(),
         }
