@@ -28,6 +28,7 @@ use serde_json::Error as SerdeError;
 use std::collections::{HashMap, HashSet};
 use std::fmt::{self, Display};
 use std::thread;
+use std::time::Duration;
 use tokio::sync::oneshot::{Receiver, Sender};
 use tokio::sync::{mpsc, RwLock};
 use tokio::task::JoinHandle;
@@ -610,10 +611,12 @@ impl AlertConfig {
         // validate that target repeat notifs !> eval_frequency
         for target_id in &self.targets {
             let target = TARGETS.get_target_by_id(target_id).await?;
-            match &target.timeout.times {
+            match &target.notification_config.times {
                 target::Retry::Infinite => {}
                 target::Retry::Finite(repeat) => {
-                    let notif_duration = target.timeout.interval * *repeat as u32;
+                    let notif_duration =
+                        Duration::from_secs(60 * target.notification_config.interval)
+                            * *repeat as u32;
                     if (notif_duration.as_secs_f64()).gt(&((eval_frequency * 60) as f64)) {
                         return Err(AlertError::Metadata(
                             "evalFrequency should be greater than target repetition  interval",
@@ -853,8 +856,8 @@ pub enum AlertError {
     FromStrError(#[from] FromStrError),
     #[error("Invalid Target ID- {0}")]
     InvalidTargetID(String),
-    #[error("Target already exists")]
-    DuplicateTargetConfig,
+    #[error("Invalid target modification request: {0}")]
+    InvalidTargetModification(String),
     #[error("Can't delete a Target which is being used")]
     TargetInUse,
 }
@@ -875,7 +878,7 @@ impl actix_web::ResponseError for AlertError {
             Self::InvalidAlertModifyRequest => StatusCode::BAD_REQUEST,
             Self::FromStrError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidTargetID(_) => StatusCode::BAD_REQUEST,
-            Self::DuplicateTargetConfig => StatusCode::BAD_REQUEST,
+            Self::InvalidTargetModification(_) => StatusCode::BAD_REQUEST,
             Self::TargetInUse => StatusCode::CONFLICT,
         }
     }
