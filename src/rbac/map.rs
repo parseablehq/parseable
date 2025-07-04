@@ -226,32 +226,32 @@ impl Sessions {
     ) -> Option<Response> {
         self.active_sessions.get(key).map(|(username, perms)| {
             // if user is a part of any user groups, then add permissions
-            let perms: HashSet<Permission> =
-                if !users().0.get(username).unwrap().user_groups.is_empty() {
-                    let groups = users().0.get(username).unwrap().user_groups.clone();
-                    let all_groups_roles = groups
-                        .iter()
-                        .filter(|id| (read_user_groups().0.contains_key(*id)))
-                        .map(|id| read_user_groups().0.get(id).unwrap().roles.clone())
-                        .reduce(|mut acc, e| {
-                            acc.extend(e);
-                            acc
-                        })
-                        .unwrap_or_default();
-                    let mut privilege_list = Vec::new();
-                    all_groups_roles
-                        .iter()
-                        .filter_map(|role| roles().get(role).cloned())
-                        .for_each(|privileges| privilege_list.extend(privileges));
+            let perms: HashSet<Permission> = if let Some(user) = users().0.get(username) {
+                let all_groups_roles = user
+                    .user_groups
+                    .iter()
+                    .filter(|id| (read_user_groups().0.contains_key(*id)))
+                    .map(|id| read_user_groups().0.get(id).unwrap().roles.clone())
+                    .reduce(|mut acc, e| {
+                        acc.extend(e);
+                        acc
+                    })
+                    .unwrap_or_default();
 
-                    let mut perms = HashSet::from_iter(perms.clone());
-                    for privs in privilege_list {
-                        perms.extend(RoleBuilder::from(&privs).build())
-                    }
-                    perms
-                } else {
-                    HashSet::from_iter(perms.clone())
-                };
+                let mut privilege_list = Vec::new();
+                all_groups_roles
+                    .iter()
+                    .filter_map(|role| roles().get(role).cloned())
+                    .for_each(|privileges| privilege_list.extend(privileges));
+
+                let mut perms = HashSet::from_iter(perms.clone());
+                for privs in privilege_list {
+                    perms.extend(RoleBuilder::from(&privs).build())
+                }
+                perms
+            } else {
+                HashSet::from_iter(perms.clone())
+            };
             if perms.iter().any(|user_perm| {
                 match *user_perm {
                     // if any action is ALL then we we authorize

@@ -40,55 +40,6 @@ use crate::{
 // async aware lock for updating storage metadata and user map atomically
 static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
 
-// // Handler for POST /api/v1/user/{username}
-// // Creates a new user by username if it does not exists
-// pub async fn post_user(
-//     username: web::Path<String>,
-//     body: Option<web::Json<serde_json::Value>>,
-// ) -> Result<impl Responder, RBACError> {
-//     let username = username.into_inner();
-
-//     let mut metadata = get_metadata().await?;
-
-//     validator::user_name(&username)?;
-//     let roles: HashSet<String> = if let Some(body) = body {
-//         serde_json::from_value(body.into_inner())?
-//     } else {
-//         return Err(RBACError::RoleValidationError);
-//     };
-
-//     if roles.is_empty() {
-//         return Err(RBACError::RoleValidationError);
-//     }
-//     let _ = UPDATE_LOCK.lock().await;
-//     if Users.contains(&username)
-//         || metadata
-//             .users
-//             .iter()
-//             .any(|user| user.username() == username)
-//     {
-//         return Err(RBACError::UserExists);
-//     }
-
-//     let (user, password) = user::User::new_basic(username.clone());
-
-//     metadata.users.push(user.clone());
-
-//     put_metadata(&metadata).await?;
-//     let created_role = roles.clone();
-//     Users.put_user(user.clone());
-
-//     sync_user_creation_with_ingestors(user, &Some(roles)).await?;
-
-//     put_role(
-//         web::Path::<String>::from(username.clone()),
-//         web::Json(created_role),
-//     )
-//     .await?;
-
-//     Ok(password)
-// }
-
 // Handler for POST /api/v1/user/{username}
 // Creates a new user by username if it does not exists
 pub async fn post_user(
@@ -205,40 +156,6 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     Users.delete_user(&username);
     Ok(format!("deleted user: {username}"))
 }
-
-// // Handler PUT /user/{username}/roles => Put roles for user
-// // Put roles for given user
-// pub async fn put_role(
-//     username: web::Path<String>,
-//     role: web::Json<HashSet<String>>,
-// ) -> Result<String, RBACError> {
-//     let username = username.into_inner();
-//     let role = role.into_inner();
-
-//     if !Users.contains(&username) {
-//         return Err(RBACError::UserDoesNotExist);
-//     };
-//     // update parseable.json first
-//     let mut metadata = get_metadata().await?;
-//     if let Some(user) = metadata
-//         .users
-//         .iter_mut()
-//         .find(|user| user.username() == username)
-//     {
-//         user.roles.clone_from(&role);
-//     } else {
-//         // should be unreachable given state is always consistent
-//         return Err(RBACError::UserDoesNotExist);
-//     }
-
-//     put_metadata(&metadata).await?;
-//     // update in mem table
-//     Users.put_role(&username.clone(), role.clone());
-
-//     sync_users_with_roles_with_ingestors(&username, &role).await?;
-
-//     Ok(format!("Roles updated successfully for {username}"))
-// }
 
 // Handler PATCH /user/{username}/role/add => Add roles to a user
 pub async fn add_roles_to_user(

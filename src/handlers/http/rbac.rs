@@ -278,38 +278,6 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     Ok(format!("deleted user: {username}"))
 }
 
-// // Handler PUT /user/{username}/roles => Put roles for user
-// // Put roles for given user
-// pub async fn put_role(
-//     username: web::Path<String>,
-//     role: web::Json<HashSet<String>>,
-// ) -> Result<String, RBACError> {
-//     let username = username.into_inner();
-//     let role = role.into_inner();
-
-//     if !Users.contains(&username) {
-//         return Err(RBACError::UserDoesNotExist);
-//     };
-//     // update parseable.json first
-//     let mut metadata = get_metadata().await?;
-//     if let Some(user) = metadata
-//         .users
-//         .iter_mut()
-//         .find(|user| user.username() == username)
-//     {
-//         user.roles.clone_from(&role);
-//     } else {
-//         // should be unreachable given state is always consistent
-//         return Err(RBACError::UserDoesNotExist);
-//     }
-
-//     put_metadata(&metadata).await?;
-//     // update in mem table
-//     Users.add_roles(&username.clone(), role.clone());
-
-//     Ok(format!("Roles updated successfully for {username}"))
-// }
-
 // Handler PATCH /user/{username}/role/add => Add roles to a user
 pub async fn add_roles_to_user(
     username: web::Path<String>,
