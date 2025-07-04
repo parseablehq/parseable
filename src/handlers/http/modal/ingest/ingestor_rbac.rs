@@ -48,7 +48,7 @@ pub async fn post_user(
         let _ = storage::put_staging_metadata(&metadata);
         let created_role = user.roles.clone();
         Users.put_user(user.clone());
-        Users.put_role(&username, created_role.clone());
+        Users.add_roles(&username, created_role.clone());
     }
 
     Ok(generated_password)
@@ -73,14 +73,45 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     Ok(format!("deleted user: {username}"))
 }
 
-// Handler PUT /user/{username}/roles => Put roles for user
-// Put roles for given user
-pub async fn put_role(
+// // Handler PUT /user/{username}/roles => Put roles for user
+// // Put roles for given user
+// pub async fn put_role(
+//     username: web::Path<String>,
+//     role: web::Json<HashSet<String>>,
+// ) -> Result<String, RBACError> {
+//     let username = username.into_inner();
+//     let role = role.into_inner();
+
+//     if !Users.contains(&username) {
+//         return Err(RBACError::UserDoesNotExist);
+//     };
+//     // update parseable.json first
+//     let mut metadata = get_metadata().await?;
+//     if let Some(user) = metadata
+//         .users
+//         .iter_mut()
+//         .find(|user| user.username() == username)
+//     {
+//         user.roles.clone_from(&role);
+//     } else {
+//         // should be unreachable given state is always consistent
+//         return Err(RBACError::UserDoesNotExist);
+//     }
+
+//     let _ = storage::put_staging_metadata(&metadata);
+//     // update in mem table
+//     Users.add_roles(&username.clone(), role.clone());
+
+//     Ok(format!("Roles updated successfully for {username}"))
+// }
+
+// Handler PATCH /user/{username}/role/sync/add => Add roles to a user
+pub async fn add_roles_to_user(
     username: web::Path<String>,
-    role: web::Json<HashSet<String>>,
+    roles_to_add: web::Json<HashSet<String>>,
 ) -> Result<String, RBACError> {
     let username = username.into_inner();
-    let role = role.into_inner();
+    let roles_to_add = roles_to_add.into_inner();
 
     if !Users.contains(&username) {
         return Err(RBACError::UserDoesNotExist);
@@ -92,7 +123,7 @@ pub async fn put_role(
         .iter_mut()
         .find(|user| user.username() == username)
     {
-        user.roles.clone_from(&role);
+        user.roles.extend(roles_to_add.clone());
     } else {
         // should be unreachable given state is always consistent
         return Err(RBACError::UserDoesNotExist);
@@ -100,7 +131,40 @@ pub async fn put_role(
 
     let _ = storage::put_staging_metadata(&metadata);
     // update in mem table
-    Users.put_role(&username.clone(), role.clone());
+    Users.add_roles(&username.clone(), roles_to_add.clone());
+
+    Ok(format!("Roles updated successfully for {username}"))
+}
+
+// Handler PATCH /user/{username}/role/sync/add => Add roles to a user
+pub async fn remove_roles_from_user(
+    username: web::Path<String>,
+    roles_to_remove: web::Json<HashSet<String>>,
+) -> Result<String, RBACError> {
+    let username = username.into_inner();
+    let roles_to_remove = roles_to_remove.into_inner();
+
+    if !Users.contains(&username) {
+        return Err(RBACError::UserDoesNotExist);
+    };
+    // update parseable.json first
+    let mut metadata = get_metadata().await?;
+    if let Some(user) = metadata
+        .users
+        .iter_mut()
+        .find(|user| user.username() == username)
+    {
+        let diff: HashSet<String> =
+            HashSet::from_iter(user.roles.difference(&roles_to_remove).cloned());
+        user.roles = diff;
+    } else {
+        // should be unreachable given state is always consistent
+        return Err(RBACError::UserDoesNotExist);
+    }
+
+    let _ = storage::put_staging_metadata(&metadata);
+    // update in mem table
+    Users.remove_roles(&username.clone(), roles_to_remove.clone());
 
     Ok(format!("Roles updated successfully for {username}"))
 }

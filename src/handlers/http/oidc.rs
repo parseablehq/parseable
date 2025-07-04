@@ -344,7 +344,7 @@ async fn update_user_if_changed(
     group: HashSet<String>,
     user_info: user::UserInfo,
 ) -> Result<User, ObjectStorageError> {
-    let User { ty, roles } = &mut user;
+    let User { ty, roles, .. } = &mut user;
     let UserType::OAuth(oauth_user) = ty else {
         unreachable!()
     };

@@ -16,8 +16,9 @@
  *
  */
 
-use crate::rbac::user::User;
+use crate::rbac::user::{User, UserGroup};
 use crate::{parseable::PARSEABLE, storage::StorageMetadata};
+use std::collections::HashSet;
 use std::{collections::HashMap, sync::Mutex};
 
 use super::Response;
@@ -35,6 +36,23 @@ pub static USERS: OnceCell<RwLock<Users>> = OnceCell::new();
 pub static ROLES: OnceCell<RwLock<Roles>> = OnceCell::new();
 pub static DEFAULT_ROLE: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 pub static SESSIONS: OnceCell<RwLock<Sessions>> = OnceCell::new();
+pub static USER_GROUPS: OnceCell<RwLock<UserGroups>> = OnceCell::new();
+
+pub fn read_user_groups() -> RwLockReadGuard<'static, UserGroups> {
+    USER_GROUPS
+        .get()
+        .expect("UserGroups map not created")
+        .read()
+        .expect("UserGroups map is poisoned")
+}
+
+pub fn write_user_groups() -> RwLockWriteGuard<'static, UserGroups> {
+    USER_GROUPS
+        .get()
+        .expect("UserGroups map not created")
+        .write()
+        .expect("UserGroups map is poisoned")
+}
 
 pub fn users() -> RwLockReadGuard<'static, Users> {
     USERS
@@ -90,6 +108,7 @@ pub fn mut_sessions() -> RwLockWriteGuard<'static, Sessions> {
 // as users authenticate
 pub fn init(metadata: &StorageMetadata) {
     let users = metadata.users.clone();
+    let user_groups = metadata.user_groups.clone();
     let mut roles = metadata.roles.clone();
 
     DEFAULT_ROLE
@@ -122,6 +141,9 @@ pub fn init(metadata: &StorageMetadata) {
     SESSIONS
         .set(RwLock::new(sessions))
         .expect("map is only set once");
+    USER_GROUPS
+        .set(RwLock::new(UserGroups::from(user_groups)))
+        .expect("Unable to create UserGroups map from storage");
 }
 
 // A session is loosly active mapping to permissions
@@ -203,6 +225,33 @@ impl Sessions {
         context_user: Option<&str>,
     ) -> Option<Response> {
         self.active_sessions.get(key).map(|(username, perms)| {
+            // if user is a part of any user groups, then add permissions
+            let perms: HashSet<Permission> =
+                if !users().0.get(username).unwrap().user_groups.is_empty() {
+                    let groups = users().0.get(username).unwrap().user_groups.clone();
+                    let all_groups_roles = groups
+                        .iter()
+                        .filter(|id| (read_user_groups().0.contains_key(*id)))
+                        .map(|id| read_user_groups().0.get(id).unwrap().roles.clone())
+                        .reduce(|mut acc, e| {
+                            acc.extend(e);
+                            acc
+                        })
+                        .unwrap_or_default();
+                    let mut privilege_list = Vec::new();
+                    all_groups_roles
+                        .iter()
+                        .filter_map(|role| roles().get(role).cloned())
+                        .for_each(|privileges| privilege_list.extend(privileges));
+
+                    let mut perms = HashSet::from_iter(perms.clone());
+                    for privs in privilege_list {
+                        perms.extend(RoleBuilder::from(&privs).build())
+                    }
+                    perms
+                } else {
+                    HashSet::from_iter(perms.clone())
+                };
             if perms.iter().any(|user_perm| {
                 match *user_perm {
                     // if any action is ALL then we we authorize
@@ -253,6 +302,29 @@ impl From<Vec<User>> for Users {
             users
                 .into_iter()
                 .map(|user| (user.username().to_owned(), user)),
+        );
+        map
+    }
+}
+
+// Map of [user group ID --> UserGroup]
+// This map is populated at startup with the list of user groups from parseable.json file
+#[derive(Debug, Default, Clone, derive_more::Deref, derive_more::DerefMut)]
+pub struct UserGroups(HashMap<String, UserGroup>);
+
+impl UserGroups {
+    pub fn insert(&mut self, user_group: UserGroup) {
+        self.0.insert(user_group.name.clone(), user_group);
+    }
+}
+
+impl From<Vec<UserGroup>> for UserGroups {
+    fn from(user_groups: Vec<UserGroup>) -> Self {
+        let mut map = Self::default();
+        map.extend(
+            user_groups
+                .into_iter()
+                .map(|group| (group.name.to_owned(), group)),
         );
         map
     }

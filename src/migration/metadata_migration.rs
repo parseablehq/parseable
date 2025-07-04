@@ -161,6 +161,29 @@ pub fn v4_v5(mut storage_metadata: JsonValue) -> JsonValue {
     storage_metadata
 }
 
+pub fn v5_v6(mut storage_metadata: JsonValue) -> JsonValue {
+    let metadata = storage_metadata.as_object_mut().unwrap();
+    metadata.remove_entry("version");
+    metadata.insert("version".to_string(), JsonValue::String("v6".to_string()));
+
+    // If user_groups is missing, add an empty array or your default structure
+    if !metadata.contains_key("user_groups") {
+        metadata.insert("user_groups".to_string(), JsonValue::Array(vec![]));
+    }
+
+    // introduce user groups entry for all users
+    let users = metadata.get_mut("users").unwrap().as_array_mut().unwrap();
+    for user in users.iter_mut() {
+        if !user.as_object_mut().unwrap().contains_key("user_groups") {
+            user.as_object_mut()
+                .unwrap()
+                .insert("user_groups".to_string(), JsonValue::Array(vec![]));
+        }
+    }
+
+    storage_metadata
+}
+
 /// Remove the querier endpoint and auth token from the storage metadata
 pub fn remove_querier_metadata(mut storage_metadata: JsonValue) -> JsonValue {
     let metadata = storage_metadata.as_object_mut().unwrap();

@@ -114,8 +114,8 @@ impl ParseableServer for Server {
     async fn load_metadata(&self) -> anyhow::Result<Option<Bytes>> {
         //TODO: removed file migration
         //deprecated support for deployments < v1.0.0
-        let parseable_json = PARSEABLE.validate_storage().await?;
-        migration::run_metadata_migration(&PARSEABLE, &parseable_json).await?;
+        let mut parseable_json = PARSEABLE.validate_storage().await?;
+        migration::run_metadata_migration(&PARSEABLE, &mut parseable_json).await?;
 
         Ok(parseable_json)
     }
@@ -622,18 +622,30 @@ impl Server {
                     .wrap(DisAllowRootUser),
             )
             .service(
-                web::resource("/{username}/role")
-                    // PUT /user/{username}/roles => Put roles for user
+                web::resource("/{username}/role").route(
+                    web::get()
+                        .to(http::rbac::get_role)
+                        .authorize_for_user(Action::GetUserRoles),
+                ),
+            )
+            .service(
+                web::resource("/{username}/role/add")
+                    // PATCH /user/{username}/role/add => Add roles to a user
                     .route(
-                        web::put()
-                            .to(http::rbac::put_role)
+                        web::patch()
+                            .to(http::rbac::add_roles_to_user)
                             .authorize(Action::PutUserRoles)
                             .wrap(DisAllowRootUser),
-                    )
+                    ),
+            )
+            .service(
+                web::resource("/{username}/role/remove")
+                    // PATCH /user/{username}/role/remove => Remove roles from a user
                     .route(
-                        web::get()
-                            .to(http::rbac::get_role)
-                            .authorize_for_user(Action::GetUserRoles),
+                        web::patch()
+                            .to(http::rbac::remove_roles_from_user)
+                            .authorize(Action::PutUserRoles)
+                            .wrap(DisAllowRootUser),
                     ),
             )
             .service(

@@ -94,9 +94,8 @@ impl ParseableServer for QueryServer {
              ));
         }
 
-        let parseable_json = PARSEABLE.validate_storage().await?;
-        migration::run_metadata_migration(&PARSEABLE, &parseable_json).await?;
-
+        let mut parseable_json = PARSEABLE.validate_storage().await?;
+        migration::run_metadata_migration(&PARSEABLE, &mut parseable_json).await?;
         Ok(parseable_json)
     }
 
@@ -209,18 +208,30 @@ impl QueryServer {
                     .wrap(DisAllowRootUser),
             )
             .service(
-                web::resource("/{username}/role")
-                    // PUT /user/{username}/roles => Put roles for user
+                web::resource("/{username}/role").route(
+                    web::get()
+                        .to(rbac::get_role)
+                        .authorize_for_user(Action::GetUserRoles),
+                ),
+            )
+            .service(
+                web::resource("/{username}/role/add")
+                    // PATCH /user/{username}/role/add => Add roles to a user
                     .route(
-                        web::put()
-                            .to(querier_rbac::put_role)
+                        web::patch()
+                            .to(rbac::add_roles_to_user)
                             .authorize(Action::PutUserRoles)
                             .wrap(DisAllowRootUser),
-                    )
+                    ),
+            )
+            .service(
+                web::resource("/{username}/role/remove")
+                    // PATCH /user/{username}/role/remove => Remove roles from a user
                     .route(
-                        web::get()
-                            .to(rbac::get_role)
-                            .authorize_for_user(Action::GetUserRoles),
+                        web::patch()
+                            .to(rbac::remove_roles_from_user)
+                            .authorize(Action::PutUserRoles)
+                            .wrap(DisAllowRootUser),
                     ),
             )
             .service(

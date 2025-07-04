@@ -20,6 +20,10 @@
 // Represents actions that corresponds to an api
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
+    CreateUserGroup,
+    GetUserGroup,
+    ModifyUserGroup,
+    DeleteUserGroup,
     Ingest,
     Query,
     CreateStream,
@@ -47,10 +51,10 @@ pub enum Action {
     DeleteRole,
     ListRole,
     GetAbout,
-    QueryLLM,
     AddLLM,
     DeleteLLM,
     GetLLM,
+    QueryLLM,
     ListLLM,
     ListCluster,
     ListClusterMetrics,
@@ -78,6 +82,7 @@ pub enum Permission {
     Unit(Action),
     Stream(Action, String),
     StreamWithTag(Action, String, Option<String>),
+    Resource(Action, Option<String>, Option<String>),
     SelfUser,
 }
 
@@ -87,6 +92,8 @@ pub struct RoleBuilder {
     actions: Vec<Action>,
     stream: Option<String>,
     tag: Option<String>,
+    resource_id: Option<String>,
+    resource_type: Option<String>,
 }
 
 // R x P
@@ -98,6 +105,12 @@ impl RoleBuilder {
 
     pub fn with_tag(mut self, tag: String) -> Self {
         self.tag = Some(tag);
+        self
+    }
+
+    pub fn with_resource(mut self, resource_id: String, resource_type: String) -> Self {
+        self.resource_id = Some(resource_id);
+        self.resource_type = Some(resource_type);
         self
     }
 
@@ -118,11 +131,6 @@ impl RoleBuilder {
                 | Action::GetUserRoles
                 | Action::DeleteUser
                 | Action::GetAbout
-                | Action::QueryLLM
-                | Action::AddLLM
-                | Action::DeleteLLM
-                | Action::GetLLM
-                | Action::ListLLM
                 | Action::PutRole
                 | Action::GetRole
                 | Action::DeleteRole
@@ -151,7 +159,20 @@ impl RoleBuilder {
                 | Action::PutAlert
                 | Action::GetAlert
                 | Action::DeleteAlert
+                | Action::CreateUserGroup
+                | Action::GetUserGroup
+                | Action::DeleteUserGroup
+                | Action::ModifyUserGroup
                 | Action::GetAnalytics => Permission::Unit(action),
+                Action::QueryLLM
+                | Action::AddLLM
+                | Action::DeleteLLM
+                | Action::GetLLM
+                | Action::ListLLM => Permission::Resource(
+                    action,
+                    self.resource_type.clone(),
+                    self.resource_id.clone(),
+                ),
                 Action::Ingest
                 | Action::ListStream
                 | Action::GetSchema
@@ -179,9 +200,20 @@ pub mod model {
     pub enum DefaultPrivilege {
         Admin,
         Editor,
-        Writer { stream: String },
-        Ingestor { stream: String },
-        Reader { stream: String, tag: Option<String> },
+        Writer {
+            stream: String,
+        },
+        Ingestor {
+            stream: String,
+        },
+        Reader {
+            stream: String,
+            tag: Option<String>,
+        },
+        Resource {
+            resource_id: String,
+            resource_type: String,
+        },
     }
 
     impl From<&DefaultPrivilege> for RoleBuilder {
@@ -202,6 +234,11 @@ pub mod model {
                 DefaultPrivilege::Ingestor { stream } => {
                     ingest_perm_builder().with_stream(stream.to_owned())
                 }
+                DefaultPrivilege::Resource {
+                    resource_id,
+                    resource_type,
+                } => resource_perm_builder()
+                    .with_resource(resource_id.clone(), resource_type.clone()),
             }
         }
     }
@@ -211,6 +248,8 @@ pub mod model {
             actions: vec![Action::All],
             stream: Some("*".to_string()),
             tag: None,
+            resource_type: Some("*".to_string()),
+            resource_id: Some("*".to_string()),
         }
     }
 
@@ -241,11 +280,11 @@ pub mod model {
                 Action::PutAlert,
                 Action::GetAlert,
                 Action::DeleteAlert,
-                Action::QueryLLM,
-                Action::GetLLM,
-                Action::ListLLM,
                 Action::AddLLM,
                 Action::DeleteLLM,
+                Action::GetLLM,
+                Action::QueryLLM,
+                Action::ListLLM,
                 Action::CreateFilter,
                 Action::ListFilter,
                 Action::GetFilter,
@@ -258,6 +297,8 @@ pub mod model {
             ],
             stream: Some("*".to_string()),
             tag: None,
+            resource_id: None,
+            resource_type: None,
         }
     }
 
@@ -287,11 +328,9 @@ pub mod model {
                 Action::CreateDashboard,
                 Action::DeleteDashboard,
                 Action::Ingest,
-                Action::QueryLLM,
                 Action::GetLLM,
+                Action::QueryLLM,
                 Action::ListLLM,
-                Action::AddLLM,
-                Action::DeleteLLM,
                 Action::GetStreamInfo,
                 Action::GetFilter,
                 Action::ListFilter,
@@ -301,6 +340,8 @@ pub mod model {
             ],
             stream: None,
             tag: None,
+            resource_id: None,
+            resource_type: None,
         }
     }
 
@@ -313,11 +354,9 @@ pub mod model {
                 Action::ListStream,
                 Action::GetSchema,
                 Action::GetStats,
-                Action::QueryLLM,
                 Action::GetLLM,
+                Action::QueryLLM,
                 Action::ListLLM,
-                Action::AddLLM,
-                Action::DeleteLLM,
                 Action::ListFilter,
                 Action::GetFilter,
                 Action::CreateFilter,
@@ -337,6 +376,18 @@ pub mod model {
             ],
             stream: None,
             tag: None,
+            resource_id: None,
+            resource_type: None,
+        }
+    }
+
+    fn resource_perm_builder() -> RoleBuilder {
+        RoleBuilder {
+            actions: vec![Action::GetLLM, Action::ListLLM, Action::QueryLLM],
+            stream: None,
+            tag: None,
+            resource_id: None,
+            resource_type: None,
         }
     }
 
@@ -345,6 +396,8 @@ pub mod model {
             actions: vec![Action::Ingest],
             stream: None,
             tag: None,
+            resource_id: None,
+            resource_type: None,
         }
     }
 }

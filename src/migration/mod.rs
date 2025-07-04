@@ -45,7 +45,7 @@ use crate::{
 /// This is a one time migration
 pub async fn run_metadata_migration(
     config: &Parseable,
-    parseable_json: &Option<Bytes>,
+    parseable_json: &mut Option<Bytes>,
 ) -> anyhow::Result<()> {
     let object_store = config.storage.get_object_store();
     let mut storage_metadata: Option<Value> = None;
@@ -62,45 +62,54 @@ pub async fn run_metadata_migration(
             .and_then(|version| version.as_str())
     }
 
+    warn!(verion=?get_version(storage_metadata.as_ref().unwrap()));
     // if storage metadata is none do nothing
     if let Some(storage_metadata) = storage_metadata {
         match get_version(&storage_metadata) {
             Some("v1") => {
-                //migrate to latest version
-                //remove querier endpooint and token from storage metadata
                 let mut metadata = metadata_migration::v1_v3(storage_metadata);
                 metadata = metadata_migration::v3_v4(metadata);
                 metadata = metadata_migration::v4_v5(metadata);
+                metadata = metadata_migration::v5_v6(metadata);
                 metadata = metadata_migration::remove_querier_metadata(metadata);
+                let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
+                *parseable_json = Some(_metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
             Some("v2") => {
-                //migrate to latest version
-                //remove querier endpooint and token from storage metadata
                 let mut metadata = metadata_migration::v2_v3(storage_metadata);
                 metadata = metadata_migration::v3_v4(metadata);
                 metadata = metadata_migration::v4_v5(metadata);
+                metadata = metadata_migration::v5_v6(metadata);
                 metadata = metadata_migration::remove_querier_metadata(metadata);
+                let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
+                *parseable_json = Some(_metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
             Some("v3") => {
-                //migrate to latest version
-                //remove querier endpooint and token from storage metadata
                 let mut metadata = metadata_migration::v3_v4(storage_metadata);
                 metadata = metadata_migration::v4_v5(metadata);
+                metadata = metadata_migration::v5_v6(metadata);
                 metadata = metadata_migration::remove_querier_metadata(metadata);
+                let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
+                *parseable_json = Some(_metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
             Some("v4") => {
-                //migrate to latest version
-                //remove querier endpooint and token from storage metadata
                 let mut metadata = metadata_migration::v4_v5(storage_metadata);
-                metadata = metadata_migration::v4_v5(metadata);
+                metadata = metadata_migration::v5_v6(metadata);
                 metadata = metadata_migration::remove_querier_metadata(metadata);
+                let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
+                *parseable_json = Some(_metadata);
+                put_remote_metadata(&*object_store, &metadata).await?;
+            }
+            Some("v5") => {
+                let metadata = metadata_migration::v5_v6(storage_metadata);
+                let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
+                *parseable_json = Some(_metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }
             _ => {
-                //remove querier endpooint and token from storage metadata
                 let metadata = metadata_migration::remove_querier_metadata(storage_metadata);
                 put_remote_metadata(&*object_store, &metadata).await?;
             }

@@ -29,7 +29,7 @@ use role::model::DefaultPrivilege;
 use serde::Serialize;
 use url::Url;
 
-use crate::rbac::map::{mut_sessions, mut_users, sessions, users};
+use crate::rbac::map::{mut_sessions, mut_users, read_user_groups, roles, sessions, users};
 use crate::rbac::role::Action;
 use crate::rbac::user::User;
 
@@ -52,6 +52,13 @@ impl Users {
     pub fn put_user(&self, user: User) {
         mut_sessions().remove_user(user.username());
         mut_users().insert(user);
+    }
+
+    pub fn get_user_groups(&self, username: &str) -> HashSet<String> {
+        users()
+            .get(username)
+            .map(|user| user.user_groups.clone())
+            .unwrap_or_default()
     }
 
     pub fn get_user(&self, username: &str) -> Option<User> {
@@ -90,9 +97,17 @@ impl Users {
         };
     }
 
-    pub fn put_role(&self, username: &str, roles: HashSet<String>) {
+    pub fn add_roles(&self, username: &str, roles: HashSet<String>) {
         if let Some(user) = mut_users().get_mut(username) {
-            user.roles = roles;
+            user.roles.extend(roles);
+            mut_sessions().remove_user(username)
+        };
+    }
+
+    pub fn remove_roles(&self, username: &str, roles: HashSet<String>) {
+        if let Some(user) = mut_users().get_mut(username) {
+            let diff = HashSet::from_iter(user.roles.difference(&roles).cloned());
+            user.roles = diff;
             mut_sessions().remove_user(username)
         };
     }
@@ -102,7 +117,23 @@ impl Users {
     }
 
     pub fn get_permissions(&self, session: &SessionKey) -> Vec<Permission> {
-        sessions().get(session).cloned().unwrap_or_default()
+        let mut permissions = sessions().get(session).cloned().unwrap_or_default();
+
+        let username = self.get_username_from_session(session).unwrap();
+        let user_groups = self.get_user_groups(&username);
+        for group in user_groups {
+            if let Some(group) = read_user_groups().get(&group) {
+                let group_roles = &group.roles;
+                for role in group_roles {
+                    if let Some(privelege_list) = roles().get(role) {
+                        for privelege in privelege_list {
+                            permissions.extend(RoleBuilder::from(privelege).build());
+                        }
+                    }
+                }
+            }
+        }
+        permissions.into_iter().collect_vec()
     }
 
     pub fn session_exists(&self, session: &SessionKey) -> bool {
@@ -174,6 +205,7 @@ impl Users {
 ///
 /// TODO: rename this after deprecating the older struct
 #[derive(Debug, Serialize, Clone)]
+#[serde(rename = "camelCase")]
 pub struct UsersPrism {
     // username
     pub id: String,
@@ -183,8 +215,12 @@ pub struct UsersPrism {
     pub email: Option<String>,
     // picture only if oauth
     pub picture: Option<Url>,
-    // roles for the user
+    // roles given directly to the user
     pub roles: HashMap<String, Vec<DefaultPrivilege>>,
+    // roles inherited by the user from their usergroups
+    pub group_roles: HashMap<String, HashMap<String, Vec<DefaultPrivilege>>>,
+    // user groups
+    pub user_groups: HashSet<String>,
 }
 
 fn roles_to_permission(roles: Vec<String>) -> Vec<Permission> {
