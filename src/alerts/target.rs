@@ -164,10 +164,16 @@ impl Target {
                 })
             }
             TargetType::Other(other_web_hook) => {
+                let endpoint = other_web_hook.endpoint.to_string();
+                let masked_endpoint = if endpoint.len() > 20 {
+                    format!("{}********", &endpoint[..20])
+                } else {
+                    "********".to_string()
+                };
                 json!({
                     "name":self.name,
                     "type":"webhook",
-                    "endpoint":other_web_hook.endpoint,
+                    "endpoint":masked_endpoint,
                     "headers":other_web_hook.headers,
                     "skipTlsCheck":other_web_hook.skip_tls_check,
                     "notificationConfig":self.notification_config,
@@ -175,12 +181,18 @@ impl Target {
                 })
             }
             TargetType::AlertManager(alert_manager) => {
+                let endpoint = alert_manager.endpoint.to_string();
+                let masked_endpoint = if endpoint.len() > 20 {
+                    format!("{}********", &endpoint[..20])
+                } else {
+                    "********".to_string()
+                };
                 if let Some(auth) = alert_manager.auth {
                     let password = "********";
                     json!({
                         "name":self.name,
                         "type":"webhook",
-                        "endpoint":alert_manager.endpoint,
+                        "endpoint":masked_endpoint,
                         "username":auth.username,
                         "password":password,
                         "skipTlsCheck":alert_manager.skip_tls_check,
@@ -191,7 +203,7 @@ impl Target {
                     json!({
                         "name":self.name,
                         "type":"webhook",
-                        "endpoint":alert_manager.endpoint,
+                        "endpoint":masked_endpoint,
                         "username":Value::Null,
                         "password":Value::Null,
                         "skipTlsCheck":alert_manager.skip_tls_check,
