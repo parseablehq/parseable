@@ -198,11 +198,21 @@ impl IngestServer {
                     .wrap(DisAllowRootUser),
             )
             .service(
-                web::resource("/{username}/role/sync")
-                    // PUT /user/{username}/roles => Put roles for user
+                web::resource("/{username}/role/sync/add")
+                    // PATCH /user/{username}/role/sync/add => Add roles to a user
                     .route(
-                        web::put()
-                            .to(ingestor_rbac::put_role)
+                        web::patch()
+                            .to(ingestor_rbac::add_roles_to_user)
+                            .authorize(Action::PutUserRoles)
+                            .wrap(DisAllowRootUser),
+                    ),
+            )
+            .service(
+                web::resource("/{username}/role/sync/remove")
+                    // PATCH /user/{username}/role/sync/remove => Remove roles from a user
+                    .route(
+                        web::patch()
+                            .to(ingestor_rbac::remove_roles_from_user)
                             .authorize(Action::PutUserRoles)
                             .wrap(DisAllowRootUser),
                     ),

@@ -93,9 +93,8 @@ pub async fn user_auth_for_query(
     session_key: &SessionKey,
     query: &str,
 ) -> Result<(), actix_web::error::Error> {
-    let tables = get_tables_from_query(query).await?;
+    let tables = get_tables_from_query(query).await?.into_inner();
     let permissions = Users.get_permissions(session_key);
-    let tables = tables.into_inner();
     user_auth_for_datasets(&permissions, &tables)
 }
 
