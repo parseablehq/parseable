@@ -77,12 +77,22 @@ pub enum Action {
     PutCorrelation,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ParseableResourceType {
+    #[serde(rename="stream")]
+    Stream(String),
+    #[serde(rename="llm")]
+    Llm(String),
+    #[serde(rename="all")]
+    All
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Permission {
     Unit(Action),
-    Stream(Action, String),
-    StreamWithTag(Action, String, Option<String>),
-    Resource(Action, Option<String>, Option<String>),
+    // Stream(Action, String),
+    // StreamWithTag(Action, String, Option<String>),
+    Resource(Action, ParseableResourceType),
     SelfUser,
 }
 
@@ -90,39 +100,44 @@ pub enum Permission {
 #[derive(Debug, Default)]
 pub struct RoleBuilder {
     actions: Vec<Action>,
-    stream: Option<String>,
-    tag: Option<String>,
-    resource_id: Option<String>,
-    resource_type: Option<String>,
+    // stream: Option<String>,
+    // tag: Option<String>,
+    // resource_id: Option<String>,
+    resource_type: Option<ParseableResourceType>,
 }
 
 // R x P
 impl RoleBuilder {
-    pub fn with_stream(mut self, stream: String) -> Self {
-        self.stream = Some(stream);
-        self
-    }
-
-    pub fn with_tag(mut self, tag: String) -> Self {
-        self.tag = Some(tag);
-        self
-    }
-
-    pub fn with_resource(mut self, resource_id: String, resource_type: String) -> Self {
-        self.resource_id = Some(resource_id);
+    pub fn with_resource(
+        mut self,
+        resource_type: ParseableResourceType,
+        // resource_id: String,
+    ) -> Self {
         self.resource_type = Some(resource_type);
+        // self.resource_id = Some(resource_id);
         self
     }
+
+    // pub fn with_stream(mut self, stream: String) -> Self {
+    //     self.stream = Some(stream);
+    //     self
+    // }
+
+    // pub fn with_tag(mut self, tag: String) -> Self {
+    //     self.tag = Some(tag);
+    //     self
+    // }
+
+    // pub fn with_resource(mut self, resource_id: String, resource_type: ParseableResourceType) -> Self {
+    //     self.resource_id = Some(resource_id);
+    //     self.resource_type = Some(resource_type);
+    //     self
+    // }
 
     pub fn build(self) -> Vec<Permission> {
         let mut perms = Vec::new();
         for action in self.actions {
             let perm = match action {
-                Action::Query => Permission::StreamWithTag(
-                    action,
-                    self.stream.clone().unwrap(),
-                    self.tag.clone(),
-                ),
                 Action::Login
                 | Action::Metrics
                 | Action::PutUser
@@ -164,23 +179,24 @@ impl RoleBuilder {
                 | Action::DeleteUserGroup
                 | Action::ModifyUserGroup
                 | Action::GetAnalytics => Permission::Unit(action),
-                Action::QueryLLM
+                Action::Query
+                | Action::QueryLLM
                 | Action::AddLLM
                 | Action::DeleteLLM
                 | Action::GetLLM
-                | Action::ListLLM => Permission::Resource(
-                    action,
-                    self.resource_type.clone(),
-                    self.resource_id.clone(),
-                ),
-                Action::Ingest
+                | Action::ListLLM
+                | Action::Ingest
                 | Action::ListStream
                 | Action::GetSchema
                 | Action::DetectSchema
                 | Action::GetStats
                 | Action::GetRetention
                 | Action::PutRetention
-                | Action::All => Permission::Stream(action, self.stream.clone().unwrap()),
+                | Action::All => Permission::Resource(
+                    action,
+                    self.resource_type.clone().unwrap(),
+                    // self.resource_id.clone().unwrap(),
+                ),
             };
             perms.push(perm);
         }
@@ -193,26 +209,25 @@ impl RoleBuilder {
 // we can put same model in the backend
 // user -> Vec<DefaultRoles>
 pub mod model {
+    use crate::rbac::role::ParseableResourceType;
+
     use super::{Action, RoleBuilder};
 
     #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Hash)]
-    #[serde(tag = "privilege", content = "resource", rename_all = "lowercase")]
+    #[serde(tag = "privilege", rename_all = "lowercase")]
     pub enum DefaultPrivilege {
         Admin,
         Editor,
         Writer {
-            stream: String,
+            resource: ParseableResourceType,
+            // resource_id: String,
         },
         Ingestor {
-            stream: String,
+            resource: ParseableResourceType,
         },
         Reader {
-            stream: String,
-            tag: Option<String>,
-        },
-        Resource {
-            resource_id: String,
-            resource_type: String,
+            resource: ParseableResourceType,
+            // resource_id: String,
         },
     }
 
@@ -221,24 +236,18 @@ pub mod model {
             match value {
                 DefaultPrivilege::Admin => admin_perm_builder(),
                 DefaultPrivilege::Editor => editor_perm_builder(),
-                DefaultPrivilege::Writer { stream } => {
-                    writer_perm_builder().with_stream(stream.to_owned())
-                }
-                DefaultPrivilege::Reader { stream, tag } => {
-                    let mut reader = reader_perm_builder().with_stream(stream.to_owned());
-                    if let Some(tag) = tag {
-                        reader = reader.with_tag(tag.to_owned())
-                    }
-                    reader
-                }
-                DefaultPrivilege::Ingestor { stream } => {
-                    ingest_perm_builder().with_stream(stream.to_owned())
-                }
-                DefaultPrivilege::Resource {
-                    resource_id,
-                    resource_type,
-                } => resource_perm_builder()
-                    .with_resource(resource_id.clone(), resource_type.clone()),
+                DefaultPrivilege::Writer {
+                    resource,
+                    // resource_id,
+                } => writer_perm_builder()
+                    .with_resource(resource.to_owned()),
+                DefaultPrivilege::Reader {
+                    resource,
+                    // resource_id,
+                } => reader_perm_builder()
+                    .with_resource(resource.to_owned()),
+                DefaultPrivilege::Ingestor { resource } => ingest_perm_builder()
+                    .with_resource(resource.to_owned()),
             }
         }
     }
@@ -246,10 +255,10 @@ pub mod model {
     fn admin_perm_builder() -> RoleBuilder {
         RoleBuilder {
             actions: vec![Action::All],
-            stream: Some("*".to_string()),
-            tag: None,
-            resource_type: Some("*".to_string()),
-            resource_id: Some("*".to_string()),
+            // stream: Some("*".to_string()),
+            // tag: None,
+            resource_type: Some(ParseableResourceType::All),
+            // resource_id: Some("*".to_string()),
         }
     }
 
@@ -295,10 +304,10 @@ pub mod model {
                 Action::DeleteDashboard,
                 Action::GetUserRoles,
             ],
-            stream: Some("*".to_string()),
-            tag: None,
-            resource_id: None,
-            resource_type: None,
+            // stream: Some("*".to_string()),
+            // tag: None,
+            // resource_id: Some("*".to_string()),
+            resource_type: Some(ParseableResourceType::All),
         }
     }
 
@@ -338,9 +347,9 @@ pub mod model {
                 Action::DeleteFilter,
                 Action::GetUserRoles,
             ],
-            stream: None,
-            tag: None,
-            resource_id: None,
+            // stream: None,
+            // tag: None,
+            // resource_id: None,
             resource_type: None,
         }
     }
@@ -374,19 +383,9 @@ pub mod model {
                 Action::GetUserRoles,
                 Action::GetAlert,
             ],
-            stream: None,
-            tag: None,
-            resource_id: None,
-            resource_type: None,
-        }
-    }
-
-    fn resource_perm_builder() -> RoleBuilder {
-        RoleBuilder {
-            actions: vec![Action::GetLLM, Action::ListLLM, Action::QueryLLM],
-            stream: None,
-            tag: None,
-            resource_id: None,
+            // stream: None,
+            // tag: None,
+            // resource_id: None,
             resource_type: None,
         }
     }
@@ -394,9 +393,9 @@ pub mod model {
     fn ingest_perm_builder() -> RoleBuilder {
         RoleBuilder {
             actions: vec![Action::Ingest],
-            stream: None,
-            tag: None,
-            resource_id: None,
+            // stream: None,
+            // tag: None,
+            // resource_id: None,
             resource_type: None,
         }
     }
