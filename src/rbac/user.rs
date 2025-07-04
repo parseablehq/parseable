@@ -31,7 +31,7 @@ use crate::{
         rbac::{InvalidUserGroupError, RBACError},
     },
     parseable::PARSEABLE,
-    rbac::map::{mut_users, read_user_groups, roles, users},
+    rbac::map::{read_user_groups, roles, users},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -264,35 +264,12 @@ impl UserGroup {
         UserGroup { name, roles, users }
     }
 
-    pub async fn add_roles(&mut self, roles: HashSet<String>) -> Result<(), RBACError> {
-        self.roles.extend(roles.clone());
-        let new_roles = self.roles.clone();
-        let mut metadata = get_metadata().await?;
-        metadata
-            .user_groups
-            .iter_mut()
-            .filter(|ug| ug.name == self.name)
-            .map(|ug| ug.roles.clone_from(&new_roles))
-            .for_each(drop);
-        put_metadata(&metadata).await?;
+    pub fn add_roles(&mut self, roles: HashSet<String>) -> Result<(), RBACError> {
+        self.roles.extend(roles);
         Ok(())
     }
 
-    pub async fn add_users(&mut self, users: HashSet<String>) -> Result<(), RBACError> {
-        // ensure that the users add the user group to their map
-        let mut metadata = get_metadata().await?;
-
-        users
-            .iter()
-            .map(|user| {
-                if let Some(user) = mut_users().get_mut(user) {
-                    user.user_groups.insert(self.name.clone());
-                    metadata.users.retain(|u| u.username() != user.username());
-                    metadata.users.push(user.clone());
-                }
-            })
-            .for_each(drop);
-        put_metadata(&metadata).await?;
+    pub fn add_users(&mut self, users: HashSet<String>) -> Result<(), RBACError> {
         self.users.extend(users);
         Ok(())
     }

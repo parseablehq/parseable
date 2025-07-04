@@ -261,18 +261,19 @@ impl Sessions {
                         match resource_type {
                             ParseableResourceType::Stream(resource_id)
                             | ParseableResourceType::Llm(resource_id) => {
-                                let ok_resource = if let Some(context_resource_id) = context_resource {
-                                    resource_id == context_resource_id || resource_id == "*"
-                                } else {
-                                    // if no resource to match then resource check is not needed
-                                    // WHEN IS THIS VALID?? 
-                                    true
-                                };
+                                let ok_resource =
+                                    if let Some(context_resource_id) = context_resource {
+                                        resource_id == context_resource_id || resource_id == "*"
+                                    } else {
+                                        // if no resource to match then resource check is not needed
+                                        // WHEN IS THIS VALID??
+                                        true
+                                    };
                                 (action == required_action || action == Action::All) && ok_resource
                             }
                             ParseableResourceType::All => {
                                 action == required_action || action == Action::All
-                            },
+                            }
                         }
                     }
                     Permission::SelfUser if required_action == Action::GetUserRoles => {

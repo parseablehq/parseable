@@ -113,14 +113,12 @@ pub fn user_auth_for_datasets(
                     authorized = true;
                     break;
                 }
-                Permission::Resource(Action::Query, ref resource_type) => {
-                    match resource_type {
-                        crate::rbac::role::ParseableResourceType::Stream(stream) => {
-                            if stream == table_name || stream == "*" {
-                                authorized = true;
-                            }
-                        }
-                        _ => {},
+                Permission::Resource(
+                    Action::Query,
+                    crate::rbac::role::ParseableResourceType::Stream(stream),
+                ) => {
+                    if stream == table_name || stream == "*" {
+                        authorized = true;
                     }
                 }
                 _ => (),

@@ -79,12 +79,12 @@ pub enum Action {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum ParseableResourceType {
-    #[serde(rename="stream")]
+    #[serde(rename = "stream")]
     Stream(String),
-    #[serde(rename="llm")]
+    #[serde(rename = "llm")]
     Llm(String),
-    #[serde(rename="all")]
-    All
+    #[serde(rename = "all")]
+    All,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -239,15 +239,14 @@ pub mod model {
                 DefaultPrivilege::Writer {
                     resource,
                     // resource_id,
-                } => writer_perm_builder()
-                    .with_resource(resource.to_owned()),
+                } => writer_perm_builder().with_resource(resource.to_owned()),
                 DefaultPrivilege::Reader {
                     resource,
                     // resource_id,
-                } => reader_perm_builder()
-                    .with_resource(resource.to_owned()),
-                DefaultPrivilege::Ingestor { resource } => ingest_perm_builder()
-                    .with_resource(resource.to_owned()),
+                } => reader_perm_builder().with_resource(resource.to_owned()),
+                DefaultPrivilege::Ingestor { resource } => {
+                    ingest_perm_builder().with_resource(resource.to_owned())
+                }
             }
         }
     }
