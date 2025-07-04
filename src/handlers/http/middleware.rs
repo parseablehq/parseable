@@ -59,7 +59,7 @@ pub struct CommonAttributes {
 
 pub trait RouteExt {
     fn authorize(self, action: Action) -> Self;
-    fn authorize_for_stream(self, action: Action) -> Self;
+    fn authorize_for_resource(self, action: Action) -> Self;
     fn authorize_for_user(self, action: Action) -> Self;
 }
 
@@ -71,10 +71,10 @@ impl RouteExt for Route {
         })
     }
 
-    fn authorize_for_stream(self, action: Action) -> Self {
+    fn authorize_for_resource(self, action: Action) -> Self {
         self.wrap(Auth {
             action,
-            method: auth_stream_context,
+            method: auth_resource_context,
         })
     }
 
@@ -182,18 +182,26 @@ pub fn auth_no_context(req: &mut ServiceRequest, action: Action) -> Result<rbac:
     creds.map(|key| Users.authorize(key, action, None, None))
 }
 
-pub fn auth_stream_context(
+pub fn auth_resource_context(
     req: &mut ServiceRequest,
     action: Action,
 ) -> Result<rbac::Response, Error> {
     let creds = extract_session_key(req);
+    let usergroup = req.match_info().get("usergroup");
+    let llmid = req.match_info().get("llmid");
     let mut stream = req.match_info().get("logstream");
-    if stream.is_none() {
+    if let Some(usergroup) = usergroup {
+        creds.map(|key| Users.authorize(key, action, Some(usergroup), None))
+    } else if let Some(llmid) = llmid {
+        creds.map(|key| Users.authorize(key, action, Some(llmid), None))
+    } else if let Some(stream) = stream {
+        creds.map(|key| Users.authorize(key, action, Some(stream), None))
+    } else {
         if let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) {
             stream = Some(stream_name.to_str().unwrap());
         }
+        creds.map(|key| Users.authorize(key, action, stream, None))
     }
-    creds.map(|key| Users.authorize(key, action, stream, None))
 }
 
 pub fn auth_user_context(

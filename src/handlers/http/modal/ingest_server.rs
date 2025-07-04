@@ -237,7 +237,7 @@ impl IngestServer {
                         .route(
                             web::post()
                                 .to(ingest::post_event)
-                                .authorize_for_stream(Action::Ingest),
+                                .authorize_for_resource(Action::Ingest),
                         )
                         .wrap(from_fn(
                             resource_check::check_resource_utilization_middleware,
@@ -255,7 +255,7 @@ impl IngestServer {
                         .route(
                             web::put()
                                 .to(ingestor_logstream::put_stream)
-                                .authorize_for_stream(Action::CreateStream),
+                                .authorize_for_resource(Action::CreateStream),
                         ),
                 )
                 .service(
@@ -263,7 +263,7 @@ impl IngestServer {
                     web::resource("/info").route(
                         web::get()
                             .to(logstream::get_stream_info)
-                            .authorize_for_stream(Action::GetStreamInfo),
+                            .authorize_for_resource(Action::GetStreamInfo),
                     ),
                 )
                 .service(
@@ -271,7 +271,7 @@ impl IngestServer {
                     web::resource("/stats").route(
                         web::get()
                             .to(logstream::get_stats)
-                            .authorize_for_stream(Action::GetStats),
+                            .authorize_for_resource(Action::GetStats),
                     ),
                 )
                 .service(
@@ -279,7 +279,7 @@ impl IngestServer {
                         web::resource("/cleanup").route(
                             web::post()
                                 .to(ingestor_logstream::retention_cleanup)
-                                .authorize_for_stream(Action::PutRetention),
+                                .authorize_for_resource(Action::PutRetention),
                         ),
                     ),
                 ),

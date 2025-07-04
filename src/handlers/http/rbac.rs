@@ -425,6 +425,8 @@ pub enum RBACError {
     InvalidSyncOperation(String),
     #[error("User group still being used by users: {0}")]
     UserGroupNotEmpty(String),
+    #[error("Resource in use: {0}")]
+    ResourceInUse(String),
 }
 
 impl actix_web::ResponseError for RBACError {
@@ -445,6 +447,7 @@ impl actix_web::ResponseError for RBACError {
             Self::InvalidUserGroupRequest(_) => StatusCode::BAD_REQUEST,
             Self::InvalidSyncOperation(_) => StatusCode::BAD_REQUEST,
             Self::UserGroupNotEmpty(_) => StatusCode::BAD_REQUEST,
+            Self::ResourceInUse(_) => StatusCode::BAD_REQUEST,
         }
     }
 

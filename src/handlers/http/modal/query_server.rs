@@ -273,19 +273,19 @@ impl QueryServer {
                             .route(
                                 web::put()
                                     .to(querier_logstream::put_stream)
-                                    .authorize_for_stream(Action::CreateStream),
+                                    .authorize_for_resource(Action::CreateStream),
                             )
                             // POST "/logstream/{logstream}" ==> Post logs to given log stream
                             .route(
                                 web::post()
                                     .to(querier_ingest::post_event)
-                                    .authorize_for_stream(Action::Ingest),
+                                    .authorize_for_resource(Action::Ingest),
                             )
                             // DELETE "/logstream/{logstream}" ==> Delete log stream
                             .route(
                                 web::delete()
                                     .to(querier_logstream::delete)
-                                    .authorize_for_stream(Action::DeleteStream),
+                                    .authorize_for_resource(Action::DeleteStream),
                             )
                             .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
                     )
@@ -294,7 +294,7 @@ impl QueryServer {
                         web::resource("/info").route(
                             web::get()
                                 .to(logstream::get_stream_info)
-                                .authorize_for_stream(Action::GetStreamInfo),
+                                .authorize_for_resource(Action::GetStreamInfo),
                         ),
                     )
                     .service(
@@ -302,7 +302,7 @@ impl QueryServer {
                         web::resource("/schema").route(
                             web::get()
                                 .to(logstream::get_schema)
-                                .authorize_for_stream(Action::GetSchema),
+                                .authorize_for_resource(Action::GetSchema),
                         ),
                     )
                     .service(
@@ -310,7 +310,7 @@ impl QueryServer {
                         web::resource("/stats").route(
                             web::get()
                                 .to(querier_logstream::get_stats)
-                                .authorize_for_stream(Action::GetStats),
+                                .authorize_for_resource(Action::GetStats),
                         ),
                     )
                     .service(
@@ -319,13 +319,13 @@ impl QueryServer {
                             .route(
                                 web::put()
                                     .to(logstream::put_retention)
-                                    .authorize_for_stream(Action::PutRetention),
+                                    .authorize_for_resource(Action::PutRetention),
                             )
                             // GET "/logstream/{logstream}/retention" ==> Get retention for given logstream
                             .route(
                                 web::get()
                                     .to(logstream::get_retention)
-                                    .authorize_for_stream(Action::GetRetention),
+                                    .authorize_for_resource(Action::GetRetention),
                             ),
                     )
                     .service(
@@ -334,17 +334,17 @@ impl QueryServer {
                             .route(
                                 web::put()
                                     .to(logstream::put_stream_hot_tier)
-                                    .authorize_for_stream(Action::PutHotTierEnabled),
+                                    .authorize_for_resource(Action::PutHotTierEnabled),
                             )
                             .route(
                                 web::get()
                                     .to(logstream::get_stream_hot_tier)
-                                    .authorize_for_stream(Action::GetHotTierEnabled),
+                                    .authorize_for_resource(Action::GetHotTierEnabled),
                             )
                             .route(
                                 web::delete()
                                     .to(logstream::delete_stream_hot_tier)
-                                    .authorize_for_stream(Action::DeleteHotTierEnabled),
+                                    .authorize_for_resource(Action::DeleteHotTierEnabled),
                             ),
                     ),
             )

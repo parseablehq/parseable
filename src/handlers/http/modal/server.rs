@@ -182,9 +182,9 @@ impl Server {
                 web::resource("/info").route(
                     web::get()
                         .to(http::prism_logstream::get_info)
-                        .authorize_for_stream(Action::GetStreamInfo)
-                        .authorize_for_stream(Action::GetStats)
-                        .authorize_for_stream(Action::GetRetention),
+                        .authorize_for_resource(Action::GetStreamInfo)
+                        .authorize_for_resource(Action::GetStats)
+                        .authorize_for_resource(Action::GetRetention),
                 ),
             ),
         )
@@ -195,9 +195,9 @@ impl Server {
             "",
             web::post()
                 .to(http::prism_logstream::post_datasets)
-                .authorize_for_stream(Action::GetStreamInfo)
-                .authorize_for_stream(Action::GetStats)
-                .authorize_for_stream(Action::GetRetention),
+                .authorize_for_resource(Action::GetStreamInfo)
+                .authorize_for_resource(Action::GetStats)
+                .authorize_for_resource(Action::GetRetention),
         )
     }
 
@@ -408,13 +408,13 @@ impl Server {
                             .route(
                                 web::put()
                                     .to(logstream::put_stream)
-                                    .authorize_for_stream(Action::CreateStream),
+                                    .authorize_for_resource(Action::CreateStream),
                             )
                             // POST "/logstream/{logstream}" ==> Post logs to given log stream
                             .route(
                                 web::post()
                                     .to(ingest::post_event)
-                                    .authorize_for_stream(Action::Ingest)
+                                    .authorize_for_resource(Action::Ingest)
                                     .wrap(from_fn(
                                         resource_check::check_resource_utilization_middleware,
                                     )),
@@ -423,7 +423,7 @@ impl Server {
                             .route(
                                 web::delete()
                                     .to(logstream::delete)
-                                    .authorize_for_stream(Action::DeleteStream),
+                                    .authorize_for_resource(Action::DeleteStream),
                             )
                             .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
                     )
@@ -432,7 +432,7 @@ impl Server {
                         web::resource("/info").route(
                             web::get()
                                 .to(logstream::get_stream_info)
-                                .authorize_for_stream(Action::GetStreamInfo),
+                                .authorize_for_resource(Action::GetStreamInfo),
                         ),
                     )
                     .service(
@@ -440,7 +440,7 @@ impl Server {
                         web::resource("/schema").route(
                             web::get()
                                 .to(logstream::get_schema)
-                                .authorize_for_stream(Action::GetSchema),
+                                .authorize_for_resource(Action::GetSchema),
                         ),
                     )
                     .service(
@@ -448,7 +448,7 @@ impl Server {
                         web::resource("/stats").route(
                             web::get()
                                 .to(logstream::get_stats)
-                                .authorize_for_stream(Action::GetStats),
+                                .authorize_for_resource(Action::GetStats),
                         ),
                     )
                     .service(
@@ -457,13 +457,13 @@ impl Server {
                             .route(
                                 web::put()
                                     .to(logstream::put_retention)
-                                    .authorize_for_stream(Action::PutRetention),
+                                    .authorize_for_resource(Action::PutRetention),
                             )
                             // GET "/logstream/{logstream}/retention" ==> Get retention for given logstream
                             .route(
                                 web::get()
                                     .to(logstream::get_retention)
-                                    .authorize_for_stream(Action::GetRetention),
+                                    .authorize_for_resource(Action::GetRetention),
                             ),
                     )
                     .service(
@@ -472,17 +472,17 @@ impl Server {
                             .route(
                                 web::put()
                                     .to(logstream::put_stream_hot_tier)
-                                    .authorize_for_stream(Action::PutHotTierEnabled),
+                                    .authorize_for_resource(Action::PutHotTierEnabled),
                             )
                             .route(
                                 web::get()
                                     .to(logstream::get_stream_hot_tier)
-                                    .authorize_for_stream(Action::GetHotTierEnabled),
+                                    .authorize_for_resource(Action::GetHotTierEnabled),
                             )
                             .route(
                                 web::delete()
                                     .to(logstream::delete_stream_hot_tier)
-                                    .authorize_for_stream(Action::DeleteHotTierEnabled),
+                                    .authorize_for_resource(Action::DeleteHotTierEnabled),
                             ),
                     ),
             )
@@ -494,7 +494,7 @@ impl Server {
             .route(
                 web::post()
                     .to(ingest::ingest)
-                    .authorize_for_stream(Action::Ingest),
+                    .authorize_for_resource(Action::Ingest),
             )
             .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE))
     }
@@ -507,7 +507,7 @@ impl Server {
                     .route(
                         web::post()
                             .to(ingest::handle_otel_logs_ingestion)
-                            .authorize_for_stream(Action::Ingest),
+                            .authorize_for_resource(Action::Ingest),
                     )
                     .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
@@ -516,7 +516,7 @@ impl Server {
                     .route(
                         web::post()
                             .to(ingest::handle_otel_metrics_ingestion)
-                            .authorize_for_stream(Action::Ingest),
+                            .authorize_for_resource(Action::Ingest),
                     )
                     .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
@@ -525,7 +525,7 @@ impl Server {
                     .route(
                         web::post()
                             .to(ingest::handle_otel_traces_ingestion)
-                            .authorize_for_stream(Action::Ingest),
+                            .authorize_for_resource(Action::Ingest),
                     )
                     .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
             )
