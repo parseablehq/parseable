@@ -62,7 +62,6 @@ pub async fn run_metadata_migration(
             .and_then(|version| version.as_str())
     }
 
-    warn!(verion=?get_version(storage_metadata.as_ref().unwrap()));
     // if storage metadata is none do nothing
     if let Some(storage_metadata) = storage_metadata {
         match get_version(&storage_metadata) {

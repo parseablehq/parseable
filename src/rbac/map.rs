@@ -16,6 +16,7 @@
  *
  */
 
+use crate::rbac::role::ParseableResourceType;
 use crate::rbac::user::{User, UserGroup};
 use crate::{parseable::PARSEABLE, storage::StorageMetadata};
 use std::collections::HashSet;
@@ -221,7 +222,7 @@ impl Sessions {
         &self,
         key: &SessionKey,
         required_action: Action,
-        context_stream: Option<&str>,
+        context_resource: Option<&str>,
         context_user: Option<&str>,
     ) -> Option<Response> {
         self.active_sessions.get(key).map(|(username, perms)| {
@@ -256,15 +257,23 @@ impl Sessions {
                 match *user_perm {
                     // if any action is ALL then we we authorize
                     Permission::Unit(action) => action == required_action || action == Action::All,
-                    Permission::Stream(action, ref stream)
-                    | Permission::StreamWithTag(action, ref stream, _) => {
-                        let ok_stream = if let Some(context_stream) = context_stream {
-                            stream == context_stream || stream == "*"
-                        } else {
-                            // if no stream to match then stream check is not needed
-                            true
-                        };
-                        (action == required_action || action == Action::All) && ok_stream
+                    Permission::Resource(action, ref resource_type) => {
+                        match resource_type {
+                            ParseableResourceType::Stream(resource_id)
+                            | ParseableResourceType::Llm(resource_id) => {
+                                let ok_resource = if let Some(context_resource_id) = context_resource {
+                                    resource_id == context_resource_id || resource_id == "*"
+                                } else {
+                                    // if no resource to match then resource check is not needed
+                                    // WHEN IS THIS VALID?? 
+                                    true
+                                };
+                                (action == required_action || action == Action::All) && ok_resource
+                            }
+                            ParseableResourceType::All => {
+                                action == required_action || action == Action::All
+                            },
+                        }
                     }
                     Permission::SelfUser if required_action == Action::GetUserRoles => {
                         context_user.map(|x| x == username).unwrap_or_default()

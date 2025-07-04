@@ -31,7 +31,7 @@ use crate::{
         rbac::RBACError,
     },
     rbac::{
-        map::{mut_users, roles, write_user_groups},
+        map::{roles, write_user_groups},
         user, Users,
     },
     validator,
@@ -126,22 +126,6 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
             continue;
         };
     }
-
-    // ensure that the users remove the user group from their map
-    [&username]
-        .iter()
-        .map(|user| {
-            if let Some(user) = mut_users().get_mut(*user) {
-                for group in groups_to_update.iter() {
-                    user.user_groups.remove(&group.name);
-                }
-
-                metadata.users.retain(|u| u.username() != user.username());
-                metadata.users.push(user.clone());
-            }
-        })
-        .for_each(drop);
-    put_metadata(&metadata).await?;
 
     // update in metadata user group
     metadata

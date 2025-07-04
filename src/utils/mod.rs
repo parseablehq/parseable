@@ -109,14 +109,19 @@ pub fn user_auth_for_datasets(
         // also while iterating add any filter tags for this stream
         for permission in permissions.iter() {
             match permission {
-                Permission::Stream(Action::All, _) => {
+                Permission::Resource(Action::All, _) => {
                     authorized = true;
                     break;
                 }
-                Permission::StreamWithTag(Action::Query, ref stream, _)
-                    if stream == table_name || stream == "*" =>
-                {
-                    authorized = true;
+                Permission::Resource(Action::Query, ref resource_type) => {
+                    match resource_type {
+                        crate::rbac::role::ParseableResourceType::Stream(stream) => {
+                            if stream == table_name || stream == "*" {
+                                authorized = true;
+                            }
+                        }
+                        _ => {},
+                    }
                 }
                 _ => (),
             }
