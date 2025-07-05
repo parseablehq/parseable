@@ -35,6 +35,7 @@ use once_cell::sync::Lazy;
 pub use staging::StagingError;
 use streams::StreamRef;
 pub use streams::{Stream, StreamNotFound, Streams};
+use tokio::try_join;
 use tracing::error;
 
 #[cfg(feature = "kafka")]
@@ -270,17 +271,22 @@ impl Parseable {
             return Ok(false);
         }
 
-        let mut stream_metadata = ObjectStoreFormat::default();
-        let stream_metadata_bytes = storage.create_stream_from_ingestor(stream_name).await?;
-        if !stream_metadata_bytes.is_empty() {
-            stream_metadata = serde_json::from_slice::<ObjectStoreFormat>(&stream_metadata_bytes)?;
-        }
+        let (stream_metadata_bytes, schema_bytes) = try_join!(
+            storage.create_stream_from_ingestor(stream_name),
+            storage.create_schema_from_ingestor(stream_name)
+        )?;
 
-        let mut schema = Arc::new(Schema::empty());
-        let schema_bytes = storage.create_schema_from_ingestor(stream_name).await?;
-        if !schema_bytes.is_empty() {
-            schema = serde_json::from_slice::<Arc<Schema>>(&schema_bytes)?;
-        }
+        let stream_metadata = if stream_metadata_bytes.is_empty() {
+            ObjectStoreFormat::default()
+        } else {
+            serde_json::from_slice::<ObjectStoreFormat>(&stream_metadata_bytes)?
+        };
+
+        let schema = if schema_bytes.is_empty() {
+            Arc::new(Schema::empty())
+        } else {
+            serde_json::from_slice::<Arc<Schema>>(&schema_bytes)?
+        };
 
         let static_schema: HashMap<String, Arc<Field>> = schema
             .fields
