@@ -451,6 +451,16 @@ pub struct Options {
         help = "Object store sync threshold in seconds"
     )]
     pub object_store_sync_threshold: u64,
+    // the oidc scope 
+    #[arg(
+        long = "oidc-scope",
+        name = "oidc-scope",
+        env = "P_OIDC_SCOPE",
+        default_value = "openid profile email",
+        required = false,
+        help = "OIDC scope to request (default: openid profile email)"
+    )]
+    pub scope: String,
 }
 
 #[derive(Parser, Debug)]

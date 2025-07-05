@@ -32,7 +32,7 @@ use ulid::Ulid;
 use url::Url;
 
 use crate::{
-    handlers::{COOKIE_AGE_DAYS, OIDC_SCOPE, SESSION_COOKIE_NAME, USER_COOKIE_NAME},
+    handlers::{COOKIE_AGE_DAYS, SESSION_COOKIE_NAME, USER_COOKIE_NAME},
     oidc::{Claims, DiscoveredClient},
     parseable::PARSEABLE,
     rbac::{
@@ -77,7 +77,7 @@ pub async fn login(
     let session_key = extract_session_key_from_req(&req).ok();
     let (session_key, oidc_client) = match (session_key, oidc_client) {
         (None, None) => return Ok(redirect_no_oauth_setup(query.redirect.clone())),
-        (None, Some(client)) => return Ok(redirect_to_oidc(query, client)),
+        (None, Some(client)) => return Ok(redirect_to_oidc(query, client, PARSEABLE.options.scope.to_string().as_str())),
         (Some(session_key), client) => (session_key, client),
     };
     // try authorize
@@ -113,7 +113,7 @@ pub async fn login(
             } else {
                 Users.remove_session(&key);
                 if let Some(oidc_client) = oidc_client {
-                    redirect_to_oidc(query, oidc_client)
+                    redirect_to_oidc(query, oidc_client, PARSEABLE.options.scope.to_string().as_str())
                 } else {
                     redirect_to_client(query.redirect.as_str(), None)
                 }
@@ -226,10 +226,11 @@ fn exchange_basic_for_cookie(user: &User, key: SessionKey) -> Cookie<'static> {
 fn redirect_to_oidc(
     query: web::Query<RedirectAfterLogin>,
     oidc_client: &DiscoveredClient,
+    scope: &str,
 ) -> HttpResponse {
     let redirect = query.into_inner().redirect.to_string();
     let auth_url = oidc_client.auth_url(&Options {
-        scope: Some(OIDC_SCOPE.into()),
+        scope: Some(scope.to_string()),
         state: Some(redirect),
         ..Default::default()
     });
