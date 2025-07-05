@@ -160,7 +160,13 @@ pub async fn sync_streams_with_ingestors(
 pub async fn sync_users_with_roles_with_ingestors(
     username: &str,
     role: &HashSet<String>,
+    operation: &str,
 ) -> Result<(), RBACError> {
+    match operation {
+        "add" | "remove" => {}
+        _ => return Err(RBACError::InvalidSyncOperation(operation.to_string())),
+    }
+
     let role_data = to_vec(&role.clone()).map_err(|err| {
         error!("Fatal: failed to serialize role: {:?}", err);
         RBACError::SerdeError(err)
@@ -168,12 +174,15 @@ pub async fn sync_users_with_roles_with_ingestors(
 
     let username = username.to_owned();
 
+    let op = operation.to_string();
+
     for_each_live_ingestor(move |ingestor| {
         let url = format!(
-            "{}{}/user/{}/role/sync",
+            "{}{}/user/{}/role/sync/{}",
             ingestor.domain_name,
             base_path_without_preceding_slash(),
-            username
+            username,
+            op
         );
 
         let role_data = role_data.clone();

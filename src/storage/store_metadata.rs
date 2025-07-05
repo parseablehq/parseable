@@ -30,7 +30,10 @@ use std::io;
 use crate::{
     option::Mode,
     parseable::{JOIN_COMMUNITY, PARSEABLE},
-    rbac::{role::model::DefaultPrivilege, user::User},
+    rbac::{
+        role::model::DefaultPrivilege,
+        user::{User, UserGroup},
+    },
     storage::ObjectStorageError,
     utils::uid,
 };
@@ -39,7 +42,7 @@ use super::PARSEABLE_METADATA_FILE_NAME;
 
 // Expose some static variables for internal usage
 pub static STORAGE_METADATA: OnceCell<StaticStorageMetadata> = OnceCell::new();
-pub const CURRENT_STORAGE_METADATA_VERSION: &str = "v4";
+pub const CURRENT_STORAGE_METADATA_VERSION: &str = "v6";
 // For use in global static
 #[derive(Debug, PartialEq, Eq)]
 pub struct StaticStorageMetadata {
@@ -57,6 +60,7 @@ pub struct StorageMetadata {
     #[serde(default = "crate::utils::uid::gen")]
     pub deployment_id: uid::Uid,
     pub users: Vec<User>,
+    pub user_groups: Vec<UserGroup>,
     pub streams: Vec<String>,
     pub server_mode: Mode,
     #[serde(default)]
@@ -75,6 +79,7 @@ impl Default for StorageMetadata {
             deployment_id: uid::gen(),
             server_mode: PARSEABLE.options.mode,
             users: Vec::new(),
+            user_groups: Vec::new(),
             streams: Vec::new(),
             roles: HashMap::default(),
             default_role: None,
@@ -86,7 +91,7 @@ impl StorageMetadata {
     pub fn global() -> &'static StaticStorageMetadata {
         STORAGE_METADATA
             .get()
-            .expect("gloabal static is initialized")
+            .expect("global static is initialized")
     }
 
     pub fn set_global(self) {
