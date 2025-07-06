@@ -206,7 +206,7 @@ async fn migration_stream(
 ) -> anyhow::Result<Option<LogStreamMetadata>> {
     let mut arrow_schema: Schema = Schema::empty();
 
-    let schema = fetch_or_create_schema(stream, storage).await?;
+    let schema = storage.create_schema_from_storage(stream).await?;
     let stream_metadata = fetch_or_create_stream_metadata(stream, storage).await?;
 
     let mut stream_meta_found = true;
@@ -232,29 +232,6 @@ async fn migration_stream(
     let metadata =
         setup_logstream_metadata(stream, &mut arrow_schema, stream_metadata_value).await?;
     Ok(Some(metadata))
-}
-
-async fn fetch_or_create_schema(
-    stream: &str,
-    storage: &dyn ObjectStorage,
-) -> anyhow::Result<Bytes> {
-    let schema_path = schema_path(stream);
-    if let Ok(schema) = storage.get_object(&schema_path).await {
-        Ok(schema)
-    } else {
-        let querier_schema = storage
-            .create_schema_from_querier(stream)
-            .await
-            .unwrap_or_default();
-        if !querier_schema.is_empty() {
-            Ok(querier_schema)
-        } else {
-            Ok(storage
-                .create_schema_from_ingestor(stream)
-                .await
-                .unwrap_or_default())
-        }
-    }
 }
 
 async fn fetch_or_create_stream_metadata(
