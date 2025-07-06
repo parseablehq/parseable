@@ -49,6 +49,7 @@ use crate::catalog::{self, manifest::Manifest, snapshot::Snapshot};
 use crate::correlation::{CorrelationConfig, CorrelationError};
 use crate::event::format::LogSource;
 use crate::event::format::LogSourceEntry;
+use crate::handlers::http::fetch_schema;
 use crate::handlers::http::modal::ingest_server::INGESTOR_EXPECT;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::handlers::http::users::CORRELATION_DIR;
@@ -652,44 +653,18 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         Ok(Bytes::new())
     }
 
-    ///create schema from querier schema from storage
-    async fn create_schema_from_querier(
+    ///create schema from storage
+    async fn create_schema_from_storage(
         &self,
         stream_name: &str,
     ) -> Result<Bytes, ObjectStorageError> {
-        let path =
-            RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY, SCHEMA_FILE_NAME]);
-        if let Ok(querier_schema_bytes) = self.get_object(&path).await {
-            self.put_object(&schema_path(stream_name), querier_schema_bytes.clone())
-                .await?;
-            return Ok(querier_schema_bytes);
-        }
-        Ok(Bytes::new())
-    }
-
-    ///create schema from ingestor schema from storage
-    async fn create_schema_from_ingestor(
-        &self,
-        stream_name: &str,
-    ) -> Result<Bytes, ObjectStorageError> {
-        let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
-        if let Some(schema_obs) = self
-            .get_objects(
-                Some(&path),
-                Box::new(|file_name| {
-                    file_name.starts_with(".ingestor") && file_name.ends_with("schema")
-                }),
-            )
-            .await
-            .into_iter()
-            .next()
-        {
-            let schema_ob = &schema_obs[0];
-            self.put_object(&schema_path(stream_name), schema_ob.clone())
-                .await?;
-            return Ok(schema_ob.clone());
-        }
-        Ok(Bytes::new())
+        let schema = fetch_schema(stream_name).await?;
+        // convert to bytes
+        let schema = serde_json::to_vec(&schema)?;
+        let schema_bytes = Bytes::from(schema);
+        self.put_object(&schema_path(stream_name), schema_bytes.clone())
+            .await?;
+        Ok(schema_bytes)
     }
 
     async fn get_stream_meta_from_storage(
