@@ -115,17 +115,17 @@ pub async fn post_user(
     if user_roles.is_empty() {
         return Err(RBACError::RoleValidationError);
     } else {
-        let mut non_existant_roles = Vec::new();
+        let mut non_existent_roles = Vec::new();
         user_roles
             .iter()
             .map(|r| {
                 if !roles().contains_key(r) {
-                    non_existant_roles.push(r.clone());
+                    non_existent_roles.push(r.clone());
                 }
             })
             .for_each(drop);
-        if !non_existant_roles.is_empty() {
-            return Err(RBACError::RolesDoNotExist(non_existant_roles));
+        if !non_existent_roles.is_empty() {
+            return Err(RBACError::RolesDoNotExist(non_existent_roles));
         }
     }
     let _ = UPDATE_LOCK.lock().await;
@@ -237,24 +237,23 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     let mut metadata = get_metadata().await?;
     metadata.users.retain(|user| user.username() != username);
 
-    // also delete from user groups
+    // Remove user from all groups
     let user_groups = Users.get_user_groups(&username);
-    let mut groups_to_update = Vec::new();
-    for user_group in user_groups {
-        if let Some(ug) = write_user_groups().get_mut(&user_group) {
-            ug.remove_users(HashSet::from_iter([username.clone()]))?;
-            groups_to_update.push(ug.clone());
-            // ug.update_in_metadata().await?;
-        } else {
-            continue;
-        };
+    {
+        let mut groups = write_user_groups();
+        for group_name in &user_groups {
+            if let Some(group) = groups.get_mut(group_name) {
+                group.remove_users(HashSet::from_iter([username.clone()]))?;
+            }
+        }
     }
 
-    // update in metadata user groups
-    metadata
-        .user_groups
-        .retain(|x| !groups_to_update.contains(x));
-    metadata.user_groups.extend(groups_to_update);
+    // Update metadata with modified groups
+    for group in metadata.user_groups.iter_mut() {
+        if user_groups.contains(&group.name) {
+            group.users.retain(|u| u != &username);
+        }
+    }
     put_metadata(&metadata).await?;
 
     // update in mem table
@@ -274,17 +273,17 @@ pub async fn add_roles_to_user(
         return Err(RBACError::UserDoesNotExist);
     };
 
-    let mut non_existant_roles = Vec::new();
+    let mut non_existent_roles = Vec::new();
 
     // check if the role exists
     roles_to_add.iter().for_each(|r| {
         if roles().get(r).is_none() {
-            non_existant_roles.push(r.clone());
+            non_existent_roles.push(r.clone());
         }
     });
 
-    if !non_existant_roles.is_empty() {
-        return Err(RBACError::RolesDoNotExist(non_existant_roles));
+    if !non_existent_roles.is_empty() {
+        return Err(RBACError::RolesDoNotExist(non_existent_roles));
     }
 
     // update parseable.json first
@@ -319,17 +318,17 @@ pub async fn remove_roles_from_user(
         return Err(RBACError::UserDoesNotExist);
     };
 
-    let mut non_existant_roles = Vec::new();
+    let mut non_existent_roles = Vec::new();
 
     // check if the role exists
     roles_to_remove.iter().for_each(|r| {
         if roles().get(r).is_none() {
-            non_existant_roles.push(r.clone());
+            non_existent_roles.push(r.clone());
         }
     });
 
-    if !non_existant_roles.is_empty() {
-        return Err(RBACError::RolesDoNotExist(non_existant_roles));
+    if !non_existent_roles.is_empty() {
+        return Err(RBACError::RolesDoNotExist(non_existent_roles));
     }
 
     // check for role not present with user
@@ -368,30 +367,12 @@ pub async fn remove_roles_from_user(
 #[serde(rename = "camelCase")]
 pub struct InvalidUserGroupError {
     pub valid_name: bool,
-    pub non_existant_roles: Vec<String>,
-    pub non_existant_users: Vec<String>,
+    pub non_existent_roles: Vec<String>,
+    pub non_existent_users: Vec<String>,
     pub roles_not_in_group: Vec<String>,
     pub users_not_in_group: Vec<String>,
     pub comments: String,
 }
-
-// impl Display for InvalidUserGroupRequestStruct {
-//     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-//         if !self.invalid_name {
-//             write!(
-//                 f,
-//                 "Invalid user group request- {{invalidName: {}\nnonExistantRoles: {:?}\nnonExistantUsers: {:?}\nThe name should follow this regex- ^[A-Za-z0-9_-]+$}}",
-//                 self.invalid_name, self.non_existant_roles, self.non_existant_users
-//             )
-//         } else {
-//             write!(
-//                 f,
-//                 "Invalid user group request- {{nonExistantRoles: {:?}\nnonExistantUsers: {:?}}}",
-//                 self.non_existant_roles, self.non_existant_users
-//             )
-//         }
-//     }
-// }
 
 #[derive(Debug, thiserror::Error)]
 pub enum RBACError {
@@ -461,7 +442,7 @@ impl actix_web::ResponseError for RBACError {
             RBACError::RolesDoNotExist(obj) => actix_web::HttpResponse::build(self.status_code())
                 .insert_header(ContentType::plaintext())
                 .json(json!({
-                    "non_existant_roles": obj
+                    "non_existent_roles": obj
                 })),
             RBACError::InvalidUserGroupRequest(obj) => {
                 actix_web::HttpResponse::build(self.status_code())

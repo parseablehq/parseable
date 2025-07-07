@@ -221,26 +221,26 @@ impl UserGroup {
         if read_user_groups().contains_key(&self.name) {
             return Err(RBACError::UserGroupExists(self.name.clone()));
         }
-        let mut non_existant_roles = Vec::new();
+        let mut non_existent_roles = Vec::new();
         if !self.roles.is_empty() {
             // validate that the roles exist
             for role in &self.roles {
                 if !roles().contains_key(role) {
-                    non_existant_roles.push(role.clone());
+                    non_existent_roles.push(role.clone());
                 }
             }
         }
-        let mut non_existant_users = Vec::new();
+        let mut non_existent_users = Vec::new();
         if !self.users.is_empty() {
             // validate that the users exist
             for user in &self.users {
                 if !users().contains_key(user) {
-                    non_existant_users.push(user.clone());
+                    non_existent_users.push(user.clone());
                 }
             }
         }
 
-        if !non_existant_roles.is_empty() || !non_existant_users.is_empty() || !valid_name {
+        if !non_existent_roles.is_empty() || !non_existent_users.is_empty() || !valid_name {
             let comments = if !valid_name {
                 "The name should follow this regex- `^[A-Za-z0-9_-]+$`".to_string()
             } else {
@@ -249,8 +249,8 @@ impl UserGroup {
             Err(RBACError::InvalidUserGroupRequest(Box::new(
                 InvalidUserGroupError {
                     valid_name,
-                    non_existant_roles,
-                    non_existant_users,
+                    non_existent_roles,
+                    non_existent_users,
                     roles_not_in_group: vec![],
                     users_not_in_group: vec![],
                     comments,

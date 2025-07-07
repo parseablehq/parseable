@@ -16,8 +16,6 @@
  *
  */
 
-use std::collections::HashSet;
-
 use actix_web::{
     http::header::ContentType,
     web::{self, Json},
@@ -103,23 +101,21 @@ pub async fn delete(name: web::Path<String>) -> Result<impl Responder, RoleError
         };
     }
 
+    // remove role from all user groups that have it
     let mut groups_to_update = Vec::new();
-    for user_group in group_names {
-        if let Some(ug) = write_user_groups().get_mut(&user_group) {
-            ug.remove_roles(HashSet::from_iter([name.clone()]))
-                .map_err(|e| RoleError::Anyhow(anyhow::Error::msg(e.to_string())))?;
-            groups_to_update.push(ug.clone());
-            // ug.update_in_metadata().await?;
-        } else {
-            continue;
-        };
+    for group in write_user_groups().values_mut() {
+        if group.roles.remove(&name) {
+            groups_to_update.push(group.clone());
+        }
     }
 
-    // update in metadata
-    metadata
-        .user_groups
-        .retain(|x| !groups_to_update.contains(x));
-    metadata.user_groups.extend(groups_to_update);
+    // update metadata only if there are changes
+    if !groups_to_update.is_empty() {
+        metadata
+            .user_groups
+            .retain(|x| !groups_to_update.contains(x));
+        metadata.user_groups.extend(groups_to_update);
+    }
     put_metadata(&metadata).await?;
 
     Ok(HttpResponse::Ok().finish())

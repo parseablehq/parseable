@@ -119,7 +119,10 @@ impl Users {
     pub fn get_permissions(&self, session: &SessionKey) -> Vec<Permission> {
         let mut permissions = sessions().get(session).cloned().unwrap_or_default();
 
-        let username = self.get_username_from_session(session).unwrap();
+        let Some(username) = self.get_username_from_session(session) else {
+            return permissions.into_iter().collect_vec();
+        };
+
         let user_groups = self.get_user_groups(&username);
         for group in user_groups {
             if let Some(group) = read_user_groups().get(&group) {

@@ -24,6 +24,7 @@ use tokio::sync::Mutex;
 use crate::{
     handlers::http::{modal::utils::rbac_utils::get_metadata, rbac::RBACError},
     rbac::{
+        map::roles,
         user::{self, User as ParseableUser},
         Users,
     },
@@ -73,38 +74,6 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     Ok(format!("deleted user: {username}"))
 }
 
-// // Handler PUT /user/{username}/roles => Put roles for user
-// // Put roles for given user
-// pub async fn put_role(
-//     username: web::Path<String>,
-//     role: web::Json<HashSet<String>>,
-// ) -> Result<String, RBACError> {
-//     let username = username.into_inner();
-//     let role = role.into_inner();
-
-//     if !Users.contains(&username) {
-//         return Err(RBACError::UserDoesNotExist);
-//     };
-//     // update parseable.json first
-//     let mut metadata = get_metadata().await?;
-//     if let Some(user) = metadata
-//         .users
-//         .iter_mut()
-//         .find(|user| user.username() == username)
-//     {
-//         user.roles.clone_from(&role);
-//     } else {
-//         // should be unreachable given state is always consistent
-//         return Err(RBACError::UserDoesNotExist);
-//     }
-
-//     let _ = storage::put_staging_metadata(&metadata);
-//     // update in mem table
-//     Users.add_roles(&username.clone(), role.clone());
-
-//     Ok(format!("Roles updated successfully for {username}"))
-// }
-
 // Handler PATCH /user/{username}/role/sync/add => Add roles to a user
 pub async fn add_roles_to_user(
     username: web::Path<String>,
@@ -116,6 +85,19 @@ pub async fn add_roles_to_user(
     if !Users.contains(&username) {
         return Err(RBACError::UserDoesNotExist);
     };
+
+    // check if all roles exist
+    let mut non_existent_roles = Vec::new();
+    roles_to_add.iter().for_each(|r| {
+        if roles().get(r).is_none() {
+            non_existent_roles.push(r.clone());
+        }
+    });
+
+    if !non_existent_roles.is_empty() {
+        return Err(RBACError::RolesDoNotExist(non_existent_roles));
+    }
+
     // update parseable.json first
     let mut metadata = get_metadata().await?;
     if let Some(user) = metadata
@@ -147,6 +129,30 @@ pub async fn remove_roles_from_user(
     if !Users.contains(&username) {
         return Err(RBACError::UserDoesNotExist);
     };
+
+    // check if all roles exist
+    let mut non_existent_roles = Vec::new();
+    roles_to_remove.iter().for_each(|r| {
+        if roles().get(r).is_none() {
+            non_existent_roles.push(r.clone());
+        }
+    });
+
+    if !non_existent_roles.is_empty() {
+        return Err(RBACError::RolesDoNotExist(non_existent_roles));
+    }
+
+    // check that user actually has these roles
+    let user_roles: HashSet<String> = HashSet::from_iter(Users.get_role(&username));
+    let roles_not_with_user: HashSet<String> =
+        HashSet::from_iter(roles_to_remove.difference(&user_roles).cloned());
+
+    if !roles_not_with_user.is_empty() {
+        return Err(RBACError::RolesNotAssigned(Vec::from_iter(
+            roles_not_with_user,
+        )));
+    }
+
     // update parseable.json first
     let mut metadata = get_metadata().await?;
     if let Some(user) = metadata

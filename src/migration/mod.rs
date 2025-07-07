@@ -41,6 +41,13 @@ use crate::{
     },
 };
 
+fn get_version(metadata: &serde_json::Value) -> Option<&str> {
+    metadata
+        .as_object()
+        .and_then(|meta| meta.get("version"))
+        .and_then(|version| version.as_str())
+}
+
 /// Migrate the metdata from v1 or v2 to v3
 /// This is a one time migration
 pub async fn run_metadata_migration(
@@ -54,13 +61,6 @@ pub async fn run_metadata_migration(
             .expect("parseable config is valid json");
     }
     let staging_metadata = get_staging_metadata(config)?;
-
-    fn get_version(metadata: &serde_json::Value) -> Option<&str> {
-        metadata
-            .as_object()
-            .and_then(|meta| meta.get("version"))
-            .and_then(|version| version.as_str())
-    }
 
     // if storage metadata is none do nothing
     if let Some(storage_metadata) = storage_metadata {
@@ -117,34 +117,39 @@ pub async fn run_metadata_migration(
 
     // if staging metadata is none do nothing
     if let Some(staging_metadata) = staging_metadata {
-        match get_version(&staging_metadata) {
-            Some("v1") => {
-                let mut metadata = metadata_migration::v1_v3(staging_metadata);
-                metadata = metadata_migration::v3_v4(metadata);
-                put_staging_metadata(config, &metadata)?;
-            }
-            Some("v2") => {
-                let mut metadata = metadata_migration::v2_v3(staging_metadata);
-                metadata = metadata_migration::v3_v4(metadata);
-                put_staging_metadata(config, &metadata)?;
-            }
-            Some("v3") => {
-                let metadata = metadata_migration::v3_v4(staging_metadata);
-                put_staging_metadata(config, &metadata)?;
-            }
-            Some("v4") => {
-                let metadata = metadata_migration::v4_v5(staging_metadata);
-                let metadata = metadata_migration::v5_v6(metadata);
-                put_staging_metadata(config, &metadata)?;
-            }
-            Some("v5") => {
-                let metadata = metadata_migration::v5_v6(staging_metadata);
-                put_staging_metadata(config, &metadata)?;
-            }
-            _ => (),
-        }
+        migrate_staging(config, staging_metadata)?;
     }
 
+    Ok(())
+}
+
+fn migrate_staging(config: &Parseable, staging_metadata: Value) -> anyhow::Result<()> {
+    match get_version(&staging_metadata) {
+        Some("v1") => {
+            let mut metadata = metadata_migration::v1_v3(staging_metadata);
+            metadata = metadata_migration::v3_v4(metadata);
+            put_staging_metadata(config, &metadata)?;
+        }
+        Some("v2") => {
+            let mut metadata = metadata_migration::v2_v3(staging_metadata);
+            metadata = metadata_migration::v3_v4(metadata);
+            put_staging_metadata(config, &metadata)?;
+        }
+        Some("v3") => {
+            let metadata = metadata_migration::v3_v4(staging_metadata);
+            put_staging_metadata(config, &metadata)?;
+        }
+        Some("v4") => {
+            let metadata = metadata_migration::v4_v5(staging_metadata);
+            let metadata = metadata_migration::v5_v6(metadata);
+            put_staging_metadata(config, &metadata)?;
+        }
+        Some("v5") => {
+            let metadata = metadata_migration::v5_v6(staging_metadata);
+            put_staging_metadata(config, &metadata)?;
+        }
+        _ => (),
+    }
     Ok(())
 }
 
