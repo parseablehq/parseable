@@ -77,7 +77,13 @@ pub async fn login(
     let session_key = extract_session_key_from_req(&req).ok();
     let (session_key, oidc_client) = match (session_key, oidc_client) {
         (None, None) => return Ok(redirect_no_oauth_setup(query.redirect.clone())),
-        (None, Some(client)) => return Ok(redirect_to_oidc(query, client, PARSEABLE.options.scope.to_string().as_str())),
+        (None, Some(client)) => {
+            return Ok(redirect_to_oidc(
+                query,
+                client,
+                PARSEABLE.options.scope.to_string().as_str(),
+            ))
+        }
         (Some(session_key), client) => (session_key, client),
     };
     // try authorize
@@ -113,7 +119,11 @@ pub async fn login(
             } else {
                 Users.remove_session(&key);
                 if let Some(oidc_client) = oidc_client {
-                    redirect_to_oidc(query, oidc_client, PARSEABLE.options.scope.to_string().as_str())
+                    redirect_to_oidc(
+                        query,
+                        oidc_client,
+                        PARSEABLE.options.scope.to_string().as_str(),
+                    )
                 } else {
                     redirect_to_client(query.redirect.as_str(), None)
                 }

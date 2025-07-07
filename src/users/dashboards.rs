@@ -52,12 +52,16 @@ pub struct Tile {
     pub other_fields: Option<serde_json::Map<String, Value>>,
 }
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct Dashboard {
     pub version: Option<String>,
     pub title: String,
     pub author: Option<String>,
     pub dashboard_id: Option<Ulid>,
+    pub created: Option<DateTime<Utc>>,
     pub modified: Option<DateTime<Utc>>,
+    pub tags: Option<Vec<String>>,
+    pub is_favorite: Option<bool>, // whether the dashboard is marked as favorite, default is false
     dashboard_type: Option<DashboardType>,
     pub tiles: Option<Vec<Tile>>,
 }
@@ -77,6 +81,9 @@ impl Dashboard {
         if self.tiles.is_none() {
             self.tiles = Some(Vec::new());
         }
+
+        // if is_favorite is None, set it to false, else set it to the current value
+        self.is_favorite = self.is_favorite.or(Some(false));
     }
 
     /// create a summary of the dashboard
@@ -96,6 +103,13 @@ impl Dashboard {
             );
         }
 
+        if let Some(created) = &self.created {
+            map.insert(
+                "created".to_string(),
+                serde_json::Value::String(created.to_string()),
+            );
+        }
+
         if let Some(modified) = &self.modified {
             map.insert(
                 "modified".to_string(),
@@ -105,10 +119,26 @@ impl Dashboard {
 
         if let Some(dashboard_id) = &self.dashboard_id {
             map.insert(
-                "dashboard_id".to_string(),
+                "dashboardId".to_string(),
                 serde_json::Value::String(dashboard_id.to_string()),
             );
         }
+
+        if let Some(tags) = &self.tags {
+            map.insert(
+                "tags".to_string(),
+                serde_json::Value::Array(
+                    tags.iter()
+                        .map(|tag| serde_json::Value::String(tag.clone()))
+                        .collect(),
+                ),
+            );
+        }
+
+        map.insert(
+            "isFavorite".to_string(),
+            serde_json::Value::Bool(self.is_favorite.unwrap_or(false)),
+        );
 
         map
     }
@@ -175,8 +205,8 @@ impl Dashboards {
         let dashboard_id = dashboard
             .dashboard_id
             .ok_or(DashboardError::Metadata("Dashboard ID must be provided"))?;
-        let path = dashboard_path(user_id, &format!("{dashboard_id}.json"));
 
+        let path = dashboard_path(user_id, &format!("{dashboard_id}.json"));
         let store = PARSEABLE.storage.get_object_store();
         let dashboard_bytes = serde_json::to_vec(&dashboard)?;
         store
@@ -194,10 +224,22 @@ impl Dashboards {
         user_id: &str,
         dashboard: &mut Dashboard,
     ) -> Result<(), DashboardError> {
+        dashboard.created = Some(Utc::now());
         dashboard.set_metadata(user_id, None);
 
+        let mut dashboards = self.0.write().await;
+
+        let has_duplicate = dashboards
+            .iter()
+            .any(|d| d.title == dashboard.title && d.dashboard_id != dashboard.dashboard_id);
+
+        if has_duplicate {
+            return Err(DashboardError::Metadata("Dashboard title must be unique"));
+        }
+
         self.save_dashboard(user_id, dashboard).await?;
-        self.0.write().await.push(dashboard.clone());
+
+        dashboards.push(dashboard.clone());
 
         Ok(())
     }
@@ -211,14 +253,32 @@ impl Dashboards {
         dashboard_id: Ulid,
         dashboard: &mut Dashboard,
     ) -> Result<(), DashboardError> {
-        self.ensure_dashboard_ownership(dashboard_id, user_id)
-            .await?;
+        let mut dashboards = self.0.write().await;
+
+        let existing_dashboard = dashboards
+            .iter()
+            .find(|d| d.dashboard_id == Some(dashboard_id) && d.author == Some(user_id.to_string()))
+            .cloned()
+            .ok_or_else(|| {
+                DashboardError::Metadata(
+                    "Dashboard does not exist or you do not have permission to access it",
+                )
+            })?;
 
         dashboard.set_metadata(user_id, Some(dashboard_id));
+        dashboard.created = existing_dashboard.created;
+
+        let has_duplicate = dashboards
+            .iter()
+            .any(|d| d.title == dashboard.title && d.dashboard_id != dashboard.dashboard_id);
+
+        if has_duplicate {
+            return Err(DashboardError::Metadata("Dashboard title must be unique"));
+        }
+
         self.save_dashboard(user_id, dashboard).await?;
 
-        let mut dashboards = self.0.write().await;
-        dashboards.retain(|d| d.dashboard_id != dashboard.dashboard_id);
+        dashboards.retain(|d| d.dashboard_id != Some(dashboard_id));
         dashboards.push(dashboard.clone());
 
         Ok(())
@@ -288,6 +348,35 @@ impl Dashboards {
         self.0.read().await.clone()
     }
 
+    /// List tags from all dashboards
+    /// This function returns a list of unique tags from all dashboards
+    pub async fn list_tags(&self) -> Vec<String> {
+        let dashboards = self.0.read().await;
+        let mut tags = dashboards
+            .iter()
+            .filter_map(|d| d.tags.as_ref())
+            .flat_map(|t| t.iter().cloned())
+            .collect::<Vec<String>>();
+        tags.sort();
+        tags.dedup();
+        tags
+    }
+
+    /// List dashboards by tag
+    /// This function returns a list of dashboards that have the specified tag
+    pub async fn list_dashboards_by_tag(&self, tag: &str) -> Vec<Dashboard> {
+        let dashboards = self.0.read().await;
+        dashboards
+            .iter()
+            .filter(|d| {
+                d.tags
+                    .as_ref()
+                    .is_some_and(|tags| tags.contains(&tag.to_string()))
+            })
+            .cloned()
+            .collect()
+    }
+
     /// Ensure the user is the owner of the dashboard
     /// This function is called when updating or deleting a dashboard
     /// check if the user is the owner of the dashboard
@@ -296,10 +385,13 @@ impl Dashboards {
         &self,
         dashboard_id: Ulid,
         user_id: &str,
-    ) -> Result<(), DashboardError> {
+    ) -> Result<Dashboard, DashboardError> {
         self.get_dashboard_by_user(dashboard_id, user_id)
             .await
-            .ok_or_else(|| DashboardError::Unauthorized)
-            .map(|_| ())
+            .ok_or_else(|| {
+                DashboardError::Metadata(
+                    "Dashboard does not exist or you do not have permission to access it",
+                )
+            })
     }
 }

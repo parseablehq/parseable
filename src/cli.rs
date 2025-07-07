@@ -451,7 +451,7 @@ pub struct Options {
         help = "Object store sync threshold in seconds"
     )]
     pub object_store_sync_threshold: u64,
-    // the oidc scope 
+    // the oidc scope
     #[arg(
         long = "oidc-scope",
         name = "oidc-scope",
