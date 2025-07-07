@@ -181,6 +181,20 @@ pub fn v5_v6(mut storage_metadata: JsonValue) -> JsonValue {
         }
     }
 
+    if let Some(JsonValue::Object(roles)) = metadata.get_mut("roles") {
+        for (_, role_permissions) in roles.iter_mut() {
+            if let JsonValue::Array(permissions) = role_permissions {
+                for permission in permissions.iter_mut() {
+                    if let JsonValue::Object(perm_obj) = permission {
+                        if let Some(JsonValue::Object(resource)) = perm_obj.get_mut("resource") {
+                            resource.remove("tag");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     storage_metadata
 }
 

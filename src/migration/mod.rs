@@ -132,6 +132,15 @@ pub async fn run_metadata_migration(
                 let metadata = metadata_migration::v3_v4(staging_metadata);
                 put_staging_metadata(config, &metadata)?;
             }
+            Some("v4") => {
+                let metadata = metadata_migration::v4_v5(staging_metadata);
+                let metadata = metadata_migration::v5_v6(metadata);
+                put_staging_metadata(config, &metadata)?;
+            }
+            Some("v5") => {
+                let metadata = metadata_migration::v5_v6(staging_metadata);
+                put_staging_metadata(config, &metadata)?;
+            }
             _ => (),
         }
     }
