@@ -206,17 +206,7 @@ impl Dashboards {
             .dashboard_id
             .ok_or(DashboardError::Metadata("Dashboard ID must be provided"))?;
 
-        // ensure the dashboard has unique title
-        let dashboards = self.0.read().await;
-        let has_duplicate = dashboards
-            .iter()
-            .any(|d| d.title == dashboard.title && d.dashboard_id != dashboard.dashboard_id);
-
-        if has_duplicate {
-            return Err(DashboardError::Metadata("Dashboard title must be unique"));
-        }
         let path = dashboard_path(user_id, &format!("{dashboard_id}.json"));
-
         let store = PARSEABLE.storage.get_object_store();
         let dashboard_bytes = serde_json::to_vec(&dashboard)?;
         store
@@ -237,8 +227,19 @@ impl Dashboards {
         dashboard.created = Some(Utc::now());
         dashboard.set_metadata(user_id, None);
 
+        let mut dashboards = self.0.write().await;
+
+        let has_duplicate = dashboards
+            .iter()
+            .any(|d| d.title == dashboard.title && d.dashboard_id != dashboard.dashboard_id);
+
+        if has_duplicate {
+            return Err(DashboardError::Metadata("Dashboard title must be unique"));
+        }
+
         self.save_dashboard(user_id, dashboard).await?;
-        self.0.write().await.push(dashboard.clone());
+
+        dashboards.push(dashboard.clone());
 
         Ok(())
     }
@@ -252,16 +253,32 @@ impl Dashboards {
         dashboard_id: Ulid,
         dashboard: &mut Dashboard,
     ) -> Result<(), DashboardError> {
-        let existing_dashboard = self
-            .ensure_dashboard_ownership(dashboard_id, user_id)
-            .await?;
+        let mut dashboards = self.0.write().await;
+
+        let existing_dashboard = dashboards
+            .iter()
+            .find(|d| d.dashboard_id == Some(dashboard_id) && d.author == Some(user_id.to_string()))
+            .cloned()
+            .ok_or_else(|| {
+                DashboardError::Metadata(
+                    "Dashboard does not exist or you do not have permission to access it",
+                )
+            })?;
 
         dashboard.set_metadata(user_id, Some(dashboard_id));
         dashboard.created = existing_dashboard.created;
+
+        let has_duplicate = dashboards
+            .iter()
+            .any(|d| d.title == dashboard.title && d.dashboard_id != dashboard.dashboard_id);
+
+        if has_duplicate {
+            return Err(DashboardError::Metadata("Dashboard title must be unique"));
+        }
+
         self.save_dashboard(user_id, dashboard).await?;
 
-        let mut dashboards = self.0.write().await;
-        dashboards.retain(|d| d.dashboard_id != dashboard.dashboard_id);
+        dashboards.retain(|d| d.dashboard_id != Some(dashboard_id));
         dashboards.push(dashboard.clone());
 
         Ok(())
