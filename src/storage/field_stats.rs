@@ -355,23 +355,22 @@ fn format_arrow_value(array: &dyn Array, idx: usize) -> String {
         } else {
             "false".to_string()
         }),
-        DataType::List(_field) => {
-            let list_array = array
-                .as_any()
-                .downcast_ref::<arrow_array::ListArray>()
-                .expect("Expected ListArray");
+        DataType::List(_field) => try_downcast!(
+            arrow_array::ListArray,
+            array,
+            |list_array: &arrow_array::ListArray| {
+                let child_array = list_array.values();
+                let offsets = list_array.value_offsets();
+                let start = offsets[idx] as usize;
+                let end = offsets[idx + 1] as usize;
 
-            let child_array = list_array.values();
-            let offsets = list_array.value_offsets();
-            let start = offsets[idx] as usize;
-            let end = offsets[idx + 1] as usize;
+                let formatted_values: Vec<String> = (start..end)
+                    .map(|i| format_arrow_value(child_array.as_ref(), i))
+                    .collect();
 
-            let formatted_values: Vec<String> = (start..end)
-                .map(|i| format_arrow_value(child_array.as_ref(), i))
-                .collect();
-
-            format!("[{}]", formatted_values.join(", "))
-        }
+                format!("[{}]", formatted_values.join(", "))
+            }
+        ),
         DataType::Null => "NULL".to_string(),
         _ => {
             warn!(
@@ -387,8 +386,10 @@ fn format_arrow_value(array: &dyn Array, idx: usize) -> String {
 mod tests {
     use std::{fs::OpenOptions, sync::Arc};
 
+    use arrow::buffer::OffsetBuffer;
     use arrow_array::{
-        BooleanArray, Float64Array, Int64Array, RecordBatch, StringArray, TimestampMillisecondArray,
+        BooleanArray, Float64Array, Int64Array, ListArray, RecordBatch, StringArray,
+        TimestampMillisecondArray,
     };
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use datafusion::prelude::{ParquetReadOptions, SessionContext};
@@ -467,6 +468,35 @@ mod tests {
             Some("constant"),
         ]);
 
+        // Create List<Int64> field
+        let int_list_data = Int64Array::from(vec![
+            1, 2, 3, 4, 5, 1, 2, 3, 6, 7, 8, 9, 1, 4, 5, 10, 11, 12, 13, 14, 1, 2, 12, 13, 14, 1, 2,
+        ]);
+        let int_list_offsets =
+            OffsetBuffer::new(vec![0, 3, 5, 8, 12, 13, 15, 17, 17, 20, 22].into());
+        let int_list_field = Arc::new(Field::new("item", DataType::Int64, false));
+        let int_list_array = ListArray::new(
+            int_list_field,
+            int_list_offsets,
+            Arc::new(int_list_data),
+            None,
+        );
+
+        // Create List<Float64> field
+        let float_list_data = Float64Array::from(vec![
+            1.1, 2.2, 3.3, 4.4, 5.5, 1.1, 2.2, 6.6, 7.7, 8.8, 9.9, 3.3, 4.4, 5.5, 10.0, 11.1, 12.2,
+            13.3,
+        ]);
+        let float_list_offsets =
+            OffsetBuffer::new(vec![0, 2, 5, 7, 8, 11, 14, 15, 15, 17, 18].into());
+        let float_list_field = Arc::new(Field::new("item", DataType::Float64, false));
+        let float_list_array = ListArray::new(
+            float_list_field,
+            float_list_offsets,
+            Arc::new(float_list_data),
+            None,
+        );
+
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
@@ -476,6 +506,8 @@ mod tests {
                 Arc::new(active_array),
                 Arc::new(timestamp_array),
                 Arc::new(single_value_array),
+                Arc::new(int_list_array),
+                Arc::new(float_list_array),
             ],
         )
         .unwrap();
@@ -505,6 +537,16 @@ mod tests {
                 true,
             ),
             Field::new("single_value", DataType::Utf8, true),
+            Field::new_list(
+                "int_list",
+                Arc::new(Field::new("item", DataType::Int64, false)),
+                true,
+            ),
+            Field::new_list(
+                "float_list",
+                Arc::new(Field::new("item", DataType::Float64, false)),
+                true,
+            ),
         ])
     }
 
@@ -909,5 +951,122 @@ mod tests {
         for distinct_stat in &stats.distinct_stats {
             assert_eq!(distinct_stat.count, 100);
         }
+    }
+
+    #[tokio::test]
+    async fn test_calculate_single_field_stats_with_int_list_field() {
+        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
+
+        let ctx = SessionContext::new();
+        let table_name = ulid::Ulid::new().to_string();
+
+        ctx.register_parquet(
+            &table_name,
+            parquet_path.to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        // Test int_list field (List<Int64>)
+        let result = calculate_single_field_stats(ctx.clone(), &table_name, "int_list", 50).await;
+
+        assert!(result.is_some());
+        let stats = result.unwrap();
+
+        assert_eq!(stats.field_name, "int_list");
+        assert_eq!(stats.count, 10);
+
+        // Verify we have the expected distinct lists
+        // Expected: [1, 2, 3], [4, 5], [6, 7, 8, 9], [1], [10, 11], [], [12, 13, 14], [1, 2]
+        assert_eq!(stats.distinct_count, 8);
+
+        // Check for duplicate lists - [1, 2, 3] appears twice, [4, 5] appears twice
+        let list_123_stat = stats
+            .distinct_stats
+            .iter()
+            .find(|s| s.distinct_value == "[1, 2, 3]");
+        assert!(list_123_stat.is_some());
+        assert_eq!(list_123_stat.unwrap().count, 2);
+
+        let list_45_stat = stats
+            .distinct_stats
+            .iter()
+            .find(|s| s.distinct_value == "[4, 5]");
+        assert!(list_45_stat.is_some());
+        assert_eq!(list_45_stat.unwrap().count, 2);
+
+        // Check single occurrence lists
+        let list_6789_stat = stats
+            .distinct_stats
+            .iter()
+            .find(|s| s.distinct_value == "[6, 7, 8, 9]");
+        assert!(list_6789_stat.is_some());
+        assert_eq!(list_6789_stat.unwrap().count, 1);
+
+        let empty_list_stat = stats
+            .distinct_stats
+            .iter()
+            .find(|s| s.distinct_value == "[]");
+        assert!(empty_list_stat.is_some());
+        assert_eq!(empty_list_stat.unwrap().count, 1);
+    }
+
+    #[tokio::test]
+    async fn test_calculate_single_field_stats_with_float_list_field() {
+        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
+
+        let ctx = SessionContext::new();
+        let table_name = ulid::Ulid::new().to_string();
+
+        ctx.register_parquet(
+            &table_name,
+            parquet_path.to_str().unwrap(),
+            ParquetReadOptions::default(),
+        )
+        .await
+        .unwrap();
+
+        // Test float_list field (List<Float64>)
+        let result = calculate_single_field_stats(ctx.clone(), &table_name, "float_list", 50).await;
+
+        assert!(result.is_some());
+        let stats = result.unwrap();
+
+        assert_eq!(stats.field_name, "float_list");
+        assert_eq!(stats.count, 10);
+
+        // Expected distinct lists: [1.1, 2.2], [3.3, 4.4, 5.5], [6.6], [7.7, 8.8, 9.9], [10.0], [], [11.1, 12.2], [13.3]
+        assert_eq!(stats.distinct_count, 8);
+
+        // Check for duplicate lists - [1.1, 2.2] appears twice, [3.3, 4.4, 5.5] appears twice
+        let list_11_22_stat = stats
+            .distinct_stats
+            .iter()
+            .find(|s| s.distinct_value == "[1.1, 2.2]");
+        assert!(list_11_22_stat.is_some());
+        assert_eq!(list_11_22_stat.unwrap().count, 2);
+
+        let list_33_44_55_stat = stats
+            .distinct_stats
+            .iter()
+            .find(|s| s.distinct_value == "[3.3, 4.4, 5.5]");
+        assert!(list_33_44_55_stat.is_some());
+        assert_eq!(list_33_44_55_stat.unwrap().count, 2);
+
+        // Check single occurrence lists
+        let list_66_stat = stats
+            .distinct_stats
+            .iter()
+            .find(|s| s.distinct_value == "[6.6]");
+        assert!(list_66_stat.is_some());
+        assert_eq!(list_66_stat.unwrap().count, 1);
+
+        let empty_list_stat = stats
+            .distinct_stats
+            .iter()
+            .find(|s| s.distinct_value == "[]");
+        assert!(empty_list_stat.is_some());
+        assert_eq!(empty_list_stat.unwrap().count, 1);
     }
 }
