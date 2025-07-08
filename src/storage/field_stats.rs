@@ -85,7 +85,9 @@ pub async fn calculate_field_stats(
         let table_name = Ulid::new().to_string();
         ctx.register_parquet(
             &table_name,
-            parquet_path.to_str().expect("valid path"),
+            parquet_path
+                .to_str()
+                .ok_or_else(|| PostError::Invalid(anyhow::anyhow!("Invalid UTF-8 in path")))?,
             ParquetReadOptions::default(),
         )
         .await
