@@ -22,12 +22,11 @@ use actix_web::{
     HttpResponse, Responder,
 };
 use http::StatusCode;
-use itertools::Itertools;
 
 use crate::{
     parseable::PARSEABLE,
     rbac::{
-        map::{mut_roles, read_user_groups, write_user_groups, DEFAULT_ROLE},
+        map::{mut_roles, DEFAULT_ROLE},
         role::model::DefaultPrivilege,
     },
     storage::{self, ObjectStorageError, StorageMetadata},
@@ -78,45 +77,21 @@ pub async fn list_roles() -> Result<impl Responder, RoleError> {
 // Delete existing role
 pub async fn delete(name: web::Path<String>) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
+    // check if the role is being used by any user or group
     let mut metadata = get_metadata().await?;
     if metadata.users.iter().any(|user| user.roles.contains(&name)) {
+        return Err(RoleError::RoleInUse);
+    }
+    if metadata
+        .user_groups
+        .iter()
+        .any(|user_group| user_group.roles.contains(&name))
+    {
         return Err(RoleError::RoleInUse);
     }
     metadata.roles.remove(&name);
     put_metadata(&metadata).await?;
     mut_roles().remove(&name);
-
-    // also delete from user groups
-    let groups = read_user_groups().keys().cloned().collect_vec();
-    let mut group_names = Vec::new();
-
-    for user_group in groups {
-        if let Some(ug) = read_user_groups().get(&user_group) {
-            if ug.roles.contains(&name) {
-                return Err(RoleError::RoleInUse);
-            }
-            group_names.push(ug.name.clone());
-        } else {
-            continue;
-        };
-    }
-
-    // remove role from all user groups that have it
-    let mut groups_to_update = Vec::new();
-    for group in write_user_groups().values_mut() {
-        if group.roles.remove(&name) {
-            groups_to_update.push(group.clone());
-        }
-    }
-
-    // update metadata only if there are changes
-    if !groups_to_update.is_empty() {
-        metadata
-            .user_groups
-            .retain(|x| !groups_to_update.contains(x));
-        metadata.user_groups.extend(groups_to_update);
-    }
-    put_metadata(&metadata).await?;
 
     Ok(HttpResponse::Ok().finish())
 }

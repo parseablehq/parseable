@@ -228,11 +228,19 @@ pub async fn get_role(username: web::Path<String>) -> Result<impl Responder, RBA
 // Handler for DELETE /api/v1/user/delete/{username}
 pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
-    let _ = UPDATE_LOCK.lock().await;
+
+    // if user is a part of any groups then don't allow deletion
+    if !Users.get_user_groups(&username).is_empty() {
+        return Err(RBACError::InvalidDeletionRequest(format!(
+            "User: {username} should not be a part of any groups"
+        )));
+    }
     // fail this request if the user does not exists
     if !Users.contains(&username) {
         return Err(RBACError::UserDoesNotExist);
     };
+    let _ = UPDATE_LOCK.lock().await;
+
     // delete from parseable.json first
     let mut metadata = get_metadata().await?;
     metadata.users.retain(|user| user.username() != username);
@@ -408,6 +416,8 @@ pub enum RBACError {
     UserGroupNotEmpty(String),
     #[error("Resource in use: {0}")]
     ResourceInUse(String),
+    #[error("{0}")]
+    InvalidDeletionRequest(String),
 }
 
 impl actix_web::ResponseError for RBACError {
@@ -429,6 +439,7 @@ impl actix_web::ResponseError for RBACError {
             Self::InvalidSyncOperation(_) => StatusCode::BAD_REQUEST,
             Self::UserGroupNotEmpty(_) => StatusCode::BAD_REQUEST,
             Self::ResourceInUse(_) => StatusCode::BAD_REQUEST,
+            Self::InvalidDeletionRequest(_) => StatusCode::BAD_REQUEST,
         }
     }
 

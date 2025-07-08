@@ -81,7 +81,7 @@ pub enum Action {
 pub enum ParseableResourceType {
     #[serde(rename = "stream")]
     Stream(String),
-    #[serde(rename = "llm")]
+    #[serde(rename = "llmKey")]
     Llm(String),
     #[serde(rename = "all")]
     All,
