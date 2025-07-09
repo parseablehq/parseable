@@ -21,7 +21,7 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     rbac::{
         self,
-        map::{read_user_groups, roles, write_user_groups},
+        map::{read_user_groups, roles},
         role::model::DefaultPrivilege,
         user,
         utils::to_prism_user,
@@ -116,14 +116,11 @@ pub async fn post_user(
         return Err(RBACError::RoleValidationError);
     } else {
         let mut non_existent_roles = Vec::new();
-        user_roles
-            .iter()
-            .map(|r| {
-                if !roles().contains_key(r) {
-                    non_existent_roles.push(r.clone());
-                }
-            })
-            .for_each(drop);
+        for role in &user_roles {
+            if !roles().contains_key(role) {
+                non_existent_roles.push(role.clone());
+            }
+        }
         if !non_existent_roles.is_empty() {
             return Err(RBACError::RolesDoNotExist(non_existent_roles));
         }
@@ -244,24 +241,6 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     // delete from parseable.json first
     let mut metadata = get_metadata().await?;
     metadata.users.retain(|user| user.username() != username);
-
-    // Remove user from all groups
-    let user_groups = Users.get_user_groups(&username);
-    {
-        let mut groups = write_user_groups();
-        for group_name in &user_groups {
-            if let Some(group) = groups.get_mut(group_name) {
-                group.remove_users(HashSet::from_iter([username.clone()]))?;
-            }
-        }
-    }
-
-    // Update metadata with modified groups
-    for group in metadata.user_groups.iter_mut() {
-        if user_groups.contains(&group.name) {
-            group.users.retain(|u| u != &username);
-        }
-    }
     put_metadata(&metadata).await?;
 
     // update in mem table
@@ -284,11 +263,11 @@ pub async fn add_roles_to_user(
     let mut non_existent_roles = Vec::new();
 
     // check if the role exists
-    roles_to_add.iter().for_each(|r| {
-        if roles().get(r).is_none() {
-            non_existent_roles.push(r.clone());
+    for role in &roles_to_add {
+        if !roles().contains_key(role) {
+            non_existent_roles.push(role.clone());
         }
-    });
+    }
 
     if !non_existent_roles.is_empty() {
         return Err(RBACError::RolesDoNotExist(non_existent_roles));
@@ -329,11 +308,11 @@ pub async fn remove_roles_from_user(
     let mut non_existent_roles = Vec::new();
 
     // check if the role exists
-    roles_to_remove.iter().for_each(|r| {
-        if roles().get(r).is_none() {
-            non_existent_roles.push(r.clone());
+    for role in &roles_to_remove {
+        if !roles().contains_key(role) {
+            non_existent_roles.push(role.clone());
         }
-    });
+    }
 
     if !non_existent_roles.is_empty() {
         return Err(RBACError::RolesDoNotExist(non_existent_roles));

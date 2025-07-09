@@ -31,7 +31,7 @@ use crate::{
         rbac::{InvalidUserGroupError, RBACError},
     },
     parseable::PARSEABLE,
-    rbac::map::{read_user_groups, roles, users},
+    rbac::map::{mut_sessions, read_user_groups, roles, users},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -266,11 +266,19 @@ impl UserGroup {
 
     pub fn add_roles(&mut self, roles: HashSet<String>) -> Result<(), RBACError> {
         self.roles.extend(roles);
+        // also refresh all user sessions
+        for username in &self.users {
+            mut_sessions().remove_user(username);
+        }
         Ok(())
     }
 
     pub fn add_users(&mut self, users: HashSet<String>) -> Result<(), RBACError> {
-        self.users.extend(users);
+        self.users.extend(users.clone());
+        // also refresh all user sessions
+        for username in &users {
+            mut_sessions().remove_user(username);
+        }
         Ok(())
     }
 
@@ -283,6 +291,10 @@ impl UserGroup {
         }
         self.roles.clone_from(&new_roles);
 
+        // also refresh all user sessions
+        for username in &self.users {
+            mut_sessions().remove_user(username);
+        }
         Ok(())
     }
 
@@ -292,6 +304,10 @@ impl UserGroup {
 
         if old_users.eq(&new_users) {
             return Ok(());
+        }
+        // also refresh all user sessions
+        for username in &users {
+            mut_sessions().remove_user(username);
         }
         self.users.clone_from(&new_users);
 
@@ -305,21 +321,4 @@ impl UserGroup {
         put_metadata(&metadata).await?;
         Ok(())
     }
-
-    // // are these methods even needed??
-    // pub fn group_name(&self) -> String {
-    //     self.name.clone()
-    // }
-
-    // pub fn group_id(&self) -> Ulid {
-    //     self.id
-    // }
-
-    // pub fn group_roles(&self) -> HashSet<String> {
-    //     self.roles.clone()
-    // }
-
-    // pub fn group_users(&self) -> HashSet<String> {
-    //     self.users.clone()
-    // }
 }
