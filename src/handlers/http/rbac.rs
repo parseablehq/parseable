@@ -379,9 +379,9 @@ pub enum RBACError {
     Anyhow(#[from] anyhow::Error),
     #[error("User cannot be created without a role")]
     RoleValidationError,
-    #[error("User group already exists: '{0}'")]
+    #[error("User group `{0}` already exists")]
     UserGroupExists(String),
-    #[error("UserGroup does not exist: {0}")]
+    #[error("UserGroup `{0}` does not exist")]
     UserGroupDoesNotExist(String),
     #[error("Invalid Roles: {0:?}")]
     RolesDoNotExist(Vec<String>),
@@ -391,9 +391,9 @@ pub enum RBACError {
     InvalidUserGroupRequest(Box<InvalidUserGroupError>),
     #[error("{0}")]
     InvalidSyncOperation(String),
-    #[error("User group still being used by users: {0}")]
+    #[error("User group `{0}` is still being used")]
     UserGroupNotEmpty(String),
-    #[error("Resource in use: {0}")]
+    #[error("Resource `{0}` is still in use")]
     ResourceInUse(String),
     #[error("{0}")]
     InvalidDeletionRequest(String),

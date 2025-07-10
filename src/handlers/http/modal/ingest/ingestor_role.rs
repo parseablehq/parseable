@@ -16,6 +16,8 @@
  *
  */
 
+use std::collections::HashSet;
+
 use actix_web::{
     web::{self, Json},
     HttpResponse, Responder,
@@ -23,7 +25,10 @@ use actix_web::{
 
 use crate::{
     handlers::http::{modal::utils::rbac_utils::get_metadata, role::RoleError},
-    rbac::{map::mut_roles, role::model::DefaultPrivilege},
+    rbac::{
+        map::{mut_roles, mut_sessions, read_user_groups, users},
+        role::model::DefaultPrivilege,
+    },
     storage,
 };
 
@@ -39,6 +44,26 @@ pub async fn put(
 
     let _ = storage::put_staging_metadata(&metadata);
     mut_roles().insert(name.clone(), privileges);
+
+    // refresh the sessions of all users using this role
+    // for this, iterate over all user_groups and users and create a hashset of users
+    let mut session_refresh_users: HashSet<String> = HashSet::new();
+    for user_group in read_user_groups().values().cloned() {
+        if user_group.roles.contains(&name) {
+            session_refresh_users.extend(user_group.users);
+        }
+    }
+
+    // iterate over all users to see if they have this role
+    for user in users().values().cloned() {
+        if user.roles.contains(&name) {
+            session_refresh_users.insert(user.username().to_string());
+        }
+    }
+
+    for username in session_refresh_users {
+        mut_sessions().remove_user(&username);
+    }
 
     Ok(HttpResponse::Ok().finish())
 }
