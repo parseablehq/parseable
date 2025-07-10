@@ -22,13 +22,13 @@ use std::{
     task::Poll,
 };
 
+use arrow_array::RecordBatch;
 use futures_util::Stream;
+use once_cell::sync::Lazy;
 use tokio::sync::mpsc::{
     self, error::TrySendError, Receiver, Sender, UnboundedReceiver, UnboundedSender,
 };
-
-use arrow_array::RecordBatch;
-use once_cell::sync::Lazy;
+use ulid::Ulid;
 
 pub static LIVETAIL: Lazy<LiveTail> = Lazy::new(LiveTail::default);
 
@@ -39,7 +39,7 @@ pub struct LiveTail {
 }
 
 impl LiveTail {
-    pub fn new_pipe(&self, id: String, stream: String) -> ReceiverPipe {
+    pub fn new_pipe(&self, id: ulid, stream: String) -> ReceiverPipe {
         let (sender, revc) = channel(id, stream.clone(), Arc::downgrade(&self.pipes));
         self.pipes
             .write()
@@ -106,7 +106,7 @@ pub struct ReceiverPipe {
 }
 
 fn channel(
-    id: String,
+    id: ulid,
     stream: String,
     weak_ptr: Weak<LiveTailRegistry>,
 ) -> (SenderPipe, ReceiverPipe) {
