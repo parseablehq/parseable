@@ -493,6 +493,10 @@ pub enum PostError {
     IncorrectLogFormat(String),
     #[error("Failed to ingest events in dataset {0}. Total number of fields {1} exceeds the permissible limit of {2}. We recommend creating a new dataset beyond {2} for better query performance.")]
     FieldsCountLimitExceeded(String, usize, usize),
+    #[error("Invalid query parameter")]
+    InvalidQueryParameter,
+    #[error("Missing query parameter")]
+    MissingQueryParameter,
 }
 
 impl actix_web::ResponseError for PostError {
@@ -522,6 +526,8 @@ impl actix_web::ResponseError for PostError {
             PostError::KnownFormat(_) => StatusCode::BAD_REQUEST,
             PostError::IncorrectLogFormat(_) => StatusCode::BAD_REQUEST,
             PostError::FieldsCountLimitExceeded(_, _, _) => StatusCode::BAD_REQUEST,
+            PostError::InvalidQueryParameter => StatusCode::BAD_REQUEST,
+            PostError::MissingQueryParameter => StatusCode::BAD_REQUEST,
         }
     }
 
