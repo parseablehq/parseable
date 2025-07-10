@@ -93,9 +93,8 @@ pub async fn user_auth_for_query(
     session_key: &SessionKey,
     query: &str,
 ) -> Result<(), actix_web::error::Error> {
-    let tables = get_tables_from_query(query).await?;
+    let tables = get_tables_from_query(query).await?.into_inner();
     let permissions = Users.get_permissions(session_key);
-    let tables = tables.into_inner();
     user_auth_for_datasets(&permissions, &tables)
 }
 
@@ -110,14 +109,17 @@ pub fn user_auth_for_datasets(
         // also while iterating add any filter tags for this stream
         for permission in permissions.iter() {
             match permission {
-                Permission::Stream(Action::All, _) => {
+                Permission::Resource(Action::All, _) => {
                     authorized = true;
                     break;
                 }
-                Permission::StreamWithTag(Action::Query, ref stream, _)
-                    if stream == table_name || stream == "*" =>
-                {
-                    authorized = true;
+                Permission::Resource(
+                    Action::Query,
+                    crate::rbac::role::ParseableResourceType::Stream(stream),
+                ) => {
+                    if stream == table_name || stream == "*" {
+                        authorized = true;
+                    }
                 }
                 _ => (),
             }

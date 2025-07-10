@@ -16,8 +16,10 @@
  *
  */
 
-use crate::rbac::user::User;
+use crate::rbac::role::ParseableResourceType;
+use crate::rbac::user::{User, UserGroup};
 use crate::{parseable::PARSEABLE, storage::StorageMetadata};
+use std::collections::HashSet;
 use std::{collections::HashMap, sync::Mutex};
 
 use super::Response;
@@ -35,6 +37,23 @@ pub static USERS: OnceCell<RwLock<Users>> = OnceCell::new();
 pub static ROLES: OnceCell<RwLock<Roles>> = OnceCell::new();
 pub static DEFAULT_ROLE: Lazy<Mutex<Option<String>>> = Lazy::new(|| Mutex::new(None));
 pub static SESSIONS: OnceCell<RwLock<Sessions>> = OnceCell::new();
+pub static USER_GROUPS: OnceCell<RwLock<UserGroups>> = OnceCell::new();
+
+pub fn read_user_groups() -> RwLockReadGuard<'static, UserGroups> {
+    USER_GROUPS
+        .get()
+        .expect("UserGroups map not created")
+        .read()
+        .expect("UserGroups map is poisoned")
+}
+
+pub fn write_user_groups() -> RwLockWriteGuard<'static, UserGroups> {
+    USER_GROUPS
+        .get()
+        .expect("UserGroups map not created")
+        .write()
+        .expect("UserGroups map is poisoned")
+}
 
 pub fn users() -> RwLockReadGuard<'static, Users> {
     USERS
@@ -90,6 +109,7 @@ pub fn mut_sessions() -> RwLockWriteGuard<'static, Sessions> {
 // as users authenticate
 pub fn init(metadata: &StorageMetadata) {
     let users = metadata.users.clone();
+    let user_groups = metadata.user_groups.clone();
     let mut roles = metadata.roles.clone();
 
     DEFAULT_ROLE
@@ -122,6 +142,9 @@ pub fn init(metadata: &StorageMetadata) {
     SESSIONS
         .set(RwLock::new(sessions))
         .expect("map is only set once");
+    USER_GROUPS
+        .set(RwLock::new(UserGroups::from(user_groups)))
+        .expect("Unable to create UserGroups map from storage");
 }
 
 // A session is loosly active mapping to permissions
@@ -199,23 +222,35 @@ impl Sessions {
         &self,
         key: &SessionKey,
         required_action: Action,
-        context_stream: Option<&str>,
+        context_resource: Option<&str>,
         context_user: Option<&str>,
     ) -> Option<Response> {
         self.active_sessions.get(key).map(|(username, perms)| {
+            let mut perms: HashSet<Permission> = HashSet::from_iter(perms.clone());
+            perms.extend(aggregate_group_permissions(username));
+
             if perms.iter().any(|user_perm| {
                 match *user_perm {
                     // if any action is ALL then we we authorize
                     Permission::Unit(action) => action == required_action || action == Action::All,
-                    Permission::Stream(action, ref stream)
-                    | Permission::StreamWithTag(action, ref stream, _) => {
-                        let ok_stream = if let Some(context_stream) = context_stream {
-                            stream == context_stream || stream == "*"
-                        } else {
-                            // if no stream to match then stream check is not needed
-                            true
-                        };
-                        (action == required_action || action == Action::All) && ok_stream
+                    Permission::Resource(action, ref resource_type) => {
+                        match resource_type {
+                            ParseableResourceType::Stream(resource_id)
+                            | ParseableResourceType::Llm(resource_id) => {
+                                let ok_resource =
+                                    if let Some(context_resource_id) = context_resource {
+                                        resource_id == context_resource_id || resource_id == "*"
+                                    } else {
+                                        // if no resource to match then resource check is not needed
+                                        // WHEN IS THIS VALID??
+                                        true
+                                    };
+                                (action == required_action || action == Action::All) && ok_resource
+                            }
+                            ParseableResourceType::All => {
+                                action == required_action || action == Action::All
+                            }
+                        }
                     }
                     Permission::SelfUser if required_action == Action::GetUserRoles => {
                         context_user.map(|x| x == username).unwrap_or_default()
@@ -253,6 +288,58 @@ impl From<Vec<User>> for Users {
             users
                 .into_iter()
                 .map(|user| (user.username().to_owned(), user)),
+        );
+        map
+    }
+}
+
+fn aggregate_group_permissions(username: &str) -> HashSet<Permission> {
+    let mut group_perms = HashSet::new();
+
+    let Some(user) = users().get(username).cloned() else {
+        return group_perms;
+    };
+
+    if user.user_groups.is_empty() {
+        return group_perms;
+    }
+
+    for group_name in &user.user_groups {
+        let Some(group) = read_user_groups().get(group_name).cloned() else {
+            continue;
+        };
+
+        for role_name in &group.roles {
+            let Some(privileges) = roles().get(role_name).cloned() else {
+                continue;
+            };
+
+            for privilege in privileges {
+                group_perms.extend(RoleBuilder::from(&privilege).build());
+            }
+        }
+    }
+
+    group_perms
+}
+// Map of [user group ID --> UserGroup]
+// This map is populated at startup with the list of user groups from parseable.json file
+#[derive(Debug, Default, Clone, derive_more::Deref, derive_more::DerefMut)]
+pub struct UserGroups(HashMap<String, UserGroup>);
+
+impl UserGroups {
+    pub fn insert(&mut self, user_group: UserGroup) {
+        self.0.insert(user_group.name.clone(), user_group);
+    }
+}
+
+impl From<Vec<UserGroup>> for UserGroups {
+    fn from(user_groups: Vec<UserGroup>) -> Self {
+        let mut map = Self::default();
+        map.extend(
+            user_groups
+                .into_iter()
+                .map(|group| (group.name.to_owned(), group)),
         );
         map
     }

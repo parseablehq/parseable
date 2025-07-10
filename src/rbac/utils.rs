@@ -15,11 +15,11 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use url::Url;
 
-use crate::parseable::PARSEABLE;
+use crate::{parseable::PARSEABLE, rbac::map::read_user_groups};
 
 use super::{
     map::roles,
@@ -38,7 +38,7 @@ pub fn to_prism_user(user: &User) -> UsersPrism {
             oauth.user_info.picture.clone(),
         ),
     };
-    let roles: HashMap<String, Vec<DefaultPrivilege>> = Users
+    let direct_roles: HashMap<String, Vec<DefaultPrivilege>> = Users
         .get_role(id)
         .iter()
         .filter_map(|role_name| {
@@ -48,12 +48,33 @@ pub fn to_prism_user(user: &User) -> UsersPrism {
         })
         .collect();
 
+    let mut group_roles: HashMap<String, HashMap<String, Vec<DefaultPrivilege>>> = HashMap::new();
+    let mut user_groups = HashSet::new();
+    // user might be part of some user groups, fetch the roles from there as well
+    for user_group in Users.get_user_groups(user.username()) {
+        if let Some(group) = read_user_groups().get(&user_group) {
+            let ug_roles: HashMap<String, Vec<DefaultPrivilege>> = group
+                .roles
+                .iter()
+                .filter_map(|role_name| {
+                    roles()
+                        .get(role_name)
+                        .map(|role| (role_name.to_owned(), role.clone()))
+                })
+                .collect();
+            group_roles.insert(group.name.clone(), ug_roles);
+            user_groups.insert(user_group);
+        }
+    }
+
     UsersPrism {
         id: id.into(),
         method: method.into(),
         email: mask_pii_string(email),
         picture: mask_pii_url(picture),
-        roles,
+        roles: direct_roles,
+        group_roles,
+        user_groups,
     }
 }
 

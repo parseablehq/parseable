@@ -25,7 +25,14 @@ use argon2::{
 
 use rand::distributions::{Alphanumeric, DistString};
 
-use crate::parseable::PARSEABLE;
+use crate::{
+    handlers::http::{
+        modal::utils::rbac_utils::{get_metadata, put_metadata},
+        rbac::{InvalidUserGroupError, RBACError},
+    },
+    parseable::PARSEABLE,
+    rbac::map::{mut_sessions, read_user_groups, roles, users},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
@@ -39,6 +46,7 @@ pub struct User {
     #[serde(flatten)]
     pub ty: UserType,
     pub roles: HashSet<String>,
+    pub user_groups: HashSet<String>,
 }
 
 impl User {
@@ -52,6 +60,7 @@ impl User {
                     password_hash: hash,
                 }),
                 roles: HashSet::new(),
+                user_groups: HashSet::new(),
             },
             password,
         )
@@ -64,6 +73,7 @@ impl User {
                 user_info,
             }),
             roles,
+            user_groups: HashSet::new(),
         }
     }
 
@@ -147,6 +157,7 @@ pub fn get_admin_user() -> User {
             password_hash: hashcode,
         }),
         roles: ["admin".to_string()].into(),
+        user_groups: HashSet::new(),
     }
 }
 
@@ -183,5 +194,131 @@ impl From<openid::Userinfo> for UserInfo {
             gender: user.gender,
             updated_at: user.updated_at,
         }
+    }
+}
+
+/// Logically speaking, UserGroup is a collection of roles and is applied to a collection of users.
+///
+/// The users present in a group inherit all the roles present in the group for as long as they are a part of the group.
+#[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UserGroup {
+    pub name: String,
+    // #[serde(default = "crate::utils::uid::gen")]
+    // pub id: Ulid,
+    pub roles: HashSet<String>,
+    pub users: HashSet<String>,
+}
+
+fn is_valid_group_name(name: &str) -> bool {
+    let re = regex::Regex::new(r"^[A-Za-z0-9_-]+$").unwrap();
+    re.is_match(name)
+}
+
+impl UserGroup {
+    pub fn validate(&self) -> Result<(), RBACError> {
+        let valid_name = is_valid_group_name(&self.name);
+
+        if read_user_groups().contains_key(&self.name) {
+            return Err(RBACError::UserGroupExists(self.name.clone()));
+        }
+        let mut non_existent_roles = Vec::new();
+        if !self.roles.is_empty() {
+            // validate that the roles exist
+            for role in &self.roles {
+                if !roles().contains_key(role) {
+                    non_existent_roles.push(role.clone());
+                }
+            }
+        }
+        let mut non_existent_users = Vec::new();
+        if !self.users.is_empty() {
+            // validate that the users exist
+            for user in &self.users {
+                if !users().contains_key(user) {
+                    non_existent_users.push(user.clone());
+                }
+            }
+        }
+
+        if !non_existent_roles.is_empty() || !non_existent_users.is_empty() || !valid_name {
+            let comments = if !valid_name {
+                "The name should follow this regex- `^[A-Za-z0-9_-]+$`".to_string()
+            } else {
+                "".to_string()
+            };
+            Err(RBACError::InvalidUserGroupRequest(Box::new(
+                InvalidUserGroupError {
+                    valid_name,
+                    non_existent_roles,
+                    non_existent_users,
+                    roles_not_in_group: vec![],
+                    users_not_in_group: vec![],
+                    comments,
+                },
+            )))
+        } else {
+            Ok(())
+        }
+    }
+    pub fn new(name: String, roles: HashSet<String>, users: HashSet<String>) -> Self {
+        UserGroup { name, roles, users }
+    }
+
+    pub fn add_roles(&mut self, roles: HashSet<String>) -> Result<(), RBACError> {
+        self.roles.extend(roles);
+        // also refresh all user sessions
+        for username in &self.users {
+            mut_sessions().remove_user(username);
+        }
+        Ok(())
+    }
+
+    pub fn add_users(&mut self, users: HashSet<String>) -> Result<(), RBACError> {
+        self.users.extend(users.clone());
+        // also refresh all user sessions
+        for username in &users {
+            mut_sessions().remove_user(username);
+        }
+        Ok(())
+    }
+
+    pub fn remove_roles(&mut self, roles: HashSet<String>) -> Result<(), RBACError> {
+        let old_roles = &self.roles;
+        let new_roles = HashSet::from_iter(self.roles.difference(&roles).cloned());
+
+        if old_roles.eq(&new_roles) {
+            return Ok(());
+        }
+        self.roles.clone_from(&new_roles);
+
+        // also refresh all user sessions
+        for username in &self.users {
+            mut_sessions().remove_user(username);
+        }
+        Ok(())
+    }
+
+    pub fn remove_users(&mut self, users: HashSet<String>) -> Result<(), RBACError> {
+        let old_users = &self.users;
+        let new_users = HashSet::from_iter(self.users.difference(&users).cloned());
+
+        if old_users.eq(&new_users) {
+            return Ok(());
+        }
+        // also refresh all user sessions
+        for username in &users {
+            mut_sessions().remove_user(username);
+        }
+        self.users.clone_from(&new_users);
+
+        Ok(())
+    }
+
+    pub async fn update_in_metadata(&self) -> Result<(), RBACError> {
+        let mut metadata = get_metadata().await?;
+        metadata.user_groups.retain(|x| x.name != self.name);
+        metadata.user_groups.push(self.clone());
+        put_metadata(&metadata).await?;
+        Ok(())
     }
 }
