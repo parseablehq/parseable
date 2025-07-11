@@ -22,8 +22,14 @@ use crate::{
     parseable::PARSEABLE,
 };
 use actix_web::{web, HttpRequest, HttpResponse};
-use std::{collections::HashMap, env, os::unix::fs::PermissionsExt, process::Command};
+use std::{collections::HashMap, fs, process::Command};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
+// Embed the scripts at compile time
+const INGEST_SCRIPT: &str = include_str!("../../../resources/ingest_demo_data.sh");
+const FILTER_SCRIPT: &str = include_str!("../../../resources/filters_demo_data.sh");
 pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> {
     let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
         .map_err(|_| PostError::InvalidQueryParameter)?;
@@ -46,13 +52,9 @@ pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> 
     match action.as_str() {
         "ingest" => match PARSEABLE.options.mode {
             Mode::Ingest | Mode::All => {
-                let script_path = get_script_path(&action)?;
-
                 // Fire the script execution asynchronously
                 tokio::spawn(async move {
-                    if let Err(e) =
-                        execute_demo_script(&script_path, &url, username, password).await
-                    {
+                    if let Err(e) = execute_demo_script(&action, &url, username, password).await {
                         tracing::warn!("Failed to execute demo script: {}", e);
                     }
                 });
@@ -74,11 +76,9 @@ pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> 
             ))),
         },
         "filters" => {
-            let script_path = get_script_path(&action)?;
-
             // Fire the script execution asynchronously
             tokio::spawn(async move {
-                if let Err(e) = execute_demo_script(&script_path, &url, username, password).await {
+                if let Err(e) = execute_demo_script(&action, &url, username, password).await {
                     tracing::warn!("Failed to execute demo script: {}", e);
                 }
             });
@@ -90,47 +90,62 @@ pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> 
 }
 
 async fn execute_demo_script(
-    script_path: &str,
+    action: &str,
     url: &str,
     username: &str,
     password: &str,
 ) -> Result<(), anyhow::Error> {
-    // Ensure the script exists and has correct permissions set during deployment
-    let metadata = std::fs::metadata(script_path)
-        .map_err(|e| anyhow::anyhow!("Failed to read script metadata: {}", e))?;
+    // Create a temporary file to write the script
+    let temp_file = tempfile::NamedTempFile::new()
+        .map_err(|e| anyhow::anyhow!("Failed to create temporary file: {}", e))?;
 
-    if metadata.permissions().mode() & 0o111 == 0 {
-        return Err(anyhow::anyhow!("Script is not executable: {}", script_path));
+    let temp_path = temp_file.path();
+    let script_content = match action {
+        "ingest" => INGEST_SCRIPT,
+        "filters" => FILTER_SCRIPT,
+        _ => return Err(anyhow::anyhow!("Unsupported action: {}", action)),
+    };
+    // Write the script content to the temporary file
+    fs::write(temp_path, script_content)
+        .map_err(|e| anyhow::anyhow!("Failed to write script to temp file: {}", e))?;
+
+    // Make the temporary file executable (Unix only)
+    #[cfg(unix)]
+    {
+        let mut permissions = fs::metadata(temp_path)
+            .map_err(|e| anyhow::anyhow!("Failed to read temp file metadata: {}", e))?
+            .permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(temp_path, permissions)
+            .map_err(|e| anyhow::anyhow!("Failed to set temp file permissions: {}", e))?;
     }
-    // Execute the script with environment variables
-    if let Err(e) = Command::new("bash")
-        .arg(script_path)
-        .arg("--silent")
+
+    let output = Command::new("bash")
+        .arg(temp_path)
         .env("P_URL", url)
         .env("P_USERNAME", username)
         .env("P_PASSWORD", password)
+        .env("DEMO_ACTION", action)
         .output()
-    {
-        return Err(anyhow::anyhow!("Failed to execute script: {}", e));
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to execute script: {}. Make sure bash is available.",
+                e
+            )
+        })?;
+
+    drop(temp_file);
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(anyhow::anyhow!(
+            "Script execution failed. Exit code: {:?}, stdout: {}, stderr: {}",
+            output.status.code(),
+            stdout,
+            stderr
+        ));
     }
 
     Ok(())
-}
-
-fn get_script_path(action: &str) -> Result<String, anyhow::Error> {
-    // Get the current working directory (where cargo run is executed from)
-    let current_dir = env::current_dir()
-        .map_err(|e| anyhow::anyhow!("Failed to get current directory: {}", e))?;
-    // Construct the path to the script based on the action
-    let path = match action {
-        "ingest" => "resources/ingest_demo_data.sh",
-        "filters" => "resources/filters_demo_data.sh",
-        _ => return Err(anyhow::anyhow!("Invalid action: {}", action)),
-    };
-    let full_path = current_dir.join(path);
-    if full_path.exists() {
-        return Ok(full_path.to_string_lossy().to_string());
-    }
-
-    Err(anyhow::anyhow!("Script not found"))
 }

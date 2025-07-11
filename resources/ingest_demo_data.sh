@@ -1,43 +1,15 @@
 #!/usr/bin/env bash
 
-# Configuration with validation
+# Configuration
 P_URL=${P_URL:-"http://localhost:8000"}
 P_USERNAME=${P_USERNAME:-"admin"}
 P_PASSWORD=${P_PASSWORD:-"admin"}
 P_STREAM=${P_STREAM:-"demodata"}
 TARGET_RECORDS=10000
-BATCH_SIZE=1000  # Back to 1000 for maximum throughput
+BATCH_SIZE=1000
 
-# Silent mode handling
-SILENT=${SILENT:-false}
-for arg in "$@"; do
-    case $arg in
-        --silent)
-            SILENT=true
-            shift
-            ;;
-        -h|--help)
-            echo "Usage: $0 [--silent]"
-            echo "  --silent    Run in silent mode"
-            exit 0
-            ;;
-    esac
-done
-
-# Only show config if not silent
-if [[ "$SILENT" != "true" ]]; then
-    echo "Configuration:"
-    echo "  URL: $P_URL"
-    echo "  Username: $P_USERNAME"
-    echo "  Stream: $P_STREAM"
-    echo "  Target Records: $TARGET_RECORDS"
-    echo "  Batch Size: $BATCH_SIZE"
-    echo
-fi
-
-# Performance tracking
-START_TIME=$(date +%s)
-RECORDS_SENT=0
+# Pre-compute auth header
+AUTH_HEADER="Authorization: Basic $(echo -n "$P_USERNAME:$P_PASSWORD" | base64)"
 
 # Common curl function with retry logic
 curl_with_retry() {
@@ -46,26 +18,20 @@ curl_with_retry() {
     local data="$3"
     local content_type="${4:-application/json}"
     local max_retries="${5:-3}"
-    local base_timeout="${6:-15}"
     local retry_count=0
-    
-    # Set timeout based on retry attempt: 10s, 20s, 30s
-    local max_time=$((10 + (retry_count * 10)))
-    local connect_timeout=5
     
     # Create temp file if data is provided
     if [[ -n "$data" ]]; then
         temp_file=$(mktemp)
         if [[ $? -ne 0 ]]; then
-            print_error "Failed to create temporary file"
             return 1
         fi
         echo "$data" > "$temp_file"
     fi
     
     while [[ $retry_count -lt $max_retries ]]; do
-        # Current timeout: 10s, 20s, 30s for attempts 1, 2, 3
-        max_time=$((10 + (retry_count * 10)))
+        local max_time=$((10 + (retry_count * 10)))
+        local connect_timeout=5
         
         local curl_cmd="curl -s -w \"\n%{http_code}\" --max-time $max_time --connect-timeout $connect_timeout"
         
@@ -98,11 +64,9 @@ curl_with_retry() {
         
         # Check curl exit code
         if [[ $curl_exit_code -eq 0 ]]; then
-            # Success - extract status code and return
             local status_code
             if [[ -n "$response" ]]; then
                 status_code=$(echo "$response" | tail -n1)
-                local response_body=$(echo "$response" | sed '$d')
                 
                 # Clean up temp file
                 [[ -n "$temp_file" ]] && rm -f "$temp_file"
@@ -110,27 +74,16 @@ curl_with_retry() {
                 if [[ "$status_code" == "200" || "$status_code" == "201" ]]; then
                     return 0
                 else
-                    print_error "HTTP $status_code: $response_body"
                     return 1
                 fi
             else
-                print_error "No response from server"
                 return 1
             fi
         elif [[ $curl_exit_code -eq 28 ]]; then
-            # Timeout - retry immediately with next timeout level
+            # Timeout - retry
             retry_count=$((retry_count + 1))
-            
-            if [[ "$SILENT" != "true" && -n "$data" ]]; then
-                echo "Timeout (${#data} chars) - retry $retry_count with $((10 + (retry_count * 10)))s timeout"
-            elif [[ "$SILENT" != "true" ]]; then
-                echo "Timeout - retry $retry_count with $((10 + (retry_count * 10)))s timeout"
-            fi
-            
-            # Brief pause before retry
             sleep 1
         else
-            # Other error - break and report
             break
         fi
     done
@@ -138,28 +91,10 @@ curl_with_retry() {
     # Clean up temp file on failure
     [[ -n "$temp_file" ]] && rm -f "$temp_file"
     
-    # Final error reporting
-    print_error "curl failed with exit code $curl_exit_code after $retry_count retries"
-    if [[ -n "$data" ]]; then
-        print_error "Data size: ${#data} characters, Final timeout: ${max_time}s"
-    fi
-    [[ "$SILENT" != "true" ]] && print_error "Response: $response"
-    
     return 1
 }
 
-# Colors
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-print_info() { [[ "$SILENT" != "true" ]] && echo -e "${BLUE}[INFO]${NC} $1"; }
-print_success() { [[ "$SILENT" != "true" ]] && echo -e "${GREEN}[SUCCESS]${NC} $1"; }
-print_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
-
-# Pre-compute ALL static data once (no random generation in loop)
-[[ "$SILENT" != "true" ]] && echo "Initializing static data..."
+# Pre-compute static data
 TRACE_IDS=()
 SPAN_IDS=()
 IP_ADDRESSES=()
@@ -175,7 +110,7 @@ for i in {1..100}; do
     UNIX_NANOS+=("$(date +%s)$(printf '%09d' $((RANDOM % 1000000000)))")
 done
 
-# Static arrays for ultra-fast selection
+# Static arrays
 METHODS=("GET" "GET" "GET" "GET" "POST" "PUT")
 STATUS_CODES=(200 200 200 201 400 500)
 SERVICES=("frontend" "api" "auth" "cart" "payment")
@@ -183,24 +118,15 @@ ENDPOINTS=("/products" "/cart" "/login" "/checkout" "/search")
 USER_AGENTS=("curl/7.88.1" "python-requests/2.32.3" "Mozilla/5.0")
 CLUSTERS=("web" "api" "db")
 
-# Pre-compute auth header
-AUTH_HEADER="Authorization: Basic $(echo -n "$P_USERNAME:$P_PASSWORD" | base64)"
-
-[[ "$SILENT" != "true" ]] && echo "Static data initialized. Starting generation..."
-
-# Ultra-fast log generation using array cycling
+# Generate batch data
 generate_batch() {
     batch_size=$1
     
-    # Validate input
     if [[ -z "$batch_size" || "$batch_size" -eq 0 ]]; then
-        print_error "generate_batch called with invalid batch_size: $batch_size"
         return 1
     fi
     
-    # Check if arrays are initialized
     if [[ ${#TRACE_IDS[@]} -eq 0 ]]; then
-        print_error "Static data arrays not initialized"
         return 1
     fi
     
@@ -216,7 +142,7 @@ generate_batch() {
         agent_idx=$((i % 3))
         cluster_idx=$((i % 3))
         
-        # Direct array access (no random calls in loop)
+        # Direct array access
         trace_id=${TRACE_IDS[$idx]}
         span_id=${SPAN_IDS[$idx]}
         source_ip=${IP_ADDRESSES[$idx]}
@@ -241,112 +167,61 @@ generate_batch() {
             severity_text="ERROR"
         fi
         
-        # Escape user agent for JSON (simple approach)
+        # Escape user agent for JSON
         escaped_user_agent=$(echo "$user_agent" | sed 's/"/\\"/g' | sed "s/'/\\'/g")
         
-        # Single-line JSON generation with proper field structure
+        # Generate JSON record
         batch_data+="{\"body\":\"[$timestamp] $method $endpoint HTTP/1.1 $status - bytes:$((500 + i % 1000)) duration:$((10 + i % 90))ms\",\"time_unix_nano\":\"$unix_nano\",\"observed_time_unix_nano\":\"$unix_nano\",\"trace_id\":\"$trace_id\",\"span_id\":\"$span_id\",\"flags\":0,\"severity_number\":$severity_num,\"severity_text\":\"$severity_text\",\"service.name\":\"$service\",\"source.address\":\"$source_ip\",\"destination.address\":\"$dest_ip\",\"server.address\":\"$dest_ip\",\"url.path\":\"$endpoint\",\"url.full\":\"http://$service:8080$endpoint\",\"upstream.cluster\":\"$cluster\",\"user_agent.original\":\"$escaped_user_agent\",\"event.name\":\"proxy.access\"}"
         
-        # Add comma except for last item
         [[ $i -lt $((batch_size - 1)) ]] && batch_data+=','
     done
     
     batch_data+=']'
     
-    # Validate JSON structure
     if [[ ${#batch_data} -lt 10 ]]; then
-        print_error "Generated batch too small: ${#batch_data} characters"
         return 1
     fi
     
     echo "$batch_data"
 }
 
-# Send batch with minimal overhead
+# Send batch
 send_batch() {
     local data="$1"
     
-    # Validate input
     if [[ -z "$data" ]]; then
-        print_error "send_batch called with empty data"
         return 1
     fi
     
-    # Use common curl function with retry logic
     curl_with_retry "$P_URL/api/v1/ingest" "POST" "$data" "application/json" 3 15
 }
 
-# Main execution loop - optimized for speed
-[[ "$SILENT" != "true" ]] && echo "Starting batch generation and sending..."
-
-# Test connection and basic functionality first
-if [[ "$SILENT" != "true" ]]; then
-    print_info "Testing basic connectivity..."
-    if curl_with_retry "$P_URL" "GET" "" "text/html" 1 5; then
-        print_info "Basic connectivity OK"
-    else
-        print_error "Cannot connect to $P_URL - check if server is running"
-        exit 1
-    fi
-fi
-
-# Generate a small test batch first to validate everything works
-if [[ "$SILENT" != "true" ]]; then
-    print_info "Testing batch generation..."
-    test_batch=$(generate_batch 1)
-    if [[ -z "$test_batch" || ${#test_batch} -lt 50 ]]; then
-        print_error "Batch generation failed - generated: ${#test_batch} characters"
-        exit 1
-    fi
-    print_info "Batch generation OK (${#test_batch} characters)"
-    
-    print_info "Testing first ingestion..."
-    if ! send_batch "$test_batch"; then
-        print_error "Test ingestion failed - check credentials and stream name"
-        exit 1
-    fi
-    print_info "Test ingestion successful"
-    RECORDS_SENT=1
-fi
+# Main execution
+START_TIME=$(date +%s)
+RECORDS_SENT=0
 
 while [[ $RECORDS_SENT -lt $TARGET_RECORDS ]]; do
-    # Calculate remaining records
     remaining=$((TARGET_RECORDS - RECORDS_SENT))
     current_batch_size=$((remaining > BATCH_SIZE ? BATCH_SIZE : remaining))
     
-    # Progress tracking (only if not silent)
-    if [[ "$SILENT" != "true" ]]; then
-        progress=$((RECORDS_SENT * 100 / TARGET_RECORDS))
-        elapsed=$(($(date +%s) - START_TIME))
-        rate=$((RECORDS_SENT / (elapsed == 0 ? 1 : elapsed)))
-        echo "Progress: ${progress}% (${RECORDS_SENT}/${TARGET_RECORDS}) | Rate: ${rate} records/sec | Elapsed: ${elapsed}s"
-    fi
+    # Progress tracking
+    progress=$((RECORDS_SENT * 100 / TARGET_RECORDS))
+    elapsed=$(($(date +%s) - START_TIME))
+    rate=$((RECORDS_SENT / (elapsed == 0 ? 1 : elapsed)))
     
-    # Generate and send batch with error checking
-    if [[ "$SILENT" != "true" ]]; then
-        echo "Generating batch of $current_batch_size records..."
-    fi
-    
+    # Generate and send batch
     batch_data=$(generate_batch $current_batch_size)
     
     if [[ -z "$batch_data" ]]; then
-        print_error "Failed to generate batch data"
         exit 1
-    fi
-    
-    if [[ "$SILENT" != "true" ]]; then
-        echo "Sending batch (${#batch_data} characters)..."
     fi
     
     if send_batch "$batch_data"; then
         RECORDS_SENT=$((RECORDS_SENT + current_batch_size))
-        [[ "$SILENT" != "true" ]] && echo "✓ Batch sent successfully"
     else
-        print_error "Failed to send batch at record $RECORDS_SENT"
         exit 1
     fi
     
-    # Small delay to prevent overwhelming the server
     sleep 0.1
 done
 
@@ -354,24 +229,4 @@ done
 TOTAL_TIME=$(($(date +%s) - START_TIME))
 FINAL_RATE=$((TARGET_RECORDS / (TOTAL_TIME == 0 ? 1 : TOTAL_TIME)))
 
-if [[ "$SILENT" != "true" ]]; then
-    echo -e "\n"
-    print_success "Completed $TARGET_RECORDS records in ${TOTAL_TIME} seconds"
-    print_success "Average rate: ${FINAL_RATE} records/second"
-    print_success "Total batches: $((TARGET_RECORDS / BATCH_SIZE))"
-fi
-
-# Performance tips shown (only if not silent)
-if [[ "$SILENT" != "true" ]]; then
-    echo
-    print_info "Performance optimizations used:"
-    echo "  • Pre-computed all random data (no runtime generation)"
-    echo "  • Large batch sizes (fewer HTTP requests)"
-    echo "  • Array cycling instead of random selection"
-    echo "  • Minimal JSON formatting"
-    echo "  • curl connection keep-alive"
-    echo "  • Single-process execution (no worker overhead)"
-fi
-
-# Always exit with success if we get here
 exit 0
