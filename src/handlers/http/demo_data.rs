@@ -30,6 +30,8 @@ use std::os::unix::fs::PermissionsExt;
 // Embed the scripts at compile time
 const INGEST_SCRIPT: &str = include_str!("../../../resources/ingest_demo_data.sh");
 const FILTER_SCRIPT: &str = include_str!("../../../resources/filters_demo_data.sh");
+const ALERT_SCRIPT: &str = include_str!("../../../resources/alerts_demo_data.sh");
+
 pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> {
     let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
         .map_err(|_| PostError::InvalidQueryParameter)?;
@@ -75,7 +77,7 @@ pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> 
                 "Demo data is not available in this mode"
             ))),
         },
-        "filters" => {
+        "filters" | "alerts" => {
             // Fire the script execution asynchronously
             tokio::spawn(async move {
                 if let Err(e) = execute_demo_script(&action, &url, username, password).await {
@@ -103,6 +105,7 @@ async fn execute_demo_script(
     let script_content = match action {
         "ingest" => INGEST_SCRIPT,
         "filters" => FILTER_SCRIPT,
+        "alerts" => ALERT_SCRIPT,
         _ => return Err(anyhow::anyhow!("Unsupported action: {}", action)),
     };
     // Write the script content to the temporary file
