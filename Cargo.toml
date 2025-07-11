@@ -122,6 +122,7 @@ thiserror = "2.0"
 ulid = { version = "1.0", features = ["serde"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 futures-core = "0.3.31"
+tempfile = "3.20.0"
 
 [build-dependencies]
 cargo_toml = "0.21"
