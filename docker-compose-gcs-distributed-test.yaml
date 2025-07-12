@@ -1,0 +1,114 @@
+networks:
+  parseable-internal:
+
+services:
+  # query server
+  parseable-query:
+    container_name: parseable-query
+    build:
+      context: .
+      dockerfile: Dockerfile.debug
+    platform: linux/amd64
+    command: ["parseable", "gcs-store"]
+    ports:
+      - "8000:8000"
+    environment:
+      - P_S3_URL=http://minio:9000
+      - P_S3_ACCESS_KEY=parseable
+      - P_S3_SECRET_KEY=supersecret
+      - P_S3_REGION=us-east-1
+      - P_S3_BUCKET=parseable
+      - P_STAGING_DIR=/tmp/data
+      - P_USERNAME=parseableadmin
+      - P_PASSWORD=parseableadmin
+      - P_CHECK_UPDATE=false
+      - P_PARQUET_COMPRESSION_ALGO=snappy
+      - P_MODE=query
+      - RUST_LOG=warn
+    networks:
+      - parseable-internal
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness"]
+      interval: 15s
+      timeout: 20s
+      retries: 5
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 20s
+        max_attempts: 3
+  # ingest server one
+  parseable-ingest-one:
+    container_name: parseable-ingest-one
+    build:
+      context: .
+      dockerfile: Dockerfile.debug
+    platform: linux/amd64
+    command: ["parseable", "gcs-store"]
+    ports:
+      - "8000"
+    environment:
+      - P_S3_URL=http://minio:9000
+      - P_S3_ACCESS_KEY=parseable
+      - P_S3_SECRET_KEY=supersecret
+      - P_S3_REGION=us-east-1
+      - P_S3_BUCKET=parseable
+      - P_STAGING_DIR=/tmp/data
+      - P_USERNAME=parseableadmin
+      - P_PASSWORD=parseableadmin
+      - P_CHECK_UPDATE=false
+      - P_PARQUET_COMPRESSION_ALGO=snappy
+      - P_MODE=ingest
+      - P_INGESTOR_ENDPOINT=parseable-ingest-one:8000
+      - RUST_LOG=warn
+    networks:
+      - parseable-internal
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness"]
+      interval: 15s
+      timeout: 20s
+      retries: 5
+    depends_on:
+      parseable-query:
+        condition: service_healthy
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 20s
+        max_attempts: 3
+
+  quest:
+    platform: linux/amd64
+    image: ghcr.io/parseablehq/quest:main
+    pull_policy: always
+    command:
+      [
+        "load",
+        "http://parseable-query:8000",
+        "parseableadmin",
+        "parseableadmin",
+        "20",
+        "10",
+        "5m",
+        "minio:9000",
+        "parseable",
+        "supersecret",
+        "parseable",
+        "http://parseable-ingest-one:8000",
+        "parseableadmin",
+        "parseableadmin",
+      ]
+    networks:
+      - parseable-internal
+    depends_on:
+      parseable-query:
+        condition: service_healthy
+      parseable-ingest-one:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 20s
+        max_attempts: 3
