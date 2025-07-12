@@ -5,6 +5,7 @@ P_URL=${P_URL:-"http://localhost:8000"}
 P_USERNAME=${P_USERNAME:-"admin"}
 P_PASSWORD=${P_PASSWORD:-"admin"}
 P_STREAM=${P_STREAM:-"demodata"}
+ACTION=${ACTION:-"ingest"}
 TARGET_RECORDS=10000
 BATCH_SIZE=1000
 
@@ -19,14 +20,17 @@ curl_with_retry() {
     local content_type="${4:-application/json}"
     local max_retries="${5:-3}"
     local retry_count=0
+    local data_file="$7"
     
-    # Create temp file if data is provided
-    if [[ -n "$data" ]]; then
+    # Create temp file if data is provided (either as string or file)
+    if [[ -n "$data_file" ]]; then
+        temp_file="$data_file"
+    elif [[ -n "$data" ]]; then
         temp_file=$(mktemp)
         if [[ $? -ne 0 ]]; then
             return 1
         fi
-        echo "$data" > "$temp_file"
+        printf "%s" "$data" > "$temp_file"
     fi
     
     while [[ $retry_count -lt $max_retries ]]; do
@@ -67,11 +71,15 @@ curl_with_retry() {
             local status_code
             if [[ -n "$response" ]]; then
                 status_code=$(echo "$response" | tail -n1)
+                local response_body=$(echo "$response" | sed '$d')
                 
-                # Clean up temp file
-                [[ -n "$temp_file" ]] && rm -f "$temp_file"
+                # Clean up temp file (only if we created it)
+                if [[ -n "$temp_file" && -z "$data_file" ]]; then
+                    rm -f "$temp_file"
+                fi
                 
                 if [[ "$status_code" == "200" || "$status_code" == "201" ]]; then
+                    echo "$response_body"
                     return 0
                 else
                     return 1
@@ -88,35 +96,41 @@ curl_with_retry() {
         fi
     done
     
-    # Clean up temp file on failure
-    [[ -n "$temp_file" ]] && rm -f "$temp_file"
+    # Clean up temp file on failure (only if we created it)
+    if [[ -n "$temp_file" && -z "$data_file" ]]; then
+        rm -f "$temp_file"
+    fi
     
     return 1
 }
 
-# Pre-compute static data
-TRACE_IDS=()
-SPAN_IDS=()
-IP_ADDRESSES=()
-TIMESTAMPS=()
-UNIX_NANOS=()
+# ==================== INGEST FUNCTIONALITY ====================
 
-# Generate 100 of each for cycling through
-for i in {1..100}; do
-    TRACE_IDS+=("$(printf '%032x' $((RANDOM * RANDOM)))")
-    SPAN_IDS+=("$(printf '%016x' $((RANDOM * RANDOM)))")
-    IP_ADDRESSES+=("192.168.$((RANDOM % 256)).$((RANDOM % 256))")
-    TIMESTAMPS+=("$(date -u +%Y-%m-%dT%H:%M:%S.%03dZ -d "+$((RANDOM % 3600)) seconds")")
-    UNIX_NANOS+=("$(date +%s)$(printf '%09d' $((RANDOM % 1000000000)))")
-done
+# Pre-compute static data for ingestion
+init_ingest_data() {
+    TRACE_IDS=()
+    SPAN_IDS=()
+    IP_ADDRESSES=()
+    TIMESTAMPS=()
+    UNIX_NANOS=()
 
-# Static arrays
-METHODS=("GET" "GET" "GET" "GET" "POST" "PUT")
-STATUS_CODES=(200 200 200 201 400 500)
-SERVICES=("frontend" "api" "auth" "cart" "payment")
-ENDPOINTS=("/products" "/cart" "/login" "/checkout" "/search")
-USER_AGENTS=("curl/7.88.1" "python-requests/2.32.3" "Mozilla/5.0")
-CLUSTERS=("web" "api" "db")
+    # Generate 100 of each for cycling through
+    for i in {1..100}; do
+        TRACE_IDS+=("$(printf '%032x' $((RANDOM * RANDOM)))")
+        SPAN_IDS+=("$(printf '%016x' $((RANDOM * RANDOM)))")
+        IP_ADDRESSES+=("192.168.$((RANDOM % 256)).$((RANDOM % 256))")
+        TIMESTAMPS+=("$(date -u +%Y-%m-%dT%H:%M:%S.%03dZ -d "+$((RANDOM % 3600)) seconds")")
+        UNIX_NANOS+=("$(date +%s)$(printf '%09d' $((RANDOM % 1000000000)))")
+    done
+
+    # Static arrays
+    METHODS=("GET" "GET" "GET" "GET" "POST" "PUT")
+    STATUS_CODES=(200 200 200 201 400 500)
+    SERVICES=("frontend" "api" "auth" "cart" "payment")
+    ENDPOINTS=("/products" "/cart" "/login" "/checkout" "/search")
+    USER_AGENTS=("curl/7.88.1" "python-requests/2.32.3" "Mozilla/5.0")
+    CLUSTERS=("web" "api" "db")
+}
 
 # Generate batch data
 generate_batch() {
@@ -196,37 +210,311 @@ send_batch() {
     curl_with_retry "$P_URL/api/v1/ingest" "POST" "$data" "application/json" 3 15
 }
 
-# Main execution
-START_TIME=$(date +%s)
-RECORDS_SENT=0
+# Main ingest function
+run_ingest() {
+    echo "Starting data ingestion..."
+    init_ingest_data
+    
+    START_TIME=$(date +%s)
+    RECORDS_SENT=0
 
-while [[ $RECORDS_SENT -lt $TARGET_RECORDS ]]; do
-    remaining=$((TARGET_RECORDS - RECORDS_SENT))
-    current_batch_size=$((remaining > BATCH_SIZE ? BATCH_SIZE : remaining))
+    while [[ $RECORDS_SENT -lt $TARGET_RECORDS ]]; do
+        remaining=$((TARGET_RECORDS - RECORDS_SENT))
+        current_batch_size=$((remaining > BATCH_SIZE ? BATCH_SIZE : remaining))
+        
+        # Progress tracking
+        progress=$((RECORDS_SENT * 100 / TARGET_RECORDS))
+        elapsed=$(($(date +%s) - START_TIME))
+        rate=$((RECORDS_SENT / (elapsed == 0 ? 1 : elapsed)))
+        
+        echo "Progress: $progress% ($RECORDS_SENT/$TARGET_RECORDS) - Rate: $rate records/sec"
+        
+        # Generate and send batch
+        batch_data=$(generate_batch $current_batch_size)
+        
+        if [[ -z "$batch_data" ]]; then
+            echo "Failed to generate batch data"
+            exit 1
+        fi
+        
+        if send_batch "$batch_data"; then
+            RECORDS_SENT=$((RECORDS_SENT + current_batch_size))
+        else
+            echo "Failed to send batch"
+            exit 1
+        fi
+        
+        sleep 0.1
+    done
+
+    # Final statistics
+    TOTAL_TIME=$(($(date +%s) - START_TIME))
+    FINAL_RATE=$((TARGET_RECORDS / (TOTAL_TIME == 0 ? 1 : TOTAL_TIME)))
     
-    # Progress tracking
-    progress=$((RECORDS_SENT * 100 / TARGET_RECORDS))
-    elapsed=$(($(date +%s) - START_TIME))
-    rate=$((RECORDS_SENT / (elapsed == 0 ? 1 : elapsed)))
+    echo "Ingestion completed: $TARGET_RECORDS records in $TOTAL_TIME seconds (avg: $FINAL_RATE records/sec)"
+}
+
+# ==================== FILTERS FUNCTIONALITY ====================
+
+# Create SQL filters
+create_sql_filters() {
+    echo "Creating SQL filters..."
     
-    # Generate and send batch
-    batch_data=$(generate_batch $current_batch_size)
+    sql_filters=(
+        "error_logs|Monitor all ERROR and FATAL severity events|SELECT * FROM $P_STREAM WHERE severity_text IN ('ERROR', 'FATAL') ORDER BY time_unix_nano DESC LIMIT 100"
+        "high_response_time|Identify requests with extended response times|SELECT \"service.name\", \"url.path\", body FROM $P_STREAM WHERE body LIKE '%duration%' ORDER BY time_unix_nano DESC LIMIT 50"
+        "service_health_summary|Service health metrics by severity|SELECT \"service.name\", severity_text, COUNT(*) as count FROM $P_STREAM GROUP BY \"service.name\", severity_text ORDER BY count DESC"
+        "api_endpoint_performance|API endpoint request patterns|SELECT \"url.path\", COUNT(*) as request_count, \"service.name\" FROM $P_STREAM GROUP BY \"url.path\", \"service.name\" ORDER BY request_count DESC LIMIT 20"
+        "authentication_failures|Monitor auth-related warnings and errors|SELECT * FROM $P_STREAM WHERE \"url.path\" LIKE '%login%' AND severity_text IN ('WARN', 'ERROR') ORDER BY time_unix_nano DESC LIMIT 100"
+        "upstream_cluster_analysis|Request distribution across clusters|SELECT \"upstream.cluster\", COUNT(*) as request_count, \"service.name\" FROM $P_STREAM GROUP BY \"upstream.cluster\", \"service.name\" ORDER BY request_count DESC"
+        "trace_analysis|Multi-span traces for distributed tracking|SELECT trace_id, COUNT(*) as span_count, \"service.name\" FROM $P_STREAM GROUP BY trace_id, \"service.name\" HAVING span_count > 1 ORDER BY span_count DESC LIMIT 10"
+        "user_agent_distribution|Client types and user agent patterns|SELECT \"user_agent.original\", COUNT(*) as usage_count FROM $P_STREAM GROUP BY \"user_agent.original\" ORDER BY usage_count DESC LIMIT 15"
+        "source_address_analysis|Request distribution by source IP|SELECT \"source.address\", COUNT(*) as request_count, COUNT(DISTINCT \"service.name\") as services_accessed FROM $P_STREAM GROUP BY \"source.address\" ORDER BY request_count DESC LIMIT 20"
+        "severity_timeline|Severity trends over time|SELECT \"severity_text\", COUNT(*) as count, \"service.name\" FROM $P_STREAM GROUP BY \"severity_text\", \"service.name\" ORDER BY count DESC"
+    )
     
-    if [[ -z "$batch_data" ]]; then
-        exit 1
-    fi
+    sql_success_count=0
     
-    if send_batch "$batch_data"; then
-        RECORDS_SENT=$((RECORDS_SENT + current_batch_size))
+    for filter_config in "${sql_filters[@]}"; do
+        IFS='|' read -r name description query <<< "$filter_config"
+        
+        # Escape quotes for JSON
+        escaped_query=$(echo "$query" | sed 's/"/\\"/g')
+        escaped_desc=$(echo "$description" | sed 's/"/\\"/g')
+        
+        json="{\"stream_name\":\"sql\",\"filter_name\":\"$name\",\"filter_description\":\"$escaped_desc\",\"query\":{\"filter_type\":\"sql\",\"filter_query\":\"$escaped_query\"},\"time_filter\":null}"
+        
+        if curl_with_retry "$P_URL/api/v1/filters" "POST" "$json" "application/json" 3 10; then
+            sql_success_count=$((sql_success_count + 1))
+            echo "Created SQL filter: $name"
+        else
+            echo "Failed to create SQL filter: $name"
+        fi
+        
+        sleep 0.5
+    done
+    
+    echo "Created $sql_success_count SQL filters"
+    sleep 3
+}
+
+# Create saved filters
+create_saved_filters() {
+    echo "Creating saved filters..."
+    
+    saved_filters=(
+        "service_errors|Monitor service errors and failures|SELECT * FROM $P_STREAM WHERE severity_text IN ('ERROR', 'FATAL') LIMIT 500|Ingestion Time,Data,service.name,severity_text,url.path|service.name"
+        "auth_security_events|Authentication and authorization monitoring|SELECT * FROM $P_STREAM WHERE url.path LIKE '%login%' AND severity_text IN ('WARN', 'ERROR', 'FATAL') LIMIT 500|Ingestion Time,Data,service.name,severity_text,source.address,user_agent.original|severity_text"
+        "high_latency_requests|High response time requests|SELECT * FROM $P_STREAM WHERE body LIKE '%duration%' LIMIT 500|Ingestion Time,Data,service.name,url.path,upstream.cluster,body|service.name"
+        "upstream_cluster_health|Upstream cluster performance|SELECT * FROM $P_STREAM WHERE upstream.cluster IS NOT NULL LIMIT 500|Ingestion Time,Data,upstream.cluster,service.name,severity_text,destination.address|upstream.cluster"
+        "api_endpoint_monitoring|API endpoint usage patterns|SELECT * FROM $P_STREAM WHERE url.path IS NOT NULL LIMIT 500|Ingestion Time,Data,url.path,service.name,severity_text,source.address|url.path"
+        "trace_correlation_view|Correlated traces for distributed tracking|SELECT * FROM $P_STREAM WHERE trace_id IS NOT NULL AND span_id IS NOT NULL LIMIT 500|Ingestion Time,Data,trace_id,span_id,service.name,url.path|trace_id"
+        "user_agent_analysis|Client types and patterns|SELECT * FROM $P_STREAM WHERE user_agent.original IS NOT NULL LIMIT 500|Ingestion Time,Data,user_agent.original,source.address,url.path,service.name|user_agent.original"
+        "network_monitoring|Network traffic and server interactions|SELECT * FROM $P_STREAM WHERE source.address IS NOT NULL LIMIT 500|Ingestion Time,Data,source.address,destination.address,service.name,severity_text,url.path|source.address"
+        "service_overview|Comprehensive service activity view|SELECT * FROM $P_STREAM LIMIT 500|Ingestion Time,Data,service.name,url.path,source.address,destination.address,upstream.cluster|service.name"
+        "recent_activity|Most recent system activity|SELECT * FROM $P_STREAM ORDER BY time_unix_nano DESC LIMIT 500|Ingestion Time,Data,service.name,severity_text,url.path,source.address|severity_text"
+    )
+    
+    saved_success_count=0
+    
+    for filter_config in "${saved_filters[@]}"; do
+        IFS='|' read -r name description query visible_columns group_by <<< "$filter_config"
+        
+        # Escape quotes
+        escaped_query=$(echo "$query" | sed 's/"/\\"/g')
+        escaped_desc=$(echo "$description" | sed 's/"/\\"/g')
+        
+        # Convert visible columns to JSON array
+        IFS=',' read -ra col_array <<< "$visible_columns"
+        visible_cols_json=""
+        for i in "${!col_array[@]}"; do
+            [[ $i -gt 0 ]] && visible_cols_json+=","
+            visible_cols_json+="\"${col_array[$i]}\""
+        done
+        
+        json="{\"stream_name\":\"$P_STREAM\",\"filter_name\":\"$name\",\"filter_description\":\"$escaped_desc\",\"query\":{\"filter_type\":\"filter\",\"filter_query\":\"$escaped_query\"},\"time_filter\":null,\"tableConfig\":{\"visibleColumns\":[$visible_cols_json],\"pinnedColumns\":[]},\"groupBy\":\"$group_by\"}"
+        
+        if curl_with_retry "$P_URL/api/v1/filters" "POST" "$json" "application/json" 3 10; then
+            saved_success_count=$((saved_success_count + 1))
+            echo "Created saved filter: $name"
+        else
+            echo "Failed to create saved filter: $name"
+        fi
+        
+        sleep 0.5
+    done
+    
+    echo "Created $saved_success_count saved filters"
+}
+
+# Main filters function
+run_filters() {
+    echo "Starting filter creation..."
+    create_sql_filters
+    create_saved_filters
+    echo "Filter creation completed"
+}
+
+# ==================== ALERTS FUNCTIONALITY ====================
+
+# Create webhook target
+create_target() {
+    echo "Creating webhook target..." >&2
+    
+    response=$(curl -s -H "Content-Type: application/json" -H "$AUTH_HEADER" -X POST "$P_URL/api/v1/targets" -d @- << EOF
+{"type":"webhook","endpoint":"https://webhook.site/8e1f26bd-2f5b-47a2-9d0b-3b3dabb30710","name":"Test Webhook","auth":{"username":"","password":""},"skipTlsCheck":false,"notificationConfig":{"interval":1,"times":1}}
+EOF
+)
+    
+    curl_exit_code=$?
+    
+    if [[ $curl_exit_code -eq 0 && -n "$response" ]]; then
+        # Extract target ID from response
+        target_id=$(echo "$response" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+        if [[ -n "$target_id" ]]; then
+            echo "Target created successfully with ID: $target_id" >&2
+            echo "$target_id"
+            return 0
+        else
+            echo "Failed to extract target ID from response" >&2
+            echo "Response: $response" >&2
+            return 1
+        fi
     else
-        exit 1
+        echo "Failed to create target" >&2
+        echo "Curl exit code: $curl_exit_code" >&2
+        echo "Response: $response" >&2
+        return 1
+    fi
+}
+
+# Create alerts
+create_alerts() {
+    local target_id="$1"
+    
+    if [[ -z "$target_id" ]]; then
+        echo "Target ID is required to create alerts"
+        return 1
     fi
     
-    sleep 0.1
-done
+    echo "Creating alerts with target ID: $target_id"
+    
+    # Alert 1: Error Count (severity_number = 18)
+    alert1_json="{\"severity\":\"high\",\"title\":\"error count\",\"stream\":\"$P_STREAM\",\"alertType\":\"threshold\",\"aggregates\":{\"aggregateConfig\":[{\"aggregateFunction\":\"count\",\"conditions\":{\"operator\":null,\"conditionConfig\":[{\"column\":\"severity_number\",\"operator\":\"=\",\"value\":\"18\"}]},\"column\":\"severity_number\",\"operator\":\">\",\"value\":1000}]},\"evalConfig\":{\"rollingWindow\":{\"evalStart\":\"5h\",\"evalEnd\":\"now\",\"evalFrequency\":1}},\"targets\":[\"$target_id\"]}"
+    
+    response1=$(curl_with_retry "$P_URL/api/v1/alerts" "POST" "$alert1_json" "application/json" 3 10)
+    if [[ $? -eq 0 ]]; then
+        echo "Alert 1 (Error Count) created successfully"
+    else
+        echo "Failed to create Alert 1 (Error Count)"
+        echo "Response: $response1"
+    fi
+    
+    # Alert 2: 400 Errors
+    alert2_json="{\"severity\":\"critical\",\"title\":\"400 Errors\",\"stream\":\"$P_STREAM\",\"alertType\":\"threshold\",\"aggregates\":{\"aggregateConfig\":[{\"aggregateFunction\":\"count\",\"conditions\":{\"operator\":null,\"conditionConfig\":[{\"column\":\"body\",\"operator\":\"contains\",\"value\":\"400\"}]},\"column\":\"body\",\"operator\":\">\",\"value\":10}]},\"evalConfig\":{\"rollingWindow\":{\"evalStart\":\"5h\",\"evalEnd\":\"now\",\"evalFrequency\":1}},\"targets\":[\"$target_id\"]}"
+    
+    response2=$(curl_with_retry "$P_URL/api/v1/alerts" "POST" "$alert2_json" "application/json" 3 10)
+    if [[ $? -eq 0 ]]; then
+        echo "Alert 2 (400 Errors) created successfully"
+    else
+        echo "Failed to create Alert 2 (400 Errors)"
+        echo "Response: $response2"
+    fi
+    
+    # Alert 3: Trace ID or Span ID null
+    alert3_json="{\"severity\":\"high\",\"title\":\"Trace ID or Span ID null\",\"stream\":\"$P_STREAM\",\"alertType\":\"threshold\",\"aggregates\":{\"aggregateConfig\":[{\"aggregateFunction\":\"count\",\"conditions\":{\"operator\":null,\"conditionConfig\":[{\"column\":\"trace_id\",\"operator\":\"is null\",\"value\":\"\"}]},\"column\":\"trace_id\",\"operator\":\">\",\"value\":0}]},\"evalConfig\":{\"rollingWindow\":{\"evalStart\":\"5h\",\"evalEnd\":\"now\",\"evalFrequency\":1}},\"targets\":[\"$target_id\"]}"
+    
+    response3=$(curl_with_retry "$P_URL/api/v1/alerts" "POST" "$alert3_json" "application/json" 3 10)
+    if [[ $? -eq 0 ]]; then
+        echo "Alert 3 (Trace ID null) created successfully"
+    else
+        echo "Failed to create Alert 3 (Trace ID null)"
+        echo "Response: $response3"
+    fi
+    
+    sleep 1
+}
 
-# Final statistics
-TOTAL_TIME=$(($(date +%s) - START_TIME))
-FINAL_RATE=$((TARGET_RECORDS / (TOTAL_TIME == 0 ? 1 : TOTAL_TIME)))
+# Main alerts function
+run_alerts() {
+    echo "Starting alert creation..."
+    
+    # Create target and get ID
+    target_id=$(create_target)
 
-exit 0
+    if [[ $? -eq 0 && -n "$target_id" ]]; then
+        echo "Target creation successful, proceeding with alerts..."
+        sleep 2
+        
+        # Create alerts using the target ID
+        create_alerts "$target_id"
+        echo "Alert creation completed"
+    else
+        echo "Failed to create target, cannot proceed with alerts"
+        return 1
+    fi
+}
+
+# ==================== MAIN EXECUTION ====================
+
+# Display usage
+show_usage() {
+    echo "Usage: $0 [ACTION=ingest|filters|alerts|all]"
+    echo ""
+    echo "Environment variables:"
+    echo "  P_URL       - API URL (default: http://localhost:8000)"
+    echo "  P_USERNAME  - Username (default: admin)"
+    echo "  P_PASSWORD  - Password (default: admin)"
+    echo "  P_STREAM    - Stream name (default: demodata)"
+    echo "  ACTION      - Action to perform (default: ingest)"
+    echo ""
+    echo "Actions:"
+    echo "  ingest      - Ingest demo log data"
+    echo "  filters     - Create SQL and saved filters"
+    echo "  alerts      - Create alerts and webhook targets"
+    echo "  all         - Run all actions in sequence"
+    echo ""
+    echo "Examples:"
+    echo "  ACTION=ingest ./script.sh"
+    echo "  ACTION=filters P_STREAM=mystream ./script.sh"
+    echo "  ACTION=all ./script.sh"
+}
+
+# Main execution logic
+main() {
+    case "$ACTION" in
+        "ingest")
+            run_ingest
+            ;;
+        "filters")
+            run_filters
+            ;;
+        "alerts")
+            run_alerts
+            ;;
+        "all")
+            echo "Running all actions..."
+            run_ingest
+            echo "Waiting before creating filters..."
+            sleep 5
+            run_filters
+            echo "Waiting before creating alerts..."
+            sleep 5
+            run_alerts
+            echo "All actions completed"
+            ;;
+        "help"|"--help"|"-h")
+            show_usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown action: $ACTION"
+            show_usage
+            exit 1
+            ;;
+    esac
+}
+
+# Execute main function
+main "$@"
+exit $?
