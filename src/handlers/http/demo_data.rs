@@ -28,9 +28,7 @@ use std::{collections::HashMap, fs, process::Command};
 use std::os::unix::fs::PermissionsExt;
 
 // Embed the scripts at compile time
-const INGEST_SCRIPT: &str = include_str!("../../../resources/ingest_demo_data.sh");
-const FILTER_SCRIPT: &str = include_str!("../../../resources/filters_demo_data.sh");
-const ALERT_SCRIPT: &str = include_str!("../../../resources/alerts_demo_data.sh");
+const DEMO_SCRIPT: &str = include_str!("../../../resources/ingest_demo_data.sh");
 
 pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> {
     let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
@@ -56,22 +54,17 @@ pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> 
             Mode::Ingest | Mode::All => {
                 // Fire the script execution asynchronously
                 tokio::spawn(async move {
-                    if let Err(e) = execute_demo_script(&action, &url, username, password).await {
-                        tracing::warn!("Failed to execute demo script: {}", e);
-                    }
+                    execute_demo_script(&action, &url, username, password).await
                 });
 
                 Ok(HttpResponse::Accepted().finish())
             }
             Mode::Query | Mode::Prism => {
                 // Forward the request to ingestor asynchronously
-                tokio::spawn(async move {
-                    if let Err(e) = get_demo_data_from_ingestor(&action).await {
-                        tracing::warn!("Failed to forward request to ingestor: {}", e);
-                    }
-                });
-
-                Ok(HttpResponse::Accepted().finish())
+                match get_demo_data_from_ingestor(&action).await {
+                    Ok(()) => Ok(HttpResponse::Accepted().finish()),
+                    Err(e) => Err(PostError::Invalid(anyhow::anyhow!(e))),
+                }
             }
             _ => Err(PostError::Invalid(anyhow::anyhow!(
                 "Demo data is not available in this mode"
@@ -79,11 +72,9 @@ pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> 
         },
         "filters" | "alerts" => {
             // Fire the script execution asynchronously
-            tokio::spawn(async move {
-                if let Err(e) = execute_demo_script(&action, &url, username, password).await {
-                    tracing::warn!("Failed to execute demo script: {}", e);
-                }
-            });
+            tokio::spawn(
+                async move { execute_demo_script(&action, &url, username, password).await },
+            );
 
             Ok(HttpResponse::Accepted().finish())
         }
@@ -102,14 +93,8 @@ async fn execute_demo_script(
         .map_err(|e| anyhow::anyhow!("Failed to create temporary file: {}", e))?;
 
     let temp_path = temp_file.path();
-    let script_content = match action {
-        "ingest" => INGEST_SCRIPT,
-        "filters" => FILTER_SCRIPT,
-        "alerts" => ALERT_SCRIPT,
-        _ => return Err(anyhow::anyhow!("Unsupported action: {}", action)),
-    };
     // Write the script content to the temporary file
-    fs::write(temp_path, script_content)
+    fs::write(temp_path, DEMO_SCRIPT)
         .map_err(|e| anyhow::anyhow!("Failed to write script to temp file: {}", e))?;
 
     // Make the temporary file executable (Unix only)
@@ -128,7 +113,7 @@ async fn execute_demo_script(
         .env("P_URL", url)
         .env("P_USERNAME", username)
         .env("P_PASSWORD", password)
-        .env("DEMO_ACTION", action)
+        .env("ACTION", action)
         .output()
         .map_err(|e| {
             anyhow::anyhow!(
