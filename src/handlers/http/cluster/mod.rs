@@ -156,6 +156,62 @@ pub async fn sync_streams_with_ingestors(
     ).await
 }
 
+// forward the demo data request to one of the live ingestor
+pub async fn get_demo_data_from_ingestor(action: &str) -> Result<(), PostError> {
+    let ingestor_infos: Vec<NodeMetadata> =
+        get_node_info(NodeType::Ingestor).await.map_err(|err| {
+            error!("Fatal: failed to get ingestor info: {:?}", err);
+            PostError::Invalid(err)
+        })?;
+
+    let mut live_ingestors: Vec<NodeMetadata> = Vec::new();
+    for ingestor in ingestor_infos {
+        if utils::check_liveness(&ingestor.domain_name).await {
+            live_ingestors.push(ingestor);
+            break;
+        }
+    }
+
+    if live_ingestors.is_empty() {
+        return Err(PostError::Invalid(anyhow::anyhow!(
+            "No live ingestors found"
+        )));
+    }
+
+    // Pick the first live ingestor
+    let ingestor = &live_ingestors[0];
+
+    let url = format!(
+        "{}{}/demodata?action={action}",
+        ingestor.domain_name,
+        base_path_without_preceding_slash()
+    );
+
+    let res = INTRA_CLUSTER_CLIENT
+        .get(url)
+        .header(header::AUTHORIZATION, &ingestor.token)
+        .header(header::CONTENT_TYPE, "application/json")
+        .send()
+        .await
+        .map_err(|err| {
+            error!(
+                "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
+                ingestor.domain_name, err
+            );
+            PostError::Invalid(err.into())
+        })?;
+
+    if !res.status().is_success() {
+        return Err(PostError::Invalid(anyhow::anyhow!(
+            "failed to forward request to ingestor: {}\nResponse status: {}",
+            ingestor.domain_name,
+            res.status()
+        )));
+    }
+
+    Ok(())
+}
+
 // forward the role update request to all ingestors to keep them in sync
 pub async fn sync_users_with_roles_with_ingestors(
     username: &str,
@@ -919,7 +975,7 @@ where
     for result in results {
         match result {
             Ok(Some(node_metrics)) => metrics.push(node_metrics),
-            Ok(None) => {} // node was not live or metrics couldn't be fetched
+            Ok(_) => {} // node was not live or metrics couldn't be fetched
             Err(err) => return Err(err),
         }
     }
