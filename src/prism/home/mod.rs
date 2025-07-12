@@ -41,14 +41,6 @@ use crate::{
 type StreamMetadataResponse = Result<(String, Vec<ObjectStoreFormat>, DataSetType), PrismHomeError>;
 
 #[derive(Debug, Serialize, Default)]
-pub struct DatasetStats {
-    dataset_name: String,
-    events: u64,
-    ingestion_size: u64,
-    storage_size: u64,
-}
-
-#[derive(Debug, Serialize, Default)]
 pub struct DatedStats {
     date: String,
     events: u64,
