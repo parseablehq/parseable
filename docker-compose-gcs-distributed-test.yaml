@@ -13,11 +13,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - P_S3_URL=http://minio:9000
-      - P_S3_ACCESS_KEY=parseable
-      - P_S3_SECRET_KEY=supersecret
-      - P_S3_REGION=us-east-1
-      - P_S3_BUCKET=parseable
+      - P_GCS_BUCKET=parseable-test-gcs-local
       - P_STAGING_DIR=/tmp/data
       - P_USERNAME=parseableadmin
       - P_PASSWORD=parseableadmin
@@ -25,6 +21,7 @@ services:
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=query
       - RUST_LOG=warn
+      - GOOGLE_APPLICATION_CREDENTIALS=/parseable/svc/mpt-randd-8217aef869fd.json
     networks:
       - parseable-internal
     healthcheck:
@@ -36,7 +33,9 @@ services:
       restart_policy:
         condition: on-failure
         delay: 20s
-        max_attempts: 3
+        max_attempts:
+    volumes:
+      - "/home/opeyemi/Downloads/:/parseable/svc/:ro,z"
   # ingest server one
   parseable-ingest-one:
     container_name: parseable-ingest-one
@@ -48,11 +47,7 @@ services:
     ports:
       - "8000"
     environment:
-      - P_S3_URL=http://minio:9000
-      - P_S3_ACCESS_KEY=parseable
-      - P_S3_SECRET_KEY=supersecret
-      - P_S3_REGION=us-east-1
-      - P_S3_BUCKET=parseable
+      - P_GCS_BUCKET=parseable-test-gcs-local
       - P_STAGING_DIR=/tmp/data
       - P_USERNAME=parseableadmin
       - P_PASSWORD=parseableadmin
@@ -61,6 +56,7 @@ services:
       - P_MODE=ingest
       - P_INGESTOR_ENDPOINT=parseable-ingest-one:8000
       - RUST_LOG=warn
+      - GOOGLE_APPLICATION_CREDENTIALS=/parseable/svc/mpt-randd-8217aef869fd.json
     networks:
       - parseable-internal
     healthcheck:
@@ -76,6 +72,8 @@ services:
         condition: on-failure
         delay: 20s
         max_attempts: 3
+    volumes:
+      - "/home/opeyemi/Downloads/:/parseable/svc/:ro,z"
 
   quest:
     platform: linux/amd64
@@ -90,10 +88,10 @@ services:
         "20",
         "10",
         "5m",
-        "minio:9000",
-        "parseable",
-        "supersecret",
-        "parseable",
+        "storage.googleapis.com",
+        "GOOG1ESWXFI3QEE6X2SEYKIQDK6PONOW3QPKDD3HJZOBE34H6PWQWWQHYYBSI",
+        "1Cfhir7cep9ej56UlLX6RKmkuV2BMcC2+BDFoSoa",
+        "parseable-test-gcs-local",
         "http://parseable-ingest-one:8000",
         "parseableadmin",
         "parseableadmin",
@@ -104,8 +102,6 @@ services:
       parseable-query:
         condition: service_healthy
       parseable-ingest-one:
-        condition: service_healthy
-      minio:
         condition: service_healthy
     deploy:
       restart_policy:

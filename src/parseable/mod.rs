@@ -249,6 +249,8 @@ impl Parseable {
             return "S3 bucket";
         } else if self.storage.name() == "blob_store" {
             return "Azure Blob Storage";
+        } else if self.storage.name() == "gcs" {
+            return "Google Object Store";
         }
         "Unknown"
     }

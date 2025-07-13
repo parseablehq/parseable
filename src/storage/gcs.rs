@@ -69,7 +69,13 @@ use super::{
 
 pub struct GCSConfig {
     /// The endpoint to GCS or compatible object storage platform
-    #[arg(long, env = "P_S3_URL", value_name = "url", required = true)]
+    #[arg(
+        long,
+        env = "P_GCS_URL",
+        value_name = "url",
+        default_value = "https://storage.googleapis.com",
+        required = false
+    )]
     pub endpoint_url: String,
 
     /// The GCS or compatible object storage bucket to be used for storage
@@ -107,7 +113,7 @@ impl GCSConfig {
             backoff: BackoffConfig::default(),
         };
 
-        let builder = GoogleCloudStorageBuilder::new()
+        let builder = GoogleCloudStorageBuilder::from_env()
             .with_bucket_name(&self.bucket_name)
             .with_retry(retry_config);
 
