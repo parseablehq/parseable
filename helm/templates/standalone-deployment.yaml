@@ -36,14 +36,14 @@ spec:
           imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
           # Uncomment to debug
           # command: [ "/bin/sh", "-c", "sleep 1000000" ]
-          args: [ "/usr/bin/parseable", {{ if eq .Values.parseable.store "gcs-store" }}"s3-store"{{ else }}{{ .Values.parseable.store | quote }}{{ end }}]
+          args: [ "/usr/bin/parseable", {{ .Values.parseable.store | quote }}]
           env:
             - name: HOSTNAME
               valueFrom:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: metadata.name
-            {{- range $key, $value :=  .Values.parseable.env }}
+            {{- range $key, $value := .Values.parseable.env }}
             - name: {{ $key }}
               value: {{ tpl $value $ | quote }}
             {{- end }}
@@ -92,11 +92,13 @@ spec:
             {{- end }}
 
             {{- if and .Values.parseable.gcsModeSecret .Values.parseable.gcsModeSecret.enabled }}
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: {{ .Values.parseable.gcsModeSecret.auth.mount_path }}
             {{- range $secret := .Values.parseable.gcsModeSecret.secrets }}
             {{- range $key := $secret.keys }}
             {{- $envPrefix := $secret.prefix | default "" | upper }}
             {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
-            - name: {{ $envPrefix }}{{ $envKey | replace "GCS" "S3"}}
+            - name: {{ $envPrefix }}{{ $envKey }}
               valueFrom:
                 secretKeyRef:
                   name: {{ $secret.name }}
@@ -119,21 +121,30 @@ spec:
             {{- end }}
             {{- end }}
 
-
           ports:
             - containerPort: 8000
           {{- with .Values.readinessProbe }}
           readinessProbe:
-            {{ toYaml . | nindent 12 }}
+            {{- toYaml . | nindent 12 }}
           {{- end }}
           resources:
             {{- toYaml .Values.parseable.resources | nindent 12 }}
           volumeMounts:
+          {{- if and .Values.parseable.gcsModeSecret .Values.parseable.gcsModeSecret.enabled }}
+          - mountPath: {{ .Values.parseable.gcsModeSecret.auth.mount_path }}
+            name: {{ .Values.parseable.gcsModeSecret.auth.secret_name }}
+            readOnly: true
+          {{- end }}
           - mountPath: "/parseable/data"
             name: data-volume
           - mountPath: "/parseable/staging"
             name: stage-volume
       volumes:
+      {{- if and .Values.parseable.gcsModeSecret .Values.parseable.gcsModeSecret.enabled }}
+        - name: {{ .Values.parseable.gcsModeSecret.auth.secret_name }}
+          secret:
+            secretName: {{ .Values.parseable.gcsModeSecret.auth.secret_name }}
+      {{- end }}
       {{- if .Values.parseable.persistence.staging.enabled }}
       - name: stage-volume
         persistentVolumeClaim:
@@ -158,4 +169,4 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-{{- end }}  # Closing for "if eq .Values.parseable.highAvailability.enabled false"
+{{- end }}

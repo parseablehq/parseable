@@ -66,6 +66,12 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if and .Values.parseable.gcsModeSecret .Values.parseable.gcsModeSecret.enabled }}
+      volumes:
+        - name: {{ .Values.parseable.gcsModeSecret.auth.secret_name }}
+          secret:
+            secretName: {{ .Values.parseable.gcsModeSecret.auth.secret_name }}
+      {{- end }}
       containers:
       - name: {{ .Chart.Name }}
         securityContext:
@@ -74,19 +80,19 @@ spec:
         imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
         args:
           - /usr/bin/parseable
-          - {{ if eq .Values.parseable.store "gcs-store" }}"s3-store"{{ else }}{{ .Values.parseable.store | quote }}{{ end }}
+          - {{ .Values.parseable.store | quote }}
           - --ingestor-endpoint=$(HOSTNAME).{{ include "parseable.fullname" . }}-ingestor-headless.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.parseable.highAvailability.ingestor.port }}
         env:
-          {{- range $key, $value :=  .Values.parseable.highAvailability.ingestor.env }}
-          - name: {{ $key }}
-            value: {{ tpl $value $ | quote }}
           - name: HOSTNAME
             valueFrom:
               fieldRef:
                 apiVersion: v1
                 fieldPath: metadata.name
+          {{- range $key, $value := .Values.parseable.highAvailability.ingestor.env }}
+          - name: {{ $key }}
+            value: {{ tpl $value $ | quote }}
           {{- end }}
-          
+
           {{- if .Values.parseable.auditLogging.enabled }}
           - name: P_AUDIT_LOGGER
             value: {{ .Values.parseable.auditLogging.p_server | quote }}
@@ -111,11 +117,13 @@ spec:
           {{- end }}
 
           {{- if and .Values.parseable.gcsModeSecret .Values.parseable.gcsModeSecret.enabled }}
+          - name: GOOGLE_APPLICATION_CREDENTIALS
+            value: {{ .Values.parseable.gcsModeSecret.auth.mount_path }}
           {{- range $secret := .Values.parseable.gcsModeSecret.secrets }}
           {{- range $key := $secret.keys }}
           {{- $envPrefix := $secret.prefix | default "" | upper }}
           {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
-          - name: {{ $envPrefix }}{{ $envKey | replace "GCS" "S3"}}
+          - name: {{ $envPrefix }}{{ $envKey }}
             valueFrom:
               secretKeyRef:
                 name: {{ $secret.name }}
@@ -137,30 +145,39 @@ spec:
           {{- end }}
           {{- end }}
           {{- end }}
+
           - name: P_MODE
             value: "ingest"
+
           {{- if .Values.parseable.kafkaConnector.enabled }}
-            {{- range $key, $value := .Values.parseable.kafkaConnector.env }}
+          {{- range $key, $value := .Values.parseable.kafkaConnector.env }}
           - name: {{ $key }}
             value: {{ tpl $value $ | quote }}
-            {{- end }}
+          {{- end }}
           {{- end }}
 
         ports:
           - containerPort: {{ .Values.parseable.highAvailability.ingestor.port }}
-      {{- with .Values.readinessProbe }}
+        {{- with .Values.readinessProbe }}
         readinessProbe:
-          {{ toYaml . | nindent 12 }}
-      {{- end }}
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
         resources:
-          {{- toYaml .Values.parseable.highAvailability.ingestor.resources | nindent 12 }}
-        {{- if .Values.parseable.persistence.ingestor.enabled }}
+          {{- toYaml .Values.parseable.highAvailability.ingestor.resources | nindent 10 }}
+        {{- if or .Values.parseable.persistence.ingestor.enabled (and .Values.parseable.gcsModeSecret .Values.parseable.gcsModeSecret.enabled) }}
         volumeMounts:
+        {{- if .Values.parseable.persistence.ingestor.enabled }}
         - mountPath: "/parseable/staging"
           name: stage-volume
         {{- end }}
-  volumeClaimTemplates:
+        {{- if and .Values.parseable.gcsModeSecret .Values.parseable.gcsModeSecret.enabled }}
+        - mountPath: {{ .Values.parseable.gcsModeSecret.auth.mount_path }}
+          name: {{ .Values.parseable.gcsModeSecret.auth.secret_name }}
+          readOnly: true
+        {{- end }}
+        {{- end }}
   {{- if .Values.parseable.persistence.ingestor.enabled }}
+  volumeClaimTemplates:
   - metadata:
       name: stage-volume
     spec:
