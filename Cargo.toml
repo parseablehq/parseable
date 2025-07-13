@@ -33,7 +33,7 @@ actix-web-prometheus = { version = "0.1" }
 actix-web-static-files = "4.0"
 http = "0.2.7"
 http-auth-basic = "0.3.3"
-tonic = { version = "0.12.3", features = ["tls", "transport", "gzip", "zstd"] }
+tonic = { version = "0.12.3", features = ["tls", "transport", "gzip", "zstd", "prost"] }
 tonic-web = "0.12.3"
 tower-http = { version = "0.6.1", features = ["cors"] }
 url = "2.4.0"
@@ -76,7 +76,13 @@ tokio-stream = { version = "0.1", features = ["fs"] }
 tokio-util = { version = "0.7" }
 
 # Logging and Metrics
-opentelemetry-proto = { git = "https://github.com/parseablehq/opentelemetry-rust", branch = "fix-metrics-u64-serialization" }
+opentelemetry-proto = { version = "0.30.0", features = [
+    "gen-tonic",
+    "with-serde",
+    "logs",
+    "metrics",
+    "trace",
+] }
 prometheus = { version = "0.13", features = ["process"] }
 prometheus-parse = "0.2.5"
 tracing = "0.1"
@@ -133,6 +139,7 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 futures-core = "0.3.31"
 tempfile = "3.20.0"
 lazy_static = "1.4.0"
+prost = "0.13.1"
 
 [build-dependencies]
 cargo_toml = "0.21"

@@ -18,6 +18,7 @@
 use super::otel_utils::collect_json_from_values;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
+use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::logs::v1::LogRecord;
 use opentelemetry_proto::tonic::logs::v1::LogsData;
 use opentelemetry_proto::tonic::logs::v1::ScopeLogs;
@@ -140,6 +141,38 @@ fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<Map<String, Value>> {
     }
 
     vec_scope_log_json
+}
+
+pub fn flatten_otel_protobuf(message: &ExportLogsServiceRequest) -> Vec<Value> {
+    let mut vec_otel_json = Vec::new();
+    for resource_logs in &message.resource_logs {
+        let mut resource_log_json = Map::new();
+        if let Some(resource) = &resource_logs.resource {
+            insert_attributes(&mut resource_log_json, &resource.attributes);
+            resource_log_json.insert(
+                "resource_dropped_attributes_count".to_string(),
+                Value::Number(resource.dropped_attributes_count.into()),
+            );
+        }
+
+        let mut vec_resource_logs_json = Vec::new();
+        for scope_log in &resource_logs.scope_logs {
+            vec_resource_logs_json.extend(flatten_scope_log(scope_log));
+        }
+
+        resource_log_json.insert(
+            "schema_url".to_string(),
+            Value::String(resource_logs.schema_url.clone()),
+        );
+
+        for resource_logs_json in &mut vec_resource_logs_json {
+            resource_logs_json.extend(resource_log_json.clone());
+
+            vec_otel_json.push(Value::Object(resource_logs_json.clone()));
+        }
+    }
+
+    vec_otel_json
 }
 
 /// this function performs the custom flattening of the otel logs

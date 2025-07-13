@@ -339,7 +339,7 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
+    use opentelemetry_proto::tonic::common::v1::{AnyValue, EntityRef, KeyValue};
     use opentelemetry_proto::tonic::resource::v1::Resource;
     use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, TracesData};
 
@@ -780,6 +780,14 @@ mod tests {
                         }),
                     }],
                     dropped_attributes_count: 0,
+                    entity_refs: vec![
+                        EntityRef{
+                            schema_url: "https://opentelemetry.io/schemas/1.21.0".to_string(),
+                            r#type: "service".to_string(),
+                            id_keys: vec!["service.name".to_string()],
+                            description_keys: vec!["service.name".to_string()],
+                        }
+                    ]
                 }),
                 scope_spans: vec![ScopeSpans {
                     scope: Some(opentelemetry_proto::tonic::common::v1::InstrumentationScope {

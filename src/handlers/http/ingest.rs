@@ -18,7 +18,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use actix_web::web::{Json, Path};
+use actix_web::web::{self, Json, Path};
 use actix_web::{HttpRequest, HttpResponse, http::header::ContentType};
 use arrow_array::RecordBatch;
 use bytes::Bytes;
@@ -29,18 +29,21 @@ use crate::event::error::EventError;
 use crate::event::format::known_schema::{self, KNOWN_SCHEMA_LIST};
 use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
 use crate::event::{self, FORMAT_KEY, USER_AGENT_KEY};
+use crate::handlers::http::modal::utils::ingest_utils::push_logs;
 use crate::handlers::{
     EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY, TELEMETRY_TYPE_KEY, TelemetryType,
 };
 use crate::metadata::SchemaVersion;
 use crate::option::Mode;
-use crate::otel::logs::OTEL_LOG_KNOWN_FIELD_LIST;
+use crate::otel::logs::{OTEL_LOG_KNOWN_FIELD_LIST, flatten_otel_protobuf};
 use crate::otel::metrics::OTEL_METRICS_KNOWN_FIELD_LIST;
 use crate::otel::traces::OTEL_TRACES_KNOWN_FIELD_LIST;
 use crate::parseable::{PARSEABLE, StreamNotFound};
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::{flatten::JsonFlattenError, strict::StrictValue};
+use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+use prost::Message;
 
 use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::{flatten_and_push_logs, get_custom_fields_from_header};
@@ -166,7 +169,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
 // creates if stream does not exist
 pub async fn handle_otel_logs_ingestion(
     req: HttpRequest,
-    Json(json): Json<StrictValue>,
+    body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
@@ -217,14 +220,35 @@ pub async fn handle_otel_logs_ingestion(
         .await?;
 
     let p_custom_fields = get_custom_fields_from_header(&req);
+    match req.headers().get("Content-Type") {
+        Some(content_type) => {
+            if content_type == "application/json" {
+                flatten_and_push_logs(
+                    serde_json::from_slice(&body)?,
+                    &stream_name,
+                    &log_source,
+                    &p_custom_fields,
+                )
+                .await?;
+            }
 
-    flatten_and_push_logs(
-        json.into_inner(),
-        &stream_name,
-        &log_source,
-        &p_custom_fields,
-    )
-    .await?;
+            if content_type == "application/x-protobuf" {
+                match ExportLogsServiceRequest::decode(body) {
+                    Ok(json) => {
+                        for record in flatten_otel_protobuf(&json) {
+                            push_logs(&stream_name, record, &log_source, &p_custom_fields).await?;
+                        }
+                    }
+                    Err(e) => {
+                        return Err(PostError::Invalid(e.into()));
+                    }
+                }
+            }
+        }
+        None => {
+            return Err(PostError::Header(ParseHeaderError::InvalidValue));
+        }
+    }
 
     Ok(HttpResponse::Ok().finish())
 }
