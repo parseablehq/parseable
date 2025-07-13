@@ -66,8 +66,7 @@ use super::{
 {all-args}
 "
 )]
-
-pub struct GCSConfig {
+pub struct GcsConfig {
     /// The endpoint to GCS or compatible object storage platform
     #[arg(
         long,
@@ -90,14 +89,14 @@ pub struct GCSConfig {
     /// Set client to skip tls verification
     #[arg(
         long,
-        env = "P_S3_TLS_SKIP_VERIFY",
+        env = "P_GCS_TLS_SKIP_VERIFY",
         value_name = "bool",
         default_value = "false"
     )]
     pub skip_tls: bool,
 }
 
-impl GCSConfig {
+impl GcsConfig {
     fn get_default_builder(&self) -> GoogleCloudStorageBuilder {
         let mut client_options = ClientOptions::default()
             .with_allow_http(true)
@@ -121,7 +120,7 @@ impl GCSConfig {
     }
 }
 
-impl ObjectStorageProvider for GCSConfig {
+impl ObjectStorageProvider for GcsConfig {
     fn name(&self) -> &'static str {
         "gcs"
     }
@@ -134,6 +133,8 @@ impl ObjectStorageProvider for GCSConfig {
         let gcs = MetricLayer::new(gcs);
 
         let object_store_registry = DefaultObjectStoreRegistry::new();
+        // Register GCS client under the "s3://" scheme so DataFusion can route
+        // object store calls to our GoogleCloudStorage implementatio
         let url = ObjectStoreUrl::parse(format!("s3://{}", &self.bucket_name)).unwrap();
         object_store_registry.register_store(url.as_ref(), Arc::new(gcs));
 
@@ -143,7 +144,7 @@ impl ObjectStorageProvider for GCSConfig {
     fn construct_client(&self) -> Arc<dyn ObjectStorage> {
         let gcs = self.get_default_builder().build().unwrap();
 
-        Arc::new(GCS {
+        Arc::new(Gcs {
             client: Arc::new(gcs),
             bucket: self.bucket_name.clone(),
             root: StorePath::from(""),
@@ -167,13 +168,13 @@ impl ObjectStorageProvider for GCSConfig {
 }
 
 #[derive(Debug)]
-pub struct GCS {
+pub struct Gcs {
     client: Arc<GoogleCloudStorage>,
     bucket: String,
     root: StorePath,
 }
 
-impl GCS {
+impl Gcs {
     async fn _get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         let instant = Instant::now();
 
@@ -215,7 +216,7 @@ impl GCS {
             let source_str = source.to_string();
             if source_str.contains("<Code>NoSuchBucket</Code>") {
                 return Err(ObjectStorageError::Custom(
-                    format!("Bucket '{}' does not exist in S3.", self.bucket).to_string(),
+                    format!("Bucket '{}' does not exist in GCS.", self.bucket).to_string(),
                 ));
             }
         }
@@ -335,7 +336,7 @@ impl GCS {
         } else {
             let bytes = tokio::fs::read(path).await?;
             let result = self.client.put(&key.into(), bytes.into()).await?;
-            info!("Uploaded file to S3: {:?}", result);
+            info!("Uploaded file to GCS: {:?}", result);
             Ok(())
         };
 
@@ -406,7 +407,7 @@ impl GCS {
 }
 
 #[async_trait]
-impl ObjectStorage for GCS {
+impl ObjectStorage for Gcs {
     async fn get_buffered_reader(
         &self,
         path: &RelativePath,

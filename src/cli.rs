@@ -27,7 +27,7 @@ use crate::connectors::kafka::config::KafkaConfig;
 use crate::{
     oidc::{self, OpenidConfig},
     option::{validation, Compression, Mode},
-    storage::{AzureBlobConfig, FSConfig, GCSConfig, S3Config},
+    storage::{AzureBlobConfig, FSConfig, GcsConfig, S3Config},
 };
 
 /// Default username and password for Parseable server, used by default for local mode.
@@ -82,7 +82,7 @@ pub enum StorageOptions {
     Blob(BlobStoreArgs),
 
     #[command(name = "gcs-store")]
-    GCS(GCSStoreArgs),
+    Gcs(GcsStoreArgs),
 }
 
 #[derive(Parser)]
@@ -119,11 +119,11 @@ pub struct BlobStoreArgs {
 }
 
 #[derive(Parser)]
-pub struct GCSStoreArgs {
+pub struct GcsStoreArgs {
     #[command(flatten)]
     pub options: Options,
     #[command(flatten)]
-    pub storage: GCSConfig,
+    pub storage: GcsConfig,
     #[cfg(feature = "kafka")]
     #[command(flatten)]
     pub kafka: KafkaConfig,

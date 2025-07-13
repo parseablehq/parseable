@@ -47,7 +47,7 @@ pub mod store_metadata;
 
 use self::retention::Retention;
 pub use azure_blob::AzureBlobConfig;
-pub use gcs::GCSConfig;
+pub use gcs::GcsConfig;
 pub use localfs::FSConfig;
 pub use object_storage::{ObjectStorage, ObjectStorageProvider};
 pub use s3::S3Config;

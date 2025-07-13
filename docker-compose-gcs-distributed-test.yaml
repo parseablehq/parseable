@@ -56,7 +56,7 @@ services:
       - P_MODE=ingest
       - P_INGESTOR_ENDPOINT=parseable-ingest-one:8000
       - RUST_LOG=warn
-      - GOOGLE_APPLICATION_CREDENTIALS=/parseable/svc/mpt-randd-8217aef869fd.json
+      - GOOGLE_APPLICATION_CREDENTIALS=/parseable/svc/${GCS_CREDENTIALS_FILE:-key.json}
     networks:
       - parseable-internal
     healthcheck:
@@ -73,7 +73,7 @@ services:
         delay: 20s
         max_attempts: 3
     volumes:
-      - "/home/opeyemi/Downloads/:/parseable/svc/:ro,z"
+      - "${GCS_CREDENTIALS_PATH:-./credentials}:/parseable/svc/:ro,z"
 
   quest:
     platform: linux/amd64

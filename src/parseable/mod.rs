@@ -117,7 +117,7 @@ pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| match Cli::parse().storage 
         args.kafka,
         Arc::new(args.storage),
     ),
-    StorageOptions::GCS(args) => Parseable::new(
+    StorageOptions::Gcs(args) => Parseable::new(
         args.options,
         #[cfg(feature = "kafka")]
         args.kafka,

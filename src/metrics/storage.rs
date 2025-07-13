@@ -127,7 +127,7 @@ pub mod azureblob {
 }
 
 pub mod gcs {
-    use crate::{metrics::METRICS_NAMESPACE, storage::GCSConfig};
+    use crate::{metrics::METRICS_NAMESPACE, storage::GcsConfig};
     use once_cell::sync::Lazy;
     use prometheus::{HistogramOpts, HistogramVec};
 
@@ -135,7 +135,7 @@ pub mod gcs {
 
     pub static REQUEST_RESPONSE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
         HistogramVec::new(
-            HistogramOpts::new("gcs_response_time", "gcs Request Latency")
+            HistogramOpts::new("gcs_response_time", "GCS Request Latency")
                 .namespace(METRICS_NAMESPACE),
             &["method", "status"],
         )
@@ -151,7 +151,7 @@ pub mod gcs {
         .expect("metric can be created")
     });
 
-    impl StorageMetrics for GCSConfig {
+    impl StorageMetrics for GcsConfig {
         fn register_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {
             handler
                 .registry
