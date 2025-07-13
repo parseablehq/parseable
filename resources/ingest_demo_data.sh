@@ -56,6 +56,13 @@ curl_with_retry() {
             elif [[ -n "$data" ]]; then
                 curl_cmd+=" -d \"$data\""
             fi
+        elif [[ "$method" == "PUT" ]]; then
+            curl_cmd+=" -X PUT"
+            if [[ -n "$temp_file" ]]; then
+                curl_cmd+=" --data-binary \"@$temp_file\""
+            elif [[ -n "$data" ]]; then
+                curl_cmd+=" -d \"$data\""
+            fi
         fi
         
         # Add URL
@@ -455,11 +462,375 @@ run_alerts() {
     fi
 }
 
+# ==================== DASHBOARDS FUNCTIONALITY ====================
+
+# Create dashboard
+create_dashboard() {
+    echo "Creating dashboard..." >&2
+    
+    response=$(curl -s -H "Content-Type: application/json" -H "$AUTH_HEADER" -X POST "$P_URL/api/v1/dashboards" -d @- << EOF
+{
+    "title": "Demo Dashboard",
+    "tags": [
+        "demo",
+        "oss"
+    ]
+}
+EOF
+)
+    
+    curl_exit_code=$?
+    
+    if [[ $curl_exit_code -eq 0 && -n "$response" ]]; then
+        # Extract dashboard ID from response
+        dashboard_id=$(echo "$response" | grep -o '"dashboardId":"[^"]*"' | cut -d'"' -f4)
+        if [[ -n "$dashboard_id" ]]; then
+            echo "Dashboard created successfully with ID: $dashboard_id" >&2
+            echo "$dashboard_id"
+            return 0
+        else
+            echo "Failed to extract dashboard ID from response" >&2
+            echo "Response: $response" >&2
+            return 1
+        fi
+    else
+        echo "Failed to create dashboard" >&2
+        echo "Curl exit code: $curl_exit_code" >&2
+        echo "Response: $response" >&2
+        return 1
+    fi
+}
+
+# Update dashboard with tiles
+update_dashboard() {
+    local dashboard_id="$1"
+    
+    if [[ -z "$dashboard_id" ]]; then
+        echo "Dashboard ID is required to update dashboard"
+        return 1
+    fi
+    
+    echo "Updating dashboard with ID: $dashboard_id"
+    
+    # Create the dashboard configuration with updated tiles
+    dashboard_config=$(cat << EOF
+{
+    "title": "Demo Dashboard",
+    "dashboardId": "$dashboard_id",
+    "tags": [
+        "demo",
+        "oss"
+    ],
+    "isFavorite": true,
+    "dashboardType": "Dashboard",
+    "tiles": [
+        {
+            "tile_id": "01K017X5NG2SZ20PJ0EEYG9376",
+            "title": "Service Error Rate Over Time",
+            "chartQuery": {
+                "x": {
+                    "fields": [
+                        {
+                            "name": "p_timestamp",
+                            "type": "time"
+                        }
+                    ],
+                    "granularity": "minute"
+                },
+                "y": {
+                    "fields": [
+                        {
+                            "name": "severity_number",
+                            "aggregate": "COUNT"
+                        }
+                    ],
+                    "groupBy": [
+                        "severity_text"
+                    ]
+                },
+                "filters": []
+            },
+            "dbName": "$P_STREAM",
+            "chartType": "timeseries",
+            "config": {
+                "type": "bar",
+                "colourScheme": "forest",
+                "layout": {
+                    "legendPosition": "bottom"
+                },
+                "axes": {
+                    "x": {
+                        "field": "time_bucket",
+                        "title": "Time"
+                    },
+                    "y": {
+                        "field": "COUNT_severity_number",
+                        "title": "Event Count"
+                    }
+                },
+                "advanced": {
+                    "dataLabels": {
+                        "enabled": false
+                    },
+                    "tooltip": {
+                        "enabled": true,
+                        "mode": "index",
+                        "intersect": false
+                    }
+                }
+            },
+            "layout": {
+                "w": 12,
+                "h": 8,
+                "x": 0,
+                "y": 0,
+                "i": "01K017X5NG2SZ20PJ0EEYG9376",
+                "moved": false,
+                "static": false
+            }
+        },
+        {
+            "tile_id": "01K027HTD413T9MP39KYEE42GS",
+            "title": "Request Count by Service",
+            "chartQuery": {
+                "x": {
+                    "fields": [
+                        {
+                            "name": "service.name",
+                            "aggregate": "COUNT"
+                        }
+                    ],
+                    "groupBy": [
+                        "service.name"
+                    ]
+                },
+                "y": {
+                    "fields": [
+                        {
+                            "name": "url.path",
+                            "aggregate": "COUNT"
+                        }
+                    ],
+                    "groupBy": [
+                        "url.path"
+                    ]
+                },
+                "filters": []
+            },
+            "dbName": "$P_STREAM",
+            "chartType": "line",
+            "config": {
+                "type": "line",
+                "colourScheme": "cyber",
+                "layout": {
+                    "legendPosition": "bottom"
+                },
+                "axes": {
+                    "x": {
+                        "field": "service.name",
+                        "title": "Service"
+                    },
+                    "y": {
+                        "field": "COUNT_url.path",
+                        "title": "Request Count"
+                    }
+                },
+                "advanced": {
+                    "dataLabels": {
+                        "enabled": false
+                    },
+                    "tooltip": {
+                        "enabled": true,
+                        "mode": "index",
+                        "intersect": false
+                    }
+                }
+            },
+            "layout": {
+                "w": 4,
+                "h": 8,
+                "x": 0,
+                "y": 8,
+                "i": "01K027HTD413T9MP39KYEE42GS",
+                "moved": false,
+                "static": false
+            }
+        },
+        {
+            "tile_id": "01K027MQ5K75VSCFGVVN86MBMJ",
+            "title": "Response Status Distribution by Upstream Cluster",
+            "chartQuery": {
+                "x": {
+                    "fields": [
+                        {
+                            "name": "upstream.cluster",
+                            "aggregate": "COUNT"
+                        }
+                    ],
+                    "groupBy": [
+                        "upstream.cluster"
+                    ]
+                },
+                "y": {
+                    "fields": [
+                        {
+                            "name": "severity_text",
+                            "aggregate": "COUNT"
+                        }
+                    ],
+                    "groupBy": [
+                        "severity_text"
+                    ]
+                },
+                "filters": []
+            },
+            "dbName": "$P_STREAM",
+            "chartType": "bar",
+            "config": {
+                "type": "bar",
+                "colourScheme": "dusk",
+                "layout": {
+                    "legendPosition": "bottom"
+                },
+                "axes": {
+                    "x": {
+                        "field": "upstream.cluster",
+                        "title": "Upstream Cluster"
+                    },
+                    "y": {
+                        "field": "COUNT_severity_text",
+                        "title": "Response Count"
+                    }
+                },
+                "advanced": {
+                    "dataLabels": {
+                        "enabled": false
+                    },
+                    "tooltip": {
+                        "enabled": true,
+                        "mode": "index",
+                        "intersect": false
+                    }
+                }
+            },
+            "layout": {
+                "w": 8,
+                "h": 8,
+                "x": 4,
+                "y": 8,
+                "i": "01K027MQ5K75VSCFGVVN86MBMJ",
+                "moved": false,
+                "static": false
+            }
+        },
+        {
+            "tile_id": "01K027RM6R3EQ6K960ECSKP5PX",
+            "title": "User Agent Distribution by Source Address",
+            "chartQuery": {
+                "x": {
+                    "fields": [
+                        {
+                            "name": "source.address",
+                            "aggregate": "COUNT"
+                        }
+                    ],
+                    "groupBy": [
+                        "source.address"
+                    ]
+                },
+                "y": {
+                    "fields": [
+                        {
+                            "name": "user_agent.original",
+                            "aggregate": "COUNT"
+                        }
+                    ],
+                    "groupBy": [
+                        "user_agent.original"
+                    ]
+                },
+                "filters": []
+            },
+            "dbName": "$P_STREAM",
+            "chartType": "area",
+            "config": {
+                "type": "area",
+                "colourScheme": "forest",
+                "layout": {
+                    "legendPosition": "bottom"
+                },
+                "axes": {
+                    "x": {
+                        "field": "source.address",
+                        "title": "Source IP Address"
+                    },
+                    "y": {
+                        "field": "COUNT_user_agent.original",
+                        "title": "User Agent Count"
+                    }
+                },
+                "advanced": {
+                    "dataLabels": {
+                        "enabled": false
+                    },
+                    "tooltip": {
+                        "enabled": true,
+                        "mode": "index",
+                        "intersect": false
+                    }
+                }
+            },
+            "layout": {
+                "w": 7,
+                "h": 7,
+                "x": 0,
+                "y": 16,
+                "i": "01K027RM6R3EQ6K960ECSKP5PX",
+                "moved": false,
+                "static": false
+            }
+        }
+    ]
+}
+EOF
+)
+    
+    response=$(curl_with_retry "$P_URL/api/v1/dashboards/$dashboard_id" "PUT" "$dashboard_config" "application/json" 3 10)
+    if [[ $? -eq 0 ]]; then
+        echo "Dashboard updated successfully"
+        return 0
+    else
+        echo "Failed to update dashboard"
+        echo "Response: $response"
+        return 1
+    fi
+}
+
+# Main dashboards function
+run_dashboards() {
+    echo "Starting dashboard creation..."
+    
+    # Create dashboard and get ID
+    dashboard_id=$(create_dashboard)
+
+    if [[ $? -eq 0 && -n "$dashboard_id" ]]; then
+        echo "Dashboard creation successful, proceeding with tiles..."
+        sleep 2
+        
+        # Update dashboard with tiles
+        update_dashboard "$dashboard_id"
+        echo "Dashboard creation completed"
+    else
+        echo "Failed to create dashboard, cannot proceed with tiles"
+        return 1
+    fi
+}
+
 # ==================== MAIN EXECUTION ====================
 
 # Display usage
 show_usage() {
-    echo "Usage: $0 [ACTION=ingest|filters|alerts|all]"
+    echo "Usage: $0 [ACTION=ingest|filters|alerts|dashboards|all]"
     echo ""
     echo "Environment variables:"
     echo "  P_URL       - API URL (default: http://localhost:8000)"
@@ -472,11 +843,13 @@ show_usage() {
     echo "  ingest      - Ingest demo log data"
     echo "  filters     - Create SQL and saved filters"
     echo "  alerts      - Create alerts and webhook targets"
+    echo "  dashboards  - Create demo dashboard with tiles"
     echo "  all         - Run all actions in sequence"
     echo ""
     echo "Examples:"
     echo "  ACTION=ingest ./script.sh"
     echo "  ACTION=filters P_STREAM=mystream ./script.sh"
+    echo "  ACTION=dashboards ./script.sh"
     echo "  ACTION=all ./script.sh"
 }
 
@@ -492,6 +865,9 @@ main() {
         "alerts")
             run_alerts
             ;;
+        "dashboards")
+            run_dashboards
+            ;;
         "all")
             echo "Running all actions..."
             run_ingest
@@ -501,6 +877,9 @@ main() {
             echo "Waiting before creating alerts..."
             sleep 5
             run_alerts
+            echo "Waiting before creating dashboards..."
+            sleep 5
+            run_dashboards
             echo "All actions completed"
             ;;
         "help"|"--help"|"-h")
