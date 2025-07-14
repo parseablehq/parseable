@@ -23,6 +23,11 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::{
+    handlers::http::users::USERS_ROOT_DIR,
+    metrics::storage::{gcs::REQUEST_RESPONSE_TIME, StorageMetrics},
+    parseable::LogStream,
+};
 use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::{
@@ -43,12 +48,6 @@ use object_store::{
 use relative_path::{RelativePath, RelativePathBuf};
 use tokio::{fs::OpenOptions, io::AsyncReadExt};
 use tracing::{error, info};
-
-use crate::{
-    handlers::http::users::USERS_ROOT_DIR,
-    metrics::storage::{azureblob::REQUEST_RESPONSE_TIME, StorageMetrics},
-    parseable::LogStream,
-};
 
 use super::{
     metrics_layer::MetricLayer, object_storage::parseable_json_path, to_object_store_path,
