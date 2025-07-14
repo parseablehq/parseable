@@ -1031,53 +1031,101 @@ impl Alerts {
 }
 
 #[derive(Debug, Serialize)]
-pub struct AlertsInfo {
+pub struct AlertsSummary {
     total: u64,
-    silenced: u64,
-    resolved: u64,
-    triggered: u64,
-    low: u64,
-    medium: u64,
-    high: u64,
-    critical: u64,
+    triggered: AlertsInfoByState,
+    silenced: AlertsInfoByState,
+    resolved: AlertsInfoByState,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AlertsInfoByState {
+    total: u64,
+    alert_info: Vec<AlertsInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AlertsInfo {
+    title: String,
+    id: Ulid,
+    severity: Severity,
 }
 
 // TODO: add RBAC
-pub async fn get_alerts_info() -> Result<AlertsInfo, AlertError> {
+pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
     let alerts = ALERTS.alerts.read().await;
-    let mut total = 0;
-    let mut silenced = 0;
-    let mut resolved = 0;
+    let total = alerts.len() as u64;
     let mut triggered = 0;
-    let mut low = 0;
-    let mut medium = 0;
-    let mut high = 0;
-    let mut critical = 0;
+    let mut resolved = 0;
+    let mut silenced = 0;
+    let mut triggered_alerts: Vec<AlertsInfo> = Vec::new();
+    let mut silenced_alerts: Vec<AlertsInfo> = Vec::new();
+    let mut resolved_alerts: Vec<AlertsInfo> = Vec::new();
 
+    // find total alerts for each state
+    // get title, id and state of each alert for that state
     for (_, alert) in alerts.iter() {
-        total += 1;
         match alert.state {
-            AlertState::Silenced => silenced += 1,
-            AlertState::Resolved => resolved += 1,
-            AlertState::Triggered => triggered += 1,
-        }
-
-        match alert.severity {
-            Severity::Low => low += 1,
-            Severity::Medium => medium += 1,
-            Severity::High => high += 1,
-            Severity::Critical => critical += 1,
+            AlertState::Triggered => {
+                triggered += 1;
+                triggered_alerts.push(AlertsInfo {
+                    title: alert.title.clone(),
+                    id: alert.id,
+                    severity: alert.severity.clone(),
+                });
+            }
+            AlertState::Silenced => {
+                silenced += 1;
+                silenced_alerts.push(AlertsInfo {
+                    title: alert.title.clone(),
+                    id: alert.id,
+                    severity: alert.severity.clone(),
+                });
+            }
+            AlertState::Resolved => {
+                resolved += 1;
+                resolved_alerts.push(AlertsInfo {
+                    title: alert.title.clone(),
+                    id: alert.id,
+                    severity: alert.severity.clone(),
+                });
+            }
         }
     }
 
-    Ok(AlertsInfo {
+    // Sort and limit to top 5 for each state by severity priority
+    triggered_alerts.sort_by_key(|alert| get_severity_priority(&alert.severity));
+    triggered_alerts.truncate(5);
+
+    silenced_alerts.sort_by_key(|alert| get_severity_priority(&alert.severity));
+    silenced_alerts.truncate(5);
+
+    resolved_alerts.sort_by_key(|alert| get_severity_priority(&alert.severity));
+    resolved_alerts.truncate(5);
+
+    let alert_summary = AlertsSummary {
         total,
-        silenced,
-        resolved,
-        triggered,
-        low,
-        medium,
-        high,
-        critical,
-    })
+        triggered: AlertsInfoByState {
+            total: triggered,
+            alert_info: triggered_alerts,
+        },
+        silenced: AlertsInfoByState {
+            total: silenced,
+            alert_info: silenced_alerts,
+        },
+        resolved: AlertsInfoByState {
+            total: resolved,
+            alert_info: resolved_alerts,
+        },
+    };
+    Ok(alert_summary)
+}
+
+fn get_severity_priority(severity: &Severity) -> u8 {
+    match severity {
+        Severity::Critical => 0,
+        Severity::High => 1,
+        Severity::Medium => 2,
+        Severity::Low => 3,
+    }
 }

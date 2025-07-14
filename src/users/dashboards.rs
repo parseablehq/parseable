@@ -344,8 +344,20 @@ impl Dashboards {
 
     /// List all dashboards
     /// fetch all dashboards from memory
-    pub async fn list_dashboards(&self) -> Vec<Dashboard> {
-        self.0.read().await.clone()
+    pub async fn list_dashboards(&self, limit: usize) -> Vec<Dashboard> {
+        // limit the number of dashboards returned in order of modified date
+        // if limit is 0, return all dashboards
+        let dashboards = self.0.read().await;
+        let mut sorted_dashboards = dashboards
+            .iter()
+            .filter(|d| d.dashboard_id.is_some())
+            .cloned()
+            .collect::<Vec<Dashboard>>();
+        sorted_dashboards.sort_by_key(|d| std::cmp::Reverse(d.modified));
+        if limit > 0 {
+            sorted_dashboards.truncate(limit);
+        }
+        sorted_dashboards
     }
 
     /// List tags from all dashboards
