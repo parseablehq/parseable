@@ -155,7 +155,7 @@ impl ObjectStorageProvider for GcsConfig {
     }
 
     fn register_store_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {
-        self.register_metrics(handler)
+        self.register_metrics(handler);
     }
 
     fn get_object_store(&self) -> Arc<dyn ObjectStorage> {
@@ -323,29 +323,16 @@ impl Gcs {
     async fn _upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
         let instant = Instant::now();
 
-        // // TODO: Uncomment this when multipart is fixed
-        // let should_multipart = std::fs::metadata(path)?.len() > MULTIPART_UPLOAD_SIZE as u64;
+        let bytes = tokio::fs::read(path).await?;
+        let result = self.client.put(&key.into(), bytes.into()).await?;
+        info!("Uploaded file to GCS: {:?}", result);
 
-        let should_multipart = false;
-
-        let res = if should_multipart {
-            // self._upload_multipart(key, path).await
-            // this branch will never get executed
-            Ok(())
-        } else {
-            let bytes = tokio::fs::read(path).await?;
-            let result = self.client.put(&key.into(), bytes.into()).await?;
-            info!("Uploaded file to GCS: {:?}", result);
-            Ok(())
-        };
-
-        let status = if res.is_ok() { "200" } else { "400" };
         let time = instant.elapsed().as_secs_f64();
         REQUEST_RESPONSE_TIME
-            .with_label_values(&["UPLOAD_PARQUET", status])
+            .with_label_values(&["UPLOAD_PARQUET", "200"])
             .observe(time);
 
-        res
+        Ok(())
     }
 
     async fn _upload_multipart(
@@ -364,14 +351,10 @@ impl Gcs {
             let mut data = Vec::new();
             file.read_to_end(&mut data).await?;
             self.client.put(location, data.into()).await?;
-            // async_writer.put_part(data.into()).await?;
-            // async_writer.complete().await?;
             return Ok(());
         } else {
             let mut data = Vec::new();
             file.read_to_end(&mut data).await?;
-
-            // let mut upload_parts = Vec::new();
 
             let has_final_partial_part = total_size % MIN_MULTIPART_UPLOAD_SIZE > 0;
             let num_full_parts = total_size / MIN_MULTIPART_UPLOAD_SIZE;
@@ -393,8 +376,6 @@ impl Gcs {
 
                 // Upload the part
                 async_writer.put_part(part_data.into()).await?;
-
-                // upload_parts.push(part_number as u64 + 1);
             }
             if let Err(err) = async_writer.complete().await {
                 error!("Failed to complete multipart upload. {:?}", err);
