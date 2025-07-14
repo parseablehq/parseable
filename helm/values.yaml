@@ -4,7 +4,7 @@ parseable:
     tag: "v2.3.3"
     pullPolicy: Always
   ## object store can be local-store, s3-store, blob-store or gcs-store.
-  store: gcs-store
+  store: local-store
   ## Set to true if you want to deploy Parseable in a HA mode (multiple ingestors + hot tier)
   ## Please note that highAvailability is not supported in local mode
   highAvailability:
@@ -141,7 +141,7 @@ parseable:
     auth:
       secret_name: parseable-env-secret
       secret_key: key.json
-      mount_path: /var/secrets/google/key.json
+      mount_path: /var/secrets/google
     secrets:
       - name: parseable-env-secret
         prefix: P_
