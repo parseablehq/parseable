@@ -72,37 +72,48 @@ curl_with_retry() {
         # Add URL
         curl_args+=("$url")
         
-        # Execute curl
-        local response
-        response=$(curl "${curl_args[@]}" 2>&1)
+        # Create temporary files for response body and stderr
+        local response_file
+        response_file=$(mktemp) || { log_error "Failed to create temporary file"; return 1; }
+        local stderr_file
+        stderr_file=$(mktemp) || { log_error "Failed to create temporary file"; rm -f "$response_file"; return 1; }
+        
+        # Add options to capture status code separately
+        curl_args+=("-w" "%{http_code}" "-o" "$response_file")
+        
+        # Execute curl and capture status code and stderr
+        local status_code
+        status_code=$(curl "${curl_args[@]}" 2>"$stderr_file")
         local curl_exit_code=$?
         
         # Check curl exit code
         if [[ $curl_exit_code -eq 0 ]]; then
-            local status_code
-            if [[ -n "$response" ]]; then
-                status_code=$(echo "$response" | tail -n1)
-                local response_body=$(echo "$response" | sed '$d')
-                
-                # Clean up temp file (only if we created it)
-                if [[ -n "$temp_file" && -z "$data_file" ]]; then
-                    rm -f "$temp_file"
-                fi
-                
-                 if [[ "$status_code" =~ ^2[0-9][0-9]$ ]]; then
-                    echo "$response_body"
-                    return 0
-                else
-                    return 1
-                fi
+            local response_body
+            response_body=$(cat "$response_file" 2>/dev/null)
+            
+            # Clean up temporary files
+            rm -f "$response_file" "$stderr_file"
+            
+            # Clean up temp data file (only if we created it)
+            if [[ -n "$temp_file" && -z "$data_file" ]]; then
+                rm -f "$temp_file"
+            fi
+            
+            if [[ "$status_code" =~ ^2[0-9][0-9]$ ]]; then
+                echo "$response_body"
+                return 0
             else
+                log_error "HTTP $status_code: Request failed"
                 return 1
             fi
         elif [[ $curl_exit_code -eq 28 ]]; then
             # Timeout - retry
+            rm -f "$response_file" "$stderr_file"
             retry_count=$((retry_count + 1))
             sleep 1
         else
+            # Other curl error - cleanup and exit
+            rm -f "$response_file" "$stderr_file"
             break
         fi
     done
