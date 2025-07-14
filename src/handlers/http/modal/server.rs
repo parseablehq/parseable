@@ -308,9 +308,9 @@ impl Server {
                 ),
             )
             .service(
-                web::resource("/list_by_tag/{tag}").route(
+                web::resource("/list_by_tag/{tags}").route(
                     web::get()
-                        .to(dashboards::list_dashboards_by_tag)
+                        .to(dashboards::list_dashboards_by_tags)
                         .authorize(Action::ListDashboard),
                 ),
             )

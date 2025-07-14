@@ -215,13 +215,21 @@ pub async fn list_tags() -> Result<impl Responder, DashboardError> {
     Ok((web::Json(tags), StatusCode::OK))
 }
 
-pub async fn list_dashboards_by_tag(tag: Path<String>) -> Result<impl Responder, DashboardError> {
-    let tag = tag.into_inner();
-    if tag.is_empty() {
-        return Err(DashboardError::Metadata("Tag cannot be empty"));
+pub async fn list_dashboards_by_tags(tags: Path<String>) -> Result<impl Responder, DashboardError> {
+    let tags = tags.into_inner();
+    if tags.is_empty() {
+        return Err(DashboardError::Metadata("Tags cannot be empty"));
     }
-
-    let dashboards = DASHBOARDS.list_dashboards_by_tag(&tag).await;
+    // tags can be comma separated list of tags
+    let tags = tags
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect::<Vec<_>>();
+    if tags.is_empty() {
+        return Err(DashboardError::Metadata("Tags cannot be empty"));
+    }
+    let dashboards = DASHBOARDS.list_dashboards_by_tags(tags).await;
     let dashboard_summaries = dashboards
         .iter()
         .map(|dashboard| dashboard.to_summary())
