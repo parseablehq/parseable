@@ -87,7 +87,7 @@ curl_with_retry() {
         
         # Execute curl and capture status code and stderr
         local status_code
-        status_code=$(curl "${curl_args[@]}" 2>"$stderr_file")
+        status_code=$(curl "${curl_args[@]}" 2>"$stderr_file" | tr -d '\n')
         local curl_exit_code=$?
         
         # Check curl exit code
