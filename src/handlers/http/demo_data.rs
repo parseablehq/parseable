@@ -70,7 +70,7 @@ pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> 
                 "Demo data is not available in this mode"
             ))),
         },
-        "filters" | "alerts" => {
+        "filters" | "alerts" | "dashboards" => {
             // Fire the script execution asynchronously
             tokio::spawn(
                 async move { execute_demo_script(&action, &url, username, password).await },
