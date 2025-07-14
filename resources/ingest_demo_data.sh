@@ -19,8 +19,8 @@ curl_with_retry() {
     local data="$3"
     local content_type="${4:-application/json}"
     local max_retries="${5:-3}"
+    local data_file="$6"
     local retry_count=0
-    local data_file="$7"
     
     # Create temp file if data is provided (either as string or file)
     if [[ -n "$data_file" ]]; then
@@ -214,7 +214,7 @@ send_batch() {
         return 1
     fi
     
-    curl_with_retry "$P_URL/api/v1/ingest" "POST" "$data" "application/json" 3 15
+    curl_with_retry "$P_URL/api/v1/ingest" "POST" "$data" "application/json" 3
 }
 
 # Main ingest function
@@ -291,7 +291,7 @@ create_sql_filters() {
         
         json="{\"stream_name\":\"sql\",\"filter_name\":\"$name\",\"filter_description\":\"$escaped_desc\",\"query\":{\"filter_type\":\"sql\",\"filter_query\":\"$escaped_query\"},\"time_filter\":null}"
         
-        if curl_with_retry "$P_URL/api/v1/filters" "POST" "$json" "application/json" 3 10; then
+        if curl_with_retry "$P_URL/api/v1/filters" "POST" "$json" "application/json" 3; then
             sql_success_count=$((sql_success_count + 1))
             echo "Created SQL filter: $name"
         else
@@ -341,7 +341,7 @@ create_saved_filters() {
         
         json="{\"stream_name\":\"$P_STREAM\",\"filter_name\":\"$name\",\"filter_description\":\"$escaped_desc\",\"query\":{\"filter_type\":\"filter\",\"filter_query\":\"$escaped_query\"},\"time_filter\":null,\"tableConfig\":{\"visibleColumns\":[$visible_cols_json],\"pinnedColumns\":[]},\"groupBy\":\"$group_by\"}"
         
-        if curl_with_retry "$P_URL/api/v1/filters" "POST" "$json" "application/json" 3 10; then
+        if curl_with_retry "$P_URL/api/v1/filters" "POST" "$json" "application/json" 3; then
             saved_success_count=$((saved_success_count + 1))
             echo "Created saved filter: $name"
         else
@@ -409,7 +409,7 @@ create_alerts() {
     # Alert 1: Error Count (severity_number = 18)
     alert1_json="{\"severity\":\"high\",\"title\":\"error count\",\"stream\":\"$P_STREAM\",\"alertType\":\"threshold\",\"aggregates\":{\"aggregateConfig\":[{\"aggregateFunction\":\"count\",\"conditions\":{\"operator\":null,\"conditionConfig\":[{\"column\":\"severity_number\",\"operator\":\"=\",\"value\":\"18\"}]},\"column\":\"severity_number\",\"operator\":\">\",\"value\":1000}]},\"evalConfig\":{\"rollingWindow\":{\"evalStart\":\"5h\",\"evalEnd\":\"now\",\"evalFrequency\":1}},\"targets\":[\"$target_id\"]}"
     
-    response1=$(curl_with_retry "$P_URL/api/v1/alerts" "POST" "$alert1_json" "application/json" 3 10)
+    response1=$(curl_with_retry "$P_URL/api/v1/alerts" "POST" "$alert1_json" "application/json" 3)
     if [[ $? -eq 0 ]]; then
         echo "Alert 1 (Error Count) created successfully"
     else
@@ -420,7 +420,7 @@ create_alerts() {
     # Alert 2: 400 Errors
     alert2_json="{\"severity\":\"critical\",\"title\":\"400 Errors\",\"stream\":\"$P_STREAM\",\"alertType\":\"threshold\",\"aggregates\":{\"aggregateConfig\":[{\"aggregateFunction\":\"count\",\"conditions\":{\"operator\":null,\"conditionConfig\":[{\"column\":\"body\",\"operator\":\"contains\",\"value\":\"400\"}]},\"column\":\"body\",\"operator\":\">\",\"value\":10}]},\"evalConfig\":{\"rollingWindow\":{\"evalStart\":\"5h\",\"evalEnd\":\"now\",\"evalFrequency\":1}},\"targets\":[\"$target_id\"]}"
     
-    response2=$(curl_with_retry "$P_URL/api/v1/alerts" "POST" "$alert2_json" "application/json" 3 10)
+    response2=$(curl_with_retry "$P_URL/api/v1/alerts" "POST" "$alert2_json" "application/json" 3)
     if [[ $? -eq 0 ]]; then
         echo "Alert 2 (400 Errors) created successfully"
     else
@@ -431,7 +431,7 @@ create_alerts() {
     # Alert 3: Trace ID or Span ID null
     alert3_json="{\"severity\":\"high\",\"title\":\"Trace ID or Span ID null\",\"stream\":\"$P_STREAM\",\"alertType\":\"threshold\",\"aggregates\":{\"aggregateConfig\":[{\"aggregateFunction\":\"count\",\"conditions\":{\"operator\":null,\"conditionConfig\":[{\"column\":\"trace_id\",\"operator\":\"is null\",\"value\":\"\"}]},\"column\":\"trace_id\",\"operator\":\">\",\"value\":0}]},\"evalConfig\":{\"rollingWindow\":{\"evalStart\":\"5h\",\"evalEnd\":\"now\",\"evalFrequency\":1}},\"targets\":[\"$target_id\"]}"
     
-    response3=$(curl_with_retry "$P_URL/api/v1/alerts" "POST" "$alert3_json" "application/json" 3 10)
+    response3=$(curl_with_retry "$P_URL/api/v1/alerts" "POST" "$alert3_json" "application/json" 3)
     if [[ $? -eq 0 ]]; then
         echo "Alert 3 (Trace ID null) created successfully"
     else
@@ -795,7 +795,7 @@ update_dashboard() {
 EOF
 )
     
-    response=$(curl_with_retry "$P_URL/api/v1/dashboards/$dashboard_id" "PUT" "$dashboard_config" "application/json" 3 10)
+    response=$(curl_with_retry "$P_URL/api/v1/dashboards/$dashboard_id" "PUT" "$dashboard_config" "application/json" 3)
     if [[ $? -eq 0 ]]; then
         echo "Dashboard updated successfully"
         return 0
