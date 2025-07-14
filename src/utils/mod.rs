@@ -26,6 +26,7 @@ pub mod uid;
 pub mod update;
 
 use crate::handlers::http::rbac::RBACError;
+use crate::parseable::PARSEABLE;
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::map::SessionKey;
 use crate::rbac::role::{Action, Permission};
@@ -117,9 +118,19 @@ pub fn user_auth_for_datasets(
                     Action::Query,
                     crate::rbac::role::ParseableResourceType::Stream(stream),
                 ) => {
-                    if stream == table_name || stream == "*" {
+                    let is_internal = PARSEABLE
+                        .get_stream(&table_name)
+                        .is_ok_and(|stream|stream.get_stream_type().eq(&crate::storage::StreamType::Internal));
+                    
+                    if stream == table_name
+                        || stream == "*"
+                        || is_internal
+                    {
                         authorized = true;
                     }
+                }
+                Permission::Resource(_, crate::rbac::role::ParseableResourceType::All) => {
+                    authorized = true;
                 }
                 _ => (),
             }
