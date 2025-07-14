@@ -21,7 +21,7 @@ services:
       - P_PARQUET_COMPRESSION_ALGO=snappy
       - P_MODE=query
       - RUST_LOG=warn
-      - GOOGLE_APPLICATION_CREDENTIALS=/parseable/svc/mpt-randd-8217aef869fd.json
+      - GOOGLE_APPLICATION_CREDENTIALS=/parseable/svc/${GCS_CREDENTIALS_FILE:-key.json}
     networks:
       - parseable-internal
     healthcheck:
@@ -35,7 +35,7 @@ services:
         delay: 20s
         max_attempts:
     volumes:
-      - "/home/opeyemi/Downloads/:/parseable/svc/:ro,z"
+      - "${GCS_CREDENTIALS_PATH:-./credentials}:/parseable/svc/:ro,z"
   # ingest server one
   parseable-ingest-one:
     container_name: parseable-ingest-one
