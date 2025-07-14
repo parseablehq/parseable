@@ -133,9 +133,9 @@ impl ObjectStorageProvider for GcsConfig {
         let gcs = MetricLayer::new(gcs);
 
         let object_store_registry = DefaultObjectStoreRegistry::new();
-        // Register GCS client under the "s3://" scheme so DataFusion can route
-        // object store calls to our GoogleCloudStorage implementatio
-        let url = ObjectStoreUrl::parse(format!("s3://{}", &self.bucket_name)).unwrap();
+        // Register GCS client under the "gs://" scheme so DataFusion can route
+        // object store calls to our GoogleCloudStorage implementation
+        let url = ObjectStoreUrl::parse(format!("gs://{}", &self.bucket_name)).unwrap();
         object_store_registry.register_store(url.as_ref(), Arc::new(gcs));
 
         RuntimeEnvBuilder::new().with_object_store_registry(Arc::new(object_store_registry))
@@ -643,14 +643,14 @@ impl ObjectStorage for Gcs {
         prefixes
             .into_iter()
             .map(|prefix| {
-                let path = format!("s3://{}/{}", &self.bucket, prefix);
+                let path = format!("gs://{}/{}", &self.bucket, prefix);
                 ListingTableUrl::parse(path).unwrap()
             })
             .collect()
     }
 
     fn store_url(&self) -> url::Url {
-        url::Url::parse(&format!("s3://{}", self.bucket)).unwrap()
+        url::Url::parse(&format!("gs://{}", self.bucket)).unwrap()
     }
 
     async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError> {
