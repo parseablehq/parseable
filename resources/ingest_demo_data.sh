@@ -45,7 +45,6 @@ curl_with_retry() {
         
         local curl_args=(
             -s
-            -w '\n%{http_code}'
             --max-time "$max_time"
             --connect-timeout "$connect_timeout"
             -H "Content-Type: $content_type"
