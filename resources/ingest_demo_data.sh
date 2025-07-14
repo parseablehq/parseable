@@ -22,6 +22,7 @@ curl_with_retry() {
     local data_file="$6"
     local retry_count=0
     
+    local temp_file=""
     # Create temp file if data is provided (either as string or file)
     if [[ -n "$data_file" ]]; then
         temp_file="$data_file"
@@ -88,7 +89,7 @@ curl_with_retry() {
                     rm -f "$temp_file"
                 fi
                 
-                if [[ "$status_code" == "200" || "$status_code" == "201" ]]; then
+                 if [[ "$status_code" =~ ^2[0-9][0-9]$ ]]; then
                     echo "$response_body"
                     return 0
                 else
@@ -380,7 +381,7 @@ EOF
     
     if [[ $curl_exit_code -eq 0 && -n "$response" ]]; then
         # Extract target ID from response
-        target_id=$(echo "$response" | grep -o '"id":"[^"]*"' | cut -d'"' -f4)
+        target_id=$(echo "$response" | jq -r '.id // empty')
         if [[ -n "$target_id" ]]; then
             echo "Target created successfully with ID: $target_id" >&2
             echo "$target_id"
@@ -486,7 +487,7 @@ EOF
     
     if [[ $curl_exit_code -eq 0 && -n "$response" ]]; then
         # Extract dashboard ID from response
-        dashboard_id=$(echo "$response" | grep -o '"dashboardId":"[^"]*"' | cut -d'"' -f4)
+        dashboard_id=$(echo "$response" | jq -r '.dashboardId // empty')
         if [[ -n "$dashboard_id" ]]; then
             echo "Dashboard created successfully with ID: $dashboard_id" >&2
             echo "$dashboard_id"
