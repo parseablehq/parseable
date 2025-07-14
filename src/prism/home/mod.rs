@@ -27,7 +27,7 @@ use serde::Serialize;
 use tracing::error;
 
 use crate::{
-    alerts::{get_alerts_info, AlertError, AlertsInfo, ALERTS},
+    alerts::{get_alerts_summary, AlertError, AlertsSummary, ALERTS},
     correlation::{CorrelationError, CORRELATIONS},
     event::format::LogSource,
     handlers::http::{cluster::fetch_daily_stats, logstream::error::StreamError},
@@ -44,8 +44,8 @@ type StreamMetadataResponse = Result<(String, Vec<ObjectStoreFormat>, DataSetTyp
 pub struct DatedStats {
     date: String,
     events: u64,
-    ingestion_size: u64,
-    storage_size: u64,
+    ingestion: u64,
+    storage: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -63,10 +63,10 @@ pub struct DataSet {
 
 #[derive(Debug, Serialize)]
 pub struct HomeResponse {
-    pub alerts_info: AlertsInfo,
+    pub alerts_summary: AlertsSummary,
     pub stats_details: Vec<DatedStats>,
     pub datasets: Vec<DataSet>,
-    pub top_five_ingestion: Vec<(String, Stats)>,
+    pub top_five_ingestion: HashMap<String, Stats>,
 }
 
 #[derive(Debug, Serialize)]
@@ -95,11 +95,11 @@ pub async fn generate_home_response(
     include_internal: bool,
 ) -> Result<HomeResponse, PrismHomeError> {
     // Execute these operations concurrently
-    let (stream_titles_result, alerts_info_result) =
-        tokio::join!(get_stream_titles(key), get_alerts_info());
+    let (stream_titles_result, alerts_summary_result) =
+        tokio::join!(get_stream_titles(key), get_alerts_summary());
 
     let stream_titles = stream_titles_result?;
-    let alerts_info = alerts_info_result?;
+    let alerts_summary = alerts_summary_result?;
 
     // Generate dates for date-wise stats
     let mut dates = (0..7)
@@ -172,14 +172,14 @@ pub async fn generate_home_response(
     Ok(HomeResponse {
         stats_details: stream_details,
         datasets,
-        alerts_info,
+        alerts_summary,
         top_five_ingestion,
     })
 }
 
 fn get_top_5_streams_by_ingestion(
     stream_wise_stream_json: &HashMap<String, Vec<ObjectStoreFormat>>,
-) -> Vec<(String, Stats)> {
+) -> HashMap<String, Stats> {
     let mut result: Vec<_> = stream_wise_stream_json
         .iter()
         .map(|(stream_name, formats)| {
@@ -203,7 +203,7 @@ fn get_top_5_streams_by_ingestion(
 
     result.sort_by_key(|(_, stats)| std::cmp::Reverse(stats.ingestion));
     result.truncate(5);
-    result
+    result.into_iter().collect()
 }
 
 async fn get_stream_metadata(
@@ -275,8 +275,8 @@ async fn stats_for_date(
         match result {
             Ok((events, ingestion, storage)) => {
                 details.events += events;
-                details.ingestion_size += ingestion;
-                details.storage_size += storage;
+                details.ingestion += ingestion;
+                details.storage += storage;
             }
             Err(e) => {
                 error!("Failed to get stats for stream: {:?}", e);
@@ -405,7 +405,7 @@ async fn get_correlation_titles(
 
 async fn get_dashboard_titles(query_value: &str) -> Result<Vec<Resource>, PrismHomeError> {
     let dashboard_titles = DASHBOARDS
-        .list_dashboards()
+        .list_dashboards(0)
         .await
         .iter()
         .filter_map(|dashboard| {

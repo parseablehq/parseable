@@ -32,8 +32,20 @@ use actix_web::{
 use http::StatusCode;
 use serde_json::Error as SerdeError;
 
-pub async fn list_dashboards() -> Result<impl Responder, DashboardError> {
-    let dashboards = DASHBOARDS.list_dashboards().await;
+pub async fn list_dashboards(req: HttpRequest) -> Result<impl Responder, DashboardError> {
+    let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
+        .map_err(|_| DashboardError::InvalidQueryParameter)?;
+    let mut dashboard_limit = 0;
+    if !query_map.is_empty() {
+        if let Some(limit) = query_map.get("limit") {
+            if let Ok(parsed_limit) = limit.parse::<usize>() {
+                dashboard_limit = parsed_limit;
+            } else {
+                return Err(DashboardError::Metadata("Invalid limit value"));
+            }
+        }
+    }
+    let dashboards = DASHBOARDS.list_dashboards(dashboard_limit).await;
     let dashboard_summaries = dashboards
         .iter()
         .map(|dashboard| dashboard.to_summary())
