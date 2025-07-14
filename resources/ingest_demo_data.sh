@@ -12,6 +12,11 @@ BATCH_SIZE=1000
 # Pre-compute auth header
 AUTH_HEADER="Authorization: Basic $(echo -n "$P_USERNAME:$P_PASSWORD" | base64)"
 
+# Logging functions
+log_error() {
+    echo "$@" >&2
+}
+
 # Common curl function with retry logic
 curl_with_retry() {
     local url="$1"
