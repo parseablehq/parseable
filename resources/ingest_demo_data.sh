@@ -37,40 +37,43 @@ curl_with_retry() {
         local max_time=$((10 + (retry_count * 10)))
         local connect_timeout=5
         
-        local curl_cmd="curl -s -w \"\n%{http_code}\" --max-time $max_time --connect-timeout $connect_timeout"
-        
-        # Add headers
-        curl_cmd+=" -H \"Content-Type: $content_type\""
-        curl_cmd+=" -H \"$AUTH_HEADER\""
+        local curl_args=(
+            -s
+            -w '\n%{http_code}'
+            --max-time "$max_time"
+            --connect-timeout "$connect_timeout"
+            -H "Content-Type: $content_type"
+            -H "$AUTH_HEADER"
+        )
         
         # Add stream header for ingestion requests
         if [[ "$url" == *"/ingest"* ]]; then
-            curl_cmd+=" -H \"X-P-STREAM: $P_STREAM\""
+            curl_args+=(-H "X-P-STREAM: $P_STREAM")
         fi
         
         # Add method and data
         if [[ "$method" == "POST" ]]; then
-            curl_cmd+=" -X POST"
+            curl_args+=(-X POST)
             if [[ -n "$temp_file" ]]; then
-                curl_cmd+=" --data-binary \"@$temp_file\""
+                curl_args+=(--data-binary "@$temp_file")
             elif [[ -n "$data" ]]; then
-                curl_cmd+=" -d \"$data\""
+                curl_args+=(-d "$data")
             fi
         elif [[ "$method" == "PUT" ]]; then
-            curl_cmd+=" -X PUT"
+            curl_args+=(-X PUT)
             if [[ -n "$temp_file" ]]; then
-                curl_cmd+=" --data-binary \"@$temp_file\""
+                curl_args+=(--data-binary "@$temp_file")
             elif [[ -n "$data" ]]; then
-                curl_cmd+=" -d \"$data\""
+                curl_args+=(-d "$data")
             fi
         fi
         
         # Add URL
-        curl_cmd+=" \"$url\""
+        curl_args+=("$url")
         
         # Execute curl
         local response
-        response=$(eval "$curl_cmd" 2>&1)
+        response=$(curl "${curl_args[@]}" 2>&1)
         local curl_exit_code=$?
         
         # Check curl exit code
