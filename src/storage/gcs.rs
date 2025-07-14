@@ -378,8 +378,13 @@ impl Gcs {
                 async_writer.put_part(part_data.into()).await?;
             }
             if let Err(err) = async_writer.complete().await {
-                error!("Failed to complete multipart upload. {:?}", err);
-                async_writer.abort().await?;
+                if let Err(abort_err) = async_writer.abort().await {
+                    error!(
+                        "Failed to abort multipart upload after completion failure: {:?}",
+                        abort_err
+                    );
+                }
+                return Err(err.into());
             };
         }
         Ok(())
