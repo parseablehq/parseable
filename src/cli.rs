@@ -461,6 +461,9 @@ pub struct Options {
         help = "OIDC scope to request (default: openid profile email)"
     )]
     pub scope: String,
+    // resend API integration
+    #[arg(long, env = "P_RESEND_KEY", help = "Resend key to enable mailing")]
+    pub resend_key: Option<String>,
 }
 
 #[derive(Parser, Debug)]
