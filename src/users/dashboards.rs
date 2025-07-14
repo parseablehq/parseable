@@ -375,14 +375,17 @@ impl Dashboards {
     }
 
     /// List dashboards by tag
-    /// This function returns a list of dashboards that have the specified tag
+    /// This function returns a list of dashboards that match any of the provided tags
+    /// If no tags are provided, it returns an empty list
     pub async fn list_dashboards_by_tags(&self, tags: Vec<String>) -> Vec<Dashboard> {
         let dashboards = self.0.read().await;
         dashboards
             .iter()
             .filter(|d| {
                 if let Some(dashboard_tags) = &d.tags {
-                    !tags.is_empty() && dashboard_tags.iter().any(|tag| tags.contains(tag))
+                    dashboard_tags
+                        .iter()
+                        .any(|dashboard_tag| tags.contains(dashboard_tag))
                 } else {
                     false
                 }

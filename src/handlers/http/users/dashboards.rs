@@ -44,6 +44,23 @@ pub async fn list_dashboards(req: HttpRequest) -> Result<impl Responder, Dashboa
                 return Err(DashboardError::Metadata("Invalid limit value"));
             }
         }
+
+        if let Some(tags) = query_map.get("tags") {
+            let tags: Vec<String> = tags
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if tags.is_empty() {
+                return Err(DashboardError::Metadata("Tags cannot be empty"));
+            }
+            let dashboards = DASHBOARDS.list_dashboards_by_tags(tags).await;
+            let dashboard_summaries = dashboards
+                .iter()
+                .map(|dashboard| dashboard.to_summary())
+                .collect::<Vec<_>>();
+            return Ok((web::Json(dashboard_summaries), StatusCode::OK));
+        }
     }
     let dashboards = DASHBOARDS.list_dashboards(dashboard_limit).await;
     let dashboard_summaries = dashboards
@@ -213,29 +230,6 @@ pub async fn add_tile(
 pub async fn list_tags() -> Result<impl Responder, DashboardError> {
     let tags = DASHBOARDS.list_tags().await;
     Ok((web::Json(tags), StatusCode::OK))
-}
-
-pub async fn list_dashboards_by_tags(tags: Path<String>) -> Result<impl Responder, DashboardError> {
-    let tags = tags.into_inner();
-    if tags.is_empty() {
-        return Err(DashboardError::Metadata("Tags cannot be empty"));
-    }
-    // tags can be comma separated list of tags
-    let tags = tags
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect::<Vec<_>>();
-    if tags.is_empty() {
-        return Err(DashboardError::Metadata("Tags cannot be empty"));
-    }
-    let dashboards = DASHBOARDS.list_dashboards_by_tags(tags).await;
-    let dashboard_summaries = dashboards
-        .iter()
-        .map(|dashboard| dashboard.to_summary())
-        .collect::<Vec<_>>();
-
-    Ok((web::Json(dashboard_summaries), StatusCode::OK))
 }
 
 #[derive(Debug, thiserror::Error)]
