@@ -23,6 +23,7 @@ use crate::handlers;
 use crate::handlers::http::about;
 use crate::handlers::http::alerts;
 use crate::handlers::http::base_path;
+use crate::handlers::http::demo_data::get_demo_data;
 use crate::handlers::http::health_check;
 use crate::handlers::http::prism_base_path;
 use crate::handlers::http::query;
@@ -97,7 +98,8 @@ impl ParseableServer for Server {
                     )))
                     .service(Self::get_alerts_webscope())
                     .service(Self::get_targets_webscope())
-                    .service(Self::get_metrics_webscope()),
+                    .service(Self::get_metrics_webscope())
+                    .service(Self::get_demo_data_webscope()),
             )
             .service(
                 web::scope(&prism_base_path())
@@ -199,6 +201,10 @@ impl Server {
                 .authorize_for_resource(Action::GetStats)
                 .authorize_for_resource(Action::GetRetention),
         )
+    }
+
+    pub fn get_demo_data_webscope() -> Scope {
+        web::scope("/demodata").service(web::resource("").route(web::get().to(get_demo_data)))
     }
 
     pub fn get_metrics_webscope() -> Scope {
