@@ -29,8 +29,10 @@ spec:
   minReadySeconds: 2
   template:
     metadata:
+      {{- with .Values.parseable.podAnnotations }}
       annotations:
-      {{- .Values.parseable.podAnnotations | toYaml | nindent 8 }}
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       labels:
         {{- .Values.parseable.podLabels | toYaml | nindent 8 }}
         {{- include "parseable.querierLabelsSelector" . | nindent 8 }}
@@ -39,11 +41,23 @@ spec:
       serviceAccountName: {{ include "parseable.serviceAccountName" . }}
       {{- with .Values.parseable.toleration }}
       tolerations:
-        {{ toYaml . | nindent 8 }}
+        {{- toYaml . | nindent 8 }}
       {{- end }}
       {{- with .Values.parseable.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if and .Values.parseable.gcsModeSecret .Values.parseable.gcsModeSecret.enabled }}
+      volumes:
+        - name: {{ .Values.parseable.gcsModeSecret.auth.secret_name }}
+          secret:
+            secretName: {{ .Values.parseable.gcsModeSecret.auth.secret_name }}
+        - name: stage-volume
+          emptyDir: {}
+      {{- else }}
+      volumes:
+        - name: stage-volume
+          emptyDir: {}
       {{- end }}
       containers:
       - name: {{ .Chart.Name }}
@@ -51,7 +65,9 @@ spec:
           {{- toYaml .Values.parseable.securityContext | nindent 10 }}
         image: {{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}
         imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
-        args: ["/usr/bin/parseable", {{ if eq .Values.parseable.store "gcs-store" }}"s3-store"{{ else }}{{ .Values.parseable.store | quote }}{{ end }}]
+        args:
+          - "/usr/bin/parseable"
+          - {{ .Values.parseable.store | quote }}
         env:
           - name: HOSTNAME
             valueFrom:
@@ -66,7 +82,7 @@ spec:
           - name: P_MAX_DISK_USAGE_PERCENT
             value: "95.0"
           {{- end }}
-          {{- range $key, $value :=  .Values.parseable.env }}
+          {{- range $key, $value := .Values.parseable.env }}
           - name: {{ $key }}
             value: {{ tpl $value $ | quote }}
           {{- end }}
@@ -95,11 +111,13 @@ spec:
           {{- end }}
 
           {{- if and .Values.parseable.gcsModeSecret .Values.parseable.gcsModeSecret.enabled }}
+          - name: GOOGLE_APPLICATION_CREDENTIALS
+            value: {{ .Values.parseable.gcsModeSecret.auth.mount_path }}/{{ .Values.parseable.gcsModeSecret.auth.secret_key }}
           {{- range $secret := .Values.parseable.gcsModeSecret.secrets }}
           {{- range $key := $secret.keys }}
           {{- $envPrefix := $secret.prefix | default "" | upper }}
           {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
-          - name: {{ $envPrefix }}{{ $envKey | replace "GCS" "S3"}}
+          - name: {{ $envPrefix }}{{ $envKey }}
             valueFrom:
               secretKeyRef:
                 name: {{ $secret.name }}
@@ -107,7 +125,7 @@ spec:
           {{- end }}
           {{- end }}
           {{- end }}
-          
+
           {{- if and .Values.parseable.blobModeSecret .Values.parseable.blobModeSecret.enabled }}
           {{- range $secret := .Values.parseable.blobModeSecret.secrets }}
           {{- range $key := $secret.keys }}
@@ -121,14 +139,15 @@ spec:
           {{- end }}
           {{- end }}
           {{- end }}
+
         ports:
           - containerPort: 8000
         {{- with .Values.parseable.readinessProbe }}
         readinessProbe:
-          {{ toYaml . | nindent 12 }}
+          {{- toYaml . | nindent 10 }}
         {{- end }}
         resources:
-          {{- toYaml .Values.parseable.resources | nindent 12 }}
+          {{- toYaml .Values.parseable.resources | nindent 10 }}
         volumeMounts:
         - mountPath: "/parseable/staging"
           name: stage-volume
@@ -136,19 +155,21 @@ spec:
         - mountPath: "/parseable/hot-tier"
           name: hot-tier-volume
         {{- end }}
-      volumes:
-      - emptyDir: {}
-        name: stage-volume
-      {{- if .Values.parseable.sidecar.enabled}}
+        {{- if and .Values.parseable.gcsModeSecret .Values.parseable.gcsModeSecret.enabled }}
+        - mountPath: {{ .Values.parseable.gcsModeSecret.auth.mount_path }}
+          name: {{ .Values.parseable.gcsModeSecret.auth.secret_name }}
+          readOnly: true
+        {{- end }}
+      {{- if .Values.parseable.sidecar.enabled }}
       - name: {{ .Chart.Name }}-sidecar
         securityContext:
-          {{- toYaml .Values.parseable.securityContext | nindent 8 }}
+          {{- toYaml .Values.parseable.securityContext | nindent 10 }}
         image: {{ .Values.parseable.sidecar.image.repository }}:{{ .Values.parseable.sidecar.image.tag }}
         imagePullPolicy: {{ .Values.parseable.sidecar.image.pullPolicy }}
-        command: {{ .Values.parseable.sidecar.command  }}
-        args: {{ .Values.parseable.sidecar.args  }}
+        command: {{ .Values.parseable.sidecar.command }}
+        args: {{ .Values.parseable.sidecar.args }}
         env:
-          {{- range $key, $value :=  .Values.parseable.sidecar.env }}
+          {{- range $key, $value := .Values.parseable.sidecar.env }}
           - name: {{ $key }}
             value: {{ tpl $value $ | quote }}
           {{- end }}
@@ -156,10 +177,11 @@ spec:
           - containerPort: {{ .Values.parseable.sidecar.ports }}
         resources:
           {{- toYaml .Values.parseable.sidecar.resources | nindent 10 }}
-        volumeMounts: {{ .Values.parseable.sidecar.volumeMounts | toYaml | nindent 10 }}
+        volumeMounts:
+          {{- .Values.parseable.sidecar.volumeMounts | toYaml | nindent 10 }}
       {{- end }}
-  volumeClaimTemplates:
   {{- if .Values.parseable.persistence.querier.enabled }}
+  volumeClaimTemplates:
   - metadata:
       name: hot-tier-volume
     spec:
@@ -178,8 +200,13 @@ spec:
       resources:
         requests:
           storage: 5Gi
+  {{- if .Values.parseable.sidecar.enabled }}
+  {{- .Values.parseable.sidecar.volumeClaimTemplates | toYaml | nindent 2 }}
   {{- end }}
-  {{- if .Values.parseable.sidecar.enabled}}
-    {{- .Values.parseable.sidecar.volumeClaimTemplates | toYaml | nindent 4 }}
+  {{- else }}
+  {{- if .Values.parseable.sidecar.enabled }}
+  volumeClaimTemplates:
+  {{- .Values.parseable.sidecar.volumeClaimTemplates | toYaml | nindent 2 }}
+  {{- end }}
   {{- end }}
 {{- end }}

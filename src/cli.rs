@@ -27,7 +27,7 @@ use crate::connectors::kafka::config::KafkaConfig;
 use crate::{
     oidc::{self, OpenidConfig},
     option::{validation, Compression, Mode},
-    storage::{AzureBlobConfig, FSConfig, S3Config},
+    storage::{AzureBlobConfig, FSConfig, GcsConfig, S3Config},
 };
 
 /// Default username and password for Parseable server, used by default for local mode.
@@ -80,6 +80,9 @@ pub enum StorageOptions {
 
     #[command(name = "blob-store")]
     Blob(BlobStoreArgs),
+
+    #[command(name = "gcs-store")]
+    Gcs(GcsStoreArgs),
 }
 
 #[derive(Parser)]
@@ -110,6 +113,17 @@ pub struct BlobStoreArgs {
     pub options: Options,
     #[command(flatten)]
     pub storage: AzureBlobConfig,
+    #[cfg(feature = "kafka")]
+    #[command(flatten)]
+    pub kafka: KafkaConfig,
+}
+
+#[derive(Parser)]
+pub struct GcsStoreArgs {
+    #[command(flatten)]
+    pub options: Options,
+    #[command(flatten)]
+    pub storage: GcsConfig,
     #[cfg(feature = "kafka")]
     #[command(flatten)]
     pub kafka: KafkaConfig,
@@ -338,7 +352,7 @@ pub struct Options {
 
     #[arg(
         long,
-        env = "P_MEMORY_THRESHOLD", 
+        env = "P_MEMORY_THRESHOLD",
         default_value = "80.0",
         value_parser = validation::validate_percentage,
         help = "Memory utilization threshold percentage (0.0-100.0) for resource monitoring"

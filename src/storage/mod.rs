@@ -37,6 +37,7 @@ use std::fmt::Debug;
 
 mod azure_blob;
 pub mod field_stats;
+mod gcs;
 mod localfs;
 mod metrics_layer;
 pub mod object_storage;
@@ -46,6 +47,7 @@ pub mod store_metadata;
 
 use self::retention::Retention;
 pub use azure_blob::AzureBlobConfig;
+pub use gcs::GcsConfig;
 pub use localfs::FSConfig;
 pub use object_storage::{ObjectStorage, ObjectStorageProvider};
 pub use s3::S3Config;

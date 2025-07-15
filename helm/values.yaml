@@ -8,9 +8,9 @@ parseable:
   ## Set to true if you want to deploy Parseable in a HA mode (multiple ingestors + hot tier)
   ## Please note that highAvailability is not supported in local mode
   highAvailability:
-    enabled: false
+    enabled: true
     ingestor:
-      affinity: { }
+      affinity: {}
         # podAntiAffinity:
         #   requiredDuringSchedulingIgnoredDuringExecution:
         #   - labelSelector:
@@ -21,9 +21,9 @@ parseable:
       port: 8000
       extraLabels:
         app: parseable
-      podAnnotations: { }
-      nodeSelector: { }
-      tolerations: [ ]
+      podAnnotations: {}
+      nodeSelector: {}
+      tolerations: []
       labels:
         app: parseable
         component: ingestor
@@ -137,7 +137,11 @@ parseable:
           - s3.bucket
           - s3.region
   gcsModeSecret:
-    enabled: false
+    enabled: true
+    auth:
+      secret_name: parseable-env-secret
+      secret_key: key.json
+      mount_path: /var/secrets/google
     secrets:
       - name: parseable-env-secret
         prefix: P_
@@ -148,15 +152,12 @@ parseable:
           - staging.dir
           - fs.dir
           - gcs.url
-          - gcs.access.key
-          - gcs.secret.key
           - gcs.bucket
-          - gcs.region
   serviceAccount:
     create: true
     name: "parseable"
-    annotations: { }
-  nodeSelector: { }
+    annotations: {}
+  nodeSelector: {}
   service:
     type: ClusterIP
     port: 80
@@ -164,7 +165,7 @@ parseable:
     httpGet:
       path: /api/v1/readiness
       port: 8000
-  toleration: [ ]
+  toleration: []
   resources:
     limits:
       cpu: 500m
@@ -173,7 +174,7 @@ parseable:
       cpu: 250m
       memory: 1Gi
   ## works only when highAvailability is enabled
-  ## Set it to true if you want to deploy Parseable 
+  ## Set it to true if you want to deploy Parseable
   ## Query node with a sidecar
   sidecar:
     enabled: false
@@ -181,8 +182,8 @@ parseable:
       repository: busybox
       tag: latest
       pullPolicy: IfNotPresent
-    command: [ ]
-    args: [ ]
+    command: []
+    args: []
     env:
       RUST_LOG: warn
     ports: 8000
@@ -193,7 +194,7 @@ parseable:
       - metadata:
           name: test-volume
         spec:
-          accessModes: [ "ReadWriteOnce" ]
+          accessModes: ["ReadWriteOnce"]
           resources:
             requests:
               storage: 1Gi
@@ -217,36 +218,36 @@ parseable:
     fsGroupChangePolicy: "Always"
   nameOverride: ""
   fullnameOverride: ""
-  affinity: { }
+  affinity: {}
   podLabels:
     app: parseable
     component: query
-  tolerations: [ ]
+  tolerations: []
   ## Use this section to create ServiceMonitor object for
   ## this Parseable deployment. Read more on ServiceMonitor
   ## here: https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.ServiceMonitor
   metrics:
     serviceMonitor:
       enabled: false
-      labels: { }
+      labels: {}
       namespace: ""
       spec:
         jobLabel: ""
-        targetLabels: [ ]
-        podTargetLabels: [ ]
-        endpoints: [ ]
-        selector: { }
-        namespaceSelector: { }
+        targetLabels: []
+        podTargetLabels: []
+        endpoints: []
+        selector: {}
+        namespaceSelector: {}
         sampleLimit: 0
-        scrapeProtocols: [ ]
+        scrapeProtocols: []
         targetLimit: 0
         labelLimit: 0
         labelNameLengthLimit: 0
         labelValueLengthLimit: 0
         keepDroppedTargets: 0
-        attachMetadata: { }
+        attachMetadata: {}
         scrapeClass: ""
-        bodySizeLimit: { }
+        bodySizeLimit: {}
   kafkaConnector:
     enabled: false
     env:
@@ -319,7 +320,7 @@ vector:
   image:
     repository: timberio/vector
     pullPolicy: IfNotPresent
-    pullSecrets: [ ]
+    pullSecrets: []
     tag: ""
     sha: ""
   replicas: 1
@@ -332,7 +333,7 @@ vector:
     create: true
   serviceAccount:
     create: true
-    annotations: { }
+    annotations: {}
     name:
     automountToken: true
   podLabels:
@@ -344,13 +345,13 @@ vector:
   service:
     enabled: true
     type: "ClusterIP"
-    annotations: { }
-    topologyKeys: [ ]
-    ports: [ ]
+    annotations: {}
+    topologyKeys: []
+    ports: []
     externalTrafficPolicy: ""
     loadBalancerIP: ""
     ipFamilyPolicy: ""
-    ipFamilies: [ ]
+    ipFamilies: []
   serviceHeadless:
     enabled: true
   dnsPolicy: ClusterFirst
@@ -376,7 +377,7 @@ vector:
           - kubernetes_logs
         encoding:
           codec: json
-        uri: 'http://parseable.parseable.svc.cluster.local/api/v1/ingest'
+        uri: "http://parseable.parseable.svc.cluster.local/api/v1/ingest"
         auth:
           strategy: basic
           user: admin
@@ -386,7 +387,7 @@ vector:
             X-P-Stream: vectordemo
         healthcheck:
           enabled: true
-          path: 'http://parseable.parseable.svc.cluster.local/api/v1/liveness'
+          path: "http://parseable.parseable.svc.cluster.local/api/v1/liveness"
           port: 80
 
 # Default values for fluent-bit.
@@ -413,7 +414,7 @@ fluent-bit:
       tag: latest
   serviceAccount:
     create: true
-    annotations: { }
+    annotations: {}
     name:
   rbac:
     create: true
@@ -424,8 +425,8 @@ fluent-bit:
     type: ClusterIP
     port: 2020
     loadBalancerClass:
-    loadBalancerSourceRanges: [ ]
-    labels: { }
+    loadBalancerSourceRanges: []
+    labels: {}
   livenessProbe:
     httpGet:
       path: /
@@ -515,9 +516,9 @@ fluent-bit:
           Server_Port 80
           Username {{ .Values.serverUsername }}
           Password {{ .Values.serverPassword }}
-          Stream k8s-events 
+          Stream k8s-events
 
-    upstream: { }
+    upstream: {}
 
     customParsers: |
       [PARSER]
@@ -533,7 +534,7 @@ fluent-bit:
       #     Regex    ^(?<timestamp>\S+Z) stderr F (?<error_timestamp>\S+ \S+) \[(?<log_level>\S+)\] (?<process_id>\d+#\d+): \*(?<request_id>\d+) (?<error_message>.*?) client: (?<client_ip>\S+), server: (?<server_name>\S+), request: "(?<request_method>\S+) (?<request_path>\S+) HTTP/\S+", upstream: "(?<upstream_url>[^"]+)", host: "(?<host>\S+)"$
       #     Time_Key  timestamp
       #     Time_Format %Y/%m/%d %H:%M:%S
-      
+
       # [PARSER]
       #     Name   nginx_access
       #     Format regex

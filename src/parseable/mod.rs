@@ -117,6 +117,12 @@ pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| match Cli::parse().storage 
         args.kafka,
         Arc::new(args.storage),
     ),
+    StorageOptions::Gcs(args) => Parseable::new(
+        args.options,
+        #[cfg(feature = "kafka")]
+        args.kafka,
+        Arc::new(args.storage),
+    ),
 });
 
 /// All state related to parseable, in one place.
@@ -243,6 +249,8 @@ impl Parseable {
             return "S3 bucket";
         } else if self.storage.name() == "blob_store" {
             return "Azure Blob Storage";
+        } else if self.storage.name() == "gcs" {
+            return "Google Object Store";
         }
         "Unknown"
     }

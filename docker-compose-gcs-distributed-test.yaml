@@ -1,0 +1,110 @@
+networks:
+  parseable-internal:
+
+services:
+  # query server
+  parseable-query:
+    container_name: parseable-query
+    build:
+      context: .
+      dockerfile: Dockerfile.debug
+    platform: linux/amd64
+    command: ["parseable", "gcs-store"]
+    ports:
+      - "8000:8000"
+    environment:
+      - P_GCS_BUCKET=parseable-test-gcs-local
+      - P_STAGING_DIR=/tmp/data
+      - P_USERNAME=parseableadmin
+      - P_PASSWORD=parseableadmin
+      - P_CHECK_UPDATE=false
+      - P_PARQUET_COMPRESSION_ALGO=snappy
+      - P_MODE=query
+      - RUST_LOG=warn
+      - GOOGLE_APPLICATION_CREDENTIALS=/parseable/svc/${GCS_CREDENTIALS_FILE:-key.json}
+    networks:
+      - parseable-internal
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness"]
+      interval: 15s
+      timeout: 20s
+      retries: 5
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 20s
+        max_attempts:
+    volumes:
+      - "${GCS_CREDENTIALS_PATH:-./credentials}:/parseable/svc/:ro,z"
+  # ingest server one
+  parseable-ingest-one:
+    container_name: parseable-ingest-one
+    build:
+      context: .
+      dockerfile: Dockerfile.debug
+    platform: linux/amd64
+    command: ["parseable", "gcs-store"]
+    ports:
+      - "8000"
+    environment:
+      - P_GCS_BUCKET=parseable-test-gcs-local
+      - P_STAGING_DIR=/tmp/data
+      - P_USERNAME=parseableadmin
+      - P_PASSWORD=parseableadmin
+      - P_CHECK_UPDATE=false
+      - P_PARQUET_COMPRESSION_ALGO=snappy
+      - P_MODE=ingest
+      - P_INGESTOR_ENDPOINT=parseable-ingest-one:8000
+      - RUST_LOG=warn
+      - GOOGLE_APPLICATION_CREDENTIALS=/parseable/svc/${GCS_CREDENTIALS_FILE:-key.json}
+    networks:
+      - parseable-internal
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/liveness"]
+      interval: 15s
+      timeout: 20s
+      retries: 5
+    depends_on:
+      parseable-query:
+        condition: service_healthy
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 20s
+        max_attempts: 3
+    volumes:
+      - "${GCS_CREDENTIALS_PATH:-./credentials}:/parseable/svc/:ro,z"
+
+  quest:
+    platform: linux/amd64
+    image: ghcr.io/parseablehq/quest:main
+    pull_policy: always
+    command:
+      [
+        "load",
+        "http://parseable-query:8000",
+        "parseableadmin",
+        "parseableadmin",
+        "20",
+        "10",
+        "5m",
+        "storage.googleapis.com",
+        "",
+        "",
+        "parseable-test-gcs-local",
+        "http://parseable-ingest-one:8000",
+        "parseableadmin",
+        "parseableadmin",
+      ]
+    networks:
+      - parseable-internal
+    depends_on:
+      parseable-query:
+        condition: service_healthy
+      parseable-ingest-one:
+        condition: service_healthy
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 20s
+        max_attempts: 3

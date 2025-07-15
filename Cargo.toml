@@ -10,14 +10,19 @@ build = "build.rs"
 [dependencies]
 # Arrow and DataFusion ecosystem
 arrow = "54.0.0"
-arrow-array = "54.0.0" 
+arrow-array = "54.0.0"
 arrow-flight = { version = "54.0.0", features = ["tls"] }
 arrow-ipc = { version = "54.0.0", features = ["zstd"] }
 arrow-json = "54.0.0"
 arrow-schema = { version = "54.0.0", features = ["serde"] }
 arrow-select = "54.0.0"
 datafusion = "45.0.0"
-object_store = { version = "0.11.2", features = ["cloud", "aws", "azure"] }
+object_store = { version = "0.11.2", features = [
+    "cloud",
+    "aws",
+    "azure",
+    "gcp",
+] }
 parquet = "54.0.0"
 
 # Web server and HTTP-related
@@ -34,7 +39,11 @@ tower-http = { version = "0.6.1", features = ["cors"] }
 url = "2.4.0"
 
 # Connectors dependencies
-rdkafka = { version = "0.37", optional = true, features = ["cmake-build", "tracing", "libz-static"] }
+rdkafka = { version = "0.37", optional = true, features = [
+    "cmake-build",
+    "tracing",
+    "libz-static",
+] }
 sasl2-sys = { version = "0.1.22", optional = true, features = ["vendored"] }
 
 # Authentication and Security
@@ -145,7 +154,14 @@ assets-sha1 = "3e703ef8bedf8ae55fd31713f6267ad14ad3d29d"
 
 [features]
 debug = []
-kafka = ["rdkafka", "rdkafka/ssl-vendored", "rdkafka/ssl", "rdkafka/sasl", "sasl2-sys", "sasl2-sys/vendored"]
+kafka = [
+    "rdkafka",
+    "rdkafka/ssl-vendored",
+    "rdkafka/ssl",
+    "rdkafka/sasl",
+    "sasl2-sys",
+    "sasl2-sys/vendored",
+]
 
 [profile.release-lto]
 inherits = "release"
