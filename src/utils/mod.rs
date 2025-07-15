@@ -26,9 +26,10 @@ pub mod uid;
 pub mod update;
 
 use crate::handlers::http::rbac::RBACError;
+use crate::parseable::PARSEABLE;
 use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::map::SessionKey;
-use crate::rbac::role::{Action, Permission};
+use crate::rbac::role::{Action, ParseableResourceType, Permission};
 use crate::rbac::Users;
 use actix::extract_session_key_from_req;
 use actix_web::HttpRequest;
@@ -113,13 +114,32 @@ pub fn user_auth_for_datasets(
                     authorized = true;
                     break;
                 }
-                Permission::Resource(
-                    Action::Query,
-                    crate::rbac::role::ParseableResourceType::Stream(stream),
-                ) => {
-                    if stream == table_name || stream == "*" {
+                Permission::Resource(Action::Query, ParseableResourceType::Stream(stream)) => {
+                    let is_internal = PARSEABLE.get_stream(table_name).is_ok_and(|stream| {
+                        stream
+                            .get_stream_type()
+                            .eq(&crate::storage::StreamType::Internal)
+                    });
+
+                    if stream == table_name || stream == "*" || is_internal {
                         authorized = true;
                     }
+                }
+                Permission::Resource(action, ParseableResourceType::All)
+                    if ![
+                        Action::All,
+                        Action::PutUser,
+                        Action::PutRole,
+                        Action::DeleteUser,
+                        Action::DeleteRole,
+                        Action::ModifyUserGroup,
+                        Action::CreateUserGroup,
+                        Action::DeleteUserGroup,
+                        Action::DeleteNode,
+                    ]
+                    .contains(action) =>
+                {
+                    authorized = true;
                 }
                 _ => (),
             }

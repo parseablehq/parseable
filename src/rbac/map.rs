@@ -239,7 +239,16 @@ impl Sessions {
                             | ParseableResourceType::Llm(resource_id) => {
                                 let ok_resource =
                                     if let Some(context_resource_id) = context_resource {
-                                        resource_id == context_resource_id || resource_id == "*"
+                                        let is_internal = PARSEABLE
+                                            .get_stream(context_resource_id)
+                                            .is_ok_and(|stream| {
+                                                stream
+                                                    .get_stream_type()
+                                                    .eq(&crate::storage::StreamType::Internal)
+                                            });
+                                        resource_id == context_resource_id
+                                            || resource_id == "*"
+                                            || is_internal
                                     } else {
                                         // if no resource to match then resource check is not needed
                                         // WHEN IS THIS VALID??
