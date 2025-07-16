@@ -450,10 +450,10 @@ pub async fn create_streams_for_querier() -> Result<(), QueryError> {
         .into_iter()
         .filter(|stream_name| {
             !querier_streams_set.contains(stream_name)
-                && PARSEABLE
+                || PARSEABLE
                     .get_stream(stream_name)
                     .map(|s| s.get_schema().fields().is_empty())
-                    .unwrap_or(true)
+                    .unwrap_or(false)
         })
         .collect();
 
