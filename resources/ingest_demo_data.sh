@@ -151,11 +151,17 @@ init_ingest_data() {
 
     # Static arrays
     METHODS=("GET" "POST" "PUT" "DELETE" "PATCH" "HEAD")
+    METHODS_LEN=${#METHODS[@]}
     STATUS_CODES=(200 400 401 500 503)
+    STATUS_CODES_LEN=${#STATUS_CODES[@]}
     SERVICES=("frontend" "api" "auth" "cart" "payment")
+    SERVICES_LEN=${#SERVICES[@]}
     ENDPOINTS=("/products" "/cart" "/login" "/checkout" "/search")
+    ENDPOINTS_LEN=${#ENDPOINTS[@]}
     USER_AGENTS=("curl/7.88.1" "python-requests/2.32.3" "Mozilla/5.0")
+    USER_AGENTS_LEN=${#USER_AGENTS[@]}
     CLUSTERS=("web" "api" "db")
+    CLUSTERS_LEN=${#CLUSTERS[@]}
 }
 
 # Generate batch data
@@ -175,12 +181,12 @@ generate_batch() {
     for ((i=0; i<batch_size; i++)); do
         # Use modulo for cycling through pre-computed arrays
         idx=$((i % 100))
-        method_idx=$((i % 6))
-        status_idx=$((i % 5))
-        service_idx=$((i % 5))
-        endpoint_idx=$((i % 5))
-        agent_idx=$((i % 3))
-        cluster_idx=$((i % 3))
+        method_idx=$(( i % METHODS_LEN ))
+        status_idx=$((i % STATUS_CODES_LEN))
+        service_idx=$((i % SERVICES_LEN))
+        endpoint_idx=$((i % ENDPOINTS_LEN))
+        agent_idx=$((i % USER_AGENTS_LEN))
+        cluster_idx=$((i % CLUSTERS_LEN))
         
         # Direct array access
         trace_id=${TRACE_IDS[$idx]}
