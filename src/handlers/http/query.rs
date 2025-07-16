@@ -439,12 +439,22 @@ pub async fn create_streams_for_querier() -> Result<(), QueryError> {
     let querier_streams = PARSEABLE.streams.list();
 
     let querier_streams_set: HashSet<_> = querier_streams.into_iter().collect();
+    // fetch querier streams which have field list blank
+    // now missing streams should be list of streams which are in storage but not in querier
+    // and also have no fields in the schema
+    // this is to ensure that we do not create streams for querier which already exist in querier
 
-    let storage_streams = store.list_streams().await?;
-
-    let missing_streams: Vec<_> = storage_streams
+    let missing_streams: Vec<_> = store
+        .list_streams()
+        .await?
         .into_iter()
-        .filter(|stream_name| !querier_streams_set.contains(stream_name))
+        .filter(|stream_name| {
+            !querier_streams_set.contains(stream_name)
+                && PARSEABLE
+                    .get_stream(stream_name)
+                    .map(|s| s.get_schema().fields().is_empty())
+                    .unwrap_or(true)
+        })
         .collect();
 
     if missing_streams.is_empty() {
