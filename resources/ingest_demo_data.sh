@@ -6,8 +6,8 @@ P_USERNAME=${P_USERNAME:-"admin"}
 P_PASSWORD=${P_PASSWORD:-"admin"}
 P_STREAM=${P_STREAM:-"demodata"}
 ACTION=${ACTION:-"ingest"}
-TARGET_RECORDS=10000
-BATCH_SIZE=1000
+TARGET_RECORDS=5000
+BATCH_SIZE=500
 
 # Pre-compute auth header
 AUTH_HEADER="Authorization: Basic $(echo -n "$P_USERNAME:$P_PASSWORD" | base64)"
@@ -150,12 +150,18 @@ init_ingest_data() {
     done
 
     # Static arrays
-    METHODS=("GET" "GET" "GET" "GET" "POST" "PUT")
-    STATUS_CODES=(200 200 200 201 400 500)
+    METHODS=("GET" "POST" "PUT" "DELETE" "PATCH" "HEAD")
+    METHODS_LEN=${#METHODS[@]}
+    STATUS_CODES=(200 400 401 500 503)
+    STATUS_CODES_LEN=${#STATUS_CODES[@]}
     SERVICES=("frontend" "api" "auth" "cart" "payment")
+    SERVICES_LEN=${#SERVICES[@]}
     ENDPOINTS=("/products" "/cart" "/login" "/checkout" "/search")
+    ENDPOINTS_LEN=${#ENDPOINTS[@]}
     USER_AGENTS=("curl/7.88.1" "python-requests/2.32.3" "Mozilla/5.0")
+    USER_AGENTS_LEN=${#USER_AGENTS[@]}
     CLUSTERS=("web" "api" "db")
+    CLUSTERS_LEN=${#CLUSTERS[@]}
 }
 
 # Generate batch data
@@ -175,12 +181,12 @@ generate_batch() {
     for ((i=0; i<batch_size; i++)); do
         # Use modulo for cycling through pre-computed arrays
         idx=$((i % 100))
-        method_idx=$((i % 6))
-        status_idx=$((i % 6))
-        service_idx=$((i % 5))
-        endpoint_idx=$((i % 5))
-        agent_idx=$((i % 3))
-        cluster_idx=$((i % 3))
+        method_idx=$(( i % METHODS_LEN ))
+        status_idx=$((i % STATUS_CODES_LEN))
+        service_idx=$((i % SERVICES_LEN))
+        endpoint_idx=$((i % ENDPOINTS_LEN))
+        agent_idx=$((i % USER_AGENTS_LEN))
+        cluster_idx=$((i % CLUSTERS_LEN))
         
         # Direct array access
         trace_id=${TRACE_IDS[$idx]}
@@ -269,8 +275,6 @@ run_ingest() {
             echo "Failed to send batch"
             exit 1
         fi
-        
-        sleep 0.1
     done
 
     # Final statistics
@@ -292,11 +296,6 @@ create_sql_filters() {
         "service_health_summary|Service health metrics by severity|SELECT \"service.name\", severity_text, COUNT(*) as count FROM $P_STREAM GROUP BY \"service.name\", severity_text ORDER BY count DESC"
         "api_endpoint_performance|API endpoint request patterns|SELECT \"url.path\", COUNT(*) as request_count, \"service.name\" FROM $P_STREAM GROUP BY \"url.path\", \"service.name\" ORDER BY request_count DESC LIMIT 20"
         "authentication_failures|Monitor auth-related warnings and errors|SELECT * FROM $P_STREAM WHERE \"url.path\" LIKE '%login%' AND severity_text IN ('WARN', 'ERROR') ORDER BY time_unix_nano DESC LIMIT 100"
-        "upstream_cluster_analysis|Request distribution across clusters|SELECT \"upstream.cluster\", COUNT(*) as request_count, \"service.name\" FROM $P_STREAM GROUP BY \"upstream.cluster\", \"service.name\" ORDER BY request_count DESC"
-        "trace_analysis|Multi-span traces for distributed tracking|SELECT trace_id, COUNT(*) as span_count, \"service.name\" FROM $P_STREAM GROUP BY trace_id, \"service.name\" HAVING span_count > 1 ORDER BY span_count DESC LIMIT 10"
-        "user_agent_distribution|Client types and user agent patterns|SELECT \"user_agent.original\", COUNT(*) as usage_count FROM $P_STREAM GROUP BY \"user_agent.original\" ORDER BY usage_count DESC LIMIT 15"
-        "source_address_analysis|Request distribution by source IP|SELECT \"source.address\", COUNT(*) as request_count, COUNT(DISTINCT \"service.name\") as services_accessed FROM $P_STREAM GROUP BY \"source.address\" ORDER BY request_count DESC LIMIT 20"
-        "severity_timeline|Severity trends over time|SELECT \"severity_text\", COUNT(*) as count, \"service.name\" FROM $P_STREAM GROUP BY \"severity_text\", \"service.name\" ORDER BY count DESC"
     )
     
     sql_success_count=0
@@ -316,12 +315,9 @@ create_sql_filters() {
         else
             echo "Failed to create SQL filter: $name"
         fi
-        
-        sleep 0.5
     done
     
     echo "Created $sql_success_count SQL filters"
-    sleep 3
 }
 
 # Create saved filters
@@ -334,11 +330,6 @@ create_saved_filters() {
         "high_latency_requests|High response time requests|SELECT * FROM $P_STREAM WHERE body LIKE '%duration%' LIMIT 500|Ingestion Time,Data,service.name,url.path,upstream.cluster,body|service.name"
         "upstream_cluster_health|Upstream cluster performance|SELECT * FROM $P_STREAM WHERE upstream.cluster IS NOT NULL LIMIT 500|Ingestion Time,Data,upstream.cluster,service.name,severity_text,destination.address|upstream.cluster"
         "api_endpoint_monitoring|API endpoint usage patterns|SELECT * FROM $P_STREAM WHERE url.path IS NOT NULL LIMIT 500|Ingestion Time,Data,url.path,service.name,severity_text,source.address|url.path"
-        "trace_correlation_view|Correlated traces for distributed tracking|SELECT * FROM $P_STREAM WHERE trace_id IS NOT NULL AND span_id IS NOT NULL LIMIT 500|Ingestion Time,Data,trace_id,span_id,service.name,url.path|trace_id"
-        "user_agent_analysis|Client types and patterns|SELECT * FROM $P_STREAM WHERE user_agent.original IS NOT NULL LIMIT 500|Ingestion Time,Data,user_agent.original,source.address,url.path,service.name|user_agent.original"
-        "network_monitoring|Network traffic and server interactions|SELECT * FROM $P_STREAM WHERE source.address IS NOT NULL LIMIT 500|Ingestion Time,Data,source.address,destination.address,service.name,severity_text,url.path|source.address"
-        "service_overview|Comprehensive service activity view|SELECT * FROM $P_STREAM LIMIT 500|Ingestion Time,Data,service.name,url.path,source.address,destination.address,upstream.cluster|service.name"
-        "recent_activity|Most recent system activity|SELECT * FROM $P_STREAM ORDER BY time_unix_nano DESC LIMIT 500|Ingestion Time,Data,service.name,severity_text,url.path,source.address|severity_text"
     )
     
     saved_success_count=0
@@ -366,8 +357,6 @@ create_saved_filters() {
         else
             echo "Failed to create saved filter: $name"
         fi
-        
-        sleep 0.5
     done
     
     echo "Created $saved_success_count saved filters"
@@ -457,8 +446,6 @@ create_alerts() {
         echo "Failed to create Alert 3 (Trace ID null)"
         echo "Response: $response3"
     fi
-    
-    sleep 1
 }
 
 # Main alerts function
@@ -470,7 +457,6 @@ run_alerts() {
 
     if [[ $? -eq 0 && -n "$target_id" ]]; then
         echo "Target creation successful, proceeding with alerts..."
-        sleep 2
         
         # Create alerts using the target ID
         create_alerts "$target_id"
@@ -834,7 +820,6 @@ run_dashboards() {
 
     if [[ $? -eq 0 && -n "$dashboard_id" ]]; then
         echo "Dashboard creation successful, proceeding with tiles..."
-        sleep 2
         
         # Update dashboard with tiles
         update_dashboard "$dashboard_id"
@@ -891,13 +876,10 @@ main() {
             echo "Running all actions..."
             run_ingest
             echo "Waiting before creating filters..."
-            sleep 5
             run_filters
             echo "Waiting before creating alerts..."
-            sleep 5
             run_alerts
             echo "Waiting before creating dashboards..."
-            sleep 5
             run_dashboards
             echo "All actions completed"
             ;;
