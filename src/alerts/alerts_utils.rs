@@ -439,8 +439,14 @@ fn match_alert_operator(expr: &ConditionConfig) -> Expr {
     // if it can be parsed as a number, then parse it
     // else keep it as a string
     if expr.value.as_ref().is_some_and(|v| !v.is_empty()) {
-        let value = expr.value.as_ref().unwrap();
-        let value = NumberOrString::from_string(value.clone());
+        let string_value = expr
+            .value
+            .as_ref()
+            .unwrap()
+            .replace("'", "\\'")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        let value = NumberOrString::from_string(string_value.clone());
 
         // for maintaining column case
         let column = format!(r#""{}""#, expr.column);
@@ -451,28 +457,30 @@ fn match_alert_operator(expr: &ConditionConfig) -> Expr {
             WhereConfigOperator::GreaterThan => col(column).gt(lit(value)),
             WhereConfigOperator::LessThanOrEqual => col(column).lt_eq(lit(value)),
             WhereConfigOperator::GreaterThanOrEqual => col(column).gt_eq(lit(value)),
-            WhereConfigOperator::ILike => col(column).ilike(lit(value)),
-            WhereConfigOperator::Contains => col(column).like(lit(value)),
+            WhereConfigOperator::ILike => col(column).ilike(lit(string_value)),
+            WhereConfigOperator::Contains => {
+                col(column).like(lit(format!("%{string_value}%")))
+            },
             WhereConfigOperator::BeginsWith => Expr::BinaryExpr(BinaryExpr::new(
                 Box::new(col(column)),
                 Operator::RegexIMatch,
-                Box::new(lit(format!("^{value}"))),
+                Box::new(lit(format!("^{string_value}"))),
             )),
             WhereConfigOperator::EndsWith => Expr::BinaryExpr(BinaryExpr::new(
                 Box::new(col(column)),
                 Operator::RegexIMatch,
-                Box::new(lit(format!("{value}$"))),
+                Box::new(lit(format!("{string_value}$"))),
             )),
-            WhereConfigOperator::DoesNotContain => col(column).not_ilike(lit(value)),
+            WhereConfigOperator::DoesNotContain => col(column).not_ilike(lit(string_value)),
             WhereConfigOperator::DoesNotBeginWith => Expr::BinaryExpr(BinaryExpr::new(
                 Box::new(col(column)),
                 Operator::RegexNotIMatch,
-                Box::new(lit(format!("^{value}"))),
+                Box::new(lit(format!("^{string_value}"))),
             )),
             WhereConfigOperator::DoesNotEndWith => Expr::BinaryExpr(BinaryExpr::new(
                 Box::new(col(column)),
                 Operator::RegexNotIMatch,
-                Box::new(lit(format!("{value}$"))),
+                Box::new(lit(format!("{string_value}$"))),
             )),
             _ => unreachable!("value must not be null for operators other than `is null` and `is not null`. Should've been caught in validation")
         }
