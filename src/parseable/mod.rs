@@ -281,7 +281,7 @@ impl Parseable {
 
         let (stream_metadata_bytes, schema_bytes) = try_join!(
             storage.create_stream_from_ingestor(stream_name),
-            storage.create_schema_from_ingestor(stream_name)
+            storage.create_schema_from_storage(stream_name)
         )?;
 
         let stream_metadata = if stream_metadata_bytes.is_empty() {
