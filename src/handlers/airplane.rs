@@ -20,8 +20,6 @@ use arrow_array::RecordBatch;
 use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_flight::PollInfo;
 use arrow_schema::ArrowError;
-
-use datafusion::common::tree_node::TreeNode;
 use serde_json::json;
 use std::net::SocketAddr;
 use std::time::Instant;
@@ -35,11 +33,11 @@ use tonic_web::GrpcWebLayer;
 
 use crate::handlers::http::cluster::get_node_info;
 use crate::handlers::http::modal::{NodeMetadata, NodeType};
-use crate::handlers::http::query::{into_query, update_schema_when_distributed};
+use crate::handlers::http::query::into_query;
 use crate::handlers::livetail::cross_origin_config;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::parseable::PARSEABLE;
-use crate::query::{execute, TableScanVisitor, QUERY_SESSION};
+use crate::query::{execute, resolve_stream_names, QUERY_SESSION};
 use crate::utils::arrow::flight::{
     append_temporary_events, get_query_from_ticket, into_flight_data, run_do_get_rpc,
     send_to_ingester,
@@ -131,40 +129,27 @@ impl FlightService for AirServiceImpl {
 
         let ticket =
             get_query_from_ticket(&req).map_err(|e| Status::invalid_argument(e.to_string()))?;
-
+        let streams = resolve_stream_names(&ticket.query).map_err(|e| {
+            error!("Failed to extract table names from SQL: {}", e);
+            Status::invalid_argument("Invalid SQL query syntax")
+        })?;
         info!("query requested to airplane: {:?}", ticket);
 
         // get the query session_state
         let session_state = QUERY_SESSION.state();
 
-        // get the logical plan and extract the table name
-        let raw_logical_plan = session_state
-            .create_logical_plan(&ticket.query)
-            .await
-            .map_err(|err| {
-                error!("Datafusion Error: Failed to create logical plan: {}", err);
-                Status::internal("Failed to create logical plan")
-            })?;
-
         let time_range = TimeRange::parse_human_time(&ticket.start_time, &ticket.end_time)
             .map_err(|e| Status::internal(e.to_string()))?;
         // create a visitor to extract the table name
-        let mut visitor = TableScanVisitor::default();
-        let _ = raw_logical_plan.visit(&mut visitor);
-
-        let streams = visitor.into_inner();
 
         let stream_name = streams
-            .first()
+            .iter()
+            .next()
             .ok_or_else(|| Status::aborted("Malformed SQL Provided, Table Name Not Found"))?
             .to_owned();
 
-        update_schema_when_distributed(&streams)
-            .await
-            .map_err(|err| Status::internal(err.to_string()))?;
-
         // map payload to query
-        let query = into_query(&ticket, &session_state, time_range)
+        let query = into_query(&ticket, &session_state, time_range, &streams)
             .await
             .map_err(|_| Status::internal("Failed to parse query"))?;
 
@@ -214,7 +199,7 @@ impl FlightService for AirServiceImpl {
 
         let permissions = Users.get_permissions(&key);
 
-        user_auth_for_datasets(&permissions, &streams).map_err(|_| {
+        user_auth_for_datasets(&permissions, &streams).await.map_err(|_| {
             Status::permission_denied("User Does not have permission to access this")
         })?;
         let time = Instant::now();

@@ -24,7 +24,8 @@ use actix_web::Either;
 use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::common::tree_node::{Transformed, TreeNode, TreeNodeRecursion, TreeNodeVisitor};
+use datafusion::catalog::resolve_table_references;
+use datafusion::common::tree_node::{Transformed, TreeNode};
 use datafusion::error::DataFusionError;
 use datafusion::execution::disk_manager::DiskManagerConfig;
 use datafusion::execution::{SendableRecordBatchStream, SessionState, SessionStateBuilder};
@@ -33,6 +34,8 @@ use datafusion::logical_expr::{
     Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
 };
 use datafusion::prelude::*;
+use datafusion::sql::parser::DFParser;
+use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
@@ -259,12 +262,6 @@ impl Query {
         }
     }
 
-    pub fn first_table_name(&self) -> Option<String> {
-        let mut visitor = TableScanVisitor::default();
-        let _ = self.raw_logical_plan.visit(&mut visitor);
-        visitor.into_inner().pop()
-    }
-
     /// Evaluates to Some("count(*)") | Some("column_name") if the logical plan is a Projection: SELECT COUNT(*) | SELECT COUNT(*) as column_name
     pub fn is_logical_plan_count_without_filters(&self) -> Option<&String> {
         // Check if the raw logical plan is a Projection: SELECT
@@ -488,29 +485,18 @@ pub struct CountsResponse {
     pub records: Vec<CountsRecord>,
 }
 
-#[derive(Debug, Default)]
-pub struct TableScanVisitor {
-    tables: Vec<String>,
-}
-
-impl TableScanVisitor {
-    pub fn into_inner(self) -> Vec<String> {
-        self.tables
+pub fn resolve_stream_names(sql: &str) -> Result<Vec<String>, anyhow::Error> {
+    let normalized_sql = sql.replace('`', "\"");
+    let dialect = &PostgreSqlDialect {};
+    let statement = DFParser::parse_sql_with_dialect(&normalized_sql, dialect)?
+        .pop_back()
+        .ok_or(anyhow::anyhow!("Failed to parse sql"))?;
+    let (table_refs, _) = resolve_table_references(&statement, true)?;
+    let mut tables = Vec::new();
+    for table in table_refs {
+        tables.push(table.table().to_string());
     }
-}
-
-impl TreeNodeVisitor<'_> for TableScanVisitor {
-    type Node = LogicalPlan;
-
-    fn f_down(&mut self, node: &Self::Node) -> Result<TreeNodeRecursion, DataFusionError> {
-        match node {
-            LogicalPlan::TableScan(table) => {
-                self.tables.push(table.table_name.table().to_string());
-                Ok(TreeNodeRecursion::Jump)
-            }
-            _ => Ok(TreeNodeRecursion::Continue),
-        }
-    }
+    Ok(tables)
 }
 
 pub async fn get_manifest_list(

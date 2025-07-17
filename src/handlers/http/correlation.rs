@@ -54,7 +54,7 @@ pub async fn get(
         .map(|t| t.table_name.clone())
         .collect_vec();
 
-    user_auth_for_datasets(&permissions, tables)?;
+    user_auth_for_datasets(&permissions, tables).await?;
 
     Ok(web::Json(correlation))
 }

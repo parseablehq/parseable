@@ -87,7 +87,7 @@ impl Correlations {
                 .iter()
                 .map(|t| t.table_name.clone())
                 .collect_vec();
-            if user_auth_for_datasets(&permissions, tables).is_ok() {
+            if user_auth_for_datasets(&permissions, tables).await.is_ok() {
                 user_correlations.push(correlation.clone());
             }
         }
@@ -281,7 +281,7 @@ impl CorrelationConfig {
             .map(|t| t.table_name.clone())
             .collect_vec();
 
-        user_auth_for_datasets(&permissions, tables)?;
+        user_auth_for_datasets(&permissions, tables).await?;
 
         // to validate table config, we need to check whether the mentioned fields
         // are present in the table or not

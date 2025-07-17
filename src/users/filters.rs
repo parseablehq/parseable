@@ -193,7 +193,7 @@ impl Filters {
                 }
             } else if *filter_type == FilterType::Search || *filter_type == FilterType::Filter {
                 let dataset_name = &f.stream_name;
-                if user_auth_for_datasets(&permissions, &[dataset_name.to_string()]).is_ok() {
+                if user_auth_for_datasets(&permissions, &[dataset_name.to_string()]).await.is_ok() {
                     filters.push(f.clone())
                 }
             }

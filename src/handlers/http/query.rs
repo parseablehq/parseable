@@ -25,9 +25,9 @@ use actix_web::{Either, FromRequest, HttpRequest, HttpResponse, Responder};
 use arrow_array::RecordBatch;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
-use datafusion::common::tree_node::TreeNode;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
+use datafusion::sql::sqlparser::parser::ParserError;
 use futures::stream::once;
 use futures::{future, Stream, StreamExt};
 use futures_util::Future;
@@ -44,11 +44,10 @@ use tracing::{error, warn};
 
 use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
-use crate::option::Mode;
 use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::query::error::ExecuteError;
+use crate::query::{resolve_stream_names, QUERY_SESSION};
 use crate::query::{execute, CountsRequest, Query as LogicalQuery};
-use crate::query::{TableScanVisitor, QUERY_SESSION};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
 use crate::storage::ObjectStorageError;
@@ -81,31 +80,21 @@ pub async fn get_records_and_fields(
     query_request: &Query,
     req: &HttpRequest,
 ) -> Result<(Option<Vec<RecordBatch>>, Option<Vec<String>>), QueryError> {
+    let tables = resolve_stream_names(&query_request.query)?;
     let session_state = QUERY_SESSION.state();
-
-    // get the logical plan and extract the table name
-    let raw_logical_plan = session_state
-        .create_logical_plan(&query_request.query)
-        .await?;
 
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
-    // create a visitor to extract the table name
-    let mut visitor = TableScanVisitor::default();
-    let _ = raw_logical_plan.visit(&mut visitor);
 
-    let tables = visitor.into_inner();
-    update_schema_when_distributed(&tables).await?;
-    let query: LogicalQuery = into_query(query_request, &session_state, time_range).await?;
-
+    let query: LogicalQuery =
+        into_query(query_request, &session_state, time_range, &tables).await?;
     let creds = extract_session_key_from_req(req)?;
     let permissions = Users.get_permissions(&creds);
 
-    let table_name = query
-        .first_table_name()
+    let table_name = tables
+        .first()
         .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
-
-    user_auth_for_datasets(&permissions, &tables)?;
+    user_auth_for_datasets(&permissions, &tables).await?;
 
     let (records, fields) = execute(query, &table_name, false).await?;
 
@@ -121,35 +110,18 @@ pub async fn get_records_and_fields(
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
     let session_state = QUERY_SESSION.state();
-    let raw_logical_plan = match session_state
-        .create_logical_plan(&query_request.query)
-        .await
-    {
-        Ok(raw_logical_plan) => raw_logical_plan,
-        Err(_) => {
-            create_streams_for_querier().await?;
-            session_state
-                .create_logical_plan(&query_request.query)
-                .await?
-        }
-    };
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
-
-    let mut visitor = TableScanVisitor::default();
-    let _ = raw_logical_plan.visit(&mut visitor);
-    let tables = visitor.into_inner();
-    update_schema_when_distributed(&tables).await?;
-    let query: LogicalQuery = into_query(&query_request, &session_state, time_range).await?;
-
+    let tables = resolve_stream_names(&query_request.query)?;
+    let query: LogicalQuery =
+        into_query(&query_request, &session_state, time_range, &tables).await?;
     let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);
 
-    let table_name = query
-        .first_table_name()
+    let table_name = tables
+        .first()
         .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
-
-    user_auth_for_datasets(&permissions, &tables)?;
+    user_auth_for_datasets(&permissions, &tables).await?;
 
     let time = Instant::now();
 
@@ -372,7 +344,7 @@ pub async fn get_counts(
     let body = counts_request.into_inner();
 
     // does user have access to table?
-    user_auth_for_datasets(&permissions, &[body.stream.clone()])?;
+    user_auth_for_datasets(&permissions, &[body.stream.clone()]).await?;
 
     // if the user has given a sql query (counts call with filters applied), then use this flow
     // this could include filters or group by
@@ -420,11 +392,9 @@ pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), 
     // if the mode is query or prism, we need to update the schema in memory
     // no need to commit schema to storage
     // as the schema is read from memory everytime
-    if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
-        for table in tables {
-            if let Ok(new_schema) = fetch_schema(table).await {
-                commit_schema(table, Arc::new(new_schema))?;
-            }
+    for table in tables {
+        if let Ok(new_schema) = fetch_schema(table).await {
+            commit_schema(table, Arc::new(new_schema))?;
         }
     }
 
@@ -520,6 +490,7 @@ pub async fn into_query(
     query: &Query,
     session_state: &SessionState,
     time_range: TimeRange,
+    tables: &Vec<String>,
 ) -> Result<LogicalQuery, QueryError> {
     if query.query.is_empty() {
         return Err(QueryError::EmptyQuery);
@@ -532,9 +503,36 @@ pub async fn into_query(
     if query.end_time.is_empty() {
         return Err(QueryError::EmptyEndTime);
     }
+    let raw_logical_plan = match session_state.create_logical_plan(&query.query).await {
+        Ok(plan) => plan,
+        Err(_) => {
+            let mut join_set = JoinSet::new();
+            for stream_name in tables {
+                let stream_name = stream_name.clone();
+                join_set.spawn(async move {
+                    let result = PARSEABLE
+                        .create_stream_and_schema_from_storage(&stream_name)
+                        .await;
+
+                    if let Err(e) = &result {
+                        warn!("Failed to create stream '{}': {}", stream_name, e);
+                    }
+
+                    (stream_name, result)
+                });
+            }
+
+            while let Some(result) = join_set.join_next().await {
+                if let Err(join_error) = result {
+                    warn!("Task join error: {}", join_error);
+                }
+            }
+            session_state.create_logical_plan(&query.query).await?
+        }
+    };
 
     Ok(crate::query::Query {
-        raw_logical_plan: session_state.create_logical_plan(&query.query).await?,
+        raw_logical_plan,
         time_range,
         filter_tag: query.filter_tags.clone(),
     })
@@ -618,6 +616,8 @@ Description: {0}"#
     CustomError(String),
     #[error("No available queriers found")]
     NoAvailableQuerier,
+    #[error("{0}")]
+    ParserError(#[from] ParserError),
 }
 
 impl actix_web::ResponseError for QueryError {
