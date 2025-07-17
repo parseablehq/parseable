@@ -258,7 +258,7 @@ fn redirect_to_oidc_logout(mut logout_endpoint: Url, redirect: &Url) -> HttpResp
         .finish()
 }
 
-fn redirect_to_client(
+pub fn redirect_to_client(
     url: &str,
     cookies: impl IntoIterator<Item = Cookie<'static>>,
 ) -> HttpResponse {
@@ -279,7 +279,7 @@ fn redirect_no_oauth_setup(mut url: Url) -> HttpResponse {
     response.finish()
 }
 
-fn cookie_session(id: Ulid) -> Cookie<'static> {
+pub fn cookie_session(id: Ulid) -> Cookie<'static> {
     let authorization_cookie = Cookie::build(SESSION_COOKIE_NAME, id.to_string())
         .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
         .same_site(SameSite::Strict)
@@ -288,7 +288,7 @@ fn cookie_session(id: Ulid) -> Cookie<'static> {
     authorization_cookie
 }
 
-fn cookie_username(username: &str) -> Cookie<'static> {
+pub fn cookie_username(username: &str) -> Cookie<'static> {
     let authorization_cookie = Cookie::build(USER_COOKIE_NAME, username.to_string())
         .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
         .same_site(SameSite::Strict)
@@ -297,7 +297,7 @@ fn cookie_username(username: &str) -> Cookie<'static> {
     authorization_cookie
 }
 
-async fn request_token(
+pub async fn request_token(
     oidc_client: Arc<DiscoveredClient>,
     login_query: &Login,
 ) -> anyhow::Result<(Claims, Userinfo)> {
@@ -316,7 +316,7 @@ async fn request_token(
 
 // put new user in metadata if does not exits
 // update local cache
-async fn put_user(
+pub async fn put_user(
     username: &str,
     group: HashSet<String>,
     user_info: user::UserInfo,
@@ -339,7 +339,7 @@ async fn put_user(
     Ok(user)
 }
 
-async fn update_user_if_changed(
+pub async fn update_user_if_changed(
     mut user: User,
     group: HashSet<String>,
     user_info: user::UserInfo,

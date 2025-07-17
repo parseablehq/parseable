@@ -34,7 +34,7 @@ mod livetail;
 mod metadata;
 pub mod metrics;
 pub mod migration;
-mod oidc;
+pub mod oidc;
 pub mod option;
 pub mod otel;
 pub mod parseable;
