@@ -19,6 +19,7 @@
 use actix_web::http::header::ContentType;
 use async_trait::async_trait;
 use chrono::Utc;
+use datafusion::sql::sqlparser::parser::ParserError;
 use derive_more::derive::FromStr;
 use derive_more::FromStrError;
 use http::StatusCode;
@@ -860,6 +861,8 @@ pub enum AlertError {
     InvalidTargetModification(String),
     #[error("Can't delete a Target which is being used")]
     TargetInUse,
+    #[error("{0}")]
+    ParserError(#[from] ParserError),
 }
 
 impl actix_web::ResponseError for AlertError {
@@ -880,6 +883,7 @@ impl actix_web::ResponseError for AlertError {
             Self::InvalidTargetID(_) => StatusCode::BAD_REQUEST,
             Self::InvalidTargetModification(_) => StatusCode::BAD_REQUEST,
             Self::TargetInUse => StatusCode::CONFLICT,
+            Self::ParserError(_) => StatusCode::BAD_REQUEST,
         }
     }
 

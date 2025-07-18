@@ -29,10 +29,15 @@ use datafusion::{
     logical_expr::{BinaryExpr, Literal, Operator},
     prelude::{col, lit, DataFrame, Expr},
 };
-use tracing::trace;
+use tokio::task::JoinSet;
+use tracing::{trace, warn};
 
 use crate::{
-    alerts::LogicalOperator, parseable::PARSEABLE, query::QUERY_SESSION, utils::time::TimeRange,
+    alerts::LogicalOperator,
+    handlers::http::query::update_schema_when_distributed,
+    parseable::PARSEABLE,
+    query::{resolve_stream_names, QUERY_SESSION},
+    utils::time::TimeRange,
 };
 
 use super::{
@@ -71,11 +76,37 @@ async fn prepare_query(alert: &AlertConfig) -> Result<crate::query::Query, Alert
 
     let session_state = QUERY_SESSION.state();
     let select_query = alert.get_base_query();
-    let raw_logical_plan = session_state.create_logical_plan(&select_query).await?;
-
     let time_range = TimeRange::parse_human_time(start_time, end_time)
         .map_err(|err| AlertError::CustomError(err.to_string()))?;
 
+    let streams = resolve_stream_names(&select_query)?;
+    let raw_logical_plan = match session_state.create_logical_plan(&select_query).await {
+        Ok(plan) => plan,
+        Err(_) => {
+            let mut join_set = JoinSet::new();
+            for stream_name in streams {
+                let stream_name = stream_name.clone();
+                join_set.spawn(async move {
+                    let result = PARSEABLE
+                        .create_stream_and_schema_from_storage(&stream_name)
+                        .await;
+
+                    if let Err(e) = &result {
+                        warn!("Failed to create stream '{}': {}", stream_name, e);
+                    }
+
+                    (stream_name, result)
+                });
+            }
+
+            while let Some(result) = join_set.join_next().await {
+                if let Err(join_error) = result {
+                    warn!("Task join error: {}", join_error);
+                }
+            }
+            session_state.create_logical_plan(&select_query).await?
+        }
+    };
     Ok(crate::query::Query {
         raw_logical_plan,
         time_range,
@@ -87,11 +118,18 @@ async fn execute_base_query(
     query: &crate::query::Query,
     original_query: &str,
 ) -> Result<DataFrame, AlertError> {
-    let stream_name = query.first_table_name().ok_or_else(|| {
+    let streams = resolve_stream_names(original_query)?;
+    let stream_name = streams.first().ok_or_else(|| {
         AlertError::CustomError(format!("Table name not found in query- {original_query}"))
     })?;
-
-    let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
+    update_schema_when_distributed(&streams)
+        .await
+        .map_err(|err| {
+            AlertError::CustomError(format!(
+                "Failed to update schema for distributed streams: {err}"
+            ))
+        })?;
+    let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
     query
         .get_dataframe(time_partition.as_ref())
         .await

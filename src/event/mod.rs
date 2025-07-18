@@ -123,7 +123,7 @@ pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), Stagi
 
     let map = &mut stream_metadata
         .get_mut(stream_name)
-        .expect("map has entry for this stream name")
+        .ok_or_else(|| StagingError::NotFound(stream_name.to_string()))?
         .metadata
         .write()
         .expect(LOCK_EXPECT)

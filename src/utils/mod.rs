@@ -27,14 +27,13 @@ pub mod update;
 
 use crate::handlers::http::rbac::RBACError;
 use crate::parseable::PARSEABLE;
-use crate::query::{TableScanVisitor, QUERY_SESSION};
+use crate::query::resolve_stream_names;
 use crate::rbac::map::SessionKey;
 use crate::rbac::role::{Action, ParseableResourceType, Permission};
 use crate::rbac::Users;
 use actix::extract_session_key_from_req;
 use actix_web::HttpRequest;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use datafusion::common::tree_node::TreeNode;
 use regex::Regex;
 use sha2::{Digest, Sha256};
 
@@ -78,28 +77,18 @@ pub fn get_hash(key: &str) -> String {
     result
 }
 
-async fn get_tables_from_query(query: &str) -> Result<TableScanVisitor, actix_web::error::Error> {
-    let session_state = QUERY_SESSION.state();
-    let raw_logical_plan = session_state
-        .create_logical_plan(query)
-        .await
-        .map_err(|e| actix_web::error::ErrorInternalServerError(format!("Query error: {e}")))?;
-
-    let mut visitor = TableScanVisitor::default();
-    let _ = raw_logical_plan.visit(&mut visitor);
-    Ok(visitor)
-}
-
 pub async fn user_auth_for_query(
     session_key: &SessionKey,
     query: &str,
 ) -> Result<(), actix_web::error::Error> {
-    let tables = get_tables_from_query(query).await?.into_inner();
+    let tables = resolve_stream_names(query).map_err(|e| {
+        actix_web::error::ErrorBadRequest(format!("Failed to extract table names: {e}"))
+    })?;
     let permissions = Users.get_permissions(session_key);
-    user_auth_for_datasets(&permissions, &tables)
+    user_auth_for_datasets(&permissions, &tables).await
 }
 
-pub fn user_auth_for_datasets(
+pub async fn user_auth_for_datasets(
     permissions: &[Permission],
     tables: &[String],
 ) -> Result<(), actix_web::error::Error> {
@@ -115,6 +104,11 @@ pub fn user_auth_for_datasets(
                     break;
                 }
                 Permission::Resource(Action::Query, ParseableResourceType::Stream(stream)) => {
+                    if !PARSEABLE.check_or_load_stream(stream).await {
+                        return Err(actix_web::error::ErrorUnauthorized(format!(
+                            "Stream not found: {table_name}"
+                        )));
+                    }
                     let is_internal = PARSEABLE.get_stream(table_name).is_ok_and(|stream| {
                         stream
                             .get_stream_type()
@@ -153,23 +147,4 @@ pub fn user_auth_for_datasets(
     }
 
     Ok(())
-}
-
-/// A function to extract table names from a SQL string
-pub async fn extract_tables(sql: &str) -> Option<Vec<String>> {
-    let session_state = QUERY_SESSION.state();
-
-    // get the logical plan and extract the table name
-    let raw_logical_plan = match session_state.create_logical_plan(sql).await {
-        Ok(plan) => plan,
-        Err(_) => return None,
-    };
-
-    // create a visitor to extract the table name
-    let mut visitor = TableScanVisitor::default();
-    let _ = raw_logical_plan.visit(&mut visitor);
-
-    let tables = visitor.into_inner();
-
-    Some(tables)
 }
