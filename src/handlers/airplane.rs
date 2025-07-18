@@ -143,8 +143,7 @@ impl FlightService for AirServiceImpl {
         // create a visitor to extract the table name
 
         let stream_name = streams
-            .iter()
-            .next()
+            .first()
             .ok_or_else(|| Status::aborted("Malformed SQL Provided, Table Name Not Found"))?
             .to_owned();
 
@@ -199,9 +198,11 @@ impl FlightService for AirServiceImpl {
 
         let permissions = Users.get_permissions(&key);
 
-        user_auth_for_datasets(&permissions, &streams).await.map_err(|_| {
-            Status::permission_denied("User Does not have permission to access this")
-        })?;
+        user_auth_for_datasets(&permissions, &streams)
+            .await
+            .map_err(|_| {
+                Status::permission_denied("User Does not have permission to access this")
+            })?;
         let time = Instant::now();
 
         let (records, _) = execute(query, &stream_name, false)

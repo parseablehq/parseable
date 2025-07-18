@@ -46,8 +46,8 @@ use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::parseable::{StreamNotFound, PARSEABLE};
 use crate::query::error::ExecuteError;
-use crate::query::{resolve_stream_names, QUERY_SESSION};
 use crate::query::{execute, CountsRequest, Query as LogicalQuery};
+use crate::query::{resolve_stream_names, QUERY_SESSION};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
 use crate::storage::ObjectStorageError;
@@ -95,8 +95,8 @@ pub async fn get_records_and_fields(
         .first()
         .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
     user_auth_for_datasets(&permissions, &tables).await?;
-
-    let (records, fields) = execute(query, &table_name, false).await?;
+    update_schema_when_distributed(&tables).await?;
+    let (records, fields) = execute(query, table_name, false).await?;
 
     let records = match records {
         Either::Left(vec_rb) => vec_rb,
@@ -122,25 +122,25 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         .first()
         .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
     user_auth_for_datasets(&permissions, &tables).await?;
-
+    update_schema_when_distributed(&tables).await?;
     let time = Instant::now();
 
     // if the query is `select count(*) from <dataset>`
     // we use the `get_bin_density` method to get the count of records in the dataset
     // instead of executing the query using datafusion
     if let Some(column_name) = query.is_logical_plan_count_without_filters() {
-        return handle_count_query(&query_request, &table_name, column_name, time).await;
+        return handle_count_query(&query_request, table_name, column_name, time).await;
     }
 
     // if the query request has streaming = false (default)
     // we use datafusion's `execute` method to get the records
     if !query_request.streaming {
-        return handle_non_streaming_query(query, &table_name, &query_request, time).await;
+        return handle_non_streaming_query(query, table_name, &query_request, time).await;
     }
 
     // if the query request has streaming = true
     // we use datafusion's `execute_stream` method to get the records
-    handle_streaming_query(query, &table_name, &query_request, time).await
+    handle_streaming_query(query, table_name, &query_request, time).await
 }
 
 /// Handles count queries (e.g., `SELECT COUNT(*) FROM <dataset-name>`)

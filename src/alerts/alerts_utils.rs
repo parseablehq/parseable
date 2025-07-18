@@ -34,6 +34,7 @@ use tracing::{trace, warn};
 
 use crate::{
     alerts::LogicalOperator,
+    handlers::http::query::update_schema_when_distributed,
     parseable::PARSEABLE,
     query::{resolve_stream_names, QUERY_SESSION},
     utils::time::TimeRange,
@@ -117,12 +118,18 @@ async fn execute_base_query(
     query: &crate::query::Query,
     original_query: &str,
 ) -> Result<DataFrame, AlertError> {
-    let streams = resolve_stream_names(&original_query)?;
+    let streams = resolve_stream_names(original_query)?;
     let stream_name = streams.first().ok_or_else(|| {
         AlertError::CustomError(format!("Table name not found in query- {original_query}"))
     })?;
-
-    let time_partition = PARSEABLE.get_stream(&stream_name)?.get_time_partition();
+    update_schema_when_distributed(&streams)
+        .await
+        .map_err(|err| {
+            AlertError::CustomError(format!(
+                "Failed to update schema for distributed streams: {err}"
+            ))
+        })?;
+    let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
     query
         .get_dataframe(time_partition.as_ref())
         .await

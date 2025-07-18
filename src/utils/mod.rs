@@ -104,7 +104,7 @@ pub async fn user_auth_for_datasets(
                     break;
                 }
                 Permission::Resource(Action::Query, ParseableResourceType::Stream(stream)) => {
-                    if !PARSEABLE.check_or_load_stream(&stream).await {
+                    if !PARSEABLE.check_or_load_stream(stream).await {
                         return Err(actix_web::error::ErrorUnauthorized(format!(
                             "Stream not found: {stream}"
                         )));
