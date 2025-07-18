@@ -18,6 +18,7 @@
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
+use crate::option::Mode;
 use crate::utils::arrow::record_batches_to_json;
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
@@ -113,6 +114,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
     let tables = resolve_stream_names(&query_request.query)?;
+    update_schema_when_distributed(&tables).await?;
     let query: LogicalQuery =
         into_query(&query_request, &session_state, time_range, &tables).await?;
     let creds = extract_session_key_from_req(&req)?;
@@ -122,7 +124,6 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         .first()
         .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
     user_auth_for_datasets(&permissions, &tables).await?;
-    update_schema_when_distributed(&tables).await?;
     let time = Instant::now();
 
     // if the query is `select count(*) from <dataset>`
@@ -392,12 +393,13 @@ pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), 
     // if the mode is query or prism, we need to update the schema in memory
     // no need to commit schema to storage
     // as the schema is read from memory everytime
-    for table in tables {
-        if let Ok(new_schema) = fetch_schema(table).await {
-            commit_schema(table, Arc::new(new_schema))?;
+    if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
+        for table in tables {
+            if let Ok(new_schema) = fetch_schema(table).await {
+                commit_schema(table, Arc::new(new_schema))?;
+            }
         }
     }
-
     Ok(())
 }
 
