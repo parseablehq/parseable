@@ -106,7 +106,7 @@ pub async fn user_auth_for_datasets(
                 Permission::Resource(Action::Query, ParseableResourceType::Stream(stream)) => {
                     if !PARSEABLE.check_or_load_stream(stream).await {
                         return Err(actix_web::error::ErrorUnauthorized(format!(
-                            "Stream not found: {stream}"
+                            "Stream not found: {table_name}"
                         )));
                     }
                     let is_internal = PARSEABLE.get_stream(table_name).is_ok_and(|stream| {
