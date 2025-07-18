@@ -89,6 +89,7 @@ pub async fn get_records_and_fields(
 
     let query: LogicalQuery =
         into_query(query_request, &session_state, time_range, &tables).await?;
+    update_schema_when_distributed(&tables).await?;
     let creds = extract_session_key_from_req(req)?;
     let permissions = Users.get_permissions(&creds);
 
@@ -96,7 +97,7 @@ pub async fn get_records_and_fields(
         .first()
         .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
     user_auth_for_datasets(&permissions, &tables).await?;
-    update_schema_when_distributed(&tables).await?;
+
     let (records, fields) = execute(query, table_name, false).await?;
 
     let records = match records {
@@ -114,9 +115,10 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
     let tables = resolve_stream_names(&query_request.query)?;
-    update_schema_when_distributed(&tables).await?;
+
     let query: LogicalQuery =
         into_query(&query_request, &session_state, time_range, &tables).await?;
+    update_schema_when_distributed(&tables).await?;
     let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);
 
