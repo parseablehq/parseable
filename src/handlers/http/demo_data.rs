@@ -63,7 +63,7 @@ pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> 
                 // Forward the request to ingestor asynchronously
                 match get_demo_data_from_ingestor(&action).await {
                     Ok(()) => Ok(HttpResponse::Accepted().finish()),
-                    Err(e) => Err(PostError::Invalid(anyhow::anyhow!(e))),
+                    Err(e) => Err(e),
                 }
             }
             _ => Err(PostError::Invalid(anyhow::anyhow!(

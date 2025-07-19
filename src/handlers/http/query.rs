@@ -36,7 +36,7 @@ use http::StatusCode;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
@@ -81,15 +81,14 @@ pub async fn get_records_and_fields(
     query_request: &Query,
     req: &HttpRequest,
 ) -> Result<(Option<Vec<RecordBatch>>, Option<Vec<String>>), QueryError> {
-    let tables = resolve_stream_names(&query_request.query)?;
     let session_state = QUERY_SESSION.state();
-
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
+    let tables = resolve_stream_names(&query_request.query)?;
+    //check or load streams in memory
+    create_streams_for_distributed(tables.clone()).await?;
 
-    let query: LogicalQuery =
-        into_query(query_request, &session_state, time_range, &tables).await?;
-    update_schema_when_distributed(&tables).await?;
+    let query: LogicalQuery = into_query(query_request, &session_state, time_range).await?;
     let creds = extract_session_key_from_req(req)?;
     let permissions = Users.get_permissions(&creds);
 
@@ -115,10 +114,10 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
     let tables = resolve_stream_names(&query_request.query)?;
+    //check or load streams in memory
+    create_streams_for_distributed(tables.clone()).await?;
 
-    let query: LogicalQuery =
-        into_query(&query_request, &session_state, time_range, &tables).await?;
-    update_schema_when_distributed(&tables).await?;
+    let query: LogicalQuery = into_query(&query_request, &session_state, time_range).await?;
     let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);
 
@@ -408,35 +407,12 @@ pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), 
 /// Create streams for querier if they do not exist
 /// get list of streams from memory and storage
 /// create streams for memory from storage if they do not exist
-pub async fn create_streams_for_querier() -> Result<(), QueryError> {
-    let store = PARSEABLE.storage.get_object_store();
-    let querier_streams = PARSEABLE.streams.list();
-
-    let querier_streams_set: HashSet<_> = querier_streams.into_iter().collect();
-    // fetch querier streams which have field list blank
-    // now missing streams should be list of streams which are in storage but not in querier
-    // and also have no fields in the schema
-    // this is to ensure that we do not create streams for querier which already exist in querier
-
-    let missing_streams: Vec<_> = store
-        .list_streams()
-        .await?
-        .into_iter()
-        .filter(|stream_name| {
-            !querier_streams_set.contains(stream_name)
-                || PARSEABLE
-                    .get_stream(stream_name)
-                    .map(|s| s.get_schema().fields().is_empty())
-                    .unwrap_or(false)
-        })
-        .collect();
-
-    if missing_streams.is_empty() {
+pub async fn create_streams_for_distributed(streams: Vec<String>) -> Result<(), QueryError> {
+    if PARSEABLE.options.mode != Mode::Query && PARSEABLE.options.mode != Mode::Prism {
         return Ok(());
     }
-
     let mut join_set = JoinSet::new();
-    for stream_name in missing_streams {
+    for stream_name in streams {
         join_set.spawn(async move {
             let result = PARSEABLE
                 .create_stream_and_schema_from_storage(&stream_name)
@@ -494,7 +470,6 @@ pub async fn into_query(
     query: &Query,
     session_state: &SessionState,
     time_range: TimeRange,
-    tables: &Vec<String>,
 ) -> Result<LogicalQuery, QueryError> {
     if query.query.is_empty() {
         return Err(QueryError::EmptyQuery);
@@ -507,33 +482,7 @@ pub async fn into_query(
     if query.end_time.is_empty() {
         return Err(QueryError::EmptyEndTime);
     }
-    let raw_logical_plan = match session_state.create_logical_plan(&query.query).await {
-        Ok(plan) => plan,
-        Err(_) => {
-            let mut join_set = JoinSet::new();
-            for stream_name in tables {
-                let stream_name = stream_name.clone();
-                join_set.spawn(async move {
-                    let result = PARSEABLE
-                        .create_stream_and_schema_from_storage(&stream_name)
-                        .await;
-
-                    if let Err(e) = &result {
-                        warn!("Failed to create stream '{}': {}", stream_name, e);
-                    }
-
-                    (stream_name, result)
-                });
-            }
-
-            while let Some(result) = join_set.join_next().await {
-                if let Err(join_error) = result {
-                    warn!("Task join error: {}", join_error);
-                }
-            }
-            session_state.create_logical_plan(&query.query).await?
-        }
-    };
+    let raw_logical_plan = session_state.create_logical_plan(&query.query).await?;
 
     Ok(crate::query::Query {
         raw_logical_plan,

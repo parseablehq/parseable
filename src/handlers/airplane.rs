@@ -148,7 +148,7 @@ impl FlightService for AirServiceImpl {
             .to_owned();
 
         // map payload to query
-        let query = into_query(&ticket, &session_state, time_range, &streams)
+        let query = into_query(&ticket, &session_state, time_range)
             .await
             .map_err(|_| Status::internal("Failed to parse query"))?;
 

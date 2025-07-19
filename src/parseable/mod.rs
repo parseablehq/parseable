@@ -42,7 +42,10 @@ use tracing::error;
 use crate::connectors::kafka::config::KafkaConfig;
 use crate::{
     cli::{Cli, Options, StorageOptions},
-    event::format::{LogSource, LogSourceEntry},
+    event::{
+        commit_schema,
+        format::{LogSource, LogSourceEntry},
+    },
     handlers::{
         http::{
             cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME},
@@ -278,7 +281,6 @@ impl Parseable {
         if !streams.contains(stream_name) {
             return Ok(false);
         }
-
         let (stream_metadata_bytes, schema_bytes) = try_join!(
             storage.create_stream_from_ingestor(stream_name),
             storage.create_schema_from_storage(stream_name)
@@ -334,6 +336,9 @@ impl Parseable {
             metadata,
             ingestor_id,
         );
+
+        //commit schema in memory
+        commit_schema(stream_name, schema).map_err(|e| StreamError::Anyhow(e.into()))?;
 
         Ok(true)
     }
