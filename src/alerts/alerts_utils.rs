@@ -424,9 +424,10 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
                                 format!("NOT LIKE '%{escaped_value}' ESCAPE '\\'")
                             }
                             _ => {
-                                let value = match NumberOrString::from_string(value.to_owned()) {
-                                    NumberOrString::Number(val) => format!("{val}"),
-                                    NumberOrString::String(val) => {
+                                let value = match ValueType::from_string(value.to_owned()) {
+                                    ValueType::Number(val) => format!("{val}"),
+                                    ValueType::Boolean(val) => format!("{val}"),
+                                    ValueType::String(val) => {
                                         format!("'{val}'")
                                     }
                                 };
@@ -461,7 +462,7 @@ fn match_alert_operator(expr: &ConditionConfig) -> Expr {
             .replace("'", "\\'")
             .replace('%', "\\%")
             .replace('_', "\\_");
-        let value = NumberOrString::from_string(string_value.clone());
+        let value = ValueType::from_string(string_value.clone());
 
         // for maintaining column case
         let column = format!(r#""{}""#, expr.column);
@@ -525,34 +526,39 @@ fn match_aggregate_operation(agg: &AggregateConfig) -> Expr {
     }
 }
 
-enum NumberOrString {
+enum ValueType {
     Number(f64),
     String(String),
+    Boolean(bool),
 }
 
-impl Literal for NumberOrString {
+impl Literal for ValueType {
     fn lit(&self) -> Expr {
         match self {
-            NumberOrString::Number(expr) => lit(*expr),
-            NumberOrString::String(expr) => lit(expr.clone()),
+            ValueType::Number(expr) => lit(*expr),
+            ValueType::String(expr) => lit(expr.clone()),
+            ValueType::Boolean(expr) => lit(*expr),
         }
     }
 }
-impl NumberOrString {
+impl ValueType {
     fn from_string(value: String) -> Self {
         if let Ok(num) = value.parse::<f64>() {
-            NumberOrString::Number(num)
+            ValueType::Number(num)
+        } else if let Ok(boolean) = value.parse::<bool>() {
+            ValueType::Boolean(boolean)
         } else {
-            NumberOrString::String(value)
+            ValueType::String(value)
         }
     }
 }
 
-impl Display for NumberOrString {
+impl Display for ValueType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            NumberOrString::Number(v) => write!(f, "{v}"),
-            NumberOrString::String(v) => write!(f, "{v}"),
+            ValueType::Number(v) => write!(f, "{v}"),
+            ValueType::String(v) => write!(f, "{v}"),
+            ValueType::Boolean(v) => write!(f, "{v}"),
         }
     }
 }
