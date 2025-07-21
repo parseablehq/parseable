@@ -17,13 +17,13 @@
 *
 */
 
-use std::future::{ready, Ready};
+use std::future::{Ready, ready};
 
 use actix_web::{
-    dev::{forward_ready, Service, ServiceRequest, ServiceResponse, Transform},
+    Error, HttpMessage, Route,
+    dev::{Service, ServiceRequest, ServiceResponse, Transform, forward_ready},
     error::{ErrorBadRequest, ErrorForbidden, ErrorUnauthorized},
     http::header::{self, HeaderName},
-    Error, HttpMessage, Route,
 };
 use futures_util::future::LocalBoxFuture;
 
@@ -163,12 +163,16 @@ where
         let fut = self.service.call(req);
         Box::pin(async move {
             match auth_result? {
-                rbac::Response::UnAuthorized => return Err(
-                    ErrorForbidden("You don't have permission to access this resource. Please contact your administrator for assistance.")
-                ),
-                rbac::Response::ReloadRequired => return Err(
-                    ErrorUnauthorized("Your session has expired or is no longer valid. Please re-authenticate to access this resource.")
-                ),
+                rbac::Response::UnAuthorized => {
+                    return Err(ErrorForbidden(
+                        "You don't have permission to access this resource. Please contact your administrator for assistance.",
+                    ));
+                }
+                rbac::Response::ReloadRequired => {
+                    return Err(ErrorUnauthorized(
+                        "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
+                    ));
+                }
                 _ => {}
             }
 

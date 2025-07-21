@@ -19,7 +19,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, remove_file, write, File, OpenOptions},
+    fs::{self, File, OpenOptions, remove_file, write},
     num::NonZeroU32,
     path::{Path, PathBuf},
     sync::{Arc, Mutex, RwLock},
@@ -34,7 +34,7 @@ use itertools::Itertools;
 use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
-    file::{properties::WriterProperties, FOOTER_SIZE},
+    file::{FOOTER_SIZE, properties::WriterProperties},
     format::SortingColumn,
     schema::types::ColumnPath,
 };
@@ -43,27 +43,27 @@ use tokio::task::JoinSet;
 use tracing::{error, info, trace, warn};
 
 use crate::{
+    LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
     cli::Options,
     event::{
-        format::{LogSource, LogSourceEntry},
         DEFAULT_TIMESTAMP_KEY,
+        format::{LogSource, LogSourceEntry},
     },
     handlers::http::modal::{ingest_server::INGESTOR_META, query_server::QUERIER_META},
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
-    storage::{object_storage::to_bytes, retention::Retention, StreamType},
+    storage::{StreamType, object_storage::to_bytes, retention::Retention},
     utils::time::{Minute, TimeRange},
-    LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
 };
 
 use super::{
+    ARROW_FILE_EXTENSION, LogStream,
     staging::{
+        StagingError,
         reader::{MergedRecordReader, MergedReverseRecordReader},
         writer::{DiskWriter, Writer},
-        StagingError,
     },
-    LogStream, ARROW_FILE_EXTENSION,
 };
 
 const INPROCESS_DIR_PREFIX: &str = "processing_";
@@ -1468,9 +1468,9 @@ mod tests {
         assert!(result.is_some());
         let parquet_path = result.unwrap();
         assert_eq!(
-                parquet_path.file_name().unwrap().to_str().unwrap(),
-                "date=2020-01-21.hour=10.minute=30.key1=value1.key2=value2.ee529ffc8e76.data.random123.parquet"
-            );
+            parquet_path.file_name().unwrap().to_str().unwrap(),
+            "date=2020-01-21.hour=10.minute=30.key1=value1.key2=value2.ee529ffc8e76.data.random123.parquet"
+        );
     }
 
     #[test]

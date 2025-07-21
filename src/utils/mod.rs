@@ -28,9 +28,9 @@ pub mod update;
 use crate::handlers::http::rbac::RBACError;
 use crate::parseable::PARSEABLE;
 use crate::query::resolve_stream_names;
+use crate::rbac::Users;
 use crate::rbac::map::SessionKey;
 use crate::rbac::role::{Action, ParseableResourceType, Permission};
-use crate::rbac::Users;
 use actix::extract_session_key_from_req;
 use actix_web::HttpRequest;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Utc};
@@ -41,8 +41,7 @@ pub const DATASET_STATS_STREAM_NAME: &str = "pstats";
 
 pub fn get_node_id() -> String {
     let now = Utc::now().to_rfc3339();
-    let id = get_hash(&now).to_string().split_at(15).0.to_string();
-    id
+    get_hash(&now).to_string().split_at(15).0.to_string()
 }
 
 pub fn extract_datetime(path: &str) -> Option<NaiveDateTime> {

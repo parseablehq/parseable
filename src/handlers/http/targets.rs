@@ -1,13 +1,13 @@
 use actix_web::{
-    web::{self, Json, Path},
     HttpRequest, Responder,
+    web::{self, Json, Path},
 };
 use itertools::Itertools;
 use ulid::Ulid;
 
 use crate::alerts::{
-    target::{Target, TARGETS},
     AlertError,
+    target::{TARGETS, Target},
 };
 
 // POST /targets

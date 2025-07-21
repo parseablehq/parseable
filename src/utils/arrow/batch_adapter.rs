@@ -16,8 +16,8 @@
  *
  */
 
-use datafusion::arrow::array::new_null_array;
 use datafusion::arrow::array::ArrayRef;
+use datafusion::arrow::array::new_null_array;
 use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::record_batch::RecordBatch;
 

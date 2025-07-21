@@ -21,12 +21,12 @@ use std::{
     fmt::{Debug, Display},
 };
 
-use crate::{about::current, parseable::PARSEABLE, storage::StorageMetadata, HTTP_CLIENT};
+use crate::{HTTP_CLIENT, about::current, parseable::PARSEABLE, storage::StorageMetadata};
 
 use chrono::{DateTime, Utc};
 use once_cell::sync::Lazy;
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tracing::error;
 
 use ulid::Ulid;

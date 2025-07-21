@@ -17,8 +17,8 @@
  */
 use opentelemetry_proto::tonic::metrics::v1::number_data_point::Value as NumberDataPointValue;
 use opentelemetry_proto::tonic::metrics::v1::{
-    exemplar::Value as ExemplarValue, exponential_histogram_data_point::Buckets, metric, Exemplar,
-    ExponentialHistogram, Gauge, Histogram, Metric, MetricsData, NumberDataPoint, Sum, Summary,
+    Exemplar, ExponentialHistogram, Gauge, Histogram, Metric, MetricsData, NumberDataPoint, Sum,
+    Summary, exemplar::Value as ExemplarValue, exponential_histogram_data_point::Buckets, metric,
 };
 use serde_json::{Map, Value};
 

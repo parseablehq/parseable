@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use human_size::{Any, SpecificSize};
-use serde::{de, Deserialize, Deserializer, Serializer};
+use serde::{Deserialize, Deserializer, Serializer, de};
 
 #[derive(Debug, thiserror::Error)]
 enum ParsingError {

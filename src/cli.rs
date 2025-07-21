@@ -26,7 +26,7 @@ use crate::connectors::kafka::config::KafkaConfig;
 
 use crate::{
     oidc::{self, OpenidConfig},
-    option::{validation, Compression, Mode},
+    option::{Compression, Mode, validation},
     storage::{AzureBlobConfig, FSConfig, GcsConfig, S3Config},
 };
 

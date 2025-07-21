@@ -30,12 +30,12 @@ use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
 use datafusion::sql::sqlparser::parser::ParserError;
 use futures::stream::once;
-use futures::{future, Stream, StreamExt};
+use futures::{Stream, StreamExt, future};
 use futures_util::Future;
 use http::StatusCode;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -45,10 +45,10 @@ use tracing::{error, warn};
 
 use crate::event::commit_schema;
 use crate::metrics::QUERY_EXECUTE_TIME;
-use crate::parseable::{StreamNotFound, PARSEABLE};
+use crate::parseable::{PARSEABLE, StreamNotFound};
 use crate::query::error::ExecuteError;
-use crate::query::{execute, CountsRequest, Query as LogicalQuery};
-use crate::query::{resolve_stream_names, QUERY_SESSION};
+use crate::query::{CountsRequest, Query as LogicalQuery, execute};
+use crate::query::{QUERY_SESSION, resolve_stream_names};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
 use crate::storage::ObjectStorageError;
@@ -102,7 +102,7 @@ pub async fn get_records_and_fields(
     let records = match records {
         Either::Left(vec_rb) => vec_rb,
         Either::Right(_) => {
-            return Err(QueryError::CustomError("Reject streaming response".into()))
+            return Err(QueryError::CustomError("Reject streaming response".into()));
         }
     };
 
@@ -221,7 +221,7 @@ async fn handle_non_streaming_query(
         Either::Right(_) => {
             return Err(QueryError::MalformedQuery(
                 "Expected batch results, got stream",
-            ))
+            ));
         }
     };
     let total_time = format!("{:?}", time.elapsed());
@@ -268,7 +268,7 @@ async fn handle_streaming_query(
         Either::Left(_) => {
             return Err(QueryError::MalformedQuery(
                 "Expected stream results, got batch",
-            ))
+            ));
         }
         Either::Right(stream) => stream,
     };

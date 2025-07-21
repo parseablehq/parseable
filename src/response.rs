@@ -19,7 +19,7 @@
 use crate::{handlers::http::query::QueryError, utils::arrow::record_batches_to_json};
 use datafusion::arrow::record_batch::RecordBatch;
 use itertools::Itertools;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tracing::info;
 
 pub struct QueryResponse {

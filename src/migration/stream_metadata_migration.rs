@@ -19,7 +19,7 @@
 
 use std::collections::HashMap;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
     catalog::snapshot::CURRENT_SNAPSHOT_VERSION, handlers::http::cluster::INTERNAL_STREAM_NAME,

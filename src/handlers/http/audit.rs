@@ -29,7 +29,7 @@ use ulid::Ulid;
 use crate::{
     audit::AuditLogBuilder,
     handlers::{KINESIS_COMMON_ATTRIBUTES_KEY, STREAM_NAME_HEADER_KEY},
-    rbac::{map::SessionKey, Users},
+    rbac::{Users, map::SessionKey},
 };
 
 const DROP_HEADERS: [&str; 4] = ["authorization", "cookie", "user-agent", "x-p-stream"];

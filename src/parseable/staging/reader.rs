@@ -18,7 +18,7 @@
  */
 
 use std::{
-    fs::{remove_file, File},
+    fs::{File, remove_file},
     io::{self, BufReader, Read, Seek, SeekFrom},
     path::PathBuf,
     sync::Arc,
@@ -26,7 +26,7 @@ use std::{
 };
 
 use arrow_array::{RecordBatch, TimestampMillisecondArray};
-use arrow_ipc::{reader::StreamReader, root_as_message_unchecked, MessageHeader};
+use arrow_ipc::{MessageHeader, reader::StreamReader, root_as_message_unchecked};
 use arrow_schema::Schema;
 use byteorder::{LittleEndian, ReadBytesExt};
 use itertools::kmerge_by;
@@ -338,23 +338,23 @@ mod tests {
     };
 
     use arrow_array::{
-        cast::AsArray, types::Int64Type, Array, Float64Array, Int32Array, Int64Array, RecordBatch,
-        StringArray,
+        Array, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray, cast::AsArray,
+        types::Int64Type,
     };
     use arrow_ipc::writer::{
-        write_message, DictionaryTracker, IpcDataGenerator, IpcWriteOptions, StreamWriter,
+        DictionaryTracker, IpcDataGenerator, IpcWriteOptions, StreamWriter, write_message,
     };
     use arrow_schema::{DataType, Field, Schema};
     use chrono::Utc;
     use temp_dir::TempDir;
 
     use crate::{
+        OBJECT_STORE_DATA_GRANULARITY,
         parseable::staging::{
             reader::{MergedReverseRecordReader, OffsetReader},
             writer::DiskWriter,
         },
         utils::time::TimeRange,
-        OBJECT_STORE_DATA_GRANULARITY,
     };
 
     use super::get_reverse_reader;

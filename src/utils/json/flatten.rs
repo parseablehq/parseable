@@ -114,26 +114,26 @@ pub fn validate_custom_partition(
         // The field should not be null, empty, an object, an array or contain a `.` in the value
         match field_value {
             Value::Null => {
-                return Err(JsonFlattenError::FieldEmptyOrNull(trimmed_field.to_owned()))
+                return Err(JsonFlattenError::FieldEmptyOrNull(trimmed_field.to_owned()));
             }
             Value::String(s) if s.is_empty() => {
-                return Err(JsonFlattenError::FieldEmptyOrNull(trimmed_field.to_owned()))
+                return Err(JsonFlattenError::FieldEmptyOrNull(trimmed_field.to_owned()));
             }
             Value::Object(_) => {
-                return Err(JsonFlattenError::FieldIsObject(trimmed_field.to_owned()))
+                return Err(JsonFlattenError::FieldIsObject(trimmed_field.to_owned()));
             }
             Value::Array(_) => {
-                return Err(JsonFlattenError::FieldIsArray(trimmed_field.to_owned()))
+                return Err(JsonFlattenError::FieldIsArray(trimmed_field.to_owned()));
             }
             Value::String(s) if s.contains('.') => {
                 return Err(JsonFlattenError::FieldContainsPeriod(
                     trimmed_field.to_owned(),
-                ))
+                ));
             }
             Value::Number(n) if n.is_f64() => {
                 return Err(JsonFlattenError::FieldContainsPeriod(
                     trimmed_field.to_owned(),
-                ))
+                ));
             }
             _ => {}
         }
@@ -360,8 +360,8 @@ pub fn convert_to_array(flattened: Vec<Value>) -> Result<Value, JsonFlattenError
 mod tests {
     use crate::utils::json::flatten::{flatten_array_objects, generic_flattening};
 
-    use super::{flatten, JsonFlattenError};
-    use serde_json::{json, Map, Value};
+    use super::{JsonFlattenError, flatten};
+    use serde_json::{Map, Value, json};
 
     #[test]
     fn flatten_single_key_string() {

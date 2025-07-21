@@ -28,15 +28,15 @@ use tracing::warn;
 
 use crate::{
     event::{
-        format::{json, EventFormat, LogSource},
         FORMAT_KEY, SOURCE_IP_KEY, USER_AGENT_KEY,
+        format::{EventFormat, LogSource, json},
     },
     handlers::{
+        EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY,
         http::{
             ingest::PostError,
-            kinesis::{flatten_kinesis_logs, Message},
+            kinesis::{Message, flatten_kinesis_logs},
         },
-        EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY,
     },
     otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
     parseable::PARSEABLE,
@@ -223,7 +223,7 @@ fn verify_dataset_fields_count(stream_name: &str) -> Result<(), PostError> {
             fields_count,
             dataset_fields_warn_threshold as usize,
             PARSEABLE.options.dataset_fields_allowed_limit
-            );
+        );
     }
     // Check if the fields count exceeds the limit
     // Return an error if the fields count exceeds the limit

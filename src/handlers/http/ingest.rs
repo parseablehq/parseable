@@ -19,7 +19,7 @@
 use std::collections::{HashMap, HashSet};
 
 use actix_web::web::{Json, Path};
-use actix_web::{http::header::ContentType, HttpRequest, HttpResponse};
+use actix_web::{HttpRequest, HttpResponse, http::header::ContentType};
 use arrow_array::RecordBatch;
 use bytes::Bytes;
 use chrono::Utc;
@@ -35,7 +35,7 @@ use crate::option::Mode;
 use crate::otel::logs::OTEL_LOG_KNOWN_FIELD_LIST;
 use crate::otel::metrics::OTEL_METRICS_KNOWN_FIELD_LIST;
 use crate::otel::traces::OTEL_TRACES_KNOWN_FIELD_LIST;
-use crate::parseable::{StreamNotFound, PARSEABLE};
+use crate::parseable::{PARSEABLE, StreamNotFound};
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::{flatten::JsonFlattenError, strict::StrictValue};
@@ -395,7 +395,7 @@ pub async fn post_event(
     let mut json = json.into_inner();
     match &log_source {
         LogSource::OtelLogs | LogSource::OtelMetrics | LogSource::OtelTraces => {
-            return Err(PostError::OtelNotSupported)
+            return Err(PostError::OtelNotSupported);
         }
         LogSource::Custom(src) => {
             KNOWN_SCHEMA_LIST.extract_from_inline_log(
@@ -489,9 +489,13 @@ pub enum PostError {
     MissingTimePartition(String),
     #[error("{0}")]
     KnownFormat(#[from] known_schema::Error),
-    #[error("Ingestion is not allowed to stream {0} as it is already associated with a different OTEL format")]
+    #[error(
+        "Ingestion is not allowed to stream {0} as it is already associated with a different OTEL format"
+    )]
     IncorrectLogFormat(String),
-    #[error("Failed to ingest events in dataset {0}. Total number of fields {1} exceeds the permissible limit of {2}. We recommend creating a new dataset beyond {2} for better query performance.")]
+    #[error(
+        "Failed to ingest events in dataset {0}. Total number of fields {1} exceeds the permissible limit of {2}. We recommend creating a new dataset beyond {2} for better query performance."
+    )]
     FieldsCountLimitExceeded(String, usize, usize),
     #[error("Invalid query parameter")]
     InvalidQueryParameter,
@@ -548,7 +552,7 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use crate::{
-        event::format::{json, EventFormat},
+        event::format::{EventFormat, json},
         metadata::SchemaVersion,
     };
 
@@ -688,9 +692,11 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(json::Event::new(json)
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
-            .is_err());
+        assert!(
+            json::Event::new(json)
+                .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
+                .is_err()
+        );
     }
 
     #[test]
@@ -890,9 +896,11 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(json::Event::new(json)
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
-            .is_err());
+        assert!(
+            json::Event::new(json)
+                .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
+                .is_err()
+        );
     }
 
     #[test]

@@ -162,8 +162,7 @@ impl<const N: usize> MemWriter<N> {
 
 fn concat_records(schema: &Arc<Schema>, record: &[RecordBatch]) -> RecordBatch {
     let records = record.iter().map(|x| adapt_batch(schema, x)).collect_vec();
-    let record = concat_batches(schema, records.iter()).unwrap();
-    record
+    concat_batches(schema, records.iter()).unwrap()
 }
 
 #[derive(Debug, Default)]

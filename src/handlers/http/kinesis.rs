@@ -16,7 +16,7 @@
  *
  */
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::str;
@@ -92,7 +92,8 @@ pub async fn flatten_kinesis_logs(message: Message) -> Result<Vec<Value>, anyhow
                 // This is a fallback to ensure we don't lose data.
                 tracing::warn!(
                     "Kinesis log with requestId {} and timestamp {} has more than the allowed levels of nesting, skipping flattening for this record.",
-                    message.request_id, message.timestamp
+                    message.request_id,
+                    message.timestamp
                 );
                 vec_kinesis_json.push(json);
             }

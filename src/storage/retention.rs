@@ -172,7 +172,7 @@ mod action {
     use crate::catalog::remove_manifest_from_snapshot;
     use crate::parseable::PARSEABLE;
     use chrono::{Days, NaiveDate, Utc};
-    use futures::{stream::FuturesUnordered, StreamExt};
+    use futures::{StreamExt, stream::FuturesUnordered};
     use itertools::Itertools;
     use relative_path::RelativePathBuf;
     use tracing::{error, info};

@@ -18,28 +18,29 @@
 
 pub mod utils;
 
-use futures::{future, stream, StreamExt};
+use futures::{StreamExt, future, stream};
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 
+use actix_web::Responder;
 use actix_web::http::header::{self, HeaderMap};
 use actix_web::web::Path;
-use actix_web::Responder;
 use bytes::Bytes;
 use chrono::Utc;
 use clokwerk::{AsyncScheduler, Interval};
-use http::{header as http_header, StatusCode};
+use http::{StatusCode, header as http_header};
 use itertools::Itertools;
 use relative_path::RelativePathBuf;
 use serde::de::{DeserializeOwned, Error};
 use serde_json::error::Error as SerdeError;
-use serde_json::{to_vec, Value as JsonValue};
+use serde_json::{Value as JsonValue, to_vec};
 use tracing::{error, info, warn};
 use url::Url;
-use utils::{check_liveness, to_url_string, IngestionStats, QueriedStats, StorageStats};
+use utils::{IngestionStats, QueriedStats, StorageStats, check_liveness, to_url_string};
 
+use crate::INTRA_CLUSTER_CLIENT;
 use crate::handlers::http::ingest::ingest_internal_stream;
 use crate::metrics::prom_utils::Metrics;
 use crate::parseable::PARSEABLE;
@@ -50,7 +51,6 @@ use crate::storage::{
     ObjectStorage, ObjectStorageError, ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY,
     STREAM_ROOT_DIRECTORY,
 };
-use crate::INTRA_CLUSTER_CLIENT;
 
 use super::base_path_without_preceding_slash;
 use super::ingest::PostError;

@@ -26,23 +26,23 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::{
+    LOCK_EXPECT,
     handlers::http::{
         cluster::{
             fetch_stats_from_ingestors,
-            utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
+            utils::{IngestionStats, QueriedStats, StorageStats, merge_quried_stats},
         },
         logstream::error::StreamError,
-        query::{update_schema_when_distributed, QueryError},
+        query::{QueryError, update_schema_when_distributed},
     },
     hottier::{HotTierError, HotTierManager, StreamHotTier},
-    parseable::{StreamNotFound, PARSEABLE},
-    query::{error::ExecuteError, CountsRequest, CountsResponse},
-    rbac::{map::SessionKey, role::Action, Users},
+    parseable::{PARSEABLE, StreamNotFound},
+    query::{CountsRequest, CountsResponse, error::ExecuteError},
+    rbac::{Users, map::SessionKey, role::Action},
     stats,
-    storage::{retention::Retention, StreamInfo, StreamType},
+    storage::{StreamInfo, StreamType, retention::Retention},
     utils::time::TimeParseError,
     validator::error::HotTierValidationError,
-    LOCK_EXPECT,
 };
 
 #[derive(Serialize)]

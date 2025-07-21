@@ -16,20 +16,20 @@
  *
  */
 
-use crate::connectors::common::shutdown::Shutdown;
 use crate::connectors::common::ConnectorError;
+use crate::connectors::common::shutdown::Shutdown;
 use crate::connectors::kafka::partition_stream::{PartitionStreamReceiver, PartitionStreamSender};
 use crate::connectors::kafka::state::StreamState;
 use crate::connectors::kafka::{
-    partition_stream, ConsumerRecord, KafkaContext, StreamConsumer, TopicPartition,
+    ConsumerRecord, KafkaContext, StreamConsumer, TopicPartition, partition_stream,
 };
 use futures_util::FutureExt;
+use rdkafka::Statistics;
 use rdkafka::consumer::Consumer;
 use rdkafka::message::BorrowedMessage;
-use rdkafka::Statistics;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{error, info, warn};
 

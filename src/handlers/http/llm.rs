@@ -16,13 +16,13 @@
  *
  */
 
-use actix_web::{http::header::ContentType, web, HttpResponse, Result};
-use http::{header, StatusCode};
+use actix_web::{HttpResponse, Result, http::header::ContentType, web};
+use http::{StatusCode, header};
 use itertools::Itertools;
 use reqwest;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
-use crate::{parseable::StreamNotFound, parseable::PARSEABLE};
+use crate::{parseable::PARSEABLE, parseable::StreamNotFound};
 
 const OPEN_AI_URL: &str = "https://api.openai.com/v1/chat/completions";
 

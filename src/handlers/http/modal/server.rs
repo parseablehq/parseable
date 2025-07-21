@@ -38,11 +38,11 @@ use crate::storage;
 use crate::sync;
 use crate::sync::sync_start;
 
+use actix_web::Resource;
+use actix_web::Scope;
 use actix_web::middleware::from_fn;
 use actix_web::web;
 use actix_web::web::resource;
-use actix_web::Resource;
-use actix_web::Scope;
 use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
@@ -51,19 +51,19 @@ use tokio::sync::oneshot;
 
 use crate::{
     handlers::http::{
-        self, ingest, llm, logstream,
+        self, MAX_EVENT_PAYLOAD_SIZE, ingest, llm, logstream,
         middleware::{DisAllowRootUser, RouteExt},
-        oidc, role, MAX_EVENT_PAYLOAD_SIZE,
+        oidc, role,
     },
     parseable::PARSEABLE,
     rbac::role::Action,
 };
 
 // use super::generate;
-use super::generate;
-use super::load_on_init;
 use super::OpenIdClient;
 use super::ParseableServer;
+use super::generate;
+use super::load_on_init;
 
 pub struct Server;
 

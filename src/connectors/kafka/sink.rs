@@ -17,9 +17,9 @@
  */
 use crate::connectors::common::build_runtime;
 use crate::connectors::common::processor::Processor;
+use crate::connectors::kafka::ConsumerRecord;
 use crate::connectors::kafka::consumer::KafkaStreams;
 use crate::connectors::kafka::processor::StreamWorker;
-use crate::connectors::kafka::ConsumerRecord;
 use anyhow::Result;
 use futures_util::StreamExt;
 use rdkafka::consumer::Consumer;

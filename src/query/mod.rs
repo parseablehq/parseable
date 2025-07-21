@@ -40,7 +40,7 @@ use itertools::Itertools;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::ops::Bound;
 use std::sync::Arc;
 use stream_schema_provider::collect_manifest_files;
@@ -50,12 +50,12 @@ use tokio::runtime::Runtime;
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
 pub use self::stream_schema_provider::PartialTimeFilter;
-use crate::alerts::alerts_utils::get_filter_string;
 use crate::alerts::Conditions;
+use crate::alerts::alerts_utils::get_filter_string;
+use crate::catalog::Snapshot as CatalogSnapshot;
 use crate::catalog::column::{Int64Type, TypedStatistics};
 use crate::catalog::manifest::Manifest;
 use crate::catalog::snapshot::Snapshot;
-use crate::catalog::Snapshot as CatalogSnapshot;
 use crate::event;
 use crate::handlers::http::query::QueryError;
 use crate::option::Mode;
@@ -242,9 +242,11 @@ impl Query {
                 );
                 LogicalPlan::Explain(Explain {
                     verbose: plan.verbose,
-                    stringified_plans: vec![transformed
-                        .data
-                        .to_stringified(PlanType::InitialLogicalPlan)],
+                    stringified_plans: vec![
+                        transformed
+                            .data
+                            .to_stringified(PlanType::InitialLogicalPlan),
+                    ],
                     plan: Arc::new(transformed.data),
                     schema: plan.schema,
                     logical_optimization_succeeded: plan.logical_optimization_succeeded,
@@ -457,20 +459,35 @@ impl CountsRequest {
 
         let date_bin = if dur.num_minutes() <= 60 * 10 {
             // date_bin 1 minute
-            format!("CAST(DATE_BIN('1 minute', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 minute', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 minute' as end_time", self.stream)
+            format!(
+                "CAST(DATE_BIN('1 minute', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 minute', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 minute' as end_time",
+                self.stream
+            )
         } else if dur.num_minutes() > 60 * 10 && dur.num_minutes() < 60 * 240 {
             // date_bin 1 hour
-            format!("CAST(DATE_BIN('1 hour', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 hour', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 hour' as end_time", self.stream)
+            format!(
+                "CAST(DATE_BIN('1 hour', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 hour', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 hour' as end_time",
+                self.stream
+            )
         } else {
             // date_bin 1 day
-            format!("CAST(DATE_BIN('1 day', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 day', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 day' as end_time", self.stream)
+            format!(
+                "CAST(DATE_BIN('1 day', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 day', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 day' as end_time",
+                self.stream
+            )
         };
 
         let query = if let Some(conditions) = &count_conditions.conditions {
             let f = get_filter_string(conditions).map_err(QueryError::CustomError)?;
-            format!("SELECT {date_bin}, COUNT(*) as count FROM \"{}\" WHERE {} GROUP BY end_time,start_time ORDER BY end_time",self.stream,f)
+            format!(
+                "SELECT {date_bin}, COUNT(*) as count FROM \"{}\" WHERE {} GROUP BY end_time,start_time ORDER BY end_time",
+                self.stream, f
+            )
         } else {
-            format!("SELECT {date_bin}, COUNT(*) as count FROM \"{}\" GROUP BY end_time,start_time ORDER BY end_time",self.stream)
+            format!(
+                "SELECT {date_bin}, COUNT(*) as count FROM \"{}\" GROUP BY end_time,start_time ORDER BY end_time",
+                self.stream
+            )
         };
         Ok(query)
     }

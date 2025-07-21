@@ -31,7 +31,7 @@ use arrow_select::concat::concat_batches;
 use datafusion::logical_expr::BinaryExpr;
 use datafusion::prelude::Expr;
 use datafusion::scalar::ScalarValue;
-use futures::{stream, TryStreamExt};
+use futures::{TryStreamExt, stream};
 
 use tonic::{Request, Response, Status};
 

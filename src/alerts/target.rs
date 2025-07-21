@@ -26,11 +26,11 @@ use async_trait::async_trait;
 use base64::Engine;
 use bytes::Bytes;
 use chrono::Utc;
-use http::{header::AUTHORIZATION, HeaderMap, HeaderValue};
+use http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use reqwest::ClientBuilder;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use tracing::{error, trace, warn};
 use ulid::Ulid;
@@ -288,7 +288,9 @@ impl Target {
                         state
                     } else {
                         *state.lock().unwrap() = TimeoutState::default();
-                        warn!("Unable to fetch state for given alert_id- {alert_id}, stopping target notifs");
+                        warn!(
+                            "Unable to fetch state for given alert_id- {alert_id}, stopping target notifs"
+                        );
                         return;
                     };
 
@@ -304,7 +306,9 @@ impl Target {
                             state
                         } else {
                             *state.lock().unwrap() = TimeoutState::default();
-                            warn!("Unable to fetch state for given alert_id- {alert_id}, stopping target notifs");
+                            warn!(
+                                "Unable to fetch state for given alert_id- {alert_id}, stopping target notifs"
+                            );
                             return;
                         };
 

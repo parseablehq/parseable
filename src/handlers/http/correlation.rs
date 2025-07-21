@@ -17,7 +17,7 @@
  */
 
 use actix_web::web::{Json, Path};
-use actix_web::{web, HttpRequest, HttpResponse, Responder};
+use actix_web::{HttpRequest, HttpResponse, Responder, web};
 use anyhow::Error;
 use itertools::Itertools;
 
@@ -25,7 +25,7 @@ use crate::rbac::Users;
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::{get_hash, get_user_from_request, user_auth_for_datasets};
 
-use crate::correlation::{CorrelationConfig, CorrelationError, CORRELATIONS};
+use crate::correlation::{CORRELATIONS, CorrelationConfig, CorrelationError};
 
 pub async fn list(req: HttpRequest) -> Result<impl Responder, CorrelationError> {
     let session_key = extract_session_key_from_req(&req)

@@ -22,27 +22,27 @@ use std::thread;
 use crate::handlers::airplane;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
+use crate::handlers::http::{MAX_EVENT_PAYLOAD_SIZE, logstream};
 use crate::handlers::http::{base_path, prism_base_path, resource_check};
-use crate::handlers::http::{logstream, MAX_EVENT_PAYLOAD_SIZE};
 use crate::handlers::http::{rbac, role};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
 use crate::sync::sync_start;
 use crate::{analytics, migration, storage, sync};
 use actix_web::middleware::from_fn;
-use actix_web::web::{resource, ServiceConfig};
-use actix_web::{web, Scope};
+use actix_web::web::{ServiceConfig, resource};
+use actix_web::{Scope, web};
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use bytes::Bytes;
-use tokio::sync::{oneshot, OnceCell};
+use tokio::sync::{OnceCell, oneshot};
 use tracing::info;
 
-use crate::parseable::PARSEABLE;
 use crate::Server;
+use crate::parseable::PARSEABLE;
 
 use super::query::{querier_ingest, querier_logstream, querier_rbac, querier_role};
-use super::{load_on_init, NodeType, OpenIdClient, ParseableServer, QuerierMetadata};
+use super::{NodeType, OpenIdClient, ParseableServer, QuerierMetadata, load_on_init};
 
 pub struct QueryServer;
 pub static QUERIER_META: OnceCell<Arc<QuerierMetadata>> = OnceCell::const_new();
@@ -91,8 +91,8 @@ impl ParseableServer for QueryServer {
         // parseable can't use local storage for persistence when running a distributed setup
         if PARSEABLE.storage.name() == "drive" {
             return Err(anyhow::anyhow!(
-                 "This instance of the Parseable server has been configured to run in a distributed setup, it doesn't support local storage.",
-             ));
+                "This instance of the Parseable server has been configured to run in a distributed setup, it doesn't support local storage.",
+            ));
         }
 
         let mut parseable_json = PARSEABLE.validate_storage().await?;

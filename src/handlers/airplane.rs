@@ -17,8 +17,8 @@
  */
 
 use arrow_array::RecordBatch;
-use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_flight::PollInfo;
+use arrow_flight::flight_service_server::FlightServiceServer;
 use arrow_schema::ArrowError;
 use serde_json::json;
 use std::net::SocketAddr;
@@ -37,7 +37,7 @@ use crate::handlers::http::query::into_query;
 use crate::handlers::livetail::cross_origin_config;
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::parseable::PARSEABLE;
-use crate::query::{execute, resolve_stream_names, QUERY_SESSION};
+use crate::query::{QUERY_SESSION, execute, resolve_stream_names};
 use crate::utils::arrow::flight::{
     append_temporary_events, get_query_from_ticket, into_flight_data, run_do_get_rpc,
     send_to_ingester,
@@ -45,9 +45,9 @@ use crate::utils::arrow::flight::{
 use crate::utils::time::TimeRange;
 use crate::utils::user_auth_for_datasets;
 use arrow_flight::{
-    flight_service_server::FlightService, Action, ActionType, Criteria, Empty, FlightData,
-    FlightDescriptor, FlightInfo, HandshakeRequest, HandshakeResponse, PutResult, SchemaAsIpc,
-    SchemaResult, Ticket,
+    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
+    HandshakeRequest, HandshakeResponse, PutResult, SchemaAsIpc, SchemaResult, Ticket,
+    flight_service_server::FlightService,
 };
 use arrow_ipc::writer::IpcWriteOptions;
 use futures::stream;
@@ -189,10 +189,10 @@ impl FlightService for AirServiceImpl {
             rbac::Response::UnAuthorized => {
                 return Err(Status::permission_denied(
                     "user is not authorized to access this resource",
-                ))
+                ));
             }
             rbac::Response::ReloadRequired => {
-                return Err(Status::unauthenticated("reload required"))
+                return Err(Status::unauthenticated("reload required"));
             }
         }
 
@@ -214,7 +214,7 @@ impl FlightService for AirServiceImpl {
             actix_web::Either::Right(_) => {
                 return Err(Status::failed_precondition(
                     "Expected batch results, got stream",
-                ))
+                ));
             }
         };
 

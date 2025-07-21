@@ -25,7 +25,7 @@ use itertools::Itertools;
 use modal::{NodeMetadata, NodeType};
 use serde_json::Value;
 
-use crate::{parseable::PARSEABLE, storage::STREAM_ROOT_DIRECTORY, INTRA_CLUSTER_CLIENT};
+use crate::{INTRA_CLUSTER_CLIENT, parseable::PARSEABLE, storage::STREAM_ROOT_DIRECTORY};
 
 use self::query::Query;
 

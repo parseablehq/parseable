@@ -18,7 +18,7 @@
 
 use chrono::DateTime;
 use opentelemetry_proto::tonic::common::v1::{
-    any_value::Value as OtelValue, AnyValue, ArrayValue, KeyValue, KeyValueList,
+    AnyValue, ArrayValue, KeyValue, KeyValueList, any_value::Value as OtelValue,
 };
 use serde_json::{Map, Value};
 

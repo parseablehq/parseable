@@ -17,8 +17,8 @@
  */
 
 use crate::{
-    handlers::http::{base_path_without_preceding_slash, modal::NodeType},
     INTRA_CLUSTER_CLIENT,
+    handlers::http::{base_path_without_preceding_slash, modal::NodeType},
 };
 use actix_web::http::header;
 use chrono::{DateTime, Utc};

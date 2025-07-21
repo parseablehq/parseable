@@ -23,11 +23,11 @@ use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
-use tokio::time::{interval_at, sleep, Duration, Instant};
+use tokio::time::{Duration, Instant, interval_at, sleep};
 use tokio::{select, task};
 use tracing::{error, info, trace, warn};
 
-use crate::alerts::{alerts_utils, AlertTask};
+use crate::alerts::{AlertTask, alerts_utils};
 use crate::parseable::PARSEABLE;
 use crate::storage::object_storage::sync_all_streams;
 use crate::{LOCAL_SYNC_INTERVAL, STORAGE_UPLOAD_INTERVAL};
@@ -311,12 +311,18 @@ pub async fn alert_runtime(mut rx: mpsc::Receiver<AlertTask>) -> Result<(), anyh
                                 retry_counter = 0;
                             }
                             Err(err) => {
-                                warn!("Error while evaluation- {}\nRetrying after sleeping for 1 minute", err);
+                                warn!(
+                                    "Error while evaluation- {}\nRetrying after sleeping for 1 minute",
+                                    err
+                                );
                                 sleep_duration = 1;
                                 retry_counter += 1;
 
                                 if retry_counter > 3 {
-                                    error!("Alert with id {} failed to evaluate after 3 retries with err- {}", id, err);
+                                    error!(
+                                        "Alert with id {} failed to evaluate after 3 retries with err- {}",
+                                        id, err
+                                    );
                                     break;
                                 }
                             }

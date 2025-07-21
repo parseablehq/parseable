@@ -1,6 +1,6 @@
 use serde::{
-    de::{Error as _, Visitor},
     Deserialize, Serialize,
+    de::{Error as _, Visitor},
 };
 
 enum InterimValue {

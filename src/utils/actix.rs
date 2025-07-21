@@ -18,9 +18,9 @@
 */
 
 use actix_web::{
+    Error, FromRequest, HttpRequest,
     dev::ServiceRequest,
     error::{ErrorUnauthorized, ErrorUnprocessableEntity},
-    Error, FromRequest, HttpRequest,
 };
 use actix_web_httpauth::extractors::basic::BasicAuth;
 

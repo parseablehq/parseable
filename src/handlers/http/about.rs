@@ -17,7 +17,7 @@
  */
 
 use actix_web::web::Json;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::{
     about::{self, get_latest_release},

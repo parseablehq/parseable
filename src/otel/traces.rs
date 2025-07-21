@@ -15,12 +15,12 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-use opentelemetry_proto::tonic::trace::v1::span::Event;
-use opentelemetry_proto::tonic::trace::v1::span::Link;
 use opentelemetry_proto::tonic::trace::v1::ScopeSpans;
 use opentelemetry_proto::tonic::trace::v1::Span;
 use opentelemetry_proto::tonic::trace::v1::Status;
 use opentelemetry_proto::tonic::trace::v1::TracesData;
+use opentelemetry_proto::tonic::trace::v1::span::Event;
+use opentelemetry_proto::tonic::trace::v1::span::Link;
 use serde_json::{Map, Value};
 
 use super::otel_utils::convert_epoch_nano_to_timestamp;
