@@ -268,7 +268,7 @@ pub fn extract_session_key(headers: &MetadataMap) -> Result<SessionKey, Box<Stat
 
 fn extract_basic_auth(header: &MetadataMap) -> Option<Credentials> {
     header
-        .get("Authorization")
+        .get("authorization")
         .and_then(|value| value.to_str().ok())
         .and_then(|value| Credentials::from_header(value.to_string()).ok())
 }
