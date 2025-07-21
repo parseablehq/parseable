@@ -18,8 +18,8 @@
 
 use prometheus::core::{Collector, Desc};
 use prometheus::{
-    proto, Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge,
-    IntGaugeVec, Opts,
+    Histogram, HistogramOpts, HistogramVec, IntCounter, IntCounterVec, IntGauge, IntGaugeVec, Opts,
+    proto,
 };
 use rdkafka::Statistics;
 use std::sync::{Arc, RwLock};

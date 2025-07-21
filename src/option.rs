@@ -31,7 +31,9 @@ pub enum Mode {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("Starting Standalone Mode is not permitted when Distributed Mode is enabled. Please restart the server with Distributed Mode enabled.")]
+#[error(
+    "Starting Standalone Mode is not permitted when Distributed Mode is enabled. Please restart the server with Distributed Mode enabled."
+)]
 pub struct StandaloneWithDistributed;
 
 impl Mode {

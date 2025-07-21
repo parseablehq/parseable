@@ -24,10 +24,10 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use futures_util::{stream::BoxStream, Stream, StreamExt};
+use futures_util::{Stream, StreamExt, stream::BoxStream};
 use object_store::{
-    path::Path, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    PutMultipartOpts, PutOptions, PutPayload, PutResult, Result as ObjectStoreResult,
+    GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore, PutMultipartOpts,
+    PutOptions, PutPayload, PutResult, Result as ObjectStoreResult, path::Path,
 };
 
 /* NOTE: Keeping these imports as they would make migration to object_store 0.10.0 easier

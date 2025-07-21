@@ -53,7 +53,7 @@ mod validator;
 use std::time::Duration;
 
 pub use handlers::http::modal::{
-    ingest_server::IngestServer, query_server::QueryServer, server::Server, ParseableServer,
+    ParseableServer, ingest_server::IngestServer, query_server::QueryServer, server::Server,
 };
 use once_cell::sync::Lazy;
 use parseable::PARSEABLE;

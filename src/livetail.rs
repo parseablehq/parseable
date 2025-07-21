@@ -24,7 +24,7 @@ use std::{
 
 use futures_util::Stream;
 use tokio::sync::mpsc::{
-    self, error::TrySendError, Receiver, Sender, UnboundedReceiver, UnboundedSender,
+    self, Receiver, Sender, UnboundedReceiver, UnboundedSender, error::TrySendError,
 };
 
 use arrow_array::RecordBatch;

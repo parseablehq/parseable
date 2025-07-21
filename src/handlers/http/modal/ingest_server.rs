@@ -19,22 +19,22 @@
 use std::sync::Arc;
 use std::thread;
 
+use actix_web::Scope;
 use actix_web::middleware::from_fn;
 use actix_web::web;
-use actix_web::Scope;
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use base64::Engine;
 use bytes::Bytes;
 use relative_path::RelativePathBuf;
 use serde_json::Value;
-use tokio::sync::oneshot;
 use tokio::sync::OnceCell;
+use tokio::sync::oneshot;
 
 use crate::handlers::http::modal::NodeType;
 use crate::sync::sync_start;
 use crate::{
-    analytics,
+    Server, analytics,
     handlers::{
         airplane,
         http::{
@@ -46,14 +46,14 @@ use crate::{
     migration,
     parseable::PARSEABLE,
     rbac::role::Action,
-    storage::{object_storage::parseable_json_path, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY},
-    sync, Server,
+    storage::{ObjectStorageError, PARSEABLE_ROOT_DIRECTORY, object_storage::parseable_json_path},
+    sync,
 };
 
 use super::IngestorMetadata;
 use super::{
-    ingest::{ingestor_logstream, ingestor_rbac, ingestor_role},
     OpenIdClient, ParseableServer,
+    ingest::{ingestor_logstream, ingestor_rbac, ingestor_role},
 };
 
 pub const INGESTOR_EXPECT: &str = "Ingestor Metadata should be set in ingestor mode";
@@ -336,7 +336,9 @@ async fn validate_credentials() -> anyhow::Result<()> {
         let token = format!("Basic {token}");
 
         if check != token {
-            return Err(anyhow::anyhow!("Credentials do not match with other ingestors. Please check your credentials and try again."));
+            return Err(anyhow::anyhow!(
+                "Credentials do not match with other ingestors. Please check your credentials and try again."
+            ));
         }
     }
 

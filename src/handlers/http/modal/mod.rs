@@ -18,11 +18,11 @@
 
 use std::{fmt, path::Path, sync::Arc};
 
-use actix_web::{middleware::from_fn, web::ServiceConfig, App, HttpServer};
+use actix_web::{App, HttpServer, middleware::from_fn, web::ServiceConfig};
 use actix_web_prometheus::PrometheusMetrics;
 use anyhow::Context;
 use async_trait::async_trait;
-use base64::{prelude::BASE64_STANDARD, Engine};
+use base64::{Engine, prelude::BASE64_STANDARD};
 use bytes::Bytes;
 use futures::future;
 use openid::Discovered;
@@ -34,7 +34,7 @@ use tokio::sync::oneshot;
 use tracing::{error, info, warn};
 
 use crate::{
-    alerts::{target::TARGETS, ALERTS},
+    alerts::{ALERTS, target::TARGETS},
     cli::Options,
     correlation::CORRELATIONS,
     oidc::Claims,
@@ -45,7 +45,7 @@ use crate::{
     utils::get_node_id,
 };
 
-use super::{audit, cross_origin_config, health_check, resource_check, API_BASE_PATH, API_VERSION};
+use super::{API_BASE_PATH, API_VERSION, audit, cross_origin_config, health_check, resource_check};
 
 pub mod ingest;
 pub mod ingest_server;

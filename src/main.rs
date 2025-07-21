@@ -20,8 +20,8 @@ use std::process::exit;
 #[cfg(feature = "kafka")]
 use parseable::connectors;
 use parseable::{
-    banner, metrics, option::Mode, parseable::PARSEABLE, rbac, storage, IngestServer,
-    ParseableServer, QueryServer, Server,
+    IngestServer, ParseableServer, QueryServer, Server, banner, metrics, option::Mode,
+    parseable::PARSEABLE, rbac, storage,
 };
 use tokio::signal::ctrl_c;
 use tokio::sync::oneshot;
@@ -29,7 +29,7 @@ use tracing::Level;
 use tracing::{info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{fmt, EnvFilter, Registry};
+use tracing_subscriber::{EnvFilter, Registry, fmt};
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
@@ -40,11 +40,15 @@ async fn main() -> anyhow::Result<()> {
         Mode::Query => Box::new(QueryServer),
         Mode::Ingest => Box::new(IngestServer),
         Mode::Index => {
-            println!("Indexing is an enterprise feature. Check out https://www.parseable.com/pricing to know more!");
+            println!(
+                "Indexing is an enterprise feature. Check out https://www.parseable.com/pricing to know more!"
+            );
             exit(0)
         }
         Mode::Prism => {
-            println!("Prism is an enterprise feature. Check out https://www.parseable.com/pricing to know more!");
+            println!(
+                "Prism is an enterprise feature. Check out https://www.parseable.com/pricing to know more!"
+            );
             exit(0)
         }
         Mode::All => Box::new(Server),
@@ -122,7 +126,7 @@ pub async fn block_until_shutdown_signal() {
 #[cfg(unix)]
 /// Asynchronously blocks until a shutdown signal is received
 pub async fn block_until_shutdown_signal() {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
     let mut sigterm =
         signal(SignalKind::terminate()).expect("Failed to create SIGTERM signal handler");
 

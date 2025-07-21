@@ -20,9 +20,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use once_cell::sync::Lazy;
+use prometheus::IntGaugeVec;
 use prometheus::core::Collector;
 use prometheus::proto::MetricFamily;
-use prometheus::IntGaugeVec;
 use tracing::warn;
 
 use crate::metrics::{

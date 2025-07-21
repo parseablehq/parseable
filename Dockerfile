@@ -14,7 +14,7 @@
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 # build stage
-FROM rust:1.84.0-bookworm AS builder
+FROM rust:1.88.0-bookworm AS builder
 
 LABEL org.opencontainers.image.title="Parseable"
 LABEL maintainer="Parseable Team <hi@parseable.io>"

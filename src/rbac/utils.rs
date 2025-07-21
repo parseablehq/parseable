@@ -22,10 +22,10 @@ use url::Url;
 use crate::{parseable::PARSEABLE, rbac::map::read_user_groups};
 
 use super::{
+    Users, UsersPrism,
     map::roles,
     role::model::DefaultPrivilege,
     user::{User, UserType},
-    Users, UsersPrism,
 };
 
 pub fn to_prism_user(user: &User) -> UsersPrism {

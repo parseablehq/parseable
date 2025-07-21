@@ -19,8 +19,8 @@
 use std::fs;
 
 use actix_web::{
-    web::{Json, Path},
     HttpRequest, Responder,
+    web::{Json, Path},
 };
 use bytes::Bytes;
 use http::StatusCode;
@@ -29,7 +29,7 @@ use tracing::warn;
 use crate::{
     catalog::remove_manifest_from_snapshot,
     handlers::http::logstream::error::StreamError,
-    parseable::{StreamNotFound, PARSEABLE},
+    parseable::{PARSEABLE, StreamNotFound},
     stats,
 };
 

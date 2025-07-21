@@ -27,13 +27,13 @@ use datafusion::{
     error::DataFusionError,
     logical_expr::col,
 };
-use futures_util::{stream::FuturesUnordered, Future, TryStreamExt};
+use futures_util::{Future, TryStreamExt, stream::FuturesUnordered};
 use itertools::Itertools;
-use object_store::{path::Path, ObjectMeta, ObjectStore};
+use object_store::{ObjectMeta, ObjectStore, path::Path};
 
 use crate::{
-    event::DEFAULT_TIMESTAMP_KEY, storage::ObjectStorage, utils::time::TimeRange,
-    OBJECT_STORE_DATA_GRANULARITY,
+    OBJECT_STORE_DATA_GRANULARITY, event::DEFAULT_TIMESTAMP_KEY, storage::ObjectStorage,
+    utils::time::TimeRange,
 };
 
 use super::PartialTimeFilter;
@@ -168,9 +168,11 @@ impl ListingTableBuilder {
             return Ok(None);
         }
 
-        let file_sort_order = vec![vec![time_partition
-            .map_or_else(|| col(DEFAULT_TIMESTAMP_KEY), col)
-            .sort(true, false)]];
+        let file_sort_order = vec![vec![
+            time_partition
+                .map_or_else(|| col(DEFAULT_TIMESTAMP_KEY), col)
+                .sort(true, false),
+        ]];
         let file_format = ParquetFormat::default().with_enable_pruning(true);
         let listing_options = ListingOptions::new(Arc::new(file_format))
             .with_file_extension(".parquet")

@@ -20,6 +20,6 @@ use ulid::Ulid;
 
 pub type Uid = Ulid;
 
-pub fn gen() -> Ulid {
+pub fn generate_ulid() -> Ulid {
     Ulid::new()
 }

@@ -25,7 +25,7 @@ use super::TimeFilter;
 use crate::{
     migration::to_bytes,
     parseable::PARSEABLE,
-    rbac::{map::SessionKey, Users},
+    rbac::{Users, map::SessionKey},
     storage::object_storage::filter_path,
     utils::{get_hash, user_auth_for_datasets, user_auth_for_query},
 };

@@ -25,38 +25,38 @@ use chrono::{DateTime, NaiveDateTime, TimeDelta, Timelike, Utc};
 use datafusion::{
     catalog::{SchemaProvider, Session},
     common::{
+        Constraints, ToDFSchema,
         stats::Precision,
         tree_node::{TreeNode, TreeNodeRecursion},
-        Constraints, ToDFSchema,
     },
     datasource::{
-        file_format::{parquet::ParquetFormat, FileFormat},
+        MemTable, TableProvider,
+        file_format::{FileFormat, parquet::ParquetFormat},
         listing::PartitionedFile,
         physical_plan::FileScanConfig,
-        MemTable, TableProvider,
     },
     error::{DataFusionError, Result as DataFusionResult},
     execution::{context::SessionState, object_store::ObjectStoreUrl},
     logical_expr::{
-        utils::conjunction, BinaryExpr, Operator, TableProviderFilterPushDown, TableType,
+        BinaryExpr, Operator, TableProviderFilterPushDown, TableType, utils::conjunction,
     },
-    physical_expr::{create_physical_expr, expressions::col, LexOrdering, PhysicalSortExpr},
-    physical_plan::{empty::EmptyExec, union::UnionExec, ExecutionPlan, Statistics},
+    physical_expr::{LexOrdering, PhysicalSortExpr, create_physical_expr, expressions::col},
+    physical_plan::{ExecutionPlan, Statistics, empty::EmptyExec, union::UnionExec},
     prelude::Expr,
     scalar::ScalarValue,
 };
-use futures_util::{stream::FuturesOrdered, StreamExt, TryFutureExt, TryStreamExt};
+use futures_util::{StreamExt, TryFutureExt, TryStreamExt, stream::FuturesOrdered};
 use itertools::Itertools;
-use object_store::{path::Path, ObjectStore};
+use object_store::{ObjectStore, path::Path};
 use relative_path::RelativePathBuf;
 use url::Url;
 
 use crate::{
     catalog::{
+        ManifestFile, Snapshot as CatalogSnapshot,
         column::{Column, TypedStatistics},
         manifest::{File, Manifest},
         snapshot::{ManifestItem, Snapshot},
-        ManifestFile, Snapshot as CatalogSnapshot,
     },
     event::DEFAULT_TIMESTAMP_KEY,
     hottier::HotTierManager,
@@ -1016,7 +1016,7 @@ mod tests {
 
     use crate::catalog::snapshot::ManifestItem;
 
-    use super::{extract_timestamp_bound, is_overlapping_query, PartialTimeFilter};
+    use super::{PartialTimeFilter, extract_timestamp_bound, is_overlapping_query};
 
     fn datetime_min(year: i32, month: u32, day: u32) -> DateTime<Utc> {
         NaiveDate::from_ymd_opt(year, month, day)

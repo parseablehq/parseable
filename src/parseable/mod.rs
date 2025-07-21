@@ -29,8 +29,8 @@ use actix_web::http::header::HeaderMap;
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Utc;
-use clap::{error::ErrorKind, Parser};
-use http::{header::CONTENT_TYPE, HeaderName, HeaderValue, StatusCode};
+use clap::{Parser, error::ErrorKind};
+use http::{HeaderName, HeaderValue, StatusCode, header::CONTENT_TYPE};
 use once_cell::sync::Lazy;
 pub use staging::StagingError;
 use streams::StreamRef;
@@ -47,20 +47,20 @@ use crate::{
         format::{LogSource, LogSourceEntry},
     },
     handlers::{
+        STREAM_TYPE_KEY,
         http::{
-            cluster::{sync_streams_with_ingestors, INTERNAL_STREAM_NAME},
+            cluster::{INTERNAL_STREAM_NAME, sync_streams_with_ingestors},
             ingest::PostError,
             logstream::error::{CreateStreamError, StreamError},
             modal::{ingest_server::INGESTOR_META, utils::logstream_utils::PutStreamHeaders},
         },
-        STREAM_TYPE_KEY,
     },
     metadata::{LogStreamMetadata, SchemaVersion},
     option::Mode,
-    static_schema::{convert_static_schema_to_arrow_schema, StaticSchema},
+    static_schema::{StaticSchema, convert_static_schema_to_arrow_schema},
     storage::{
-        object_storage::parseable_json_path, ObjectStorageError, ObjectStorageProvider,
-        ObjectStoreFormat, Owner, Permisssion, StreamType,
+        ObjectStorageError, ObjectStorageProvider, ObjectStoreFormat, Owner, Permisssion,
+        StreamType, object_storage::parseable_json_path,
     },
     validator,
 };
@@ -226,11 +226,19 @@ impl Parseable {
         }
 
         if self.storage.name() == "drive" {
-            return Err(ObjectStorageError::Custom(format!("Could not start the server because directory '{}' contains stale data, please use an empty directory, and restart the server.\n{}", self.storage.get_endpoint(), JOIN_COMMUNITY)));
+            return Err(ObjectStorageError::Custom(format!(
+                "Could not start the server because directory '{}' contains stale data, please use an empty directory, and restart the server.\n{}",
+                self.storage.get_endpoint(),
+                JOIN_COMMUNITY
+            )));
         }
 
         // S3 bucket mode
-        Err(ObjectStorageError::Custom(format!("Could not start the server because bucket '{}' contains stale data, please use an empty bucket and restart the server.\n{}", self.storage.get_endpoint(), JOIN_COMMUNITY)))
+        Err(ObjectStorageError::Custom(format!(
+            "Could not start the server because bucket '{}' contains stale data, please use an empty bucket and restart the server.\n{}",
+            self.storage.get_endpoint(),
+            JOIN_COMMUNITY
+        )))
     }
 
     pub fn storage(&self) -> Arc<dyn ObjectStorageProvider> {
@@ -491,11 +499,11 @@ impl Parseable {
                 .await?;
         if stream_in_memory_dont_update || stream_in_storage_only_for_query_node {
             return Err(StreamError::Custom {
-                 msg: format!(
-                     "Logstream {stream_name} already exists, please create a new log stream with unique name"
-                 ),
-                 status: StatusCode::BAD_REQUEST,
-             });
+                msg: format!(
+                    "Logstream {stream_name} already exists, please create a new log stream with unique name"
+                ),
+                status: StatusCode::BAD_REQUEST,
+            });
         }
 
         if update_stream_flag {
@@ -732,9 +740,11 @@ impl Parseable {
                         .any(|field| field.name() == partition)
                     {
                         return Err(CreateStreamError::Custom {
-                         msg: format!("custom partition field {partition} does not exist in the schema for the stream {stream_name}"),
-                         status: StatusCode::BAD_REQUEST,
-                     });
+                            msg: format!(
+                                "custom partition field {partition} does not exist in the schema for the stream {stream_name}"
+                            ),
+                            status: StatusCode::BAD_REQUEST,
+                        });
                     }
                 }
 
@@ -855,11 +865,11 @@ pub fn validate_static_schema(
 
     if body.is_empty() {
         return Err(CreateStreamError::Custom {
-                 msg: format!(
-                     "Please provide schema in the request body for static schema logstream {stream_name}"
-                 ),
-                 status: StatusCode::BAD_REQUEST,
-             });
+            msg: format!(
+                "Please provide schema in the request body for static schema logstream {stream_name}"
+            ),
+            status: StatusCode::BAD_REQUEST,
+        });
     }
 
     let static_schema: StaticSchema = serde_json::from_slice(body)?;

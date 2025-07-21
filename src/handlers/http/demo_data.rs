@@ -21,7 +21,7 @@ use crate::{
     option::Mode,
     parseable::PARSEABLE,
 };
-use actix_web::{web, HttpRequest, HttpResponse};
+use actix_web::{HttpRequest, HttpResponse, web};
 use std::{collections::HashMap, fs, process::Command};
 
 #[cfg(unix)]

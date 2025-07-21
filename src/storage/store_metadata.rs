@@ -18,7 +18,7 @@
 
 use std::{
     collections::HashMap,
-    fs::{self, create_dir_all, OpenOptions},
+    fs::{self, OpenOptions, create_dir_all},
     path::PathBuf,
 };
 
@@ -57,7 +57,7 @@ pub struct StorageMetadata {
     pub mode: String,
     pub staging: PathBuf,
     pub storage: String,
-    #[serde(default = "crate::utils::uid::gen")]
+    #[serde(default = "crate::utils::uid::generate_ulid")]
     pub deployment_id: uid::Uid,
     pub users: Vec<User>,
     pub user_groups: Vec<UserGroup>,
@@ -76,7 +76,7 @@ impl Default for StorageMetadata {
             mode: PARSEABLE.storage.name().to_owned(),
             staging: PARSEABLE.options.staging_dir().to_path_buf(),
             storage: PARSEABLE.storage.get_endpoint(),
-            deployment_id: uid::gen(),
+            deployment_id: uid::generate_ulid(),
             server_mode: PARSEABLE.options.mode,
             users: Vec::new(),
             user_groups: Vec::new(),

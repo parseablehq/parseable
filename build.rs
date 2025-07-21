@@ -38,7 +38,7 @@ pub fn main() -> Result<()> {
 
 mod ui {
 
-    use std::fs::{self, create_dir_all, OpenOptions};
+    use std::fs::{self, OpenOptions, create_dir_all};
     use std::io::{self, Cursor, Read, Write};
     use std::path::{Path, PathBuf};
     use std::{env, panic};

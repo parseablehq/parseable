@@ -21,7 +21,7 @@
 
 use anyhow::anyhow;
 use arrow_array::RecordBatch;
-use arrow_json::reader::{infer_json_schema_from_iterator, ReaderBuilder};
+use arrow_json::reader::{ReaderBuilder, infer_json_schema_from_iterator};
 use arrow_schema::{DataType, Field, Fields, Schema};
 use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;

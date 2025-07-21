@@ -24,7 +24,7 @@ use std::{collections::HashMap, sync::Mutex};
 
 use super::Response;
 use super::{
-    role::{model::DefaultPrivilege, Action, Permission, RoleBuilder},
+    role::{Action, Permission, RoleBuilder, model::DefaultPrivilege},
     user,
 };
 use chrono::{DateTime, Utc};

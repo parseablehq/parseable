@@ -25,7 +25,7 @@ use std::{
 
 use crate::{
     handlers::http::users::USERS_ROOT_DIR,
-    metrics::storage::{gcs::REQUEST_RESPONSE_TIME, StorageMetrics},
+    metrics::storage::{StorageMetrics, gcs::REQUEST_RESPONSE_TIME},
     parseable::LogStream,
 };
 use async_trait::async_trait;
@@ -37,23 +37,23 @@ use datafusion::{
         runtime_env::RuntimeEnvBuilder,
     },
 };
-use futures::{stream::FuturesUnordered, StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt, stream::FuturesUnordered};
 use object_store::{
+    BackoffConfig, ClientOptions, ObjectMeta, ObjectStore, PutPayload, RetryConfig,
     buffered::BufReader,
     gcp::{GoogleCloudStorage, GoogleCloudStorageBuilder},
     limit::LimitStore,
     path::Path as StorePath,
-    BackoffConfig, ClientOptions, ObjectMeta, ObjectStore, PutPayload, RetryConfig,
 };
 use relative_path::{RelativePath, RelativePathBuf};
 use tokio::{fs::OpenOptions, io::AsyncReadExt};
 use tracing::{error, info};
 
 use super::{
-    metrics_layer::MetricLayer, object_storage::parseable_json_path, to_object_store_path,
-    ObjectStorage, ObjectStorageError, ObjectStorageProvider, CONNECT_TIMEOUT_SECS,
-    MIN_MULTIPART_UPLOAD_SIZE, PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, SCHEMA_FILE_NAME,
-    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    CONNECT_TIMEOUT_SECS, MIN_MULTIPART_UPLOAD_SIZE, ObjectStorage, ObjectStorageError,
+    ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, SCHEMA_FILE_NAME,
+    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY, metrics_layer::MetricLayer,
+    object_storage::parseable_json_path, to_object_store_path,
 };
 
 #[derive(Debug, Clone, clap::Args)]

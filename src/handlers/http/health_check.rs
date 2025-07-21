@@ -19,12 +19,12 @@
 use std::sync::Arc;
 
 use actix_web::{
+    HttpResponse,
     body::MessageBody,
     dev::{ServiceRequest, ServiceResponse},
     error::Error,
     error::ErrorServiceUnavailable,
     middleware::Next,
-    HttpResponse,
 };
 use http::StatusCode;
 use once_cell::sync::Lazy;

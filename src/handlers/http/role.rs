@@ -19,16 +19,16 @@
 use std::collections::HashSet;
 
 use actix_web::{
+    HttpResponse, Responder,
     http::header::ContentType,
     web::{self, Json},
-    HttpResponse, Responder,
 };
 use http::StatusCode;
 
 use crate::{
     parseable::PARSEABLE,
     rbac::{
-        map::{mut_roles, mut_sessions, read_user_groups, users, DEFAULT_ROLE},
+        map::{DEFAULT_ROLE, mut_roles, mut_sessions, read_user_groups, users},
         role::model::DefaultPrivilege,
     },
     storage::{self, ObjectStorageError, StorageMetadata},

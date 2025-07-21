@@ -8,12 +8,13 @@ use relative_path::RelativePathBuf;
 use crate::query::stream_schema_provider::extract_primary_filter;
 use crate::{
     catalog::{
+        Snapshot,
         manifest::{File, Manifest},
-        snapshot, Snapshot,
+        snapshot,
     },
     event,
     parseable::PARSEABLE,
-    query::{stream_schema_provider::ManifestExt, PartialTimeFilter},
+    query::{PartialTimeFilter, stream_schema_provider::ManifestExt},
     storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
     utils::time::TimeRange,
 };

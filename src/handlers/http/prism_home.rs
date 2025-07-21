@@ -18,10 +18,10 @@
 
 use std::collections::HashMap;
 
-use actix_web::{web, HttpRequest, Responder};
+use actix_web::{HttpRequest, Responder, web};
 
 use crate::{
-    prism::home::{generate_home_response, generate_home_search_response, PrismHomeError},
+    prism::home::{PrismHomeError, generate_home_response, generate_home_search_response},
     utils::actix::extract_session_key_from_req,
 };
 

@@ -16,7 +16,7 @@
  *
  */
 
-use std::sync::{atomic::AtomicBool, Arc, LazyLock};
+use std::sync::{Arc, LazyLock, atomic::AtomicBool};
 
 use actix_web::{
     body::MessageBody,
@@ -27,11 +27,11 @@ use actix_web::{
 };
 use tokio::{
     select,
-    time::{interval, Duration},
+    time::{Duration, interval},
 };
 use tracing::{info, trace, warn};
 
-use crate::analytics::{refresh_sys_info, SYS_INFO};
+use crate::analytics::{SYS_INFO, refresh_sys_info};
 use crate::parseable::PARSEABLE;
 
 static RESOURCE_CHECK_ENABLED: LazyLock<Arc<AtomicBool>> =

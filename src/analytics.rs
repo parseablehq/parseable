@@ -16,7 +16,7 @@
  *
  *
  */
-use actix_web::{web, HttpRequest, Responder};
+use actix_web::{HttpRequest, Responder, web};
 use chrono::{DateTime, Utc};
 use clokwerk::{AsyncScheduler, Interval};
 use http::header;
@@ -31,19 +31,20 @@ use tracing::{error, info};
 use ulid::Ulid;
 
 use crate::{
+    HTTP_CLIENT, INTRA_CLUSTER_CLIENT,
     about::{current, platform},
     handlers::{
+        STREAM_NAME_HEADER_KEY,
         http::{
             base_path_without_preceding_slash,
             cluster::{self, utils::check_liveness},
             modal::{NodeMetadata, NodeType},
         },
-        STREAM_NAME_HEADER_KEY,
     },
     option::Mode,
     parseable::PARSEABLE,
     stats::{self, Stats},
-    storage, HTTP_CLIENT, INTRA_CLUSTER_CLIENT,
+    storage,
 };
 
 const ANALYTICS_SERVER_URL: &str = "https://analytics.parseable.io:80";
@@ -239,8 +240,8 @@ fn total_event_stats() -> (Stats, Stats, Stats) {
     )
 }
 
-async fn fetch_ingestors_metrics(
-) -> anyhow::Result<(u64, u64, usize, u64, u64, u64, u64, u64, u64, u64, u64, u64)> {
+async fn fetch_ingestors_metrics()
+-> anyhow::Result<(u64, u64, usize, u64, u64, u64, u64, u64, u64, u64, u64, u64)> {
     let event_stats = total_event_stats();
     let mut node_metrics = NodeMetrics::new(
         total_streams(),

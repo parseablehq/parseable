@@ -28,14 +28,14 @@ use tracing::{debug, error};
 use crate::{
     connectors::common::processor::Processor,
     event::{
-        format::{json, EventFormat, LogSourceEntry},
         Event as ParseableEvent, USER_AGENT_KEY,
+        format::{EventFormat, LogSourceEntry, json},
     },
     parseable::PARSEABLE,
     storage::StreamType,
 };
 
-use super::{config::BufferConfig, ConsumerRecord, StreamConsumer, TopicPartition};
+use super::{ConsumerRecord, StreamConsumer, TopicPartition, config::BufferConfig};
 
 #[derive(Default, Debug, Clone)]
 pub struct ParseableSinkProcessor;

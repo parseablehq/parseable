@@ -20,29 +20,29 @@ use self::error::StreamError;
 use super::cluster::utils::{IngestionStats, QueriedStats, StorageStats};
 use super::query::update_schema_when_distributed;
 use crate::event::format::override_data_type;
-use crate::hottier::{HotTierManager, StreamHotTier, CURRENT_HOT_TIER_VERSION};
+use crate::hottier::{CURRENT_HOT_TIER_VERSION, HotTierManager, StreamHotTier};
 use crate::metadata::SchemaVersion;
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
-use crate::parseable::{StreamNotFound, PARSEABLE};
-use crate::rbac::role::Action;
+use crate::parseable::{PARSEABLE, StreamNotFound};
 use crate::rbac::Users;
-use crate::stats::{event_labels_date, storage_size_labels_date, Stats};
+use crate::rbac::role::Action;
+use crate::stats::{Stats, event_labels_date, storage_size_labels_date};
 use crate::storage::retention::Retention;
 use crate::storage::{StreamInfo, StreamType};
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::json::flatten::{
     self, convert_to_array, generic_flattening, has_more_than_max_allowed_levels,
 };
-use crate::{stats, validator, LOCK_EXPECT};
+use crate::{LOCK_EXPECT, stats, validator};
 
 use actix_web::http::StatusCode;
 use actix_web::web::{Json, Path};
-use actix_web::{web, HttpRequest, Responder};
+use actix_web::{HttpRequest, Responder, web};
 use arrow_json::reader::infer_json_schema_from_iterator;
 use bytes::Bytes;
 use chrono::Utc;
 use itertools::Itertools;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::fs;
 use std::sync::Arc;
 use tracing::warn;
@@ -115,14 +115,14 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
                     return Err(StreamError::Custom {
                         msg: format!("Failed to convert to array: {e}"),
                         status: StatusCode::BAD_REQUEST,
-                    })
+                    });
                 }
             },
             Err(e) => {
                 return Err(StreamError::Custom {
                     msg: e.to_string(),
                     status: StatusCode::BAD_REQUEST,
-                })
+                });
             }
         };
         if let Err(err) = flatten::flatten(&mut flattened_json, "_", None, None, None, false) {
@@ -142,7 +142,7 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
                 return Err(StreamError::Custom {
                     msg: format!("Failed to infer schema: {e}"),
                     status: StatusCode::BAD_REQUEST,
-                })
+                });
             }
         };
         for flattened_json in flattened_json_arr {
@@ -541,7 +541,9 @@ pub mod error {
         },
         #[error("Alert validation failed due to {0}")]
         AlertValidation(#[from] AlertValidationError),
-        #[error("alert - \"{0}\" is invalid, please check if alert is valid according to this stream's schema and try again")]
+        #[error(
+            "alert - \"{0}\" is invalid, please check if alert is valid according to this stream's schema and try again"
+        )]
         InvalidAlert(String),
         #[error(
             "alert - \"{0}\" is invalid, column \"{1}\" does not exist in this stream's schema"

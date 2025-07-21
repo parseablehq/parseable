@@ -31,13 +31,13 @@ use serde_json::Value;
 use tracing::warn;
 
 use crate::{
-    metadata::{load_daily_metrics, update_data_type_time_partition, LogStreamMetadata},
+    metadata::{LogStreamMetadata, load_daily_metrics, update_data_type_time_partition},
     metrics::fetch_stats_from_storage,
     option::Mode,
-    parseable::{Parseable, PARSEABLE},
+    parseable::{PARSEABLE, Parseable},
     storage::{
-        object_storage::{parseable_json_path, schema_path, stream_json_path},
         ObjectStorage, ObjectStoreFormat, PARSEABLE_METADATA_FILE_NAME,
+        object_storage::{parseable_json_path, schema_path, stream_json_path},
     },
 };
 

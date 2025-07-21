@@ -16,12 +16,12 @@
  *
  */
 
+use crate::INTRA_CLUSTER_CLIENT;
 use crate::handlers::http::base_path_without_preceding_slash;
 use crate::handlers::http::ingest::PostError;
 use crate::handlers::http::modal::Metadata;
 use crate::option::Mode;
 use crate::parseable::PARSEABLE;
-use crate::INTRA_CLUSTER_CLIENT;
 use actix_web::http::header;
 use chrono::NaiveDateTime;
 use chrono::Utc;

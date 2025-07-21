@@ -33,9 +33,9 @@ use crate::{
 };
 use chrono::NaiveDate;
 use clokwerk::{AsyncScheduler, Interval, Job};
-use futures::{stream::FuturesUnordered, StreamExt, TryStreamExt};
+use futures::{StreamExt, TryStreamExt, stream::FuturesUnordered};
 use futures_util::TryFutureExt;
-use object_store::{local::LocalFileSystem, ObjectStore};
+use object_store::{ObjectStore, local::LocalFileSystem};
 use once_cell::sync::OnceCell;
 use parquet::errors::ParquetError;
 use relative_path::RelativePathBuf;
@@ -123,11 +123,13 @@ impl HotTierManager {
             existing_hot_tier_used_size = existing_hot_tier.used_size;
 
             if stream_hot_tier_size < existing_hot_tier_used_size {
-                return Err(HotTierError::ObjectStorageError(ObjectStorageError::Custom(format!(
-                    "Reducing hot tier size is not supported, failed to reduce the hot tier size from {} to {}",
-                    bytes_to_human_size(existing_hot_tier_used_size),
-                    bytes_to_human_size(stream_hot_tier_size)
-                ))));
+                return Err(HotTierError::ObjectStorageError(
+                    ObjectStorageError::Custom(format!(
+                        "Reducing hot tier size is not supported, failed to reduce the hot tier size from {} to {}",
+                        bytes_to_human_size(existing_hot_tier_used_size),
+                        bytes_to_human_size(stream_hot_tier_size)
+                    )),
+                ));
             }
         }
 
@@ -149,8 +151,14 @@ impl HotTierManager {
                 - existing_hot_tier_used_size as f64);
 
         if stream_hot_tier_size as f64 > max_allowed_hot_tier_size {
-            error!("disk_threshold: {}, used_disk_space: {}, total_hot_tier_used_size: {}, existing_hot_tier_used_size: {}, total_hot_tier_size: {}",
-                    bytes_to_human_size(disk_threshold as u64), bytes_to_human_size(used_space), bytes_to_human_size(total_hot_tier_used_size), bytes_to_human_size(existing_hot_tier_used_size), bytes_to_human_size(total_hot_tier_size));
+            error!(
+                "disk_threshold: {}, used_disk_space: {}, total_hot_tier_used_size: {}, existing_hot_tier_used_size: {}, total_hot_tier_size: {}",
+                bytes_to_human_size(disk_threshold as u64),
+                bytes_to_human_size(used_space),
+                bytes_to_human_size(total_hot_tier_used_size),
+                bytes_to_human_size(existing_hot_tier_used_size),
+                bytes_to_human_size(total_hot_tier_size)
+            );
 
             return Err(HotTierError::ObjectStorageError(
                 ObjectStorageError::Custom(format!(

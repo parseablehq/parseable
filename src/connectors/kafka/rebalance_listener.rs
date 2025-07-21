@@ -17,8 +17,8 @@
  */
 
 use crate::connectors::common::shutdown::Shutdown;
-use crate::connectors::kafka::state::StreamState;
 use crate::connectors::kafka::RebalanceEvent;
+use crate::connectors::kafka::state::StreamState;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::{runtime::Handle, sync::mpsc::Receiver};

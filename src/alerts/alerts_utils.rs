@@ -27,7 +27,7 @@ use datafusion::{
         sum::sum,
     },
     logical_expr::{BinaryExpr, Literal, Operator},
-    prelude::{col, lit, DataFrame, Expr},
+    prelude::{DataFrame, Expr, col, lit},
 };
 use tracing::trace;
 
@@ -35,13 +35,13 @@ use crate::{
     alerts::LogicalOperator,
     handlers::http::query::{create_streams_for_distributed, update_schema_when_distributed},
     parseable::PARSEABLE,
-    query::{resolve_stream_names, QUERY_SESSION},
+    query::{QUERY_SESSION, resolve_stream_names},
     utils::time::TimeRange,
 };
 
 use super::{
-    AggregateConfig, AggregateFunction, AggregateResult, Aggregates, AlertConfig, AlertError,
-    AlertOperator, AlertState, ConditionConfig, Conditions, WhereConfigOperator, ALERTS,
+    ALERTS, AggregateConfig, AggregateFunction, AggregateResult, Aggregates, AlertConfig,
+    AlertError, AlertOperator, AlertState, ConditionConfig, Conditions, WhereConfigOperator,
 };
 
 /// accept the alert
@@ -473,9 +473,7 @@ fn match_alert_operator(expr: &ConditionConfig) -> Expr {
             WhereConfigOperator::LessThanOrEqual => col(column).lt_eq(lit(value)),
             WhereConfigOperator::GreaterThanOrEqual => col(column).gt_eq(lit(value)),
             WhereConfigOperator::ILike => col(column).ilike(lit(string_value)),
-            WhereConfigOperator::Contains => {
-                col(column).like(lit(format!("%{string_value}%")))
-            },
+            WhereConfigOperator::Contains => col(column).like(lit(format!("%{string_value}%"))),
             WhereConfigOperator::BeginsWith => Expr::BinaryExpr(BinaryExpr::new(
                 Box::new(col(column)),
                 Operator::RegexIMatch,
@@ -497,7 +495,9 @@ fn match_alert_operator(expr: &ConditionConfig) -> Expr {
                 Operator::RegexNotIMatch,
                 Box::new(lit(format!("{string_value}$"))),
             )),
-            _ => unreachable!("value must not be null for operators other than `is null` and `is not null`. Should've been caught in validation")
+            _ => unreachable!(
+                "value must not be null for operators other than `is null` and `is not null`. Should've been caught in validation"
+            ),
         }
     } else {
         // for maintaining column case
@@ -505,7 +505,9 @@ fn match_alert_operator(expr: &ConditionConfig) -> Expr {
         match expr.operator {
             WhereConfigOperator::IsNull => col(column).is_null(),
             WhereConfigOperator::IsNotNull => col(column).is_not_null(),
-            _ => unreachable!("value must be null for `is null` and `is not null`. Should've been caught in validation")
+            _ => unreachable!(
+                "value must be null for `is null` and `is not null`. Should've been caught in validation"
+            ),
         }
     }
 }

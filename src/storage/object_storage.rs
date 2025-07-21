@@ -22,8 +22,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
-use object_store::buffered::BufReader;
 use object_store::ObjectMeta;
+use object_store::buffered::BufReader;
 use once_cell::sync::OnceCell;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
@@ -31,7 +31,7 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
-use std::fs::{remove_file, File};
+use std::fs::{File, remove_file};
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::Arc;
@@ -43,8 +43,8 @@ use tracing::info;
 use tracing::{error, warn};
 use ulid::Ulid;
 
-use crate::alerts::target::Target;
 use crate::alerts::AlertConfig;
+use crate::alerts::target::Target;
 use crate::catalog::{self, manifest::Manifest, snapshot::Snapshot};
 use crate::correlation::{CorrelationConfig, CorrelationError};
 use crate::event::format::LogSource;
@@ -60,15 +60,15 @@ use crate::option::Mode;
 use crate::parseable::LogStream;
 use crate::parseable::PARSEABLE;
 use crate::stats::FullStats;
-use crate::storage::field_stats::calculate_field_stats;
 use crate::storage::SETTINGS_ROOT_DIRECTORY;
 use crate::storage::TARGETS_ROOT_DIRECTORY;
+use crate::storage::field_stats::calculate_field_stats;
 use crate::utils::DATASET_STATS_STREAM_NAME;
 
 use super::{
-    retention::Retention, ObjectStorageError, ObjectStoreFormat, StorageMetadata,
-    ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY,
-    SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, ObjectStorageError, ObjectStoreFormat,
+    PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
+    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY, StorageMetadata, retention::Retention,
 };
 
 pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync {

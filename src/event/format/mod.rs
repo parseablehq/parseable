@@ -23,7 +23,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::{anyhow, Error as AnyError};
+use anyhow::{Error as AnyError, anyhow};
 use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::{DateTime, Utc};
@@ -36,7 +36,7 @@ use crate::{
     utils::arrow::{add_parseable_fields, get_field},
 };
 
-use super::{Event, DEFAULT_TIMESTAMP_KEY};
+use super::{DEFAULT_TIMESTAMP_KEY, Event};
 
 pub mod json;
 pub mod known_schema;

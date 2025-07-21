@@ -18,15 +18,15 @@
 
 use std::collections::HashSet;
 
-use actix_web::{web, Responder};
+use actix_web::{Responder, web};
 use tokio::sync::Mutex;
 
 use crate::{
     handlers::http::{modal::utils::rbac_utils::get_metadata, rbac::RBACError},
     rbac::{
+        Users,
         map::roles,
         user::{self, User as ParseableUser},
-        Users,
     },
     storage,
 };

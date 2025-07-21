@@ -25,13 +25,13 @@ use crate::{
     utils::{actix::extract_session_key_from_req, user_auth_for_query},
 };
 use actix_web::{
-    web::{self, Json, Path},
     HttpRequest, Responder,
+    web::{self, Json, Path},
 };
 use bytes::Bytes;
 use ulid::Ulid;
 
-use crate::alerts::{AlertConfig, AlertError, AlertRequest, AlertState, ALERTS};
+use crate::alerts::{ALERTS, AlertConfig, AlertError, AlertRequest, AlertState};
 
 // GET /alerts
 /// User needs at least a read access to the stream(s) that is being referenced in an alert

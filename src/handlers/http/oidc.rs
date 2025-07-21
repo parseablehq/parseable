@@ -19,10 +19,10 @@
 use std::{collections::HashSet, sync::Arc};
 
 use actix_web::{
-    cookie::{time, Cookie, SameSite},
+    HttpRequest, HttpResponse,
+    cookie::{Cookie, SameSite, time},
     http::header::{self, ContentType},
     web::{self, Data},
-    HttpRequest, HttpResponse,
 };
 use http::StatusCode;
 use openid::{Options, Token, Userinfo};
@@ -36,10 +36,9 @@ use crate::{
     oidc::{Claims, DiscoveredClient},
     parseable::PARSEABLE,
     rbac::{
-        self,
-        map::{SessionKey, DEFAULT_ROLE},
+        self, Users,
+        map::{DEFAULT_ROLE, SessionKey},
         user::{self, User, UserType},
-        Users,
     },
     storage::{self, ObjectStorageError, StorageMetadata},
     utils::actix::extract_session_key_from_req,
@@ -82,7 +81,7 @@ pub async fn login(
                 query,
                 client,
                 PARSEABLE.options.scope.to_string().as_str(),
-            ))
+            ));
         }
         (Some(session_key), client) => (session_key, client),
     };
@@ -90,7 +89,7 @@ pub async fn login(
     match Users.authorize(session_key.clone(), rbac::role::Action::Login, None, None) {
         rbac::Response::Authorized => (),
         rbac::Response::UnAuthorized | rbac::Response::ReloadRequired => {
-            return Err(OIDCError::Unauthorized)
+            return Err(OIDCError::Unauthorized);
         }
     }
     match session_key {
@@ -280,21 +279,19 @@ fn redirect_no_oauth_setup(mut url: Url) -> HttpResponse {
 }
 
 pub fn cookie_session(id: Ulid) -> Cookie<'static> {
-    let authorization_cookie = Cookie::build(SESSION_COOKIE_NAME, id.to_string())
+    Cookie::build(SESSION_COOKIE_NAME, id.to_string())
         .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
         .same_site(SameSite::Strict)
         .path("/")
-        .finish();
-    authorization_cookie
+        .finish()
 }
 
 pub fn cookie_username(username: &str) -> Cookie<'static> {
-    let authorization_cookie = Cookie::build(USER_COOKIE_NAME, username.to_string())
+    Cookie::build(USER_COOKIE_NAME, username.to_string())
         .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
         .same_site(SameSite::Strict)
         .path("/")
-        .finish();
-    authorization_cookie
+        .finish()
 }
 
 pub async fn request_token(

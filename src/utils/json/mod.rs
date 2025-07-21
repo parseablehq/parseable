@@ -240,16 +240,18 @@ mod tests {
     fn non_object_arr_is_err() {
         let json = json!([1]);
 
-        assert!(flatten_json_body(
-            json,
-            None,
-            None,
-            None,
-            SchemaVersion::V0,
-            false,
-            &crate::event::format::LogSource::default()
+        assert!(
+            flatten_json_body(
+                json,
+                None,
+                None,
+                None,
+                SchemaVersion::V0,
+                false,
+                &crate::event::format::LogSource::default()
+            )
+            .is_err()
         )
-        .is_err())
     }
 
     #[test]

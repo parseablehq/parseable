@@ -29,8 +29,8 @@ use crate::metrics::{
     EVENTS_INGESTED, EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
     EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
 };
-use crate::storage::retention::Retention;
 use crate::storage::StreamType;
+use crate::storage::retention::Retention;
 
 pub fn update_stats(
     stream_name: &str,

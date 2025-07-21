@@ -19,8 +19,8 @@
 use std::net::SocketAddr;
 
 use arrow_array::RecordBatch;
-use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::PollInfo;
+use arrow_flight::encode::FlightDataEncoderBuilder;
 use cookie::Cookie;
 use futures::stream::BoxStream;
 use futures_util::{Future, StreamExt, TryFutureExt, TryStreamExt};
@@ -31,15 +31,15 @@ use tonic::transport::{Identity, Server, ServerTlsConfig};
 use tonic::{Request, Response, Status, Streaming};
 
 use arrow_flight::{
-    flight_service_server::FlightService, flight_service_server::FlightServiceServer, Action,
-    ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo, HandshakeRequest,
-    HandshakeResponse, PutResult, SchemaResult, Ticket,
+    Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
+    HandshakeRequest, HandshakeResponse, PutResult, SchemaResult, Ticket,
+    flight_service_server::FlightService, flight_service_server::FlightServiceServer,
 };
 use tonic_web::GrpcWebLayer;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 
-use crate::livetail::{Message, LIVETAIL};
+use crate::livetail::{LIVETAIL, Message};
 use crate::parseable::PARSEABLE;
 use crate::rbac::map::SessionKey;
 use crate::rbac::{self, Users};
@@ -108,10 +108,10 @@ impl FlightService for FlightServiceImpl {
             rbac::Response::UnAuthorized => {
                 return Err(Status::permission_denied(
                     "user is not authenticated to access this resource",
-                ))
+                ));
             }
             rbac::Response::ReloadRequired => {
-                return Err(Status::unauthenticated("reload required"))
+                return Err(Status::unauthenticated("reload required"));
             }
         }
 
@@ -267,11 +267,10 @@ pub fn extract_session_key(headers: &MetadataMap) -> Result<SessionKey, Box<Stat
 }
 
 fn extract_basic_auth(header: &MetadataMap) -> Option<Credentials> {
-    let creds = header
-        .get("Authorization")
+    header
+        .get("authorization")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| Credentials::from_header(value.to_string()).ok());
-    creds
+        .and_then(|value| Credentials::from_header(value.to_string()).ok())
 }
 
 fn extract_cookie(header: &MetadataMap) -> Option<Cookie> {

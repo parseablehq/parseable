@@ -18,7 +18,7 @@
 
 use crate::connectors::kafka::{ConsumerRecord, TopicPartition};
 use std::sync::Arc;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{Notify, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{error, info};
 

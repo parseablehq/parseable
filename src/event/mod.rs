@@ -26,10 +26,10 @@ use std::sync::Arc;
 
 use self::error::EventError;
 use crate::{
-    metadata::update_stats,
-    parseable::{StagingError, PARSEABLE},
-    storage::StreamType,
     LOCK_EXPECT,
+    metadata::update_stats,
+    parseable::{PARSEABLE, StagingError},
+    storage::StreamType,
 };
 use chrono::NaiveDateTime;
 use std::collections::HashMap;

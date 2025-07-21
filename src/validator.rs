@@ -43,10 +43,10 @@ pub fn stream_name(
             ' ' => {
                 return Err(StreamNameValidationError::NameWhiteSpace(
                     stream_name.to_owned(),
-                ))
+                ));
             }
             c if !c.is_alphanumeric() && !ALLOWED_SPECIAL_CHARS.contains(&c) => {
-                return Err(StreamNameValidationError::NameSpecialChar { c })
+                return Err(StreamNameValidationError::NameSpecialChar { c });
             }
             _ => {}
         }
@@ -127,7 +127,9 @@ pub mod error {
         NameSpecialChar { c: char },
         #[error("SQL keyword cannot be used as stream name")]
         SQLKeyword(String),
-        #[error("The stream {0} is reserved for internal use and cannot be used for user defined streams")]
+        #[error(
+            "The stream {0} is reserved for internal use and cannot be used for user defined streams"
+        )]
         InternalStream(String),
     }
 

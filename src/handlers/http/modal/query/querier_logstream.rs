@@ -20,8 +20,8 @@ use core::str;
 use std::{collections::HashMap, fs};
 
 use actix_web::{
-    web::{self, Path},
     HttpRequest, Responder,
+    web::{self, Path},
 };
 use bytes::Bytes;
 use chrono::Utc;
@@ -37,15 +37,15 @@ use crate::{
         base_path_without_preceding_slash,
         cluster::{
             self, fetch_daily_stats, fetch_stats_from_ingestors, sync_streams_with_ingestors,
-            utils::{merge_quried_stats, IngestionStats, QueriedStats, StorageStats},
+            utils::{IngestionStats, QueriedStats, StorageStats, merge_quried_stats},
         },
         logstream::error::StreamError,
         modal::{NodeMetadata, NodeType},
     },
     hottier::HotTierManager,
-    parseable::{StreamNotFound, PARSEABLE},
+    parseable::{PARSEABLE, StreamNotFound},
     stats,
-    storage::{ObjectStoreFormat, StreamType, STREAM_ROOT_DIRECTORY},
+    storage::{ObjectStoreFormat, STREAM_ROOT_DIRECTORY, StreamType},
 };
 const STATS_DATE_QUERY_PARAM: &str = "date";
 

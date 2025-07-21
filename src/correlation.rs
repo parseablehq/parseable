@@ -18,7 +18,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use actix_web::{http::header::ContentType, Error};
+use actix_web::{Error, http::header::ContentType};
 use chrono::Utc;
 use datafusion::error::DataFusionError;
 use http::StatusCode;
@@ -37,7 +37,7 @@ use crate::{
     },
     parseable::PARSEABLE,
     query::QUERY_SESSION,
-    rbac::{map::SessionKey, Users},
+    rbac::{Users, map::SessionKey},
     storage::ObjectStorageError,
     users::filters::FilterQuery,
     utils::{get_hash, user_auth_for_datasets},

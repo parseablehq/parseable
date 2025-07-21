@@ -20,20 +20,19 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     rbac::{
-        self,
+        self, Users,
         map::{read_user_groups, roles},
         role::model::DefaultPrivilege,
         user,
         utils::to_prism_user,
-        Users,
     },
     storage::ObjectStorageError,
     validator::{self, error::UsernameValidationError},
 };
 use actix_web::{
+    Responder,
     http::header::ContentType,
     web::{self, Path},
-    Responder,
 };
 use http::StatusCode;
 use itertools::Itertools;

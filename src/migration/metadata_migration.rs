@@ -17,7 +17,7 @@
  */
 
 use rand::distributions::DistString;
-use serde_json::{json, Map, Value as JsonValue};
+use serde_json::{Map, Value as JsonValue, json};
 
 use crate::parseable::PARSEABLE;
 

@@ -27,8 +27,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use fs_extra::file::CopyOptions;
-use futures::{stream::FuturesUnordered, TryStreamExt};
-use object_store::{buffered::BufReader, ObjectMeta};
+use futures::{TryStreamExt, stream::FuturesUnordered};
+use object_store::{ObjectMeta, buffered::BufReader};
 use relative_path::{RelativePath, RelativePathBuf};
 use tokio::{
     fs::{self, DirEntry, OpenOptions},
@@ -38,14 +38,14 @@ use tokio_stream::wrappers::ReadDirStream;
 
 use crate::{
     handlers::http::users::USERS_ROOT_DIR,
-    metrics::storage::{azureblob::REQUEST_RESPONSE_TIME, StorageMetrics},
+    metrics::storage::{StorageMetrics, azureblob::REQUEST_RESPONSE_TIME},
     option::validation,
     parseable::LogStream,
     storage::SETTINGS_ROOT_DIRECTORY,
 };
 
 use super::{
-    ObjectStorage, ObjectStorageError, ObjectStorageProvider, ALERTS_ROOT_DIRECTORY,
+    ALERTS_ROOT_DIRECTORY, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
     PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 

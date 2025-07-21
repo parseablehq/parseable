@@ -18,7 +18,7 @@
 
 use std::collections::HashSet;
 
-use actix_web::{web, Responder};
+use actix_web::{Responder, web};
 use tokio::sync::Mutex;
 
 use crate::{
@@ -31,8 +31,9 @@ use crate::{
         rbac::RBACError,
     },
     rbac::{
+        Users,
         map::{roles, write_user_groups},
-        user, Users,
+        user,
     },
     validator,
 };

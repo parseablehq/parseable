@@ -19,8 +19,8 @@
 use std::collections::HashSet;
 
 use actix_web::{
-    web::{self, Json},
     HttpResponse, Responder,
+    web::{self, Json},
 };
 
 use crate::{

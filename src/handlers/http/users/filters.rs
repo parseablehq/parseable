@@ -19,14 +19,14 @@
 use crate::{
     handlers::http::rbac::RBACError,
     parseable::PARSEABLE,
-    storage::{object_storage::filter_path, ObjectStorageError},
-    users::filters::{Filter, CURRENT_FILTER_VERSION, FILTERS},
+    storage::{ObjectStorageError, object_storage::filter_path},
+    users::filters::{CURRENT_FILTER_VERSION, FILTERS, Filter},
     utils::{actix::extract_session_key_from_req, get_hash, get_user_from_request},
 };
 use actix_web::{
+    HttpRequest, HttpResponse, Responder,
     http::header::ContentType,
     web::{self, Json, Path},
-    HttpRequest, HttpResponse, Responder,
 };
 use bytes::Bytes;
 use chrono::Utc;

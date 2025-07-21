@@ -17,12 +17,12 @@
  */
 
 use actix_web::{
-    web::{self, Json, Path},
     HttpRequest, Responder,
+    web::{self, Json, Path},
 };
 
 use crate::{
-    prism::logstream::{get_prism_logstream_info, PrismDatasetRequest, PrismLogstreamError},
+    prism::logstream::{PrismDatasetRequest, PrismLogstreamError, get_prism_logstream_info},
     utils::actix::extract_session_key_from_req,
 };
 

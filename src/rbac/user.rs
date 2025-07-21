@@ -19,8 +19,8 @@
 use std::collections::HashSet;
 
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHasher, SaltString},
     Argon2, PasswordHash, PasswordVerifier,
+    password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
 };
 
 use rand::distributions::{Alphanumeric, DistString};
@@ -133,12 +133,10 @@ pub fn verify(password_hash: &str, password: &str) -> bool {
 fn gen_hash(password: &str) -> String {
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
-    let hashcode = argon2
+    argon2
         .hash_password(password.as_bytes(), &salt)
         .expect("can hash random alphanumeric")
-        .to_string();
-
-    hashcode
+        .to_string()
 }
 
 pub struct PassCode {

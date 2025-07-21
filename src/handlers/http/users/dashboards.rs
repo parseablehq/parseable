@@ -21,13 +21,13 @@ use std::collections::HashMap;
 use crate::{
     handlers::http::rbac::RBACError,
     storage::ObjectStorageError,
-    users::dashboards::{validate_dashboard_id, Dashboard, Tile, DASHBOARDS},
+    users::dashboards::{DASHBOARDS, Dashboard, Tile, validate_dashboard_id},
     utils::{get_hash, get_user_from_request},
 };
 use actix_web::{
+    HttpRequest, HttpResponse, Responder,
     http::header::ContentType,
     web::{self, Json, Path},
-    HttpRequest, HttpResponse, Responder,
 };
 use http::StatusCode;
 use serde_json::Error as SerdeError;

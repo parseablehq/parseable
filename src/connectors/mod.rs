@@ -21,9 +21,9 @@ use std::sync::Arc;
 use actix_web_prometheus::PrometheusMetrics;
 use common::{processor::Processor, shutdown::Shutdown};
 use kafka::{
-    config::KafkaConfig, consumer::KafkaStreams, metrics::KafkaMetricsCollector,
-    processor::ParseableSinkProcessor, rebalance_listener::RebalanceListener,
-    sink::KafkaSinkConnector, state::StreamState, ConsumerRecord, KafkaContext,
+    ConsumerRecord, KafkaContext, config::KafkaConfig, consumer::KafkaStreams,
+    metrics::KafkaMetricsCollector, processor::ParseableSinkProcessor,
+    rebalance_listener::RebalanceListener, sink::KafkaSinkConnector, state::StreamState,
 };
 use prometheus::Registry;
 use tokio::sync::RwLock;

@@ -41,7 +41,7 @@ use crate::{
     query::PartialTimeFilter,
     stats::{event_labels_date, get_current_stats, storage_size_labels_date, update_deleted_stats},
     storage::{
-        object_storage::manifest_path, ObjectStorage, ObjectStorageError, ObjectStoreFormat,
+        ObjectStorage, ObjectStorageError, ObjectStoreFormat, object_storage::manifest_path,
     },
 };
 pub use manifest::create_from_parquet_file;
