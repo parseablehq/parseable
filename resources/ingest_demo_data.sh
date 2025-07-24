@@ -415,7 +415,7 @@ create_alerts() {
     echo "Creating alerts with target ID: $target_id"
     
     # Alert 1: Error Count (severity_number = 18)
-    alert1_json="{\"severity\":\"high\",\"title\":\"error count\",\"alertType\":\"threshold\",\"thresholdConfig\":{\"operator\":\">\",\"value\":1000},\"evalConfig\":{\"rollingWindow\":{\"evalStart\":\"5h\",\"evalEnd\":\"now\",\"evalFrequency\":1}},\"targets\":[\"$target_id\"]}"
+    alert1_json="{\"severity\":\"high\",\"title\":\"error count\",\"alertType\":\"threshold\",\"query\": \"select count(severity_number) as count_severity_number from demodata where severity_number=18\",\"thresholdConfig\":{\"operator\":\">\",\"value\":1000},\"evalConfig\":{\"rollingWindow\":{\"evalStart\":\"5h\",\"evalEnd\":\"now\",\"evalFrequency\":1}},\"targets\":[\"$target_id\"]}"
 
     response1=$(curl_with_retry "$P_URL/api/v1/alerts" "POST" "$alert1_json" "application/json" 3)
     if [[ $? -eq 0 ]]; then
@@ -426,7 +426,7 @@ create_alerts() {
     fi
     
     # Alert 2: 400 Errors
-    alert2_json="{\"severity\":\"critical\",\"title\":\"400 Errors\",\"alertType\":\"threshold\",\"thresholdConfig\":{\"operator\":\">\",\"value\":10},\"evalConfig\":{\"rollingWindow\":{\"evalStart\":\"5h\",\"evalEnd\":\"now\",\"evalFrequency\":1}},\"targets\":[\"$target_id\"]}"
+    alert2_json="{\"severity\":\"critical\",\"title\":\"400 Errors\",\"alertType\":\"threshold\",\"query\": \"select count(body) as count_body from demodata where body like '%400%'\",\"thresholdConfig\":{\"operator\":\">\",\"value\":10},\"evalConfig\":{\"rollingWindow\":{\"evalStart\":\"5h\",\"evalEnd\":\"now\",\"evalFrequency\":1}},\"targets\":[\"$target_id\"]}"
 
     response2=$(curl_with_retry "$P_URL/api/v1/alerts" "POST" "$alert2_json" "application/json" 3)
     if [[ $? -eq 0 ]]; then
@@ -437,7 +437,7 @@ create_alerts() {
     fi
     
     # Alert 3: Trace ID null
-    alert3_json="{\"severity\":\"high\",\"title\":\"Trace ID null\",\"alertType\":\"threshold\",\"thresholdConfig\":{\"operator\":\"is null\",\"value\":null},\"evalConfig\":{\"rollingWindow\":{\"evalStart\":\"5h\",\"evalEnd\":\"now\",\"evalFrequency\":1}},\"targets\":[\"$target_id\"]}"
+    alert3_json="{\"severity\":\"high\",\"title\":\"Trace ID null\",\"alertType\":\"threshold\",\"query\": \"select count(trace_id) as count_trace_id from demodata where trace_id is null\",\"thresholdConfig\":{\"operator\":\"is null\",\"value\":null},\"evalConfig\":{\"rollingWindow\":{\"evalStart\":\"5h\",\"evalEnd\":\"now\",\"evalFrequency\":1}},\"targets\":[\"$target_id\"]}"
     response3=$(curl_with_retry "$P_URL/api/v1/alerts" "POST" "$alert3_json" "application/json" 3)
     if [[ $? -eq 0 ]]; then
         echo "Alert 3 (Trace ID null) created successfully"

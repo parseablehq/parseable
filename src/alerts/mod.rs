@@ -681,19 +681,30 @@ impl AlertConfig {
     ) -> Result<String, AlertError> {
         let column = aggregate_config["column"].as_str().unwrap_or("*");
 
-        let query = if column == "*" {
-            format!(
-                "SELECT {}(*) as alert_value FROM \"{stream}\"",
-                aggregate_function.to_string().to_uppercase()
-            )
-        } else if matches!(aggregate_function, AggregateFunction::Count) && column != "*" {
-            // COUNT with specific column should handle NULLs differently
-            format!("SELECT COUNT(\"{column}\") as alert_value FROM \"{stream}\"",)
-        } else {
-            format!(
-                "SELECT {}(\"{column}\") as alert_value FROM \"{stream}\"",
-                aggregate_function.to_string().to_uppercase()
-            )
+        let query = match aggregate_function {
+            AggregateFunction::CountDistinct => {
+                if column == "*" {
+                    format!("SELECT COUNT(DISTINCT *) as alert_value FROM \"{stream}\"")
+                } else {
+                    format!("SELECT COUNT(DISTINCT \"{column}\") as alert_value FROM \"{stream}\"")
+                }
+            }
+            _ => {
+                if column == "*" {
+                    format!(
+                        "SELECT {}(*) as alert_value FROM \"{stream}\"",
+                        aggregate_function.to_string().to_uppercase()
+                    )
+                } else if matches!(aggregate_function, AggregateFunction::Count) && column != "*" {
+                    // COUNT with specific column should handle NULLs differently
+                    format!("SELECT COUNT(\"{column}\") as alert_value FROM \"{stream}\"")
+                } else {
+                    format!(
+                        "SELECT {}(\"{column}\") as alert_value FROM \"{stream}\"",
+                        aggregate_function.to_string().to_uppercase()
+                    )
+                }
+            }
         };
         Ok(query)
     }
@@ -760,13 +771,40 @@ impl AlertConfig {
 
     /// Format a single WHERE clause
     fn format_where_clause(column: &str, operator: &WhereConfigOperator, value: &str) -> String {
-        if matches!(
-            operator,
-            WhereConfigOperator::IsNull | WhereConfigOperator::IsNotNull
-        ) {
-            format!("\"{}\" {}", column, operator.as_str())
-        } else {
-            format!("\"{}\" {} '{}'", column, operator.as_str(), value)
+        match operator {
+            WhereConfigOperator::IsNull | WhereConfigOperator::IsNotNull => {
+                format!("\"{}\" {}", column, operator.as_str())
+            }
+            WhereConfigOperator::Contains => {
+                format!("\"{}\" LIKE '%{}%'", column, value.replace('\'', "''"))
+            }
+            WhereConfigOperator::BeginsWith => {
+                format!("\"{}\" LIKE '{}%'", column, value.replace('\'', "''"))
+            }
+            WhereConfigOperator::EndsWith => {
+                format!("\"{}\" LIKE '%{}'", column, value.replace('\'', "''"))
+            }
+            WhereConfigOperator::DoesNotContain => {
+                format!("\"{}\" NOT LIKE '%{}%'", column, value.replace('\'', "''"))
+            }
+            WhereConfigOperator::DoesNotBeginWith => {
+                format!("\"{}\" NOT LIKE '{}%'", column, value.replace('\'', "''"))
+            }
+            WhereConfigOperator::DoesNotEndWith => {
+                format!("\"{}\" NOT LIKE '%{}'", column, value.replace('\'', "''"))
+            }
+            WhereConfigOperator::ILike => {
+                format!("\"{}\" ILIKE '{}'", column, value.replace('\'', "''"))
+            }
+            _ => {
+                // Standard operators: =, !=, <, >, <=, >=
+                format!(
+                    "\"{}\" {} '{}'",
+                    column,
+                    operator.as_str(),
+                    value.replace('\'', "''")
+                )
+            }
         }
     }
 
