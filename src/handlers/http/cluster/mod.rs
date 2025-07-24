@@ -1308,6 +1308,9 @@ pub async fn mark_querier_available(domain_name: &str) {
 
 pub async fn send_query_request(query_request: &Query) -> Result<(JsonValue, String), QueryError> {
     let querier = get_available_querier().await?;
+    let domain_name = querier.domain_name.clone();
+
+    // Perform the query request
     let fields = query_request.fields;
     let streaming = query_request.streaming;
     let send_null = query_request.send_null;
@@ -1316,16 +1319,30 @@ pub async fn send_query_request(query_request: &Query) -> Result<(JsonValue, Str
         &querier.domain_name,
     );
 
-    let body = serde_json::to_string(&query_request)?;
-    let res = INTRA_CLUSTER_CLIENT
+    let body = match serde_json::to_string(&query_request) {
+        Ok(body) => body,
+        Err(err) => {
+            mark_querier_available(&domain_name).await;
+            return Err(QueryError::from(err));
+        }
+    };
+
+    let res = match INTRA_CLUSTER_CLIENT
         .post(uri)
         .header(header::AUTHORIZATION, &querier.token)
         .header(header::CONTENT_TYPE, "application/json")
         .body(body)
         .send()
-        .await?;
+        .await
+    {
+        Ok(res) => res,
+        Err(err) => {
+            mark_querier_available(&domain_name).await;
+            return Err(QueryError::from(err));
+        }
+    };
 
-    let domain_name = querier.domain_name.clone();
+    // Mark querier as available immediately after the HTTP request completes
     mark_querier_available(&domain_name).await;
 
     let headers = res.headers();

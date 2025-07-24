@@ -437,7 +437,7 @@ create_alerts() {
     fi
     
     # Alert 3: Trace ID null
-    alert3_json="{\"severity\":\"high\",\"title\":\"Trace ID null\",\"alertType\":\"threshold\",\"query\": \"select count(trace_id) as count_trace_id from demodata where trace_id is null\",\"thresholdConfig\":{\"operator\":\"is null\",\"value\":null},\"evalConfig\":{\"rollingWindow\":{\"evalStart\":\"5h\",\"evalEnd\":\"now\",\"evalFrequency\":1}},\"targets\":[\"$target_id\"]}"
+    alert3_json="{\"severity\":\"high\",\"title\":\"Trace ID null\",\"alertType\":\"threshold\",\"query\": \"select count(trace_id) as count_trace_id from demodata where trace_id is null\",\"thresholdConfig\":{\"operator\":\">\",\"value\":0},\"evalConfig\":{\"rollingWindow\":{\"evalStart\":\"5h\",\"evalEnd\":\"now\",\"evalFrequency\":1}},\"targets\":[\"$target_id\"]}"
     response3=$(curl_with_retry "$P_URL/api/v1/alerts" "POST" "$alert3_json" "application/json" 3)
     if [[ $? -eq 0 ]]; then
         echo "Alert 3 (Trace ID null) created successfully"
