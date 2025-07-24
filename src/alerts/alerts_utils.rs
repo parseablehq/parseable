@@ -181,13 +181,14 @@ async fn update_alert_state(
 ) -> Result<(), AlertError> {
     if final_res {
         let message = format!(
-            "Expected Value: {} {} {}\n Actual Value: {}\nEvaluation Window: {}\nEvaluation Frequency: {}m",
-            alert.query,
+            "Alert Triggered: {}\n\nThreshold: ({} {})\nCurrent Value: {}\nEvaluation Window: {} | Frequency: {}\n\nQuery:\n{}",
+            alert.id,
             alert.threshold_config.operator,
             alert.threshold_config.value,
-            actual_value,
+            format_number(actual_value),
             alert.get_eval_window(),
-            alert.get_eval_frequency()
+            alert.get_eval_frequency(),
+            alert.query
         );
         ALERTS
             .update_state(alert.id, AlertState::Triggered, Some(message))
@@ -200,6 +201,23 @@ async fn update_alert_state(
         ALERTS
             .update_state(alert.id, AlertState::Resolved, None)
             .await
+    }
+}
+
+/// Format a number for better readability
+fn format_number(value: f64) -> String {
+    if value.fract() == 0.0 {
+        // Integer value
+        format!("{:.0}", value)
+    } else if value.abs() < 1.0 {
+        // Small decimal, show more precision
+        format!("{:.4}", value)
+            .trim_end_matches('0')
+            .trim_end_matches('.')
+            .to_string()
+    } else {
+        // Regular decimal, show 2 decimal places
+        format!("{:.2}", value)
     }
 }
 
