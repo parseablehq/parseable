@@ -1147,7 +1147,6 @@ impl Alerts {
                     || json_value.get("stream").is_some()
                 {
                     // This is a v1 alert that needs migration
-                    warn!("Migrating v1 alert to v2");
                     match AlertConfig::migrate_from_v1(&json_value, store.as_ref()).await {
                         Ok(migrated) => migrated,
                         Err(e) => {
