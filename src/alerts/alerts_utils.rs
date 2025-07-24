@@ -18,39 +18,35 @@
 
 use std::fmt::Display;
 
+use actix_web::Either;
 use arrow_array::{Float64Array, Int64Array, RecordBatch};
 use datafusion::{
-    functions_aggregate::{
-        count::{count, count_distinct},
-        expr_fn::avg,
-        min_max::{max, min},
-        sum::sum,
-    },
-    logical_expr::{BinaryExpr, Literal, Operator},
-    prelude::{DataFrame, Expr, col, lit},
+    logical_expr::Literal,
+    prelude::{Expr, lit},
 };
 use tracing::trace;
 
 use crate::{
-    alerts::LogicalOperator,
-    handlers::http::query::{create_streams_for_distributed, update_schema_when_distributed},
+    alerts::{Conditions, LogicalOperator, WhereConfigOperator},
+    handlers::http::{
+        cluster::send_query_request,
+        query::{Query, create_streams_for_distributed},
+    },
+    option::Mode,
     parseable::PARSEABLE,
-    query::{QUERY_SESSION, resolve_stream_names},
+    query::{QUERY_SESSION, execute, resolve_stream_names},
     utils::time::TimeRange,
 };
 
-use super::{
-    ALERTS, AggregateConfig, AggregateFunction, AggregateResult, Aggregates, AlertConfig,
-    AlertError, AlertOperator, AlertState, ConditionConfig, Conditions, WhereConfigOperator,
-};
+use super::{ALERTS, AlertConfig, AlertError, AlertOperator, AlertState};
 
 /// accept the alert
 ///
-/// alert contains aggregate_config
+/// alert contains query and the threshold_config
 ///
-/// aggregate_config contains the filters which need to be applied
+/// execute the query and compute the output of the query
 ///
-/// iterate over each agg config, apply filters, the evaluate for that config
+/// compare the output with the threshold_config
 ///
 /// collect the results in the end
 ///
@@ -58,116 +54,113 @@ use super::{
 pub async fn evaluate_alert(alert: &AlertConfig) -> Result<(), AlertError> {
     trace!("RUNNING EVAL TASK FOR- {alert:?}");
 
-    let query = prepare_query(alert).await?;
-    let select_query = alert.get_base_query();
-    let base_df = execute_base_query(&query, &select_query).await?;
-    let agg_results = evaluate_aggregates(&alert.aggregates, &base_df).await?;
-    let final_res = calculate_final_result(&alert.aggregates, &agg_results);
+    let time_range = extract_time_range(&alert.eval_config)?;
+    let final_value = execute_alert_query(alert, &time_range).await?;
+    let result = evaluate_condition(
+        &alert.threshold_config.operator,
+        final_value,
+        alert.threshold_config.value,
+    );
 
-    update_alert_state(alert, final_res, &agg_results).await?;
-    Ok(())
+    update_alert_state(alert, result, final_value).await
 }
 
-async fn prepare_query(alert: &AlertConfig) -> Result<crate::query::Query, AlertError> {
-    let (start_time, end_time) = match &alert.eval_config {
+/// Extract time range from alert evaluation configuration
+fn extract_time_range(eval_config: &super::EvalConfig) -> Result<TimeRange, AlertError> {
+    let (start_time, end_time) = match eval_config {
         super::EvalConfig::RollingWindow(rolling_window) => (&rolling_window.eval_start, "now"),
     };
 
-    let session_state = QUERY_SESSION.state();
-    let select_query = alert.get_base_query();
-    let time_range = TimeRange::parse_human_time(start_time, end_time)
-        .map_err(|err| AlertError::CustomError(err.to_string()))?;
-
-    let tables = resolve_stream_names(&select_query)?;
-    //check or load streams in memory
-    create_streams_for_distributed(tables.clone())
-        .await
-        .map_err(|err| AlertError::CustomError(format!("Failed to create streams: {err}")))?;
-    let raw_logical_plan = session_state.create_logical_plan(&select_query).await?;
-    Ok(crate::query::Query {
-        raw_logical_plan,
-        time_range,
-        filter_tag: None,
-    })
-}
-
-async fn execute_base_query(
-    query: &crate::query::Query,
-    original_query: &str,
-) -> Result<DataFrame, AlertError> {
-    let streams = resolve_stream_names(original_query)?;
-    let stream_name = streams.first().ok_or_else(|| {
-        AlertError::CustomError(format!("Table name not found in query- {original_query}"))
-    })?;
-    update_schema_when_distributed(&streams)
-        .await
-        .map_err(|err| {
-            AlertError::CustomError(format!(
-                "Failed to update schema for distributed streams: {err}"
-            ))
-        })?;
-    let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
-    query
-        .get_dataframe(time_partition.as_ref())
-        .await
+    TimeRange::parse_human_time(start_time, end_time)
         .map_err(|err| AlertError::CustomError(err.to_string()))
 }
 
-async fn evaluate_aggregates(
-    agg_config: &Aggregates,
-    base_df: &DataFrame,
-) -> Result<Vec<AggregateResult>, AlertError> {
-    let agg_filter_exprs = get_exprs(agg_config);
-    let mut results = Vec::new();
-
-    let conditions = match &agg_config.operator {
-        Some(_) => &agg_config.aggregate_config[0..2],
-        None => &agg_config.aggregate_config[0..1],
-    };
-
-    for ((agg_expr, filter), agg) in agg_filter_exprs.into_iter().zip(conditions) {
-        let result = evaluate_single_aggregate(base_df, filter, agg_expr, agg).await?;
-        results.push(result);
+/// Execute the alert query based on the current mode and return the final value
+async fn execute_alert_query(
+    alert: &AlertConfig,
+    time_range: &TimeRange,
+) -> Result<f64, AlertError> {
+    match PARSEABLE.options.mode {
+        Mode::All | Mode::Query => execute_local_query(alert, time_range).await,
+        Mode::Prism => execute_remote_query(alert, time_range).await,
+        _ => Err(AlertError::CustomError(format!(
+            "Unsupported mode '{:?}' for alert evaluation",
+            PARSEABLE.options.mode
+        ))),
     }
-
-    Ok(results)
 }
 
-async fn evaluate_single_aggregate(
-    base_df: &DataFrame,
-    filter: Option<Expr>,
-    agg_expr: Expr,
-    agg: &AggregateConfig,
-) -> Result<AggregateResult, AlertError> {
-    let filtered_df = if let Some(filter) = filter {
-        base_df.clone().filter(filter)?
-    } else {
-        base_df.clone()
+/// Execute alert query locally (Query/All mode)
+async fn execute_local_query(
+    alert: &AlertConfig,
+    time_range: &TimeRange,
+) -> Result<f64, AlertError> {
+    let session_state = QUERY_SESSION.state();
+    let query = &alert.query;
+
+    let tables = resolve_stream_names(query)?;
+    create_streams_for_distributed(tables.clone())
+        .await
+        .map_err(|err| AlertError::CustomError(format!("Failed to create streams: {err}")))?;
+
+    let raw_logical_plan = session_state.create_logical_plan(query).await?;
+    let query = crate::query::Query {
+        raw_logical_plan,
+        time_range: time_range.clone(),
+        filter_tag: None,
     };
 
-    let aggregated_rows = filtered_df
-        .aggregate(vec![], vec![agg_expr])?
-        .collect()
-        .await?;
+    let (records, _) = execute(query, &tables[0], false)
+        .await
+        .map_err(|err| AlertError::CustomError(format!("Failed to execute query: {err}")))?;
 
-    let final_value = get_final_value(aggregated_rows);
-    let result = evaluate_condition(&agg.operator, final_value, agg.value);
-
-    let message = if result {
-        agg.conditions
-            .as_ref()
-            .map(|config| config.generate_filter_message())
-            .or(None)
-    } else {
-        None
+    let records = match records {
+        Either::Left(rbs) => rbs,
+        Either::Right(_) => {
+            return Err(AlertError::CustomError(
+                "Query returned no results".to_string(),
+            ));
+        }
     };
 
-    Ok(AggregateResult {
-        result,
-        message,
-        config: agg.clone(),
-        value: final_value,
-    })
+    Ok(get_final_value(records))
+}
+
+/// Execute alert query remotely (Prism mode)
+async fn execute_remote_query(
+    alert: &AlertConfig,
+    time_range: &TimeRange,
+) -> Result<f64, AlertError> {
+    let query_request = Query {
+        query: alert.query.clone(),
+        start_time: time_range.start.to_rfc3339(),
+        end_time: time_range.end.to_rfc3339(),
+        streaming: false,
+        send_null: false,
+        fields: false,
+        filter_tags: None,
+    };
+
+    let (result_value, _) = send_query_request(&query_request)
+        .await
+        .map_err(|err| AlertError::CustomError(format!("Failed to send query request: {err}")))?;
+
+    convert_result_to_f64(result_value)
+}
+
+/// Convert JSON result value to f64
+fn convert_result_to_f64(result_value: serde_json::Value) -> Result<f64, AlertError> {
+    if let Some(value) = result_value.as_f64() {
+        Ok(value)
+    } else if let Some(value) = result_value.as_i64() {
+        Ok(value as f64)
+    } else if let Some(value) = result_value.as_u64() {
+        Ok(value as f64)
+    } else {
+        Err(AlertError::CustomError(
+            "Query result is not a number".to_string(),
+        ))
+    }
 }
 
 fn evaluate_condition(operator: &AlertOperator, actual: f64, expected: f64) -> bool {
@@ -181,23 +174,18 @@ fn evaluate_condition(operator: &AlertOperator, actual: f64, expected: f64) -> b
     }
 }
 
-fn calculate_final_result(agg_config: &Aggregates, results: &[AggregateResult]) -> bool {
-    match &agg_config.operator {
-        Some(LogicalOperator::And) => results.iter().all(|r| r.result),
-        Some(LogicalOperator::Or) => results.iter().any(|r| r.result),
-        None => results.first().is_some_and(|r| r.result),
-    }
-}
-
 async fn update_alert_state(
     alert: &AlertConfig,
     final_res: bool,
-    agg_results: &[AggregateResult],
+    actual_value: f64,
 ) -> Result<(), AlertError> {
     if final_res {
-        let message = format_alert_message(agg_results);
         let message = format!(
-            "{message}\nEvaluation Window: {}\nEvaluation Frequency: {}m",
+            "Expected Value: {} {} {}\n Actual Value: {}\nEvaluation Window: {}\nEvaluation Frequency: {}m",
+            alert.query,
+            alert.threshold_config.operator,
+            alert.threshold_config.value,
+            actual_value,
             alert.get_eval_window(),
             alert.get_eval_frequency()
         );
@@ -215,37 +203,10 @@ async fn update_alert_state(
     }
 }
 
-fn format_alert_message(agg_results: &[AggregateResult]) -> String {
-    let mut message = String::default();
-    for result in agg_results {
-        if let Some(msg) = &result.message {
-            message.extend([format!(
-                "\nCondition: {}({}) WHERE ({}) {} {}\nActualValue: {}\n",
-                result.config.aggregate_function,
-                result.config.column,
-                msg,
-                result.config.operator,
-                result.config.value,
-                result.value
-            )]);
-        } else {
-            message.extend([format!(
-                "\nCondition: {}({}) {} {}\nActualValue: {}\n",
-                result.config.aggregate_function,
-                result.config.column,
-                result.config.operator,
-                result.config.value,
-                result.value
-            )]);
-        }
-    }
-    message
-}
+fn get_final_value(records: Vec<RecordBatch>) -> f64 {
+    trace!("records-\n{records:?}");
 
-fn get_final_value(aggregated_rows: Vec<RecordBatch>) -> f64 {
-    trace!("aggregated_rows-\n{aggregated_rows:?}");
-
-    if let Some(f) = aggregated_rows
+    if let Some(f) = records
         .first()
         .and_then(|batch| {
             trace!("batch.column(0)-\n{:?}", batch.column(0));
@@ -258,7 +219,7 @@ fn get_final_value(aggregated_rows: Vec<RecordBatch>) -> f64 {
     {
         f
     } else {
-        aggregated_rows
+        records
             .first()
             .and_then(|batch| {
                 trace!("batch.column(0)-\n{:?}", batch.column(0));
@@ -272,94 +233,10 @@ fn get_final_value(aggregated_rows: Vec<RecordBatch>) -> f64 {
     }
 }
 
-/// This function accepts aggregate_config and
-/// returns a tuple of (aggregate expressions, filter expressions)
-///
-/// It calls get_filter_expr() to get filter expressions
-fn get_exprs(aggregate_config: &Aggregates) -> Vec<(Expr, Option<Expr>)> {
-    let mut agg_expr = Vec::new();
-
-    match &aggregate_config.operator {
-        Some(op) => match op {
-            LogicalOperator::And | LogicalOperator::Or => {
-                let agg1 = &aggregate_config.aggregate_config[0];
-                let agg2 = &aggregate_config.aggregate_config[1];
-
-                for agg in [agg1, agg2] {
-                    let filter_expr = if let Some(where_clause) = &agg.conditions {
-                        let fe = get_filter_expr(where_clause);
-
-                        trace!("filter_expr-\n{fe:?}");
-
-                        Some(fe)
-                    } else {
-                        None
-                    };
-
-                    let e = match_aggregate_operation(agg);
-                    agg_expr.push((e, filter_expr));
-                }
-            }
-        },
-        None => {
-            let agg = &aggregate_config.aggregate_config[0];
-
-            let filter_expr = if let Some(where_clause) = &agg.conditions {
-                let fe = get_filter_expr(where_clause);
-
-                trace!("filter_expr-\n{fe:?}");
-
-                Some(fe)
-            } else {
-                None
-            };
-
-            let e = match_aggregate_operation(agg);
-            agg_expr.push((e, filter_expr));
-        }
-    }
-    agg_expr
-}
-
-fn get_filter_expr(where_clause: &Conditions) -> Expr {
-    match &where_clause.operator {
-        Some(op) => match op {
-            LogicalOperator::And => {
-                let mut expr = Expr::Literal(datafusion::scalar::ScalarValue::Boolean(Some(true)));
-
-                let expr1 = &where_clause.condition_config[0];
-                let expr2 = &where_clause.condition_config[1];
-
-                for e in [expr1, expr2] {
-                    let ex = match_alert_operator(e);
-                    expr = expr.and(ex);
-                }
-                expr
-            }
-            LogicalOperator::Or => {
-                let mut expr = Expr::Literal(datafusion::scalar::ScalarValue::Boolean(Some(false)));
-
-                let expr1 = &where_clause.condition_config[0];
-                let expr2 = &where_clause.condition_config[1];
-
-                for e in [expr1, expr2] {
-                    let ex = match_alert_operator(e);
-                    expr = expr.or(ex);
-                }
-                expr
-            }
-        },
-        None => {
-            let expr = &where_clause.condition_config[0];
-            match_alert_operator(expr)
-        }
-    }
-}
-
 pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
     match &where_clause.operator {
         Some(op) => match op {
-            LogicalOperator::And => {
+            &LogicalOperator::And => {
                 let mut exprs = vec![];
                 for condition in &where_clause.condition_config {
                     if condition.value.as_ref().is_some_and(|v| !v.is_empty()) {
@@ -447,82 +324,6 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
         _ => Err(String::from(
             "Invalid option 'null', only 'and' is supported",
         )),
-    }
-}
-
-fn match_alert_operator(expr: &ConditionConfig) -> Expr {
-    // the form accepts value as a string
-    // if it can be parsed as a number, then parse it
-    // else keep it as a string
-    if expr.value.as_ref().is_some_and(|v| !v.is_empty()) {
-        let string_value = expr
-            .value
-            .as_ref()
-            .unwrap()
-            .replace("'", "\\'")
-            .replace('%', "\\%")
-            .replace('_', "\\_");
-        let value = ValueType::from_string(string_value.clone());
-
-        // for maintaining column case
-        let column = format!(r#""{}""#, expr.column);
-        match expr.operator {
-            WhereConfigOperator::Equal => col(column).eq(lit(value)),
-            WhereConfigOperator::NotEqual => col(column).not_eq(lit(value)),
-            WhereConfigOperator::LessThan => col(column).lt(lit(value)),
-            WhereConfigOperator::GreaterThan => col(column).gt(lit(value)),
-            WhereConfigOperator::LessThanOrEqual => col(column).lt_eq(lit(value)),
-            WhereConfigOperator::GreaterThanOrEqual => col(column).gt_eq(lit(value)),
-            WhereConfigOperator::ILike => col(column).ilike(lit(string_value)),
-            WhereConfigOperator::Contains => col(column).like(lit(format!("%{string_value}%"))),
-            WhereConfigOperator::BeginsWith => Expr::BinaryExpr(BinaryExpr::new(
-                Box::new(col(column)),
-                Operator::RegexIMatch,
-                Box::new(lit(format!("^{string_value}"))),
-            )),
-            WhereConfigOperator::EndsWith => Expr::BinaryExpr(BinaryExpr::new(
-                Box::new(col(column)),
-                Operator::RegexIMatch,
-                Box::new(lit(format!("{string_value}$"))),
-            )),
-            WhereConfigOperator::DoesNotContain => col(column).not_ilike(lit(string_value)),
-            WhereConfigOperator::DoesNotBeginWith => Expr::BinaryExpr(BinaryExpr::new(
-                Box::new(col(column)),
-                Operator::RegexNotIMatch,
-                Box::new(lit(format!("^{string_value}"))),
-            )),
-            WhereConfigOperator::DoesNotEndWith => Expr::BinaryExpr(BinaryExpr::new(
-                Box::new(col(column)),
-                Operator::RegexNotIMatch,
-                Box::new(lit(format!("{string_value}$"))),
-            )),
-            _ => unreachable!(
-                "value must not be null for operators other than `is null` and `is not null`. Should've been caught in validation"
-            ),
-        }
-    } else {
-        // for maintaining column case
-        let column = format!(r#""{}""#, expr.column);
-        match expr.operator {
-            WhereConfigOperator::IsNull => col(column).is_null(),
-            WhereConfigOperator::IsNotNull => col(column).is_not_null(),
-            _ => unreachable!(
-                "value must be null for `is null` and `is not null`. Should've been caught in validation"
-            ),
-        }
-    }
-}
-
-fn match_aggregate_operation(agg: &AggregateConfig) -> Expr {
-    // for maintaining column case
-    let column = format!(r#""{}""#, agg.column);
-    match agg.aggregate_function {
-        AggregateFunction::Avg => avg(col(column)),
-        AggregateFunction::CountDistinct => count_distinct(col(column)),
-        AggregateFunction::Count => count(col(column)),
-        AggregateFunction::Min => min(col(column)),
-        AggregateFunction::Max => max(col(column)),
-        AggregateFunction::Sum => sum(col(column)),
     }
 }
 

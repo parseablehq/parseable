@@ -49,13 +49,12 @@ pub async fn post(
     Json(alert): Json<AlertRequest>,
 ) -> Result<impl Responder, AlertError> {
     let alert: AlertConfig = alert.into().await?;
-    alert.validate().await?;
 
     // validate the incoming alert query
     // does the user have access to these tables or not?
     let session_key = extract_session_key_from_req(&req)?;
-    let query = alert.get_base_query();
-    user_auth_for_query(&session_key, &query).await?;
+
+    alert.validate(session_key).await?;
 
     // now that we've validated that the user can run this query
     // move on to saving the alert in ObjectStore
@@ -79,9 +78,8 @@ pub async fn get(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Responde
     let alert_id = alert_id.into_inner();
 
     let alert = ALERTS.get_alert_by_id(alert_id).await?;
-    // validate that the user has access to the tables mentioned
-    let query = alert.get_base_query();
-    user_auth_for_query(&session_key, &query).await?;
+    // validate that the user has access to the tables mentioned in the query
+    user_auth_for_query(&session_key, &alert.query).await?;
 
     Ok(web::Json(alert))
 }
@@ -94,9 +92,8 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
 
     let alert = ALERTS.get_alert_by_id(alert_id).await?;
 
-    // validate that the user has access to the tables mentioned
-    let query = alert.get_base_query();
-    user_auth_for_query(&session_key, &query).await?;
+    // validate that the user has access to the tables mentioned in the query
+    user_auth_for_query(&session_key, &alert.query).await?;
 
     let store = PARSEABLE.storage.get_object_store();
     let alert_path = alert_json_path(alert_id);
@@ -128,9 +125,8 @@ pub async fn update_state(
 
     // check if alert id exists in map
     let alert = ALERTS.get_alert_by_id(alert_id).await?;
-    // validate that the user has access to the tables mentioned
-    let query = alert.get_base_query();
-    user_auth_for_query(&session_key, &query).await?;
+    // validate that the user has access to the tables mentioned in the query
+    user_auth_for_query(&session_key, &alert.query).await?;
 
     let query_string = req.query_string();
 
