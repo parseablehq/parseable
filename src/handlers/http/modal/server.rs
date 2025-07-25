@@ -269,6 +269,13 @@ impl Server {
                             .authorize(Action::DeleteAlert),
                     ),
             )
+            .service(
+                web::resource("/list_tags").route(
+                    web::get()
+                        .to(alerts::list_tags)
+                        .authorize(Action::ListDashboard),
+                ),
+            )
     }
 
     pub fn get_targets_webscope() -> Scope {

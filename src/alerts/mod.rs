@@ -19,7 +19,7 @@
 use actix_web::http::header::ContentType;
 use arrow_schema::{DataType, Schema};
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use datafusion::logical_expr::{LogicalPlan, Projection};
 use datafusion::sql::sqlparser::parser::ParserError;
 use derive_more::FromStrError;
@@ -195,6 +195,14 @@ impl DeploymentInfo {
 #[serde(rename_all = "camelCase")]
 pub enum AlertType {
     Threshold,
+}
+
+impl Display for AlertType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AlertType::Threshold => write!(f, "Threshold"),
+        }
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -528,6 +536,7 @@ pub struct AlertRequest {
     pub threshold_config: ThresholdConfig,
     pub eval_config: EvalConfig,
     pub targets: Vec<Ulid>,
+    pub tags: Option<Vec<String>>,
 }
 
 impl AlertRequest {
@@ -547,6 +556,8 @@ impl AlertRequest {
             eval_config: self.eval_config,
             targets: self.targets,
             state: AlertState::default(),
+            created: Utc::now(),
+            tags: self.tags,
         };
         Ok(config)
     }
@@ -568,6 +579,8 @@ pub struct AlertConfig {
     // for new alerts, state should be resolved
     #[serde(default)]
     pub state: AlertState,
+    pub created: DateTime<Utc>,
+    pub tags: Option<Vec<String>>,
 }
 
 impl AlertConfig {
@@ -597,6 +610,8 @@ impl AlertConfig {
             eval_config,
             targets,
             state,
+            created: Utc::now(),
+            tags: None,
         };
 
         // Save the migrated alert back to storage
@@ -1183,6 +1198,45 @@ impl AlertConfig {
         }
         Ok(())
     }
+
+    /// create a summary of the dashboard
+    /// used for listing dashboards
+    pub fn to_summary(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut map = serde_json::Map::new();
+
+        map.insert(
+            "title".to_string(),
+            serde_json::Value::String(self.title.clone()),
+        );
+
+        map.insert(
+            "created".to_string(),
+            serde_json::Value::String(self.created.to_string()),
+        );
+
+        map.insert(
+            "alertType".to_string(),
+            serde_json::Value::String(self.alert_type.to_string()),
+        );
+
+        map.insert(
+            "id".to_string(),
+            serde_json::Value::String(self.id.to_string()),
+        );
+
+        if let Some(tags) = &self.tags {
+            map.insert(
+                "tags".to_string(),
+                serde_json::Value::Array(
+                    tags.iter()
+                        .map(|tag| serde_json::Value::String(tag.clone()))
+                        .collect(),
+                ),
+            );
+        }
+
+        map
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -1221,6 +1275,8 @@ pub enum AlertError {
     ParserError(#[from] ParserError),
     #[error("Invalid alert query")]
     InvalidAlertQuery,
+    #[error("Invalid query parameter")]
+    InvalidQueryParameter,
 }
 
 impl actix_web::ResponseError for AlertError {
@@ -1243,6 +1299,7 @@ impl actix_web::ResponseError for AlertError {
             Self::TargetInUse => StatusCode::CONFLICT,
             Self::ParserError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidAlertQuery => StatusCode::BAD_REQUEST,
+            Self::InvalidQueryParameter => StatusCode::BAD_REQUEST,
         }
     }
 
@@ -1350,6 +1407,7 @@ impl Alerts {
     pub async fn list_alerts_for_user(
         &self,
         session: SessionKey,
+        tags: Vec<String>,
     ) -> Result<Vec<AlertConfig>, AlertError> {
         let mut alerts: Vec<AlertConfig> = Vec::new();
         for (_, alert) in self.alerts.read().await.iter() {
@@ -1358,6 +1416,17 @@ impl Alerts {
                 alerts.push(alert.to_owned());
             }
         }
+        if tags.is_empty() {
+            return Ok(alerts);
+        }
+        // filter alerts based on tags
+        alerts.retain(|alert| {
+            if let Some(alert_tags) = &alert.tags {
+                alert_tags.iter().any(|tag| tags.contains(tag))
+            } else {
+                false
+            }
+        });
 
         Ok(alerts)
     }
@@ -1455,6 +1524,20 @@ impl Alerts {
             .map_err(|e| AlertError::CustomError(e.to_string()))?;
 
         Ok(())
+    }
+
+    /// List tags from all alerts
+    /// This function returns a list of unique tags from all alerts
+    pub async fn list_tags(&self) -> Vec<String> {
+        let alerts = self.alerts.read().await;
+        let mut tags = alerts
+            .iter()
+            .filter_map(|(_, alert)| alert.tags.as_ref())
+            .flat_map(|t| t.iter().cloned())
+            .collect::<Vec<String>>();
+        tags.sort();
+        tags.dedup();
+        tags
     }
 }
 

@@ -16,7 +16,7 @@
  *
  */
 
-use std::str::FromStr;
+use std::{collections::HashMap, str::FromStr};
 
 use crate::{
     parseable::PARSEABLE,
@@ -38,9 +38,28 @@ use crate::alerts::{ALERTS, AlertConfig, AlertError, AlertRequest, AlertState};
 /// Read all alerts then return alerts which satisfy the condition
 pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
     let session_key = extract_session_key_from_req(&req)?;
-    let alerts = ALERTS.list_alerts_for_user(session_key).await?;
+    let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
+        .map_err(|_| AlertError::InvalidQueryParameter)?;
+    let mut tags_list = Vec::new();
+    if !query_map.is_empty() {
+        if let Some(tags) = query_map.get("tags") {
+            tags_list = tags
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if tags_list.is_empty() {
+                return Err(AlertError::InvalidQueryParameter);
+            }
+        }
+    }
 
-    Ok(web::Json(alerts))
+    let alerts = ALERTS.list_alerts_for_user(session_key, tags_list).await?;
+    let alerts_summary = alerts
+        .iter()
+        .map(|alert| alert.to_summary())
+        .collect::<Vec<_>>();
+    Ok(web::Json(alerts_summary))
 }
 
 // POST /alerts
@@ -153,4 +172,9 @@ pub async fn update_state(
     current_state.update_state(new_state, alert_id).await?;
     let alert = ALERTS.get_alert_by_id(alert_id).await?;
     Ok(web::Json(alert))
+}
+
+pub async fn list_tags() -> Result<impl Responder, AlertError> {
+    let tags = ALERTS.list_tags().await;
+    Ok(web::Json(tags))
 }
