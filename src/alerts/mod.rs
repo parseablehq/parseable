@@ -577,10 +577,12 @@ impl AlertConfig {
         store: &dyn crate::storage::ObjectStorage,
     ) -> Result<AlertConfig, AlertError> {
         let basic_fields = Self::parse_basic_fields(alert_json)?;
-        let query = Self::build_query_from_v1(alert_json).await?;
-        let threshold_config = Self::extract_threshold_config(alert_json)?;
-        let eval_config = Self::extract_eval_config(alert_json)?;
-        let targets = Self::extract_targets(alert_json)?;
+        let alert_info = format!("Alert '{}' (ID: {})", basic_fields.title, basic_fields.id);
+
+        let query = Self::build_query_from_v1(alert_json, &alert_info).await?;
+        let threshold_config = Self::extract_threshold_config(alert_json, &alert_info)?;
+        let eval_config = Self::extract_eval_config(alert_json, &alert_info)?;
+        let targets = Self::extract_targets(alert_json, &alert_info)?;
         let state = Self::extract_state(alert_json);
 
         // Create the migrated v2 alert
@@ -613,12 +615,14 @@ impl AlertConfig {
 
         let title = alert_json["title"]
             .as_str()
-            .ok_or_else(|| AlertError::CustomError("Missing title in v1 alert".to_string()))?
+            .ok_or_else(|| {
+                AlertError::CustomError(format!("Missing title in v1 alert (ID: {id})"))
+            })?
             .to_string();
 
-        let severity_str = alert_json["severity"]
-            .as_str()
-            .ok_or_else(|| AlertError::CustomError("Missing severity in v1 alert".to_string()))?;
+        let severity_str = alert_json["severity"].as_str().ok_or_else(|| {
+            AlertError::CustomError(format!("Missing severity in v1 alert '{title}' (ID: {id})"))
+        })?;
 
         let severity = match severity_str.to_lowercase().as_str() {
             "critical" => Severity::Critical,
@@ -636,17 +640,22 @@ impl AlertConfig {
     }
 
     /// Build SQL query from v1 alert structure
-    async fn build_query_from_v1(alert_json: &JsonValue) -> Result<String, AlertError> {
-        let stream = alert_json["stream"]
-            .as_str()
-            .ok_or_else(|| AlertError::CustomError("Missing stream in v1 alert".to_string()))?;
+    async fn build_query_from_v1(
+        alert_json: &JsonValue,
+        alert_info: &str,
+    ) -> Result<String, AlertError> {
+        let stream = alert_json["stream"].as_str().ok_or_else(|| {
+            AlertError::CustomError(format!("Missing stream in v1 alert for {alert_info}"))
+        })?;
 
         let aggregates = &alert_json["aggregates"];
         let aggregate_config = &aggregates["aggregateConfig"][0];
 
-        let aggregate_function = Self::parse_aggregate_function(aggregate_config)?;
-        let base_query = Self::build_base_query(&aggregate_function, aggregate_config, stream)?;
-        let final_query = Self::add_where_conditions(base_query, aggregate_config, stream).await?;
+        let aggregate_function = Self::parse_aggregate_function(aggregate_config, alert_info)?;
+        let base_query =
+            Self::build_base_query(&aggregate_function, aggregate_config, stream, alert_info)?;
+        let final_query =
+            Self::add_where_conditions(base_query, aggregate_config, stream, alert_info).await?;
 
         Ok(final_query)
     }
@@ -654,12 +663,15 @@ impl AlertConfig {
     /// Parse aggregate function from v1 config
     fn parse_aggregate_function(
         aggregate_config: &JsonValue,
+        alert_info: &str,
     ) -> Result<AggregateFunction, AlertError> {
         let aggregate_function_str =
             aggregate_config["aggregateFunction"]
                 .as_str()
                 .ok_or_else(|| {
-                    AlertError::CustomError("Missing aggregateFunction in v1 alert".to_string())
+                    AlertError::CustomError(format!(
+                        "Missing aggregateFunction in v1 alert for {alert_info}"
+                    ))
                 })?;
 
         match aggregate_function_str.to_lowercase().as_str() {
@@ -670,7 +682,7 @@ impl AlertConfig {
             "max" => Ok(AggregateFunction::Max),
             "sum" => Ok(AggregateFunction::Sum),
             _ => Err(AlertError::CustomError(format!(
-                "Unsupported aggregate function: {aggregate_function_str}",
+                "Unsupported aggregate function: {aggregate_function_str} for {alert_info}"
             ))),
         }
     }
@@ -680,6 +692,7 @@ impl AlertConfig {
         aggregate_function: &AggregateFunction,
         aggregate_config: &JsonValue,
         stream: &str,
+        _alert_info: &str,
     ) -> Result<String, AlertError> {
         let column = aggregate_config["column"].as_str().unwrap_or("*");
 
@@ -716,6 +729,7 @@ impl AlertConfig {
         base_query: String,
         aggregate_config: &JsonValue,
         stream: &str,
+        alert_info: &str,
     ) -> Result<String, AlertError> {
         let Some(conditions) = aggregate_config["conditions"].as_object() else {
             return Ok(base_query);
@@ -734,7 +748,7 @@ impl AlertConfig {
             Ok(schema) => schema,
             Err(e) => {
                 return Err(AlertError::CustomError(format!(
-                    "Failed to fetch schema for stream '{stream}' during migration: {e}. Migration cannot proceed without schema information.",
+                    "Failed to fetch schema for stream '{stream}' during migration of {alert_info}: {e}. Migration cannot proceed without schema information."
                 )));
             }
         };
@@ -743,15 +757,16 @@ impl AlertConfig {
         for condition in condition_config {
             let column = condition["column"].as_str().unwrap_or("");
             if column.is_empty() {
-                warn!("Skipping WHERE condition with empty column name");
+                warn!("Skipping WHERE condition with empty column name for {alert_info}");
                 continue;
             }
             let operator_str = condition["operator"].as_str().unwrap_or("=");
             let value = condition["value"].as_str().unwrap_or("");
 
             let operator = Self::parse_where_operator(operator_str);
-            let where_clause =
-                Self::format_where_clause_with_types(column, &operator, value, &schema)?;
+            let where_clause = Self::format_where_clause_with_types(
+                column, &operator, value, &schema, alert_info,
+            )?;
             where_clauses.push(where_clause);
         }
 
@@ -789,6 +804,7 @@ impl AlertConfig {
         operator: &WhereConfigOperator,
         value: &str,
         schema: &Schema,
+        alert_info: &str,
     ) -> Result<String, AlertError> {
         match operator {
             WhereConfigOperator::IsNull | WhereConfigOperator::IsNotNull => {
@@ -824,7 +840,8 @@ impl AlertConfig {
             )),
             _ => {
                 // Standard operators: =, !=, <, >, <=, >=
-                let formatted_value = Self::convert_value_by_data_type(column, value, schema)?;
+                let formatted_value =
+                    Self::convert_value_by_data_type(column, value, schema, alert_info)?;
                 Ok(format!(
                     "\"{column}\" {} {formatted_value}",
                     operator.as_str()
@@ -838,13 +855,14 @@ impl AlertConfig {
         column: &str,
         value: &str,
         schema: &Schema,
+        alert_info: &str,
     ) -> Result<String, AlertError> {
         // Find the field in the schema
         let field = schema.fields().iter().find(|f| f.name() == column);
         let Some(field) = field else {
             // Column not found in schema, fail migration
             return Err(AlertError::CustomError(format!(
-                "Column '{column}' not found in stream schema during migration. Available columns: [{}]",
+                "Column '{column}' not found in stream schema during migration of {alert_info}. Available columns: [{}]",
                 schema
                     .fields()
                     .iter()
@@ -859,7 +877,7 @@ impl AlertConfig {
                 match value.parse::<f64>() {
                     Ok(float_val) => Ok(float_val.to_string()), // Raw number without quotes
                     Err(_) => Err(AlertError::CustomError(format!(
-                        "Failed to parse value '{value}' as float64 for column '{column}' during migration",
+                        "Failed to parse value '{value}' as float64 for column '{column}' during migration of {alert_info}",
                     ))),
                 }
             }
@@ -867,7 +885,7 @@ impl AlertConfig {
                 match value.parse::<i64>() {
                     Ok(int_val) => Ok(int_val.to_string()), // Raw number without quotes
                     Err(_) => Err(AlertError::CustomError(format!(
-                        "Failed to parse value '{value}' as int64 for column '{column}' during migration",
+                        "Failed to parse value '{value}' as int64 for column '{column}' during migration of {alert_info}",
                     ))),
                 }
             }
@@ -875,7 +893,7 @@ impl AlertConfig {
                 match value.to_lowercase().parse::<bool>() {
                     Ok(bool_val) => Ok(bool_val.to_string()), // Raw boolean without quotes
                     Err(_) => Err(AlertError::CustomError(format!(
-                        "Failed to parse value '{value}' as boolean for column '{column}' during migration",
+                        "Failed to parse value '{value}' as boolean for column '{column}' during migration of {alert_info}",
                     ))),
                 }
             }
@@ -888,7 +906,7 @@ impl AlertConfig {
                         match value.parse::<chrono::DateTime<chrono::Utc>>() {
                             Ok(_) => Ok(format!("'{}'", value.replace('\'', "''"))),
                             Err(_) => Err(AlertError::CustomError(format!(
-                                "Failed to parse value '{value}' as date for column '{column}' during migration",
+                                "Failed to parse value '{value}' as date for column '{column}' during migration of {alert_info}",
                             ))),
                         }
                     }
@@ -899,7 +917,7 @@ impl AlertConfig {
                 match value.parse::<chrono::DateTime<chrono::Utc>>() {
                     Ok(_) => Ok(format!("'{}'", value.replace('\'', "''"))),
                     Err(_) => Err(AlertError::CustomError(format!(
-                        "Failed to parse value '{value}' as timestamp for column '{column}' during migration",
+                        "Failed to parse value '{value}' as timestamp for column '{column}' during migration of {alert_info}",
                     ))),
                 }
             }
@@ -911,17 +929,20 @@ impl AlertConfig {
     }
 
     /// Extract threshold configuration from v1 alert
-    fn extract_threshold_config(alert_json: &JsonValue) -> Result<ThresholdConfig, AlertError> {
+    fn extract_threshold_config(
+        alert_json: &JsonValue,
+        alert_info: &str,
+    ) -> Result<ThresholdConfig, AlertError> {
         let aggregates = &alert_json["aggregates"];
         let aggregate_config = &aggregates["aggregateConfig"][0];
 
-        let threshold_operator = aggregate_config["operator"]
-            .as_str()
-            .ok_or_else(|| AlertError::CustomError("Missing operator in v1 alert".to_string()))?;
+        let threshold_operator = aggregate_config["operator"].as_str().ok_or_else(|| {
+            AlertError::CustomError(format!("Missing operator in v1 alert for {alert_info}"))
+        })?;
 
-        let threshold_value = aggregate_config["value"]
-            .as_f64()
-            .ok_or_else(|| AlertError::CustomError("Missing value in v1 alert".to_string()))?;
+        let threshold_value = aggregate_config["value"].as_f64().ok_or_else(|| {
+            AlertError::CustomError(format!("Missing value in v1 alert for {alert_info}"))
+        })?;
 
         let operator = match threshold_operator {
             ">" => AlertOperator::GreaterThan,
@@ -940,21 +961,30 @@ impl AlertConfig {
     }
 
     /// Extract evaluation configuration from v1 alert
-    fn extract_eval_config(alert_json: &JsonValue) -> Result<EvalConfig, AlertError> {
+    fn extract_eval_config(
+        alert_json: &JsonValue,
+        alert_info: &str,
+    ) -> Result<EvalConfig, AlertError> {
         let rolling_window = &alert_json["evalConfig"]["rollingWindow"];
 
         let eval_start = rolling_window["evalStart"]
             .as_str()
-            .ok_or_else(|| AlertError::CustomError("Missing evalStart in v1 alert".to_string()))?
+            .ok_or_else(|| {
+                AlertError::CustomError(format!("Missing evalStart in v1 alert for {alert_info}"))
+            })?
             .to_string();
 
         let eval_end = rolling_window["evalEnd"]
             .as_str()
-            .ok_or_else(|| AlertError::CustomError("Missing evalEnd in v1 alert".to_string()))?
+            .ok_or_else(|| {
+                AlertError::CustomError(format!("Missing evalEnd in v1 alert for {alert_info}"))
+            })?
             .to_string();
 
         let eval_frequency = rolling_window["evalFrequency"].as_u64().ok_or_else(|| {
-            AlertError::CustomError("Missing evalFrequency in v1 alert".to_string())
+            AlertError::CustomError(format!(
+                "Missing evalFrequency in v1 alert for {alert_info}"
+            ))
         })?;
 
         Ok(EvalConfig::RollingWindow(RollingWindow {
@@ -965,16 +995,24 @@ impl AlertConfig {
     }
 
     /// Extract target IDs from v1 alert
-    fn extract_targets(alert_json: &JsonValue) -> Result<Vec<Ulid>, AlertError> {
+    fn extract_targets(alert_json: &JsonValue, alert_info: &str) -> Result<Vec<Ulid>, AlertError> {
         let targets: Result<Vec<Ulid>, _> = alert_json["targets"]
             .as_array()
-            .ok_or_else(|| AlertError::CustomError("Missing targets in v1 alert".to_string()))?
+            .ok_or_else(|| {
+                AlertError::CustomError(format!("Missing targets in v1 alert for {alert_info}"))
+            })?
             .iter()
             .map(|t| {
                 t.as_str()
-                    .ok_or_else(|| AlertError::CustomError("Invalid target format".to_string()))?
+                    .ok_or_else(|| {
+                        AlertError::CustomError(format!("Invalid target format for {alert_info}"))
+                    })?
                     .parse()
-                    .map_err(|_| AlertError::CustomError("Invalid target ID format".to_string()))
+                    .map_err(|_| {
+                        AlertError::CustomError(format!(
+                            "Invalid target ID format for {alert_info}"
+                        ))
+                    })
             })
             .collect();
 
