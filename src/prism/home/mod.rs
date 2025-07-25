@@ -356,7 +356,7 @@ async fn get_alert_titles(
     query_value: &str,
 ) -> Result<Vec<Resource>, PrismHomeError> {
     let alerts = ALERTS
-        .list_alerts_for_user(key.clone())
+        .list_alerts_for_user(key.clone(), vec![])
         .await?
         .iter()
         .filter_map(|alert| {
