@@ -200,7 +200,7 @@ pub enum AlertType {
 impl Display for AlertType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            AlertType::Threshold => write!(f, "Threshold"),
+            AlertType::Threshold => write!(f, "threshold"),
         }
     }
 }
@@ -1222,6 +1222,16 @@ impl AlertConfig {
         map.insert(
             "id".to_string(),
             serde_json::Value::String(self.id.to_string()),
+        );
+
+        map.insert(
+            "severity".to_string(),
+            serde_json::Value::String(self.severity.to_string()),
+        );
+
+        map.insert(
+            "state".to_string(),
+            serde_json::Value::String(self.state.to_string()),
         );
 
         if let Some(tags) = &self.tags {
