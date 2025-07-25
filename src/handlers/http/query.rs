@@ -56,7 +56,7 @@ use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::time::{TimeParseError, TimeRange};
 use crate::utils::user_auth_for_datasets;
 
-const TIME_ELAPSED_HEADER: &str = "p-time-elapsed";
+pub const TIME_ELAPSED_HEADER: &str = "p-time-elapsed";
 /// Query Request through http endpoint.
 #[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]

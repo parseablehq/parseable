@@ -17,12 +17,13 @@
  */
 
 pub mod utils;
-
 use futures::{StreamExt, future, stream};
-use std::collections::HashSet;
+use lazy_static::lazy_static;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::sync::{RwLock, Semaphore};
 
 use actix_web::Responder;
 use actix_web::http::header::{self, HeaderMap};
@@ -42,6 +43,7 @@ use utils::{IngestionStats, QueriedStats, StorageStats, check_liveness, to_url_s
 
 use crate::INTRA_CLUSTER_CLIENT;
 use crate::handlers::http::ingest::ingest_internal_stream;
+use crate::handlers::http::query::{Query, QueryError, TIME_ELAPSED_HEADER};
 use crate::metrics::prom_utils::Metrics;
 use crate::parseable::PARSEABLE;
 use crate::rbac::role::model::DefaultPrivilege;
@@ -64,6 +66,12 @@ use super::role::RoleError;
 pub const INTERNAL_STREAM_NAME: &str = "pmeta";
 
 const CLUSTER_METRICS_INTERVAL_SECONDS: Interval = clokwerk::Interval::Minutes(1);
+
+lazy_static! {
+    static ref QUERIER_MAP: Arc<RwLock<HashMap<String, QuerierStatus>>> =
+        Arc::new(RwLock::new(HashMap::new()));
+    static ref LAST_USED_QUERIER: Arc<RwLock<Option<String>>> = Arc::new(RwLock::new(None));
+}
 
 pub async fn for_each_live_ingestor<F, Fut, E>(api_fn: F) -> Result<(), E>
 where
@@ -1103,4 +1111,262 @@ pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
     });
 
     Ok(())
+}
+
+#[derive(Clone, Debug)]
+struct QuerierStatus {
+    metadata: QuerierMetadata,
+    available: bool,
+    last_used: Option<Instant>,
+}
+
+async fn get_available_querier() -> Result<QuerierMetadata, QueryError> {
+    // Get all querier metadata
+    let querier_metadata: Vec<NodeMetadata> = get_node_info(NodeType::Querier).await?;
+
+    // No queriers found
+    if querier_metadata.is_empty() {
+        return Err(QueryError::NoAvailableQuerier);
+    }
+
+    // Limit concurrency for liveness checks to avoid resource exhaustion
+    const MAX_CONCURRENT_LIVENESS_CHECKS: usize = 10;
+    let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_LIVENESS_CHECKS));
+
+    // Update the querier map with new metadata and get an available querier
+    let mut map = QUERIER_MAP.write().await;
+
+    let existing_domains: Vec<String> = map.keys().cloned().collect();
+    let mut live_domains = std::collections::HashSet::new();
+
+    // Use stream with concurrency limit instead of join_all
+    let liveness_results: Vec<(String, bool, NodeMetadata)> = stream::iter(querier_metadata)
+        .map(|metadata| {
+            let domain = metadata.domain_name.clone();
+            let metadata_clone = metadata.clone();
+            let semaphore = Arc::clone(&semaphore);
+
+            async move {
+                let _permit = semaphore.acquire().await.unwrap();
+                let is_live = check_liveness(&domain).await;
+                (domain, is_live, metadata_clone)
+            }
+        })
+        .buffer_unordered(MAX_CONCURRENT_LIVENESS_CHECKS)
+        .collect()
+        .await;
+
+    // Update the map based on liveness results
+    for (domain, is_live, metadata) in liveness_results {
+        if is_live {
+            live_domains.insert(domain.clone());
+            // Update existing entry or add new one
+            if let Some(status) = map.get_mut(&domain) {
+                // Update metadata for existing entry, preserve last_used
+                status.metadata = metadata;
+            } else {
+                // Add new entry
+                map.insert(
+                    domain,
+                    QuerierStatus {
+                        metadata,
+                        available: true,
+                        last_used: None,
+                    },
+                );
+            }
+        }
+    }
+
+    // Remove entries that are not live anymore
+    existing_domains.iter().for_each(|domain| {
+        if !live_domains.contains(domain) {
+            map.remove(domain);
+        }
+    });
+
+    // Find the next available querier using round-robin strategy
+    if let Some(selected_domain) = select_next_querier(&mut map).await {
+        if let Some(status) = map.get_mut(&selected_domain) {
+            status.available = false;
+            status.last_used = Some(Instant::now());
+            return Ok(status.metadata.clone());
+        }
+    }
+
+    // If no querier is available, use least-recently-used strategy
+    if let Some(selected_domain) = select_least_recently_used_querier(&mut map) {
+        if let Some(status) = map.get_mut(&selected_domain) {
+            status.available = false;
+            status.last_used = Some(Instant::now());
+            return Ok(status.metadata.clone());
+        }
+    }
+
+    // If no querier is available, return an error
+    Err(QueryError::NoAvailableQuerier)
+}
+
+/// Select next querier using round-robin strategy
+async fn select_next_querier(map: &mut HashMap<String, QuerierStatus>) -> Option<String> {
+    // First, try to find any available querier
+    let available_queriers: Vec<String> = map
+        .iter()
+        .filter_map(|(domain, status)| {
+            if status.available {
+                Some(domain.clone())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if available_queriers.is_empty() {
+        return None;
+    }
+
+    // Get the last used querier for round-robin
+    let last_used = LAST_USED_QUERIER.read().await;
+
+    if let Some(ref last_domain) = *last_used {
+        // Find the next querier in the list after the last used one
+        let mut found_last = false;
+        for domain in &available_queriers {
+            if found_last {
+                drop(last_used);
+                *LAST_USED_QUERIER.write().await = Some(domain.clone());
+                return Some(domain.clone());
+            }
+            if domain == last_domain {
+                found_last = true;
+            }
+        }
+        // If we reached here, either last_used querier is not available anymore
+        // or it was the last in the list, so wrap around to the first
+        if let Some(first_domain) = available_queriers.first() {
+            drop(last_used);
+            *LAST_USED_QUERIER.write().await = Some(first_domain.clone());
+            return Some(first_domain.clone());
+        }
+    } else {
+        // No previous querier, select the first available one
+        if let Some(first_domain) = available_queriers.first() {
+            drop(last_used);
+            *LAST_USED_QUERIER.write().await = Some(first_domain.clone());
+            return Some(first_domain.clone());
+        }
+    }
+
+    None
+}
+
+/// Select the least recently used querier when no querier is marked as available
+fn select_least_recently_used_querier(map: &mut HashMap<String, QuerierStatus>) -> Option<String> {
+    if map.is_empty() {
+        return None;
+    }
+
+    // Find the querier that was used least recently (or never used)
+    let mut least_recently_used_domain: Option<String> = None;
+    let mut oldest_time: Option<Instant> = None;
+
+    for (domain, status) in map.iter() {
+        match (status.last_used, oldest_time) {
+            // Never used - highest priority
+            (None, _) => {
+                least_recently_used_domain = Some(domain.clone());
+                oldest_time = None;
+            }
+            // Used, but we haven't found any used querier yet
+            (Some(used_time), None) => {
+                if least_recently_used_domain.is_none() {
+                    least_recently_used_domain = Some(domain.clone());
+                    oldest_time = Some(used_time);
+                }
+            }
+            // Used, and we have a candidate - compare times
+            (Some(used_time), Some(current_oldest)) => {
+                if used_time < current_oldest {
+                    least_recently_used_domain = Some(domain.clone());
+                    oldest_time = Some(used_time);
+                }
+            }
+        }
+    }
+
+    least_recently_used_domain
+}
+
+// Mark a querier as available again
+pub async fn mark_querier_available(domain_name: &str) {
+    let mut map = QUERIER_MAP.write().await;
+    if let Some(status) = map.get_mut(domain_name) {
+        status.available = true;
+        // Note: We don't reset last_used here as it's used for LRU selection
+    }
+}
+
+pub async fn send_query_request(query_request: &Query) -> Result<(JsonValue, String), QueryError> {
+    let querier = get_available_querier().await?;
+    let domain_name = querier.domain_name.clone();
+
+    // Perform the query request
+    let fields = query_request.fields;
+    let streaming = query_request.streaming;
+    let send_null = query_request.send_null;
+    let uri = format!(
+        "{}api/v1/query?fields={fields}&streaming={streaming}&send_null={send_null}",
+        &querier.domain_name,
+    );
+
+    let body = match serde_json::to_string(&query_request) {
+        Ok(body) => body,
+        Err(err) => {
+            mark_querier_available(&domain_name).await;
+            return Err(QueryError::from(err));
+        }
+    };
+
+    let res = match INTRA_CLUSTER_CLIENT
+        .post(uri)
+        .header(header::AUTHORIZATION, &querier.token)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(body)
+        .send()
+        .await
+    {
+        Ok(res) => res,
+        Err(err) => {
+            mark_querier_available(&domain_name).await;
+            return Err(QueryError::from(err));
+        }
+    };
+
+    // Mark querier as available immediately after the HTTP request completes
+    mark_querier_available(&domain_name).await;
+
+    let headers = res.headers();
+    let total_time = match headers.get(TIME_ELAPSED_HEADER) {
+        Some(v) => {
+            let total_time = v.to_str().unwrap_or_default();
+            total_time.to_string()
+        }
+        None => String::default(),
+    };
+
+    if res.status().is_success() {
+        match res.text().await {
+            Ok(text) => {
+                let query_response: JsonValue = serde_json::from_str(&text)?;
+                Ok((query_response, total_time))
+            }
+            Err(err) => {
+                error!("Error parsing query response: {:?}", err);
+                Err(QueryError::Anyhow(err.into()))
+            }
+        }
+    } else {
+        let err_text = res.text().await?;
+        Err(QueryError::JsonParse(err_text))
+    }
 }
