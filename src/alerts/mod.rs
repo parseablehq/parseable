@@ -17,6 +17,7 @@
  */
 
 use actix_web::http::header::ContentType;
+use arrow_schema::{DataType, Schema};
 use async_trait::async_trait;
 use chrono::Utc;
 use datafusion::logical_expr::{LogicalPlan, Projection};
@@ -41,6 +42,7 @@ pub mod alerts_utils;
 pub mod target;
 
 use crate::alerts::target::TARGETS;
+use crate::handlers::http::fetch_schema;
 use crate::handlers::http::query::create_streams_for_distributed;
 use crate::parseable::{PARSEABLE, StreamNotFound};
 use crate::query::{QUERY_SESSION, resolve_stream_names};
@@ -575,7 +577,7 @@ impl AlertConfig {
         store: &dyn crate::storage::ObjectStorage,
     ) -> Result<AlertConfig, AlertError> {
         let basic_fields = Self::parse_basic_fields(alert_json)?;
-        let query = Self::build_query_from_v1(alert_json)?;
+        let query = Self::build_query_from_v1(alert_json).await?;
         let threshold_config = Self::extract_threshold_config(alert_json)?;
         let eval_config = Self::extract_eval_config(alert_json)?;
         let targets = Self::extract_targets(alert_json)?;
@@ -634,7 +636,7 @@ impl AlertConfig {
     }
 
     /// Build SQL query from v1 alert structure
-    fn build_query_from_v1(alert_json: &JsonValue) -> Result<String, AlertError> {
+    async fn build_query_from_v1(alert_json: &JsonValue) -> Result<String, AlertError> {
         let stream = alert_json["stream"]
             .as_str()
             .ok_or_else(|| AlertError::CustomError("Missing stream in v1 alert".to_string()))?;
@@ -644,7 +646,7 @@ impl AlertConfig {
 
         let aggregate_function = Self::parse_aggregate_function(aggregate_config)?;
         let base_query = Self::build_base_query(&aggregate_function, aggregate_config, stream)?;
-        let final_query = Self::add_where_conditions(base_query, aggregate_config)?;
+        let final_query = Self::add_where_conditions(base_query, aggregate_config, stream).await?;
 
         Ok(final_query)
     }
@@ -709,10 +711,11 @@ impl AlertConfig {
         Ok(query)
     }
 
-    /// Add WHERE conditions to the base query
-    fn add_where_conditions(
+    /// Add WHERE conditions to the base query with data type conversion
+    async fn add_where_conditions(
         base_query: String,
         aggregate_config: &JsonValue,
+        stream: &str,
     ) -> Result<String, AlertError> {
         let Some(conditions) = aggregate_config["conditions"].as_object() else {
             return Ok(base_query);
@@ -726,6 +729,16 @@ impl AlertConfig {
             return Ok(base_query);
         }
 
+        // Fetch the stream schema for data type conversion
+        let schema = match fetch_schema(stream).await {
+            Ok(schema) => schema,
+            Err(e) => {
+                return Err(AlertError::CustomError(format!(
+                    "Failed to fetch schema for stream '{stream}' during migration: {e}. Migration cannot proceed without schema information.",
+                )));
+            }
+        };
+
         let mut where_clauses = Vec::new();
         for condition in condition_config {
             let column = condition["column"].as_str().unwrap_or("");
@@ -737,7 +750,8 @@ impl AlertConfig {
             let value = condition["value"].as_str().unwrap_or("");
 
             let operator = Self::parse_where_operator(operator_str);
-            let where_clause = Self::format_where_clause(column, &operator, value);
+            let where_clause =
+                Self::format_where_clause_with_types(column, &operator, value, &schema)?;
             where_clauses.push(where_clause);
         }
 
@@ -769,41 +783,129 @@ impl AlertConfig {
         }
     }
 
-    /// Format a single WHERE clause
-    fn format_where_clause(column: &str, operator: &WhereConfigOperator, value: &str) -> String {
+    /// Format a single WHERE clause with proper data type conversion
+    fn format_where_clause_with_types(
+        column: &str,
+        operator: &WhereConfigOperator,
+        value: &str,
+        schema: &Schema,
+    ) -> Result<String, AlertError> {
         match operator {
             WhereConfigOperator::IsNull | WhereConfigOperator::IsNotNull => {
-                format!("\"{}\" {}", column, operator.as_str())
+                Ok(format!("\"{column}\" {}", operator.as_str()))
             }
-            WhereConfigOperator::Contains => {
-                format!("\"{}\" LIKE '%{}%'", column, value.replace('\'', "''"))
-            }
-            WhereConfigOperator::BeginsWith => {
-                format!("\"{}\" LIKE '{}%'", column, value.replace('\'', "''"))
-            }
-            WhereConfigOperator::EndsWith => {
-                format!("\"{}\" LIKE '%{}'", column, value.replace('\'', "''"))
-            }
-            WhereConfigOperator::DoesNotContain => {
-                format!("\"{}\" NOT LIKE '%{}%'", column, value.replace('\'', "''"))
-            }
-            WhereConfigOperator::DoesNotBeginWith => {
-                format!("\"{}\" NOT LIKE '{}%'", column, value.replace('\'', "''"))
-            }
-            WhereConfigOperator::DoesNotEndWith => {
-                format!("\"{}\" NOT LIKE '%{}'", column, value.replace('\'', "''"))
-            }
-            WhereConfigOperator::ILike => {
-                format!("\"{}\" ILIKE '{}'", column, value.replace('\'', "''"))
-            }
+            WhereConfigOperator::Contains => Ok(format!(
+                "\"{column}\" LIKE '%{}%'",
+                value.replace('\'', "''")
+            )),
+            WhereConfigOperator::BeginsWith => Ok(format!(
+                "\"{column}\" LIKE '{}%'",
+                value.replace('\'', "''")
+            )),
+            WhereConfigOperator::EndsWith => Ok(format!(
+                "\"{column}\" LIKE '%{}'",
+                value.replace('\'', "''")
+            )),
+            WhereConfigOperator::DoesNotContain => Ok(format!(
+                "\"{column}\" NOT LIKE '%{}%'",
+                value.replace('\'', "''")
+            )),
+            WhereConfigOperator::DoesNotBeginWith => Ok(format!(
+                "\"{column}\" NOT LIKE '{}%'",
+                value.replace('\'', "''")
+            )),
+            WhereConfigOperator::DoesNotEndWith => Ok(format!(
+                "\"{column}\" NOT LIKE '%{}'",
+                value.replace('\'', "''")
+            )),
+            WhereConfigOperator::ILike => Ok(format!(
+                "\"{column}\" ILIKE '{}'",
+                value.replace('\'', "''")
+            )),
             _ => {
                 // Standard operators: =, !=, <, >, <=, >=
-                format!(
-                    "\"{}\" {} '{}'",
-                    column,
-                    operator.as_str(),
-                    value.replace('\'', "''")
-                )
+                let formatted_value = Self::convert_value_by_data_type(column, value, schema)?;
+                Ok(format!(
+                    "\"{column}\" {} {formatted_value}",
+                    operator.as_str()
+                ))
+            }
+        }
+    }
+
+    /// Convert string value to appropriate data type based on schema
+    fn convert_value_by_data_type(
+        column: &str,
+        value: &str,
+        schema: &Schema,
+    ) -> Result<String, AlertError> {
+        // Find the field in the schema
+        let field = schema.fields().iter().find(|f| f.name() == column);
+        let Some(field) = field else {
+            // Column not found in schema, fail migration
+            return Err(AlertError::CustomError(format!(
+                "Column '{column}' not found in stream schema during migration. Available columns: [{}]",
+                schema
+                    .fields()
+                    .iter()
+                    .map(|f| f.name().clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        };
+
+        match field.data_type() {
+            DataType::Float64 => {
+                match value.parse::<f64>() {
+                    Ok(float_val) => Ok(float_val.to_string()), // Raw number without quotes
+                    Err(_) => Err(AlertError::CustomError(format!(
+                        "Failed to parse value '{value}' as float64 for column '{column}' during migration",
+                    ))),
+                }
+            }
+            DataType::Int64 => {
+                match value.parse::<i64>() {
+                    Ok(int_val) => Ok(int_val.to_string()), // Raw number without quotes
+                    Err(_) => Err(AlertError::CustomError(format!(
+                        "Failed to parse value '{value}' as int64 for column '{column}' during migration",
+                    ))),
+                }
+            }
+            DataType::Boolean => {
+                match value.to_lowercase().parse::<bool>() {
+                    Ok(bool_val) => Ok(bool_val.to_string()), // Raw boolean without quotes
+                    Err(_) => Err(AlertError::CustomError(format!(
+                        "Failed to parse value '{value}' as boolean for column '{column}' during migration",
+                    ))),
+                }
+            }
+            DataType::Date32 | DataType::Date64 => {
+                // For date types, try to validate the format but keep as quoted string in SQL
+                match chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d") {
+                    Ok(_) => Ok(format!("'{}'", value.replace('\'', "''"))),
+                    Err(_) => {
+                        // Try ISO format
+                        match value.parse::<chrono::DateTime<chrono::Utc>>() {
+                            Ok(_) => Ok(format!("'{}'", value.replace('\'', "''"))),
+                            Err(_) => Err(AlertError::CustomError(format!(
+                                "Failed to parse value '{value}' as date for column '{column}' during migration",
+                            ))),
+                        }
+                    }
+                }
+            }
+            DataType::Timestamp(..) => {
+                // For timestamp types, try to validate but keep as quoted string in SQL
+                match value.parse::<chrono::DateTime<chrono::Utc>>() {
+                    Ok(_) => Ok(format!("'{}'", value.replace('\'', "''"))),
+                    Err(_) => Err(AlertError::CustomError(format!(
+                        "Failed to parse value '{value}' as timestamp for column '{column}' during migration",
+                    ))),
+                }
+            }
+            _ => {
+                // For all other data types (string, binary, etc.), use string with quotes
+                Ok(format!("'{}'", value.replace('\'', "''")))
             }
         }
     }
