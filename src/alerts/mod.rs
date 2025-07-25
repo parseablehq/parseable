@@ -699,7 +699,7 @@ impl AlertConfig {
         let query = match aggregate_function {
             AggregateFunction::CountDistinct => {
                 if column == "*" {
-                    format!("SELECT COUNT(DISTINCT *) as alert_value FROM \"{stream}\"")
+                    format!("SELECT COUNT(*) as alert_value FROM \"{stream}\"")
                 } else {
                     format!("SELECT COUNT(DISTINCT \"{column}\") as alert_value FROM \"{stream}\"")
                 }
