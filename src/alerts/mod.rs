@@ -545,12 +545,14 @@ impl AlertRequest {
         for id in &self.targets {
             TARGETS.get_target_by_id(id).await?;
         }
+        let datasets = resolve_stream_names(&self.query)?;
         let config = AlertConfig {
             version: AlertVerison::from(CURRENT_ALERTS_VERSION),
             id: Ulid::new(),
             severity: self.severity,
             title: self.title,
             query: self.query,
+            datasets,
             alert_type: self.alert_type,
             threshold_config: self.threshold_config,
             eval_config: self.eval_config,
@@ -572,6 +574,7 @@ pub struct AlertConfig {
     pub severity: Severity,
     pub title: String,
     pub query: String,
+    pub datasets: Vec<String>,
     pub alert_type: AlertType,
     pub threshold_config: ThresholdConfig,
     pub eval_config: EvalConfig,
@@ -593,6 +596,7 @@ impl AlertConfig {
         let alert_info = format!("Alert '{}' (ID: {})", basic_fields.title, basic_fields.id);
 
         let query = Self::build_query_from_v1(alert_json, &alert_info).await?;
+        let datasets = resolve_stream_names(&query)?;
         let threshold_config = Self::extract_threshold_config(alert_json, &alert_info)?;
         let eval_config = Self::extract_eval_config(alert_json, &alert_info)?;
         let targets = Self::extract_targets(alert_json, &alert_info)?;
@@ -605,6 +609,7 @@ impl AlertConfig {
             severity: basic_fields.severity,
             title: basic_fields.title,
             query,
+            datasets,
             alert_type: AlertType::Threshold,
             threshold_config,
             eval_config,
@@ -1244,6 +1249,16 @@ impl AlertConfig {
                 ),
             );
         }
+
+        map.insert(
+            "datasets".to_string(),
+            serde_json::Value::Array(
+                self.datasets
+                    .iter()
+                    .map(|dataset| serde_json::Value::String(dataset.clone()))
+                    .collect(),
+            ),
+        );
 
         map
     }
