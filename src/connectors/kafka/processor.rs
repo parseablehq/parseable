@@ -24,13 +24,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error};
-
 use crate::{
     connectors::common::processor::Processor,
     event::{
         Event as ParseableEvent, USER_AGENT_KEY,
         format::{EventFormat, LogSourceEntry, json},
     },
+    handlers::TelemetryType,
     parseable::PARSEABLE,
     storage::StreamType,
 };
