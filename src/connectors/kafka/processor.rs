@@ -50,13 +50,13 @@ impl ParseableSinkProcessor {
             .map(|r| r.topic.as_str())
             .unwrap_or_default();
         let log_source_entry = LogSourceEntry::default();
-
         PARSEABLE
             .create_stream_if_not_exists(
                 stream_name,
                 StreamType::UserDefined,
                 None,
                 vec![log_source_entry],
+                TelemetryType::default(),
             )
             .await?;
 
