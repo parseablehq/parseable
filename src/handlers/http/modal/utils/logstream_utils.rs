@@ -22,7 +22,8 @@ use crate::{
     event::format::LogSource,
     handlers::{
         CUSTOM_PARTITION_KEY, LOG_SOURCE_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY,
-        TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY, UPDATE_STREAM_KEY,
+        TELEMETRY_TYPE_KEY, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY, TelemetryType,
+        UPDATE_STREAM_KEY,
     },
     storage::StreamType,
 };
@@ -36,6 +37,7 @@ pub struct PutStreamHeaders {
     pub update_stream_flag: bool,
     pub stream_type: StreamType,
     pub log_source: LogSource,
+    pub telemetry_type: TelemetryType,
 }
 
 impl From<&HeaderMap> for PutStreamHeaders {
@@ -65,6 +67,10 @@ impl From<&HeaderMap> for PutStreamHeaders {
             log_source: headers
                 .get(LOG_SOURCE_KEY)
                 .map_or(LogSource::default(), |v| v.to_str().unwrap().into()),
+            telemetry_type: headers
+                .get(TELEMETRY_TYPE_KEY)
+                .and_then(|v| v.to_str().ok())
+                .map_or(TelemetryType::Logs, TelemetryType::from),
         }
     }
 }
