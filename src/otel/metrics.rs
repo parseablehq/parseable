@@ -15,6 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::metrics::v1::number_data_point::Value as NumberDataPointValue;
 use opentelemetry_proto::tonic::metrics::v1::{
     Exemplar, ExponentialHistogram, Gauge, Histogram, Metric, MetricsData, NumberDataPoint, Sum,
@@ -600,4 +601,61 @@ fn flatten_data_point_flags(flags: u32) -> Map<String, Value> {
         Value::String(description.to_string()),
     );
     data_point_flags_json
+}
+
+/// Flattens OpenTelemetry metrics from protobuf format
+pub fn flatten_otel_metrics_protobuf(message: &ExportMetricsServiceRequest) -> Vec<Value> {
+    let mut vec_otel_json = Vec::new();
+    for resource_metrics in &message.resource_metrics {
+        let mut resource_metrics_json = Map::new();
+        if let Some(resource) = &resource_metrics.resource {
+            insert_attributes(&mut resource_metrics_json, &resource.attributes);
+            resource_metrics_json.insert(
+                "resource_dropped_attributes_count".to_string(),
+                Value::Number(resource.dropped_attributes_count.into()),
+            );
+        }
+
+        let mut vec_resource_metrics_json = Vec::new();
+        for scope_metrics in &resource_metrics.scope_metrics {
+            // scope-level metadata
+            let mut scope_metrics_json = Map::new();
+            if let Some(scope) = &scope_metrics.scope {
+                scope_metrics_json
+                    .insert("scope_name".to_string(), Value::String(scope.name.clone()));
+                scope_metrics_json.insert(
+                    "scope_version".to_string(),
+                    Value::String(scope.version.clone()),
+                );
+                insert_attributes(&mut scope_metrics_json, &scope.attributes);
+                scope_metrics_json.insert(
+                    "scope_dropped_attributes_count".to_string(),
+                    Value::Number(scope.dropped_attributes_count.into()),
+                );
+            }
+            scope_metrics_json.insert(
+                "scope_schema_url".to_string(),
+                Value::String(scope_metrics.schema_url.clone()),
+            );
+
+            for metric in &scope_metrics.metrics {
+                vec_resource_metrics_json.extend(flatten_metrics_record(metric));
+            }
+
+            for resource_metrics_json_item in &mut vec_resource_metrics_json {
+                resource_metrics_json_item.extend(scope_metrics_json.clone());
+            }
+        }
+
+        resource_metrics_json.insert(
+            "resource_schema_url".to_string(),
+            Value::String(resource_metrics.schema_url.clone()),
+        );
+
+        for resource_metrics_json_item in &mut vec_resource_metrics_json {
+            resource_metrics_json_item.extend(resource_metrics_json.clone());
+            vec_otel_json.push(Value::Object(resource_metrics_json_item.clone()));
+        }
+    }
+    vec_otel_json
 }

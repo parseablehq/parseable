@@ -15,6 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::trace::v1::ScopeSpans;
 use opentelemetry_proto::tonic::trace::v1::Span;
 use opentelemetry_proto::tonic::trace::v1::Status;
@@ -931,4 +932,66 @@ mod tests {
             );
         }
     }
+}
+
+/// Flattens OpenTelemetry traces from protobuf format
+pub fn flatten_otel_traces_protobuf(message: &ExportTraceServiceRequest) -> Vec<Value> {
+    let mut vec_otel_json = Vec::new();
+    for resource_spans in &message.resource_spans {
+        let mut resource_spans_json = Map::new();
+        if let Some(resource) = &resource_spans.resource {
+            insert_attributes(&mut resource_spans_json, &resource.attributes);
+            resource_spans_json.insert(
+                "resource_dropped_attributes_count".to_string(),
+                Value::Number(resource.dropped_attributes_count.into()),
+            );
+        }
+
+        let mut vec_resource_spans_json: Vec<Map<String, Value>> = Vec::new();
+        for scope_spans in &resource_spans.scope_spans {
+            // 1) collect all span JSON under this scope
+            let mut scope_spans_json = Vec::new();
+            for span in &scope_spans.spans {
+                scope_spans_json.extend(flatten_span_record(span));
+            }
+
+            // 2) build a Map of scope‐level fields
+            let mut scope_span_json = Map::new();
+            if let Some(scope) = &scope_spans.scope {
+                scope_span_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
+                scope_span_json.insert(
+                    "scope_version".to_string(),
+                    Value::String(scope.version.clone()),
+                );
+                insert_attributes(&mut scope_span_json, &scope.attributes);
+                scope_span_json.insert(
+                    "scope_dropped_attributes_count".to_string(),
+                    Value::Number(scope.dropped_attributes_count.into()),
+                );
+            }
+            scope_span_json.insert(
+                "scope_schema_url".to_string(),
+                Value::String(scope_spans.schema_url.clone()),
+            );
+
+            // 3) merge scope fields into each span record
+            for span_json in &mut scope_spans_json {
+                span_json.extend(scope_span_json.clone());
+            }
+
+            // 4) append to the resource‐level accumulator
+            vec_resource_spans_json.extend(scope_spans_json);
+        }
+
+        resource_spans_json.insert(
+            "resource_schema_url".to_string(),
+            Value::String(resource_spans.schema_url.clone()),
+        );
+
+        for resource_spans_json_item in &mut vec_resource_spans_json {
+            resource_spans_json_item.extend(resource_spans_json.clone());
+            vec_otel_json.push(Value::Object(resource_spans_json_item.clone()));
+        }
+    }
+    vec_otel_json
 }

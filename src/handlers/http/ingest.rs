@@ -36,13 +36,15 @@ use crate::handlers::{
 use crate::metadata::SchemaVersion;
 use crate::option::Mode;
 use crate::otel::logs::{OTEL_LOG_KNOWN_FIELD_LIST, flatten_otel_protobuf};
-use crate::otel::metrics::OTEL_METRICS_KNOWN_FIELD_LIST;
-use crate::otel::traces::OTEL_TRACES_KNOWN_FIELD_LIST;
+use crate::otel::metrics::{OTEL_METRICS_KNOWN_FIELD_LIST, flatten_otel_metrics_protobuf};
+use crate::otel::traces::{OTEL_TRACES_KNOWN_FIELD_LIST, flatten_otel_traces_protobuf};
 use crate::parseable::{PARSEABLE, StreamNotFound};
 use crate::storage::{ObjectStorageError, StreamType};
 use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::{flatten::JsonFlattenError, strict::StrictValue};
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
+use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use prost::Message;
 
 use super::logstream::error::{CreateStreamError, StreamError};
@@ -233,6 +235,14 @@ pub async fn handle_otel_logs_ingestion(
             }
 
             if content_type == "application/x-protobuf" {
+                const MAX_PROTOBUF_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
+                if body.len() > MAX_PROTOBUF_SIZE {
+                    return Err(PostError::Invalid(anyhow::anyhow!(
+                        "Protobuf message size {} exceeds maximum allowed size of {} bytes",
+                        body.len(),
+                        MAX_PROTOBUF_SIZE
+                    )));
+                }
                 match ExportLogsServiceRequest::decode(body) {
                     Ok(json) => {
                         for record in flatten_otel_protobuf(&json) {
@@ -240,7 +250,10 @@ pub async fn handle_otel_logs_ingestion(
                         }
                     }
                     Err(e) => {
-                        return Err(PostError::Invalid(e.into()));
+                        return Err(PostError::Invalid(anyhow::anyhow!(
+                            "Failed to decode protobuf message: {}",
+                            e
+                        )));
                     }
                 }
             }
@@ -258,7 +271,7 @@ pub async fn handle_otel_logs_ingestion(
 // creates if stream does not exist
 pub async fn handle_otel_metrics_ingestion(
     req: HttpRequest,
-    Json(json): Json<StrictValue>,
+    body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
@@ -308,13 +321,35 @@ pub async fn handle_otel_metrics_ingestion(
 
     let p_custom_fields = get_custom_fields_from_header(&req);
 
-    flatten_and_push_logs(
-        json.into_inner(),
-        &stream_name,
-        &log_source,
-        &p_custom_fields,
-    )
-    .await?;
+    match req.headers().get("Content-Type") {
+        Some(content_type) => {
+            if content_type == "application/json" {
+                flatten_and_push_logs(
+                    serde_json::from_slice(&body)?,
+                    &stream_name,
+                    &log_source,
+                    &p_custom_fields,
+                )
+                .await?;
+            }
+
+            if content_type == "application/x-protobuf" {
+                match ExportMetricsServiceRequest::decode(body) {
+                    Ok(json) => {
+                        for record in flatten_otel_metrics_protobuf(&json) {
+                            push_logs(&stream_name, record, &log_source, &p_custom_fields).await?;
+                        }
+                    }
+                    Err(e) => {
+                        return Err(PostError::Invalid(e.into()));
+                    }
+                }
+            }
+        }
+        None => {
+            return Err(PostError::Header(ParseHeaderError::InvalidValue));
+        }
+    }
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -324,7 +359,7 @@ pub async fn handle_otel_metrics_ingestion(
 // creates if stream does not exist
 pub async fn handle_otel_traces_ingestion(
     req: HttpRequest,
-    Json(json): Json<StrictValue>,
+    body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
@@ -375,13 +410,35 @@ pub async fn handle_otel_traces_ingestion(
 
     let p_custom_fields = get_custom_fields_from_header(&req);
 
-    flatten_and_push_logs(
-        json.into_inner(),
-        &stream_name,
-        &log_source,
-        &p_custom_fields,
-    )
-    .await?;
+    match req.headers().get("Content-Type") {
+        Some(content_type) => {
+            if content_type == "application/json" {
+                flatten_and_push_logs(
+                    serde_json::from_slice(&body)?,
+                    &stream_name,
+                    &log_source,
+                    &p_custom_fields,
+                )
+                .await?;
+            }
+
+            if content_type == "application/x-protobuf" {
+                match ExportTraceServiceRequest::decode(body) {
+                    Ok(json) => {
+                        for record in flatten_otel_traces_protobuf(&json) {
+                            push_logs(&stream_name, record, &log_source, &p_custom_fields).await?;
+                        }
+                    }
+                    Err(e) => {
+                        return Err(PostError::Invalid(e.into()));
+                    }
+                }
+            }
+        }
+        None => {
+            return Err(PostError::Header(ParseHeaderError::InvalidValue));
+        }
+    }
 
     Ok(HttpResponse::Ok().finish())
 }
