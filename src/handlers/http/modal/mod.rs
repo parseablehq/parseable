@@ -34,7 +34,7 @@ use tokio::sync::oneshot;
 use tracing::{error, info, warn};
 
 use crate::{
-    alerts::{ALERTS, target::TARGETS},
+    alerts::{ALERTS, get_alert_manager, target::TARGETS},
     cli::Options,
     correlation::CORRELATIONS,
     oidc::Claims,
@@ -183,7 +183,16 @@ pub async fn load_on_init() -> anyhow::Result<()> {
             },
             async { FILTERS.load().await.context("Failed to load filters") },
             async { DASHBOARDS.load().await.context("Failed to load dashboards") },
-            async { ALERTS.load().await.context("Failed to load alerts") },
+            async {
+                get_alert_manager().await;
+                let guard = ALERTS.write().await;
+                let alerts = if let Some(alerts) = guard.as_ref() {
+                    alerts
+                } else {
+                    return Err(anyhow::Error::msg("No AlertManager set"));
+                };
+                alerts.load().await
+            },
             async { TARGETS.load().await.context("Failed to load targets") },
         )
         .await;

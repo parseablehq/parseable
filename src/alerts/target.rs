@@ -101,8 +101,15 @@ impl TargetConfigs {
 
     pub async fn delete(&self, target_id: &Ulid) -> Result<Target, AlertError> {
         // ensure that the target is not being used by any alert
-        for (_, alert) in ALERTS.alerts.read().await.iter() {
-            if alert.targets.contains(target_id) {
+        let guard = ALERTS.write().await;
+        let alerts = if let Some(alerts) = guard.as_ref() {
+            alerts
+        } else {
+            return Err(AlertError::CustomError("No AlertManager set".into()));
+        };
+
+        for (_, alert) in alerts.get_all_alerts().await.iter() {
+            if alert.get_targets().contains(target_id) {
                 return Err(AlertError::TargetInUse);
             }
         }
@@ -282,9 +289,15 @@ impl Target {
 
         trace!("Spawning retry task");
         tokio::spawn(async move {
+            let guard = ALERTS.read().await;
+            let alerts = if let Some(alerts) = guard.as_ref() {
+                alerts
+            } else {
+                panic!("No AlertManager set");
+            };
             match retry {
                 Retry::Infinite => loop {
-                    let current_state = if let Ok(state) = ALERTS.get_state(alert_id).await {
+                    let current_state = if let Ok(state) = alerts.get_state(alert_id).await {
                         state
                     } else {
                         *state.lock().unwrap() = TimeoutState::default();
@@ -302,7 +315,7 @@ impl Target {
                 },
                 Retry::Finite(times) => {
                     for _ in 0..(times - 1) {
-                        let current_state = if let Ok(state) = ALERTS.get_state(alert_id).await {
+                        let current_state = if let Ok(state) = alerts.get_state(alert_id).await {
                             state
                         } else {
                             *state.lock().unwrap() = TimeoutState::default();

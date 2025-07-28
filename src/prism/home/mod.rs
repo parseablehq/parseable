@@ -355,7 +355,15 @@ async fn get_alert_titles(
     key: &SessionKey,
     query_value: &str,
 ) -> Result<Vec<Resource>, PrismHomeError> {
-    let alerts = ALERTS
+    let guard = ALERTS.read().await;
+    let alerts = if let Some(alerts) = guard.as_ref() {
+        alerts
+    } else {
+        return Err(PrismHomeError::AlertError(AlertError::CustomError(
+            "No AlertManager set".into(),
+        )));
+    };
+    let alerts = alerts
         .list_alerts_for_user(key.clone(), vec![])
         .await?
         .iter()

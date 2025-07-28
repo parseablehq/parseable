@@ -17,7 +17,7 @@
  */
 
 use actix_web::http::header::ContentType;
-use arrow_schema::{DataType, Schema};
+use arrow_schema::{ArrowError, DataType, Schema};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use datafusion::logical_expr::{LogicalPlan, Projection};
@@ -25,11 +25,12 @@ use datafusion::sql::sqlparser::parser::ParserError;
 use derive_more::FromStrError;
 use derive_more::derive::FromStr;
 use http::StatusCode;
-use once_cell::sync::Lazy;
+// use once_cell::sync::Lazy;
 use serde::Serialize;
 use serde_json::{Error as SerdeError, Value as JsonValue};
 use std::collections::HashMap;
-use std::fmt::{self, Display};
+use std::fmt::{self, Debug, Display};
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tokio::sync::oneshot::{Receiver, Sender};
@@ -38,12 +39,17 @@ use tokio::task::JoinHandle;
 use tracing::{error, trace, warn};
 use ulid::Ulid;
 
+pub mod alert_types;
 pub mod alerts_utils;
 pub mod target;
+pub mod traits;
 
+use crate::alerts::alert_types::ThresholdAlert;
 use crate::alerts::target::TARGETS;
+use crate::alerts::traits::{AlertManagerTrait, AlertTrait};
 use crate::handlers::http::fetch_schema;
 use crate::handlers::http::query::create_streams_for_distributed;
+use crate::option::Mode;
 use crate::parseable::{PARSEABLE, StreamNotFound};
 use crate::query::{QUERY_SESSION, resolve_stream_names};
 use crate::rbac::map::SessionKey;
@@ -64,26 +70,56 @@ pub type ScheduledTaskHandlers = (JoinHandle<()>, Receiver<()>, Sender<()>);
 
 pub const CURRENT_ALERTS_VERSION: &str = "v2";
 
-pub static ALERTS: Lazy<Alerts> = Lazy::new(|| {
+pub static ALERTS: RwLock<Option<Arc<dyn AlertManagerTrait>>> = RwLock::const_new(None);
+
+pub async fn get_alert_manager() -> Arc<dyn AlertManagerTrait> {
+    let guard = ALERTS.read().await;
+    if let Some(manager) = guard.as_ref() {
+        manager.clone()
+    } else {
+        drop(guard);
+        let mut write_guard = ALERTS.write().await;
+        if write_guard.is_none() {
+            *write_guard = Some(Arc::new(create_default_alerts_manager()));
+        }
+        write_guard.as_ref().unwrap().clone()
+    }
+}
+
+pub async fn set_alert_manager(manager: Arc<dyn AlertManagerTrait>) {
+    *ALERTS.write().await = Some(manager);
+}
+
+pub fn create_default_alerts_manager() -> Alerts {
     let (tx, rx) = mpsc::channel::<AlertTask>(10);
     let alerts = Alerts {
         alerts: RwLock::new(HashMap::new()),
         sender: tx,
     };
-
     thread::spawn(|| alert_runtime(rx));
-
     alerts
-});
+}
+
+// pub static ALERTS: Lazy<Alerts> = Lazy::new(|| {
+//     let (tx, rx) = mpsc::channel::<AlertTask>(10);
+//     let alerts = Alerts {
+//         alerts: RwLock::new(HashMap::new()),
+//         sender: tx,
+//     };
+
+//     thread::spawn(|| alert_runtime(rx));
+
+//     alerts
+// });
 
 #[derive(Debug)]
 pub struct Alerts {
-    pub alerts: RwLock<HashMap<Ulid, AlertConfig>>,
+    pub alerts: RwLock<HashMap<Ulid, Box<dyn AlertTrait>>>,
     pub sender: mpsc::Sender<AlertTask>,
 }
 
 pub enum AlertTask {
-    Create(Box<AlertConfig>),
+    Create(Box<dyn AlertTrait>),
     Delete(Ulid),
 }
 
@@ -191,16 +227,18 @@ impl DeploymentInfo {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub enum AlertType {
     Threshold,
+    Anomaly,
 }
 
 impl Display for AlertType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AlertType::Threshold => write!(f, "threshold"),
+            AlertType::Anomaly => write!(f, "anomaly"),
         }
     }
 }
@@ -461,18 +499,32 @@ impl AlertState {
                     return Err(AlertError::InvalidStateChange(msg));
                 } else {
                     // update state on disk and in memory
-                    ALERTS
-                        .update_state(alert_id, new_state, Some("".into()))
-                        .await?;
+                    let guard = ALERTS.write().await;
+                    if let Some(alerts) = guard.as_ref() {
+                        alerts
+                            .update_state(alert_id, new_state, Some("".into()))
+                            .await?;
+                    }
+
+                    // ALERTS
+                    //     .update_state(alert_id, new_state, Some("".into()))
+                    //     .await?;
                 }
             }
             AlertState::Silenced => {
                 // from here, the user can only go to Resolved
                 if new_state == AlertState::Resolved {
                     // update state on disk and in memory
-                    ALERTS
-                        .update_state(alert_id, new_state, Some("".into()))
-                        .await?;
+                    let guard = ALERTS.write().await;
+                    if let Some(alerts) = guard.as_ref() {
+                        alerts
+                            .update_state(alert_id, new_state, Some("".into()))
+                            .await?;
+                    }
+
+                    // ALERTS
+                    //     .update_state(alert_id, new_state, Some("".into()))
+                    //     .await?;
                 } else {
                     let msg = format!("Not allowed to manually go from Silenced to {new_state}");
                     return Err(AlertError::InvalidStateChange(msg));
@@ -501,10 +553,10 @@ pub enum Severity {
 impl Display for Severity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Severity::Critical => write!(f, "Critical (P0)"),
-            Severity::High => write!(f, "High (P1)"),
-            Severity::Medium => write!(f, "Medium (P2)"),
-            Severity::Low => write!(f, "Low (P3)"),
+            Severity::Critical => write!(f, "Critical"),
+            Severity::High => write!(f, "High"),
+            Severity::Medium => write!(f, "Medium"),
+            Severity::Low => write!(f, "Low"),
         }
     }
 }
@@ -588,7 +640,7 @@ pub struct AlertConfig {
 
 impl AlertConfig {
     /// Migration function to convert v1 alerts to v2 structure
-    async fn migrate_from_v1(
+    pub async fn migrate_from_v1(
         alert_json: &JsonValue,
         store: &dyn crate::storage::ObjectStorage,
     ) -> Result<AlertConfig, AlertError> {
@@ -1067,6 +1119,14 @@ impl AlertConfig {
 
     /// Validations
     pub async fn validate(&self, session_key: SessionKey) -> Result<(), AlertError> {
+        // validate alert type
+        // Anomaly is only allowed in Prism
+        if self.alert_type.eq(&AlertType::Anomaly) && PARSEABLE.options.mode != Mode::Prism {
+            return Err(AlertError::CustomError(
+                "Anomaly alert is only allowed on Prism mode".into(),
+            ));
+        }
+
         // validate evalType
         let eval_frequency = match &self.eval_config {
             EvalConfig::RollingWindow(rolling_window) => {
@@ -1114,48 +1174,10 @@ impl AlertConfig {
         user_auth_for_query(&session_key, &self.query).await?;
 
         // validate that the alert query is valid and can be evaluated
-        if !Self::is_query_aggregate(&self.query).await? {
+        if !is_query_aggregate(&self.query).await? {
             return Err(AlertError::InvalidAlertQuery);
         }
         Ok(())
-    }
-
-    /// Check if a query is an aggregate query that returns a single value without executing it
-    async fn is_query_aggregate(query: &str) -> Result<bool, AlertError> {
-        let session_state = QUERY_SESSION.state();
-
-        // Parse the query into a logical plan
-        let logical_plan = session_state
-            .create_logical_plan(query)
-            .await
-            .map_err(|err| AlertError::CustomError(format!("Failed to parse query: {err}")))?;
-
-        // Check if the plan structure indicates an aggregate query
-        Ok(Self::is_logical_plan_aggregate(&logical_plan))
-    }
-
-    /// Analyze a logical plan to determine if it represents an aggregate query
-    fn is_logical_plan_aggregate(plan: &LogicalPlan) -> bool {
-        match plan {
-            // Direct aggregate: SELECT COUNT(*), AVG(col), etc.
-            LogicalPlan::Aggregate(_) => true,
-
-            // Projection over aggregate: SELECT COUNT(*) as total, SELECT AVG(col) as average
-            LogicalPlan::Projection(Projection { input, expr, .. }) => {
-                // Check if input contains an aggregate and we have exactly one expression
-                let is_aggregate_input = Self::is_logical_plan_aggregate(input);
-                let single_expr = expr.len() == 1;
-                is_aggregate_input && single_expr
-            }
-
-            // Recursively check wrapped plans (Filter, Limit, Sort, etc.)
-            _ => {
-                // Use inputs() method to get all input plans
-                plan.inputs()
-                    .iter()
-                    .any(|input| Self::is_logical_plan_aggregate(input))
-            }
-        }
     }
 
     pub fn get_eval_frequency(&self) -> u64 {
@@ -1264,6 +1286,44 @@ impl AlertConfig {
     }
 }
 
+/// Check if a query is an aggregate query that returns a single value without executing it
+pub async fn is_query_aggregate(query: &str) -> Result<bool, AlertError> {
+    let session_state = QUERY_SESSION.state();
+
+    // Parse the query into a logical plan
+    let logical_plan = session_state
+        .create_logical_plan(query)
+        .await
+        .map_err(|err| AlertError::CustomError(format!("Failed to parse query: {err}")))?;
+
+    // Check if the plan structure indicates an aggregate query
+    Ok(is_logical_plan_aggregate(&logical_plan))
+}
+
+/// Analyze a logical plan to determine if it represents an aggregate query
+pub fn is_logical_plan_aggregate(plan: &LogicalPlan) -> bool {
+    match plan {
+        // Direct aggregate: SELECT COUNT(*), AVG(col), etc.
+        LogicalPlan::Aggregate(_) => true,
+
+        // Projection over aggregate: SELECT COUNT(*) as total, SELECT AVG(col) as average
+        LogicalPlan::Projection(Projection { input, expr, .. }) => {
+            // Check if input contains an aggregate and we have exactly one expression
+            let is_aggregate_input = is_logical_plan_aggregate(input);
+            let single_expr = expr.len() == 1;
+            is_aggregate_input && single_expr
+        }
+
+        // Recursively check wrapped plans (Filter, Limit, Sort, etc.)
+        _ => {
+            // Use inputs() method to get all input plans
+            plan.inputs()
+                .iter()
+                .any(|input| is_logical_plan_aggregate(input))
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AlertError {
     #[error("Storage Error: {0}")]
@@ -1302,6 +1362,8 @@ pub enum AlertError {
     InvalidAlertQuery,
     #[error("Invalid query parameter")]
     InvalidQueryParameter,
+    #[error("{0}")]
+    ArrowError(#[from] ArrowError),
 }
 
 impl actix_web::ResponseError for AlertError {
@@ -1325,6 +1387,7 @@ impl actix_web::ResponseError for AlertError {
             Self::ParserError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidAlertQuery => StatusCode::BAD_REQUEST,
             Self::InvalidQueryParameter => StatusCode::BAD_REQUEST,
+            Self::ArrowError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
@@ -1335,9 +1398,10 @@ impl actix_web::ResponseError for AlertError {
     }
 }
 
-impl Alerts {
+#[async_trait]
+impl AlertManagerTrait for Alerts {
     /// Loads alerts from disk, blocks
-    pub async fn load(&self) -> anyhow::Result<()> {
+    async fn load(&self) -> anyhow::Result<()> {
         let mut map = self.alerts.write().await;
         let store = PARSEABLE.storage.get_object_store();
 
@@ -1398,21 +1462,24 @@ impl Alerts {
                 }
             };
 
+            let alert: Box<dyn AlertTrait> = match &alert.alert_type {
+                AlertType::Threshold => {
+                    Box::new(ThresholdAlert::from(alert)) as Box<dyn AlertTrait>
+                }
+                AlertType::Anomaly => {
+                    return Err(anyhow::Error::msg(
+                        "Get Parseable Enterprise for Anomaly alerts",
+                    ));
+                }
+            };
+
             // Create alert task
-            match self
-                .sender
-                .send(AlertTask::Create(Box::new(alert.clone())))
-                .await
-            {
+            match self.sender.send(AlertTask::Create(alert.clone_box())).await {
                 Ok(_) => {}
                 Err(e) => {
                     warn!("Failed to create alert task: {e}\nRetrying...");
                     // Retry sending the task
-                    match self
-                        .sender
-                        .send(AlertTask::Create(Box::new(alert.clone())))
-                        .await
-                    {
+                    match self.sender.send(AlertTask::Create(alert.clone_box())).await {
                         Ok(_) => {}
                         Err(e) => {
                             error!("Failed to create alert task: {e}");
@@ -1422,14 +1489,14 @@ impl Alerts {
                 }
             };
 
-            map.insert(alert.id, alert);
+            map.insert(*alert.get_id(), alert);
         }
 
         Ok(())
     }
 
     /// Returns a list of alerts that the user has access to (based on query auth)
-    pub async fn list_alerts_for_user(
+    async fn list_alerts_for_user(
         &self,
         session: SessionKey,
         tags: Vec<String>,
@@ -1437,8 +1504,11 @@ impl Alerts {
         let mut alerts: Vec<AlertConfig> = Vec::new();
         for (_, alert) in self.alerts.read().await.iter() {
             // filter based on whether the user can execute this query or not
-            if user_auth_for_query(&session, &alert.query).await.is_ok() {
-                alerts.push(alert.to_owned());
+            if user_auth_for_query(&session, alert.get_query())
+                .await
+                .is_ok()
+            {
+                alerts.push(alert.to_alert_config());
             }
         }
         if tags.is_empty() {
@@ -1457,10 +1527,10 @@ impl Alerts {
     }
 
     /// Returns a sigle alert that the user has access to (based on query auth)
-    pub async fn get_alert_by_id(&self, id: Ulid) -> Result<AlertConfig, AlertError> {
+    async fn get_alert_by_id(&self, id: Ulid) -> Result<AlertConfig, AlertError> {
         let read_access = self.alerts.read().await;
         if let Some(alert) = read_access.get(&id) {
-            Ok(alert.clone())
+            Ok(alert.to_alert_config())
         } else {
             Err(AlertError::CustomError(format!(
                 "No alert found for the given ID- {id}"
@@ -1469,12 +1539,15 @@ impl Alerts {
     }
 
     /// Update the in-mem vector of alerts
-    pub async fn update(&self, alert: &AlertConfig) {
-        self.alerts.write().await.insert(alert.id, alert.clone());
+    async fn update(&self, alert: &dyn AlertTrait) {
+        self.alerts
+            .write()
+            .await
+            .insert(*alert.get_id(), alert.clone_box());
     }
 
     /// Update the state of alert
-    pub async fn update_state(
+    async fn update_state(
         &self,
         alert_id: Ulid,
         new_state: AlertState,
@@ -1496,9 +1569,9 @@ impl Alerts {
         // modify in memory
         let mut writer = self.alerts.write().await;
         if let Some(alert) = writer.get_mut(&alert_id) {
-            trace!("in memory alert-\n{}", alert.state);
-            alert.state = new_state;
-            trace!("in memory updated alert-\n{}", alert.state);
+            trace!("in memory alert-\n{}", alert.get_state());
+            alert.set_state(new_state);
+            trace!("in memory updated alert-\n{}", alert.get_state());
         };
         drop(writer);
 
@@ -1511,7 +1584,7 @@ impl Alerts {
     }
 
     /// Remove alert and scheduled task from disk and memory
-    pub async fn delete(&self, alert_id: Ulid) -> Result<(), AlertError> {
+    async fn delete(&self, alert_id: Ulid) -> Result<(), AlertError> {
         if self.alerts.write().await.remove(&alert_id).is_some() {
             trace!("removed alert from memory");
         } else {
@@ -1521,11 +1594,11 @@ impl Alerts {
     }
 
     /// Get state of alert using alert_id
-    pub async fn get_state(&self, alert_id: Ulid) -> Result<AlertState, AlertError> {
+    async fn get_state(&self, alert_id: Ulid) -> Result<AlertState, AlertError> {
         let read_access = self.alerts.read().await;
 
         if let Some(alert) = read_access.get(&alert_id) {
-            Ok(alert.state)
+            Ok(*alert.get_state())
         } else {
             let msg = format!("No alert present for ID- {alert_id}");
             Err(AlertError::CustomError(msg))
@@ -1533,16 +1606,16 @@ impl Alerts {
     }
 
     /// Start a scheduled alert task
-    pub async fn start_task(&self, alert: AlertConfig) -> Result<(), AlertError> {
+    async fn start_task(&self, alert: Box<dyn AlertTrait>) -> Result<(), AlertError> {
         self.sender
-            .send(AlertTask::Create(Box::new(alert)))
+            .send(AlertTask::Create(alert))
             .await
             .map_err(|e| AlertError::CustomError(e.to_string()))?;
         Ok(())
     }
 
     /// Remove a scheduled alert task
-    pub async fn delete_task(&self, alert_id: Ulid) -> Result<(), AlertError> {
+    async fn delete_task(&self, alert_id: Ulid) -> Result<(), AlertError> {
         self.sender
             .send(AlertTask::Delete(alert_id))
             .await
@@ -1553,16 +1626,21 @@ impl Alerts {
 
     /// List tags from all alerts
     /// This function returns a list of unique tags from all alerts
-    pub async fn list_tags(&self) -> Vec<String> {
+    async fn list_tags(&self) -> Vec<String> {
         let alerts = self.alerts.read().await;
         let mut tags = alerts
             .iter()
-            .filter_map(|(_, alert)| alert.tags.as_ref())
+            .filter_map(|(_, alert)| alert.get_tags().as_ref())
             .flat_map(|t| t.iter().cloned())
             .collect::<Vec<String>>();
         tags.sort();
         tags.dedup();
         tags
+    }
+
+    async fn get_all_alerts(&self) -> HashMap<Ulid, Box<dyn AlertTrait>> {
+        let alerts = self.alerts.read().await;
+        alerts.iter().map(|(k, v)| (*k, v.clone_box())).collect()
     }
 }
 
@@ -1589,8 +1667,15 @@ pub struct AlertsInfo {
 
 // TODO: add RBAC
 pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
-    let alerts = ALERTS.alerts.read().await;
+    let guard = ALERTS.read().await;
+    let alerts = if let Some(alerts) = guard.as_ref() {
+        alerts.get_all_alerts().await
+    } else {
+        return Err(AlertError::CustomError("No AlertManager registered".into()));
+    };
+
     let total = alerts.len() as u64;
+
     let mut triggered = 0;
     let mut resolved = 0;
     let mut silenced = 0;
@@ -1601,29 +1686,29 @@ pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
     // find total alerts for each state
     // get title, id and state of each alert for that state
     for (_, alert) in alerts.iter() {
-        match alert.state {
+        match alert.get_state() {
             AlertState::Triggered => {
                 triggered += 1;
                 triggered_alerts.push(AlertsInfo {
-                    title: alert.title.clone(),
-                    id: alert.id,
-                    severity: alert.severity.clone(),
+                    title: alert.get_title().to_string(),
+                    id: *alert.get_id(),
+                    severity: alert.get_severity().clone(),
                 });
             }
             AlertState::Silenced => {
                 silenced += 1;
                 silenced_alerts.push(AlertsInfo {
-                    title: alert.title.clone(),
-                    id: alert.id,
-                    severity: alert.severity.clone(),
+                    title: alert.get_title().to_string(),
+                    id: *alert.get_id(),
+                    severity: alert.get_severity().clone(),
                 });
             }
             AlertState::Resolved => {
                 resolved += 1;
                 resolved_alerts.push(AlertsInfo {
-                    title: alert.title.clone(),
-                    id: alert.id,
-                    severity: alert.severity.clone(),
+                    title: alert.get_title().to_string(),
+                    id: *alert.get_id(),
+                    severity: alert.get_severity().clone(),
                 });
             }
         }

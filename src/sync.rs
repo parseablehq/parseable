@@ -295,18 +295,18 @@ pub async fn alert_runtime(mut rx: mpsc::Receiver<AlertTask>) -> Result<(), anyh
         match task {
             AlertTask::Create(alert) => {
                 // check if the alert already exists
-                if alert_tasks.contains_key(&alert.id) {
-                    error!("Alert with id {} already exists", alert.id);
+                if alert_tasks.contains_key(alert.get_id()) {
+                    error!("Alert with id {} already exists", alert.get_id());
                     continue;
                 }
 
-                let alert = alert.clone();
-                let id = alert.id;
+                let alert = alert.clone_box();
+                let id = *alert.get_id();
                 let handle = tokio::spawn(async move {
                     let mut retry_counter = 0;
                     let mut sleep_duration = alert.get_eval_frequency();
                     loop {
-                        match alerts_utils::evaluate_alert(&alert).await {
+                        match alerts_utils::evaluate_alert(&*alert).await {
                             Ok(_) => {
                                 retry_counter = 0;
                             }
