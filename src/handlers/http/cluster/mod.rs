@@ -1329,6 +1329,7 @@ pub async fn send_query_request(query_request: &Query) -> Result<(JsonValue, Str
 
     let res = match INTRA_CLUSTER_CLIENT
         .post(uri)
+        .timeout(Duration::from_secs(300))
         .header(header::AUTHORIZATION, &querier.token)
         .header(header::CONTENT_TYPE, "application/json")
         .body(body)
