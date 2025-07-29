@@ -29,8 +29,10 @@ use tracing::error;
 use crate::{
     alerts::{ALERTS, AlertError, AlertsSummary, get_alerts_summary},
     correlation::{CORRELATIONS, CorrelationError},
-    event::format::LogSource,
-    handlers::http::{cluster::fetch_daily_stats, logstream::error::StreamError},
+    handlers::{
+        TelemetryType,
+        http::{cluster::fetch_daily_stats, logstream::error::StreamError},
+    },
     parseable::PARSEABLE,
     rbac::{Users, map::SessionKey, role::Action},
     stats::Stats,
@@ -38,7 +40,8 @@ use crate::{
     users::{dashboards::DASHBOARDS, filters::FILTERS},
 };
 
-type StreamMetadataResponse = Result<(String, Vec<ObjectStoreFormat>, DataSetType), PrismHomeError>;
+type StreamMetadataResponse =
+    Result<(String, Vec<ObjectStoreFormat>, TelemetryType), PrismHomeError>;
 
 #[derive(Debug, Serialize, Default)]
 pub struct DatedStats {
@@ -49,16 +52,9 @@ pub struct DatedStats {
 }
 
 #[derive(Debug, Serialize)]
-enum DataSetType {
-    Logs,
-    Metrics,
-    Traces,
-}
-
-#[derive(Debug, Serialize)]
 pub struct DataSet {
     title: String,
-    dataset_type: DataSetType,
+    dataset_type: TelemetryType,
 }
 
 #[derive(Debug, Serialize)]
@@ -208,7 +204,7 @@ fn get_top_5_streams_by_ingestion(
 
 async fn get_stream_metadata(
     stream: String,
-) -> Result<(String, Vec<ObjectStoreFormat>, DataSetType), PrismHomeError> {
+) -> Result<(String, Vec<ObjectStoreFormat>, TelemetryType), PrismHomeError> {
     let path = RelativePathBuf::from_iter([&stream, STREAM_ROOT_DIRECTORY]);
     let obs = PARSEABLE
         .storage
@@ -237,18 +233,7 @@ async fn get_stream_metadata(
         )));
     }
 
-    // let log_source = &stream_jsons[0].clone().log_source;
-    let log_source_format = stream_jsons
-        .iter()
-        .find(|sj| !sj.log_source.is_empty())
-        .map(|sj| sj.log_source[0].log_source_format.clone())
-        .unwrap_or_default();
-
-    let dataset_type = match log_source_format {
-        LogSource::OtelMetrics => DataSetType::Metrics,
-        LogSource::OtelTraces => DataSetType::Traces,
-        _ => DataSetType::Logs,
-    };
+    let dataset_type = stream_jsons[0].telemetry_type;
 
     Ok((stream, stream_jsons, dataset_type))
 }

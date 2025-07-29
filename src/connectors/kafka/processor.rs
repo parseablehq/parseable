@@ -16,14 +16,6 @@
  *
  */
 
-use async_trait::async_trait;
-use futures_util::StreamExt;
-use rdkafka::consumer::{CommitMode, Consumer};
-use serde_json::Value;
-use std::collections::HashMap;
-use std::sync::Arc;
-use tokio_stream::wrappers::ReceiverStream;
-use tracing::{debug, error};
 use crate::{
     connectors::common::processor::Processor,
     event::{
@@ -34,6 +26,14 @@ use crate::{
     parseable::PARSEABLE,
     storage::StreamType,
 };
+use async_trait::async_trait;
+use futures_util::StreamExt;
+use rdkafka::consumer::{CommitMode, Consumer};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio_stream::wrappers::ReceiverStream;
+use tracing::{debug, error};
 
 use super::{ConsumerRecord, StreamConsumer, TopicPartition, config::BufferConfig};
 
