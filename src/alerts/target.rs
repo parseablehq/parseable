@@ -101,7 +101,7 @@ impl TargetConfigs {
 
     pub async fn delete(&self, target_id: &Ulid) -> Result<Target, AlertError> {
         // ensure that the target is not being used by any alert
-        let guard = ALERTS.write().await;
+        let guard = ALERTS.read().await;
         let alerts = if let Some(alerts) = guard.as_ref() {
             alerts
         } else {
@@ -293,7 +293,9 @@ impl Target {
             let alerts = if let Some(alerts) = guard.as_ref() {
                 alerts
             } else {
-                panic!("No AlertManager set");
+                error!("No AlertManager set for alert_id: {alert_id}, stopping timeout task");
+                *state.lock().unwrap() = TimeoutState::default();
+                return;
             };
             match retry {
                 Retry::Infinite => loop {

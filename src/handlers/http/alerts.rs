@@ -75,8 +75,12 @@ pub async fn post(
 ) -> Result<impl Responder, AlertError> {
     let alert: AlertConfig = alert.into().await?;
 
+    let threshold_alert;
     let alert: &dyn AlertTrait = match &alert.alert_type {
-        AlertType::Threshold => &*(Box::new(ThresholdAlert::from(alert)) as Box<dyn AlertTrait>),
+        AlertType::Threshold => {
+            threshold_alert = ThresholdAlert::from(alert);
+            &threshold_alert
+        }
         AlertType::Anomaly => {
             return Err(AlertError::CustomError(
                 "Get Parseable Enterprise for Anomaly alerts".into(),

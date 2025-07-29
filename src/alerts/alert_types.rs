@@ -179,7 +179,7 @@ impl AlertTrait for ThresholdAlert {
 
     fn get_eval_window(&self) -> String {
         match &self.eval_config {
-            EvalConfig::RollingWindow(rolling_window) => rolling_window.eval_start.clone()
+            EvalConfig::RollingWindow(rolling_window) => rolling_window.eval_start.clone(),
         }
     }
 

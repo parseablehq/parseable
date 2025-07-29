@@ -499,16 +499,13 @@ impl AlertState {
                     return Err(AlertError::InvalidStateChange(msg));
                 } else {
                     // update state on disk and in memory
-                    let guard = ALERTS.write().await;
-                    if let Some(alerts) = guard.as_ref() {
-                        alerts
-                            .update_state(alert_id, new_state, Some("".into()))
-                            .await?;
-                    }
-
-                    // ALERTS
-                    //     .update_state(alert_id, new_state, Some("".into()))
-                    //     .await?;
+                    let guard = ALERTS.read().await;
+                    let alerts = guard.as_ref().ok_or_else(|| {
+                        AlertError::CustomError("Alert manager not initialized".into())
+                    })?;
+                    alerts
+                        .update_state(alert_id, new_state, Some("".into()))
+                        .await?;
                 }
             }
             AlertState::Silenced => {
