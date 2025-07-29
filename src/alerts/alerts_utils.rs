@@ -24,10 +24,11 @@ use datafusion::{
     logical_expr::Literal,
     prelude::{Expr, lit},
 };
+use itertools::Itertools;
 use tracing::trace;
 
 use crate::{
-    alerts::{Conditions, LogicalOperator, WhereConfigOperator},
+    alerts::{AlertTrait, Conditions, LogicalOperator, WhereConfigOperator},
     handlers::http::{
         cluster::send_query_request,
         query::{Query, create_streams_for_distributed},
@@ -38,7 +39,7 @@ use crate::{
     utils::time::TimeRange,
 };
 
-use super::{ALERTS, AlertConfig, AlertError, AlertOperator, AlertState};
+use super::{ALERTS, AlertError, AlertOperator, AlertState};
 
 /// accept the alert
 ///
@@ -51,22 +52,16 @@ use super::{ALERTS, AlertConfig, AlertError, AlertOperator, AlertState};
 /// collect the results in the end
 ///
 /// check whether notification needs to be triggered or not
-pub async fn evaluate_alert(alert: &AlertConfig) -> Result<(), AlertError> {
+pub async fn evaluate_alert(alert: &dyn AlertTrait) -> Result<(), AlertError> {
     trace!("RUNNING EVAL TASK FOR- {alert:?}");
 
-    let time_range = extract_time_range(&alert.eval_config)?;
-    let final_value = execute_alert_query(alert, &time_range).await?;
-    let result = evaluate_condition(
-        &alert.threshold_config.operator,
-        final_value,
-        alert.threshold_config.value,
-    );
+    let (result, final_value) = alert.eval_alert().await?;
 
     update_alert_state(alert, result, final_value).await
 }
 
 /// Extract time range from alert evaluation configuration
-fn extract_time_range(eval_config: &super::EvalConfig) -> Result<TimeRange, AlertError> {
+pub fn extract_time_range(eval_config: &super::EvalConfig) -> Result<TimeRange, AlertError> {
     let (start_time, end_time) = match eval_config {
         super::EvalConfig::RollingWindow(rolling_window) => (&rolling_window.eval_start, "now"),
     };
@@ -76,13 +71,10 @@ fn extract_time_range(eval_config: &super::EvalConfig) -> Result<TimeRange, Aler
 }
 
 /// Execute the alert query based on the current mode and return the final value
-async fn execute_alert_query(
-    alert: &AlertConfig,
-    time_range: &TimeRange,
-) -> Result<f64, AlertError> {
+pub async fn execute_alert_query(query: &str, time_range: &TimeRange) -> Result<f64, AlertError> {
     match PARSEABLE.options.mode {
-        Mode::All | Mode::Query => execute_local_query(alert, time_range).await,
-        Mode::Prism => execute_remote_query(alert, time_range).await,
+        Mode::All | Mode::Query => execute_local_query(query, time_range).await,
+        Mode::Prism => execute_remote_query(query, time_range).await,
         _ => Err(AlertError::CustomError(format!(
             "Unsupported mode '{:?}' for alert evaluation",
             PARSEABLE.options.mode
@@ -91,12 +83,8 @@ async fn execute_alert_query(
 }
 
 /// Execute alert query locally (Query/All mode)
-async fn execute_local_query(
-    alert: &AlertConfig,
-    time_range: &TimeRange,
-) -> Result<f64, AlertError> {
+async fn execute_local_query(query: &str, time_range: &TimeRange) -> Result<f64, AlertError> {
     let session_state = QUERY_SESSION.state();
-    let query = &alert.query;
 
     let tables = resolve_stream_names(query)?;
     create_streams_for_distributed(tables.clone())
@@ -127,12 +115,9 @@ async fn execute_local_query(
 }
 
 /// Execute alert query remotely (Prism mode)
-async fn execute_remote_query(
-    alert: &AlertConfig,
-    time_range: &TimeRange,
-) -> Result<f64, AlertError> {
+async fn execute_remote_query(query: &str, time_range: &TimeRange) -> Result<f64, AlertError> {
     let query_request = Query {
-        query: alert.query.clone(),
+        query: query.to_string(),
         start_time: time_range.start.to_rfc3339(),
         end_time: time_range.end.to_rfc3339(),
         streaming: false,
@@ -150,20 +135,21 @@ async fn execute_remote_query(
 
 /// Convert JSON result value to f64
 fn convert_result_to_f64(result_value: serde_json::Value) -> Result<f64, AlertError> {
-    if let Some(value) = result_value.as_f64() {
-        Ok(value)
-    } else if let Some(value) = result_value.as_i64() {
-        Ok(value as f64)
-    } else if let Some(value) = result_value.as_u64() {
-        Ok(value as f64)
+    // due to the previous validations, we can be sure that we get an array of objects with just one entry
+    // [{"countField": Number(1120.251)}]
+    if let Some(array_val) = result_value.as_array().filter(|arr| !arr.is_empty())
+        && let Some(object) = array_val[0].as_object()
+    {
+        let values = object.values().map(|v| v.as_f64().unwrap()).collect_vec();
+        Ok(values[0])
     } else {
         Err(AlertError::CustomError(
-            "Query result is not a number".to_string(),
+            "Query result is not a number or response is empty".to_string(),
         ))
     }
 }
 
-fn evaluate_condition(operator: &AlertOperator, actual: f64, expected: f64) -> bool {
+pub fn evaluate_condition(operator: &AlertOperator, actual: f64, expected: f64) -> bool {
     match operator {
         AlertOperator::GreaterThan => actual > expected,
         AlertOperator::LessThan => actual < expected,
@@ -175,31 +161,43 @@ fn evaluate_condition(operator: &AlertOperator, actual: f64, expected: f64) -> b
 }
 
 async fn update_alert_state(
-    alert: &AlertConfig,
+    alert: &dyn AlertTrait,
     final_res: bool,
     actual_value: f64,
 ) -> Result<(), AlertError> {
+    let guard = ALERTS.write().await;
+    let alerts = if let Some(alerts) = guard.as_ref() {
+        alerts
+    } else {
+        return Err(AlertError::CustomError("No AlertManager set".into()));
+    };
+
     if final_res {
         let message = format!(
             "Alert Triggered: {}\n\nThreshold: ({} {})\nCurrent Value: {}\nEvaluation Window: {} | Frequency: {}\n\nQuery:\n{}",
-            alert.id,
-            alert.threshold_config.operator,
-            alert.threshold_config.value,
+            alert.get_id(),
+            alert.get_threshold_config().operator,
+            alert.get_threshold_config().value,
             actual_value,
             alert.get_eval_window(),
             alert.get_eval_frequency(),
-            alert.query
+            alert.get_query()
         );
-        ALERTS
-            .update_state(alert.id, AlertState::Triggered, Some(message))
+
+        alerts
+            .update_state(*alert.get_id(), AlertState::Triggered, Some(message))
             .await
-    } else if ALERTS.get_state(alert.id).await?.eq(&AlertState::Triggered) {
-        ALERTS
-            .update_state(alert.id, AlertState::Resolved, Some("".into()))
+    } else if alerts
+        .get_state(*alert.get_id())
+        .await?
+        .eq(&AlertState::Triggered)
+    {
+        alerts
+            .update_state(*alert.get_id(), AlertState::Resolved, Some("".into()))
             .await
     } else {
-        ALERTS
-            .update_state(alert.id, AlertState::Resolved, None)
+        alerts
+            .update_state(*alert.get_id(), AlertState::Resolved, None)
             .await
     }
 }

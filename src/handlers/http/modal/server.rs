@@ -256,6 +256,13 @@ impl Server {
                     .route(web::post().to(alerts::post).authorize(Action::PutAlert)),
             )
             .service(
+                web::resource("/list_tags").route(
+                    web::get()
+                        .to(alerts::list_tags)
+                        .authorize(Action::ListDashboard),
+                ),
+            )
+            .service(
                 web::resource("/{alert_id}")
                     .route(web::get().to(alerts::get).authorize(Action::GetAlert))
                     .route(
@@ -268,13 +275,6 @@ impl Server {
                             .to(alerts::delete)
                             .authorize(Action::DeleteAlert),
                     ),
-            )
-            .service(
-                web::resource("/list_tags").route(
-                    web::get()
-                        .to(alerts::list_tags)
-                        .authorize(Action::ListDashboard),
-                ),
             )
     }
 

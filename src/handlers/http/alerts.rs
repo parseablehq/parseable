@@ -19,9 +19,9 @@
 use std::{collections::HashMap, str::FromStr};
 
 use crate::{
+    alerts::{AlertType, alert_types::ThresholdAlert, traits::AlertTrait},
     parseable::PARSEABLE,
     storage::object_storage::alert_json_path,
-    // sync::schedule_alert_task,
     utils::{actix::extract_session_key_from_req, user_auth_for_query},
 };
 use actix_web::{
@@ -53,8 +53,14 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
             }
         }
     }
+    let guard = ALERTS.read().await;
+    let alerts = if let Some(alerts) = guard.as_ref() {
+        alerts
+    } else {
+        return Err(AlertError::CustomError("No AlertManager set".into()));
+    };
 
-    let alerts = ALERTS.list_alerts_for_user(session_key, tags_list).await?;
+    let alerts = alerts.list_alerts_for_user(session_key, tags_list).await?;
     let alerts_summary = alerts
         .iter()
         .map(|alert| alert.to_summary())
@@ -69,26 +75,46 @@ pub async fn post(
 ) -> Result<impl Responder, AlertError> {
     let alert: AlertConfig = alert.into().await?;
 
+    let threshold_alert;
+    let alert: &dyn AlertTrait = match &alert.alert_type {
+        AlertType::Threshold => {
+            threshold_alert = ThresholdAlert::from(alert);
+            &threshold_alert
+        }
+        AlertType::Anomaly => {
+            return Err(AlertError::CustomError(
+                "Get Parseable Enterprise for Anomaly alerts".into(),
+            ));
+        }
+    };
+
+    let guard = ALERTS.write().await;
+    let alerts = if let Some(alerts) = guard.as_ref() {
+        alerts
+    } else {
+        return Err(AlertError::CustomError("No AlertManager set".into()));
+    };
+
     // validate the incoming alert query
     // does the user have access to these tables or not?
     let session_key = extract_session_key_from_req(&req)?;
 
-    alert.validate(session_key).await?;
+    alert.validate(&session_key).await?;
 
     // now that we've validated that the user can run this query
     // move on to saving the alert in ObjectStore
-    ALERTS.update(&alert).await;
+    alerts.update(alert).await;
 
-    let path = alert_json_path(alert.id);
+    let path = alert_json_path(*alert.get_id());
 
     let store = PARSEABLE.storage.get_object_store();
-    let alert_bytes = serde_json::to_vec(&alert)?;
+    let alert_bytes = serde_json::to_vec(&alert.to_alert_config())?;
     store.put_object(&path, Bytes::from(alert_bytes)).await?;
 
     // start the task
-    ALERTS.start_task(alert.clone()).await?;
+    alerts.start_task(alert.clone_box()).await?;
 
-    Ok(web::Json(alert))
+    Ok(web::Json(alert.to_alert_config()))
 }
 
 // GET /alerts/{alert_id}
@@ -96,7 +122,14 @@ pub async fn get(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Responde
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
 
-    let alert = ALERTS.get_alert_by_id(alert_id).await?;
+    let guard = ALERTS.read().await;
+    let alerts = if let Some(alerts) = guard.as_ref() {
+        alerts
+    } else {
+        return Err(AlertError::CustomError("No AlertManager set".into()));
+    };
+
+    let alert = alerts.get_alert_by_id(alert_id).await?;
     // validate that the user has access to the tables mentioned in the query
     user_auth_for_query(&session_key, &alert.query).await?;
 
@@ -109,7 +142,14 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
 
-    let alert = ALERTS.get_alert_by_id(alert_id).await?;
+    let guard = ALERTS.write().await;
+    let alerts = if let Some(alerts) = guard.as_ref() {
+        alerts
+    } else {
+        return Err(AlertError::CustomError("No AlertManager set".into()));
+    };
+
+    let alert = alerts.get_alert_by_id(alert_id).await?;
 
     // validate that the user has access to the tables mentioned in the query
     user_auth_for_query(&session_key, &alert.query).await?;
@@ -124,10 +164,10 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
         .map_err(AlertError::ObjectStorage)?;
 
     // delete from memory
-    ALERTS.delete(alert_id).await?;
+    alerts.delete(alert_id).await?;
 
     // delete the scheduled task
-    ALERTS.delete_task(alert_id).await?;
+    alerts.delete_task(alert_id).await?;
 
     Ok(format!("Deleted alert with ID- {alert_id}"))
 }
@@ -142,8 +182,15 @@ pub async fn update_state(
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
 
+    let guard = ALERTS.write().await;
+    let alerts = if let Some(alerts) = guard.as_ref() {
+        alerts
+    } else {
+        return Err(AlertError::CustomError("No AlertManager set".into()));
+    };
+
     // check if alert id exists in map
-    let alert = ALERTS.get_alert_by_id(alert_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id).await?;
     // validate that the user has access to the tables mentioned in the query
     user_auth_for_query(&session_key, &alert.query).await?;
 
@@ -165,16 +212,22 @@ pub async fn update_state(
     }
 
     // get current state
-    let current_state = ALERTS.get_state(alert_id).await?;
+    let current_state = alerts.get_state(alert_id).await?;
 
     let new_state = AlertState::from_str(state_value)?;
 
     current_state.update_state(new_state, alert_id).await?;
-    let alert = ALERTS.get_alert_by_id(alert_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id).await?;
     Ok(web::Json(alert))
 }
 
 pub async fn list_tags() -> Result<impl Responder, AlertError> {
-    let tags = ALERTS.list_tags().await;
+    let guard = ALERTS.read().await;
+    let alerts = if let Some(alerts) = guard.as_ref() {
+        alerts
+    } else {
+        return Err(AlertError::CustomError("No AlertManager set".into()));
+    };
+    let tags = alerts.list_tags().await;
     Ok(web::Json(tags))
 }

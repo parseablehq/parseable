@@ -52,6 +52,7 @@ mod validator;
 
 use std::time::Duration;
 
+pub use datafusion;
 pub use handlers::http::modal::{
     ParseableServer, ingest_server::IngestServer, query_server::QueryServer, server::Server,
 };
