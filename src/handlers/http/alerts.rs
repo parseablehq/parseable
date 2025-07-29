@@ -82,9 +82,10 @@ pub async fn post(
             &threshold_alert
         }
         AlertType::Anomaly => {
-            return Err(AlertError::CustomError(
-                "Get Parseable Enterprise for Anomaly alerts".into(),
-            ));
+            return Err(AlertError::NotPresentInOSS("anomaly".into()));
+        }
+        AlertType::Forecast => {
+            return Err(AlertError::NotPresentInOSS("forecast".into()));
         }
     };
 
