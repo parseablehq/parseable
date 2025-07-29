@@ -15,6 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::metrics::v1::number_data_point::Value as NumberDataPointValue;
 use opentelemetry_proto::tonic::metrics::v1::{
     Exemplar, ExponentialHistogram, Gauge, Histogram, Metric, MetricsData, NumberDataPoint, Sum,
@@ -499,13 +500,25 @@ pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<Map<String, Value>
     data_points_json
 }
 
-/// this function performs the custom flattening of the otel metrics
-/// and returns a `Vec` of `Value::Object` of the flattened json
-pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Value> {
+/// Common function to process resource metrics and merge resource-level fields
+#[allow(clippy::too_many_arguments)]
+fn process_resource_metrics<T, S, M>(
+    resource_metrics: &[T],
+    get_resource: fn(&T) -> Option<&opentelemetry_proto::tonic::resource::v1::Resource>,
+    get_scope_metrics: fn(&T) -> &[S],
+    get_schema_url: fn(&T) -> &str,
+    get_scope: fn(&S) -> Option<&opentelemetry_proto::tonic::common::v1::InstrumentationScope>,
+    get_scope_schema_url: fn(&S) -> &str,
+    get_metrics: fn(&S) -> &[M],
+    get_metric: fn(&M) -> &Metric,
+) -> Vec<Value> {
     let mut vec_otel_json = Vec::new();
-    for record in &message.resource_metrics {
+
+    for resource_metric in resource_metrics {
         let mut resource_metrics_json = Map::new();
-        if let Some(resource) = &record.resource {
+
+        // Process resource attributes if present
+        if let Some(resource) = get_resource(resource_metric) {
             insert_attributes(&mut resource_metrics_json, &resource.attributes);
             resource_metrics_json.insert(
                 "resource_dropped_attributes_count".to_string(),
@@ -514,13 +527,17 @@ pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Value> {
         }
 
         let mut vec_scope_metrics_json = Vec::new();
-        for scope_metric in &record.scope_metrics {
+        let scope_metrics = get_scope_metrics(resource_metric);
+
+        for scope_metric in scope_metrics {
             let mut scope_metrics_json = Map::new();
-            for metrics_record in &scope_metric.metrics {
-                vec_scope_metrics_json.extend(flatten_metrics_record(metrics_record));
+
+            let metrics = get_metrics(scope_metric);
+            for metric in metrics {
+                vec_scope_metrics_json.extend(flatten_metrics_record(get_metric(metric)));
             }
 
-            if let Some(scope) = &scope_metric.scope {
+            if let Some(scope) = get_scope(scope_metric) {
                 scope_metrics_json
                     .insert("scope_name".to_string(), Value::String(scope.name.clone()));
                 scope_metrics_json.insert(
@@ -536,7 +553,7 @@ pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Value> {
 
             scope_metrics_json.insert(
                 "scope_schema_url".to_string(),
-                Value::String(scope_metric.schema_url.clone()),
+                Value::String(get_scope_schema_url(scope_metric).to_string()),
             );
 
             for scope_metric_json in &mut vec_scope_metrics_json {
@@ -548,7 +565,7 @@ pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Value> {
 
         resource_metrics_json.insert(
             "resource_schema_url".to_string(),
-            Value::String(record.schema_url.clone()),
+            Value::String(get_schema_url(resource_metric).to_string()),
         );
 
         for resource_metric_json in &mut vec_scope_metrics_json {
@@ -561,6 +578,35 @@ pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Value> {
     }
 
     vec_otel_json
+}
+
+/// this function performs the custom flattening of the otel metrics
+/// and returns a `Vec` of `Value::Object` of the flattened json
+pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Value> {
+    process_resource_metrics(
+        &message.resource_metrics,
+        |record| record.resource.as_ref(),
+        |record| &record.scope_metrics,
+        |record| &record.schema_url,
+        |scope_metric| scope_metric.scope.as_ref(),
+        |scope_metric| &scope_metric.schema_url,
+        |scope_metric| &scope_metric.metrics,
+        |metric| metric,
+    )
+}
+
+/// Flattens OpenTelemetry metrics from protobuf format
+pub fn flatten_otel_metrics_protobuf(message: &ExportMetricsServiceRequest) -> Vec<Value> {
+    process_resource_metrics(
+        &message.resource_metrics,
+        |record| record.resource.as_ref(),
+        |record| &record.scope_metrics,
+        |record| &record.schema_url,
+        |scope_metric| scope_metric.scope.as_ref(),
+        |scope_metric| &scope_metric.schema_url,
+        |scope_metric| &scope_metric.metrics,
+        |metric| metric,
+    )
 }
 
 /// otel metrics event has json object for aggregation temporality
