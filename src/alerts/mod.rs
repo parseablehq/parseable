@@ -232,6 +232,7 @@ impl DeploymentInfo {
 pub enum AlertType {
     Threshold,
     Anomaly,
+    Forecast,
 }
 
 impl Display for AlertType {
@@ -239,6 +240,7 @@ impl Display for AlertType {
         match self {
             AlertType::Threshold => write!(f, "threshold"),
             AlertType::Anomaly => write!(f, "anomaly"),
+            AlertType::Forecast => write!(f, "forecast"),
         }
     }
 }
@@ -1358,6 +1360,8 @@ pub enum AlertError {
     InvalidQueryParameter,
     #[error("{0}")]
     ArrowError(#[from] ArrowError),
+    #[error("Upgrade to Parseable Enterprise for {0} type alerts")]
+    NotPresentInOSS(String),
 }
 
 impl actix_web::ResponseError for AlertError {
@@ -1382,6 +1386,7 @@ impl actix_web::ResponseError for AlertError {
             Self::InvalidAlertQuery => StatusCode::BAD_REQUEST,
             Self::InvalidQueryParameter => StatusCode::BAD_REQUEST,
             Self::ArrowError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::NotPresentInOSS(_) => StatusCode::BAD_REQUEST,
         }
     }
 
@@ -1462,7 +1467,12 @@ impl AlertManagerTrait for Alerts {
                 }
                 AlertType::Anomaly => {
                     return Err(anyhow::Error::msg(
-                        "Get Parseable Enterprise for Anomaly alerts",
+                        AlertError::NotPresentInOSS("anomaly".into()).to_string(),
+                    ));
+                }
+                AlertType::Forecast => {
+                    return Err(anyhow::Error::msg(
+                        AlertError::NotPresentInOSS("forecast".into()).to_string(),
                     ));
                 }
             };
