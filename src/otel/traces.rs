@@ -15,6 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::trace::v1::ScopeSpans;
 use opentelemetry_proto::tonic::trace::v1::Span;
 use opentelemetry_proto::tonic::trace::v1::Status;
@@ -97,14 +98,23 @@ fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<Map<String, Value>> {
     vec_scope_span_json
 }
 
-/// this function performs the custom flattening of the otel traces event
-/// and returns a `Vec` of `Value::Object` of the flattened json
-pub fn flatten_otel_traces(message: &TracesData) -> Vec<Value> {
+/// Common function to process resource spans and merge resource-level fields
+fn process_resource_spans<T>(
+    resource_spans: &[T],
+    get_resource: fn(&T) -> Option<&opentelemetry_proto::tonic::resource::v1::Resource>,
+    get_scope_spans: fn(&T) -> &[ScopeSpans],
+    get_schema_url: fn(&T) -> &str,
+) -> Vec<Value>
+where
+    T: std::fmt::Debug,
+{
     let mut vec_otel_json = Vec::new();
 
-    for record in &message.resource_spans {
+    for resource_span in resource_spans {
         let mut resource_span_json = Map::new();
-        if let Some(resource) = &record.resource {
+
+        // Process resource attributes if present
+        if let Some(resource) = get_resource(resource_span) {
             insert_attributes(&mut resource_span_json, &resource.attributes);
             resource_span_json.insert(
                 "resource_dropped_attributes_count".to_string(),
@@ -112,27 +122,48 @@ pub fn flatten_otel_traces(message: &TracesData) -> Vec<Value> {
             );
         }
 
+        // Process scope spans
         let mut vec_resource_spans_json = Vec::new();
-        for scope_span in &record.scope_spans {
+        for scope_span in get_scope_spans(resource_span) {
             let scope_span_json = flatten_scope_span(scope_span);
             vec_resource_spans_json.extend(scope_span_json);
         }
 
+        // Add resource schema URL
         resource_span_json.insert(
             "resource_schema_url".to_string(),
-            Value::String(record.schema_url.clone()),
+            Value::String(get_schema_url(resource_span).to_string()),
         );
 
+        // Merge resource-level fields into each span record
         for resource_spans_json in &mut vec_resource_spans_json {
-            for (key, value) in &resource_span_json {
-                resource_spans_json.insert(key.clone(), value.clone());
-            }
-
+            resource_spans_json.extend(resource_span_json.clone());
             vec_otel_json.push(Value::Object(resource_spans_json.clone()));
         }
     }
 
     vec_otel_json
+}
+
+/// Flattens OpenTelemetry traces from protobuf format
+pub fn flatten_otel_traces_protobuf(message: &ExportTraceServiceRequest) -> Vec<Value> {
+    process_resource_spans(
+        &message.resource_spans,
+        |rs| rs.resource.as_ref(),
+        |rs| &rs.scope_spans,
+        |rs| &rs.schema_url,
+    )
+}
+
+/// this function performs the custom flattening of the otel traces event
+/// and returns a `Vec` of `Value::Object` of the flattened json
+pub fn flatten_otel_traces(message: &TracesData) -> Vec<Value> {
+    process_resource_spans(
+        &message.resource_spans,
+        |rs| rs.resource.as_ref(),
+        |rs| &rs.scope_spans,
+        |rs| &rs.schema_url,
+    )
 }
 
 /// otel traces has json array of events
@@ -339,7 +370,7 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
+    use opentelemetry_proto::tonic::common::v1::{AnyValue, EntityRef, KeyValue};
     use opentelemetry_proto::tonic::resource::v1::Resource;
     use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, TracesData};
 
@@ -780,6 +811,14 @@ mod tests {
                         }),
                     }],
                     dropped_attributes_count: 0,
+                    entity_refs: vec![
+                        EntityRef{
+                            schema_url: "https://opentelemetry.io/schemas/1.21.0".to_string(),
+                            r#type: "service".to_string(),
+                            id_keys: vec!["service.name".to_string()],
+                            description_keys: vec!["service.name".to_string()],
+                        }
+                    ]
                 }),
                 scope_spans: vec![ScopeSpans {
                     scope: Some(opentelemetry_proto::tonic::common::v1::InstrumentationScope {

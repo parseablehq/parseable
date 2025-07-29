@@ -188,7 +188,6 @@ pub async fn put_stream(
     body: Bytes,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
-
     PARSEABLE
         .create_update_stream(req.headers(), &body, &stream_name)
         .await?;
@@ -377,6 +376,7 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
         custom_partition: stream_meta.custom_partition.clone(),
         static_schema_flag: stream_meta.static_schema_flag,
         log_source: stream_meta.log_source.clone(),
+        telemetry_type: stream_meta.telemetry_type,
     };
 
     Ok((web::Json(stream_info), StatusCode::OK))

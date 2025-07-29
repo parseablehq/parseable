@@ -47,7 +47,7 @@ use crate::{
         format::{LogSource, LogSourceEntry},
     },
     handlers::{
-        STREAM_TYPE_KEY,
+        STREAM_TYPE_KEY, TelemetryType,
         http::{
             cluster::{INTERNAL_STREAM_NAME, sync_streams_with_ingestors},
             ingest::PostError,
@@ -322,6 +322,7 @@ impl Parseable {
         let stream_type = stream_metadata.stream_type;
         let schema_version = stream_metadata.schema_version;
         let log_source = stream_metadata.log_source;
+        let telemetry_type = stream_metadata.telemetry_type;
         let metadata = LogStreamMetadata::new(
             created_at,
             time_partition,
@@ -332,6 +333,7 @@ impl Parseable {
             stream_type,
             schema_version,
             log_source,
+            telemetry_type,
         );
         let ingestor_id = INGESTOR_META
             .get()
@@ -359,6 +361,7 @@ impl Parseable {
                 StreamType::Internal,
                 None,
                 vec![log_source_entry],
+                TelemetryType::Logs,
             )
             .await
         {
@@ -384,6 +387,7 @@ impl Parseable {
         stream_type: StreamType,
         custom_partition: Option<&String>,
         log_source: Vec<LogSourceEntry>,
+        telemetry_type: TelemetryType,
     ) -> Result<bool, PostError> {
         if self.streams.contains(stream_name) {
             return Ok(true);
@@ -414,6 +418,7 @@ impl Parseable {
             Arc::new(Schema::empty()),
             stream_type,
             log_source,
+            telemetry_type,
         )
         .await?;
 
@@ -485,6 +490,7 @@ impl Parseable {
             update_stream_flag,
             stream_type,
             log_source,
+            telemetry_type,
         } = headers.into();
 
         let stream_in_memory_dont_update =
@@ -547,6 +553,7 @@ impl Parseable {
             schema,
             stream_type,
             vec![log_source_entry],
+            telemetry_type,
         )
         .await?;
 
@@ -603,6 +610,7 @@ impl Parseable {
         schema: Arc<Schema>,
         stream_type: StreamType,
         log_source: Vec<LogSourceEntry>,
+        telemetry_type: TelemetryType,
     ) -> Result<(), CreateStreamError> {
         // fail to proceed if invalid stream name
         if stream_type != StreamType::Internal {
@@ -625,6 +633,7 @@ impl Parseable {
                 group: PARSEABLE.options.username.clone(),
             },
             log_source: log_source.clone(),
+            telemetry_type,
             ..Default::default()
         };
 
@@ -653,6 +662,7 @@ impl Parseable {
                     stream_type,
                     SchemaVersion::V1, // New stream
                     log_source,
+                    telemetry_type,
                 );
                 let ingestor_id = INGESTOR_META
                     .get()

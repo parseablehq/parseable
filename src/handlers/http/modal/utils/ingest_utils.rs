@@ -92,7 +92,7 @@ pub async fn flatten_and_push_logs(
     Ok(())
 }
 
-async fn push_logs(
+pub async fn push_logs(
     stream_name: &str,
     json: Value,
     log_source: &LogSource,

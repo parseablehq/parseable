@@ -16,6 +16,16 @@
  *
  */
 
+use crate::{
+    connectors::common::processor::Processor,
+    event::{
+        Event as ParseableEvent, USER_AGENT_KEY,
+        format::{EventFormat, LogSourceEntry, json},
+    },
+    handlers::TelemetryType,
+    parseable::PARSEABLE,
+    storage::StreamType,
+};
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use rdkafka::consumer::{CommitMode, Consumer};
@@ -24,16 +34,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error};
-
-use crate::{
-    connectors::common::processor::Processor,
-    event::{
-        Event as ParseableEvent, USER_AGENT_KEY,
-        format::{EventFormat, LogSourceEntry, json},
-    },
-    parseable::PARSEABLE,
-    storage::StreamType,
-};
 
 use super::{ConsumerRecord, StreamConsumer, TopicPartition, config::BufferConfig};
 
@@ -50,13 +50,13 @@ impl ParseableSinkProcessor {
             .map(|r| r.topic.as_str())
             .unwrap_or_default();
         let log_source_entry = LogSourceEntry::default();
-
         PARSEABLE
             .create_stream_if_not_exists(
                 stream_name,
                 StreamType::UserDefined,
                 None,
                 vec![log_source_entry],
+                TelemetryType::default(),
             )
             .await?;
 
