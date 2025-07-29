@@ -291,10 +291,17 @@ where
                         )));
                     }
                 }
+            } else {
+                return Err(PostError::Invalid(anyhow::anyhow!(
+                    "Unsupported Content-Type: {}. Expected application/json or application/x-protobuf",
+                    content_type
+                )));
             }
         }
         None => {
-            return Err(PostError::Header(ParseHeaderError::InvalidValue));
+            return Err(PostError::Invalid(anyhow::anyhow!(
+                "Missing Content-Type header. Expected application/json or application/x-protobuf"
+            )));
         }
     }
 
