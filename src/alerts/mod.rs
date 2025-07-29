@@ -512,16 +512,13 @@ impl AlertState {
                 // from here, the user can only go to Resolved
                 if new_state == AlertState::Resolved {
                     // update state on disk and in memory
-                    let guard = ALERTS.write().await;
-                    if let Some(alerts) = guard.as_ref() {
-                        alerts
-                            .update_state(alert_id, new_state, Some("".into()))
-                            .await?;
-                    }
-
-                    // ALERTS
-                    //     .update_state(alert_id, new_state, Some("".into()))
-                    //     .await?;
+                    let guard = ALERTS.read().await;
+                    let alerts = guard.as_ref().ok_or_else(|| {
+                        AlertError::CustomError("Alert manager not initialized".into())
+                    })?;
+                    alerts
+                        .update_state(alert_id, new_state, Some("".into()))
+                        .await?;
                 } else {
                     let msg = format!("Not allowed to manually go from Silenced to {new_state}");
                     return Err(AlertError::InvalidStateChange(msg));
