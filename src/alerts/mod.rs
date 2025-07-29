@@ -125,13 +125,13 @@ pub enum AlertTask {
 
 #[derive(Default, Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "lowercase")]
-pub enum AlertVerison {
+pub enum AlertVersion {
     V1,
     #[default]
     V2,
 }
 
-impl From<&str> for AlertVerison {
+impl From<&str> for AlertVersion {
     fn from(value: &str) -> Self {
         match value {
             "v1" => Self::V1,
@@ -596,7 +596,7 @@ impl AlertRequest {
         }
         let datasets = resolve_stream_names(&self.query)?;
         let config = AlertConfig {
-            version: AlertVerison::from(CURRENT_ALERTS_VERSION),
+            version: AlertVersion::from(CURRENT_ALERTS_VERSION),
             id: Ulid::new(),
             severity: self.severity,
             title: self.title,
@@ -617,7 +617,7 @@ impl AlertRequest {
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AlertConfig {
-    pub version: AlertVerison,
+    pub version: AlertVersion,
     #[serde(default)]
     pub id: Ulid,
     pub severity: Severity,
@@ -653,7 +653,7 @@ impl AlertConfig {
 
         // Create the migrated v2 alert
         let migrated_alert = AlertConfig {
-            version: AlertVerison::V2,
+            version: AlertVersion::V2,
             id: basic_fields.id,
             severity: basic_fields.severity,
             title: basic_fields.title,

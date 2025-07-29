@@ -24,7 +24,7 @@ use ulid::Ulid;
 
 use crate::{
     alerts::{
-        AlertConfig, AlertError, AlertState, AlertType, AlertVerison, EvalConfig, Severity,
+        AlertConfig, AlertError, AlertState, AlertType, AlertVersion, EvalConfig, Severity,
         ThresholdConfig,
         alerts_utils::{evaluate_condition, execute_alert_query, extract_time_range},
         is_query_aggregate,
@@ -42,7 +42,7 @@ use crate::{
 /// Struct which defines the threshold type alerts
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct ThresholdAlert {
-    pub version: AlertVerison,
+    pub version: AlertVersion,
     #[serde(default)]
     pub id: Ulid,
     pub severity: Severity,
