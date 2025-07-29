@@ -29,9 +29,11 @@ use crate::event::error::EventError;
 use crate::event::format::known_schema::{self, KNOWN_SCHEMA_LIST};
 use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
 use crate::event::{self, FORMAT_KEY, USER_AGENT_KEY};
+use crate::handlers::http::MAX_EVENT_PAYLOAD_SIZE;
 use crate::handlers::http::modal::utils::ingest_utils::push_logs;
 use crate::handlers::{
-    EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY, TELEMETRY_TYPE_KEY, TelemetryType,
+    CONTENT_TYPE_JSON, CONTENT_TYPE_PROTOBUF, EXTRACT_LOG_KEY, LOG_SOURCE_KEY,
+    STREAM_NAME_HEADER_KEY, TELEMETRY_TYPE_KEY, TelemetryType,
 };
 use crate::metadata::SchemaVersion;
 use crate::option::Mode;
@@ -166,13 +168,13 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
     Ok(())
 }
 
-// Handler for POST /v1/logs to ingest OTEL logs
-// ingests events by extracting stream name from header
-// creates if stream does not exist
-pub async fn handle_otel_logs_ingestion(
-    req: HttpRequest,
-    body: web::Bytes,
-) -> Result<HttpResponse, PostError> {
+// Common validation and setup for OTEL ingestion
+async fn setup_otel_stream(
+    req: &HttpRequest,
+    expected_log_source: LogSource,
+    known_fields: &[&str],
+    telemetry_type: TelemetryType,
+) -> Result<(String, LogSource, LogSourceEntry), PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
@@ -180,73 +182,106 @@ pub async fn handle_otel_logs_ingestion(
     let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingLogSource));
     };
+
     let log_source = LogSource::from(log_source.to_str().unwrap());
-    if log_source != LogSource::OtelLogs {
-        return Err(PostError::IncorrectLogSource(LogSource::OtelLogs));
+    if log_source != expected_log_source {
+        return Err(PostError::IncorrectLogSource(expected_log_source));
     }
 
     let stream_name = stream_name.to_str().unwrap().to_owned();
 
     let log_source_entry = LogSourceEntry::new(
         log_source.clone(),
-        OTEL_LOG_KNOWN_FIELD_LIST
-            .iter()
-            .map(|&s| s.to_string())
-            .collect(),
+        known_fields.iter().map(|&s| s.to_string()).collect(),
     );
+
     PARSEABLE
         .create_stream_if_not_exists(
             &stream_name,
             StreamType::UserDefined,
             None,
             vec![log_source_entry.clone()],
-            TelemetryType::Logs,
+            telemetry_type,
         )
         .await?;
 
-    //if stream exists, fetch the stream log source
-    //return error if the stream log source is otel traces or otel metrics
+    // Validate stream compatibility
     if let Ok(stream) = PARSEABLE.get_stream(&stream_name) {
-        stream
-            .get_log_source()
-            .iter()
-            .find(|&stream_log_source_entry| {
-                stream_log_source_entry.log_source_format != LogSource::OtelTraces
-                    && stream_log_source_entry.log_source_format != LogSource::OtelMetrics
-            })
-            .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
+        match log_source {
+            LogSource::OtelLogs => {
+                // For logs, reject if stream is metrics or traces
+                stream
+                    .get_log_source()
+                    .iter()
+                    .find(|&stream_log_source_entry| {
+                        stream_log_source_entry.log_source_format != LogSource::OtelTraces
+                            && stream_log_source_entry.log_source_format != LogSource::OtelMetrics
+                    })
+                    .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
+            }
+            LogSource::OtelMetrics | LogSource::OtelTraces => {
+                // For metrics/traces, only allow same type
+                stream
+                    .get_log_source()
+                    .iter()
+                    .find(|&stream_log_source_entry| {
+                        stream_log_source_entry.log_source_format == log_source
+                    })
+                    .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
+            }
+            _ => {}
+        }
     }
 
     PARSEABLE
-        .add_update_log_source(&stream_name, log_source_entry)
+        .add_update_log_source(&stream_name, log_source_entry.clone())
         .await?;
 
-    let p_custom_fields = get_custom_fields_from_header(&req);
-    match req.headers().get("Content-Type") {
+    Ok((stream_name, log_source, log_source_entry))
+}
+
+// Common content processing for OTEL ingestion
+async fn process_otel_content<T, F>(
+    req: &HttpRequest,
+    body: web::Bytes,
+    stream_name: &str,
+    log_source: &LogSource,
+    decode_protobuf: F,
+    flatten_protobuf: fn(&T) -> Vec<serde_json::Value>,
+) -> Result<(), PostError>
+where
+    T: prost::Message + Default,
+    F: FnOnce(web::Bytes) -> Result<T, prost::DecodeError>,
+{
+    let p_custom_fields = get_custom_fields_from_header(req);
+
+    match req
+        .headers()
+        .get("Content-Type")
+        .and_then(|h| h.to_str().ok())
+    {
         Some(content_type) => {
-            if content_type == "application/json" {
+            if content_type == CONTENT_TYPE_JSON {
                 flatten_and_push_logs(
                     serde_json::from_slice(&body)?,
-                    &stream_name,
-                    &log_source,
+                    stream_name,
+                    log_source,
                     &p_custom_fields,
                 )
                 .await?;
-            }
-
-            if content_type == "application/x-protobuf" {
-                const MAX_PROTOBUF_SIZE: usize = 10 * 1024 * 1024; // 10MB limit
-                if body.len() > MAX_PROTOBUF_SIZE {
+            } else if content_type == CONTENT_TYPE_PROTOBUF {
+                // 10MB limit
+                if body.len() > MAX_EVENT_PAYLOAD_SIZE {
                     return Err(PostError::Invalid(anyhow::anyhow!(
                         "Protobuf message size {} exceeds maximum allowed size of {} bytes",
                         body.len(),
-                        MAX_PROTOBUF_SIZE
+                        MAX_EVENT_PAYLOAD_SIZE
                     )));
                 }
-                match ExportLogsServiceRequest::decode(body) {
-                    Ok(json) => {
-                        for record in flatten_otel_protobuf(&json) {
-                            push_logs(&stream_name, record, &log_source, &p_custom_fields).await?;
+                match decode_protobuf(body) {
+                    Ok(decoded) => {
+                        for record in flatten_protobuf(&decoded) {
+                            push_logs(stream_name, record, log_source, &p_custom_fields).await?;
                         }
                     }
                     Err(e) => {
@@ -263,6 +298,34 @@ pub async fn handle_otel_logs_ingestion(
         }
     }
 
+    Ok(())
+}
+
+// Handler for POST /v1/logs to ingest OTEL logs
+// ingests events by extracting stream name from header
+// creates if stream does not exist
+pub async fn handle_otel_logs_ingestion(
+    req: HttpRequest,
+    body: web::Bytes,
+) -> Result<HttpResponse, PostError> {
+    let (stream_name, log_source, _) = setup_otel_stream(
+        &req,
+        LogSource::OtelLogs,
+        &OTEL_LOG_KNOWN_FIELD_LIST,
+        TelemetryType::Logs,
+    )
+    .await?;
+
+    process_otel_content(
+        &req,
+        body,
+        &stream_name,
+        &log_source,
+        ExportLogsServiceRequest::decode,
+        flatten_otel_protobuf,
+    )
+    .await?;
+
     Ok(HttpResponse::Ok().finish())
 }
 
@@ -273,83 +336,23 @@ pub async fn handle_otel_metrics_ingestion(
     req: HttpRequest,
     body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
-    let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
-        return Err(PostError::Header(ParseHeaderError::MissingStreamName));
-    };
-    let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
-        return Err(PostError::Header(ParseHeaderError::MissingLogSource));
-    };
-    let log_source = LogSource::from(log_source.to_str().unwrap());
-    if log_source != LogSource::OtelMetrics {
-        return Err(PostError::IncorrectLogSource(LogSource::OtelMetrics));
-    }
+    let (stream_name, log_source, _) = setup_otel_stream(
+        &req,
+        LogSource::OtelMetrics,
+        &OTEL_METRICS_KNOWN_FIELD_LIST,
+        TelemetryType::Metrics,
+    )
+    .await?;
 
-    let stream_name = stream_name.to_str().unwrap().to_owned();
-
-    let log_source_entry = LogSourceEntry::new(
-        log_source.clone(),
-        OTEL_METRICS_KNOWN_FIELD_LIST
-            .iter()
-            .map(|&s| s.to_string())
-            .collect(),
-    );
-    PARSEABLE
-        .create_stream_if_not_exists(
-            &stream_name,
-            StreamType::UserDefined,
-            None,
-            vec![log_source_entry.clone()],
-            TelemetryType::Metrics,
-        )
-        .await?;
-
-    //if stream exists, fetch the stream log source
-    //return error if the stream log source is not otel metrics
-    if let Ok(stream) = PARSEABLE.get_stream(&stream_name) {
-        stream
-            .get_log_source()
-            .iter()
-            .find(|&stream_log_source_entry| {
-                stream_log_source_entry.log_source_format == log_source.clone()
-            })
-            .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
-    }
-
-    PARSEABLE
-        .add_update_log_source(&stream_name, log_source_entry)
-        .await?;
-
-    let p_custom_fields = get_custom_fields_from_header(&req);
-
-    match req.headers().get("Content-Type") {
-        Some(content_type) => {
-            if content_type == "application/json" {
-                flatten_and_push_logs(
-                    serde_json::from_slice(&body)?,
-                    &stream_name,
-                    &log_source,
-                    &p_custom_fields,
-                )
-                .await?;
-            }
-
-            if content_type == "application/x-protobuf" {
-                match ExportMetricsServiceRequest::decode(body) {
-                    Ok(json) => {
-                        for record in flatten_otel_metrics_protobuf(&json) {
-                            push_logs(&stream_name, record, &log_source, &p_custom_fields).await?;
-                        }
-                    }
-                    Err(e) => {
-                        return Err(PostError::Invalid(e.into()));
-                    }
-                }
-            }
-        }
-        None => {
-            return Err(PostError::Header(ParseHeaderError::InvalidValue));
-        }
-    }
+    process_otel_content(
+        &req,
+        body,
+        &stream_name,
+        &log_source,
+        ExportMetricsServiceRequest::decode,
+        flatten_otel_metrics_protobuf,
+    )
+    .await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -361,84 +364,23 @@ pub async fn handle_otel_traces_ingestion(
     req: HttpRequest,
     body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
-    let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
-        return Err(PostError::Header(ParseHeaderError::MissingStreamName));
-    };
+    let (stream_name, log_source, _) = setup_otel_stream(
+        &req,
+        LogSource::OtelTraces,
+        &OTEL_TRACES_KNOWN_FIELD_LIST,
+        TelemetryType::Traces,
+    )
+    .await?;
 
-    let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
-        return Err(PostError::Header(ParseHeaderError::MissingLogSource));
-    };
-    let log_source = LogSource::from(log_source.to_str().unwrap());
-    if log_source != LogSource::OtelTraces {
-        return Err(PostError::IncorrectLogSource(LogSource::OtelTraces));
-    }
-    let stream_name = stream_name.to_str().unwrap().to_owned();
-
-    let log_source_entry = LogSourceEntry::new(
-        log_source.clone(),
-        OTEL_TRACES_KNOWN_FIELD_LIST
-            .iter()
-            .map(|&s| s.to_string())
-            .collect(),
-    );
-
-    PARSEABLE
-        .create_stream_if_not_exists(
-            &stream_name,
-            StreamType::UserDefined,
-            None,
-            vec![log_source_entry.clone()],
-            TelemetryType::Traces,
-        )
-        .await?;
-
-    //if stream exists, fetch the stream log source
-    //return error if the stream log source is not otel traces
-    if let Ok(stream) = PARSEABLE.get_stream(&stream_name) {
-        stream
-            .get_log_source()
-            .iter()
-            .find(|&stream_log_source_entry| {
-                stream_log_source_entry.log_source_format == log_source.clone()
-            })
-            .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
-    }
-
-    PARSEABLE
-        .add_update_log_source(&stream_name, log_source_entry)
-        .await?;
-
-    let p_custom_fields = get_custom_fields_from_header(&req);
-
-    match req.headers().get("Content-Type") {
-        Some(content_type) => {
-            if content_type == "application/json" {
-                flatten_and_push_logs(
-                    serde_json::from_slice(&body)?,
-                    &stream_name,
-                    &log_source,
-                    &p_custom_fields,
-                )
-                .await?;
-            }
-
-            if content_type == "application/x-protobuf" {
-                match ExportTraceServiceRequest::decode(body) {
-                    Ok(json) => {
-                        for record in flatten_otel_traces_protobuf(&json) {
-                            push_logs(&stream_name, record, &log_source, &p_custom_fields).await?;
-                        }
-                    }
-                    Err(e) => {
-                        return Err(PostError::Invalid(e.into()));
-                    }
-                }
-            }
-        }
-        None => {
-            return Err(PostError::Header(ParseHeaderError::InvalidValue));
-        }
-    }
+    process_otel_content(
+        &req,
+        body,
+        &stream_name,
+        &log_source,
+        ExportTraceServiceRequest::decode,
+        flatten_otel_traces_protobuf,
+    )
+    .await?;
 
     Ok(HttpResponse::Ok().finish())
 }

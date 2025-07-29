@@ -143,11 +143,23 @@ fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<Map<String, Value>> {
     vec_scope_log_json
 }
 
-pub fn flatten_otel_protobuf(message: &ExportLogsServiceRequest) -> Vec<Value> {
+/// Common function to process resource logs and merge resource-level fields
+fn process_resource_logs<T>(
+    resource_logs: &[T],
+    get_resource: fn(&T) -> Option<&opentelemetry_proto::tonic::resource::v1::Resource>,
+    get_scope_logs: fn(&T) -> &[ScopeLogs],
+    get_schema_url: fn(&T) -> &str,
+) -> Vec<Value>
+where
+    T: std::fmt::Debug,
+{
     let mut vec_otel_json = Vec::new();
-    for resource_logs in &message.resource_logs {
+
+    for resource_log in resource_logs {
         let mut resource_log_json = Map::new();
-        if let Some(resource) = &resource_logs.resource {
+
+        // Process resource attributes if present
+        if let Some(resource) = get_resource(resource_log) {
             insert_attributes(&mut resource_log_json, &resource.attributes);
             resource_log_json.insert(
                 "resource_dropped_attributes_count".to_string(),
@@ -156,18 +168,19 @@ pub fn flatten_otel_protobuf(message: &ExportLogsServiceRequest) -> Vec<Value> {
         }
 
         let mut vec_resource_logs_json = Vec::new();
-        for scope_log in &resource_logs.scope_logs {
+        let scope_logs = get_scope_logs(resource_log);
+
+        for scope_log in scope_logs {
             vec_resource_logs_json.extend(flatten_scope_log(scope_log));
         }
 
         resource_log_json.insert(
             "schema_url".to_string(),
-            Value::String(resource_logs.schema_url.clone()),
+            Value::String(get_schema_url(resource_log).to_string()),
         );
 
         for resource_logs_json in &mut vec_resource_logs_json {
             resource_logs_json.extend(resource_log_json.clone());
-
             vec_otel_json.push(Value::Object(resource_logs_json.clone()));
         }
     }
@@ -175,36 +188,22 @@ pub fn flatten_otel_protobuf(message: &ExportLogsServiceRequest) -> Vec<Value> {
     vec_otel_json
 }
 
+pub fn flatten_otel_protobuf(message: &ExportLogsServiceRequest) -> Vec<Value> {
+    process_resource_logs(
+        &message.resource_logs,
+        |record| record.resource.as_ref(),
+        |record| &record.scope_logs,
+        |record| &record.schema_url,
+    )
+}
+
 /// this function performs the custom flattening of the otel logs
 /// and returns a `Vec` of `Value::Object` of the flattened json
 pub fn flatten_otel_logs(message: &LogsData) -> Vec<Value> {
-    let mut vec_otel_json = Vec::new();
-    for record in &message.resource_logs {
-        let mut resource_log_json = Map::new();
-        if let Some(resource) = &record.resource {
-            insert_attributes(&mut resource_log_json, &resource.attributes);
-            resource_log_json.insert(
-                "resource_dropped_attributes_count".to_string(),
-                Value::Number(resource.dropped_attributes_count.into()),
-            );
-        }
-
-        let mut vec_resource_logs_json = Vec::new();
-        for scope_log in &record.scope_logs {
-            vec_resource_logs_json.extend(flatten_scope_log(scope_log));
-        }
-
-        resource_log_json.insert(
-            "schema_url".to_string(),
-            Value::String(record.schema_url.clone()),
-        );
-
-        for resource_logs_json in &mut vec_resource_logs_json {
-            resource_logs_json.extend(resource_log_json.clone());
-
-            vec_otel_json.push(Value::Object(resource_logs_json.clone()));
-        }
-    }
-
-    vec_otel_json
+    process_resource_logs(
+        &message.resource_logs,
+        |record| record.resource.as_ref(),
+        |record| &record.scope_logs,
+        |record| &record.schema_url,
+    )
 }

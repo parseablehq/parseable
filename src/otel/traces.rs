@@ -98,14 +98,23 @@ fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<Map<String, Value>> {
     vec_scope_span_json
 }
 
-/// this function performs the custom flattening of the otel traces event
-/// and returns a `Vec` of `Value::Object` of the flattened json
-pub fn flatten_otel_traces(message: &TracesData) -> Vec<Value> {
+/// Common function to process resource spans and merge resource-level fields
+fn process_resource_spans<T>(
+    resource_spans: &[T],
+    get_resource: fn(&T) -> Option<&opentelemetry_proto::tonic::resource::v1::Resource>,
+    get_scope_spans: fn(&T) -> &[ScopeSpans],
+    get_schema_url: fn(&T) -> &str,
+) -> Vec<Value>
+where
+    T: std::fmt::Debug,
+{
     let mut vec_otel_json = Vec::new();
 
-    for record in &message.resource_spans {
+    for resource_span in resource_spans {
         let mut resource_span_json = Map::new();
-        if let Some(resource) = &record.resource {
+
+        // Process resource attributes if present
+        if let Some(resource) = get_resource(resource_span) {
             insert_attributes(&mut resource_span_json, &resource.attributes);
             resource_span_json.insert(
                 "resource_dropped_attributes_count".to_string(),
@@ -113,27 +122,48 @@ pub fn flatten_otel_traces(message: &TracesData) -> Vec<Value> {
             );
         }
 
+        // Process scope spans
         let mut vec_resource_spans_json = Vec::new();
-        for scope_span in &record.scope_spans {
+        for scope_span in get_scope_spans(resource_span) {
             let scope_span_json = flatten_scope_span(scope_span);
             vec_resource_spans_json.extend(scope_span_json);
         }
 
+        // Add resource schema URL
         resource_span_json.insert(
             "resource_schema_url".to_string(),
-            Value::String(record.schema_url.clone()),
+            Value::String(get_schema_url(resource_span).to_string()),
         );
 
+        // Merge resource-level fields into each span record
         for resource_spans_json in &mut vec_resource_spans_json {
-            for (key, value) in &resource_span_json {
-                resource_spans_json.insert(key.clone(), value.clone());
-            }
-
+            resource_spans_json.extend(resource_span_json.clone());
             vec_otel_json.push(Value::Object(resource_spans_json.clone()));
         }
     }
 
     vec_otel_json
+}
+
+/// Flattens OpenTelemetry traces from protobuf format
+pub fn flatten_otel_traces_protobuf(message: &ExportTraceServiceRequest) -> Vec<Value> {
+    process_resource_spans(
+        &message.resource_spans,
+        |rs| rs.resource.as_ref(),
+        |rs| &rs.scope_spans,
+        |rs| &rs.schema_url,
+    )
+}
+
+/// this function performs the custom flattening of the otel traces event
+/// and returns a `Vec` of `Value::Object` of the flattened json
+pub fn flatten_otel_traces(message: &TracesData) -> Vec<Value> {
+    process_resource_spans(
+        &message.resource_spans,
+        |rs| rs.resource.as_ref(),
+        |rs| &rs.scope_spans,
+        |rs| &rs.schema_url,
+    )
 }
 
 /// otel traces has json array of events
@@ -932,66 +962,4 @@ mod tests {
             );
         }
     }
-}
-
-/// Flattens OpenTelemetry traces from protobuf format
-pub fn flatten_otel_traces_protobuf(message: &ExportTraceServiceRequest) -> Vec<Value> {
-    let mut vec_otel_json = Vec::new();
-    for resource_spans in &message.resource_spans {
-        let mut resource_spans_json = Map::new();
-        if let Some(resource) = &resource_spans.resource {
-            insert_attributes(&mut resource_spans_json, &resource.attributes);
-            resource_spans_json.insert(
-                "resource_dropped_attributes_count".to_string(),
-                Value::Number(resource.dropped_attributes_count.into()),
-            );
-        }
-
-        let mut vec_resource_spans_json: Vec<Map<String, Value>> = Vec::new();
-        for scope_spans in &resource_spans.scope_spans {
-            // 1) collect all span JSON under this scope
-            let mut scope_spans_json = Vec::new();
-            for span in &scope_spans.spans {
-                scope_spans_json.extend(flatten_span_record(span));
-            }
-
-            // 2) build a Map of scope‐level fields
-            let mut scope_span_json = Map::new();
-            if let Some(scope) = &scope_spans.scope {
-                scope_span_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
-                scope_span_json.insert(
-                    "scope_version".to_string(),
-                    Value::String(scope.version.clone()),
-                );
-                insert_attributes(&mut scope_span_json, &scope.attributes);
-                scope_span_json.insert(
-                    "scope_dropped_attributes_count".to_string(),
-                    Value::Number(scope.dropped_attributes_count.into()),
-                );
-            }
-            scope_span_json.insert(
-                "scope_schema_url".to_string(),
-                Value::String(scope_spans.schema_url.clone()),
-            );
-
-            // 3) merge scope fields into each span record
-            for span_json in &mut scope_spans_json {
-                span_json.extend(scope_span_json.clone());
-            }
-
-            // 4) append to the resource‐level accumulator
-            vec_resource_spans_json.extend(scope_spans_json);
-        }
-
-        resource_spans_json.insert(
-            "resource_schema_url".to_string(),
-            Value::String(resource_spans.schema_url.clone()),
-        );
-
-        for resource_spans_json_item in &mut vec_resource_spans_json {
-            resource_spans_json_item.extend(resource_spans_json.clone());
-            vec_otel_json.push(Value::Object(resource_spans_json_item.clone()));
-        }
-    }
-    vec_otel_json
 }
