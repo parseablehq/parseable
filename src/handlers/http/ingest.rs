@@ -29,7 +29,9 @@ use crate::event::error::EventError;
 use crate::event::format::known_schema::{self, KNOWN_SCHEMA_LIST};
 use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
 use crate::event::{self, FORMAT_KEY, USER_AGENT_KEY};
-use crate::handlers::{EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
+use crate::handlers::{
+    EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY, TELEMETRY_TYPE_KEY, TelemetryType,
+};
 use crate::metadata::SchemaVersion;
 use crate::option::Mode;
 use crate::otel::logs::OTEL_LOG_KNOWN_FIELD_LIST;
@@ -68,6 +70,12 @@ pub async fn ingest(
         .and_then(|h| h.to_str().ok())
         .map_or(LogSource::default(), LogSource::from);
 
+    let telemetry_type = req
+        .headers()
+        .get(TELEMETRY_TYPE_KEY)
+        .and_then(|h| h.to_str().ok())
+        .map_or(TelemetryType::default(), TelemetryType::from);
+
     let extract_log = req
         .headers()
         .get(EXTRACT_LOG_KEY)
@@ -102,6 +110,7 @@ pub async fn ingest(
             StreamType::UserDefined,
             None,
             vec![log_source_entry.clone()],
+            telemetry_type,
         )
         .await?;
 
@@ -186,6 +195,7 @@ pub async fn handle_otel_logs_ingestion(
             StreamType::UserDefined,
             None,
             vec![log_source_entry.clone()],
+            TelemetryType::Logs,
         )
         .await?;
 
@@ -252,6 +262,7 @@ pub async fn handle_otel_metrics_ingestion(
             StreamType::UserDefined,
             None,
             vec![log_source_entry.clone()],
+            TelemetryType::Metrics,
         )
         .await?;
 
@@ -318,6 +329,7 @@ pub async fn handle_otel_traces_ingestion(
             StreamType::UserDefined,
             None,
             vec![log_source_entry.clone()],
+            TelemetryType::Traces,
         )
         .await?;
 

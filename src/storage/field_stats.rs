@@ -18,6 +18,7 @@
 
 use crate::event::format::LogSource;
 use crate::event::format::LogSourceEntry;
+use crate::handlers::TelemetryType;
 use crate::handlers::http::ingest::PostError;
 use crate::handlers::http::modal::utils::ingest_utils::flatten_and_push_logs;
 use crate::parseable::PARSEABLE;
@@ -113,6 +114,7 @@ pub async fn calculate_field_stats(
             StreamType::Internal,
             Some(&"dataset_name".into()),
             vec![log_source_entry],
+            TelemetryType::Logs,
         )
         .await?;
     flatten_and_push_logs(

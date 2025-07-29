@@ -25,6 +25,7 @@ use std::sync::Arc;
 
 use crate::catalog::snapshot::ManifestItem;
 use crate::event::format::LogSourceEntry;
+use crate::handlers::TelemetryType;
 use crate::metrics::{
     EVENTS_INGESTED, EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
     EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
@@ -88,6 +89,7 @@ pub struct LogStreamMetadata {
     pub hot_tier_enabled: bool,
     pub stream_type: StreamType,
     pub log_source: Vec<LogSourceEntry>,
+    pub telemetry_type: TelemetryType,
 }
 
 impl LogStreamMetadata {
@@ -102,6 +104,7 @@ impl LogStreamMetadata {
         stream_type: StreamType,
         schema_version: SchemaVersion,
         log_source: Vec<LogSourceEntry>,
+        telemetry_type: TelemetryType,
     ) -> Self {
         LogStreamMetadata {
             created_at: if created_at.is_empty() {
@@ -125,6 +128,7 @@ impl LogStreamMetadata {
             stream_type,
             schema_version,
             log_source,
+            telemetry_type,
             ..Default::default()
         }
     }
