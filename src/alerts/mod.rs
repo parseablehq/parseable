@@ -1482,22 +1482,11 @@ impl AlertManagerTrait for Alerts {
         Ok(alerts)
     }
 
-    /// Returns a sigle alert that the user has access to (based on query auth)
+    /// Returns a single alert that the user has access to (based on query auth)
     async fn get_alert_by_id(&self, id: Ulid) -> Result<Box<dyn AlertTrait>, AlertError> {
         let read_access = self.alerts.read().await;
         if let Some(alert) = read_access.get(&id) {
-            let alert: Box<dyn AlertTrait> = match &alert.get_alert_type() {
-                AlertType::Threshold => {
-                    Box::new(ThresholdAlert::from(alert.to_alert_config())) as Box<dyn AlertTrait>
-                }
-                AlertType::Anomaly => {
-                    return Err(AlertError::NotPresentInOSS("anomaly".into()));
-                }
-                AlertType::Forecast => {
-                    return Err(AlertError::NotPresentInOSS("forecast".into()));
-                }
-            };
-            Ok(alert)
+            Ok(alert.clone_box())
         } else {
             Err(AlertError::CustomError(format!(
                 "No alert found for the given ID- {id}"
