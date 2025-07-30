@@ -137,7 +137,8 @@ async fn execute_remote_query(query: &str, time_range: &TimeRange) -> Result<f64
 fn convert_result_to_f64(result_value: serde_json::Value) -> Result<f64, AlertError> {
     // due to the previous validations, we can be sure that we get an array of objects with just one entry
     // [{"countField": Number(1120.251)}]
-    if let Some(array_val) = result_value.as_array().filter(|arr| !arr.is_empty())
+    if let Some(array_val) = result_value.as_array()
+        && !array_val.is_empty()
         && let Some(object) = array_val[0].as_object()
     {
         let values = object.values().map(|v| v.as_f64().unwrap()).collect_vec();

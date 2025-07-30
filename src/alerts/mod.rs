@@ -488,54 +488,6 @@ impl Display for AlertState {
     }
 }
 
-impl AlertState {
-    pub async fn update_state(
-        &self,
-        new_state: AlertState,
-        alert_id: Ulid,
-    ) -> Result<(), AlertError> {
-        match self {
-            AlertState::Triggered => {
-                if new_state == AlertState::Triggered {
-                    let msg = format!("Not allowed to manually go from Triggered to {new_state}");
-                    return Err(AlertError::InvalidStateChange(msg));
-                } else {
-                    // update state on disk and in memory
-                    let guard = ALERTS.read().await;
-                    let alerts = guard.as_ref().ok_or_else(|| {
-                        AlertError::CustomError("Alert manager not initialized".into())
-                    })?;
-                    alerts
-                        .update_state(alert_id, new_state, Some("".into()))
-                        .await?;
-                }
-            }
-            AlertState::Silenced => {
-                // from here, the user can only go to Resolved
-                if new_state == AlertState::Resolved {
-                    // update state on disk and in memory
-                    let guard = ALERTS.read().await;
-                    let alerts = guard.as_ref().ok_or_else(|| {
-                        AlertError::CustomError("Alert manager not initialized".into())
-                    })?;
-                    alerts
-                        .update_state(alert_id, new_state, Some("".into()))
-                        .await?;
-                } else {
-                    let msg = format!("Not allowed to manually go from Silenced to {new_state}");
-                    return Err(AlertError::InvalidStateChange(msg));
-                }
-            }
-            AlertState::Resolved => {
-                // user shouldn't logically be changing states if current state is Resolved
-                let msg = format!("Not allowed to go manually from Resolved to {new_state}");
-                return Err(AlertError::InvalidStateChange(msg));
-            }
-        }
-        Ok(())
-    }
-}
-
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub enum Severity {
@@ -1530,11 +1482,11 @@ impl AlertManagerTrait for Alerts {
         Ok(alerts)
     }
 
-    /// Returns a sigle alert that the user has access to (based on query auth)
-    async fn get_alert_by_id(&self, id: Ulid) -> Result<AlertConfig, AlertError> {
+    /// Returns a single alert that the user has access to (based on query auth)
+    async fn get_alert_by_id(&self, id: Ulid) -> Result<Box<dyn AlertTrait>, AlertError> {
         let read_access = self.alerts.read().await;
         if let Some(alert) = read_access.get(&id) {
-            Ok(alert.to_alert_config())
+            Ok(alert.clone_box())
         } else {
             Err(AlertError::CustomError(format!(
                 "No alert found for the given ID- {id}"
@@ -1557,31 +1509,33 @@ impl AlertManagerTrait for Alerts {
         new_state: AlertState,
         trigger_notif: Option<String>,
     ) -> Result<(), AlertError> {
-        let store = PARSEABLE.storage.get_object_store();
+        // let store = PARSEABLE.storage.get_object_store();
 
         // read and modify alert
-        let mut alert = self.get_alert_by_id(alert_id).await?;
-        trace!("get alert state by id-\n{}", alert.state);
-
-        alert.state = new_state;
-
-        trace!("new state-\n{}", alert.state);
-
-        // save to disk
-        store.put_alert(alert_id, &alert).await?;
-
-        // modify in memory
-        let mut writer = self.alerts.write().await;
-        if let Some(alert) = writer.get_mut(&alert_id) {
-            trace!("in memory alert-\n{}", alert.get_state());
-            alert.set_state(new_state);
-            trace!("in memory updated alert-\n{}", alert.get_state());
+        let mut write_access = self.alerts.write().await;
+        let mut alert: Box<dyn AlertTrait> = if let Some(alert) = write_access.get(&alert_id) {
+            match &alert.get_alert_type() {
+                AlertType::Threshold => {
+                    Box::new(ThresholdAlert::from(alert.to_alert_config())) as Box<dyn AlertTrait>
+                }
+                AlertType::Anomaly => {
+                    return Err(AlertError::NotPresentInOSS("anomaly".into()));
+                }
+                AlertType::Forecast => {
+                    return Err(AlertError::NotPresentInOSS("forecast".into()));
+                }
+            }
+        } else {
+            return Err(AlertError::CustomError(format!(
+                "No alert found for the given ID- {alert_id}"
+            )));
         };
-        drop(writer);
 
-        if trigger_notif.is_some() {
-            trace!("trigger notif on-\n{}", alert.state);
-            alert.trigger_notifications(trigger_notif.unwrap()).await?;
+        let current_state = alert.get_state();
+
+        if current_state.ne(&new_state) {
+            alert.update_state(false, new_state, trigger_notif).await?;
+            write_access.insert(*alert.get_id(), alert.clone_box());
         }
 
         Ok(())

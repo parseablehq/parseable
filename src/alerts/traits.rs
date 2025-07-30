@@ -30,6 +30,12 @@ use ulid::Ulid;
 pub trait AlertTrait: Debug + Send + Sync {
     async fn eval_alert(&self) -> Result<(bool, f64), AlertError>;
     async fn validate(&self, session_key: &SessionKey) -> Result<(), AlertError>;
+    async fn update_state(
+        &mut self,
+        is_manual: bool,
+        new_state: AlertState,
+        trigger_notif: Option<String>,
+    ) -> Result<(), AlertError>;
     fn get_id(&self) -> &Ulid;
     fn get_severity(&self) -> &Severity;
     fn get_title(&self) -> &str;
@@ -46,7 +52,6 @@ pub trait AlertTrait: Debug + Send + Sync {
     fn get_datasets(&self) -> &Vec<String>;
     fn to_alert_config(&self) -> AlertConfig;
     fn clone_box(&self) -> Box<dyn AlertTrait>;
-    fn set_state(&mut self, new_state: AlertState);
 }
 
 #[async_trait]
@@ -57,7 +62,7 @@ pub trait AlertManagerTrait: Send + Sync {
         session: SessionKey,
         tags: Vec<String>,
     ) -> Result<Vec<AlertConfig>, AlertError>;
-    async fn get_alert_by_id(&self, id: Ulid) -> Result<AlertConfig, AlertError>;
+    async fn get_alert_by_id(&self, id: Ulid) -> Result<Box<dyn AlertTrait>, AlertError>;
     async fn update(&self, alert: &dyn AlertTrait);
     async fn update_state(
         &self,

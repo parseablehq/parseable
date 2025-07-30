@@ -132,9 +132,9 @@ pub async fn get(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Responde
 
     let alert = alerts.get_alert_by_id(alert_id).await?;
     // validate that the user has access to the tables mentioned in the query
-    user_auth_for_query(&session_key, &alert.query).await?;
+    user_auth_for_query(&session_key, alert.get_query()).await?;
 
-    Ok(web::Json(alert))
+    Ok(web::Json(alert.to_alert_config()))
 }
 
 // DELETE /alerts/{alert_id}
@@ -153,7 +153,7 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
     let alert = alerts.get_alert_by_id(alert_id).await?;
 
     // validate that the user has access to the tables mentioned in the query
-    user_auth_for_query(&session_key, &alert.query).await?;
+    user_auth_for_query(&session_key, alert.get_query()).await?;
 
     let store = PARSEABLE.storage.get_object_store();
     let alert_path = alert_json_path(alert_id);
@@ -191,9 +191,9 @@ pub async fn update_state(
     };
 
     // check if alert id exists in map
-    let alert = alerts.get_alert_by_id(alert_id).await?;
+    let mut alert = alerts.get_alert_by_id(alert_id).await?;
     // validate that the user has access to the tables mentioned in the query
-    user_auth_for_query(&session_key, &alert.query).await?;
+    user_auth_for_query(&session_key, alert.get_query()).await?;
 
     let query_string = req.query_string();
 
@@ -212,14 +212,12 @@ pub async fn update_state(
         ));
     }
 
-    // get current state
-    let current_state = alerts.get_state(alert_id).await?;
-
     let new_state = AlertState::from_str(state_value)?;
+    alert.update_state(true, new_state, Some("".into())).await?;
 
-    current_state.update_state(new_state, alert_id).await?;
-    let alert = alerts.get_alert_by_id(alert_id).await?;
-    Ok(web::Json(alert))
+    alerts.update(&*alert).await;
+
+    Ok(web::Json(alert.to_alert_config()))
 }
 
 pub async fn list_tags() -> Result<impl Responder, AlertError> {

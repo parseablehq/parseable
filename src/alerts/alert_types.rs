@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use tonic::async_trait;
+use tracing::trace;
 use ulid::Ulid;
 
 use crate::{
@@ -204,8 +205,48 @@ impl AlertTrait for ThresholdAlert {
         Box::new(self.clone())
     }
 
-    fn set_state(&mut self, new_state: AlertState) {
-        self.state = new_state
+    async fn update_state(
+        &mut self,
+        is_manual: bool,
+        new_state: AlertState,
+        trigger_notif: Option<String>,
+    ) -> Result<(), AlertError> {
+        let store = PARSEABLE.storage.get_object_store();
+        match self.state {
+            AlertState::Triggered => {
+                if is_manual
+                    && new_state != AlertState::Resolved
+                    && new_state != AlertState::Silenced
+                {
+                    let msg = format!("Not allowed to manually go from Triggered to {new_state}");
+                    return Err(AlertError::InvalidStateChange(msg));
+                }
+            }
+            AlertState::Silenced => {
+                if is_manual && new_state != AlertState::Resolved {
+                    let msg = format!("Not allowed to manually go from Silenced to {new_state}");
+                    return Err(AlertError::InvalidStateChange(msg));
+                }
+            }
+            AlertState::Resolved => {
+                if is_manual {
+                    let msg = format!("Not allowed to go manually from Resolved to {new_state}");
+                    return Err(AlertError::InvalidStateChange(msg));
+                }
+            }
+        }
+        // update state in memory
+        self.state = new_state;
+        // update on disk
+        store.put_alert(self.id, &self.to_alert_config()).await?;
+
+        if trigger_notif.is_some() {
+            trace!("trigger notif on-\n{}", self.state);
+            self.to_alert_config()
+                .trigger_notifications(trigger_notif.unwrap())
+                .await?;
+        }
+        Ok(())
     }
 }
 
