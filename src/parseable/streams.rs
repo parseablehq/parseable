@@ -190,11 +190,9 @@ impl Stream {
             .unwrap_or_else(|_| std::ffi::OsString::from(&Ulid::new().to_string()))
             .into_string()
             .unwrap_or_else(|_| Ulid::new().to_string())
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-            .collect::<String>()
-            .chars()
+            .matches(|c: char| c.is_alphanumeric() || c == '-' || c == '_')
             .collect::<String>();
+
         if let Some(id) = &self.ingestor_id {
             hostname.push_str(id);
         }

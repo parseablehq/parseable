@@ -1015,25 +1015,19 @@ pub fn manifest_path(prefix: &str) -> RelativePathBuf {
         .unwrap_or_else(|_| std::ffi::OsString::from(&Ulid::new().to_string()))
         .into_string()
         .unwrap_or_else(|_| Ulid::new().to_string())
-        .chars()
-        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
-        .collect::<String>()
-        .chars()
+        .matches(|c: char| c.is_alphanumeric() || c == '-' || c == '_')
         .collect::<String>();
 
-    match &PARSEABLE.options.mode {
-        Mode::Ingest => {
-            let id = INGESTOR_META
-                .get()
-                .unwrap_or_else(|| panic!("{}", INGESTOR_EXPECT))
-                .get_node_id();
+    if PARSEABLE.options.mode == Mode::Ingest {
+        let id = INGESTOR_META
+            .get()
+            .unwrap_or_else(|| panic!("{}", INGESTOR_EXPECT))
+            .get_node_id();
 
-            let manifest_file_name = format!("ingestor.{hostname}.{id}.{MANIFEST_FILE}");
-            RelativePathBuf::from_iter([prefix, &manifest_file_name])
-        }
-        _ => {
-            let manifest_file_name = format!("{hostname}.{MANIFEST_FILE}");
-            RelativePathBuf::from_iter([prefix, &manifest_file_name])
-        }
+        let manifest_file_name = format!("ingestor.{hostname}.{id}.{MANIFEST_FILE}");
+        RelativePathBuf::from_iter([prefix, &manifest_file_name])
+    } else {
+        let manifest_file_name = format!("{hostname}.{MANIFEST_FILE}");
+        RelativePathBuf::from_iter([prefix, &manifest_file_name])
     }
 }
