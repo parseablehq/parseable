@@ -41,6 +41,7 @@ use parquet::{
 use relative_path::RelativePathBuf;
 use tokio::task::JoinSet;
 use tracing::{error, info, trace, warn};
+use ulid::Ulid;
 
 use crate::{
     LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
@@ -185,7 +186,15 @@ impl Stream {
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
     ) -> String {
-        let mut hostname = hostname::get().unwrap().into_string().unwrap();
+        let mut hostname = hostname::get()
+            .unwrap_or_else(|_| std::ffi::OsString::from(&Ulid::new().to_string()))
+            .into_string()
+            .unwrap_or_else(|_| Ulid::new().to_string())
+            .chars()
+            .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+            .collect::<String>()
+            .chars()
+            .collect::<String>();
         if let Some(id) = &self.ingestor_id {
             hostname.push_str(id);
         }

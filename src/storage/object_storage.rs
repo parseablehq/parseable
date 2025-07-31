@@ -1011,15 +1011,29 @@ pub fn target_json_path(target_id: &Ulid) -> RelativePathBuf {
 
 #[inline(always)]
 pub fn manifest_path(prefix: &str) -> RelativePathBuf {
+    let hostname = hostname::get()
+        .unwrap_or_else(|_| std::ffi::OsString::from(&Ulid::new().to_string()))
+        .into_string()
+        .unwrap_or_else(|_| Ulid::new().to_string())
+        .chars()
+        .filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_')
+        .collect::<String>()
+        .chars()
+        .collect::<String>();
+
     match &PARSEABLE.options.mode {
         Mode::Ingest => {
             let id = INGESTOR_META
                 .get()
                 .unwrap_or_else(|| panic!("{}", INGESTOR_EXPECT))
                 .get_node_id();
-            let manifest_file_name = format!("ingestor.{id}.{MANIFEST_FILE}");
+
+            let manifest_file_name = format!("ingestor.{hostname}.{id}.{MANIFEST_FILE}");
             RelativePathBuf::from_iter([prefix, &manifest_file_name])
         }
-        _ => RelativePathBuf::from_iter([prefix, MANIFEST_FILE]),
+        _ => {
+            let manifest_file_name = format!("{hostname}.{MANIFEST_FILE}");
+            RelativePathBuf::from_iter([prefix, &manifest_file_name])
+        }
     }
 }

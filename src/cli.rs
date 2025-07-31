@@ -35,7 +35,7 @@ use crate::{
 pub const DEFAULT_USERNAME: &str = "admin";
 pub const DEFAULT_PASSWORD: &str = "admin";
 
-pub const DATASET_FIELD_COUNT_LIMIT: usize = 250;
+pub const DATASET_FIELD_COUNT_LIMIT: usize = 1000;
 #[derive(Parser)]
 #[command(
     name = "parseable",

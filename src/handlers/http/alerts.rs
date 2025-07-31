@@ -61,10 +61,42 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
     };
 
     let alerts = alerts.list_alerts_for_user(session_key, tags_list).await?;
-    let alerts_summary = alerts
+    let mut alerts_summary = alerts
         .iter()
         .map(|alert| alert.to_summary())
         .collect::<Vec<_>>();
+
+    // Sort by state priority (Triggered > Silenced > Resolved) then by severity (Critical > High > Medium > Low)
+    alerts_summary.sort_by(|a, b| {
+        // Helper function to convert state to priority number (lower number = higher priority)
+        let state_priority = |state: &str| match state {
+            "Triggered" => 0,
+            "Silenced" => 1,
+            "Resolved" => 2,
+            _ => 3, // Unknown state gets lowest priority
+        };
+
+        // Helper function to convert severity to priority number (lower number = higher priority)
+        let severity_priority = |severity: &str| match severity {
+            "Critical" => 0,
+            "High" => 1,
+            "Medium" => 2,
+            "Low" => 3,
+            _ => 4, // Unknown severity gets lowest priority
+        };
+
+        let state_a = a.get("state").and_then(|v| v.as_str()).unwrap_or("");
+        let state_b = b.get("state").and_then(|v| v.as_str()).unwrap_or("");
+
+        let severity_a = a.get("severity").and_then(|v| v.as_str()).unwrap_or("");
+        let severity_b = b.get("severity").and_then(|v| v.as_str()).unwrap_or("");
+
+        // First sort by state, then by severity
+        state_priority(state_a)
+            .cmp(&state_priority(state_b))
+            .then_with(|| severity_priority(severity_a).cmp(&severity_priority(severity_b)))
+    });
+
     Ok(web::Json(alerts_summary))
 }
 
