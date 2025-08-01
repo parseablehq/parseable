@@ -8,7 +8,6 @@ ARM_APPLE_PREFIX="Parseable_OSS_aarch64-apple-darwin"
 INTEL_APPLE_PREFIX="Parseable_OSS_x86_64-apple-darwin"
 ARM_LINUX_PREFIX="Parseable_OSS_aarch64-unknown-linux-gnu"
 INTEL_LINUX_PREFIX="Parseable_OSS_x86_64-unknown-linux-gnu"
-INTEL_WINDOWS_PREFIX="Parseable_OSS_x86_64-pc-windows-msvc.exe"
 PARSEABLE_PREFIX=${ARM_APPLE_PREFIX}
 
 # Get the system's CPU architecture and operating system
@@ -67,13 +66,6 @@ elif [[ "$OS" == "linux" ]]; then
         echo "Error: Unsupported CPU architecture for Linux (${CPU_ARCH})."
         exit 1
     fi
-elif [[ "$OS" == "windows" ]]; then
-    if [[ "$CPU_ARCH" == "x86_64" ]]; then
-        PARSEABLE_PREFIX=${INTEL_WINDOWS_PREFIX}
-    else
-        echo "Error: Unsupported CPU architecture for Windows (${CPU_ARCH})."
-        exit 1
-    fi
 else
     echo "Error: Unsupported operating system (${OS})."
     exit 1
@@ -94,11 +86,12 @@ printf "Downloading Parseable version $release_tag, for OS: $OS, CPU architectur
 printf "Download URL: $download_url\n\n"
 
 if command -v curl &>/dev/null; then
-    curl -L -o "${BIN_NAME}" "$download_url"
+    curl -fL -o "${BIN_NAME}" "$download_url" || { echo "Error: download failed"; exit 1; }
 elif command -v wget &>/dev/null; then
-    wget -O "${BIN_NAME}" "$download_url"
+    wget -q -O "${BIN_NAME}" "$download_url" || { echo "Error: download failed"; exit 1; }
 else
     echo "Error: Neither curl nor wget found. Please install either curl or wget."
+    exit 1
 fi
 
 printf "Parseable Server was successfully installed at: ${BIN_NAME}\n"
