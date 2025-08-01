@@ -1180,7 +1180,7 @@ impl AlertConfig {
                 self.id,
                 self.title.clone(),
                 self.state,
-                self.severity.clone().to_string(),
+                self.severity.to_string(),
             ),
             DeploymentInfo::new(deployment_instance, deployment_id, deployment_mode),
             String::default(),
