@@ -31,17 +31,28 @@ use actix_web::{
 use bytes::Bytes;
 use ulid::Ulid;
 
-use crate::alerts::{ALERTS, AlertConfig, AlertError, AlertRequest, AlertState};
+use crate::alerts::{ALERTS, AlertConfig, AlertError, AlertRequest, AlertState, Severity};
 
 // GET /alerts
 /// User needs at least a read access to the stream(s) that is being referenced in an alert
 /// Read all alerts then return alerts which satisfy the condition
+/// Supports pagination with optional query parameters:
+/// - tags: comma-separated list of tags to filter alerts
+/// - offset: number of alerts to skip (default: 0)
+/// - limit: maximum number of alerts to return (default: 100, max: 1000)
 pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
     let session_key = extract_session_key_from_req(&req)?;
     let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
-        .map_err(|_| AlertError::InvalidQueryParameter)?;
+        .map_err(|_| AlertError::InvalidQueryParameter("malformed query parameters".to_string()))?;
+
     let mut tags_list = Vec::new();
+    let mut offset = 0usize;
+    let mut limit = 100usize; // Default limit
+    const MAX_LIMIT: usize = 1000; // Maximum allowed limit
+
+    // Parse query parameters
     if !query_map.is_empty() {
+        // Parse tags parameter
         if let Some(tags) = query_map.get("tags") {
             tags_list = tags
                 .split(',')
@@ -49,10 +60,34 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
                 .filter(|s| !s.is_empty())
                 .collect();
             if tags_list.is_empty() {
-                return Err(AlertError::InvalidQueryParameter);
+                return Err(AlertError::InvalidQueryParameter(
+                    "empty tags not allowed with query param tags".to_string(),
+                ));
+            }
+        }
+
+        // Parse offset parameter
+        if let Some(offset_str) = query_map.get("offset") {
+            offset = offset_str.parse().map_err(|_| {
+                AlertError::InvalidQueryParameter("offset is not a valid number".to_string())
+            })?;
+        }
+
+        // Parse limit parameter
+        if let Some(limit_str) = query_map.get("limit") {
+            limit = limit_str.parse().map_err(|_| {
+                AlertError::InvalidQueryParameter("limit is not a valid number".to_string())
+            })?;
+
+            // Validate limit bounds
+            if limit == 0 || limit > MAX_LIMIT {
+                return Err(AlertError::InvalidQueryParameter(
+                    "limit should be between 1 and 1000".to_string(),
+                ));
             }
         }
     }
+
     let guard = ALERTS.read().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -61,11 +96,51 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
     };
 
     let alerts = alerts.list_alerts_for_user(session_key, tags_list).await?;
-    let alerts_summary = alerts
+    let mut alerts_summary = alerts
         .iter()
         .map(|alert| alert.to_summary())
         .collect::<Vec<_>>();
-    Ok(web::Json(alerts_summary))
+
+    // Sort by state priority (Triggered > Silenced > Resolved) then by severity (Critical > High > Medium > Low)
+    alerts_summary.sort_by(|a, b| {
+        // Parse state and severity from JSON values back to enums
+        let state_a = a
+            .get("state")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<AlertState>().ok())
+            .unwrap_or(AlertState::Resolved); // Default to lowest priority
+
+        let state_b = b
+            .get("state")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<AlertState>().ok())
+            .unwrap_or(AlertState::Resolved);
+
+        let severity_a = a
+            .get("severity")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<Severity>().ok())
+            .unwrap_or(Severity::Low); // Default to lowest priority
+
+        let severity_b = b
+            .get("severity")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<Severity>().ok())
+            .unwrap_or(Severity::Low);
+
+        // First sort by state, then by severity
+        state_a
+            .cmp(&state_b)
+            .then_with(|| severity_a.cmp(&severity_b))
+    });
+
+    let paginated_alerts = alerts_summary
+        .into_iter()
+        .skip(offset)
+        .take(limit)
+        .collect::<Vec<_>>();
+
+    Ok(web::Json(paginated_alerts))
 }
 
 // POST /alerts
