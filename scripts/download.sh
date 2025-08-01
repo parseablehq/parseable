@@ -48,28 +48,16 @@ fi
 printf "Latest Parseable version: $release_tag\n"
 
 # Determine the appropriate binary prefix based on OS and CPU architecture
-if [[ "$OS" == "darwin" ]]; then
-    if [[ "$CPU_ARCH" == "arm64" ]]; then
-        PARSEABLE_PREFIX=${ARM_APPLE_PREFIX}
-    elif [[ "$CPU_ARCH" == "x86_64" ]]; then
-        PARSEABLE_PREFIX=${INTEL_APPLE_PREFIX}
-    else
-        echo "Error: Unsupported CPU architecture for macOS (${CPU_ARCH})."
-        exit 1
-    fi
-elif [[ "$OS" == "linux" ]]; then
-    if [[ "$CPU_ARCH" == "arm64" ]]; then
-        PARSEABLE_PREFIX=${ARM_LINUX_PREFIX}
-    elif [[ "$CPU_ARCH" == "x86_64" ]]; then
-        PARSEABLE_PREFIX=${INTEL_LINUX_PREFIX}
-    else
-        echo "Error: Unsupported CPU architecture for Linux (${CPU_ARCH})."
-        exit 1
-    fi
-else
-    echo "Error: Unsupported operating system (${OS})."
-    exit 1
-fi
+declare -A PREFIX_MAP=(
+  ["darwin_arm64"]=$ARM_APPLE_PREFIX
+  ["darwin_x86_64"]=$INTEL_APPLE_PREFIX
+  ["linux_arm64"]=$ARM_LINUX_PREFIX
+  ["linux_x86_64"]=$INTEL_LINUX_PREFIX
+)
+key="${OS}_${CPU_ARCH}"
+PARSEABLE_PREFIX=${PREFIX_MAP[$key]:-""} || {
+  echo "Error: unsupported platform $OS/$CPU_ARCH"; exit 1;
+}
 
 download_url=${DOWNLOAD_BASE_URL}/${release_tag}/${PARSEABLE_PREFIX}
 
