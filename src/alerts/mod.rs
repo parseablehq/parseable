@@ -469,7 +469,19 @@ pub enum EvalConfig {
 #[serde(rename_all = "camelCase")]
 pub struct AlertEval {}
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Default, FromStr)]
+#[derive(
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Default,
+    FromStr,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum AlertState {
     Triggered,
@@ -488,7 +500,19 @@ impl Display for AlertState {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Default)]
+#[derive(
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Default,
+    FromStr,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum Severity {
     Critical,
@@ -1308,8 +1332,8 @@ pub enum AlertError {
     ParserError(#[from] ParserError),
     #[error("Invalid alert query")]
     InvalidAlertQuery,
-    #[error("Invalid query parameter")]
-    InvalidQueryParameter,
+    #[error("Invalid query parameter: {0}")]
+    InvalidQueryParameter(String),
     #[error("{0}")]
     ArrowError(#[from] ArrowError),
     #[error("Upgrade to Parseable Enterprise for {0} type alerts")]
@@ -1336,7 +1360,7 @@ impl actix_web::ResponseError for AlertError {
             Self::TargetInUse => StatusCode::CONFLICT,
             Self::ParserError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidAlertQuery => StatusCode::BAD_REQUEST,
-            Self::InvalidQueryParameter => StatusCode::BAD_REQUEST,
+            Self::InvalidQueryParameter(_) => StatusCode::BAD_REQUEST,
             Self::ArrowError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::NotPresentInOSS(_) => StatusCode::BAD_REQUEST,
         }
@@ -1650,7 +1674,7 @@ pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
                 triggered_alerts.push(AlertsInfo {
                     title: alert.get_title().to_string(),
                     id: *alert.get_id(),
-                    severity: alert.get_severity().clone(),
+                    severity: *alert.get_severity(),
                 });
             }
             AlertState::Silenced => {
@@ -1658,7 +1682,7 @@ pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
                 silenced_alerts.push(AlertsInfo {
                     title: alert.get_title().to_string(),
                     id: *alert.get_id(),
-                    severity: alert.get_severity().clone(),
+                    severity: *alert.get_severity(),
                 });
             }
             AlertState::Resolved => {
@@ -1666,7 +1690,7 @@ pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
                 resolved_alerts.push(AlertsInfo {
                     title: alert.get_title().to_string(),
                     id: *alert.get_id(),
-                    severity: alert.get_severity().clone(),
+                    severity: *alert.get_severity(),
                 });
             }
         }
