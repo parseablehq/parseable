@@ -53,7 +53,7 @@ pub use crate::alerts::alert_structs::{
 };
 use crate::alerts::alert_traits::{AlertManagerTrait, AlertTrait};
 use crate::alerts::alert_types::ThresholdAlert;
-use crate::alerts::target::TARGETS;
+use crate::alerts::target::{NotificationConfig, TARGETS};
 use crate::handlers::http::fetch_schema;
 use crate::handlers::http::query::create_streams_for_distributed;
 use crate::option::Mode;
@@ -130,6 +130,7 @@ impl AlertConfig {
             targets,
             state,
             notification_state: NotificationState::Notify,
+            notification_config: NotificationConfig::default(),
             created: Utc::now(),
             tags: None,
         };
@@ -603,19 +604,15 @@ impl AlertConfig {
         };
 
         // validate that target repeat notifs !> eval_frequency
-        for target_id in &self.targets {
-            let target = TARGETS.get_target_by_id(target_id).await?;
-            match &target.notification_config.times {
-                target::Retry::Infinite => {}
-                target::Retry::Finite(repeat) => {
-                    let notif_duration =
-                        Duration::from_secs(60 * target.notification_config.interval)
-                            * *repeat as u32;
-                    if (notif_duration.as_secs_f64()).gt(&((eval_frequency * 60) as f64)) {
-                        return Err(AlertError::Metadata(
-                            "evalFrequency should be greater than target repetition  interval",
-                        ));
-                    }
+        match &self.notification_config.times {
+            target::Retry::Infinite => {}
+            target::Retry::Finite(repeat) => {
+                let notif_duration =
+                    Duration::from_secs(60 * self.notification_config.interval) * *repeat as u32;
+                if (notif_duration.as_secs_f64()).gt(&((eval_frequency * 60) as f64)) {
+                    return Err(AlertError::Metadata(
+                        "evalFrequency should be greater than target repetition  interval",
+                    ));
                 }
             }
         }
@@ -675,6 +672,7 @@ impl AlertConfig {
                 self.severity.clone().to_string(),
             ),
             DeploymentInfo::new(deployment_instance, deployment_id, deployment_mode),
+            self.notification_config.clone(),
             String::default(),
         )
     }
@@ -951,7 +949,7 @@ impl AlertManagerTrait for Alerts {
             // Create alert task iff alert's state is not paused
             if alert.get_state().eq(&AlertState::Paused) {
                 map.insert(*alert.get_id(), alert);
-                return Ok(());
+                continue;
             }
 
             match self.sender.send(AlertTask::Create(alert.clone_box())).await {

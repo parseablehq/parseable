@@ -1,3 +1,21 @@
+/*
+ * Parseable Server (C) 2022 - 2024 Parseable, Inc.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as
+ * published by the Free Software Foundation, either version 3 of the
+ * License, or (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ *
+ */
+
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
@@ -13,7 +31,7 @@ use crate::{
             LogicalOperator, NotificationState, Severity, WhereConfigOperator,
         },
         alert_traits::AlertTrait,
-        target::TARGETS,
+        target::{NotificationConfig, TARGETS},
     },
     query::resolve_stream_names,
 };
@@ -36,14 +54,21 @@ pub struct Context {
     pub alert_info: AlertInfo,
     pub deployment_info: DeploymentInfo,
     pub message: String,
+    pub notification_config: NotificationConfig,
 }
 
 impl Context {
-    pub fn new(alert_info: AlertInfo, deployment_info: DeploymentInfo, message: String) -> Self {
+    pub fn new(
+        alert_info: AlertInfo,
+        deployment_info: DeploymentInfo,
+        notification_config: NotificationConfig,
+        message: String,
+    ) -> Self {
         Self {
             alert_info,
             deployment_info,
             message,
+            notification_config,
         }
     }
 
@@ -226,6 +251,7 @@ pub struct AlertRequest {
     pub query: String,
     pub alert_type: AlertType,
     pub threshold_config: ThresholdConfig,
+    pub notification_config: NotificationConfig,
     pub eval_config: EvalConfig,
     pub targets: Vec<Ulid>,
     pub tags: Option<Vec<String>>,
@@ -251,6 +277,7 @@ impl AlertRequest {
             targets: self.targets,
             state: AlertState::default(),
             notification_state: NotificationState::Notify,
+            notification_config: self.notification_config,
             created: Utc::now(),
             tags: self.tags,
         };
@@ -276,6 +303,7 @@ pub struct AlertConfig {
     #[serde(default)]
     pub state: AlertState,
     pub notification_state: NotificationState,
+    pub notification_config: NotificationConfig,
     pub created: DateTime<Utc>,
     pub tags: Option<Vec<String>>,
 }

@@ -31,7 +31,7 @@ use crate::{
         alert_traits::{AlertTrait, MessageCreation},
         alerts_utils::{evaluate_condition, execute_alert_query, extract_time_range},
         is_query_aggregate,
-        target::{self, TARGETS},
+        target::{self, NotificationConfig},
     },
     handlers::http::query::create_streams_for_distributed,
     option::Mode,
@@ -58,6 +58,7 @@ pub struct ThresholdAlert {
     #[serde(default)]
     pub state: AlertState,
     pub notification_state: NotificationState,
+    pub notification_config: NotificationConfig,
     pub created: DateTime<Utc>,
     pub tags: Option<Vec<String>>,
     pub datasets: Vec<String>,
@@ -105,19 +106,15 @@ impl AlertTrait for ThresholdAlert {
         };
 
         // validate that target repeat notifs !> eval_frequency
-        for target_id in &self.targets {
-            let target = TARGETS.get_target_by_id(target_id).await?;
-            match &target.notification_config.times {
-                target::Retry::Infinite => {}
-                target::Retry::Finite(repeat) => {
-                    let notif_duration =
-                        Duration::from_secs(60 * target.notification_config.interval)
-                            * *repeat as u32;
-                    if (notif_duration.as_secs_f64()).gt(&((eval_frequency * 60) as f64)) {
-                        return Err(AlertError::Metadata(
-                            "evalFrequency should be greater than target repetition  interval",
-                        ));
-                    }
+        match &self.notification_config.times {
+            target::Retry::Infinite => {}
+            target::Retry::Finite(repeat) => {
+                let notif_duration =
+                    Duration::from_secs(60 * self.notification_config.interval) * *repeat as u32;
+                if (notif_duration.as_secs_f64()).gt(&((eval_frequency * 60) as f64)) {
+                    return Err(AlertError::Metadata(
+                        "evalFrequency should be greater than target repetition  interval",
+                    ));
                 }
             }
         }
@@ -329,6 +326,7 @@ impl From<AlertConfig> for ThresholdAlert {
             targets: value.targets,
             state: value.state,
             notification_state: value.notification_state,
+            notification_config: value.notification_config,
             created: value.created,
             tags: value.tags,
             datasets: value.datasets,
@@ -350,6 +348,7 @@ impl From<ThresholdAlert> for AlertConfig {
             targets: val.targets,
             state: val.state,
             notification_state: val.notification_state,
+            notification_config: val.notification_config,
             created: val.created,
             tags: val.tags,
             datasets: val.datasets,

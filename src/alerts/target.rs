@@ -151,7 +151,6 @@ pub struct Target {
     pub name: String,
     #[serde(flatten)]
     pub target: TargetType,
-    pub notification_config: Timeout,
     #[serde(default = "Ulid::new")]
     pub id: Ulid,
 }
@@ -170,7 +169,6 @@ impl Target {
                    "name":self.name,
                    "type":"slack",
                    "endpoint":masked_endpoint,
-                   "notificationConfig":self.notification_config,
                    "id":self.id
                 })
             }
@@ -187,7 +185,6 @@ impl Target {
                     "endpoint":masked_endpoint,
                     "headers":other_web_hook.headers,
                     "skipTlsCheck":other_web_hook.skip_tls_check,
-                    "notificationConfig":self.notification_config,
                     "id":self.id
                 })
             }
@@ -207,7 +204,6 @@ impl Target {
                         "username":auth.username,
                         "password":password,
                         "skipTlsCheck":alert_manager.skip_tls_check,
-                        "notificationConfig":self.notification_config,
                         "id":self.id
                     })
                 } else {
@@ -218,7 +214,6 @@ impl Target {
                         "username":Value::Null,
                         "password":Value::Null,
                         "skipTlsCheck":alert_manager.skip_tls_check,
-                        "notificationConfig":self.notification_config,
                         "id":self.id
                     })
                 }
@@ -228,7 +223,7 @@ impl Target {
 
     pub fn call(&self, context: Context) {
         trace!("target.call context- {context:?}");
-        let timeout = &self.notification_config;
+        let timeout = context.notification_config.clone();
         let resolves = context.alert_info.alert_state;
         let mut state = timeout.state.lock().unwrap();
         trace!("target.call state- {state:?}");
@@ -245,7 +240,7 @@ impl Target {
                     state.timed_out = true;
                     state.awaiting_resolve = true;
                     drop(state);
-                    self.spawn_timeout_task(timeout, context.clone());
+                    self.spawn_timeout_task(&timeout, context.clone());
                 }
             }
             alert_state @ AlertState::NotTriggered => {
@@ -268,7 +263,7 @@ impl Target {
         }
     }
 
-    fn spawn_timeout_task(&self, target_timeout: &Timeout, alert_context: Context) {
+    fn spawn_timeout_task(&self, target_timeout: &NotificationConfig, alert_context: Context) {
         trace!("repeat-\n{target_timeout:?}");
         let state = Arc::clone(&target_timeout.state);
         let retry = target_timeout.times;
@@ -383,7 +378,7 @@ impl TryFrom<TargetVerifier> for Target {
     type Error = String;
 
     fn try_from(value: TargetVerifier) -> Result<Self, Self::Error> {
-        let mut timeout = Timeout::default();
+        let mut timeout = NotificationConfig::default();
 
         // Default is Infinite in case of alertmanager
         if matches!(value.target, TargetType::AlertManager(_)) {
@@ -405,7 +400,6 @@ impl TryFrom<TargetVerifier> for Target {
         Ok(Target {
             name: value.name,
             target: value.target,
-            notification_config: timeout,
             id: value.id,
         })
     }
@@ -599,7 +593,7 @@ impl CallableTarget for AlertManager {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-pub struct Timeout {
+pub struct NotificationConfig {
     pub interval: u64,
     #[serde(default = "Retry::default")]
     pub times: Retry,
@@ -607,7 +601,7 @@ pub struct Timeout {
     pub state: Arc<Mutex<TimeoutState>>,
 }
 
-impl Default for Timeout {
+impl Default for NotificationConfig {
     fn default() -> Self {
         Self {
             interval: 1,
