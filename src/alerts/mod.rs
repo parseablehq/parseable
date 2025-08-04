@@ -19,17 +19,14 @@
 use actix_web::http::header::ContentType;
 use arrow_schema::{ArrowError, DataType, Schema};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use datafusion::logical_expr::{LogicalPlan, Projection};
 use datafusion::sql::sqlparser::parser::ParserError;
 use derive_more::FromStrError;
-use derive_more::derive::FromStr;
 use http::StatusCode;
-// use once_cell::sync::Lazy;
-use serde::Serialize;
 use serde_json::{Error as SerdeError, Value as JsonValue};
 use std::collections::HashMap;
-use std::fmt::{self, Debug, Display};
+use std::fmt::Debug;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -39,14 +36,24 @@ use tokio::task::JoinHandle;
 use tracing::{error, trace, warn};
 use ulid::Ulid;
 
+pub mod alert_enums;
+pub mod alert_structs;
+pub mod alert_traits;
 pub mod alert_types;
 pub mod alerts_utils;
 pub mod target;
-pub mod traits;
 
+pub use crate::alerts::alert_enums::{
+    AggregateFunction, AlertOperator, AlertState, AlertTask, AlertType, AlertVersion, EvalConfig,
+    LogicalOperator, NotificationState, Severity, WhereConfigOperator,
+};
+pub use crate::alerts::alert_structs::{
+    AlertConfig, AlertInfo, AlertRequest, Alerts, AlertsInfo, AlertsInfoByState, AlertsSummary,
+    BasicAlertFields, Context, DeploymentInfo, RollingWindow, ThresholdConfig,
+};
+use crate::alerts::alert_traits::{AlertManagerTrait, AlertTrait};
 use crate::alerts::alert_types::ThresholdAlert;
 use crate::alerts::target::TARGETS;
-use crate::alerts::traits::{AlertManagerTrait, AlertTrait};
 use crate::handlers::http::fetch_schema;
 use crate::handlers::http::query::create_streams_for_distributed;
 use crate::option::Mode;
@@ -57,13 +64,6 @@ use crate::storage;
 use crate::storage::{ALERTS_ROOT_DIRECTORY, ObjectStorageError};
 use crate::sync::alert_runtime;
 use crate::utils::user_auth_for_query;
-
-/// Helper struct for basic alert fields during migration
-struct BasicAlertFields {
-    id: Ulid,
-    title: String,
-    severity: Severity,
-}
 
 // these types describe the scheduled task for an alert
 pub type ScheduledTaskHandlers = (JoinHandle<()>, Receiver<()>, Sender<()>);
@@ -100,516 +100,6 @@ pub fn create_default_alerts_manager() -> Alerts {
     alerts
 }
 
-// pub static ALERTS: Lazy<Alerts> = Lazy::new(|| {
-//     let (tx, rx) = mpsc::channel::<AlertTask>(10);
-//     let alerts = Alerts {
-//         alerts: RwLock::new(HashMap::new()),
-//         sender: tx,
-//     };
-
-//     thread::spawn(|| alert_runtime(rx));
-
-//     alerts
-// });
-
-#[derive(Debug)]
-pub struct Alerts {
-    pub alerts: RwLock<HashMap<Ulid, Box<dyn AlertTrait>>>,
-    pub sender: mpsc::Sender<AlertTask>,
-}
-
-pub enum AlertTask {
-    Create(Box<dyn AlertTrait>),
-    Delete(Ulid),
-}
-
-#[derive(Default, Debug, serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "lowercase")]
-pub enum AlertVersion {
-    V1,
-    #[default]
-    V2,
-}
-
-impl From<&str> for AlertVersion {
-    fn from(value: &str) -> Self {
-        match value {
-            "v1" => Self::V1,
-            "v2" => Self::V2,
-            _ => Self::V2, // default to v2
-        }
-    }
-}
-
-#[async_trait]
-pub trait CallableTarget {
-    async fn call(&self, payload: &Context);
-}
-
-#[derive(Debug, Clone)]
-pub struct Context {
-    alert_info: AlertInfo,
-    deployment_info: DeploymentInfo,
-    message: String,
-}
-
-impl Context {
-    pub fn new(alert_info: AlertInfo, deployment_info: DeploymentInfo, message: String) -> Self {
-        Self {
-            alert_info,
-            deployment_info,
-            message,
-        }
-    }
-
-    fn default_alert_string(&self) -> String {
-        format!(
-            "AlertName: {}\nTriggered TimeStamp: {}\nSeverity: {}\n{}",
-            self.alert_info.alert_name,
-            Utc::now().to_rfc3339(),
-            self.alert_info.severity,
-            self.message
-        )
-    }
-
-    fn default_resolved_string(&self) -> String {
-        format!("{} is now resolved ", self.alert_info.alert_name)
-    }
-
-    fn default_silenced_string(&self) -> String {
-        format!(
-            "Notifications for {} have been silenced ",
-            self.alert_info.alert_name
-        )
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct AlertInfo {
-    alert_id: Ulid,
-    alert_name: String,
-    // message: String,
-    // reason: String,
-    alert_state: AlertState,
-    severity: String,
-}
-
-impl AlertInfo {
-    pub fn new(
-        alert_id: Ulid,
-        alert_name: String,
-        alert_state: AlertState,
-        severity: String,
-    ) -> Self {
-        Self {
-            alert_id,
-            alert_name,
-            alert_state,
-            severity,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct DeploymentInfo {
-    deployment_instance: String,
-    deployment_id: Ulid,
-    deployment_mode: String,
-}
-
-impl DeploymentInfo {
-    pub fn new(deployment_instance: String, deployment_id: Ulid, deployment_mode: String) -> Self {
-        Self {
-            deployment_instance,
-            deployment_id,
-            deployment_mode,
-        }
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub enum AlertType {
-    Threshold,
-    Anomaly,
-    Forecast,
-}
-
-impl Display for AlertType {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AlertType::Threshold => write!(f, "threshold"),
-            AlertType::Anomaly => write!(f, "anomaly"),
-            AlertType::Forecast => write!(f, "forecast"),
-        }
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub enum AlertOperator {
-    #[serde(rename = ">")]
-    GreaterThan,
-    #[serde(rename = "<")]
-    LessThan,
-    #[serde(rename = "=")]
-    Equal,
-    #[serde(rename = "!=")]
-    NotEqual,
-    #[serde(rename = ">=")]
-    GreaterThanOrEqual,
-    #[serde(rename = "<=")]
-    LessThanOrEqual,
-}
-
-impl Display for AlertOperator {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AlertOperator::GreaterThan => write!(f, ">"),
-            AlertOperator::LessThan => write!(f, "<"),
-            AlertOperator::Equal => write!(f, "="),
-            AlertOperator::NotEqual => write!(f, "!="),
-            AlertOperator::GreaterThanOrEqual => write!(f, ">="),
-            AlertOperator::LessThanOrEqual => write!(f, "<="),
-        }
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, FromStr, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum WhereConfigOperator {
-    #[serde(rename = "=")]
-    Equal,
-    #[serde(rename = "!=")]
-    NotEqual,
-    #[serde(rename = "<")]
-    LessThan,
-    #[serde(rename = ">")]
-    GreaterThan,
-    #[serde(rename = "<=")]
-    LessThanOrEqual,
-    #[serde(rename = ">=")]
-    GreaterThanOrEqual,
-    #[serde(rename = "is null")]
-    IsNull,
-    #[serde(rename = "is not null")]
-    IsNotNull,
-    #[serde(rename = "ilike")]
-    ILike,
-    #[serde(rename = "contains")]
-    Contains,
-    #[serde(rename = "begins with")]
-    BeginsWith,
-    #[serde(rename = "ends with")]
-    EndsWith,
-    #[serde(rename = "does not contain")]
-    DoesNotContain,
-    #[serde(rename = "does not begin with")]
-    DoesNotBeginWith,
-    #[serde(rename = "does not end with")]
-    DoesNotEndWith,
-}
-
-impl WhereConfigOperator {
-    /// Convert the enum value to its string representation
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Self::Equal => "=",
-            Self::NotEqual => "!=",
-            Self::LessThan => "<",
-            Self::GreaterThan => ">",
-            Self::LessThanOrEqual => "<=",
-            Self::GreaterThanOrEqual => ">=",
-            Self::IsNull => "is null",
-            Self::IsNotNull => "is not null",
-            Self::ILike => "ilike",
-            Self::Contains => "contains",
-            Self::BeginsWith => "begins with",
-            Self::EndsWith => "ends with",
-            Self::DoesNotContain => "does not contain",
-            Self::DoesNotBeginWith => "does not begin with",
-            Self::DoesNotEndWith => "does not end with",
-        }
-    }
-}
-
-impl Display for WhereConfigOperator {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // We can reuse our as_str method to get the string representation
-        write!(f, "{}", self.as_str())
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub enum AggregateFunction {
-    Avg,
-    Count,
-    CountDistinct,
-    Min,
-    Max,
-    Sum,
-}
-
-impl Display for AggregateFunction {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AggregateFunction::Avg => write!(f, "Avg"),
-            AggregateFunction::Count => write!(f, "Count"),
-            AggregateFunction::CountDistinct => write!(f, "CountDistinct"),
-            AggregateFunction::Min => write!(f, "Min"),
-            AggregateFunction::Max => write!(f, "Max"),
-            AggregateFunction::Sum => write!(f, "Sum"),
-        }
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-pub struct OperationConfig {
-    pub column: String,
-    pub operator: Option<String>,
-    pub value: Option<String>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct FilterConfig {
-    pub conditions: Vec<Conditions>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-pub struct ConditionConfig {
-    pub column: String,
-    pub operator: WhereConfigOperator,
-    pub value: Option<String>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct Conditions {
-    pub operator: Option<LogicalOperator>,
-    pub condition_config: Vec<ConditionConfig>,
-}
-
-impl Conditions {
-    pub fn generate_filter_message(&self) -> String {
-        match &self.operator {
-            Some(op) => match op {
-                LogicalOperator::And | LogicalOperator::Or => {
-                    let expr1 = &self.condition_config[0];
-                    let expr2 = &self.condition_config[1];
-                    let expr1_msg = if expr1.value.as_ref().is_some_and(|v| !v.is_empty()) {
-                        format!(
-                            "{} {} {}",
-                            expr1.column,
-                            expr1.operator,
-                            expr1.value.as_ref().unwrap()
-                        )
-                    } else {
-                        format!("{} {}", expr1.column, expr1.operator)
-                    };
-
-                    let expr2_msg = if expr2.value.as_ref().is_some_and(|v| !v.is_empty()) {
-                        format!(
-                            "{} {} {}",
-                            expr2.column,
-                            expr2.operator,
-                            expr2.value.as_ref().unwrap()
-                        )
-                    } else {
-                        format!("{} {}", expr2.column, expr2.operator)
-                    };
-
-                    format!("[{expr1_msg} {op} {expr2_msg}]")
-                }
-            },
-            None => {
-                let expr = &self.condition_config[0];
-                if let Some(val) = &expr.value {
-                    format!("{} {} {}", expr.column, expr.operator, val)
-                } else {
-                    format!("{} {}", expr.column, expr.operator)
-                }
-            }
-        }
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct GroupBy {
-    pub columns: Vec<String>,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct ThresholdConfig {
-    pub operator: AlertOperator,
-    pub value: f64,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct RollingWindow {
-    // x minutes (25m)
-    pub eval_start: String,
-    // should always be "now"
-    pub eval_end: String,
-    // x minutes (5m)
-    pub eval_frequency: u64,
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub enum EvalConfig {
-    RollingWindow(RollingWindow),
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct AlertEval {}
-
-#[derive(
-    Debug,
-    serde::Serialize,
-    serde::Deserialize,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Default,
-    FromStr,
-)]
-#[serde(rename_all = "camelCase")]
-pub enum AlertState {
-    Triggered,
-    Silenced,
-    #[default]
-    Resolved,
-}
-
-impl Display for AlertState {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AlertState::Triggered => write!(f, "Triggered"),
-            AlertState::Silenced => write!(f, "Silenced"),
-            AlertState::Resolved => write!(f, "Resolved"),
-        }
-    }
-}
-
-#[derive(
-    Debug,
-    serde::Serialize,
-    serde::Deserialize,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    PartialOrd,
-    Ord,
-    Default,
-    FromStr,
-)]
-#[serde(rename_all = "camelCase")]
-pub enum Severity {
-    Critical,
-    High,
-    #[default]
-    Medium,
-    Low,
-}
-
-impl Display for Severity {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Severity::Critical => write!(f, "Critical"),
-            Severity::High => write!(f, "High"),
-            Severity::Medium => write!(f, "Medium"),
-            Severity::Low => write!(f, "Low"),
-        }
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub enum LogicalOperator {
-    And,
-    Or,
-}
-
-impl Display for LogicalOperator {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            LogicalOperator::And => write!(f, "AND"),
-            LogicalOperator::Or => write!(f, "OR"),
-        }
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct AlertRequest {
-    #[serde(default = "Severity::default")]
-    pub severity: Severity,
-    pub title: String,
-    pub query: String,
-    pub alert_type: AlertType,
-    pub threshold_config: ThresholdConfig,
-    pub eval_config: EvalConfig,
-    pub targets: Vec<Ulid>,
-    pub tags: Option<Vec<String>>,
-}
-
-impl AlertRequest {
-    pub async fn into(self) -> Result<AlertConfig, AlertError> {
-        // Validate that all target IDs exist
-        for id in &self.targets {
-            TARGETS.get_target_by_id(id).await?;
-        }
-        let datasets = resolve_stream_names(&self.query)?;
-        let config = AlertConfig {
-            version: AlertVersion::from(CURRENT_ALERTS_VERSION),
-            id: Ulid::new(),
-            severity: self.severity,
-            title: self.title,
-            query: self.query,
-            datasets,
-            alert_type: self.alert_type,
-            threshold_config: self.threshold_config,
-            eval_config: self.eval_config,
-            targets: self.targets,
-            state: AlertState::default(),
-            created: Utc::now(),
-            tags: self.tags,
-        };
-        Ok(config)
-    }
-}
-
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct AlertConfig {
-    pub version: AlertVersion,
-    #[serde(default)]
-    pub id: Ulid,
-    pub severity: Severity,
-    pub title: String,
-    pub query: String,
-    pub datasets: Vec<String>,
-    pub alert_type: AlertType,
-    pub threshold_config: ThresholdConfig,
-    pub eval_config: EvalConfig,
-    pub targets: Vec<Ulid>,
-    // for new alerts, state should be resolved
-    #[serde(default)]
-    pub state: AlertState,
-    pub created: DateTime<Utc>,
-    pub tags: Option<Vec<String>>,
-}
-
 impl AlertConfig {
     /// Migration function to convert v1 alerts to v2 structure
     pub async fn migrate_from_v1(
@@ -639,6 +129,7 @@ impl AlertConfig {
             eval_config,
             targets,
             state,
+            notification_state: NotificationState::Notify,
             created: Utc::now(),
             tags: None,
         };
@@ -1068,9 +559,9 @@ impl AlertConfig {
         let state_str = alert_json["state"].as_str().unwrap_or("resolved");
         match state_str.to_lowercase().as_str() {
             "triggered" => AlertState::Triggered,
-            "silenced" => AlertState::Silenced,
-            "resolved" => AlertState::Resolved,
-            _ => AlertState::Resolved,
+            // "silenced" => AlertState::Silenced,
+            "resolved" => AlertState::NotTriggered,
+            _ => AlertState::NotTriggered,
         }
     }
 
@@ -1180,7 +671,8 @@ impl AlertConfig {
                 self.id,
                 self.title.clone(),
                 self.state,
-                self.severity.to_string(),
+                alert_enums::NotificationState::Notify,
+                self.severity.clone().to_string(),
             ),
             DeploymentInfo::new(deployment_instance, deployment_id, deployment_mode),
             String::default(),
@@ -1332,12 +824,14 @@ pub enum AlertError {
     ParserError(#[from] ParserError),
     #[error("Invalid alert query")]
     InvalidAlertQuery,
-    #[error("Invalid query parameter: {0}")]
-    InvalidQueryParameter(String),
+    #[error("Invalid query parameter")]
+    InvalidQueryParameter,
     #[error("{0}")]
     ArrowError(#[from] ArrowError),
     #[error("Upgrade to Parseable Enterprise for {0} type alerts")]
     NotPresentInOSS(String),
+    #[error("{0}")]
+    Unimplemented(String),
 }
 
 impl actix_web::ResponseError for AlertError {
@@ -1360,8 +854,9 @@ impl actix_web::ResponseError for AlertError {
             Self::TargetInUse => StatusCode::CONFLICT,
             Self::ParserError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidAlertQuery => StatusCode::BAD_REQUEST,
-            Self::InvalidQueryParameter(_) => StatusCode::BAD_REQUEST,
+            Self::InvalidQueryParameter => StatusCode::BAD_REQUEST,
             Self::ArrowError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Unimplemented(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::NotPresentInOSS(_) => StatusCode::BAD_REQUEST,
         }
     }
@@ -1453,7 +948,12 @@ impl AlertManagerTrait for Alerts {
                 }
             };
 
-            // Create alert task
+            // Create alert task iff alert's state is not paused
+            if alert.get_state().eq(&AlertState::Paused) {
+                map.insert(*alert.get_id(), alert);
+                return Ok(());
+            }
+
             match self.sender.send(AlertTask::Create(alert.clone_box())).await {
                 Ok(_) => {}
                 Err(e) => {
@@ -1555,12 +1055,59 @@ impl AlertManagerTrait for Alerts {
             )));
         };
 
-        let current_state = alert.get_state();
-
-        if current_state.ne(&new_state) {
-            alert.update_state(false, new_state, trigger_notif).await?;
-            write_access.insert(*alert.get_id(), alert.clone_box());
+        // if new state is Paused then ensure that the task is removed from list
+        if new_state.eq(&AlertState::Paused) {
+            self.sender
+                .send(AlertTask::Delete(alert_id))
+                .await
+                .map_err(|e| AlertError::CustomError(e.to_string()))?;
         }
+        // user has resumed evals for this alert
+        else if alert.get_state().eq(&AlertState::Paused)
+            && new_state.eq(&AlertState::NotTriggered)
+        {
+            self.sender
+                .send(AlertTask::Create(alert.clone_box()))
+                .await
+                .map_err(|e| AlertError::CustomError(e.to_string()))?;
+        }
+        alert.update_state(new_state, trigger_notif).await?;
+        write_access.insert(*alert.get_id(), alert.clone_box());
+        Ok(())
+    }
+
+    /// Update the notification state of alert
+    async fn update_notification_state(
+        &self,
+        alert_id: Ulid,
+        new_notification_state: NotificationState,
+    ) -> Result<(), AlertError> {
+        // let store = PARSEABLE.storage.get_object_store();
+
+        // read and modify alert
+        let mut write_access = self.alerts.write().await;
+        let mut alert: Box<dyn AlertTrait> = if let Some(alert) = write_access.get(&alert_id) {
+            match &alert.get_alert_type() {
+                AlertType::Threshold => {
+                    Box::new(ThresholdAlert::from(alert.to_alert_config())) as Box<dyn AlertTrait>
+                }
+                AlertType::Anomaly => {
+                    return Err(AlertError::NotPresentInOSS("anomaly".into()));
+                }
+                AlertType::Forecast => {
+                    return Err(AlertError::NotPresentInOSS("forecast".into()));
+                }
+            }
+        } else {
+            return Err(AlertError::CustomError(format!(
+                "No alert found for the given ID- {alert_id}"
+            )));
+        };
+
+        alert
+            .update_notification_state(new_notification_state)
+            .await?;
+        write_access.insert(*alert.get_id(), alert.clone_box());
 
         Ok(())
     }
@@ -1626,27 +1173,6 @@ impl AlertManagerTrait for Alerts {
     }
 }
 
-#[derive(Debug, Serialize)]
-pub struct AlertsSummary {
-    total: u64,
-    triggered: AlertsInfoByState,
-    silenced: AlertsInfoByState,
-    resolved: AlertsInfoByState,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AlertsInfoByState {
-    total: u64,
-    alert_info: Vec<AlertsInfo>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct AlertsInfo {
-    title: String,
-    id: Ulid,
-    severity: Severity,
-}
-
 // TODO: add RBAC
 pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
     let guard = ALERTS.read().await;
@@ -1660,9 +1186,9 @@ pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
 
     let mut triggered = 0;
     let mut resolved = 0;
-    let mut silenced = 0;
+    let mut paused = 0;
     let mut triggered_alerts: Vec<AlertsInfo> = Vec::new();
-    let mut silenced_alerts: Vec<AlertsInfo> = Vec::new();
+    let mut paused_alerts: Vec<AlertsInfo> = Vec::new();
     let mut resolved_alerts: Vec<AlertsInfo> = Vec::new();
 
     // find total alerts for each state
@@ -1674,23 +1200,23 @@ pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
                 triggered_alerts.push(AlertsInfo {
                     title: alert.get_title().to_string(),
                     id: *alert.get_id(),
-                    severity: *alert.get_severity(),
+                    severity: alert.get_severity().clone(),
                 });
             }
-            AlertState::Silenced => {
-                silenced += 1;
-                silenced_alerts.push(AlertsInfo {
+            AlertState::Paused => {
+                paused += 1;
+                paused_alerts.push(AlertsInfo {
                     title: alert.get_title().to_string(),
                     id: *alert.get_id(),
-                    severity: *alert.get_severity(),
+                    severity: alert.get_severity().clone(),
                 });
             }
-            AlertState::Resolved => {
+            AlertState::NotTriggered => {
                 resolved += 1;
                 resolved_alerts.push(AlertsInfo {
                     title: alert.get_title().to_string(),
                     id: *alert.get_id(),
-                    severity: *alert.get_severity(),
+                    severity: alert.get_severity().clone(),
                 });
             }
         }
@@ -1700,8 +1226,8 @@ pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
     triggered_alerts.sort_by_key(|alert| get_severity_priority(&alert.severity));
     triggered_alerts.truncate(5);
 
-    silenced_alerts.sort_by_key(|alert| get_severity_priority(&alert.severity));
-    silenced_alerts.truncate(5);
+    paused_alerts.sort_by_key(|alert| get_severity_priority(&alert.severity));
+    paused_alerts.truncate(5);
 
     resolved_alerts.sort_by_key(|alert| get_severity_priority(&alert.severity));
     resolved_alerts.truncate(5);
@@ -1712,9 +1238,9 @@ pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
             total: triggered,
             alert_info: triggered_alerts,
         },
-        silenced: AlertsInfoByState {
-            total: silenced,
-            alert_info: silenced_alerts,
+        paused: AlertsInfoByState {
+            total: paused,
+            alert_info: paused_alerts,
         },
         resolved: AlertsInfoByState {
             total: resolved,

@@ -36,11 +36,15 @@ use tracing::{error, trace, warn};
 use ulid::Ulid;
 use url::Url;
 
-use crate::{alerts::AlertError, parseable::PARSEABLE, storage::object_storage::target_json_path};
+use crate::{
+    alerts::{AlertError, alert_traits::CallableTarget},
+    parseable::PARSEABLE,
+    storage::object_storage::target_json_path,
+};
 
 use super::ALERTS;
 
-use super::{AlertState, CallableTarget, Context};
+use super::{AlertState, Context};
 
 pub static TARGETS: Lazy<TargetConfigs> = Lazy::new(|| TargetConfigs {
     target_configs: RwLock::new(HashMap::new()),
@@ -236,7 +240,7 @@ impl Target {
                     // call once and then start sleeping
                     // reduce repeats by 1
                     call_target(self.target.clone(), context.clone());
-                    trace!("state not timed out- {state:?}");
+                    // trace!("state not timed out- {state:?}");
                     // set state
                     state.timed_out = true;
                     state.awaiting_resolve = true;
@@ -244,7 +248,7 @@ impl Target {
                     self.spawn_timeout_task(timeout, context.clone());
                 }
             }
-            alert_state @ (AlertState::Resolved | AlertState::Silenced) => {
+            alert_state @ AlertState::NotTriggered => {
                 state.alert_state = alert_state;
                 if state.timed_out {
                     // if in timeout and resolve came in, only process if it's the first one ( awaiting resolve )
@@ -258,6 +262,9 @@ impl Target {
 
                 call_target(self.target.clone(), context);
             }
+            // do not send out any notifs
+            // (an eval should not have run!)
+            AlertState::Paused => {}
         }
     }
 
@@ -447,11 +454,11 @@ impl CallableTarget for SlackWebHook {
             AlertState::Triggered => {
                 serde_json::json!({ "text": payload.default_alert_string() })
             }
-            AlertState::Resolved => {
+            AlertState::NotTriggered => {
                 serde_json::json!({ "text": payload.default_resolved_string() })
             }
-            AlertState::Silenced => {
-                serde_json::json!({ "text": payload.default_silenced_string() })
+            AlertState::Paused => {
+                serde_json::json!({ "text": payload.default_paused_string() })
             }
         };
 
@@ -485,8 +492,8 @@ impl CallableTarget for OtherWebHook {
 
         let alert = match payload.alert_info.alert_state {
             AlertState::Triggered => payload.default_alert_string(),
-            AlertState::Resolved => payload.default_resolved_string(),
-            AlertState::Silenced => payload.default_silenced_string(),
+            AlertState::NotTriggered => payload.default_resolved_string(),
+            AlertState::Paused => payload.default_paused_string(),
         };
 
         let request = client
@@ -562,7 +569,7 @@ impl CallableTarget for AlertManager {
         // fill in status label accordingly
         match payload.alert_info.alert_state {
             AlertState::Triggered => alert["labels"]["status"] = "triggered".into(),
-            AlertState::Resolved => {
+            AlertState::NotTriggered => {
                 alert["labels"]["status"] = "resolved".into();
                 alert["annotations"]["reason"] =
                     serde_json::Value::String(payload.default_resolved_string());
@@ -570,14 +577,14 @@ impl CallableTarget for AlertManager {
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
                     .into();
             }
-            AlertState::Silenced => {
-                alert["labels"]["status"] = "silenced".into();
-                alert["annotations"]["reason"] =
-                    serde_json::Value::String(payload.default_silenced_string());
-                // alert["endsAt"] = Utc::now()
-                //     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-                //     .into();
-            }
+            AlertState::Paused => alert["labels"]["status"] = "paused".into(), // AlertState::Silenced => {
+                                                                               //     alert["labels"]["status"] = "silenced".into();
+                                                                               //     alert["annotations"]["reason"] =
+                                                                               //         serde_json::Value::String(payload.default_silenced_string());
+                                                                               //     // alert["endsAt"] = Utc::now()
+                                                                               //     //     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                                                                               //     //     .into();
+                                                                               // }
         };
 
         if let Err(e) = client

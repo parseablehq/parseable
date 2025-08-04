@@ -18,22 +18,44 @@
 
 use crate::{
     alerts::{
-        AlertConfig, AlertError, AlertState, AlertType, EvalConfig, Severity, ThresholdConfig,
+        AlertConfig, AlertError, AlertState, AlertType, EvalConfig, Severity,
+        alert_enums::NotificationState,
+        alert_structs::{Context, ThresholdConfig},
     },
     rbac::map::SessionKey,
 };
+use chrono::{DateTime, Utc};
 use std::{collections::HashMap, fmt::Debug};
 use tonic::async_trait;
 use ulid::Ulid;
 
+/// A trait to handle different types of messages built by different alert types
+pub trait MessageCreation {
+    fn create_threshold_message(&self, actual_value: f64) -> Result<String, AlertError>;
+    fn create_anomaly_message(
+        &self,
+        actual_value: f64,
+        lower_bound: f64,
+        upper_bound: f64,
+    ) -> Result<String, AlertError>;
+    fn create_forecast_message(
+        &self,
+        forecasted_time: DateTime<Utc>,
+        forecasted_value: f64,
+    ) -> Result<String, AlertError>;
+}
+
 #[async_trait]
 pub trait AlertTrait: Debug + Send + Sync {
-    async fn eval_alert(&self) -> Result<(bool, f64), AlertError>;
+    async fn eval_alert(&self) -> Result<Option<String>, AlertError>;
     async fn validate(&self, session_key: &SessionKey) -> Result<(), AlertError>;
+    async fn update_notification_state(
+        &mut self,
+        new_notification_state: NotificationState,
+    ) -> Result<(), AlertError>;
     async fn update_state(
         &mut self,
-        is_manual: bool,
-        new_state: AlertState,
+        alert_state: AlertState,
         trigger_notif: Option<String>,
     ) -> Result<(), AlertError>;
     fn get_id(&self) -> &Ulid;
@@ -52,6 +74,7 @@ pub trait AlertTrait: Debug + Send + Sync {
     fn get_datasets(&self) -> &Vec<String>;
     fn to_alert_config(&self) -> AlertConfig;
     fn clone_box(&self) -> Box<dyn AlertTrait>;
+    // fn get_alert_message(&self) -> Result<String, AlertError>;
 }
 
 #[async_trait]
@@ -70,10 +93,20 @@ pub trait AlertManagerTrait: Send + Sync {
         new_state: AlertState,
         trigger_notif: Option<String>,
     ) -> Result<(), AlertError>;
+    async fn update_notification_state(
+        &self,
+        alert_id: Ulid,
+        new_notification_state: NotificationState,
+    ) -> Result<(), AlertError>;
     async fn delete(&self, alert_id: Ulid) -> Result<(), AlertError>;
     async fn get_state(&self, alert_id: Ulid) -> Result<AlertState, AlertError>;
     async fn start_task(&self, alert: Box<dyn AlertTrait>) -> Result<(), AlertError>;
     async fn delete_task(&self, alert_id: Ulid) -> Result<(), AlertError>;
     async fn list_tags(&self) -> Vec<String>;
     async fn get_all_alerts(&self) -> HashMap<Ulid, Box<dyn AlertTrait>>;
+}
+
+#[async_trait]
+pub trait CallableTarget {
+    async fn call(&self, payload: &Context);
 }

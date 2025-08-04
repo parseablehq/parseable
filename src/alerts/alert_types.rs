@@ -16,21 +16,22 @@
  *
  */
 
-use std::time::Duration;
+use std::{str::FromStr, time::Duration};
 
 use chrono::{DateTime, Utc};
 use tonic::async_trait;
-use tracing::trace;
+use tracing::{info, trace, warn};
 use ulid::Ulid;
 
 use crate::{
     alerts::{
         AlertConfig, AlertError, AlertState, AlertType, AlertVersion, EvalConfig, Severity,
         ThresholdConfig,
+        alert_enums::NotificationState,
+        alert_traits::{AlertTrait, MessageCreation},
         alerts_utils::{evaluate_condition, execute_alert_query, extract_time_range},
         is_query_aggregate,
         target::{self, TARGETS},
-        traits::AlertTrait,
     },
     handlers::http::query::create_streams_for_distributed,
     option::Mode,
@@ -56,6 +57,7 @@ pub struct ThresholdAlert {
     // for new alerts, state should be resolved
     #[serde(default)]
     pub state: AlertState,
+    pub notification_state: NotificationState,
     pub created: DateTime<Utc>,
     pub tags: Option<Vec<String>>,
     pub datasets: Vec<String>,
@@ -63,7 +65,7 @@ pub struct ThresholdAlert {
 
 #[async_trait]
 impl AlertTrait for ThresholdAlert {
-    async fn eval_alert(&self) -> Result<(bool, f64), AlertError> {
+    async fn eval_alert(&self) -> Result<Option<String>, AlertError> {
         let time_range = extract_time_range(&self.eval_config)?;
         let final_value = execute_alert_query(self.get_query(), &time_range).await?;
         let result = evaluate_condition(
@@ -71,7 +73,14 @@ impl AlertTrait for ThresholdAlert {
             final_value,
             self.threshold_config.value,
         );
-        Ok((result, final_value))
+
+        let message = if result {
+            // generate message
+            Some(self.create_threshold_message(final_value)?)
+        } else {
+            None
+        };
+        Ok(message)
     }
 
     async fn validate(&self, session_key: &SessionKey) -> Result<(), AlertError> {
@@ -132,6 +141,70 @@ impl AlertTrait for ThresholdAlert {
         // validate that the alert query is valid and can be evaluated
         if !is_query_aggregate(&self.query).await? {
             return Err(AlertError::InvalidAlertQuery);
+        }
+        Ok(())
+    }
+
+    async fn update_notification_state(
+        &mut self,
+        new_notification_state: NotificationState,
+    ) -> Result<(), AlertError> {
+        let store = PARSEABLE.storage.get_object_store();
+        // update state in memory
+        self.notification_state = new_notification_state;
+        // update on disk
+        store.put_alert(self.id, &self.to_alert_config()).await?;
+
+        Ok(())
+    }
+
+    async fn update_state(
+        &mut self,
+        new_state: AlertState,
+        trigger_notif: Option<String>,
+    ) -> Result<(), AlertError> {
+        let store = PARSEABLE.storage.get_object_store();
+        if self.state.eq(&AlertState::Paused) {
+            warn!(
+                "Alert- {} has been Paused. No evals will be done till it is unpaused.",
+                self.id
+            );
+            // update state in memory
+            self.state = new_state;
+
+            // update on disk
+            store.put_alert(self.id, &self.to_alert_config()).await?;
+            // The task should have already been removed from the list of running tasks
+            return Ok(());
+        }
+
+        match &mut self.notification_state {
+            NotificationState::Notify => {}
+            NotificationState::Snoozed(till_time) => {
+                // if now > till_time, modify notif state to notify and proceed
+                let now = Utc::now();
+                let till = DateTime::<Utc>::from_str(till_time)
+                    .map_err(|e| AlertError::CustomError(e.to_string()))?;
+                if now > till {
+                    info!(
+                        "Modifying alert notif state from snoozed to notify- Now= {now}, Snooze till= {till}"
+                    );
+                    self.notification_state = NotificationState::Notify;
+                }
+            }
+        }
+
+        // update state in memory
+        self.state = new_state;
+
+        // update on disk
+        store.put_alert(self.id, &self.to_alert_config()).await?;
+
+        if trigger_notif.is_some() && self.notification_state.eq(&NotificationState::Notify) {
+            trace!("trigger notif on-\n{}", self.state);
+            self.to_alert_config()
+                .trigger_notifications(trigger_notif.unwrap())
+                .await?;
         }
         Ok(())
     }
@@ -204,49 +277,41 @@ impl AlertTrait for ThresholdAlert {
     fn clone_box(&self) -> Box<dyn AlertTrait> {
         Box::new(self.clone())
     }
+}
 
-    async fn update_state(
-        &mut self,
-        is_manual: bool,
-        new_state: AlertState,
-        trigger_notif: Option<String>,
-    ) -> Result<(), AlertError> {
-        let store = PARSEABLE.storage.get_object_store();
-        match self.state {
-            AlertState::Triggered => {
-                if is_manual
-                    && new_state != AlertState::Resolved
-                    && new_state != AlertState::Silenced
-                {
-                    let msg = format!("Not allowed to manually go from Triggered to {new_state}");
-                    return Err(AlertError::InvalidStateChange(msg));
-                }
-            }
-            AlertState::Silenced => {
-                if is_manual && new_state != AlertState::Resolved {
-                    let msg = format!("Not allowed to manually go from Silenced to {new_state}");
-                    return Err(AlertError::InvalidStateChange(msg));
-                }
-            }
-            AlertState::Resolved => {
-                if is_manual {
-                    let msg = format!("Not allowed to go manually from Resolved to {new_state}");
-                    return Err(AlertError::InvalidStateChange(msg));
-                }
-            }
-        }
-        // update state in memory
-        self.state = new_state;
-        // update on disk
-        store.put_alert(self.id, &self.to_alert_config()).await?;
+impl MessageCreation for ThresholdAlert {
+    fn create_threshold_message(&self, actual_value: f64) -> Result<String, AlertError> {
+        Ok(format!(
+            "Alert Triggered: {}\n\nThreshold: ({} {})\nCurrent Value: {}\nEvaluation Window: {} | Frequency: {}\n\nQuery:\n{}",
+            self.get_id(),
+            self.get_threshold_config().operator,
+            self.get_threshold_config().value,
+            actual_value,
+            self.get_eval_window(),
+            self.get_eval_frequency(),
+            self.get_query()
+        ))
+    }
 
-        if trigger_notif.is_some() {
-            trace!("trigger notif on-\n{}", self.state);
-            self.to_alert_config()
-                .trigger_notifications(trigger_notif.unwrap())
-                .await?;
-        }
-        Ok(())
+    fn create_anomaly_message(
+        &self,
+        _forecast_value: f64,
+        _lower_bound: f64,
+        _upper_bound: f64,
+    ) -> Result<String, AlertError> {
+        Err(AlertError::Unimplemented(
+            "Anomaly message creation is not allowed for Threshold alert".into(),
+        ))
+    }
+
+    fn create_forecast_message(
+        &self,
+        _forecast_time: DateTime<Utc>,
+        _forecast_value: f64,
+    ) -> Result<String, AlertError> {
+        Err(AlertError::Unimplemented(
+            "Forecast message creation is not allowed for Threshold alert".into(),
+        ))
     }
 }
 
@@ -263,6 +328,7 @@ impl From<AlertConfig> for ThresholdAlert {
             eval_config: value.eval_config,
             targets: value.targets,
             state: value.state,
+            notification_state: value.notification_state,
             created: value.created,
             tags: value.tags,
             datasets: value.datasets,
@@ -283,6 +349,7 @@ impl From<ThresholdAlert> for AlertConfig {
             eval_config: val.eval_config,
             targets: val.targets,
             state: val.state,
+            notification_state: val.notification_state,
             created: val.created,
             tags: val.tags,
             datasets: val.datasets,

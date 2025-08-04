@@ -1,0 +1,302 @@
+use std::collections::HashMap;
+
+use chrono::{DateTime, Utc};
+use serde::Serialize;
+use tokio::sync::{RwLock, mpsc};
+use ulid::Ulid;
+
+use crate::{
+    alerts::{
+        AlertError, CURRENT_ALERTS_VERSION,
+        alert_enums::{
+            AlertOperator, AlertState, AlertTask, AlertType, AlertVersion, EvalConfig,
+            LogicalOperator, NotificationState, Severity, WhereConfigOperator,
+        },
+        alert_traits::AlertTrait,
+        target::TARGETS,
+    },
+    query::resolve_stream_names,
+};
+
+/// Helper struct for basic alert fields during migration
+pub struct BasicAlertFields {
+    pub id: Ulid,
+    pub title: String,
+    pub severity: Severity,
+}
+
+#[derive(Debug)]
+pub struct Alerts {
+    pub alerts: RwLock<HashMap<Ulid, Box<dyn AlertTrait>>>,
+    pub sender: mpsc::Sender<AlertTask>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Context {
+    pub alert_info: AlertInfo,
+    pub deployment_info: DeploymentInfo,
+    pub message: String,
+}
+
+impl Context {
+    pub fn new(alert_info: AlertInfo, deployment_info: DeploymentInfo, message: String) -> Self {
+        Self {
+            alert_info,
+            deployment_info,
+            message,
+        }
+    }
+
+    pub(crate) fn default_alert_string(&self) -> String {
+        format!(
+            "AlertName: {}\nTriggered TimeStamp: {}\nSeverity: {}\n{}",
+            self.alert_info.alert_name,
+            Utc::now().to_rfc3339(),
+            self.alert_info.severity,
+            self.message
+        )
+    }
+
+    pub(crate) fn default_resolved_string(&self) -> String {
+        format!("{} is now `not-triggered` ", self.alert_info.alert_name)
+    }
+
+    pub(crate) fn default_paused_string(&self) -> String {
+        format!(
+            "{} is now `paused`. No more evals will be run till it is `paused`.",
+            self.alert_info.alert_name
+        )
+    }
+
+    // fn default_silenced_string(&self) -> String {
+    //     format!(
+    //         "Notifications for {} have been silenced ",
+    //         self.alert_info.alert_name
+    //     )
+    // }
+}
+
+#[derive(Debug, Clone)]
+pub struct AlertInfo {
+    pub alert_id: Ulid,
+    pub alert_name: String,
+    // message: String,
+    // reason: String,
+    pub alert_state: AlertState,
+    pub notification_state: NotificationState,
+    pub severity: String,
+}
+
+impl AlertInfo {
+    pub fn new(
+        alert_id: Ulid,
+        alert_name: String,
+        alert_state: AlertState,
+        notification_state: NotificationState,
+        severity: String,
+    ) -> Self {
+        Self {
+            alert_id,
+            alert_name,
+            alert_state,
+            notification_state,
+            severity,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeploymentInfo {
+    pub deployment_instance: String,
+    pub deployment_id: Ulid,
+    pub deployment_mode: String,
+}
+
+impl DeploymentInfo {
+    pub fn new(deployment_instance: String, deployment_id: Ulid, deployment_mode: String) -> Self {
+        Self {
+            deployment_instance,
+            deployment_id,
+            deployment_mode,
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct OperationConfig {
+    pub column: String,
+    pub operator: Option<String>,
+    pub value: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FilterConfig {
+    pub conditions: Vec<Conditions>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+pub struct ConditionConfig {
+    pub column: String,
+    pub operator: WhereConfigOperator,
+    pub value: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct Conditions {
+    pub operator: Option<LogicalOperator>,
+    pub condition_config: Vec<ConditionConfig>,
+}
+
+impl Conditions {
+    pub fn generate_filter_message(&self) -> String {
+        match &self.operator {
+            Some(op) => match op {
+                LogicalOperator::And | LogicalOperator::Or => {
+                    let expr1 = &self.condition_config[0];
+                    let expr2 = &self.condition_config[1];
+                    let expr1_msg = if expr1.value.as_ref().is_some_and(|v| !v.is_empty()) {
+                        format!(
+                            "{} {} {}",
+                            expr1.column,
+                            expr1.operator,
+                            expr1.value.as_ref().unwrap()
+                        )
+                    } else {
+                        format!("{} {}", expr1.column, expr1.operator)
+                    };
+
+                    let expr2_msg = if expr2.value.as_ref().is_some_and(|v| !v.is_empty()) {
+                        format!(
+                            "{} {} {}",
+                            expr2.column,
+                            expr2.operator,
+                            expr2.value.as_ref().unwrap()
+                        )
+                    } else {
+                        format!("{} {}", expr2.column, expr2.operator)
+                    };
+
+                    format!("[{expr1_msg} {op} {expr2_msg}]")
+                }
+            },
+            None => {
+                let expr = &self.condition_config[0];
+                if let Some(val) = &expr.value {
+                    format!("{} {} {}", expr.column, expr.operator, val)
+                } else {
+                    format!("{} {}", expr.column, expr.operator)
+                }
+            }
+        }
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct GroupBy {
+    pub columns: Vec<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ThresholdConfig {
+    pub operator: AlertOperator,
+    pub value: f64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct RollingWindow {
+    // x minutes (25m)
+    pub eval_start: String,
+    // should always be "now"
+    pub eval_end: String,
+    // x minutes (5m)
+    pub eval_frequency: u64,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertRequest {
+    #[serde(default = "Severity::default")]
+    pub severity: Severity,
+    pub title: String,
+    pub query: String,
+    pub alert_type: AlertType,
+    pub threshold_config: ThresholdConfig,
+    pub eval_config: EvalConfig,
+    pub targets: Vec<Ulid>,
+    pub tags: Option<Vec<String>>,
+}
+
+impl AlertRequest {
+    pub async fn into(self) -> Result<AlertConfig, AlertError> {
+        // Validate that all target IDs exist
+        for id in &self.targets {
+            TARGETS.get_target_by_id(id).await?;
+        }
+        let datasets = resolve_stream_names(&self.query)?;
+        let config = AlertConfig {
+            version: AlertVersion::from(CURRENT_ALERTS_VERSION),
+            id: Ulid::new(),
+            severity: self.severity,
+            title: self.title,
+            query: self.query,
+            datasets,
+            alert_type: self.alert_type,
+            threshold_config: self.threshold_config,
+            eval_config: self.eval_config,
+            targets: self.targets,
+            state: AlertState::default(),
+            notification_state: NotificationState::Notify,
+            created: Utc::now(),
+            tags: self.tags,
+        };
+        Ok(config)
+    }
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertConfig {
+    pub version: AlertVersion,
+    #[serde(default)]
+    pub id: Ulid,
+    pub severity: Severity,
+    pub title: String,
+    pub query: String,
+    pub datasets: Vec<String>,
+    pub alert_type: AlertType,
+    pub threshold_config: ThresholdConfig,
+    pub eval_config: EvalConfig,
+    pub targets: Vec<Ulid>,
+    // for new alerts, state should be resolved
+    #[serde(default)]
+    pub state: AlertState,
+    pub notification_state: NotificationState,
+    pub created: DateTime<Utc>,
+    pub tags: Option<Vec<String>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AlertsSummary {
+    pub total: u64,
+    pub triggered: AlertsInfoByState,
+    pub paused: AlertsInfoByState,
+    pub resolved: AlertsInfoByState,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AlertsInfoByState {
+    pub total: u64,
+    pub alert_info: Vec<AlertsInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AlertsInfo {
+    pub title: String,
+    pub id: Ulid,
+    pub severity: Severity,
+}

@@ -28,7 +28,7 @@ use itertools::Itertools;
 use tracing::trace;
 
 use crate::{
-    alerts::{AlertTrait, Conditions, LogicalOperator, WhereConfigOperator},
+    alerts::{AlertTrait, LogicalOperator, WhereConfigOperator, alert_structs::Conditions},
     handlers::http::{
         cluster::send_query_request,
         query::{Query, create_streams_for_distributed},
@@ -55,9 +55,9 @@ use super::{ALERTS, AlertError, AlertOperator, AlertState};
 pub async fn evaluate_alert(alert: &dyn AlertTrait) -> Result<(), AlertError> {
     trace!("RUNNING EVAL TASK FOR- {alert:?}");
 
-    let (result, final_value) = alert.eval_alert().await?;
+    let message = alert.eval_alert().await?;
 
-    update_alert_state(alert, result, final_value).await
+    update_alert_state(alert, message).await
 }
 
 /// Extract time range from alert evaluation configuration
@@ -163,8 +163,7 @@ pub fn evaluate_condition(operator: &AlertOperator, actual: f64, expected: f64) 
 
 async fn update_alert_state(
     alert: &dyn AlertTrait,
-    final_res: bool,
-    actual_value: f64,
+    message: Option<String>,
 ) -> Result<(), AlertError> {
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
@@ -173,20 +172,9 @@ async fn update_alert_state(
         return Err(AlertError::CustomError("No AlertManager set".into()));
     };
 
-    if final_res {
-        let message = format!(
-            "Alert Triggered: {}\n\nThreshold: ({} {})\nCurrent Value: {}\nEvaluation Window: {} | Frequency: {}\n\nQuery:\n{}",
-            alert.get_id(),
-            alert.get_threshold_config().operator,
-            alert.get_threshold_config().value,
-            actual_value,
-            alert.get_eval_window(),
-            alert.get_eval_frequency(),
-            alert.get_query()
-        );
-
+    if let Some(msg) = message {
         alerts
-            .update_state(*alert.get_id(), AlertState::Triggered, Some(message))
+            .update_state(*alert.get_id(), AlertState::Triggered, Some(msg))
             .await
     } else if alerts
         .get_state(*alert.get_id())
@@ -194,11 +182,11 @@ async fn update_alert_state(
         .eq(&AlertState::Triggered)
     {
         alerts
-            .update_state(*alert.get_id(), AlertState::Resolved, Some("".into()))
+            .update_state(*alert.get_id(), AlertState::NotTriggered, Some("".into()))
             .await
     } else {
         alerts
-            .update_state(*alert.get_id(), AlertState::Resolved, None)
+            .update_state(*alert.get_id(), AlertState::NotTriggered, None)
             .await
     }
 }

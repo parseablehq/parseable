@@ -27,7 +27,8 @@ use tokio::time::{Duration, Instant, interval_at, sleep};
 use tokio::{select, task};
 use tracing::{error, info, trace, warn};
 
-use crate::alerts::{AlertTask, alerts_utils};
+use crate::alerts::alert_enums::AlertTask;
+use crate::alerts::alerts_utils;
 use crate::parseable::PARSEABLE;
 use crate::storage::object_storage::sync_all_streams;
 use crate::{LOCAL_SYNC_INTERVAL, STORAGE_UPLOAD_INTERVAL};
@@ -308,6 +309,7 @@ pub async fn alert_runtime(mut rx: mpsc::Receiver<AlertTask>) -> Result<(), anyh
                     loop {
                         match alerts_utils::evaluate_alert(&*alert).await {
                             Ok(_) => {
+                                warn!(evaluated_alert_id=?alert.get_id());
                                 retry_counter = 0;
                             }
                             Err(err) => {
