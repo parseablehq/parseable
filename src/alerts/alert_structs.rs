@@ -251,6 +251,7 @@ pub struct AlertRequest {
     pub query: String,
     pub alert_type: AlertType,
     pub threshold_config: ThresholdConfig,
+    #[serde(default)]
     pub notification_config: NotificationConfig,
     pub eval_config: EvalConfig,
     pub targets: Vec<Ulid>,
