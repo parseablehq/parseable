@@ -166,7 +166,8 @@ pub async fn reply_login(
     let username = user_info
         .name
         .clone()
-        .expect("OIDC provider did not return a sub which is currently required.");
+        .or_else(|| user_info.email.clone())
+        .expect("OIDC provider did not return a usable identifier (name or email)");
     let user_info: user::UserInfo = user_info.into();
     let group: HashSet<String> = claims
         .other
