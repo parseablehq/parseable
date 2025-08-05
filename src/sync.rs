@@ -309,7 +309,6 @@ pub async fn alert_runtime(mut rx: mpsc::Receiver<AlertTask>) -> Result<(), anyh
                     loop {
                         match alerts_utils::evaluate_alert(&*alert).await {
                             Ok(_) => {
-                                warn!(evaluated_alert_id=?alert.get_id());
                                 retry_counter = 0;
                             }
                             Err(err) => {
