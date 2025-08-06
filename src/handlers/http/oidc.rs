@@ -186,7 +186,30 @@ pub async fn reply_login(
         }
     }
 
-    let existing_user = Users.get_user(&username);
+    /// Attempts to find an existing user by trying both name and email identifiers
+    /// This handles the case where OIDC provider configuration changes over time:
+    /// - User was initially created with email as username (when name wasn't provided)
+    /// - Later OIDC provider starts providing name, but user already exists with email as username
+    fn find_existing_user(user_info: &user::UserInfo) -> Option<User> {
+        // Try to find user by name first (current preferred identifier)
+        if let Some(name) = &user_info.name {
+            if let Some(user) = Users.get_user(name) {
+                return Some(user);
+            }
+        }
+
+        // If not found by name, try by email (fallback for legacy users)
+        if let Some(email) = &user_info.email {
+            if let Some(user) = Users.get_user(email) {
+                return Some(user);
+            }
+        }
+
+        None
+    }
+
+    let existing_user = find_existing_user(&user_info);
+
     let final_roles = match existing_user {
         Some(ref user) => {
             // For existing users: keep existing roles + add new valid OIDC roles
