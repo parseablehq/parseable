@@ -525,15 +525,21 @@ impl Parseable {
                 .await;
         }
 
-        if !time_partition.is_empty() || !time_partition_limit.is_empty() {
-            return Err(StreamError::Custom {
-                msg: "Creating stream with time partition is not supported anymore".to_string(),
-                status: StatusCode::BAD_REQUEST,
-            });
-        }
+        let time_partition_in_days = if !time_partition_limit.is_empty() {
+            Some(validate_time_partition_limit(&time_partition_limit)?)
+        } else {
+            None
+        };
 
         if let Some(custom_partition) = &custom_partition {
             validate_custom_partition(custom_partition)?;
+        }
+
+        if !time_partition.is_empty() && custom_partition.is_some() {
+            return Err(StreamError::Custom {
+                msg: "Cannot set both time partition and custom partition".to_string(),
+                status: StatusCode::BAD_REQUEST,
+            });
         }
 
         let schema = validate_static_schema(
@@ -547,7 +553,7 @@ impl Parseable {
         self.create_stream(
             stream_name.to_string(),
             &time_partition,
-            None,
+            time_partition_in_days,
             custom_partition.as_ref(),
             static_schema_flag,
             schema,
