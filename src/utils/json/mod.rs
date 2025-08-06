@@ -63,7 +63,115 @@ pub fn flatten_json_body(
     Ok(nested_value)
 }
 
-pub fn convert_array_to_object(
+/// Checks if generic flattening should be applied based on schema version and log source
+fn should_apply_generic_flattening(
+    value: &Value,
+    schema_version: SchemaVersion,
+    log_source: &LogSource,
+) -> bool {
+    schema_version == SchemaVersion::V1
+        && !has_more_than_max_allowed_levels(value, 1)
+        && matches!(log_source, LogSource::Json | LogSource::Custom(_))
+}
+
+/// Applies generic flattening and handles the result for partitioned processing
+fn apply_generic_flattening_for_partition(
+    element: Value,
+    time_partition: Option<&String>,
+    time_partition_limit: Option<NonZeroU32>,
+    custom_partition: Option<&String>,
+) -> Result<Vec<Value>, anyhow::Error> {
+    let flattened_json = generic_flattening(&element)?;
+
+    if flattened_json.len() == 1 {
+        // Single result - process normally
+        let mut nested_value = flattened_json.into_iter().next().unwrap();
+        flatten::flatten(
+            &mut nested_value,
+            "_",
+            time_partition,
+            time_partition_limit,
+            custom_partition,
+            true,
+        )?;
+        Ok(vec![nested_value])
+    } else {
+        // Multiple results - process each individually
+        let mut result = Vec::new();
+        for item in flattened_json {
+            let mut processed_item = item;
+            flatten::flatten(
+                &mut processed_item,
+                "_",
+                time_partition,
+                time_partition_limit,
+                custom_partition,
+                true,
+            )?;
+            result.push(processed_item);
+        }
+        Ok(result)
+    }
+}
+
+/// Processes a single element for partitioned arrays
+fn process_partitioned_element(
+    element: Value,
+    time_partition: Option<&String>,
+    time_partition_limit: Option<NonZeroU32>,
+    custom_partition: Option<&String>,
+    schema_version: SchemaVersion,
+    log_source: &LogSource,
+) -> Result<Vec<Value>, anyhow::Error> {
+    if should_apply_generic_flattening(&element, schema_version, log_source) {
+        apply_generic_flattening_for_partition(
+            element,
+            time_partition,
+            time_partition_limit,
+            custom_partition,
+        )
+    } else {
+        let mut nested_value = element;
+        flatten::flatten(
+            &mut nested_value,
+            "_",
+            time_partition,
+            time_partition_limit,
+            custom_partition,
+            true,
+        )?;
+        Ok(vec![nested_value])
+    }
+}
+
+/// Processes an array when partitioning is enabled
+fn process_partitioned_array(
+    arr: Vec<Value>,
+    time_partition: Option<&String>,
+    time_partition_limit: Option<NonZeroU32>,
+    custom_partition: Option<&String>,
+    schema_version: SchemaVersion,
+    log_source: &LogSource,
+) -> Result<Vec<Value>, anyhow::Error> {
+    let mut result = Vec::new();
+
+    for element in arr {
+        let processed_elements = process_partitioned_element(
+            element,
+            time_partition,
+            time_partition_limit,
+            custom_partition,
+            schema_version,
+            log_source,
+        )?;
+        result.extend(processed_elements);
+    }
+
+    Ok(result)
+}
+
+/// Processes non-array values when partitioning is enabled
+fn process_partitioned_non_array(
     body: Value,
     time_partition: Option<&String>,
     time_partition_limit: Option<NonZeroU32>,
@@ -80,12 +188,70 @@ pub fn convert_array_to_object(
         true,
         log_source,
     )?;
-    let value_arr = match data {
-        Value::Array(arr) => arr,
-        value @ Value::Object(_) => vec![value],
-        _ => unreachable!("flatten would have failed beforehand"),
-    };
-    Ok(value_arr)
+    Ok(vec![data])
+}
+
+/// Processes data when no partitioning is configured (original logic)
+fn process_non_partitioned(
+    body: Value,
+    time_partition: Option<&String>,
+    time_partition_limit: Option<NonZeroU32>,
+    custom_partition: Option<&String>,
+    schema_version: SchemaVersion,
+    log_source: &LogSource,
+) -> Result<Vec<Value>, anyhow::Error> {
+    let data = flatten_json_body(
+        body,
+        time_partition,
+        time_partition_limit,
+        custom_partition,
+        schema_version,
+        true,
+        log_source,
+    )?;
+
+    // For non-partitioned processing, return the flattened data as a single item
+    // If it's an array, it should be processed as one batch, not individual items
+    Ok(vec![data])
+}
+
+pub fn convert_array_to_object(
+    body: Value,
+    time_partition: Option<&String>,
+    time_partition_limit: Option<NonZeroU32>,
+    custom_partition: Option<&String>,
+    schema_version: SchemaVersion,
+    log_source: &LogSource,
+) -> Result<Vec<Value>, anyhow::Error> {
+    if time_partition.is_some() || custom_partition.is_some() {
+        match body {
+            Value::Array(arr) => process_partitioned_array(
+                arr,
+                time_partition,
+                time_partition_limit,
+                custom_partition,
+                schema_version,
+                log_source,
+            ),
+            _ => process_partitioned_non_array(
+                body,
+                time_partition,
+                time_partition_limit,
+                custom_partition,
+                schema_version,
+                log_source,
+            ),
+        }
+    } else {
+        process_non_partitioned(
+            body,
+            time_partition,
+            time_partition_limit,
+            custom_partition,
+            schema_version,
+            log_source,
+        )
+    }
 }
 
 struct TrueFromStr;
@@ -311,5 +477,69 @@ mod tests {
             ]),
             flattened_json
         );
+    }
+
+    #[test]
+    fn test_convert_array_to_object_with_time_partition() {
+        let json = json!([
+            {
+                "a": "b",
+                "source_time": "2025-08-01T00:00:00.000Z"
+            },
+            {
+                "a": "b",
+                "source_time": "2025-08-01T00:01:00.000Z"
+            }
+        ]);
+
+        let time_partition = Some("source_time".to_string());
+        let result = convert_array_to_object(
+            json,
+            time_partition.as_ref(),
+            None,
+            None,
+            SchemaVersion::V0,
+            &crate::event::format::LogSource::default(),
+        );
+
+        assert!(result.is_ok());
+        let objects = result.unwrap();
+
+        // Should return 2 separate objects, not wrapped in an array
+        assert_eq!(objects.len(), 2);
+        assert_eq!(objects[0]["a"], "b");
+        assert_eq!(objects[0]["source_time"], "2025-08-01T00:00:00.000Z");
+        assert_eq!(objects[1]["a"], "b");
+        assert_eq!(objects[1]["source_time"], "2025-08-01T00:01:00.000Z");
+    }
+
+    #[test]
+    fn test_convert_array_to_object_without_time_partition() {
+        let json = json!([
+            {
+                "a": "b",
+                "source_time": "2025-08-01T00:00:00.000Z"
+            },
+            {
+                "a": "b",
+                "source_time": "2025-08-01T00:01:00.000Z"
+            }
+        ]);
+
+        let result = convert_array_to_object(
+            json.clone(),
+            None,
+            None,
+            None,
+            SchemaVersion::V0,
+            &crate::event::format::LogSource::default(),
+        );
+
+        assert!(result.is_ok());
+        let objects = result.unwrap();
+
+        // Should return 1 item containing the whole array as a single batch
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0], json);
     }
 }
