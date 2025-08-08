@@ -47,6 +47,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::path::Path;
+use tracing::trace;
 use tracing::warn;
 use ulid::Ulid;
 
@@ -175,7 +176,7 @@ async fn calculate_single_field_stats(
             let mut stream = match df.execute_stream().await {
                 Ok(stream) => stream,
                 Err(e) => {
-                    warn!("Failed to execute distinct stats query: {e}");
+                    trace!("Failed to execute distinct stats query: {e}");
                     return None; // Return empty if query fails
                 }
             };
@@ -183,7 +184,7 @@ async fn calculate_single_field_stats(
                 let rb = match batch_result {
                     Ok(batch) => batch,
                     Err(e) => {
-                        warn!("Failed to fetch batch in distinct stats query: {e}");
+                        trace!("Failed to fetch batch in distinct stats query: {e}");
                         continue; // Skip this batch if there's an error
                     }
                 };
@@ -211,7 +212,7 @@ async fn calculate_single_field_stats(
             }
         }
         Err(e) => {
-            warn!("Failed to execute distinct stats query for field: {field_name}, error: {e}");
+            trace!("Failed to execute distinct stats query for field: {field_name}, error: {e}");
             return None;
         }
     }
