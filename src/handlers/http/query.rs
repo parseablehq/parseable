@@ -346,7 +346,7 @@ pub async fn get_counts(
     let body = counts_request.into_inner();
 
     // does user have access to table?
-    user_auth_for_datasets(&permissions, &[body.stream.clone()]).await?;
+    user_auth_for_datasets(&permissions, std::slice::from_ref(&body.stream)).await?;
 
     // if the user has given a sql query (counts call with filters applied), then use this flow
     // this could include filters or group by

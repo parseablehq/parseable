@@ -160,10 +160,10 @@ impl Stream for ReceiverPipe {
 // drop sender on map when going out of scope
 impl Drop for ReceiverPipe {
     fn drop(&mut self) {
-        if let Some(map) = self._ref.upgrade() {
-            if let Some(pipes) = map.write().unwrap().get_mut(&self.stream) {
-                pipes.retain(|x| x.id != self.id)
-            }
+        if let Some(map) = self._ref.upgrade()
+            && let Some(pipes) = map.write().unwrap().get_mut(&self.stream)
+        {
+            pipes.retain(|x| x.id != self.id)
         }
     }
 }

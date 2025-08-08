@@ -68,10 +68,10 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
         )
     }
 
-    if let Some(hot_tier_manager) = HotTierManager::global() {
-        if hot_tier_manager.check_stream_hot_tier_exists(&stream_name) {
-            hot_tier_manager.delete_hot_tier(&stream_name).await?;
-        }
+    if let Some(hot_tier_manager) = HotTierManager::global()
+        && hot_tier_manager.check_stream_hot_tier_exists(&stream_name)
+    {
+        hot_tier_manager.delete_hot_tier(&stream_name).await?;
     }
 
     // Delete from memory

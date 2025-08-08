@@ -315,10 +315,8 @@ fn valid_type(
 
 fn validate_int(value: &Value, static_schema_flag: bool) -> bool {
     // allow casting string to int for static schema
-    if static_schema_flag {
-        if let Value::String(s) = value {
-            return s.trim().parse::<i64>().is_ok();
-        }
+    if static_schema_flag && let Value::String(s) = value {
+        return s.trim().parse::<i64>().is_ok();
     }
     value.is_i64()
 }

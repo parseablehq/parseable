@@ -51,10 +51,10 @@ pub async fn audit_log_middleware(
         log_builder = log_builder.with_stream(message.common_attributes.x_p_stream);
     } else if let Some(stream) = req.match_info().get("logstream") {
         log_builder = log_builder.with_stream(stream);
-    } else if let Some(value) = req.headers().get(STREAM_NAME_HEADER_KEY) {
-        if let Ok(stream) = value.to_str() {
-            log_builder = log_builder.with_stream(stream);
-        }
+    } else if let Some(value) = req.headers().get(STREAM_NAME_HEADER_KEY)
+        && let Ok(stream) = value.to_str()
+    {
+        log_builder = log_builder.with_stream(stream);
     }
 
     // Get username and authorization method
