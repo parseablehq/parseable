@@ -273,7 +273,7 @@ fn extract_basic_auth(header: &MetadataMap) -> Option<Credentials> {
         .and_then(|value| Credentials::from_header(value.to_string()).ok())
 }
 
-fn extract_cookie(header: &MetadataMap) -> Option<Cookie> {
+fn extract_cookie(header: &MetadataMap) -> Option<Cookie<'_>> {
     // extract the cookie from the request
     let cookies = header.get_all("cookie");
     let cookies: Vec<_> = cookies

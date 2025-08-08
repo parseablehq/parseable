@@ -169,10 +169,10 @@ pub fn insert_if_some<T: ToString>(map: &mut Map<String, Value>, key: &str, opti
 }
 
 pub fn insert_number_if_some(map: &mut Map<String, Value>, key: &str, option: &Option<f64>) {
-    if let Some(value) = option {
-        if let Some(number) = serde_json::Number::from_f64(*value) {
-            map.insert(key.to_string(), Value::Number(number));
-        }
+    if let Some(value) = option
+        && let Some(number) = serde_json::Number::from_f64(*value)
+    {
+        map.insert(key.to_string(), Value::Number(number));
     }
 }
 

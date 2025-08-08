@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, mpsc};
 use ulid::Ulid;
 
@@ -86,9 +86,9 @@ impl Context {
         format!("{} is now `not-triggered` ", self.alert_info.alert_name)
     }
 
-    pub(crate) fn default_paused_string(&self) -> String {
+    pub(crate) fn default_disabled_string(&self) -> String {
         format!(
-            "{} is now `paused`. No more evals will be run till it is `paused`.",
+            "{} is now `disabled`. No more evals will be run till it is `disabled`.",
             self.alert_info.alert_name
         )
     }
@@ -242,6 +242,16 @@ pub struct RollingWindow {
     pub eval_frequency: u64,
 }
 
+impl Default for RollingWindow {
+    fn default() -> Self {
+        Self {
+            eval_start: "10m".into(),
+            eval_end: "now".into(),
+            eval_frequency: 10,
+        }
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AlertRequest {
@@ -328,4 +338,46 @@ pub struct AlertsInfo {
     pub title: String,
     pub id: Ulid,
     pub severity: Severity,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ForecastConfig {
+    pub historic_duration: String,
+    pub forecast_duration: String,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AnomalyConfig {
+    pub historic_duration: String,
+}
+
+/// Result structure for alert query execution with group support
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlertQueryResult {
+    /// List of group results, each containing group values and the aggregate value
+    pub groups: Vec<GroupResult>,
+    /// True if this is a simple query without GROUP BY (single group with empty group_values)
+    pub is_simple_query: bool,
+}
+
+/// Result for a single group in a GROUP BY query
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GroupResult {
+    /// The group-by column values (empty for non-GROUP BY queries)
+    pub group_values: HashMap<String, String>,
+    /// The aggregate function value for this group
+    pub aggregate_value: f64,
+}
+
+impl AlertQueryResult {
+    /// Get the single aggregate value for simple queries (backward compatibility)
+    pub fn get_single_value(&self) -> f64 {
+        if self.is_simple_query && !self.groups.is_empty() {
+            self.groups[0].aggregate_value
+        } else {
+            0.0
+        }
+    }
 }

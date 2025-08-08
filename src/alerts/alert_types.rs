@@ -28,13 +28,13 @@ use crate::{
         AlertConfig, AlertError, AlertState, AlertType, AlertVersion, EvalConfig, Severity,
         ThresholdConfig,
         alert_enums::NotificationState,
+        alert_structs::GroupResult,
         alert_traits::{AlertTrait, MessageCreation},
         alerts_utils::{evaluate_condition, execute_alert_query, extract_time_range},
-        is_query_aggregate,
+        get_number_of_agg_exprs,
         target::{self, NotificationConfig},
     },
     handlers::http::query::create_streams_for_distributed,
-    option::Mode,
     parseable::PARSEABLE,
     query::resolve_stream_names,
     rbac::map::SessionKey,
@@ -68,31 +68,49 @@ pub struct ThresholdAlert {
 impl AlertTrait for ThresholdAlert {
     async fn eval_alert(&self) -> Result<Option<String>, AlertError> {
         let time_range = extract_time_range(&self.eval_config)?;
-        let final_value = execute_alert_query(self.get_query(), &time_range).await?;
-        let result = evaluate_condition(
-            &self.threshold_config.operator,
-            final_value,
-            self.threshold_config.value,
-        );
+        let query_result = execute_alert_query(self.get_query(), &time_range).await?;
 
-        let message = if result {
-            // generate message
-            Some(self.create_threshold_message(final_value)?)
+        if query_result.is_simple_query {
+            // Handle simple queries
+            let final_value = query_result.get_single_value();
+            let result = evaluate_condition(
+                &self.threshold_config.operator,
+                final_value,
+                self.threshold_config.value,
+            );
+
+            let message = if result {
+                Some(self.create_threshold_message(final_value)?)
+            } else {
+                None
+            };
+            Ok(message)
         } else {
-            None
-        };
-        Ok(message)
+            // Handle GROUP BY queries - evaluate each group
+            let mut breached_groups = Vec::new();
+
+            for group in &query_result.groups {
+                let result = evaluate_condition(
+                    &self.threshold_config.operator,
+                    group.aggregate_value,
+                    self.threshold_config.value,
+                );
+
+                if result {
+                    breached_groups.push(group.clone());
+                }
+            }
+
+            let message = if !breached_groups.is_empty() {
+                Some(self.create_group_message(&breached_groups)?)
+            } else {
+                None
+            };
+            Ok(message)
+        }
     }
 
     async fn validate(&self, session_key: &SessionKey) -> Result<(), AlertError> {
-        // validate alert type
-        // Anomaly is only allowed in Prism
-        if self.alert_type.eq(&AlertType::Anomaly) && PARSEABLE.options.mode != Mode::Prism {
-            return Err(AlertError::CustomError(
-                "Anomaly alert is only allowed on Prism mode".into(),
-            ));
-        }
-
         // validate evalType
         let eval_frequency = match &self.eval_config {
             EvalConfig::RollingWindow(rolling_window) => {
@@ -121,23 +139,28 @@ impl AlertTrait for ThresholdAlert {
 
         // validate that the query is valid
         if self.query.is_empty() {
-            return Err(AlertError::InvalidAlertQuery);
+            return Err(AlertError::InvalidAlertQuery("Empty query".into()));
         }
 
         let tables = resolve_stream_names(&self.query)?;
         if tables.is_empty() {
-            return Err(AlertError::InvalidAlertQuery);
+            return Err(AlertError::InvalidAlertQuery(
+                "No tables found in query".into(),
+            ));
         }
         create_streams_for_distributed(tables)
             .await
-            .map_err(|_| AlertError::InvalidAlertQuery)?;
+            .map_err(|_| AlertError::InvalidAlertQuery("Invalid tables".into()))?;
 
         // validate that the user has access to the tables mentioned in the query
         user_auth_for_query(session_key, &self.query).await?;
 
         // validate that the alert query is valid and can be evaluated
-        if !is_query_aggregate(&self.query).await? {
-            return Err(AlertError::InvalidAlertQuery);
+        let num_aggrs = get_number_of_agg_exprs(&self.query).await?;
+        if num_aggrs != 1 {
+            return Err(AlertError::InvalidAlertQuery(format!(
+                "Found {num_aggrs} aggregate expressions, only 1 allowed"
+            )));
         }
         Ok(())
     }
@@ -161,9 +184,9 @@ impl AlertTrait for ThresholdAlert {
         trigger_notif: Option<String>,
     ) -> Result<(), AlertError> {
         let store = PARSEABLE.storage.get_object_store();
-        if self.state.eq(&AlertState::Paused) {
+        if self.state.eq(&AlertState::Disabled) {
             warn!(
-                "Alert- {} has been Paused. No evals will be done till it is unpaused.",
+                "Alert- {} is currently Disabled. Updating state to {new_state}.",
                 self.id
             );
             // update state in memory
@@ -177,11 +200,14 @@ impl AlertTrait for ThresholdAlert {
 
         match &mut self.notification_state {
             NotificationState::Notify => {}
-            NotificationState::Snoozed(till_time) => {
+            NotificationState::Mute(till_time) => {
                 // if now > till_time, modify notif state to notify and proceed
                 let now = Utc::now();
-                let till = DateTime::<Utc>::from_str(till_time)
-                    .map_err(|e| AlertError::CustomError(e.to_string()))?;
+                let till = match till_time.as_str() {
+                    "indefinite" => DateTime::<Utc>::MAX_UTC,
+                    _ => DateTime::<Utc>::from_str(till_time)
+                        .map_err(|e| AlertError::CustomError(e.to_string()))?,
+                };
                 if now > till {
                     info!(
                         "Modifying alert notif state from snoozed to notify- Now= {now}, Snooze till= {till}"
@@ -234,7 +260,7 @@ impl AlertTrait for ThresholdAlert {
         &self.eval_config
     }
 
-    fn get_targets(&self) -> &Vec<Ulid> {
+    fn get_targets(&self) -> &[Ulid] {
         &self.targets
     }
 
@@ -248,21 +274,21 @@ impl AlertTrait for ThresholdAlert {
         }
     }
 
-    fn get_eval_window(&self) -> String {
+    fn get_eval_window(&self) -> &str {
         match &self.eval_config {
-            EvalConfig::RollingWindow(rolling_window) => rolling_window.eval_start.clone(),
+            EvalConfig::RollingWindow(rolling_window) => rolling_window.eval_start.as_str(),
         }
     }
 
     fn get_created(&self) -> String {
-        self.created.to_string()
+        self.created.to_rfc3339()
     }
 
     fn get_tags(&self) -> &Option<Vec<String>> {
         &self.tags
     }
 
-    fn get_datasets(&self) -> &Vec<String> {
+    fn get_datasets(&self) -> &[String] {
         &self.datasets
     }
 
@@ -353,5 +379,45 @@ impl From<ThresholdAlert> for AlertConfig {
             tags: val.tags,
             datasets: val.datasets,
         }
+    }
+}
+
+impl ThresholdAlert {
+    fn create_group_message(&self, breached_groups: &[GroupResult]) -> Result<String, AlertError> {
+        let mut message = format!(
+            "Alert Triggered: {}\n\nThreshold: ({} {})\nEvaluation Window: {} | Frequency: {}\n\n",
+            self.get_id(),
+            self.get_threshold_config().operator,
+            self.get_threshold_config().value,
+            self.get_eval_window(),
+            self.get_eval_frequency()
+        );
+
+        message.push_str(&format!(
+            "Alerting Groups ({} total):\n",
+            breached_groups.len()
+        ));
+
+        for (index, group) in breached_groups.iter().enumerate() {
+            message.push_str(&format!("{}. ", index + 1));
+
+            if group.group_values.is_empty() {
+                message.push_str("[No GROUP BY]");
+            } else {
+                let group_desc = group
+                    .group_values
+                    .iter()
+                    .map(|(key, value)| format!("{}: {}", key, value))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                message.push_str(&group_desc);
+            }
+
+            message.push_str(&format!(" → Value: {}\n", group.aggregate_value));
+        }
+
+        message.push_str(&format!("\nQuery:\n{}", self.get_query()));
+
+        Ok(message)
     }
 }

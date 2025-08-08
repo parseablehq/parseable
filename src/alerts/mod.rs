@@ -21,6 +21,7 @@ use arrow_schema::{ArrowError, DataType, Schema};
 use async_trait::async_trait;
 use chrono::Utc;
 use datafusion::logical_expr::{LogicalPlan, Projection};
+use datafusion::prelude::Expr;
 use datafusion::sql::sqlparser::parser::ParserError;
 use derive_more::FromStrError;
 use http::StatusCode;
@@ -29,7 +30,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+// use std::time::Duration;
 use tokio::sync::oneshot::{Receiver, Sender};
 use tokio::sync::{RwLock, mpsc};
 use tokio::task::JoinHandle;
@@ -55,8 +56,8 @@ use crate::alerts::alert_traits::{AlertManagerTrait, AlertTrait};
 use crate::alerts::alert_types::ThresholdAlert;
 use crate::alerts::target::{NotificationConfig, TARGETS};
 use crate::handlers::http::fetch_schema;
-use crate::handlers::http::query::create_streams_for_distributed;
-use crate::option::Mode;
+// use crate::handlers::http::query::create_streams_for_distributed;
+// use crate::option::Mode;
 use crate::parseable::{PARSEABLE, StreamNotFound};
 use crate::query::{QUERY_SESSION, resolve_stream_names};
 use crate::rbac::map::SessionKey;
@@ -581,65 +582,6 @@ impl AlertConfig {
         Ok(())
     }
 
-    /// Validations
-    pub async fn validate(&self, session_key: SessionKey) -> Result<(), AlertError> {
-        // validate alert type
-        // Anomaly is only allowed in Prism
-        if self.alert_type.eq(&AlertType::Anomaly) && PARSEABLE.options.mode != Mode::Prism {
-            return Err(AlertError::CustomError(
-                "Anomaly alert is only allowed on Prism mode".into(),
-            ));
-        }
-
-        // validate evalType
-        let eval_frequency = match &self.eval_config {
-            EvalConfig::RollingWindow(rolling_window) => {
-                if humantime::parse_duration(&rolling_window.eval_start).is_err() {
-                    return Err(AlertError::Metadata(
-                        "evalStart should be of type humantime",
-                    ));
-                }
-                rolling_window.eval_frequency
-            }
-        };
-
-        // validate that target repeat notifs !> eval_frequency
-        match &self.notification_config.times {
-            target::Retry::Infinite => {}
-            target::Retry::Finite(repeat) => {
-                let notif_duration =
-                    Duration::from_secs(60 * self.notification_config.interval) * *repeat as u32;
-                if (notif_duration.as_secs_f64()).gt(&((eval_frequency * 60) as f64)) {
-                    return Err(AlertError::Metadata(
-                        "evalFrequency should be greater than target repetition  interval",
-                    ));
-                }
-            }
-        }
-
-        // validate that the query is valid
-        if self.query.is_empty() {
-            return Err(AlertError::InvalidAlertQuery);
-        }
-
-        let tables = resolve_stream_names(&self.query)?;
-        if tables.is_empty() {
-            return Err(AlertError::InvalidAlertQuery);
-        }
-        create_streams_for_distributed(tables)
-            .await
-            .map_err(|_| AlertError::InvalidAlertQuery)?;
-
-        // validate that the user has access to the tables mentioned in the query
-        user_auth_for_query(&session_key, &self.query).await?;
-
-        // validate that the alert query is valid and can be evaluated
-        if !is_query_aggregate(&self.query).await? {
-            return Err(AlertError::InvalidAlertQuery);
-        }
-        Ok(())
-    }
-
     pub fn get_eval_frequency(&self) -> u64 {
         match &self.eval_config {
             EvalConfig::RollingWindow(rolling_window) => rolling_window.eval_frequency,
@@ -709,6 +651,11 @@ impl AlertConfig {
         );
 
         map.insert(
+            "notificationState".to_string(),
+            serde_json::Value::String(self.notification_state.to_string()),
+        );
+
+        map.insert(
             "id".to_string(),
             serde_json::Value::String(self.id.to_string()),
         );
@@ -749,7 +696,7 @@ impl AlertConfig {
 }
 
 /// Check if a query is an aggregate query that returns a single value without executing it
-pub async fn is_query_aggregate(query: &str) -> Result<bool, AlertError> {
+pub async fn get_number_of_agg_exprs(query: &str) -> Result<usize, AlertError> {
     let session_state = QUERY_SESSION.state();
 
     // Parse the query into a logical plan
@@ -759,21 +706,139 @@ pub async fn is_query_aggregate(query: &str) -> Result<bool, AlertError> {
         .map_err(|err| AlertError::CustomError(format!("Failed to parse query: {err}")))?;
 
     // Check if the plan structure indicates an aggregate query
-    Ok(is_logical_plan_aggregate(&logical_plan))
+    _get_number_of_agg_exprs(&logical_plan)
+}
+
+/// Extract the projection which deals with aggregation
+pub async fn get_aggregate_projection(query: &str) -> Result<String, AlertError> {
+    let session_state = QUERY_SESSION.state();
+
+    // Parse the query into a logical plan
+    let logical_plan = session_state
+        .create_logical_plan(query)
+        .await
+        .map_err(|err| AlertError::CustomError(format!("Failed to parse query: {err}")))?;
+
+    // Check if the plan structure indicates an aggregate query
+    _get_aggregate_projection(&logical_plan)
+}
+
+fn _get_aggregate_projection(plan: &LogicalPlan) -> Result<String, AlertError> {
+    match plan {
+        LogicalPlan::Aggregate(agg) => {
+            // let fields = exprlist_to_fields(&agg.aggr_expr, &agg.input)?;
+            match &agg.aggr_expr[0] {
+                datafusion::prelude::Expr::Alias(alias) => Ok(alias.name.clone()),
+                _ => Ok(agg.aggr_expr[0].name_for_alias()?),
+            }
+        }
+        // Projection over aggregate: SELECT COUNT(*) as total, SELECT AVG(col) as average
+        LogicalPlan::Projection(Projection { input, .. }) => _get_aggregate_projection(input),
+        // Do not consider any aggregates inside a subquery or recursive CTEs
+        LogicalPlan::Subquery(_) | LogicalPlan::RecursiveQuery(_) => {
+            Err(AlertError::InvalidAlertQuery("Subquery not allowed".into()))
+        }
+        // Recursively check wrapped plans (Filter, Limit, Sort, etc.)
+        _ => {
+            // Use inputs() method to get all input plans and recursively search
+            for input in plan.inputs() {
+                if let Ok(result) = _get_aggregate_projection(input) {
+                    return Ok(result);
+                }
+            }
+            Err(AlertError::InvalidAlertQuery(
+                "No aggregate projection found".into(),
+            ))
+        }
+    }
+}
+
+/// Extracts aliases for aggregate functions from a DataFusion logical plan
+pub fn extract_aggregate_aliases(plan: &LogicalPlan) -> Vec<(String, Option<String>)> {
+    let mut aliases = Vec::new();
+
+    if let LogicalPlan::Projection(projection) = plan {
+        // Check if this projection contains aliased aggregates
+        for expr in &projection.expr {
+            if let Some((agg_name, alias)) = extract_alias_from_expr(expr) {
+                aliases.push((agg_name, alias));
+            }
+        }
+    }
+
+    // Recursively check child plans
+    for input in plan.inputs() {
+        aliases.extend(extract_aggregate_aliases(input));
+    }
+
+    aliases
+}
+
+/// Extracts aggregate function name and alias from an expression
+fn extract_alias_from_expr(expr: &Expr) -> Option<(String, Option<String>)> {
+    match expr {
+        Expr::Alias(alias_expr) => {
+            // This is an aliased expression
+            let alias_name = alias_expr.name.clone();
+
+            match alias_expr.expr.as_ref() {
+                Expr::AggregateFunction(agg_func) => {
+                    let agg_name = format!("{:?}", agg_func.func);
+                    Some((agg_name, Some(alias_name)))
+                }
+                // Handle other aggregate expressions like Count, etc.
+                _ => {
+                    // Check if the inner expression is an aggregate
+                    let expr_str = format!("{:?}", alias_expr.expr);
+                    if expr_str.contains("count")
+                        || expr_str.contains("sum")
+                        || expr_str.contains("avg")
+                        || expr_str.contains("min")
+                        || expr_str.contains("max")
+                    {
+                        Some((expr_str, Some(alias_name)))
+                    } else {
+                        None
+                    }
+                }
+            }
+        }
+        Expr::AggregateFunction(agg_func) => {
+            // Unaliased aggregate function
+            let agg_name = format!("{:?}", agg_func.func);
+            Some((agg_name, None))
+        }
+        Expr::Column(column_expr) => {
+            // This might be an un-aliased aggregate expression
+            if column_expr.name().contains("count")
+                || column_expr.name().contains("sum")
+                || column_expr.name().contains("avg")
+                || column_expr.name().contains("min")
+                || column_expr.name().contains("max")
+            {
+                Some((column_expr.name.clone(), None))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Analyze a logical plan to determine if it represents an aggregate query
-pub fn is_logical_plan_aggregate(plan: &LogicalPlan) -> bool {
+///
+/// Returns the number of aggregate expressions found in the plan
+fn _get_number_of_agg_exprs(plan: &LogicalPlan) -> Result<usize, AlertError> {
     match plan {
         // Direct aggregate: SELECT COUNT(*), AVG(col), etc.
-        LogicalPlan::Aggregate(_) => true,
+        LogicalPlan::Aggregate(agg) => Ok(agg.aggr_expr.len()),
 
         // Projection over aggregate: SELECT COUNT(*) as total, SELECT AVG(col) as average
-        LogicalPlan::Projection(Projection { input, expr, .. }) => {
-            // Check if input contains an aggregate and we have exactly one expression
-            let is_aggregate_input = is_logical_plan_aggregate(input);
-            let single_expr = expr.len() == 1;
-            is_aggregate_input && single_expr
+        LogicalPlan::Projection(Projection { input, .. }) => _get_number_of_agg_exprs(input),
+
+        // Do not consider any aggregates inside a subquery or recursive CTEs
+        LogicalPlan::Subquery(_) | LogicalPlan::RecursiveQuery(_) => {
+            Err(AlertError::InvalidAlertQuery("Subquery not allowed".into()))
         }
 
         // Recursively check wrapped plans (Filter, Limit, Sort, etc.)
@@ -781,7 +846,8 @@ pub fn is_logical_plan_aggregate(plan: &LogicalPlan) -> bool {
             // Use inputs() method to get all input plans
             plan.inputs()
                 .iter()
-                .any(|input| is_logical_plan_aggregate(input))
+                .map(|input| _get_number_of_agg_exprs(input))
+                .sum()
         }
     }
 }
@@ -820,16 +886,18 @@ pub enum AlertError {
     TargetInUse,
     #[error("{0}")]
     ParserError(#[from] ParserError),
-    #[error("Invalid alert query")]
-    InvalidAlertQuery,
+    #[error("Invalid alert query: {0}")]
+    InvalidAlertQuery(String),
     #[error("Invalid query parameter")]
     InvalidQueryParameter,
     #[error("{0}")]
     ArrowError(#[from] ArrowError),
     #[error("Upgrade to Parseable Enterprise for {0} type alerts")]
-    NotPresentInOSS(String),
+    NotPresentInOSS(&'static str),
     #[error("{0}")]
     Unimplemented(String),
+    #[error("{0}")]
+    ValidationFailure(String),
 }
 
 impl actix_web::ResponseError for AlertError {
@@ -851,8 +919,9 @@ impl actix_web::ResponseError for AlertError {
             Self::InvalidTargetModification(_) => StatusCode::BAD_REQUEST,
             Self::TargetInUse => StatusCode::CONFLICT,
             Self::ParserError(_) => StatusCode::BAD_REQUEST,
-            Self::InvalidAlertQuery => StatusCode::BAD_REQUEST,
+            Self::InvalidAlertQuery(_) => StatusCode::BAD_REQUEST,
             Self::InvalidQueryParameter => StatusCode::BAD_REQUEST,
+            Self::ValidationFailure(_) => StatusCode::BAD_REQUEST,
             Self::ArrowError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Unimplemented(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::NotPresentInOSS(_) => StatusCode::BAD_REQUEST,
@@ -934,20 +1003,20 @@ impl AlertManagerTrait for Alerts {
                 AlertType::Threshold => {
                     Box::new(ThresholdAlert::from(alert)) as Box<dyn AlertTrait>
                 }
-                AlertType::Anomaly => {
+                AlertType::Anomaly(_) => {
                     return Err(anyhow::Error::msg(
-                        AlertError::NotPresentInOSS("anomaly".into()).to_string(),
+                        AlertError::NotPresentInOSS("anomaly").to_string(),
                     ));
                 }
-                AlertType::Forecast => {
+                AlertType::Forecast(_) => {
                     return Err(anyhow::Error::msg(
-                        AlertError::NotPresentInOSS("forecast".into()).to_string(),
+                        AlertError::NotPresentInOSS("forecast").to_string(),
                     ));
                 }
             };
 
             // Create alert task iff alert's state is not paused
-            if alert.get_state().eq(&AlertState::Paused) {
+            if alert.get_state().eq(&AlertState::Disabled) {
                 map.insert(*alert.get_id(), alert);
                 continue;
             }
@@ -1040,11 +1109,11 @@ impl AlertManagerTrait for Alerts {
                 AlertType::Threshold => {
                     Box::new(ThresholdAlert::from(alert.to_alert_config())) as Box<dyn AlertTrait>
                 }
-                AlertType::Anomaly => {
-                    return Err(AlertError::NotPresentInOSS("anomaly".into()));
+                AlertType::Anomaly(_) => {
+                    return Err(AlertError::NotPresentInOSS("anomaly"));
                 }
-                AlertType::Forecast => {
-                    return Err(AlertError::NotPresentInOSS("forecast".into()));
+                AlertType::Forecast(_) => {
+                    return Err(AlertError::NotPresentInOSS("forecast"));
                 }
             }
         } else {
@@ -1053,15 +1122,21 @@ impl AlertManagerTrait for Alerts {
             )));
         };
 
-        // if new state is Paused then ensure that the task is removed from list
-        if new_state.eq(&AlertState::Paused) {
+        // if new state is Disabled then ensure that the task is removed from list
+        if new_state.eq(&AlertState::Disabled) {
+            if alert.get_state().eq(&AlertState::Disabled) {
+                return Err(AlertError::InvalidStateChange(
+                    "Can't disable an alert which is currently disabled".into(),
+                ));
+            }
+
             self.sender
                 .send(AlertTask::Delete(alert_id))
                 .await
                 .map_err(|e| AlertError::CustomError(e.to_string()))?;
         }
         // user has resumed evals for this alert
-        else if alert.get_state().eq(&AlertState::Paused)
+        else if alert.get_state().eq(&AlertState::Disabled)
             && new_state.eq(&AlertState::NotTriggered)
         {
             self.sender
@@ -1089,11 +1164,11 @@ impl AlertManagerTrait for Alerts {
                 AlertType::Threshold => {
                     Box::new(ThresholdAlert::from(alert.to_alert_config())) as Box<dyn AlertTrait>
                 }
-                AlertType::Anomaly => {
-                    return Err(AlertError::NotPresentInOSS("anomaly".into()));
+                AlertType::Anomaly(_) => {
+                    return Err(AlertError::NotPresentInOSS("anomaly"));
                 }
-                AlertType::Forecast => {
-                    return Err(AlertError::NotPresentInOSS("forecast".into()));
+                AlertType::Forecast(_) => {
+                    return Err(AlertError::NotPresentInOSS("forecast"));
                 }
             }
         } else {
@@ -1201,7 +1276,7 @@ pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
                     severity: alert.get_severity().clone(),
                 });
             }
-            AlertState::Paused => {
+            AlertState::Disabled => {
                 paused += 1;
                 paused_alerts.push(AlertsInfo {
                     title: alert.get_title().to_string(),

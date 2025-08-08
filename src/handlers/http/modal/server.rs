@@ -267,7 +267,7 @@ impl Server {
                     .route(web::get().to(alerts::get).authorize(Action::GetAlert))
                     .route(
                         web::put()
-                            .to(alerts::update_notification_state)
+                            .to(alerts::modify_alert)
                             .authorize(Action::PutAlert),
                     )
                     .route(
@@ -277,16 +277,30 @@ impl Server {
                     ),
             )
             .service(
-                web::resource("/{alert_id}/pause").route(
-                    web::put()
-                        .to(alerts::pause_alert)
+                web::resource("/{alert_id}/disable").route(
+                    web::patch()
+                        .to(alerts::disable_alert)
                         .authorize(Action::PutAlert),
                 ),
             )
             .service(
-                web::resource("/{alert_id}/resume").route(
+                web::resource("/{alert_id}/enable").route(
+                    web::patch()
+                        .to(alerts::enable_alert)
+                        .authorize(Action::PutAlert),
+                ),
+            )
+            .service(
+                web::resource("/{alert_id}/update_notification_state").route(
+                    web::patch()
+                        .to(alerts::update_notification_state)
+                        .authorize(Action::PutAlert),
+                ),
+            )
+            .service(
+                web::resource("/{alert_id}/evaluate_alert").route(
                     web::put()
-                        .to(alerts::resume_alert)
+                        .to(alerts::evaluate_alert)
                         .authorize(Action::PutAlert),
                 ),
             )

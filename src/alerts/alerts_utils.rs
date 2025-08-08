@@ -16,19 +16,22 @@
  *
  */
 
-use std::fmt::Display;
+use std::{collections::HashMap, fmt::Display};
 
 use actix_web::Either;
-use arrow_array::{Float64Array, Int64Array, RecordBatch};
+use arrow_array::{Array, Float64Array, Int64Array, RecordBatch};
 use datafusion::{
-    logical_expr::Literal,
+    logical_expr::{Literal, LogicalPlan},
     prelude::{Expr, lit},
 };
-use itertools::Itertools;
 use tracing::trace;
 
 use crate::{
-    alerts::{AlertTrait, LogicalOperator, WhereConfigOperator, alert_structs::Conditions},
+    alerts::{
+        AlertTrait, LogicalOperator, WhereConfigOperator,
+        alert_structs::{AlertQueryResult, Conditions, GroupResult},
+        extract_aggregate_aliases,
+    },
     handlers::http::{
         cluster::send_query_request,
         query::{Query, create_streams_for_distributed},
@@ -70,8 +73,11 @@ pub fn extract_time_range(eval_config: &super::EvalConfig) -> Result<TimeRange, 
         .map_err(|err| AlertError::CustomError(err.to_string()))
 }
 
-/// Execute the alert query based on the current mode and return the final value
-pub async fn execute_alert_query(query: &str, time_range: &TimeRange) -> Result<f64, AlertError> {
+/// Execute the alert query based on the current mode and return structured group results
+pub async fn execute_alert_query(
+    query: &str,
+    time_range: &TimeRange,
+) -> Result<AlertQueryResult, AlertError> {
     match PARSEABLE.options.mode {
         Mode::All | Mode::Query => execute_local_query(query, time_range).await,
         Mode::Prism => execute_remote_query(query, time_range).await,
@@ -83,7 +89,10 @@ pub async fn execute_alert_query(query: &str, time_range: &TimeRange) -> Result<
 }
 
 /// Execute alert query locally (Query/All mode)
-async fn execute_local_query(query: &str, time_range: &TimeRange) -> Result<f64, AlertError> {
+async fn execute_local_query(
+    query: &str,
+    time_range: &TimeRange,
+) -> Result<AlertQueryResult, AlertError> {
     let session_state = QUERY_SESSION.state();
 
     let tables = resolve_stream_names(query)?;
@@ -93,7 +102,7 @@ async fn execute_local_query(query: &str, time_range: &TimeRange) -> Result<f64,
 
     let raw_logical_plan = session_state.create_logical_plan(query).await?;
     let query = crate::query::Query {
-        raw_logical_plan,
+        raw_logical_plan: raw_logical_plan.clone(),
         time_range: time_range.clone(),
         filter_tag: None,
     };
@@ -111,11 +120,17 @@ async fn execute_local_query(query: &str, time_range: &TimeRange) -> Result<f64,
         }
     };
 
-    Ok(get_final_value(records))
+    Ok(extract_group_results(records, raw_logical_plan))
 }
 
 /// Execute alert query remotely (Prism mode)
-async fn execute_remote_query(query: &str, time_range: &TimeRange) -> Result<f64, AlertError> {
+async fn execute_remote_query(
+    query: &str,
+    time_range: &TimeRange,
+) -> Result<AlertQueryResult, AlertError> {
+    let session_state = QUERY_SESSION.state();
+    let raw_logical_plan = session_state.create_logical_plan(query).await?;
+
     let query_request = Query {
         query: query.to_string(),
         start_time: time_range.start.to_rfc3339(),
@@ -130,24 +145,111 @@ async fn execute_remote_query(query: &str, time_range: &TimeRange) -> Result<f64
         .await
         .map_err(|err| AlertError::CustomError(format!("Failed to send query request: {err}")))?;
 
-    convert_result_to_f64(result_value)
+    convert_result_to_group_results(result_value, raw_logical_plan)
 }
 
-/// Convert JSON result value to f64
-fn convert_result_to_f64(result_value: serde_json::Value) -> Result<f64, AlertError> {
-    // due to the previous validations, we can be sure that we get an array of objects with just one entry
-    // [{"countField": Number(1120.251)}]
-    if let Some(array_val) = result_value.as_array()
-        && !array_val.is_empty()
-        && let Some(object) = array_val[0].as_object()
-    {
-        let values = object.values().map(|v| v.as_f64().unwrap()).collect_vec();
-        Ok(values[0])
-    } else {
-        Err(AlertError::CustomError(
-            "Query result is not a number or response is empty".to_string(),
-        ))
+/// Convert JSON result value to AlertQueryResult
+/// Handles both simple queries and GROUP BY queries with multiple rows
+fn convert_result_to_group_results(
+    result_value: serde_json::Value,
+    plan: LogicalPlan,
+) -> Result<AlertQueryResult, AlertError> {
+    let array_val = result_value
+        .as_array()
+        .ok_or_else(|| AlertError::CustomError("Expected array in query result".to_string()))?;
+
+    let aggregate_aliases = extract_aggregate_aliases(&plan);
+
+    if array_val.is_empty() || aggregate_aliases.is_empty() {
+        return Ok(AlertQueryResult {
+            groups: vec![],
+            is_simple_query: true,
+        });
     }
+
+    // take the first entry and extract the column name / alias
+    let (agg_condition, alias) = &aggregate_aliases[0];
+
+    let aggregate_key = if let Some(alias) = alias {
+        alias
+    } else {
+        agg_condition
+    };
+
+    // Find the aggregate column from the first row
+    let first_row = array_val[0]
+        .as_object()
+        .ok_or_else(|| AlertError::CustomError("Expected object in query result".to_string()))?;
+
+    let is_simple_query = first_row.len() == 1;
+    let mut groups = Vec::new();
+
+    // Process each row as a separate group
+    for row in array_val {
+        if let Some(object) = row.as_object() {
+            let mut group_values = HashMap::new();
+            let mut aggregate_value = 0.0;
+
+            for (key, value) in object {
+                if key == aggregate_key {
+                    aggregate_value = value.as_f64().ok_or_else(|| {
+                        AlertError::CustomError(format!(
+                            "Non-numeric value found in aggregate column '{}'",
+                            aggregate_key
+                        ))
+                    })?;
+                } else {
+                    // This is a GROUP BY column
+                    group_values
+                        .insert(key.clone(), value.to_string().trim_matches('"').to_string());
+                }
+            }
+
+            groups.push(GroupResult {
+                group_values,
+                aggregate_value,
+            });
+        }
+    }
+
+    Ok(AlertQueryResult {
+        groups,
+        is_simple_query,
+    })
+}
+
+/// Extract numeric value from an Arrow array at the given row index
+fn extract_numeric_value(column: &dyn Array, row_index: usize) -> f64 {
+    if let Some(float_array) = column.as_any().downcast_ref::<Float64Array>() {
+        if !float_array.is_null(row_index) {
+            return float_array.value(row_index);
+        }
+    } else if let Some(int_array) = column.as_any().downcast_ref::<Int64Array>()
+        && !int_array.is_null(row_index)
+    {
+        return int_array.value(row_index) as f64;
+    }
+    0.0
+}
+
+/// Extract string value from an Arrow array at the given row index
+fn extract_string_value(column: &dyn Array, row_index: usize) -> String {
+    use arrow_array::StringArray;
+
+    if let Some(string_array) = column.as_any().downcast_ref::<StringArray>() {
+        if !string_array.is_null(row_index) {
+            return string_array.value(row_index).to_string();
+        }
+    } else if let Some(int_array) = column.as_any().downcast_ref::<Int64Array>() {
+        if !int_array.is_null(row_index) {
+            return int_array.value(row_index).to_string();
+        }
+    } else if let Some(float_array) = column.as_any().downcast_ref::<Float64Array>()
+        && !float_array.is_null(row_index)
+    {
+        return float_array.value(row_index).to_string();
+    }
+    "null".to_string()
 }
 
 pub fn evaluate_condition(operator: &AlertOperator, actual: f64, expected: f64) -> bool {
@@ -191,33 +293,64 @@ async fn update_alert_state(
     }
 }
 
-fn get_final_value(records: Vec<RecordBatch>) -> f64 {
+/// Extract group results from record batches, supporting both simple and GROUP BY queries
+fn extract_group_results(records: Vec<RecordBatch>, plan: LogicalPlan) -> AlertQueryResult {
     trace!("records-\n{records:?}");
 
-    if let Some(f) = records
-        .first()
-        .and_then(|batch| {
-            trace!("batch.column(0)-\n{:?}", batch.column(0));
-            batch.column(0).as_any().downcast_ref::<Float64Array>()
-        })
-        .map(|array| {
-            trace!("array-\n{array:?}");
-            array.value(0)
-        })
-    {
-        f
+    let aggregate_aliases = extract_aggregate_aliases(&plan);
+
+    // since there is going to be only one aggregate, we'll check if it is empty
+    if aggregate_aliases.is_empty() || records.is_empty() {
+        return AlertQueryResult {
+            groups: vec![],
+            is_simple_query: true,
+        };
+    }
+
+    // take the first entry and extract the column name / alias
+    let (agg_condition, alias) = &aggregate_aliases[0];
+
+    let alias = if let Some(alias) = alias {
+        alias
     } else {
-        records
-            .first()
-            .and_then(|batch| {
-                trace!("batch.column(0)-\n{:?}", batch.column(0));
-                batch.column(0).as_any().downcast_ref::<Int64Array>()
-            })
-            .map(|array| {
-                trace!("array-\n{array:?}");
-                array.value(0)
-            })
-            .unwrap_or_default() as f64
+        agg_condition
+    };
+
+    let first_batch = &records[0];
+    let schema = first_batch.schema();
+
+    // Determine if this is a simple query (no GROUP BY) or a grouped query
+    let is_simple_query = schema.fields().len() == 1;
+
+    let mut groups = Vec::new();
+
+    for batch in &records {
+        for row_index in 0..batch.num_rows() {
+            let mut group_values = HashMap::new();
+            let mut aggregate_value = 0.0;
+
+            // Extract values for each column
+            for (col_index, field) in schema.fields().iter().enumerate() {
+                let column = batch.column(col_index);
+                if field.name().eq(alias) {
+                    aggregate_value = extract_numeric_value(column, row_index)
+                } else {
+                    // This is a GROUP BY column
+                    let value = extract_string_value(column, row_index);
+                    group_values.insert(field.name().clone(), value);
+                }
+            }
+
+            groups.push(GroupResult {
+                group_values,
+                aggregate_value,
+            });
+        }
+    }
+
+    AlertQueryResult {
+        groups,
+        is_simple_query,
     }
 }
 

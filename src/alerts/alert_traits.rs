@@ -65,16 +65,15 @@ pub trait AlertTrait: Debug + Send + Sync {
     fn get_alert_type(&self) -> &AlertType;
     fn get_threshold_config(&self) -> &ThresholdConfig;
     fn get_eval_config(&self) -> &EvalConfig;
-    fn get_targets(&self) -> &Vec<Ulid>;
+    fn get_targets(&self) -> &[Ulid];
     fn get_state(&self) -> &AlertState;
-    fn get_eval_window(&self) -> String;
+    fn get_eval_window(&self) -> &str;
     fn get_eval_frequency(&self) -> u64;
     fn get_created(&self) -> String;
     fn get_tags(&self) -> &Option<Vec<String>>;
-    fn get_datasets(&self) -> &Vec<String>;
+    fn get_datasets(&self) -> &[String];
     fn to_alert_config(&self) -> AlertConfig;
     fn clone_box(&self) -> Box<dyn AlertTrait>;
-    // fn get_alert_message(&self) -> Result<String, AlertError>;
 }
 
 #[async_trait]

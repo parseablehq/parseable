@@ -563,20 +563,20 @@ impl TableProvider for StandardTableProvider {
         }
 
         // Hot tier data fetch
-        if let Some(hot_tier_manager) = HotTierManager::global() {
-            if hot_tier_manager.check_stream_hot_tier_exists(&self.stream) {
-                self.get_hottier_exectuion_plan(
-                    &mut execution_plans,
-                    hot_tier_manager,
-                    &mut manifest_files,
-                    projection,
-                    filters,
-                    limit,
-                    state,
-                    time_partition.clone(),
-                )
-                .await?;
-            }
+        if let Some(hot_tier_manager) = HotTierManager::global()
+            && hot_tier_manager.check_stream_hot_tier_exists(&self.stream)
+        {
+            self.get_hottier_exectuion_plan(
+                &mut execution_plans,
+                hot_tier_manager,
+                &mut manifest_files,
+                projection,
+                filters,
+                limit,
+                state,
+                time_partition.clone(),
+            )
+            .await?;
         }
         if manifest_files.is_empty() {
             QUERY_CACHE_HIT.with_label_values(&[&self.stream]).inc();

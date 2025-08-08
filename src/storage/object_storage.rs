@@ -602,53 +602,52 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             .await
             .into_iter()
             .next()
+            && !stream_metadata_obs.is_empty()
         {
-            if !stream_metadata_obs.is_empty() {
-                for stream_metadata_bytes in stream_metadata_obs.iter() {
-                    let stream_ob_metadata =
-                        serde_json::from_slice::<ObjectStoreFormat>(stream_metadata_bytes)?;
-                    all_log_sources.extend(stream_ob_metadata.log_source.clone());
-                }
-
-                // Merge log sources
-                let mut merged_log_sources: Vec<LogSourceEntry> = Vec::new();
-                let mut log_source_map: HashMap<LogSource, HashSet<String>> = HashMap::new();
-
-                for log_source_entry in all_log_sources {
-                    let log_source_format = log_source_entry.log_source_format;
-                    let fields = log_source_entry.fields;
-
-                    log_source_map
-                        .entry(log_source_format)
-                        .or_default()
-                        .extend(fields);
-                }
-
-                for (log_source_format, fields) in log_source_map {
-                    merged_log_sources.push(LogSourceEntry {
-                        log_source_format,
-                        fields: fields.into_iter().collect(),
-                    });
-                }
-
+            for stream_metadata_bytes in stream_metadata_obs.iter() {
                 let stream_ob_metadata =
-                    serde_json::from_slice::<ObjectStoreFormat>(&stream_metadata_obs[0])?;
-                let stream_metadata = ObjectStoreFormat {
-                    stats: FullStats::default(),
-                    snapshot: Snapshot::default(),
-                    log_source: merged_log_sources,
-                    ..stream_ob_metadata
-                };
-
-                let stream_metadata_bytes: Bytes = serde_json::to_vec(&stream_metadata)?.into();
-                self.put_object(
-                    &stream_json_path(stream_name),
-                    stream_metadata_bytes.clone(),
-                )
-                .await?;
-
-                return Ok(stream_metadata_bytes);
+                    serde_json::from_slice::<ObjectStoreFormat>(stream_metadata_bytes)?;
+                all_log_sources.extend(stream_ob_metadata.log_source.clone());
             }
+
+            // Merge log sources
+            let mut merged_log_sources: Vec<LogSourceEntry> = Vec::new();
+            let mut log_source_map: HashMap<LogSource, HashSet<String>> = HashMap::new();
+
+            for log_source_entry in all_log_sources {
+                let log_source_format = log_source_entry.log_source_format;
+                let fields = log_source_entry.fields;
+
+                log_source_map
+                    .entry(log_source_format)
+                    .or_default()
+                    .extend(fields);
+            }
+
+            for (log_source_format, fields) in log_source_map {
+                merged_log_sources.push(LogSourceEntry {
+                    log_source_format,
+                    fields: fields.into_iter().collect(),
+                });
+            }
+
+            let stream_ob_metadata =
+                serde_json::from_slice::<ObjectStoreFormat>(&stream_metadata_obs[0])?;
+            let stream_metadata = ObjectStoreFormat {
+                stats: FullStats::default(),
+                snapshot: Snapshot::default(),
+                log_source: merged_log_sources,
+                ..stream_ob_metadata
+            };
+
+            let stream_metadata_bytes: Bytes = serde_json::to_vec(&stream_metadata)?.into();
+            self.put_object(
+                &stream_json_path(stream_name),
+                stream_metadata_bytes.clone(),
+            )
+            .await?;
+
+            return Ok(stream_metadata_bytes);
         }
         Ok(Bytes::new())
     }
@@ -887,10 +886,10 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         if stats_calculated {
             // perform local sync for the `pstats` dataset
             task::spawn(async move {
-                if let Ok(stats_stream) = PARSEABLE.get_stream(DATASET_STATS_STREAM_NAME) {
-                    if let Err(err) = stats_stream.flush_and_convert(false, false) {
-                        error!("Failed in local sync for dataset stats stream: {err}");
-                    }
+                if let Ok(stats_stream) = PARSEABLE.get_stream(DATASET_STATS_STREAM_NAME)
+                    && let Err(err) = stats_stream.flush_and_convert(false, false)
+                {
+                    error!("Failed in local sync for dataset stats stream: {err}");
                 }
             });
         }

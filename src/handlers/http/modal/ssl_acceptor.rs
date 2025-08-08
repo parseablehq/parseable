@@ -38,17 +38,17 @@ pub fn get_ssl_acceptor(
 
             let mut certs = rustls_pemfile::certs(cert_file).collect::<Result<Vec<_>, _>>()?;
             // Load CA certificates from the directory
-            if let Some(other_cert_dir) = other_certs {
-                if other_cert_dir.is_dir() {
-                    for entry in fs::read_dir(other_cert_dir)? {
-                        let path = entry.unwrap().path();
+            if let Some(other_cert_dir) = other_certs
+                && other_cert_dir.is_dir()
+            {
+                for entry in fs::read_dir(other_cert_dir)? {
+                    let path = entry.unwrap().path();
 
-                        if path.is_file() {
-                            let other_cert_file = &mut BufReader::new(File::open(&path)?);
-                            let mut other_certs = rustls_pemfile::certs(other_cert_file)
-                                .collect::<Result<Vec<_>, _>>()?;
-                            certs.append(&mut other_certs);
-                        }
+                    if path.is_file() {
+                        let other_cert_file = &mut BufReader::new(File::open(&path)?);
+                        let mut other_certs = rustls_pemfile::certs(other_cert_file)
+                            .collect::<Result<Vec<_>, _>>()?;
+                        certs.append(&mut other_certs);
                     }
                 }
             }

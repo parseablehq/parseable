@@ -25,6 +25,7 @@ use crate::{
         alert_structs::{AlertConfig, AlertRequest},
         alert_traits::AlertTrait,
         alert_types::ThresholdAlert,
+        target::Retry,
     },
     parseable::PARSEABLE,
     storage::object_storage::alert_json_path,
@@ -45,16 +46,16 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
     let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
         .map_err(|_| AlertError::InvalidQueryParameter)?;
     let mut tags_list = Vec::new();
-    if !query_map.is_empty() {
-        if let Some(tags) = query_map.get("tags") {
-            tags_list = tags
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            if tags_list.is_empty() {
-                return Err(AlertError::InvalidQueryParameter);
-            }
+    if !query_map.is_empty()
+        && let Some(tags) = query_map.get("tags")
+    {
+        tags_list = tags
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if tags_list.is_empty() {
+            return Err(AlertError::InvalidQueryParameter);
         }
     }
     let guard = ALERTS.read().await;
@@ -77,7 +78,29 @@ pub async fn post(
     req: HttpRequest,
     Json(alert): Json<AlertRequest>,
 ) -> Result<impl Responder, AlertError> {
-    let alert: AlertConfig = alert.into().await?;
+    let mut alert: AlertConfig = alert.into().await?;
+
+    if alert.get_eval_frequency().eq(&0) {
+        return Err(AlertError::ValidationFailure(
+            "Eval frequency cannot be 0".into(),
+        ));
+    }
+    if alert.notification_config.interval.eq(&0) {
+        return Err(AlertError::ValidationFailure(
+            "Notification interval cannot be 0".into(),
+        ));
+    }
+
+    // calculate the `times` for notification config
+    let eval_freq = alert.get_eval_frequency();
+    let notif_freq = alert.notification_config.interval;
+    let times = if (eval_freq / notif_freq) == 0 {
+        1
+    } else {
+        (eval_freq / notif_freq) as usize
+    };
+
+    alert.notification_config.times = Retry::Finite(times);
 
     let threshold_alert;
     let alert: &dyn AlertTrait = match &alert.alert_type {
@@ -85,11 +108,11 @@ pub async fn post(
             threshold_alert = ThresholdAlert::from(alert);
             &threshold_alert
         }
-        AlertType::Anomaly => {
-            return Err(AlertError::NotPresentInOSS("anomaly".into()));
+        AlertType::Anomaly(_) => {
+            return Err(AlertError::NotPresentInOSS("anomaly"));
         }
-        AlertType::Forecast => {
-            return Err(AlertError::NotPresentInOSS("forecast".into()));
+        AlertType::Forecast(_) => {
+            return Err(AlertError::NotPresentInOSS("forecast"));
         }
     };
 
@@ -177,7 +200,7 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
     Ok(format!("Deleted alert with ID- {alert_id}"))
 }
 
-// PUT /alerts/{alert_id}
+// PATCH /alerts/{alert_id}/update_notification_state
 /// first save on disk, then in memory
 /// then modify scheduled task
 pub async fn update_notification_state(
@@ -191,7 +214,7 @@ pub async fn update_notification_state(
     // validate notif state
     match &mut new_notification_state {
         NotificationState::Notify => {}
-        NotificationState::Snoozed(till_time) => {
+        NotificationState::Mute(till_time) => {
             let time_range = TimeRange::parse_human_time(till_time, "now")
                 .map_err(|e| AlertError::CustomError(format!("Invalid time value passed- {e}")))?;
 
@@ -221,10 +244,10 @@ pub async fn update_notification_state(
     Ok(web::Json(alert.to_alert_config()))
 }
 
-// PUT /alerts/{alert_id}/pause
+// PATCH /alerts/{alert_id}/disable
 /// first save on disk, then in memory
 /// then modify scheduled task
-pub async fn pause_alert(
+pub async fn disable_alert(
     req: HttpRequest,
     alert_id: Path<Ulid>,
 ) -> Result<impl Responder, AlertError> {
@@ -244,17 +267,17 @@ pub async fn pause_alert(
     user_auth_for_query(&session_key, alert.get_query()).await?;
 
     alerts
-        .update_state(alert_id, AlertState::Paused, Some("".into()))
+        .update_state(alert_id, AlertState::Disabled, Some("".into()))
         .await?;
     let alert = alerts.get_alert_by_id(alert_id).await?;
 
     Ok(web::Json(alert.to_alert_config()))
 }
 
-// PUT /alerts/{alert_id}/resume
+// PATCH /alerts/{alert_id}/enable
 /// first save on disk, then in memory
 /// then modify scheduled task
-pub async fn resume_alert(
+pub async fn enable_alert(
     req: HttpRequest,
     alert_id: Path<Ulid>,
 ) -> Result<impl Responder, AlertError> {
@@ -270,6 +293,14 @@ pub async fn resume_alert(
 
     // check if alert id exists in map
     let alert = alerts.get_alert_by_id(alert_id).await?;
+
+    // only run if alert is disabled
+    if alert.get_state().ne(&AlertState::Disabled) {
+        return Err(AlertError::InvalidStateChange(
+            "Can't enable an alert which is not currently disabled".into(),
+        ));
+    }
+
     // validate that the user has access to the tables mentioned in the query
     user_auth_for_query(&session_key, alert.get_query()).await?;
 
@@ -279,6 +310,122 @@ pub async fn resume_alert(
     let alert = alerts.get_alert_by_id(alert_id).await?;
 
     Ok(web::Json(alert.to_alert_config()))
+}
+
+// PUT /alerts/{alert_id}
+/// first save on disk, then in memory
+/// then modify scheduled task
+pub async fn modify_alert(
+    req: HttpRequest,
+    alert_id: Path<Ulid>,
+    Json(alert_request): Json<AlertRequest>,
+) -> Result<impl Responder, AlertError> {
+    let session_key = extract_session_key_from_req(&req)?;
+    let alert_id = alert_id.into_inner();
+
+    let guard = ALERTS.write().await;
+    let alerts = if let Some(alerts) = guard.as_ref() {
+        alerts
+    } else {
+        return Err(AlertError::CustomError("No AlertManager set".into()));
+    };
+
+    // check if alert id exists in map
+    let alert = alerts.get_alert_by_id(alert_id).await?;
+
+    // validate that the user has access to the tables mentioned in the query
+
+    user_auth_for_query(&session_key, alert.get_query()).await?;
+    // validate the request
+    let mut new_config = alert_request.into().await?;
+
+    if &new_config.alert_type != alert.get_alert_type() {
+        return Err(AlertError::InvalidAlertModifyRequest);
+    }
+
+    user_auth_for_query(&session_key, &new_config.query).await?;
+
+    // calculate the `times` for notification config
+    let eval_freq = new_config.get_eval_frequency();
+    let notif_freq = new_config.notification_config.interval;
+    let times = if (eval_freq / notif_freq) == 0 {
+        1
+    } else {
+        (eval_freq / notif_freq) as usize
+    };
+
+    new_config.notification_config.times = Retry::Finite(times);
+
+    let mut old_config = alert.to_alert_config();
+    old_config.threshold_config = new_config.threshold_config;
+    old_config.datasets = new_config.datasets;
+    old_config.eval_config = new_config.eval_config;
+    old_config.notification_config = new_config.notification_config;
+    old_config.query = new_config.query;
+    old_config.severity = new_config.severity;
+    old_config.tags = new_config.tags;
+    old_config.targets = new_config.targets;
+    old_config.title = new_config.title;
+
+    let threshold_alert;
+    let new_alert: &dyn AlertTrait = match &new_config.alert_type {
+        AlertType::Threshold => {
+            threshold_alert = ThresholdAlert::from(old_config);
+            &threshold_alert
+        }
+        AlertType::Anomaly(_) => {
+            return Err(AlertError::NotPresentInOSS("anomaly"));
+        }
+        AlertType::Forecast(_) => {
+            return Err(AlertError::NotPresentInOSS("forecast"));
+        }
+    };
+
+    // remove the task
+    alerts.delete_task(alert_id).await?;
+
+    // remove alert from memory
+    alerts.delete(alert_id).await?;
+
+    // move on to saving the alert in ObjectStore
+    alerts.update(new_alert).await;
+
+    let path = alert_json_path(*new_alert.get_id());
+
+    let store = PARSEABLE.storage.get_object_store();
+    let alert_bytes = serde_json::to_vec(&new_alert.to_alert_config())?;
+    store.put_object(&path, Bytes::from(alert_bytes)).await?;
+
+    let config = new_alert.to_alert_config();
+
+    // start the task
+    alerts.start_task(new_alert.clone_box()).await?;
+
+    Ok(web::Json(config))
+}
+
+// PUT /alerts/{alert_id}/evaluate_alert
+pub async fn evaluate_alert(alert_id: Path<Ulid>) -> Result<impl Responder, AlertError> {
+    let alert_id = alert_id.into_inner();
+
+    let guard = ALERTS.write().await;
+    let alerts = if let Some(alerts) = guard.as_ref() {
+        alerts
+    } else {
+        return Err(AlertError::CustomError("No AlertManager set".into()));
+    };
+
+    let alert = alerts.get_alert_by_id(alert_id).await?;
+
+    let config = alert.to_alert_config();
+
+    // remove task
+    alerts.delete_task(alert_id).await?;
+
+    // add the task back again so that it evaluates right now
+    alerts.start_task(alert).await?;
+
+    Ok(Json(config))
 }
 
 pub async fn list_tags() -> Result<impl Responder, AlertError> {

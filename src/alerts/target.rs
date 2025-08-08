@@ -259,7 +259,7 @@ impl Target {
             }
             // do not send out any notifs
             // (an eval should not have run!)
-            AlertState::Paused => {}
+            AlertState::Disabled => {}
         }
     }
 
@@ -451,8 +451,8 @@ impl CallableTarget for SlackWebHook {
             AlertState::NotTriggered => {
                 serde_json::json!({ "text": payload.default_resolved_string() })
             }
-            AlertState::Paused => {
-                serde_json::json!({ "text": payload.default_paused_string() })
+            AlertState::Disabled => {
+                serde_json::json!({ "text": payload.default_disabled_string() })
             }
         };
 
@@ -487,7 +487,7 @@ impl CallableTarget for OtherWebHook {
         let alert = match payload.alert_info.alert_state {
             AlertState::Triggered => payload.default_alert_string(),
             AlertState::NotTriggered => payload.default_resolved_string(),
-            AlertState::Paused => payload.default_paused_string(),
+            AlertState::Disabled => payload.default_disabled_string(),
         };
 
         let request = client
@@ -571,14 +571,14 @@ impl CallableTarget for AlertManager {
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
                     .into();
             }
-            AlertState::Paused => alert["labels"]["status"] = "paused".into(), // AlertState::Silenced => {
-                                                                               //     alert["labels"]["status"] = "silenced".into();
-                                                                               //     alert["annotations"]["reason"] =
-                                                                               //         serde_json::Value::String(payload.default_silenced_string());
-                                                                               //     // alert["endsAt"] = Utc::now()
-                                                                               //     //     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-                                                                               //     //     .into();
-                                                                               // }
+            AlertState::Disabled => alert["labels"]["status"] = "paused".into(), // AlertState::Silenced => {
+                                                                                 //     alert["labels"]["status"] = "silenced".into();
+                                                                                 //     alert["annotations"]["reason"] =
+                                                                                 //         serde_json::Value::String(payload.default_silenced_string());
+                                                                                 //     // alert["endsAt"] = Utc::now()
+                                                                                 //     //     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                                                                                 //     //     .into();
+                                                                                 // }
         };
 
         if let Err(e) = client
@@ -595,6 +595,7 @@ impl CallableTarget for AlertManager {
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 pub struct NotificationConfig {
     pub interval: u64,
+    #[serde(skip)]
     #[serde(default = "Retry::default")]
     pub times: Retry,
     #[serde(skip)]

@@ -16,12 +16,20 @@
  *
  */
 
-use std::fmt::{self, Display};
+use std::{
+    fmt::{self, Display},
+    str::FromStr,
+};
 
+use chrono::{DateTime, Utc};
 use derive_more::derive::FromStr;
+use serde::ser::Error;
 use ulid::Ulid;
 
-use crate::alerts::{alert_structs::RollingWindow, alert_traits::AlertTrait};
+use crate::alerts::{
+    alert_structs::{AnomalyConfig, ForecastConfig, RollingWindow},
+    alert_traits::AlertTrait,
+};
 
 pub enum AlertTask {
     Create(Box<dyn AlertTrait>),
@@ -87,16 +95,16 @@ impl Display for LogicalOperator {
 #[serde(rename_all = "camelCase")]
 pub enum AlertType {
     Threshold,
-    Anomaly,
-    Forecast,
+    Anomaly(AnomalyConfig),
+    Forecast(ForecastConfig),
 }
 
 impl Display for AlertType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AlertType::Threshold => write!(f, "threshold"),
-            AlertType::Anomaly => write!(f, "anomaly"),
-            AlertType::Forecast => write!(f, "forecast"),
+            AlertType::Anomaly(_) => write!(f, "anomaly"),
+            AlertType::Forecast(_) => write!(f, "forecast"),
         }
     }
 }
@@ -232,14 +240,14 @@ pub enum AlertState {
     Triggered,
     #[default]
     NotTriggered,
-    Paused,
+    Disabled,
 }
 
 impl Display for AlertState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AlertState::Triggered => write!(f, "triggered"),
-            AlertState::Paused => write!(f, "paused"),
+            AlertState::Disabled => write!(f, "disabled"),
             AlertState::NotTriggered => write!(f, "not-triggered"),
         }
     }
@@ -255,14 +263,22 @@ pub enum NotificationState {
     /// It is a state which can only be set manually
     ///
     /// user needs to pass the timestamp or the duration (in human time) till which the alert is silenced
-    Snoozed(String),
+    Mute(String),
 }
 
 impl Display for NotificationState {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             NotificationState::Notify => write!(f, "notify"),
-            NotificationState::Snoozed(end_time) => write!(f, "snoozed till {end_time}"),
+            NotificationState::Mute(till_time) => {
+                let till = match till_time.as_str() {
+                    "indefinite" => DateTime::<Utc>::MAX_UTC.to_rfc3339(),
+                    _ => DateTime::<Utc>::from_str(till_time)
+                        .map_err(|e| std::fmt::Error::custom(e.to_string()))?
+                        .to_rfc3339(),
+                };
+                write!(f, "{till}")
+            }
         }
     }
 }
