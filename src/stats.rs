@@ -160,10 +160,10 @@ pub async fn update_deleted_stats(
         .with_label_values(&["data", stream_name, "parquet"])
         .sub(storage_size);
     let stats = get_current_stats(stream_name, "json");
-    if let Some(stats) = stats {
-        if let Err(e) = storage.put_stats(stream_name, &stats).await {
-            warn!("Error updating stats to objectstore due to error [{}]", e);
-        }
+    if let Some(stats) = stats
+        && let Err(e) = storage.put_stats(stream_name, &stats).await
+    {
+        warn!("Error updating stats to objectstore due to error [{}]", e);
     }
 
     Ok(())
@@ -209,10 +209,8 @@ fn delete_with_label_prefix(metrics: &IntGaugeVec, prefix: &[&str]) {
         // Check if all prefix elements are present in label values
         let all_prefixes_found = prefix.iter().all(|p| label_map.values().any(|v| v == p));
 
-        if all_prefixes_found {
-            if let Err(err) = metrics.remove(&label_map) {
-                warn!("Error removing metric with labels {:?}: {err}", label_map);
-            }
+        if all_prefixes_found && let Err(err) = metrics.remove(&label_map) {
+            warn!("Error removing metric with labels {:?}: {err}", label_map);
         }
     }
 }

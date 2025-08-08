@@ -143,25 +143,23 @@ pub async fn update_data_type_time_partition(
     schema: &mut Schema,
     time_partition: Option<&String>,
 ) -> anyhow::Result<()> {
-    if let Some(time_partition) = time_partition {
-        if let Ok(time_partition_field) = schema.field_with_name(time_partition) {
-            if time_partition_field.data_type() != &DataType::Timestamp(TimeUnit::Millisecond, None)
-            {
-                let mut fields = schema
-                    .fields()
-                    .iter()
-                    .filter(|field| field.name() != time_partition)
-                    .cloned()
-                    .collect::<Vec<Arc<Field>>>();
-                let time_partition_field = Arc::new(Field::new(
-                    time_partition,
-                    DataType::Timestamp(TimeUnit::Millisecond, None),
-                    true,
-                ));
-                fields.push(time_partition_field);
-                *schema = Schema::new(fields);
-            }
-        }
+    if let Some(time_partition) = time_partition
+        && let Ok(time_partition_field) = schema.field_with_name(time_partition)
+        && time_partition_field.data_type() != &DataType::Timestamp(TimeUnit::Millisecond, None)
+    {
+        let mut fields = schema
+            .fields()
+            .iter()
+            .filter(|field| field.name() != time_partition)
+            .cloned()
+            .collect::<Vec<Arc<Field>>>();
+        let time_partition_field = Arc::new(Field::new(
+            time_partition,
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            true,
+        ));
+        fields.push(time_partition_field);
+        *schema = Schema::new(fields);
     }
 
     Ok(())

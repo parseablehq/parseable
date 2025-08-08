@@ -1073,25 +1073,25 @@ pub fn init_cluster_metrics_schedular() -> Result<(), PostError> {
         .run(move || async {
             let result: Result<(), PostError> = async {
                 let cluster_metrics = fetch_cluster_metrics().await;
-                if let Ok(metrics) = cluster_metrics {
-                    if !metrics.is_empty() {
-                        info!("Cluster metrics fetched successfully from all ingestors");
-                        if let Ok(metrics_bytes) = serde_json::to_vec(&metrics) {
-                            if matches!(
-                                ingest_internal_stream(
-                                    INTERNAL_STREAM_NAME.to_string(),
-                                    bytes::Bytes::from(metrics_bytes),
-                                )
-                                .await,
-                                Ok(())
-                            ) {
-                                info!("Cluster metrics successfully ingested into internal stream");
-                            } else {
-                                error!("Failed to ingest cluster metrics into internal stream");
-                            }
+                if let Ok(metrics) = cluster_metrics
+                    && !metrics.is_empty()
+                {
+                    info!("Cluster metrics fetched successfully from all ingestors");
+                    if let Ok(metrics_bytes) = serde_json::to_vec(&metrics) {
+                        if matches!(
+                            ingest_internal_stream(
+                                INTERNAL_STREAM_NAME.to_string(),
+                                bytes::Bytes::from(metrics_bytes),
+                            )
+                            .await,
+                            Ok(())
+                        ) {
+                            info!("Cluster metrics successfully ingested into internal stream");
                         } else {
-                            error!("Failed to serialize cluster metrics");
+                            error!("Failed to ingest cluster metrics into internal stream");
                         }
+                    } else {
+                        error!("Failed to serialize cluster metrics");
                     }
                 }
                 Ok(())
@@ -1186,21 +1186,21 @@ async fn get_available_querier() -> Result<QuerierMetadata, QueryError> {
     });
 
     // Find the next available querier using round-robin strategy
-    if let Some(selected_domain) = select_next_querier(&mut map).await {
-        if let Some(status) = map.get_mut(&selected_domain) {
-            status.available = false;
-            status.last_used = Some(Instant::now());
-            return Ok(status.metadata.clone());
-        }
+    if let Some(selected_domain) = select_next_querier(&mut map).await
+        && let Some(status) = map.get_mut(&selected_domain)
+    {
+        status.available = false;
+        status.last_used = Some(Instant::now());
+        return Ok(status.metadata.clone());
     }
 
     // If no querier is available, use least-recently-used strategy
-    if let Some(selected_domain) = select_least_recently_used_querier(&mut map) {
-        if let Some(status) = map.get_mut(&selected_domain) {
-            status.available = false;
-            status.last_used = Some(Instant::now());
-            return Ok(status.metadata.clone());
-        }
+    if let Some(selected_domain) = select_least_recently_used_querier(&mut map)
+        && let Some(status) = map.get_mut(&selected_domain)
+    {
+        status.available = false;
+        status.last_used = Some(Instant::now());
+        return Ok(status.metadata.clone());
     }
 
     // If no querier is available, return an error
