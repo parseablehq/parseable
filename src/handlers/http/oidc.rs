@@ -242,22 +242,22 @@ pub async fn reply_login(
 }
 
 fn find_existing_user(user_info: &user::UserInfo) -> Option<User> {
-    if let Some(sub) = &user_info.sub {
-        if let Some(user) = Users.get_user(sub) {
-            return Some(user);
-        }
+    if let Some(sub) = &user_info.sub
+        && let Some(user) = Users.get_user(sub)
+    {
+        return Some(user);
     }
 
-    if let Some(name) = &user_info.name {
-        if let Some(user) = Users.get_user(name) {
-            return Some(user);
-        }
+    if let Some(name) = &user_info.name
+        && let Some(user) = Users.get_user(name)
+    {
+        return Some(user);
     }
 
-    if let Some(email) = &user_info.email {
-        if let Some(user) = Users.get_user(email) {
-            return Some(user);
-        }
+    if let Some(email) = &user_info.email
+        && let Some(user) = Users.get_user(email)
+    {
+        return Some(user);
     }
 
     None
