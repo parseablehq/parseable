@@ -32,7 +32,7 @@ use ulid::Ulid;
 use url::Url;
 
 use crate::{
-    handlers::{COOKIE_AGE_DAYS, SESSION_COOKIE_NAME, USER_COOKIE_NAME},
+    handlers::{COOKIE_AGE_DAYS, SESSION_COOKIE_NAME, USER_COOKIE_NAME, USER_ID_COOKIE_NAME},
     oidc::{Claims, DiscoveredClient},
     parseable::PARSEABLE,
     rbac::{
@@ -102,11 +102,12 @@ pub async fn login(
                 },
             ) if basic.verify_password(&password) => {
                 let user_cookie = cookie_username(&username);
+                let user_id_cookie = cookie_userid(&username);
                 let session_cookie =
                     exchange_basic_for_cookie(user, SessionKey::BasicAuth { username, password });
                 Ok(redirect_to_client(
                     query.redirect.as_str(),
-                    [user_cookie, session_cookie],
+                    [user_cookie, user_id_cookie, session_cookie],
                 ))
             }
             _ => Err(OIDCError::BadRequest("Bad Request".to_string())),
@@ -167,7 +168,12 @@ pub async fn reply_login(
         .name
         .clone()
         .or_else(|| user_info.email.clone())
-        .expect("OIDC provider did not return a usable identifier (name or email)");
+        .or_else(|| user_info.sub.clone())
+        .expect("OIDC provider did not return a usable identifier (name, email or sub)");
+    let user_id = user_info
+        .sub
+        .clone()
+        .expect("OIDC provider did not return a usable identifier (sub)");
     let user_info: user::UserInfo = user_info.into();
     let group: HashSet<String> = claims
         .other
@@ -186,31 +192,14 @@ pub async fn reply_login(
         }
     }
 
-    /// Attempts to find an existing user by trying both name and email identifiers
-    /// This handles the case where OIDC provider configuration changes over time:
-    /// - User was initially created with email as username (when name wasn't provided)
-    /// - Later OIDC provider starts providing name, but user already exists with email as username
-    fn find_existing_user(user_info: &user::UserInfo) -> Option<User> {
-        // Try to find user by name first (current preferred identifier)
-        if let Some(name) = &user_info.name {
-            if let Some(user) = Users.get_user(name) {
-                return Some(user);
-            }
-        }
-
-        // If not found by name, try by email (fallback for legacy users)
-        if let Some(email) = &user_info.email {
-            if let Some(user) = Users.get_user(email) {
-                return Some(user);
-            }
-        }
-
-        None
-    }
+    let default_role = if let Some(default_role) = DEFAULT_ROLE.lock().unwrap().clone() {
+        HashSet::from([default_role])
+    } else {
+        HashSet::new()
+    };
 
     let existing_user = find_existing_user(&user_info);
-
-    let final_roles = match existing_user {
+    let mut final_roles = match existing_user {
         Some(ref user) => {
             // For existing users: keep existing roles + add new valid OIDC roles
             let mut roles = user.roles.clone();
@@ -220,20 +209,19 @@ pub async fn reply_login(
         None => {
             // For new users: use valid OIDC roles, fallback to default if none
             if valid_oidc_roles.is_empty() {
-                if let Some(default_role) = DEFAULT_ROLE.lock().unwrap().clone() {
-                    HashSet::from([default_role])
-                } else {
-                    HashSet::new()
-                }
+                default_role.clone()
             } else {
                 valid_oidc_roles
             }
         }
     };
-
+    if final_roles.is_empty() {
+        // If no roles were found, use the default role
+        final_roles.clone_from(&default_role);
+    }
     let user = match (existing_user, final_roles) {
         (Some(user), roles) => update_user_if_changed(user, roles, user_info).await?,
-        (None, roles) => put_user(&username, roles, user_info).await?,
+        (None, roles) => put_user(&user_id, roles, user_info).await?,
     };
     let id = Ulid::new();
     Users.new_session(&user, SessionKey::SessionId(id));
@@ -245,8 +233,34 @@ pub async fn reply_login(
 
     Ok(redirect_to_client(
         &redirect_url,
-        [cookie_session(id), cookie_username(&username)],
+        [
+            cookie_session(id),
+            cookie_username(&username),
+            cookie_userid(&user_id),
+        ],
     ))
+}
+
+fn find_existing_user(user_info: &user::UserInfo) -> Option<User> {
+    if let Some(sub) = &user_info.sub {
+        if let Some(user) = Users.get_user(sub) {
+            return Some(user);
+        }
+    }
+
+    if let Some(name) = &user_info.name {
+        if let Some(user) = Users.get_user(name) {
+            return Some(user);
+        }
+    }
+
+    if let Some(email) = &user_info.email {
+        if let Some(user) = Users.get_user(email) {
+            return Some(user);
+        }
+    }
+
+    None
 }
 
 fn exchange_basic_for_cookie(user: &User, key: SessionKey) -> Cookie<'static> {
@@ -318,6 +332,14 @@ pub fn cookie_username(username: &str) -> Cookie<'static> {
         .finish()
 }
 
+pub fn cookie_userid(user_id: &str) -> Cookie<'static> {
+    Cookie::build(USER_ID_COOKIE_NAME, user_id.to_string())
+        .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
+        .same_site(SameSite::Strict)
+        .path("/")
+        .finish()
+}
+
 pub async fn request_token(
     oidc_client: Arc<DiscoveredClient>,
     login_query: &Login,
@@ -365,25 +387,40 @@ pub async fn update_user_if_changed(
     group: HashSet<String>,
     user_info: user::UserInfo,
 ) -> Result<User, ObjectStorageError> {
+    // Store the old username before modifying the user object
+    let old_username = user.username().to_string();
     let User { ty, roles, .. } = &mut user;
     let UserType::OAuth(oauth_user) = ty else {
         unreachable!()
     };
 
-    // update user only if roles or userinfo has changed
-    if roles == &group && oauth_user.user_info == user_info {
+    // Check if userid needs migration to sub (even if nothing else changed)
+    let needs_userid_migration = if let Some(ref sub) = user_info.sub {
+        oauth_user.userid != *sub
+    } else {
+        false
+    };
+
+    // update user only if roles, userinfo has changed, or userid needs migration
+    if roles == &group && oauth_user.user_info == user_info && !needs_userid_migration {
         return Ok(user);
     }
 
-    oauth_user.user_info = user_info;
+    oauth_user.user_info = user_info.clone();
     *roles = group;
+
+    // Update userid to use sub if available (migration from name-based to sub-based identification)
+    if let Some(ref sub) = user_info.sub {
+        oauth_user.userid = sub.clone();
+    }
 
     let mut metadata = get_metadata().await?;
 
+    // Find the user entry using the old username (before migration)
     if let Some(entry) = metadata
         .users
         .iter_mut()
-        .find(|x| x.username() == user.username())
+        .find(|x| x.username() == old_username)
     {
         entry.clone_from(&user);
         put_metadata(&metadata).await?;

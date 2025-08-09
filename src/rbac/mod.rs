@@ -210,8 +210,10 @@ impl Users {
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename = "camelCase")]
 pub struct UsersPrism {
-    // username
+    // sub
     pub id: String,
+    // username
+    pub username: String,
     // oaith or native
     pub method: String,
     // email only if method is oauth
