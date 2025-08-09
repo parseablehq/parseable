@@ -406,12 +406,12 @@ pub async fn update_user_if_changed(
         return Ok(user);
     }
 
-    oauth_user.user_info = user_info.clone();
+    oauth_user.user_info.clone_from(&user_info);
     *roles = group;
 
     // Update userid to use sub if available (migration from name-based to sub-based identification)
     if let Some(ref sub) = user_info.sub {
-        oauth_user.userid = sub.clone();
+        oauth_user.userid.clone_from(sub);
     }
 
     let mut metadata = get_metadata().await?;
