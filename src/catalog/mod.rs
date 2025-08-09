@@ -268,27 +268,27 @@ async fn create_manifest(
         ..Manifest::default()
     };
     let mut first_event_at = PARSEABLE.get_stream(stream_name)?.get_first_event();
-    if first_event_at.is_none() {
-        if let Some(first_event) = manifest.files.first() {
-            let time_partition = &meta.time_partition;
-            let lower_bound = match time_partition {
-                Some(time_partition) => {
-                    let (lower_bound, _) = get_file_bounds(first_event, time_partition.to_string());
-                    lower_bound
-                }
-                None => {
-                    let (lower_bound, _) =
-                        get_file_bounds(first_event, DEFAULT_TIMESTAMP_KEY.to_string());
-                    lower_bound
-                }
-            };
-            first_event_at = Some(lower_bound.with_timezone(&Local).to_rfc3339());
-            match PARSEABLE.get_stream(stream_name) {
-                Ok(stream) => stream.set_first_event_at(first_event_at.as_ref().unwrap()),
-                Err(err) => error!(
-                    "Failed to update first_event_at in streaminfo for stream {stream_name:?}, error = {err:?}"
-                ),
+    if first_event_at.is_none()
+        && let Some(first_event) = manifest.files.first()
+    {
+        let time_partition = &meta.time_partition;
+        let lower_bound = match time_partition {
+            Some(time_partition) => {
+                let (lower_bound, _) = get_file_bounds(first_event, time_partition.to_string());
+                lower_bound
             }
+            None => {
+                let (lower_bound, _) =
+                    get_file_bounds(first_event, DEFAULT_TIMESTAMP_KEY.to_string());
+                lower_bound
+            }
+        };
+        first_event_at = Some(lower_bound.with_timezone(&Local).to_rfc3339());
+        match PARSEABLE.get_stream(stream_name) {
+            Ok(stream) => stream.set_first_event_at(first_event_at.as_ref().unwrap()),
+            Err(err) => error!(
+                "Failed to update first_event_at in streaminfo for stream {stream_name:?}, error = {err:?}"
+            ),
         }
     }
 
@@ -366,8 +366,8 @@ pub async fn get_first_event(
         Mode::All | Mode::Ingest => {
             // get current snapshot
             let stream_first_event = PARSEABLE.get_stream(stream_name)?.get_first_event();
-            if stream_first_event.is_some() {
-                first_event_at = stream_first_event.unwrap();
+            if let Some(first_event) = stream_first_event {
+                first_event_at = first_event;
             } else {
                 let mut meta = storage.get_object_store_format(stream_name).await?;
                 let meta_clone = meta.clone();

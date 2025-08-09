@@ -174,34 +174,35 @@ pub fn get_custom_fields_from_header(req: &HttpRequest) -> HashMap<String, Strin
         }
 
         let header_name = header_name.as_str();
-        if header_name.starts_with("x-p-") && !IGNORE_HEADERS.contains(&header_name) {
-            if let Ok(value) = header_value.to_str() {
-                let key = header_name.trim_start_matches("x-p-");
-                if !key.is_empty() {
-                    // Truncate value if it exceeds the maximum length
-                    let truncated_value = if value.len() > MAX_FIELD_VALUE_LENGTH {
-                        warn!(
-                            "Header value for '{}' exceeds maximum length, truncating",
-                            header_name
-                        );
-                        &value[..MAX_FIELD_VALUE_LENGTH]
-                    } else {
-                        value
-                    };
-                    p_custom_fields.insert(key.to_string(), truncated_value.to_string());
-                } else {
+        if header_name.starts_with("x-p-")
+            && !IGNORE_HEADERS.contains(&header_name)
+            && let Ok(value) = header_value.to_str()
+        {
+            let key = header_name.trim_start_matches("x-p-");
+            if !key.is_empty() {
+                // Truncate value if it exceeds the maximum length
+                let truncated_value = if value.len() > MAX_FIELD_VALUE_LENGTH {
                     warn!(
-                        "Ignoring header with empty key after prefix: {}",
+                        "Header value for '{}' exceeds maximum length, truncating",
                         header_name
                     );
-                }
+                    &value[..MAX_FIELD_VALUE_LENGTH]
+                } else {
+                    value
+                };
+                p_custom_fields.insert(key.to_string(), truncated_value.to_string());
+            } else {
+                warn!(
+                    "Ignoring header with empty key after prefix: {}",
+                    header_name
+                );
             }
         }
 
-        if header_name == LOG_SOURCE_KEY {
-            if let Ok(value) = header_value.to_str() {
-                p_custom_fields.insert(FORMAT_KEY.to_string(), value.to_string());
-            }
+        if header_name == LOG_SOURCE_KEY
+            && let Ok(value) = header_value.to_str()
+        {
+            p_custom_fields.insert(FORMAT_KEY.to_string(), value.to_string());
         }
     }
 

@@ -588,11 +588,10 @@ impl HotTierManager {
                         if let (Some(download_date_time), Some(delete_date_time)) = (
                             extract_datetime(download_file_path.to_str().unwrap()),
                             extract_datetime(path_to_delete.to_str().unwrap()),
-                        ) {
-                            if download_date_time <= delete_date_time {
-                                delete_successful = false;
-                                break 'loop_files;
-                            }
+                        ) && download_date_time <= delete_date_time
+                        {
+                            delete_successful = false;
+                            break 'loop_files;
                         }
 
                         fs::write(manifest_file.path(), serde_json::to_vec(&manifest)?).await?;

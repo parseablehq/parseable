@@ -112,13 +112,12 @@ pub fn create_from_parquet_file(
     let columns = column_statistics(row_groups);
     manifest_file.columns = columns.into_values().collect();
     let mut sort_orders = sort_order(row_groups);
-    if let Some(last_sort_order) = sort_orders.pop() {
-        if sort_orders
+    if let Some(last_sort_order) = sort_orders.pop()
+        && sort_orders
             .into_iter()
             .all(|sort_order| sort_order == last_sort_order)
-        {
-            manifest_file.sort_order_id = last_sort_order;
-        }
+    {
+        manifest_file.sort_order_id = last_sort_order;
     }
 
     Ok(manifest_file)

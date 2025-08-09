@@ -290,10 +290,10 @@ impl Query {
                 name: alias_name,
                 ..
             }) => {
-                if let Expr::Column(Column { name, .. }) = &**inner_expr {
-                    if name.to_lowercase() == "count(*)" {
-                        return Some(alias_name);
-                    }
+                if let Expr::Column(Column { name, .. }) = &**inner_expr
+                    && name.to_lowercase() == "count(*)"
+                {
+                    return Some(alias_name);
                 }
                 None
             }

@@ -449,16 +449,16 @@ impl Stream {
         let mut schemas: Vec<Schema> = Vec::new();
 
         for file in dir.flatten() {
-            if let Some(ext) = file.path().extension() {
-                if ext.eq("schema") {
-                    let file = File::open(file.path()).expect("Schema File should exist");
+            if let Some(ext) = file.path().extension()
+                && ext.eq("schema")
+            {
+                let file = File::open(file.path()).expect("Schema File should exist");
 
-                    let schema = match serde_json::from_reader(file) {
-                        Ok(schema) => schema,
-                        Err(_) => continue,
-                    };
-                    schemas.push(schema);
-                }
+                let schema = match serde_json::from_reader(file) {
+                    Ok(schema) => schema,
+                    Err(_) => continue,
+                };
+                schemas.push(schema);
             }
         }
 
@@ -742,25 +742,25 @@ impl Stream {
             }
 
             // After deleting the last file, try to remove the inprocess directory if empty
-            if i == arrow_files.len() - 1 {
-                if let Some(parent_dir) = file.parent() {
-                    match fs::read_dir(parent_dir) {
-                        Ok(mut entries) => {
-                            if entries.next().is_none() {
-                                if let Err(err) = fs::remove_dir(parent_dir) {
-                                    warn!(
-                                        "Failed to remove inprocess directory {}: {err}",
-                                        parent_dir.display()
-                                    );
-                                }
-                            }
-                        }
-                        Err(err) => {
+            if i == arrow_files.len() - 1
+                && let Some(parent_dir) = file.parent()
+            {
+                match fs::read_dir(parent_dir) {
+                    Ok(mut entries) => {
+                        if entries.next().is_none()
+                            && let Err(err) = fs::remove_dir(parent_dir)
+                        {
                             warn!(
-                                "Failed to read inprocess directory {}: {err}",
+                                "Failed to remove inprocess directory {}: {err}",
                                 parent_dir.display()
                             );
                         }
+                    }
+                    Err(err) => {
+                        warn!(
+                            "Failed to read inprocess directory {}: {err}",
+                            parent_dir.display()
+                        );
                     }
                 }
             }

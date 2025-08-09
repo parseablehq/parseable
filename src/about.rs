@@ -112,10 +112,10 @@ pub fn print_about(
         current_version,
     ); // "        " "                                        "
 
-    if let Some(latest_release) = latest_release {
-        if latest_release.version > current_version {
-            print_latest_release(latest_release);
-        }
+    if let Some(latest_release) = latest_release
+        && latest_release.version > current_version
+    {
+        print_latest_release(latest_release);
     }
 
     eprintln!(
