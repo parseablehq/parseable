@@ -38,7 +38,7 @@ pub const TELEMETRY_TYPE_KEY: &str = "x-p-telemetry-type";
 const COOKIE_AGE_DAYS: usize = 7;
 const SESSION_COOKIE_NAME: &str = "session";
 const USER_COOKIE_NAME: &str = "username";
-
+const USER_ID_COOKIE_NAME: &str = "user_id";
 // constants for log Source values for known sources and formats
 const LOG_SOURCE_KINESIS: &str = "kinesis";
 
