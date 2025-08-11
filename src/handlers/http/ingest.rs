@@ -143,7 +143,9 @@ pub async fn ingest(
         .await?;
 
     if stream.get_time_partition().is_some() {
-        return Err(PostError::IngestionNotAllowedWithTimePartition);
+        return Err(PostError::CustomError(
+            "Ingestion is not allowed to stream with time partition".to_string(),
+        ));
     }
 
     flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields, None).await?;
@@ -566,8 +568,6 @@ pub enum PostError {
     InvalidQueryParameter,
     #[error("Missing query parameter")]
     MissingQueryParameter,
-    #[error("Ingestion is not allowed to stream with time partition")]
-    IngestionNotAllowedWithTimePartition,
 }
 
 impl actix_web::ResponseError for PostError {
@@ -599,7 +599,6 @@ impl actix_web::ResponseError for PostError {
             PostError::FieldsCountLimitExceeded(_, _, _) => StatusCode::BAD_REQUEST,
             PostError::InvalidQueryParameter => StatusCode::BAD_REQUEST,
             PostError::MissingQueryParameter => StatusCode::BAD_REQUEST,
-            PostError::IngestionNotAllowedWithTimePartition => StatusCode::BAD_REQUEST,
         }
     }
 

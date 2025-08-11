@@ -178,7 +178,7 @@ fn create_partition_bounds(lower_bound: DateTime<Utc>) -> (DateTime<Utc>, DateTi
         .date_naive()
         .and_time(
             NaiveTime::from_num_seconds_from_midnight_opt(23 * 3600 + 59 * 60 + 59, 999_999_999)
-                .unwrap_or(NaiveTime::from_hms_opt(23, 59, 59).unwrap()),
+                .unwrap_or_else(|| NaiveTime::from_hms_opt(23, 59, 59).unwrap()),
         )
         .and_utc();
     (partition_lower, partition_upper)
