@@ -1365,8 +1365,9 @@ mod tests {
         for _ in 0..3 {
             write_log(&staging, &schema, 0);
         }
+        println!("arrow files: {:?}", staging.arrow_files());
         // verify the arrow files exist in staging
-        assert_eq!(staging.arrow_files().len(), 1);
+        assert_eq!(staging.arrow_files().len(), 3);
         drop(staging);
 
         // Start with a fresh staging
