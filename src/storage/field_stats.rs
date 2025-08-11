@@ -123,6 +123,7 @@ pub async fn calculate_field_stats(
         DATASET_STATS_STREAM_NAME,
         &LogSource::Json,
         &HashMap::new(),
+        None,
     )
     .await?;
     Ok(stats_calculated)
