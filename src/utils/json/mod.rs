@@ -179,16 +179,17 @@ fn process_partitioned_non_array(
     schema_version: SchemaVersion,
     log_source: &LogSource,
 ) -> Result<Vec<Value>, anyhow::Error> {
-    let data = flatten_json_body(
-        body,
+    // convert to an array for processing
+    let arr = vec![body];
+    let processed_elements = process_partitioned_array(
+        arr,
         time_partition,
         time_partition_limit,
         custom_partition,
         schema_version,
-        true,
         log_source,
     )?;
-    Ok(vec![data])
+    Ok(processed_elements)
 }
 
 /// Processes data when no partitioning is configured (original logic)
