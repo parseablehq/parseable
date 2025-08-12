@@ -124,7 +124,11 @@ pub fn convert_static_schema_to_arrow_schema(
                     "boolean_list" => {
                         DataType::List(Arc::new(Field::new("item", DataType::Boolean, true)))
                     }
-                    _ => DataType::Null,
+                    _ => {
+                        return Err(StaticSchemaError::UnrecognizedDataType(
+                            field.data_type.clone(),
+                        ));
+                    }
                 }
             },
             nullable: default_nullable(),
@@ -216,6 +220,9 @@ pub enum StaticSchemaError {
 
     #[error("duplicate field name: {0}")]
     DuplicateField(String),
+
+    #[error("unrecognized data type: {0}")]
+    UnrecognizedDataType(String),
 }
 
 #[cfg(test)]
@@ -232,5 +239,25 @@ mod tests {
         let mut existing_field_names: HashSet<String> = HashSet::new();
         let _ = validate_field_names("test_field", &mut existing_field_names);
         assert!(validate_field_names("test_field", &mut existing_field_names).is_err());
+    }
+
+    #[test]
+    fn unrecognized_data_type() {
+        let static_schema = StaticSchema {
+            fields: vec![SchemaFields {
+                name: "test_field".to_string(),
+                data_type: "unknown_type".to_string(),
+            }],
+        };
+
+        let result = convert_static_schema_to_arrow_schema(static_schema, "", None);
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            StaticSchemaError::UnrecognizedDataType(data_type) => {
+                assert_eq!(data_type, "unknown_type");
+            }
+            _ => panic!("Expected UnrecognizedDataType error"),
+        }
     }
 }
