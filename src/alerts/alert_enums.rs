@@ -235,6 +235,7 @@ pub enum EvalConfig {
 pub enum AlertState {
     Triggered,
     #[default]
+    #[serde(rename = "not-triggered")]
     NotTriggered,
     Disabled,
 }
@@ -254,7 +255,7 @@ impl Display for AlertState {
 pub enum NotificationState {
     #[default]
     Notify,
-    /// Snoozed means the alert will evaluate but no notifications will be sent out
+    /// Mute means the alert will evaluate but no notifications will be sent out
     ///
     /// It is a state which can only be set manually
     ///

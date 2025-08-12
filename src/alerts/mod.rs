@@ -855,7 +855,7 @@ pub enum AlertError {
     StreamNotFound(#[from] StreamNotFound),
     #[error("{0}")]
     Anyhow(#[from] anyhow::Error),
-    #[error("No alert request body provided")]
+    #[error("Invalid alert modification request")]
     InvalidAlertModifyRequest,
     #[error("{0}")]
     FromStrError(#[from] FromStrError),

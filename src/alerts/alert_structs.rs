@@ -16,7 +16,7 @@
  *
  */
 
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -431,10 +431,54 @@ pub struct ForecastConfig {
     pub forecast_duration: String,
 }
 
+impl ForecastConfig {
+    pub fn calculate_eval_window(&self) -> Result<String, AlertError> {
+        let parsed_historic_duration =
+            if let Ok(historic_duration) = humantime::parse_duration(&self.historic_duration) {
+                historic_duration
+            } else {
+                return Err(AlertError::Metadata(
+                    "historicDuration should be of type humantime",
+                ));
+            };
+
+        let eval_window = if parsed_historic_duration.lt(&Duration::from_secs(60 * 60 * 24 * 3)) {
+            // less than 3 days = 10 mins
+            "10m"
+        } else {
+            "30m"
+        };
+
+        Ok(eval_window.into())
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AnomalyConfig {
     pub historic_duration: String,
+}
+
+impl AnomalyConfig {
+    pub fn calculate_eval_window(&self) -> Result<String, AlertError> {
+        let parsed_historic_duration =
+            if let Ok(historic_duration) = humantime::parse_duration(&self.historic_duration) {
+                historic_duration
+            } else {
+                return Err(AlertError::Metadata(
+                    "historicDuration should be of type humantime",
+                ));
+            };
+
+        let eval_window = if parsed_historic_duration.lt(&Duration::from_secs(60 * 60 * 24 * 3)) {
+            // less than 3 days = 10 mins
+            "10m"
+        } else {
+            "30m"
+        };
+
+        Ok(eval_window.into())
+    }
 }
 
 /// Result structure for alert query execution with group support

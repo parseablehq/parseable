@@ -275,10 +275,9 @@ async fn update_alert_state(
         } else {
             return Err(AlertError::CustomError("No AlertManager set".into()));
         }
-        // Lock is released here
     };
 
-    // Now perform the state update without holding the ALERTS lock
+    // Now perform the state update
     if let Some(msg) = message {
         alerts
             .update_state(*alert.get_id(), AlertState::Triggered, Some(msg))

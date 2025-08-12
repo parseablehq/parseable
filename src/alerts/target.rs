@@ -233,7 +233,6 @@ impl Target {
                     // call once and then start sleeping
                     // reduce repeats by 1
                     call_target(self.target.clone(), context.clone());
-                    // trace!("state not timed out- {state:?}");
                     // set state
                     state.timed_out = true;
                     state.awaiting_resolve = true;
@@ -538,17 +537,6 @@ impl CallableTarget for AlertManager {
         }]);
 
         let alert = &mut alerts[0];
-
-        // alert["labels"].as_object_mut().expect("is object").extend(
-        //     payload
-        //         .additional_labels
-        //         .as_object()
-        //         .expect("is object")
-        //         .iter()
-        //         // filter non null values for alertmanager and only pass strings
-        //         .filter(|(_, value)| !value.is_null())
-        //         .map(|(k, value)| (k.to_owned(), json::convert_to_string(value))),
-        // );
 
         // fill in status label accordingly
         match payload.alert_info.alert_state {

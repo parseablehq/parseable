@@ -81,6 +81,12 @@ pub async fn post(
 ) -> Result<impl Responder, AlertError> {
     let mut alert: AlertConfig = alert.into().await?;
 
+    if alert.notification_config.interval > alert.get_eval_frequency() {
+        return Err(AlertError::ValidationFailure(
+            "Notification interval cannot exceed evaluation frequency".into(),
+        ));
+    }
+
     if alert.get_eval_frequency().eq(&0) {
         return Err(AlertError::ValidationFailure(
             "Eval frequency cannot be 0".into(),
@@ -385,6 +391,8 @@ pub async fn modify_alert(
             return Err(AlertError::NotPresentInOSS("forecast"));
         }
     };
+
+    new_alert.validate(&session_key).await?;
 
     // Perform I/O operations
     let path = alert_json_path(*new_alert.get_id());
