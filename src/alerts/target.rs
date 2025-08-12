@@ -564,21 +564,21 @@ impl CallableTarget for AlertManager {
         match payload.alert_info.alert_state {
             AlertState::Triggered => alert["labels"]["status"] = "triggered".into(),
             AlertState::NotTriggered => {
-                alert["labels"]["status"] = "resolved".into();
+                alert["labels"]["status"] = "not-triggered".into();
                 alert["annotations"]["reason"] =
                     serde_json::Value::String(payload.default_resolved_string());
                 alert["endsAt"] = Utc::now()
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
                     .into();
             }
-            AlertState::Disabled => alert["labels"]["status"] = "paused".into(), // AlertState::Silenced => {
-                                                                                 //     alert["labels"]["status"] = "silenced".into();
-                                                                                 //     alert["annotations"]["reason"] =
-                                                                                 //         serde_json::Value::String(payload.default_silenced_string());
-                                                                                 //     // alert["endsAt"] = Utc::now()
-                                                                                 //     //     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-                                                                                 //     //     .into();
-                                                                                 // }
+            AlertState::Disabled => alert["labels"]["status"] = "disabled".into(), // AlertState::Silenced => {
+                                                                                   //     alert["labels"]["status"] = "silenced".into();
+                                                                                   //     alert["annotations"]["reason"] =
+                                                                                   //         serde_json::Value::String(payload.default_silenced_string());
+                                                                                   //     // alert["endsAt"] = Utc::now()
+                                                                                   //     //     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+                                                                                   //     //     .into();
+                                                                                   // }
         };
 
         if let Err(e) = client

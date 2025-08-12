@@ -259,7 +259,9 @@ pub struct AlertRequest {
     pub severity: Severity,
     pub title: String,
     pub query: String,
-    pub alert_type: AlertType,
+    pub alert_type: String,
+    pub anomaly_config: Option<AnomalyConfig>,
+    pub forecast_config: Option<ForecastConfig>,
     pub threshold_config: ThresholdConfig,
     #[serde(default)]
     pub notification_config: NotificationConfig,
@@ -282,7 +284,30 @@ impl AlertRequest {
             title: self.title,
             query: self.query,
             datasets,
-            alert_type: self.alert_type,
+            alert_type: {
+                match self.alert_type.as_str() {
+                    "anomaly" => {
+                        if let Some(conf) = self.anomaly_config {
+                            AlertType::Anomaly(conf)
+                        } else {
+                            return Err(AlertError::Metadata(
+                                "anomalyConfig is required for anomaly type alerts",
+                            ));
+                        }
+                    }
+                    "forecast" => {
+                        if let Some(conf) = self.forecast_config {
+                            AlertType::Forecast(conf)
+                        } else {
+                            return Err(AlertError::Metadata(
+                                "forecastConfig is required for forecast type alerts",
+                            ));
+                        }
+                    }
+                    "threshold" => AlertType::Threshold,
+                    _ => return Err(AlertError::Metadata("Invalid alert type provided")),
+                }
+            },
             threshold_config: self.threshold_config,
             eval_config: self.eval_config,
             targets: self.targets,
@@ -319,12 +344,78 @@ pub struct AlertConfig {
     pub tags: Option<Vec<String>>,
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertConfigResponse {
+    pub version: AlertVersion,
+    #[serde(default)]
+    pub id: Ulid,
+    pub severity: Severity,
+    pub title: String,
+    pub query: String,
+    pub datasets: Vec<String>,
+    pub alert_type: &'static str,
+    pub anomaly_config: Option<AnomalyConfig>,
+    pub forecast_config: Option<ForecastConfig>,
+    pub threshold_config: ThresholdConfig,
+    pub eval_config: EvalConfig,
+    pub targets: Vec<Ulid>,
+    // for new alerts, state should be resolved
+    #[serde(default)]
+    pub state: AlertState,
+    pub notification_state: NotificationState,
+    pub notification_config: NotificationConfig,
+    pub created: DateTime<Utc>,
+    pub tags: Option<Vec<String>>,
+}
+
+impl AlertConfig {
+    pub fn to_response(self) -> AlertConfigResponse {
+        AlertConfigResponse {
+            version: self.version,
+            id: self.id,
+            severity: self.severity,
+            title: self.title,
+            query: self.query,
+            datasets: self.datasets,
+            alert_type: {
+                match self.alert_type {
+                    AlertType::Threshold => "threshold",
+                    AlertType::Anomaly(_) => "anomaly",
+                    AlertType::Forecast(_) => "forecast",
+                }
+            },
+            anomaly_config: {
+                match &self.alert_type {
+                    AlertType::Anomaly(conf) => Some(conf.clone()),
+                    _ => None,
+                }
+            },
+            forecast_config: {
+                match self.alert_type {
+                    AlertType::Forecast(conf) => Some(conf),
+                    _ => None,
+                }
+            },
+            threshold_config: self.threshold_config,
+            eval_config: self.eval_config,
+            targets: self.targets,
+            state: self.state,
+            notification_state: self.notification_state,
+            notification_config: self.notification_config,
+            created: self.created,
+            tags: self.tags,
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct AlertsSummary {
     pub total: u64,
     pub triggered: AlertsInfoByState,
-    pub paused: AlertsInfoByState,
-    pub resolved: AlertsInfoByState,
+    pub disabled: AlertsInfoByState,
+    #[serde(rename = "not-triggered")]
+    pub not_triggered: AlertsInfoByState,
 }
 
 #[derive(Debug, Serialize)]
@@ -380,4 +471,9 @@ impl AlertQueryResult {
             0.0
         }
     }
+}
+
+#[derive(serde::Deserialize)]
+pub struct NotificationStateRequest {
+    pub state: String,
 }

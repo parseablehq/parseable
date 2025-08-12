@@ -567,21 +567,6 @@ impl AlertConfig {
         }
     }
 
-    pub async fn modify(&mut self, alert: AlertRequest) -> Result<(), AlertError> {
-        // Validate that all target IDs exist
-        for id in &alert.targets {
-            TARGETS.get_target_by_id(id).await?;
-        }
-        self.title = alert.title;
-        self.query = alert.query;
-        self.alert_type = alert.alert_type;
-        self.threshold_config = alert.threshold_config;
-        self.eval_config = alert.eval_config;
-        self.targets = alert.targets;
-        self.state = AlertState::default();
-        Ok(())
-    }
-
     pub fn get_eval_frequency(&self) -> u64 {
         match &self.eval_config {
             EvalConfig::RollingWindow(rolling_window) => rolling_window.eval_frequency,
@@ -1048,29 +1033,65 @@ impl AlertManagerTrait for Alerts {
         session: SessionKey,
         tags: Vec<String>,
     ) -> Result<Vec<AlertConfig>, AlertError> {
-        let mut alerts: Vec<AlertConfig> = Vec::new();
-        for (_, alert) in self.alerts.read().await.iter() {
-            // filter based on whether the user can execute this query or not
-            if user_auth_for_query(&session, alert.get_query())
-                .await
-                .is_ok()
-            {
-                alerts.push(alert.to_alert_config());
-            }
-        }
-        if tags.is_empty() {
-            return Ok(alerts);
-        }
-        // filter alerts based on tags
-        alerts.retain(|alert| {
-            if let Some(alert_tags) = &alert.tags {
-                alert_tags.iter().any(|tag| tags.contains(tag))
-            } else {
-                false
-            }
-        });
+        // First, collect all alerts without performing auth checks to avoid holding the lock
+        let all_alerts: Vec<AlertConfig> = {
+            let alerts_guard = self.alerts.read().await;
+            alerts_guard
+                .values()
+                .map(|alert| alert.to_alert_config())
+                .collect()
+        };
+        // Lock is released here, now perform expensive auth checks
 
-        Ok(alerts)
+        let authorized_alerts = if tags.is_empty() {
+            // Parallelize authorization checks
+            let futures: Vec<_> = all_alerts
+                .into_iter()
+                .map(|alert| async {
+                    if user_auth_for_query(&session.clone(), &alert.query)
+                        .await
+                        .is_ok()
+                    {
+                        Some(alert)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            futures::future::join_all(futures)
+                .await
+                .into_iter()
+                .flatten()
+                .collect()
+        } else {
+            // Parallelize authorization checks and then filter by tags
+            let futures: Vec<_> = all_alerts
+                .into_iter()
+                .map(|alert| async {
+                    if user_auth_for_query(&session, &alert.query).await.is_ok() {
+                        Some(alert)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            futures::future::join_all(futures)
+                .await
+                .into_iter()
+                .flatten()
+                .filter(|alert| {
+                    if let Some(alert_tags) = &alert.tags {
+                        alert_tags.iter().any(|tag| tags.contains(tag))
+                    } else {
+                        false
+                    }
+                })
+                .collect()
+        };
+
+        Ok(authorized_alerts)
     }
 
     /// Returns a single alert that the user has access to (based on query auth)
@@ -1258,11 +1279,11 @@ pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
     let total = alerts.len() as u64;
 
     let mut triggered = 0;
-    let mut resolved = 0;
-    let mut paused = 0;
+    let mut not_triggered = 0;
+    let mut disabled = 0;
     let mut triggered_alerts: Vec<AlertsInfo> = Vec::new();
-    let mut paused_alerts: Vec<AlertsInfo> = Vec::new();
-    let mut resolved_alerts: Vec<AlertsInfo> = Vec::new();
+    let mut disabled_alerts: Vec<AlertsInfo> = Vec::new();
+    let mut not_triggered_alerts: Vec<AlertsInfo> = Vec::new();
 
     // find total alerts for each state
     // get title, id and state of each alert for that state
@@ -1277,16 +1298,16 @@ pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
                 });
             }
             AlertState::Disabled => {
-                paused += 1;
-                paused_alerts.push(AlertsInfo {
+                disabled += 1;
+                disabled_alerts.push(AlertsInfo {
                     title: alert.get_title().to_string(),
                     id: *alert.get_id(),
                     severity: alert.get_severity().clone(),
                 });
             }
             AlertState::NotTriggered => {
-                resolved += 1;
-                resolved_alerts.push(AlertsInfo {
+                not_triggered += 1;
+                not_triggered_alerts.push(AlertsInfo {
                     title: alert.get_title().to_string(),
                     id: *alert.get_id(),
                     severity: alert.get_severity().clone(),
@@ -1299,11 +1320,11 @@ pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
     triggered_alerts.sort_by_key(|alert| get_severity_priority(&alert.severity));
     triggered_alerts.truncate(5);
 
-    paused_alerts.sort_by_key(|alert| get_severity_priority(&alert.severity));
-    paused_alerts.truncate(5);
+    disabled_alerts.sort_by_key(|alert| get_severity_priority(&alert.severity));
+    disabled_alerts.truncate(5);
 
-    resolved_alerts.sort_by_key(|alert| get_severity_priority(&alert.severity));
-    resolved_alerts.truncate(5);
+    not_triggered_alerts.sort_by_key(|alert| get_severity_priority(&alert.severity));
+    not_triggered_alerts.truncate(5);
 
     let alert_summary = AlertsSummary {
         total,
@@ -1311,13 +1332,13 @@ pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
             total: triggered,
             alert_info: triggered_alerts,
         },
-        paused: AlertsInfoByState {
-            total: paused,
-            alert_info: paused_alerts,
+        disabled: AlertsInfoByState {
+            total: disabled,
+            alert_info: disabled_alerts,
         },
-        resolved: AlertsInfoByState {
-            total: resolved,
-            alert_info: resolved_alerts,
+        not_triggered: AlertsInfoByState {
+            total: not_triggered,
+            alert_info: not_triggered_alerts,
         },
     };
     Ok(alert_summary)

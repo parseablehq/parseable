@@ -16,26 +16,27 @@
  *
  */
 
-use std::collections::HashMap;
+use std::{collections::HashMap, str::FromStr};
 
 use crate::{
     alerts::{
         ALERTS, AlertError, AlertState,
         alert_enums::{AlertType, NotificationState},
-        alert_structs::{AlertConfig, AlertRequest},
+        alert_structs::{AlertConfig, AlertRequest, NotificationStateRequest},
         alert_traits::AlertTrait,
         alert_types::ThresholdAlert,
         target::Retry,
     },
     parseable::PARSEABLE,
     storage::object_storage::alert_json_path,
-    utils::{actix::extract_session_key_from_req, time::TimeRange, user_auth_for_query},
+    utils::{actix::extract_session_key_from_req, user_auth_for_query},
 };
 use actix_web::{
     HttpRequest, Responder,
     web::{self, Json, Path},
 };
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use ulid::Ulid;
 
 // GET /alerts
@@ -142,7 +143,7 @@ pub async fn post(
     // start the task
     alerts.start_task(alert.clone_box()).await?;
 
-    Ok(web::Json(alert.to_alert_config()))
+    Ok(web::Json(alert.to_alert_config().to_response()))
 }
 
 // GET /alerts/{alert_id}
@@ -161,7 +162,7 @@ pub async fn get(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Responde
     // validate that the user has access to the tables mentioned in the query
     user_auth_for_query(&session_key, alert.get_query()).await?;
 
-    Ok(web::Json(alert.to_alert_config()))
+    Ok(web::Json(alert.to_alert_config().to_response()))
 }
 
 // DELETE /alerts/{alert_id}
@@ -206,23 +207,32 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
 pub async fn update_notification_state(
     req: HttpRequest,
     alert_id: Path<Ulid>,
-    Json(mut new_notification_state): Json<NotificationState>,
+    Json(new_notification_state): Json<NotificationStateRequest>,
 ) -> Result<impl Responder, AlertError> {
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
 
-    // validate notif state
-    match &mut new_notification_state {
-        NotificationState::Notify => {}
-        NotificationState::Mute(till_time) => {
-            let time_range = TimeRange::parse_human_time(till_time, "now")
-                .map_err(|e| AlertError::CustomError(format!("Invalid time value passed- {e}")))?;
-
-            // using the difference between start and end times, calculate the new end time
-            let delta = time_range.end - time_range.start;
-            *till_time = (time_range.end + delta).to_rfc3339();
+    let new_notification_state = match new_notification_state.state.as_str() {
+        "notify" => NotificationState::Notify,
+        "indefinite" => NotificationState::Mute("indefinite".into()),
+        _ => {
+            // either human time or datetime in UTC
+            let till_time = if let Ok(duration) =
+                humantime::parse_duration(&new_notification_state.state)
+            {
+                (Utc::now() + duration).to_rfc3339()
+            } else if let Ok(timestamp) = DateTime::<Utc>::from_str(&new_notification_state.state) {
+                // must be datetime utc then
+                timestamp.to_rfc3339()
+            } else {
+                return Err(AlertError::InvalidStateChange(format!(
+                    "Invalid notification state change request. Expected `notify` or human-time or UTC datetime. Got `{}`",
+                    &new_notification_state.state
+                )));
+            };
+            NotificationState::Mute(till_time)
         }
-    }
+    };
 
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
@@ -241,7 +251,7 @@ pub async fn update_notification_state(
         .await?;
     let alert = alerts.get_alert_by_id(alert_id).await?;
 
-    Ok(web::Json(alert.to_alert_config()))
+    Ok(web::Json(alert.to_alert_config().to_response()))
 }
 
 // PATCH /alerts/{alert_id}/disable
@@ -271,7 +281,7 @@ pub async fn disable_alert(
         .await?;
     let alert = alerts.get_alert_by_id(alert_id).await?;
 
-    Ok(web::Json(alert.to_alert_config()))
+    Ok(web::Json(alert.to_alert_config().to_response()))
 }
 
 // PATCH /alerts/{alert_id}/enable
@@ -309,7 +319,7 @@ pub async fn enable_alert(
         .await?;
     let alert = alerts.get_alert_by_id(alert_id).await?;
 
-    Ok(web::Json(alert.to_alert_config()))
+    Ok(web::Json(alert.to_alert_config().to_response()))
 }
 
 // PUT /alerts/{alert_id}
@@ -396,7 +406,7 @@ pub async fn modify_alert(
     let alert_bytes = serde_json::to_vec(&new_alert.to_alert_config())?;
     store.put_object(&path, Bytes::from(alert_bytes)).await?;
 
-    let config = new_alert.to_alert_config();
+    let config = new_alert.to_alert_config().to_response();
 
     // start the task
     alerts.start_task(new_alert.clone_box()).await?;
@@ -417,7 +427,7 @@ pub async fn evaluate_alert(alert_id: Path<Ulid>) -> Result<impl Responder, Aler
 
     let alert = alerts.get_alert_by_id(alert_id).await?;
 
-    let config = alert.to_alert_config();
+    let config = alert.to_alert_config().to_response();
 
     // remove task
     alerts.delete_task(alert_id).await?;

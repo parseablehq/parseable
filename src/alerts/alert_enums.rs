@@ -16,14 +16,10 @@
  *
  */
 
-use std::{
-    fmt::{self, Display},
-    str::FromStr,
-};
+use std::fmt::{self, Display};
 
 use chrono::{DateTime, Utc};
 use derive_more::derive::FromStr;
-use serde::ser::Error;
 use ulid::Ulid;
 
 use crate::alerts::{
@@ -272,10 +268,8 @@ impl Display for NotificationState {
             NotificationState::Notify => write!(f, "notify"),
             NotificationState::Mute(till_time) => {
                 let till = match till_time.as_str() {
-                    "indefinite" => DateTime::<Utc>::MAX_UTC.to_rfc3339(),
-                    _ => DateTime::<Utc>::from_str(till_time)
-                        .map_err(|e| std::fmt::Error::custom(e.to_string()))?
-                        .to_rfc3339(),
+                    "indefinite" => &DateTime::<Utc>::MAX_UTC.to_rfc3339(),
+                    _ => till_time,
                 };
                 write!(f, "{till}")
             }

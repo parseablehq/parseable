@@ -267,13 +267,18 @@ async fn update_alert_state(
     alert: &dyn AlertTrait,
     message: Option<String>,
 ) -> Result<(), AlertError> {
-    let guard = ALERTS.write().await;
-    let alerts = if let Some(alerts) = guard.as_ref() {
-        alerts
-    } else {
-        return Err(AlertError::CustomError("No AlertManager set".into()));
+    // Get the alert manager reference while holding the lock briefly
+    let alerts = {
+        let guard = ALERTS.read().await;
+        if let Some(alerts) = guard.as_ref() {
+            alerts.clone()
+        } else {
+            return Err(AlertError::CustomError("No AlertManager set".into()));
+        }
+        // Lock is released here
     };
 
+    // Now perform the state update without holding the ALERTS lock
     if let Some(msg) = message {
         alerts
             .update_state(*alert.get_id(), AlertState::Triggered, Some(msg))
