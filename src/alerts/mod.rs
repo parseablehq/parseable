@@ -92,7 +92,7 @@ pub async fn set_alert_manager(manager: Arc<dyn AlertManagerTrait>) {
 }
 
 pub fn create_default_alerts_manager() -> Alerts {
-    let (tx, rx) = mpsc::channel::<AlertTask>(10);
+    let (tx, rx) = mpsc::channel::<AlertTask>(1000);
     let alerts = Alerts {
         alerts: RwLock::new(HashMap::new()),
         sender: tx,
@@ -1117,52 +1117,62 @@ impl AlertManagerTrait for Alerts {
         new_state: AlertState,
         trigger_notif: Option<String>,
     ) -> Result<(), AlertError> {
-        // let store = PARSEABLE.storage.get_object_store();
+        let (mut alert, should_delete_task, should_create_task) = {
+            let read_access = self.alerts.read().await;
+            let alert = if let Some(alert) = read_access.get(&alert_id) {
+                match &alert.get_alert_type() {
+                    AlertType::Threshold => Box::new(ThresholdAlert::from(alert.to_alert_config()))
+                        as Box<dyn AlertTrait>,
+                    AlertType::Anomaly(_) => {
+                        return Err(AlertError::NotPresentInOSS("anomaly"));
+                    }
+                    AlertType::Forecast(_) => {
+                        return Err(AlertError::NotPresentInOSS("forecast"));
+                    }
+                }
+            } else {
+                return Err(AlertError::CustomError(format!(
+                    "No alert found for the given ID- {alert_id}"
+                )));
+            };
 
-        // read and modify alert
-        let mut write_access = self.alerts.write().await;
-        let mut alert: Box<dyn AlertTrait> = if let Some(alert) = write_access.get(&alert_id) {
-            match &alert.get_alert_type() {
-                AlertType::Threshold => {
-                    Box::new(ThresholdAlert::from(alert.to_alert_config())) as Box<dyn AlertTrait>
-                }
-                AlertType::Anomaly(_) => {
-                    return Err(AlertError::NotPresentInOSS("anomaly"));
-                }
-                AlertType::Forecast(_) => {
-                    return Err(AlertError::NotPresentInOSS("forecast"));
-                }
-            }
-        } else {
-            return Err(AlertError::CustomError(format!(
-                "No alert found for the given ID- {alert_id}"
-            )));
-        };
+            let current_state = *alert.get_state();
+            let should_delete_task =
+                new_state.eq(&AlertState::Disabled) && !current_state.eq(&AlertState::Disabled);
+            let should_create_task =
+                current_state.eq(&AlertState::Disabled) && new_state.eq(&AlertState::NotTriggered);
 
-        // if new state is Disabled then ensure that the task is removed from list
-        if new_state.eq(&AlertState::Disabled) {
-            if alert.get_state().eq(&AlertState::Disabled) {
+            if new_state.eq(&AlertState::Disabled) && current_state.eq(&AlertState::Disabled) {
                 return Err(AlertError::InvalidStateChange(
                     "Can't disable an alert which is currently disabled".into(),
                 ));
             }
 
+            (alert, should_delete_task, should_create_task)
+        }; // Read lock released here
+
+        // Handle task operations without holding any locks
+        if should_delete_task {
             self.sender
                 .send(AlertTask::Delete(alert_id))
                 .await
                 .map_err(|e| AlertError::CustomError(e.to_string()))?;
-        }
-        // user has resumed evals for this alert
-        else if alert.get_state().eq(&AlertState::Disabled)
-            && new_state.eq(&AlertState::NotTriggered)
-        {
+        } else if should_create_task {
             self.sender
                 .send(AlertTask::Create(alert.clone_box()))
                 .await
                 .map_err(|e| AlertError::CustomError(e.to_string()))?;
         }
+
+        // Update the alert state
         alert.update_state(new_state, trigger_notif).await?;
-        write_access.insert(*alert.get_id(), alert.clone_box());
+
+        // Finally, update the in-memory state with a brief write lock
+        {
+            let mut write_access = self.alerts.write().await;
+            write_access.insert(*alert.get_id(), alert.clone_box());
+        }
+
         Ok(())
     }
 

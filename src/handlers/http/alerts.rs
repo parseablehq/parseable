@@ -333,29 +333,28 @@ pub async fn modify_alert(
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
 
-    let guard = ALERTS.write().await;
-    let alerts = if let Some(alerts) = guard.as_ref() {
-        alerts
-    } else {
-        return Err(AlertError::CustomError("No AlertManager set".into()));
+    // Get alerts manager reference without holding the global lock
+    let alerts = {
+        let guard = ALERTS.read().await;
+        if let Some(alerts) = guard.as_ref() {
+            alerts.clone()
+        } else {
+            return Err(AlertError::CustomError("No AlertManager set".into()));
+        }
     };
 
-    // check if alert id exists in map
+    // Validate and prepare the new alert
     let alert = alerts.get_alert_by_id(alert_id).await?;
-
-    // validate that the user has access to the tables mentioned in the query
     user_auth_for_query(&session_key, alert.get_query()).await?;
 
-    // validate the request
     let mut new_config = alert_request.into().await?;
-
     if &new_config.alert_type != alert.get_alert_type() {
         return Err(AlertError::InvalidAlertModifyRequest);
     }
 
     user_auth_for_query(&session_key, &new_config.query).await?;
 
-    // calculate the `times` for notification config
+    // Calculate notification config
     let eval_freq = new_config.get_eval_frequency();
     let notif_freq = new_config.notification_config.interval;
     let times = if (eval_freq / notif_freq) == 0 {
@@ -363,9 +362,9 @@ pub async fn modify_alert(
     } else {
         (eval_freq / notif_freq) as usize
     };
-
     new_config.notification_config.times = Retry::Finite(times);
 
+    // Prepare the updated config
     let mut old_config = alert.to_alert_config();
     old_config.threshold_config = new_config.threshold_config;
     old_config.datasets = new_config.datasets;
@@ -377,12 +376,8 @@ pub async fn modify_alert(
     old_config.targets = new_config.targets;
     old_config.title = new_config.title;
 
-    let threshold_alert;
-    let new_alert: &dyn AlertTrait = match &new_config.alert_type {
-        AlertType::Threshold => {
-            threshold_alert = ThresholdAlert::from(old_config);
-            &threshold_alert
-        }
+    let new_alert: Box<dyn AlertTrait> = match &new_config.alert_type {
+        AlertType::Threshold => Box::new(ThresholdAlert::from(old_config)) as Box<dyn AlertTrait>,
         AlertType::Anomaly(_) => {
             return Err(AlertError::NotPresentInOSS("anomaly"));
         }
@@ -391,24 +386,19 @@ pub async fn modify_alert(
         }
     };
 
-    // save the new alert in ObjectStore
-    alerts.update(new_alert).await;
+    // Perform I/O operations
     let path = alert_json_path(*new_alert.get_id());
     let store = PARSEABLE.storage.get_object_store();
     let alert_bytes = serde_json::to_vec(&new_alert.to_alert_config())?;
     store.put_object(&path, Bytes::from(alert_bytes)).await?;
 
-    // remove the task
+    // Now perform the atomic operations
     alerts.delete_task(alert_id).await?;
-
-    // remove alert from memory
     alerts.delete(alert_id).await?;
-
-    let config = new_alert.to_alert_config().to_response();
-
-    // start the task
+    alerts.update(&*new_alert).await;
     alerts.start_task(new_alert.clone_box()).await?;
 
+    let config = new_alert.to_alert_config().to_response();
     Ok(web::Json(config))
 }
 
