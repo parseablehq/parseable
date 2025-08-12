@@ -37,14 +37,12 @@ use ulid::Ulid;
 use url::Url;
 
 use crate::{
-    alerts::{AlertError, alert_traits::CallableTarget},
+    alerts::{AlertError, AlertState, Context, alert_traits::CallableTarget},
     parseable::PARSEABLE,
     storage::object_storage::target_json_path,
 };
 
 use super::ALERTS;
-
-use super::{AlertState, Context};
 
 pub static TARGETS: Lazy<TargetConfigs> = Lazy::new(|| TargetConfigs {
     target_configs: RwLock::new(HashMap::new()),
@@ -571,14 +569,7 @@ impl CallableTarget for AlertManager {
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
                     .into();
             }
-            AlertState::Disabled => alert["labels"]["status"] = "disabled".into(), // AlertState::Silenced => {
-                                                                                   //     alert["labels"]["status"] = "silenced".into();
-                                                                                   //     alert["annotations"]["reason"] =
-                                                                                   //         serde_json::Value::String(payload.default_silenced_string());
-                                                                                   //     // alert["endsAt"] = Utc::now()
-                                                                                   //     //     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-                                                                                   //     //     .into();
-                                                                                   // }
+            AlertState::Disabled => alert["labels"]["status"] = "disabled".into(),
         };
 
         if let Err(e) = client

@@ -88,17 +88,10 @@ impl Context {
 
     pub(crate) fn default_disabled_string(&self) -> String {
         format!(
-            "{} is now `disabled`. No more evals will be run till it is `disabled`.",
+            "{} is now `disabled`. No more evals will be run till the sate is `disabled`.",
             self.alert_info.alert_name
         )
     }
-
-    // fn default_silenced_string(&self) -> String {
-    //     format!(
-    //         "Notifications for {} have been silenced ",
-    //         self.alert_info.alert_name
-    //     )
-    // }
 }
 
 #[derive(Debug, Clone)]

@@ -366,8 +366,8 @@ pub async fn get_first_event(
         Mode::All | Mode::Ingest => {
             // get current snapshot
             let stream_first_event = PARSEABLE.get_stream(stream_name)?.get_first_event();
-            if let Some(event) = stream_first_event {
-                first_event_at = event;
+            if let Some(first_event) = stream_first_event {
+                first_event_at = first_event;
             } else {
                 let mut meta = storage.get_object_store_format(stream_name).await?;
                 let meta_clone = meta.clone();

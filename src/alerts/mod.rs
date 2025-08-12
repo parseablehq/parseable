@@ -561,7 +561,6 @@ impl AlertConfig {
         let state_str = alert_json["state"].as_str().unwrap_or("resolved");
         match state_str.to_lowercase().as_str() {
             "triggered" => AlertState::Triggered,
-            // "silenced" => AlertState::Silenced,
             "resolved" => AlertState::NotTriggered,
             _ => AlertState::NotTriggered,
         }
@@ -766,25 +765,22 @@ fn extract_alias_from_expr(expr: &Expr) -> Option<(String, Option<String>)> {
             // This is an aliased expression
             let alias_name = alias_expr.name.clone();
 
-            match alias_expr.expr.as_ref() {
-                Expr::AggregateFunction(agg_func) => {
-                    let agg_name = format!("{:?}", agg_func.func);
-                    Some((agg_name, Some(alias_name)))
-                }
+            if let Expr::AggregateFunction(agg_func) = alias_expr.expr.as_ref() {
+                let agg_name = format!("{:?}", agg_func.func);
+                Some((agg_name, Some(alias_name)))
+            } else {
                 // Handle other aggregate expressions like Count, etc.
-                _ => {
-                    // Check if the inner expression is an aggregate
-                    let expr_str = format!("{:?}", alias_expr.expr);
-                    if expr_str.contains("count")
-                        || expr_str.contains("sum")
-                        || expr_str.contains("avg")
-                        || expr_str.contains("min")
-                        || expr_str.contains("max")
-                    {
-                        Some((expr_str, Some(alias_name)))
-                    } else {
-                        None
-                    }
+                // Check if the inner expression is an aggregate
+                let expr_str = format!("{:?}", alias_expr.expr);
+                if expr_str.contains("count")
+                    || expr_str.contains("sum")
+                    || expr_str.contains("avg")
+                    || expr_str.contains("min")
+                    || expr_str.contains("max")
+                {
+                    Some((expr_str, Some(alias_name)))
+                } else {
+                    None
                 }
             }
         }

@@ -161,7 +161,8 @@ impl Stream for ReceiverPipe {
 impl Drop for ReceiverPipe {
     fn drop(&mut self) {
         if let Some(map) = self._ref.upgrade()
-            && let Some(pipes) = map.write().unwrap().get_mut(&self.stream)
+            && let Ok(mut guard) = map.write()
+            && let Some(pipes) = guard.get_mut(&self.stream)
         {
             pipes.retain(|x| x.id != self.id)
         }
