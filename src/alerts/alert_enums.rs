@@ -50,7 +50,18 @@ impl From<&str> for AlertVersion {
     }
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Default)]
+#[derive(
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    Clone,
+    Default,
+    FromStr,
+    PartialEq,
+    PartialOrd,
+    Eq,
+    Ord,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum Severity {
     Critical,
@@ -230,7 +241,19 @@ pub enum EvalConfig {
     RollingWindow(RollingWindow),
 }
 
-#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Default, FromStr)]
+#[derive(
+    Debug,
+    serde::Serialize,
+    serde::Deserialize,
+    Clone,
+    Copy,
+    PartialEq,
+    Default,
+    FromStr,
+    Eq,
+    PartialOrd,
+    Ord,
+)]
 #[serde(rename_all = "camelCase")]
 pub enum AlertState {
     Triggered,

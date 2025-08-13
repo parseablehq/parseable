@@ -567,7 +567,6 @@ impl CallableTarget for AlertManager {
 pub struct NotificationConfig {
     pub interval: u64,
     #[serde(skip)]
-    #[serde(default = "Retry::default")]
     pub times: Retry,
     #[serde(skip)]
     pub state: Arc<Mutex<TimeoutState>>,

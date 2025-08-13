@@ -869,8 +869,8 @@ pub enum AlertError {
     ParserError(#[from] ParserError),
     #[error("Invalid alert query: {0}")]
     InvalidAlertQuery(String),
-    #[error("Invalid query parameter")]
-    InvalidQueryParameter,
+    #[error("Invalid query parameter: {0}")]
+    InvalidQueryParameter(String),
     #[error("{0}")]
     ArrowError(#[from] ArrowError),
     #[error("Upgrade to Parseable Enterprise for {0} type alerts")]
@@ -901,7 +901,7 @@ impl actix_web::ResponseError for AlertError {
             Self::TargetInUse => StatusCode::CONFLICT,
             Self::ParserError(_) => StatusCode::BAD_REQUEST,
             Self::InvalidAlertQuery(_) => StatusCode::BAD_REQUEST,
-            Self::InvalidQueryParameter => StatusCode::BAD_REQUEST,
+            Self::InvalidQueryParameter(_) => StatusCode::BAD_REQUEST,
             Self::ValidationFailure(_) => StatusCode::BAD_REQUEST,
             Self::ArrowError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Unimplemented(_) => StatusCode::INTERNAL_SERVER_ERROR,

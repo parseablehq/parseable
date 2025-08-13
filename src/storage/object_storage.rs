@@ -43,7 +43,7 @@ use tracing::info;
 use tracing::{error, warn};
 use ulid::Ulid;
 
-use crate::alerts::alert_structs::AlertConfig;
+use crate::alerts::AlertConfig;
 use crate::alerts::target::Target;
 use crate::catalog::{self, manifest::Manifest, snapshot::Snapshot};
 use crate::correlation::{CorrelationConfig, CorrelationError};
@@ -1010,15 +1010,23 @@ pub fn target_json_path(target_id: &Ulid) -> RelativePathBuf {
 
 #[inline(always)]
 pub fn manifest_path(prefix: &str) -> RelativePathBuf {
-    match &PARSEABLE.options.mode {
-        Mode::Ingest => {
-            let id = INGESTOR_META
-                .get()
-                .unwrap_or_else(|| panic!("{}", INGESTOR_EXPECT))
-                .get_node_id();
-            let manifest_file_name = format!("ingestor.{id}.{MANIFEST_FILE}");
-            RelativePathBuf::from_iter([prefix, &manifest_file_name])
-        }
-        _ => RelativePathBuf::from_iter([prefix, MANIFEST_FILE]),
+    let hostname = hostname::get()
+        .unwrap_or_else(|_| std::ffi::OsString::from(&Ulid::new().to_string()))
+        .into_string()
+        .unwrap_or_else(|_| Ulid::new().to_string())
+        .matches(|c: char| c.is_alphanumeric() || c == '-' || c == '_')
+        .collect::<String>();
+
+    if PARSEABLE.options.mode == Mode::Ingest {
+        let id = INGESTOR_META
+            .get()
+            .unwrap_or_else(|| panic!("{}", INGESTOR_EXPECT))
+            .get_node_id();
+
+        let manifest_file_name = format!("ingestor.{hostname}.{id}.{MANIFEST_FILE}");
+        RelativePathBuf::from_iter([prefix, &manifest_file_name])
+    } else {
+        let manifest_file_name = format!("{hostname}.{MANIFEST_FILE}");
+        RelativePathBuf::from_iter([prefix, &manifest_file_name])
     }
 }
