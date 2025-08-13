@@ -741,12 +741,32 @@ fn _get_aggregate_projection(plan: &LogicalPlan) -> Result<String, AlertError> {
 pub fn extract_aggregate_aliases(plan: &LogicalPlan) -> Vec<(String, Option<String>)> {
     let mut aliases = Vec::new();
 
-    if let LogicalPlan::Projection(projection) = plan {
-        // Check if this projection contains aliased aggregates
-        for expr in &projection.expr {
-            if let Some((agg_name, alias)) = extract_alias_from_expr(expr) {
-                aliases.push((agg_name, alias));
+    // Handle different logical plan node types
+    match plan {
+        LogicalPlan::Projection(projection) => {
+            for expr in &projection.expr {
+                if let Some((agg_name, alias)) = extract_alias_from_expr(expr) {
+                    aliases.push((agg_name, alias));
+                }
             }
+        }
+        LogicalPlan::Aggregate(aggregate) => {
+            // Check aggregate expressions directly
+            for expr in &aggregate.aggr_expr {
+                if let Some((agg_name, alias)) = extract_alias_from_expr(expr) {
+                    aliases.push((agg_name, alias));
+                }
+            }
+
+            // Also check group expressions in case they contain aggregates
+            for expr in &aggregate.group_expr {
+                if let Some((agg_name, alias)) = extract_alias_from_expr(expr) {
+                    aliases.push((agg_name, alias));
+                }
+            }
+        }
+        _ => {
+            // For other node types, continue traversal
         }
     }
 
@@ -762,47 +782,115 @@ pub fn extract_aggregate_aliases(plan: &LogicalPlan) -> Vec<(String, Option<Stri
 fn extract_alias_from_expr(expr: &Expr) -> Option<(String, Option<String>)> {
     match expr {
         Expr::Alias(alias_expr) => {
-            // This is an aliased expression
             let alias_name = alias_expr.name.clone();
 
-            if let Expr::AggregateFunction(agg_func) = alias_expr.expr.as_ref() {
-                let agg_name = format!("{:?}", agg_func.func);
+            // Check if the aliased expression is an aggregate
+            if let Some((agg_name, _)) = extract_alias_from_expr(&alias_expr.expr) {
                 Some((agg_name, Some(alias_name)))
             } else {
-                // Handle other aggregate expressions like Count, etc.
-                // Check if the inner expression is an aggregate
-                let expr_str = format!("{:?}", alias_expr.expr);
-                if expr_str.contains("count")
-                    || expr_str.contains("sum")
-                    || expr_str.contains("avg")
-                    || expr_str.contains("min")
-                    || expr_str.contains("max")
-                {
-                    Some((expr_str, Some(alias_name)))
-                } else {
-                    None
-                }
+                None
             }
         }
         Expr::AggregateFunction(agg_func) => {
-            // Unaliased aggregate function
             let agg_name = format!("{:?}", agg_func.func);
             Some((agg_name, None))
         }
+        // Handle specific aggregate function variants
+        Expr::WindowFunction(window_func) => {
+            // Some aggregates might appear as window functions
+            let func_name = format!("{:?}", window_func.fun);
+            if is_aggregate_function(&func_name) {
+                Some((func_name, None))
+            } else {
+                None
+            }
+        }
+        // Handle built-in aggregate functions that might not be AggregateFunction
+        Expr::ScalarFunction(scalar_func) => {
+            let func_name = format!("{:?}", scalar_func.func);
+            if is_aggregate_function(&func_name) {
+                Some((func_name, None))
+            } else {
+                None
+            }
+        }
         Expr::Column(column_expr) => {
-            // This might be an un-aliased aggregate expression
-            if column_expr.name().contains("count")
-                || column_expr.name().contains("sum")
-                || column_expr.name().contains("avg")
-                || column_expr.name().contains("min")
-                || column_expr.name().contains("max")
-            {
-                Some((column_expr.name.clone(), None))
+            // Check if column name suggests it's an aggregate result
+            let column_name = column_expr.name();
+            if is_likely_aggregate_column(column_name) {
+                Some((column_name.to_owned(), None))
             } else {
                 None
             }
         }
         _ => None,
+    }
+}
+
+/// Helper function to determine if a function name represents an aggregate
+fn is_aggregate_function(func_name: &str) -> bool {
+    let lower_func = func_name.to_lowercase();
+    matches!(
+        lower_func.as_str(),
+        "count"
+            | "sum"
+            | "avg"
+            | "mean"
+            | "min"
+            | "max"
+            | "stddev"
+            | "variance"
+            | "first"
+            | "last"
+            | "array_agg"
+            | "string_agg"
+            | "bit_and"
+            | "bit_or"
+            | "bit_xor"
+    ) || lower_func.contains("count")
+        || lower_func.contains("sum")
+        || lower_func.contains("avg")
+        || lower_func.contains("min")
+        || lower_func.contains("max")
+}
+
+/// Helper function to determine if a column name suggests it's an aggregate result
+fn is_likely_aggregate_column(column_name: &str) -> bool {
+    let lower_name = column_name.to_lowercase();
+    lower_name.starts_with("count_")
+        || lower_name.starts_with("sum_")
+        || lower_name.starts_with("avg_")
+        || lower_name.starts_with("min_")
+        || lower_name.starts_with("max_")
+        || lower_name.contains("count(")
+        || lower_name.contains("sum(")
+        || lower_name.contains("avg(")
+        || lower_name.contains("min(")
+        || lower_name.contains("max(")
+}
+
+/// Alternative approach: Walk the entire plan and collect all expressions
+pub fn extract_aggregate_aliases_comprehensive(
+    plan: &LogicalPlan,
+) -> Vec<(String, Option<String>)> {
+    let mut aliases = Vec::new();
+    collect_all_expressions(plan, &mut aliases);
+    aliases.dedup(); // Remove duplicates
+    aliases
+}
+
+fn collect_all_expressions(plan: &LogicalPlan, aliases: &mut Vec<(String, Option<String>)>) {
+    // Collect expressions from current node
+    let expressions = plan.expressions();
+    for expr in expressions {
+        if let Some((agg_name, alias)) = extract_alias_from_expr(&expr) {
+            aliases.push((agg_name, alias));
+        }
+    }
+
+    // Recursively process child plans
+    for input in plan.inputs() {
+        collect_all_expressions(input, aliases);
     }
 }
 
