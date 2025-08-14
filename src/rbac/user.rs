@@ -69,7 +69,11 @@ impl User {
     pub fn new_oauth(username: String, roles: HashSet<String>, user_info: UserInfo) -> Self {
         Self {
             ty: UserType::OAuth(OAuth {
-                userid: user_info.name.clone().unwrap_or(username),
+                userid: user_info
+                    .sub
+                    .clone()
+                    .or_else(|| user_info.name.clone())
+                    .unwrap_or(username),
                 user_info,
             }),
             roles,
@@ -168,6 +172,9 @@ pub struct OAuth {
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UserInfo {
     #[serde(default)]
+    /// Subject - Identifier for the End-User at the Issuer.
+    pub sub: Option<String>,
+    #[serde(default)]
     /// User's full name for display purposes.
     pub name: Option<String>,
     #[serde(default)]
@@ -185,6 +192,7 @@ pub struct UserInfo {
 impl From<openid::Userinfo> for UserInfo {
     fn from(user: openid::Userinfo) -> Self {
         UserInfo {
+            sub: user.sub,
             name: user.name,
             preferred_username: user.preferred_username,
             picture: user.picture,
