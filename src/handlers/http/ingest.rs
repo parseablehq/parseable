@@ -123,22 +123,32 @@ pub async fn ingest(
 
     //if stream exists, fetch the stream log source
     //return error if the stream log source is otel traces or otel metrics
-    if let Ok(stream) = PARSEABLE.get_stream(&stream_name) {
-        stream
-            .get_log_source()
-            .iter()
-            .find(|&stream_log_source_entry| {
-                stream_log_source_entry.log_source_format != LogSource::OtelTraces
-                    && stream_log_source_entry.log_source_format != LogSource::OtelMetrics
-            })
-            .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
-    }
+    let stream = match PARSEABLE.get_stream(&stream_name) {
+        Ok(stream) => {
+            stream
+                .get_log_source()
+                .iter()
+                .find(|&stream_log_source_entry| {
+                    stream_log_source_entry.log_source_format != LogSource::OtelTraces
+                        && stream_log_source_entry.log_source_format != LogSource::OtelMetrics
+                })
+                .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
+            stream
+        }
+        Err(e) => return Err(PostError::from(e)),
+    };
 
     PARSEABLE
         .add_update_log_source(&stream_name, log_source_entry)
         .await?;
 
-    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
+    if stream.get_time_partition().is_some() {
+        return Err(PostError::CustomError(
+            "Ingestion is not allowed to stream with time partition".to_string(),
+        ));
+    }
+
+    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields, None).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -267,6 +277,7 @@ where
                     stream_name,
                     log_source,
                     &p_custom_fields,
+                    None,
                 )
                 .await?;
             } else if content_type == CONTENT_TYPE_PROTOBUF {
@@ -281,7 +292,8 @@ where
                 match decode_protobuf(body) {
                     Ok(decoded) => {
                         for record in flatten_protobuf(&decoded) {
-                            push_logs(stream_name, record, log_source, &p_custom_fields).await?;
+                            push_logs(stream_name, record, log_source, &p_custom_fields, None)
+                                .await?;
                         }
                     }
                     Err(e) => {
@@ -452,18 +464,31 @@ pub async fn post_event(
 
     //if stream exists, fetch the stream log source
     //return error if the stream log source is otel traces or otel metrics
-    if let Ok(stream) = PARSEABLE.get_stream(&stream_name) {
-        stream
-            .get_log_source()
-            .iter()
-            .find(|&stream_log_source_entry| {
-                stream_log_source_entry.log_source_format != LogSource::OtelTraces
-                    && stream_log_source_entry.log_source_format != LogSource::OtelMetrics
-            })
-            .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
-    }
+    let stream = match PARSEABLE.get_stream(&stream_name) {
+        Ok(stream) => {
+            stream
+                .get_log_source()
+                .iter()
+                .find(|&stream_log_source_entry| {
+                    stream_log_source_entry.log_source_format != LogSource::OtelTraces
+                        && stream_log_source_entry.log_source_format != LogSource::OtelMetrics
+                })
+                .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
+            stream
+        }
+        Err(e) => return Err(PostError::from(e)),
+    };
 
-    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
+    let time_partition = stream.get_time_partition();
+
+    flatten_and_push_logs(
+        json,
+        &stream_name,
+        &log_source,
+        &p_custom_fields,
+        time_partition,
+    )
+    .await?;
 
     Ok(HttpResponse::Ok().finish())
 }

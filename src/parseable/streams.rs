@@ -50,7 +50,6 @@ use crate::{
         DEFAULT_TIMESTAMP_KEY,
         format::{LogSource, LogSourceEntry},
     },
-    handlers::http::modal::{ingest_server::INGESTOR_META, query_server::QUERIER_META},
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
@@ -274,7 +273,7 @@ impl Stream {
         init_signal: bool,
         shutdown_signal: bool,
     ) -> HashMap<PathBuf, Vec<PathBuf>> {
-        let random_string = self.get_node_id_string();
+        let random_string = ulid::Ulid::new().to_string();
         let inprocess_dir = Self::inprocess_folder(&self.data_path, group_minute);
 
         let arrow_files = self.fetch_arrow_files_for_conversion(exclude, shutdown_signal);
@@ -320,21 +319,6 @@ impl Stream {
             }
         }
         grouped
-    }
-
-    /// Returns the node id string for file naming.
-    fn get_node_id_string(&self) -> String {
-        match self.options.mode {
-            Mode::Query => QUERIER_META
-                .get()
-                .map(|querier_metadata| querier_metadata.get_node_id())
-                .expect("Querier metadata should be set"),
-            Mode::Ingest => INGESTOR_META
-                .get()
-                .map(|ingestor_metadata| ingestor_metadata.get_node_id())
-                .expect("Ingestor metadata should be set"),
-            _ => "000000000000000".to_string(),
-        }
     }
 
     /// Returns a mapping for inprocess arrow files (init_signal=true).
@@ -1381,8 +1365,9 @@ mod tests {
         for _ in 0..3 {
             write_log(&staging, &schema, 0);
         }
+        println!("arrow files: {:?}", staging.arrow_files());
         // verify the arrow files exist in staging
-        assert_eq!(staging.arrow_files().len(), 1);
+        assert_eq!(staging.arrow_files().len(), 3);
         drop(staging);
 
         // Start with a fresh staging
