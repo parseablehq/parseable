@@ -50,7 +50,7 @@ use tokio::runtime::Runtime;
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
 pub use self::stream_schema_provider::PartialTimeFilter;
-use crate::alerts::Conditions;
+use crate::alerts::alert_structs::Conditions;
 use crate::alerts::alerts_utils::get_filter_string;
 use crate::catalog::Snapshot as CatalogSnapshot;
 use crate::catalog::column::{Int64Type, TypedStatistics};

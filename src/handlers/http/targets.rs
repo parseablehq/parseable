@@ -19,7 +19,8 @@ pub async fn post(
     // add to the map
     TARGETS.update(target.clone()).await?;
 
-    Ok(web::Json(target.mask()))
+    // Ok(web::Json(target.mask()))
+    Ok(web::Json(target))
 }
 
 // GET /targets
@@ -29,7 +30,7 @@ pub async fn list(_req: HttpRequest) -> Result<impl Responder, AlertError> {
         .list()
         .await?
         .into_iter()
-        .map(|t| t.mask())
+        // .map(|t| t.mask())
         .collect_vec();
 
     Ok(web::Json(list))
@@ -41,7 +42,8 @@ pub async fn get(_req: HttpRequest, target_id: Path<Ulid>) -> Result<impl Respon
 
     let target = TARGETS.get_target_by_id(&target_id).await?;
 
-    Ok(web::Json(target.mask()))
+    // Ok(web::Json(target.mask()))
+    Ok(web::Json(target))
 }
 
 // PUT /targets/{target_id}
@@ -69,7 +71,8 @@ pub async fn update(
     // add to the map
     TARGETS.update(target.clone()).await?;
 
-    Ok(web::Json(target.mask()))
+    // Ok(web::Json(target.mask()))
+    Ok(web::Json(target))
 }
 
 // DELETE /targets/{target_id}
@@ -81,5 +84,6 @@ pub async fn delete(
 
     let target = TARGETS.delete(&target_id).await?;
 
-    Ok(web::Json(target.mask()))
+    // Ok(web::Json(target.mask()))
+    Ok(web::Json(target))
 }
