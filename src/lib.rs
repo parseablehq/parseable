@@ -48,7 +48,7 @@ pub mod storage;
 pub mod sync;
 pub mod users;
 pub mod utils;
-mod validator;
+pub mod validator;
 
 use std::time::Duration;
 
