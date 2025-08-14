@@ -303,15 +303,26 @@ impl AlertTrait for ThresholdAlert {
 }
 
 impl MessageCreation for ThresholdAlert {
-    fn create_threshold_message(&self, actual_value: f64) -> Result<String, AlertError> {
+    fn get_message_header(&self) -> Result<String, AlertError> {
         Ok(format!(
-            "Alert Triggered: {}\n\nThreshold: ({} {})\nCurrent Value: {}\nEvaluation Window: {} | Frequency: {}\n\nQuery:\n{}",
-            self.get_id(),
-            self.get_threshold_config().operator,
-            self.get_threshold_config().value,
-            actual_value,
+            "Alert Name:         {}\nAlert Type:         Threshold alert\nSeverity:           {}\nTriggered at:       {}\nThreshold:          {}\nAlert ID:           {}\nEvaluation Window:  {}\nFrequency:          {}\n\nValues crossing the threshold:",
+            self.title,
+            self.severity,
+            Utc::now().to_rfc3339(),
+            format_args!(
+                "{} {}",
+                self.threshold_config.operator, self.threshold_config.value
+            ),
+            self.id,
             self.get_eval_window(),
-            self.get_eval_frequency(),
+            self.get_eval_frequency()
+        ))
+    }
+    fn create_threshold_message(&self, actual_value: f64) -> Result<String, AlertError> {
+        let header = self.get_message_header()?;
+        Ok(format!(
+            "{header}\nValue: {}\n\nQuery:\n{}",
+            actual_value,
             self.get_query()
         ))
     }
@@ -384,14 +395,8 @@ impl From<ThresholdAlert> for AlertConfig {
 
 impl ThresholdAlert {
     fn create_group_message(&self, breached_groups: &[GroupResult]) -> Result<String, AlertError> {
-        let mut message = format!(
-            "Alert Triggered: {}\n\nThreshold: ({} {})\nEvaluation Window: {} | Frequency: {}\n\n",
-            self.get_id(),
-            self.get_threshold_config().operator,
-            self.get_threshold_config().value,
-            self.get_eval_window(),
-            self.get_eval_frequency()
-        );
+        let header = self.get_message_header()?;
+        let mut message = format!("{header}\n");
 
         message.push_str(&format!(
             "Alerting Groups ({} total):\n",

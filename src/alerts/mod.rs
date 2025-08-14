@@ -869,31 +869,6 @@ fn is_likely_aggregate_column(column_name: &str) -> bool {
         || lower_name.contains("max(")
 }
 
-/// Alternative approach: Walk the entire plan and collect all expressions
-pub fn extract_aggregate_aliases_comprehensive(
-    plan: &LogicalPlan,
-) -> Vec<(String, Option<String>)> {
-    let mut aliases = Vec::new();
-    collect_all_expressions(plan, &mut aliases);
-    aliases.dedup(); // Remove duplicates
-    aliases
-}
-
-fn collect_all_expressions(plan: &LogicalPlan, aliases: &mut Vec<(String, Option<String>)>) {
-    // Collect expressions from current node
-    let expressions = plan.expressions();
-    for expr in expressions {
-        if let Some((agg_name, alias)) = extract_alias_from_expr(&expr) {
-            aliases.push((agg_name, alias));
-        }
-    }
-
-    // Recursively process child plans
-    for input in plan.inputs() {
-        collect_all_expressions(input, aliases);
-    }
-}
-
 /// Analyze a logical plan to determine if it represents an aggregate query
 ///
 /// Returns the number of aggregate expressions found in the plan

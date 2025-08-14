@@ -43,6 +43,7 @@ pub trait MessageCreation {
         forecasted_time: DateTime<Utc>,
         forecasted_value: f64,
     ) -> Result<String, AlertError>;
+    fn get_message_header(&self) -> Result<String, AlertError>;
 }
 
 #[async_trait]
