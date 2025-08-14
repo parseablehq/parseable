@@ -36,11 +36,13 @@ use tracing::{error, trace, warn};
 use ulid::Ulid;
 use url::Url;
 
-use crate::{alerts::AlertError, parseable::PARSEABLE, storage::object_storage::target_json_path};
+use crate::{
+    alerts::{AlertError, AlertState, Context, alert_traits::CallableTarget},
+    parseable::PARSEABLE,
+    storage::object_storage::target_json_path,
+};
 
 use super::ALERTS;
-
-use super::{AlertState, CallableTarget, Context};
 
 pub static TARGETS: Lazy<TargetConfigs> = Lazy::new(|| TargetConfigs {
     target_configs: RwLock::new(HashMap::new()),
@@ -147,7 +149,6 @@ pub struct Target {
     pub name: String,
     #[serde(flatten)]
     pub target: TargetType,
-    pub notification_config: Timeout,
     #[serde(default = "Ulid::new")]
     pub id: Ulid,
 }
@@ -166,7 +167,6 @@ impl Target {
                    "name":self.name,
                    "type":"slack",
                    "endpoint":masked_endpoint,
-                   "notificationConfig":self.notification_config,
                    "id":self.id
                 })
             }
@@ -183,7 +183,6 @@ impl Target {
                     "endpoint":masked_endpoint,
                     "headers":other_web_hook.headers,
                     "skipTlsCheck":other_web_hook.skip_tls_check,
-                    "notificationConfig":self.notification_config,
                     "id":self.id
                 })
             }
@@ -203,7 +202,6 @@ impl Target {
                         "username":auth.username,
                         "password":password,
                         "skipTlsCheck":alert_manager.skip_tls_check,
-                        "notificationConfig":self.notification_config,
                         "id":self.id
                     })
                 } else {
@@ -214,7 +212,6 @@ impl Target {
                         "username":Value::Null,
                         "password":Value::Null,
                         "skipTlsCheck":alert_manager.skip_tls_check,
-                        "notificationConfig":self.notification_config,
                         "id":self.id
                     })
                 }
@@ -224,7 +221,7 @@ impl Target {
 
     pub fn call(&self, context: Context) {
         trace!("target.call context- {context:?}");
-        let timeout = &self.notification_config;
+        let timeout = context.notification_config.clone();
         let resolves = context.alert_info.alert_state;
         let mut state = timeout.state.lock().unwrap();
         trace!("target.call state- {state:?}");
@@ -236,15 +233,14 @@ impl Target {
                     // call once and then start sleeping
                     // reduce repeats by 1
                     call_target(self.target.clone(), context.clone());
-                    trace!("state not timed out- {state:?}");
                     // set state
                     state.timed_out = true;
                     state.awaiting_resolve = true;
                     drop(state);
-                    self.spawn_timeout_task(timeout, context.clone());
+                    self.spawn_timeout_task(&timeout, context.clone());
                 }
             }
-            alert_state @ (AlertState::Resolved | AlertState::Silenced) => {
+            alert_state @ AlertState::NotTriggered => {
                 state.alert_state = alert_state;
                 if state.timed_out {
                     // if in timeout and resolve came in, only process if it's the first one ( awaiting resolve )
@@ -258,10 +254,13 @@ impl Target {
 
                 call_target(self.target.clone(), context);
             }
+            // do not send out any notifs
+            // (an eval should not have run!)
+            AlertState::Disabled => {}
         }
     }
 
-    fn spawn_timeout_task(&self, target_timeout: &Timeout, alert_context: Context) {
+    fn spawn_timeout_task(&self, target_timeout: &NotificationConfig, alert_context: Context) {
         trace!("repeat-\n{target_timeout:?}");
         let state = Arc::clone(&target_timeout.state);
         let retry = target_timeout.times;
@@ -270,33 +269,34 @@ impl Target {
         let alert_id = alert_context.alert_info.alert_id;
 
         let sleep_and_check_if_call =
-            move |timeout_state: Arc<Mutex<TimeoutState>>, current_state: AlertState| {
-                async move {
-                    tokio::time::sleep(Duration::from_secs(timeout * 60)).await;
+            move |timeout_state: Arc<Mutex<TimeoutState>>, current_state: AlertState| async move {
+                tokio::time::sleep(Duration::from_secs(timeout * 60)).await;
 
-                    let mut state = timeout_state.lock().unwrap();
+                let mut state = timeout_state.lock().unwrap();
 
-                    if current_state == AlertState::Triggered {
-                        // it is still firing .. sleep more and come back
-                        state.awaiting_resolve = true;
-                        true
-                    } else {
-                        state.timed_out = false;
-                        false
-                    }
+                if current_state == AlertState::Triggered {
+                    state.awaiting_resolve = true;
+                    true
+                } else {
+                    state.timed_out = false;
+                    false
                 }
             };
 
         trace!("Spawning retry task");
         tokio::spawn(async move {
-            let guard = ALERTS.read().await;
-            let alerts = if let Some(alerts) = guard.as_ref() {
-                alerts
-            } else {
-                error!("No AlertManager set for alert_id: {alert_id}, stopping timeout task");
-                *state.lock().unwrap() = TimeoutState::default();
-                return;
-            };
+            // Get alerts manager reference once at the start
+            let alerts = {
+                let guard = ALERTS.read().await;
+                if let Some(alerts) = guard.as_ref() {
+                    alerts.clone()
+                } else {
+                    error!("No AlertManager set for alert_id: {alert_id}, stopping timeout task");
+                    *state.lock().unwrap() = TimeoutState::default();
+                    return;
+                }
+            }; // Lock released immediately
+
             match retry {
                 Retry::Infinite => loop {
                     let current_state = if let Ok(state) = alerts.get_state(alert_id).await {
@@ -333,15 +333,6 @@ impl Target {
                             call_target(target.clone(), alert_context.clone())
                         }
                     }
-                    // // fallback for if this task only observed FIRING on all RETRIES
-                    // // Stream might be dead and sending too many alerts is not great
-                    // // Send and alert stating that this alert will only work once it has seen a RESOLVE
-                    // state.lock().unwrap().timed_out = false;
-                    // let context = alert_context;
-                    // // context.alert_info.message = format!(
-                    // //     "Triggering alert did not resolve itself after {times} retries, This alert is paused until it resolves");
-                    // // Send and exit this task.
-                    // call_target(target, context);
                 }
             }
             *state.lock().unwrap() = TimeoutState::default();
@@ -376,7 +367,7 @@ impl TryFrom<TargetVerifier> for Target {
     type Error = String;
 
     fn try_from(value: TargetVerifier) -> Result<Self, Self::Error> {
-        let mut timeout = Timeout::default();
+        let mut timeout = NotificationConfig::default();
 
         // Default is Infinite in case of alertmanager
         if matches!(value.target, TargetType::AlertManager(_)) {
@@ -398,7 +389,6 @@ impl TryFrom<TargetVerifier> for Target {
         Ok(Target {
             name: value.name,
             target: value.target,
-            notification_config: timeout,
             id: value.id,
         })
     }
@@ -447,11 +437,11 @@ impl CallableTarget for SlackWebHook {
             AlertState::Triggered => {
                 serde_json::json!({ "text": payload.default_alert_string() })
             }
-            AlertState::Resolved => {
+            AlertState::NotTriggered => {
                 serde_json::json!({ "text": payload.default_resolved_string() })
             }
-            AlertState::Silenced => {
-                serde_json::json!({ "text": payload.default_silenced_string() })
+            AlertState::Disabled => {
+                serde_json::json!({ "text": payload.default_disabled_string() })
             }
         };
 
@@ -485,8 +475,8 @@ impl CallableTarget for OtherWebHook {
 
         let alert = match payload.alert_info.alert_state {
             AlertState::Triggered => payload.default_alert_string(),
-            AlertState::Resolved => payload.default_resolved_string(),
-            AlertState::Silenced => payload.default_silenced_string(),
+            AlertState::NotTriggered => payload.default_resolved_string(),
+            AlertState::Disabled => payload.default_disabled_string(),
         };
 
         let request = client
@@ -548,36 +538,18 @@ impl CallableTarget for AlertManager {
 
         let alert = &mut alerts[0];
 
-        // alert["labels"].as_object_mut().expect("is object").extend(
-        //     payload
-        //         .additional_labels
-        //         .as_object()
-        //         .expect("is object")
-        //         .iter()
-        //         // filter non null values for alertmanager and only pass strings
-        //         .filter(|(_, value)| !value.is_null())
-        //         .map(|(k, value)| (k.to_owned(), json::convert_to_string(value))),
-        // );
-
         // fill in status label accordingly
         match payload.alert_info.alert_state {
             AlertState::Triggered => alert["labels"]["status"] = "triggered".into(),
-            AlertState::Resolved => {
-                alert["labels"]["status"] = "resolved".into();
+            AlertState::NotTriggered => {
+                alert["labels"]["status"] = "not-triggered".into();
                 alert["annotations"]["reason"] =
                     serde_json::Value::String(payload.default_resolved_string());
                 alert["endsAt"] = Utc::now()
                     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
                     .into();
             }
-            AlertState::Silenced => {
-                alert["labels"]["status"] = "silenced".into();
-                alert["annotations"]["reason"] =
-                    serde_json::Value::String(payload.default_silenced_string());
-                // alert["endsAt"] = Utc::now()
-                //     .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-                //     .into();
-            }
+            AlertState::Disabled => alert["labels"]["status"] = "disabled".into(),
         };
 
         if let Err(e) = client
@@ -592,15 +564,15 @@ impl CallableTarget for AlertManager {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
-pub struct Timeout {
+pub struct NotificationConfig {
     pub interval: u64,
-    #[serde(default = "Retry::default")]
+    #[serde(skip)]
     pub times: Retry,
     #[serde(skip)]
     pub state: Arc<Mutex<TimeoutState>>,
 }
 
-impl Default for Timeout {
+impl Default for NotificationConfig {
     fn default() -> Self {
         Self {
             interval: 1,

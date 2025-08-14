@@ -27,7 +27,7 @@ use serde::Serialize;
 use tracing::error;
 
 use crate::{
-    alerts::{ALERTS, AlertError, AlertsSummary, get_alerts_summary},
+    alerts::{ALERTS, AlertError, alert_structs::AlertsSummary, get_alerts_summary},
     correlation::{CORRELATIONS, CorrelationError},
     handlers::{
         TelemetryType,
