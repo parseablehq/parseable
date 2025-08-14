@@ -16,24 +16,25 @@
  *
  */
 
-use std::time::Duration;
+use std::{str::FromStr, time::Duration};
 
 use chrono::{DateTime, Utc};
 use tonic::async_trait;
-use tracing::trace;
+use tracing::{info, trace, warn};
 use ulid::Ulid;
 
 use crate::{
     alerts::{
         AlertConfig, AlertError, AlertState, AlertType, AlertVersion, EvalConfig, Severity,
         ThresholdConfig,
+        alert_enums::NotificationState,
+        alert_structs::GroupResult,
+        alert_traits::{AlertTrait, MessageCreation},
         alerts_utils::{evaluate_condition, execute_alert_query, extract_time_range},
-        is_query_aggregate,
-        target::{self, TARGETS},
-        traits::AlertTrait,
+        get_number_of_agg_exprs,
+        target::{self, NotificationConfig},
     },
     handlers::http::query::create_streams_for_distributed,
-    option::Mode,
     parseable::PARSEABLE,
     query::resolve_stream_names,
     rbac::map::SessionKey,
@@ -56,6 +57,8 @@ pub struct ThresholdAlert {
     // for new alerts, state should be resolved
     #[serde(default)]
     pub state: AlertState,
+    pub notification_state: NotificationState,
+    pub notification_config: NotificationConfig,
     pub created: DateTime<Utc>,
     pub tags: Option<Vec<String>>,
     pub datasets: Vec<String>,
@@ -63,26 +66,51 @@ pub struct ThresholdAlert {
 
 #[async_trait]
 impl AlertTrait for ThresholdAlert {
-    async fn eval_alert(&self) -> Result<(bool, f64), AlertError> {
+    async fn eval_alert(&self) -> Result<Option<String>, AlertError> {
         let time_range = extract_time_range(&self.eval_config)?;
-        let final_value = execute_alert_query(self.get_query(), &time_range).await?;
-        let result = evaluate_condition(
-            &self.threshold_config.operator,
-            final_value,
-            self.threshold_config.value,
-        );
-        Ok((result, final_value))
+        let query_result = execute_alert_query(self.get_query(), &time_range).await?;
+
+        if query_result.is_simple_query {
+            // Handle simple queries
+            let final_value = query_result.get_single_value();
+            let result = evaluate_condition(
+                &self.threshold_config.operator,
+                final_value,
+                self.threshold_config.value,
+            );
+
+            let message = if result {
+                Some(self.create_threshold_message(final_value)?)
+            } else {
+                None
+            };
+            Ok(message)
+        } else {
+            // Handle GROUP BY queries - evaluate each group
+            let mut breached_groups = Vec::new();
+
+            for group in &query_result.groups {
+                let result = evaluate_condition(
+                    &self.threshold_config.operator,
+                    group.aggregate_value,
+                    self.threshold_config.value,
+                );
+
+                if result {
+                    breached_groups.push(group.clone());
+                }
+            }
+
+            let message = if !breached_groups.is_empty() {
+                Some(self.create_group_message(&breached_groups)?)
+            } else {
+                None
+            };
+            Ok(message)
+        }
     }
 
     async fn validate(&self, session_key: &SessionKey) -> Result<(), AlertError> {
-        // validate alert type
-        // Anomaly is only allowed in Prism
-        if self.alert_type.eq(&AlertType::Anomaly) && PARSEABLE.options.mode != Mode::Prism {
-            return Err(AlertError::CustomError(
-                "Anomaly alert is only allowed on Prism mode".into(),
-            ));
-        }
-
         // validate evalType
         let eval_frequency = match &self.eval_config {
             EvalConfig::RollingWindow(rolling_window) => {
@@ -96,42 +124,110 @@ impl AlertTrait for ThresholdAlert {
         };
 
         // validate that target repeat notifs !> eval_frequency
-        for target_id in &self.targets {
-            let target = TARGETS.get_target_by_id(target_id).await?;
-            match &target.notification_config.times {
-                target::Retry::Infinite => {}
-                target::Retry::Finite(repeat) => {
-                    let notif_duration =
-                        Duration::from_secs(60 * target.notification_config.interval)
-                            * *repeat as u32;
-                    if (notif_duration.as_secs_f64()).gt(&((eval_frequency * 60) as f64)) {
-                        return Err(AlertError::Metadata(
-                            "evalFrequency should be greater than target repetition  interval",
-                        ));
-                    }
+        match &self.notification_config.times {
+            target::Retry::Infinite => {}
+            target::Retry::Finite(repeat) => {
+                let notif_duration =
+                    Duration::from_secs(60 * self.notification_config.interval) * *repeat as u32;
+                if (notif_duration.as_secs_f64()).gt(&((eval_frequency * 60) as f64)) {
+                    return Err(AlertError::Metadata(
+                        "evalFrequency should be greater than target repetition  interval",
+                    ));
                 }
             }
         }
 
         // validate that the query is valid
         if self.query.is_empty() {
-            return Err(AlertError::InvalidAlertQuery);
+            return Err(AlertError::InvalidAlertQuery("Empty query".into()));
         }
 
         let tables = resolve_stream_names(&self.query)?;
         if tables.is_empty() {
-            return Err(AlertError::InvalidAlertQuery);
+            return Err(AlertError::InvalidAlertQuery(
+                "No tables found in query".into(),
+            ));
         }
         create_streams_for_distributed(tables)
             .await
-            .map_err(|_| AlertError::InvalidAlertQuery)?;
+            .map_err(|_| AlertError::InvalidAlertQuery("Invalid tables".into()))?;
 
         // validate that the user has access to the tables mentioned in the query
         user_auth_for_query(session_key, &self.query).await?;
 
         // validate that the alert query is valid and can be evaluated
-        if !is_query_aggregate(&self.query).await? {
-            return Err(AlertError::InvalidAlertQuery);
+        let num_aggrs = get_number_of_agg_exprs(&self.query).await?;
+        if num_aggrs != 1 {
+            return Err(AlertError::InvalidAlertQuery(format!(
+                "Found {num_aggrs} aggregate expressions, only 1 allowed"
+            )));
+        }
+        Ok(())
+    }
+
+    async fn update_notification_state(
+        &mut self,
+        new_notification_state: NotificationState,
+    ) -> Result<(), AlertError> {
+        let store = PARSEABLE.storage.get_object_store();
+        // update state in memory
+        self.notification_state = new_notification_state;
+        // update on disk
+        store.put_alert(self.id, &self.to_alert_config()).await?;
+
+        Ok(())
+    }
+
+    async fn update_state(
+        &mut self,
+        new_state: AlertState,
+        trigger_notif: Option<String>,
+    ) -> Result<(), AlertError> {
+        let store = PARSEABLE.storage.get_object_store();
+        if self.state.eq(&AlertState::Disabled) {
+            warn!(
+                "Alert- {} is currently Disabled. Updating state to {new_state}.",
+                self.id
+            );
+            // update state in memory
+            self.state = new_state;
+
+            // update on disk
+            store.put_alert(self.id, &self.to_alert_config()).await?;
+            // The task should have already been removed from the list of running tasks
+            return Ok(());
+        }
+
+        match &mut self.notification_state {
+            NotificationState::Notify => {}
+            NotificationState::Mute(till_time) => {
+                // if now > till_time, modify notif state to notify and proceed
+                let now = Utc::now();
+                let till = match till_time.as_str() {
+                    "indefinite" => DateTime::<Utc>::MAX_UTC,
+                    _ => DateTime::<Utc>::from_str(till_time)
+                        .map_err(|e| AlertError::CustomError(e.to_string()))?,
+                };
+                if now > till {
+                    info!(
+                        "Modifying alert notif state from snoozed to notify- Now= {now}, Snooze till= {till}"
+                    );
+                    self.notification_state = NotificationState::Notify;
+                }
+            }
+        }
+
+        // update state in memory
+        self.state = new_state;
+
+        // update on disk
+        store.put_alert(self.id, &self.to_alert_config()).await?;
+
+        if trigger_notif.is_some() && self.notification_state.eq(&NotificationState::Notify) {
+            trace!("trigger notif on-\n{}", self.state);
+            self.to_alert_config()
+                .trigger_notifications(trigger_notif.unwrap())
+                .await?;
         }
         Ok(())
     }
@@ -164,7 +260,7 @@ impl AlertTrait for ThresholdAlert {
         &self.eval_config
     }
 
-    fn get_targets(&self) -> &Vec<Ulid> {
+    fn get_targets(&self) -> &[Ulid] {
         &self.targets
     }
 
@@ -178,21 +274,21 @@ impl AlertTrait for ThresholdAlert {
         }
     }
 
-    fn get_eval_window(&self) -> String {
+    fn get_eval_window(&self) -> &str {
         match &self.eval_config {
-            EvalConfig::RollingWindow(rolling_window) => rolling_window.eval_start.clone(),
+            EvalConfig::RollingWindow(rolling_window) => rolling_window.eval_start.as_str(),
         }
     }
 
     fn get_created(&self) -> String {
-        self.created.to_string()
+        self.created.to_rfc3339()
     }
 
     fn get_tags(&self) -> &Option<Vec<String>> {
         &self.tags
     }
 
-    fn get_datasets(&self) -> &Vec<String> {
+    fn get_datasets(&self) -> &[String] {
         &self.datasets
     }
 
@@ -204,49 +300,52 @@ impl AlertTrait for ThresholdAlert {
     fn clone_box(&self) -> Box<dyn AlertTrait> {
         Box::new(self.clone())
     }
+}
 
-    async fn update_state(
-        &mut self,
-        is_manual: bool,
-        new_state: AlertState,
-        trigger_notif: Option<String>,
-    ) -> Result<(), AlertError> {
-        let store = PARSEABLE.storage.get_object_store();
-        match self.state {
-            AlertState::Triggered => {
-                if is_manual
-                    && new_state != AlertState::Resolved
-                    && new_state != AlertState::Silenced
-                {
-                    let msg = format!("Not allowed to manually go from Triggered to {new_state}");
-                    return Err(AlertError::InvalidStateChange(msg));
-                }
-            }
-            AlertState::Silenced => {
-                if is_manual && new_state != AlertState::Resolved {
-                    let msg = format!("Not allowed to manually go from Silenced to {new_state}");
-                    return Err(AlertError::InvalidStateChange(msg));
-                }
-            }
-            AlertState::Resolved => {
-                if is_manual {
-                    let msg = format!("Not allowed to go manually from Resolved to {new_state}");
-                    return Err(AlertError::InvalidStateChange(msg));
-                }
-            }
-        }
-        // update state in memory
-        self.state = new_state;
-        // update on disk
-        store.put_alert(self.id, &self.to_alert_config()).await?;
+impl MessageCreation for ThresholdAlert {
+    fn get_message_header(&self) -> Result<String, AlertError> {
+        Ok(format!(
+            "Alert Name:         {}\nAlert Type:         Threshold alert\nSeverity:           {}\nTriggered at:       {}\nThreshold:          {}\nAlert ID:           {}\nEvaluation Window:  {}\nFrequency:          {}\n\nValues crossing the threshold:",
+            self.title,
+            self.severity,
+            Utc::now().to_rfc3339(),
+            format_args!(
+                "{} {}",
+                self.threshold_config.operator, self.threshold_config.value
+            ),
+            self.id,
+            self.get_eval_window(),
+            self.get_eval_frequency()
+        ))
+    }
+    fn create_threshold_message(&self, actual_value: f64) -> Result<String, AlertError> {
+        let header = self.get_message_header()?;
+        Ok(format!(
+            "{header}\nValue: {}\n\nQuery:\n{}",
+            actual_value,
+            self.get_query()
+        ))
+    }
 
-        if trigger_notif.is_some() {
-            trace!("trigger notif on-\n{}", self.state);
-            self.to_alert_config()
-                .trigger_notifications(trigger_notif.unwrap())
-                .await?;
-        }
-        Ok(())
+    fn create_anomaly_message(
+        &self,
+        _forecast_value: f64,
+        _lower_bound: f64,
+        _upper_bound: f64,
+    ) -> Result<String, AlertError> {
+        Err(AlertError::Unimplemented(
+            "Anomaly message creation is not allowed for Threshold alert".into(),
+        ))
+    }
+
+    fn create_forecast_message(
+        &self,
+        _forecast_time: DateTime<Utc>,
+        _forecast_value: f64,
+    ) -> Result<String, AlertError> {
+        Err(AlertError::Unimplemented(
+            "Forecast message creation is not allowed for Threshold alert".into(),
+        ))
     }
 }
 
@@ -263,6 +362,8 @@ impl From<AlertConfig> for ThresholdAlert {
             eval_config: value.eval_config,
             targets: value.targets,
             state: value.state,
+            notification_state: value.notification_state,
+            notification_config: value.notification_config,
             created: value.created,
             tags: value.tags,
             datasets: value.datasets,
@@ -283,9 +384,45 @@ impl From<ThresholdAlert> for AlertConfig {
             eval_config: val.eval_config,
             targets: val.targets,
             state: val.state,
+            notification_state: val.notification_state,
+            notification_config: val.notification_config,
             created: val.created,
             tags: val.tags,
             datasets: val.datasets,
         }
+    }
+}
+
+impl ThresholdAlert {
+    fn create_group_message(&self, breached_groups: &[GroupResult]) -> Result<String, AlertError> {
+        let header = self.get_message_header()?;
+        let mut message = format!("{header}\n");
+
+        message.push_str(&format!(
+            "Alerting Groups ({} total):\n",
+            breached_groups.len()
+        ));
+
+        for (index, group) in breached_groups.iter().enumerate() {
+            message.push_str(&format!("{}. ", index + 1));
+
+            if group.group_values.is_empty() {
+                message.push_str("[No GROUP BY]");
+            } else {
+                let group_desc = group
+                    .group_values
+                    .iter()
+                    .map(|(key, value)| format!("{}: {}", key, value))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                message.push_str(&group_desc);
+            }
+
+            message.push_str(&format!(" → Value: {}\n", group.aggregate_value));
+        }
+
+        message.push_str(&format!("\nQuery:\n{}", self.get_query()));
+
+        Ok(message)
     }
 }

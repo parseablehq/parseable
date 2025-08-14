@@ -27,7 +27,8 @@ use tokio::time::{Duration, Instant, interval_at, sleep};
 use tokio::{select, task};
 use tracing::{error, info, trace, warn};
 
-use crate::alerts::{AlertTask, alerts_utils};
+use crate::alerts::alert_enums::AlertTask;
+use crate::alerts::alerts_utils;
 use crate::parseable::PARSEABLE;
 use crate::storage::object_storage::sync_all_streams;
 use crate::{LOCAL_SYNC_INTERVAL, STORAGE_UPLOAD_INTERVAL};
@@ -339,9 +340,12 @@ pub async fn alert_runtime(mut rx: mpsc::Receiver<AlertTask>) -> Result<(), anyh
                 if let Some(handle) = alert_tasks.remove(&ulid) {
                     // cancel the task
                     handle.abort();
-                    warn!("Alert with id {} deleted", ulid);
+                    trace!("Alert with id {} deleted from evaluation tasks list", ulid);
                 } else {
-                    error!("Alert with id {} does not exist", ulid);
+                    error!(
+                        "Alert with id {} does not exist in evaluation tasks list",
+                        ulid
+                    );
                 }
             }
         }
