@@ -86,7 +86,7 @@ pub fn v2_v3(mut storage_metadata: JsonValue) -> JsonValue {
             for privilege in privileges.iter_mut() {
                 let privilege_value = privilege.get_mut("privilege");
                 if let Some(value) = privilege_value
-                    && value.as_str().unwrap() == "ingester"
+                    && matches!(value.as_str(), Some("ingester"))
                 {
                     *value = JsonValue::String("ingestor".to_string());
                 }
@@ -125,7 +125,7 @@ pub fn v3_v4(mut storage_metadata: JsonValue) -> JsonValue {
         for privilege in privileges.iter_mut() {
             let privilege_value = privilege.get_mut("privilege");
             if let Some(value) = privilege_value
-                && value.as_str().unwrap() == "ingester"
+                && matches!(value.as_str(), Some("ingester"))
             {
                 *value = JsonValue::String("ingestor".to_string());
             }
