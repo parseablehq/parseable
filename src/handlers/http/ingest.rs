@@ -160,7 +160,7 @@ pub async fn setup_otel_stream(
     expected_log_source: LogSource,
     known_fields: &[&str],
     telemetry_type: TelemetryType,
-) -> Result<(String, LogSource, LogSourceEntry), PostError> {
+) -> Result<(String, LogSource, LogSourceEntry, Option<String>), PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
@@ -190,7 +190,7 @@ pub async fn setup_otel_stream(
             telemetry_type,
         )
         .await?;
-
+    let mut time_partition = None;
     // Validate stream compatibility
     if let Ok(stream) = PARSEABLE.get_stream(&stream_name) {
         match log_source {
@@ -217,13 +217,15 @@ pub async fn setup_otel_stream(
             }
             _ => {}
         }
+
+        time_partition = stream.get_time_partition();
     }
 
     PARSEABLE
         .add_update_log_source(&stream_name, log_source_entry.clone())
         .await?;
 
-    Ok((stream_name, log_source, log_source_entry))
+    Ok((stream_name, log_source, log_source_entry, time_partition))
 }
 
 // Common content processing for OTEL ingestion
@@ -278,7 +280,7 @@ pub async fn handle_otel_logs_ingestion(
     req: HttpRequest,
     body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
-    let (stream_name, log_source, _) = setup_otel_stream(
+    let (stream_name, log_source, _, _) = setup_otel_stream(
         &req,
         LogSource::OtelLogs,
         &OTEL_LOG_KNOWN_FIELD_LIST,
@@ -298,7 +300,7 @@ pub async fn handle_otel_metrics_ingestion(
     req: HttpRequest,
     body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
-    let (stream_name, log_source, _) = setup_otel_stream(
+    let (stream_name, log_source, _, _) = setup_otel_stream(
         &req,
         LogSource::OtelMetrics,
         &OTEL_METRICS_KNOWN_FIELD_LIST,
@@ -318,7 +320,7 @@ pub async fn handle_otel_traces_ingestion(
     req: HttpRequest,
     body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
-    let (stream_name, log_source, _) = setup_otel_stream(
+    let (stream_name, log_source, _, _) = setup_otel_stream(
         &req,
         LogSource::OtelTraces,
         &OTEL_TRACES_KNOWN_FIELD_LIST,
