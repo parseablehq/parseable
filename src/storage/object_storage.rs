@@ -114,17 +114,13 @@ async fn upload_single_parquet_file(
         .expect("filename is valid string");
 
     // Upload the file
-    if let Err(e) = store
+    store
         .upload_multipart(&RelativePathBuf::from(&stream_relative_path), &path)
         .await
-    {
-        error!("Failed to upload file {filename:?}: {e}");
-        return Ok(UploadResult {
-            stats_calculated: false,
-            file_path: path,
-            manifest_file: None,
-        });
-    }
+        .map_err(|e| {
+            error!("Failed to upload file {filename:?} to {stream_relative_path}: {e}");
+            ObjectStorageError::Custom(format!("Failed to upload {filename}: {e}"))
+        })?;
 
     // Update storage metrics
     update_storage_metrics(&path, &stream_name, filename)?;

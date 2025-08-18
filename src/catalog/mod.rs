@@ -261,9 +261,9 @@ async fn process_single_partition(
         handle_existing_partition(
             pos,
             partition_changes,
-            &mut meta.snapshot.manifest_list,
             storage,
             stream_name,
+            meta,
             events_ingested,
             ingestion_size,
             storage_size,
@@ -292,14 +292,15 @@ async fn process_single_partition(
 async fn handle_existing_partition(
     pos: usize,
     partition_changes: Vec<manifest::File>,
-    manifests: &mut [snapshot::ManifestItem],
     storage: Arc<dyn ObjectStorage>,
     stream_name: &str,
+    meta: &mut ObjectStoreFormat,
     events_ingested: u64,
     ingestion_size: u64,
     storage_size: u64,
     partition_lower: DateTime<Utc>,
 ) -> Result<Option<snapshot::ManifestItem>, ObjectStorageError> {
+    let manifests = &mut meta.snapshot.manifest_list;
     let path = partition_path(
         stream_name,
         manifests[pos].time_lower_bound,
@@ -329,7 +330,7 @@ async fn handle_existing_partition(
                 storage,
                 stream_name,
                 false,
-                ObjectStoreFormat::default(), // We don't have meta here, use default
+                meta.clone(),
                 events_ingested,
                 ingestion_size,
                 storage_size,

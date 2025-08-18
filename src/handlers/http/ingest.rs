@@ -29,6 +29,7 @@ use crate::event::error::EventError;
 use crate::event::format::known_schema::{self, KNOWN_SCHEMA_LIST};
 use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
 use crate::event::{self, FORMAT_KEY, USER_AGENT_KEY};
+use crate::handlers::http::modal::utils::ingest_utils::validate_stream_for_ingestion;
 use crate::handlers::{
     CONTENT_TYPE_JSON, CONTENT_TYPE_PROTOBUF, EXTRACT_LOG_KEY, LOG_SOURCE_KEY,
     STREAM_NAME_HEADER_KEY, TELEMETRY_TYPE_KEY, TelemetryType,
@@ -117,20 +118,7 @@ pub async fn ingest(
 
     //if stream exists, fetch the stream log source
     //return error if the stream log source is otel traces or otel metrics
-    let stream = match PARSEABLE.get_stream(&stream_name) {
-        Ok(stream) => {
-            stream
-                .get_log_source()
-                .iter()
-                .find(|&stream_log_source_entry| {
-                    stream_log_source_entry.log_source_format != LogSource::OtelTraces
-                        && stream_log_source_entry.log_source_format != LogSource::OtelMetrics
-                })
-                .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
-            stream
-        }
-        Err(e) => return Err(PostError::from(e)),
-    };
+    let stream = validate_stream_for_ingestion(&stream_name)?;
 
     PARSEABLE
         .add_update_log_source(&stream_name, log_source_entry)
@@ -409,20 +397,7 @@ pub async fn post_event(
 
     //if stream exists, fetch the stream log source
     //return error if the stream log source is otel traces or otel metrics
-    let stream = match PARSEABLE.get_stream(&stream_name) {
-        Ok(stream) => {
-            stream
-                .get_log_source()
-                .iter()
-                .find(|&stream_log_source_entry| {
-                    stream_log_source_entry.log_source_format != LogSource::OtelTraces
-                        && stream_log_source_entry.log_source_format != LogSource::OtelMetrics
-                })
-                .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
-            stream
-        }
-        Err(e) => return Err(PostError::from(e)),
-    };
+    let stream = validate_stream_for_ingestion(&stream_name)?;
 
     if stream.get_time_partition().is_some() {
         return Err(PostError::CustomError(
