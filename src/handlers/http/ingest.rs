@@ -400,9 +400,9 @@ pub async fn post_event(
     let stream = validate_stream_for_ingestion(&stream_name)?;
 
     if stream.get_time_partition().is_some() {
-        return Err(PostError::CustomError(
-            "Ingestion is not allowed to stream with time partition".to_string(),
-        ));
+        return Err(PostError::Invalid(anyhow::anyhow!(
+            "Ingestion is not allowed to stream with time partition. Please upgrade to Parseable enterprise to enable this feature"
+        )));
     }
 
     flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields, None).await?;
