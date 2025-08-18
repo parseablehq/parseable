@@ -424,16 +424,13 @@ pub async fn post_event(
         Err(e) => return Err(PostError::from(e)),
     };
 
-    let time_partition = stream.get_time_partition();
+    if stream.get_time_partition().is_some() {
+        return Err(PostError::CustomError(
+            "Ingestion is not allowed to stream with time partition".to_string(),
+        ));
+    }
 
-    flatten_and_push_logs(
-        json,
-        &stream_name,
-        &log_source,
-        &p_custom_fields,
-        time_partition,
-    )
-    .await?;
+    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields, None).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
