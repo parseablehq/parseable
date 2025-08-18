@@ -280,7 +280,7 @@ pub async fn handle_otel_logs_ingestion(
     req: HttpRequest,
     body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
-    let (stream_name, log_source, _, _) = setup_otel_stream(
+    let (stream_name, log_source, ..) = setup_otel_stream(
         &req,
         LogSource::OtelLogs,
         &OTEL_LOG_KNOWN_FIELD_LIST,
@@ -300,7 +300,7 @@ pub async fn handle_otel_metrics_ingestion(
     req: HttpRequest,
     body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
-    let (stream_name, log_source, _, _) = setup_otel_stream(
+    let (stream_name, log_source, ..) = setup_otel_stream(
         &req,
         LogSource::OtelMetrics,
         &OTEL_METRICS_KNOWN_FIELD_LIST,
@@ -320,7 +320,7 @@ pub async fn handle_otel_traces_ingestion(
     req: HttpRequest,
     body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
-    let (stream_name, log_source, _, _) = setup_otel_stream(
+    let (stream_name, log_source, ..) = setup_otel_stream(
         &req,
         LogSource::OtelTraces,
         &OTEL_TRACES_KNOWN_FIELD_LIST,
