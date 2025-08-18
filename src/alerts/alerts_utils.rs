@@ -107,7 +107,7 @@ async fn execute_local_query(
         filter_tag: None,
     };
 
-    let (records, _) = execute(query, &tables[0], false)
+    let (records, _) = execute(query, false)
         .await
         .map_err(|err| AlertError::CustomError(format!("Failed to execute query: {err}")))?;
 

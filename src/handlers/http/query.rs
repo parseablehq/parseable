@@ -92,12 +92,9 @@ pub async fn get_records_and_fields(
     let creds = extract_session_key_from_req(req)?;
     let permissions = Users.get_permissions(&creds);
 
-    let table_name = tables
-        .first()
-        .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
     user_auth_for_datasets(&permissions, &tables).await?;
 
-    let (records, fields) = execute(query, table_name, false).await?;
+    let (records, fields) = execute(query, false).await?;
 
     let records = match records {
         Either::Left(vec_rb) => vec_rb,
@@ -121,9 +118,6 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);
 
-    let table_name = tables
-        .first()
-        .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
     user_auth_for_datasets(&permissions, &tables).await?;
     let time = Instant::now();
 
@@ -131,18 +125,21 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     // we use the `get_bin_density` method to get the count of records in the dataset
     // instead of executing the query using datafusion
     if let Some(column_name) = query.is_logical_plan_count_without_filters() {
-        return handle_count_query(&query_request, table_name, column_name, time).await;
+        let table = tables
+            .first()
+            .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
+        return handle_count_query(&query_request, table, column_name, time).await;
     }
 
     // if the query request has streaming = false (default)
     // we use datafusion's `execute` method to get the records
     if !query_request.streaming {
-        return handle_non_streaming_query(query, table_name, &query_request, time).await;
+        return handle_non_streaming_query(query, tables, &query_request, time).await;
     }
 
     // if the query request has streaming = true
     // we use datafusion's `execute_stream` method to get the records
-    handle_streaming_query(query, table_name, &query_request, time).await
+    handle_streaming_query(query, tables, &query_request, time).await
 }
 
 /// Handles count queries (e.g., `SELECT COUNT(*) FROM <dataset-name>`)
@@ -211,11 +208,12 @@ async fn handle_count_query(
 /// - `HttpResponse` with the full query result as a JSON object.
 async fn handle_non_streaming_query(
     query: LogicalQuery,
-    table_name: &str,
+    table_name: Vec<String>,
     query_request: &Query,
     time: Instant,
 ) -> Result<HttpResponse, QueryError> {
-    let (records, fields) = execute(query, table_name, query_request.streaming).await?;
+    let first_table_name = table_name[0].clone();
+    let (records, fields) = execute(query, query_request.streaming).await?;
     let records = match records {
         Either::Left(rbs) => rbs,
         Either::Right(_) => {
@@ -228,7 +226,7 @@ async fn handle_non_streaming_query(
     let time = time.elapsed().as_secs_f64();
 
     QUERY_EXECUTE_TIME
-        .with_label_values(&[table_name])
+        .with_label_values(&[&first_table_name])
         .observe(time);
     let response = QueryResponse {
         records,
@@ -259,11 +257,12 @@ async fn handle_non_streaming_query(
 /// - `HttpResponse` streaming the query results as NDJSON, optionally prefixed with the fields array.
 async fn handle_streaming_query(
     query: LogicalQuery,
-    table_name: &str,
+    table_name: Vec<String>,
     query_request: &Query,
     time: Instant,
 ) -> Result<HttpResponse, QueryError> {
-    let (records_stream, fields) = execute(query, table_name, query_request.streaming).await?;
+    let first_table_name = table_name[0].clone();
+    let (records_stream, fields) = execute(query, query_request.streaming).await?;
     let records_stream = match records_stream {
         Either::Left(_) => {
             return Err(QueryError::MalformedQuery(
@@ -275,7 +274,7 @@ async fn handle_streaming_query(
     let total_time = format!("{:?}", time.elapsed());
     let time = time.elapsed().as_secs_f64();
     QUERY_EXECUTE_TIME
-        .with_label_values(&[table_name])
+        .with_label_values(&[&first_table_name])
         .observe(time);
 
     let send_null = query_request.send_null;
