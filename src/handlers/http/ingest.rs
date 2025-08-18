@@ -118,17 +118,11 @@ pub async fn ingest(
 
     //if stream exists, fetch the stream log source
     //return error if the stream log source is otel traces or otel metrics
-    let stream = validate_stream_for_ingestion(&stream_name)?;
+    validate_stream_for_ingestion(&stream_name)?;
 
     PARSEABLE
         .add_update_log_source(&stream_name, log_source_entry)
         .await?;
-
-    if stream.get_time_partition().is_some() {
-        return Err(PostError::CustomError(
-            "Ingestion is not allowed to stream with time partition".to_string(),
-        ));
-    }
 
     flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields, None).await?;
 
@@ -397,13 +391,7 @@ pub async fn post_event(
 
     //if stream exists, fetch the stream log source
     //return error if the stream log source is otel traces or otel metrics
-    let stream = validate_stream_for_ingestion(&stream_name)?;
-
-    if stream.get_time_partition().is_some() {
-        return Err(PostError::Invalid(anyhow::anyhow!(
-            "Ingestion is not allowed to stream with time partition. Please upgrade to Parseable enterprise to enable this feature"
-        )));
-    }
+    validate_stream_for_ingestion(&stream_name)?;
 
     flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields, None).await?;
 

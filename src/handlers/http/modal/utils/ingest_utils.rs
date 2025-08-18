@@ -23,7 +23,7 @@ use opentelemetry_proto::tonic::{
     logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
 };
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
 use tracing::warn;
 
 use crate::{
@@ -39,7 +39,7 @@ use crate::{
         },
     },
     otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
-    parseable::{PARSEABLE, Stream},
+    parseable::PARSEABLE,
     storage::StreamType,
     utils::json::{convert_array_to_object, flatten::convert_to_array},
 };
@@ -268,7 +268,7 @@ fn verify_dataset_fields_count(stream_name: &str) -> Result<(), PostError> {
     Ok(())
 }
 
-pub fn validate_stream_for_ingestion(stream_name: &str) -> Result<Arc<Stream>, PostError> {
+pub fn validate_stream_for_ingestion(stream_name: &str) -> Result<(), PostError> {
     let stream = PARSEABLE.get_stream(stream_name)?;
 
     // Validate that the stream's log source is compatible
@@ -283,12 +283,12 @@ pub fn validate_stream_for_ingestion(stream_name: &str) -> Result<Arc<Stream>, P
 
     // Check for time partition
     if stream.get_time_partition().is_some() {
-        return Err(PostError::CustomError(
-            "Ingestion is not allowed to stream with time partition".to_string(),
-        ));
+        return Err(PostError::Invalid(anyhow::anyhow!(
+            "Ingestion with time partition is not supported in Parseable OSS"
+        )));
     }
 
-    Ok(stream)
+    Ok(())
 }
 
 #[cfg(test)]
