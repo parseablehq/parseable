@@ -29,14 +29,19 @@ use super::{
 };
 
 pub fn to_prism_user(user: &User) -> UsersPrism {
-    let (id, method, email, picture) = match &user.ty {
-        UserType::Native(_) => (user.username(), "native", None, None),
-        UserType::OAuth(oauth) => (
-            user.username(),
-            "oauth",
-            oauth.user_info.email.clone(),
-            oauth.user_info.picture.clone(),
-        ),
+    let (id, username, method, email, picture) = match &user.ty {
+        UserType::Native(_) => (user.username(), user.username(), "native", None, None),
+        UserType::OAuth(oauth) => {
+            let username = user.username();
+            let display_name = oauth.user_info.name.as_deref().unwrap_or(username);
+            (
+                username,
+                display_name,
+                "oauth",
+                oauth.user_info.email.clone(),
+                oauth.user_info.picture.clone(),
+            )
+        }
     };
     let direct_roles: HashMap<String, Vec<DefaultPrivilege>> = Users
         .get_role(id)
@@ -69,6 +74,7 @@ pub fn to_prism_user(user: &User) -> UsersPrism {
 
     UsersPrism {
         id: id.into(),
+        username: username.into(),
         method: method.into(),
         email: mask_pii_string(email),
         picture: mask_pii_url(picture),
