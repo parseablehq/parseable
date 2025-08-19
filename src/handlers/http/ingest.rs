@@ -29,6 +29,7 @@ use crate::event::error::EventError;
 use crate::event::format::known_schema::{self, KNOWN_SCHEMA_LIST};
 use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
 use crate::event::{self, FORMAT_KEY, USER_AGENT_KEY};
+use crate::handlers::http::modal::utils::ingest_utils::validate_stream_for_ingestion;
 use crate::handlers::{
     CONTENT_TYPE_JSON, CONTENT_TYPE_PROTOBUF, EXTRACT_LOG_KEY, LOG_SOURCE_KEY,
     STREAM_NAME_HEADER_KEY, TELEMETRY_TYPE_KEY, TelemetryType,
@@ -117,22 +118,13 @@ pub async fn ingest(
 
     //if stream exists, fetch the stream log source
     //return error if the stream log source is otel traces or otel metrics
-    if let Ok(stream) = PARSEABLE.get_stream(&stream_name) {
-        stream
-            .get_log_source()
-            .iter()
-            .find(|&stream_log_source_entry| {
-                stream_log_source_entry.log_source_format != LogSource::OtelTraces
-                    && stream_log_source_entry.log_source_format != LogSource::OtelMetrics
-            })
-            .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
-    }
+    validate_stream_for_ingestion(&stream_name)?;
 
     PARSEABLE
         .add_update_log_source(&stream_name, log_source_entry)
         .await?;
 
-    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
+    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields, None).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -168,7 +160,7 @@ pub async fn setup_otel_stream(
     expected_log_source: LogSource,
     known_fields: &[&str],
     telemetry_type: TelemetryType,
-) -> Result<(String, LogSource, LogSourceEntry), PostError> {
+) -> Result<(String, LogSource, LogSourceEntry, Option<String>), PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
@@ -198,7 +190,7 @@ pub async fn setup_otel_stream(
             telemetry_type,
         )
         .await?;
-
+    let mut time_partition = None;
     // Validate stream compatibility
     if let Ok(stream) = PARSEABLE.get_stream(&stream_name) {
         match log_source {
@@ -225,13 +217,15 @@ pub async fn setup_otel_stream(
             }
             _ => {}
         }
+
+        time_partition = stream.get_time_partition();
     }
 
     PARSEABLE
         .add_update_log_source(&stream_name, log_source_entry.clone())
         .await?;
 
-    Ok((stream_name, log_source, log_source_entry))
+    Ok((stream_name, log_source, log_source_entry, time_partition))
 }
 
 // Common content processing for OTEL ingestion
@@ -255,6 +249,7 @@ async fn process_otel_content(
                     stream_name,
                     log_source,
                     &p_custom_fields,
+                    None,
                 )
                 .await?;
             } else if content_type == CONTENT_TYPE_PROTOBUF {
@@ -285,7 +280,7 @@ pub async fn handle_otel_logs_ingestion(
     req: HttpRequest,
     body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
-    let (stream_name, log_source, _) = setup_otel_stream(
+    let (stream_name, log_source, ..) = setup_otel_stream(
         &req,
         LogSource::OtelLogs,
         &OTEL_LOG_KNOWN_FIELD_LIST,
@@ -305,7 +300,7 @@ pub async fn handle_otel_metrics_ingestion(
     req: HttpRequest,
     body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
-    let (stream_name, log_source, _) = setup_otel_stream(
+    let (stream_name, log_source, ..) = setup_otel_stream(
         &req,
         LogSource::OtelMetrics,
         &OTEL_METRICS_KNOWN_FIELD_LIST,
@@ -325,7 +320,7 @@ pub async fn handle_otel_traces_ingestion(
     req: HttpRequest,
     body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
-    let (stream_name, log_source, _) = setup_otel_stream(
+    let (stream_name, log_source, ..) = setup_otel_stream(
         &req,
         LogSource::OtelTraces,
         &OTEL_TRACES_KNOWN_FIELD_LIST,
@@ -398,18 +393,9 @@ pub async fn post_event(
 
     //if stream exists, fetch the stream log source
     //return error if the stream log source is otel traces or otel metrics
-    if let Ok(stream) = PARSEABLE.get_stream(&stream_name) {
-        stream
-            .get_log_source()
-            .iter()
-            .find(|&stream_log_source_entry| {
-                stream_log_source_entry.log_source_format != LogSource::OtelTraces
-                    && stream_log_source_entry.log_source_format != LogSource::OtelMetrics
-            })
-            .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
-    }
+    validate_stream_for_ingestion(&stream_name)?;
 
-    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
+    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields, None).await?;
 
     Ok(HttpResponse::Ok().finish())
 }

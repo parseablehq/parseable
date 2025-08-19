@@ -31,7 +31,8 @@ use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
 use chrono::Utc;
 use itertools::Itertools;
-use tracing::{error, warn};
+use rand::distributions::{Alphanumeric, DistString};
+use tracing::error;
 
 use crate::{
     parseable::{ARROW_FILE_EXTENSION, PART_FILE_EXTENSION},
@@ -92,8 +93,15 @@ impl Drop for DiskWriter {
         let mut arrow_path = self.path.to_owned();
         arrow_path.set_extension(ARROW_FILE_EXTENSION);
 
+        // If file exists, append a random string before .date to avoid overwriting
         if arrow_path.exists() {
-            warn!("File {arrow_path:?} exists and will be overwritten");
+            let file_name = arrow_path.file_name().unwrap().to_string_lossy();
+            let date_pos = file_name
+                .find(".date")
+                .expect("File name should contain .date");
+            let random_suffix = Alphanumeric.sample_string(&mut rand::thread_rng(), 8);
+            let new_name = format!("{}{}", random_suffix, &file_name[date_pos..]);
+            arrow_path.set_file_name(new_name);
         }
 
         if let Err(err) = std::fs::rename(&self.path, &arrow_path) {

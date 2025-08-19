@@ -53,6 +53,7 @@ pub async fn flatten_and_push_logs(
     stream_name: &str,
     log_source: &LogSource,
     p_custom_fields: &HashMap<String, String>,
+    time_partition: Option<String>,
 ) -> Result<(), PostError> {
     // Verify the dataset fields count
     verify_dataset_fields_count(stream_name)?;
@@ -63,30 +64,67 @@ pub async fn flatten_and_push_logs(
             let message: Message = serde_json::from_value(json)?;
             let flattened_kinesis_data = flatten_kinesis_logs(message).await?;
             let record = convert_to_array(flattened_kinesis_data)?;
-            push_logs(stream_name, record, log_source, p_custom_fields).await?;
+            push_logs(
+                stream_name,
+                record,
+                log_source,
+                p_custom_fields,
+                time_partition,
+            )
+            .await?;
         }
         LogSource::OtelLogs => {
             //custom flattening required for otel logs
             let logs: LogsData = serde_json::from_value(json)?;
             for record in flatten_otel_logs(&logs) {
-                push_logs(stream_name, record, log_source, p_custom_fields).await?;
+                push_logs(
+                    stream_name,
+                    record,
+                    log_source,
+                    p_custom_fields,
+                    time_partition.clone(),
+                )
+                .await?;
             }
         }
         LogSource::OtelTraces => {
             //custom flattening required for otel traces
             let traces: TracesData = serde_json::from_value(json)?;
             for record in flatten_otel_traces(&traces) {
-                push_logs(stream_name, record, log_source, p_custom_fields).await?;
+                push_logs(
+                    stream_name,
+                    record,
+                    log_source,
+                    p_custom_fields,
+                    time_partition.clone(),
+                )
+                .await?;
             }
         }
         LogSource::OtelMetrics => {
             //custom flattening required for otel metrics
             let metrics: MetricsData = serde_json::from_value(json)?;
             for record in flatten_otel_metrics(metrics) {
-                push_logs(stream_name, record, log_source, p_custom_fields).await?;
+                push_logs(
+                    stream_name,
+                    record,
+                    log_source,
+                    p_custom_fields,
+                    time_partition.clone(),
+                )
+                .await?;
             }
         }
-        _ => push_logs(stream_name, json, log_source, p_custom_fields).await?,
+        _ => {
+            push_logs(
+                stream_name,
+                json,
+                log_source,
+                p_custom_fields,
+                time_partition,
+            )
+            .await?
+        }
     }
 
     Ok(())
@@ -97,9 +135,9 @@ pub async fn push_logs(
     json: Value,
     log_source: &LogSource,
     p_custom_fields: &HashMap<String, String>,
+    time_partition: Option<String>,
 ) -> Result<(), PostError> {
     let stream = PARSEABLE.get_stream(stream_name)?;
-    let time_partition = stream.get_time_partition();
     let time_partition_limit = PARSEABLE
         .get_stream(stream_name)?
         .get_time_partition_limit();
@@ -108,25 +146,14 @@ pub async fn push_logs(
     let schema_version = stream.get_schema_version();
     let p_timestamp = Utc::now();
 
-    let data = if time_partition.is_some() || custom_partition.is_some() {
-        convert_array_to_object(
-            json,
-            time_partition.as_ref(),
-            time_partition_limit,
-            custom_partition.as_ref(),
-            schema_version,
-            log_source,
-        )?
-    } else {
-        vec![convert_to_array(convert_array_to_object(
-            json,
-            None,
-            None,
-            None,
-            schema_version,
-            log_source,
-        )?)?]
-    };
+    let data = convert_array_to_object(
+        json,
+        time_partition.as_ref(),
+        time_partition_limit,
+        custom_partition.as_ref(),
+        schema_version,
+        log_source,
+    )?;
 
     for json in data {
         let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
@@ -238,6 +265,29 @@ fn verify_dataset_fields_count(stream_name: &str) -> Result<(), PostError> {
         // Return an error if the fields count exceeds the limit
         return Err(error);
     }
+    Ok(())
+}
+
+pub fn validate_stream_for_ingestion(stream_name: &str) -> Result<(), PostError> {
+    let stream = PARSEABLE.get_stream(stream_name)?;
+
+    // Validate that the stream's log source is compatible
+    stream
+        .get_log_source()
+        .iter()
+        .find(|&stream_log_source_entry| {
+            stream_log_source_entry.log_source_format != LogSource::OtelTraces
+                && stream_log_source_entry.log_source_format != LogSource::OtelMetrics
+        })
+        .ok_or(PostError::IncorrectLogFormat(stream_name.to_string()))?;
+
+    // Check for time partition
+    if stream.get_time_partition().is_some() {
+        return Err(PostError::Invalid(anyhow::anyhow!(
+            "Ingestion with time partition is not supported in Parseable OSS"
+        )));
+    }
+
     Ok(())
 }
 

@@ -3509,6 +3509,7 @@ dependencies = [
  "prometheus-parse",
  "prost",
  "rand 0.8.5",
+ "rayon",
  "rdkafka",
  "regex",
  "relative-path",

@@ -25,7 +25,7 @@ use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::resolve_table_references;
-use datafusion::common::tree_node::{Transformed, TreeNode};
+use datafusion::common::tree_node::Transformed;
 use datafusion::error::DataFusionError;
 use datafusion::execution::disk_manager::DiskManagerConfig;
 use datafusion::execution::{SendableRecordBatchStream, SessionState, SessionStateBuilder};
@@ -56,7 +56,7 @@ use crate::catalog::Snapshot as CatalogSnapshot;
 use crate::catalog::column::{Int64Type, TypedStatistics};
 use crate::catalog::manifest::Manifest;
 use crate::catalog::snapshot::Snapshot;
-use crate::event;
+use crate::event::{self, DEFAULT_TIMESTAMP_KEY};
 use crate::handlers::http::query::QueryError;
 use crate::option::Mode;
 use crate::parseable::PARSEABLE;
@@ -77,7 +77,6 @@ pub static QUERY_RUNTIME: Lazy<Runtime> =
 /// at a time and has access to the entire thread pool, enabling better concurrent processing, and thus quicker results.
 pub async fn execute(
     query: Query,
-    stream_name: &str,
     is_streaming: bool,
 ) -> Result<
     (
@@ -86,9 +85,8 @@ pub async fn execute(
     ),
     ExecuteError,
 > {
-    let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
     QUERY_RUNTIME
-        .spawn(async move { query.execute(time_partition.as_ref(), is_streaming).await })
+        .spawn(async move { query.execute(is_streaming).await })
         .await
         .expect("The Join should have been successful")
 }
@@ -180,7 +178,6 @@ impl Query {
     /// if streaming is false, it returns a vector of record batches
     pub async fn execute(
         &self,
-        time_partition: Option<&String>,
         is_streaming: bool,
     ) -> Result<
         (
@@ -190,7 +187,7 @@ impl Query {
         ExecuteError,
     > {
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan(time_partition))
+            .execute_logical_plan(self.final_logical_plan())
             .await?;
 
         let fields = df
@@ -214,19 +211,16 @@ impl Query {
         Ok((results, fields))
     }
 
-    pub async fn get_dataframe(
-        &self,
-        time_partition: Option<&String>,
-    ) -> Result<DataFrame, ExecuteError> {
+    pub async fn get_dataframe(&self) -> Result<DataFrame, ExecuteError> {
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan(time_partition))
+            .execute_logical_plan(self.final_logical_plan())
             .await?;
 
         Ok(df)
     }
 
     /// return logical plan with all time filters applied through
-    fn final_logical_plan(&self, time_partition: Option<&String>) -> LogicalPlan {
+    fn final_logical_plan(&self) -> LogicalPlan {
         // see https://github.com/apache/arrow-datafusion/pull/8400
         // this can be eliminated in later version of datafusion but with slight caveat
         // transform cannot modify stringified plans by itself
@@ -238,7 +232,6 @@ impl Query {
                     plan.plan.as_ref().clone(),
                     self.time_range.start.naive_utc(),
                     self.time_range.end.naive_utc(),
-                    time_partition,
                 );
                 LogicalPlan::Explain(Explain {
                     verbose: plan.verbose,
@@ -257,7 +250,6 @@ impl Query {
                     x,
                     self.time_range.start.naive_utc(),
                     self.time_range.end.naive_utc(),
-                    time_partition,
                 )
                 .data
             }
@@ -586,66 +578,69 @@ fn transform(
     plan: LogicalPlan,
     start_time: NaiveDateTime,
     end_time: NaiveDateTime,
-    time_partition: Option<&String>,
 ) -> Transformed<LogicalPlan> {
-    plan.transform(&|plan| match plan {
-        LogicalPlan::TableScan(table) => {
-            let mut new_filters = vec![];
-            if !table_contains_any_time_filters(&table, time_partition) {
-                let mut _start_time_filter: Expr;
-                let mut _end_time_filter: Expr;
-                match time_partition {
-                    Some(time_partition) => {
-                        _start_time_filter =
-                            PartialTimeFilter::Low(std::ops::Bound::Included(start_time))
-                                .binary_expr(Expr::Column(Column::new(
-                                    Some(table.table_name.to_owned()),
-                                    time_partition.clone(),
-                                )));
-                        _end_time_filter =
-                            PartialTimeFilter::High(std::ops::Bound::Excluded(end_time))
-                                .binary_expr(Expr::Column(Column::new(
-                                    Some(table.table_name.to_owned()),
-                                    time_partition,
-                                )));
-                    }
-                    None => {
-                        _start_time_filter =
-                            PartialTimeFilter::Low(std::ops::Bound::Included(start_time))
-                                .binary_expr(Expr::Column(Column::new(
-                                    Some(table.table_name.to_owned()),
-                                    event::DEFAULT_TIMESTAMP_KEY,
-                                )));
-                        _end_time_filter =
-                            PartialTimeFilter::High(std::ops::Bound::Excluded(end_time))
-                                .binary_expr(Expr::Column(Column::new(
-                                    Some(table.table_name.to_owned()),
-                                    event::DEFAULT_TIMESTAMP_KEY,
-                                )));
-                    }
+    plan.transform_up_with_subqueries(&|plan| {
+        match plan {
+            LogicalPlan::TableScan(table) => {
+                // Get the specific time partition for this stream
+                let time_partition = PARSEABLE
+                    .get_stream(&table.table_name.to_string())
+                    .ok()
+                    .and_then(|stream| stream.get_time_partition());
+
+                let mut new_filters = vec![];
+                if !table_contains_any_time_filters(&table, time_partition.as_ref()) {
+                    let default_timestamp = DEFAULT_TIMESTAMP_KEY.to_string();
+                    let time_column = time_partition.as_ref().unwrap_or(&default_timestamp);
+
+                    // Create time filters with table-qualified column names
+                    let start_time_filter = PartialTimeFilter::Low(std::ops::Bound::Included(
+                        start_time,
+                    ))
+                    .binary_expr(Expr::Column(Column::new(
+                        Some(table.table_name.to_owned()),
+                        time_column.clone(),
+                    )));
+
+                    let end_time_filter = PartialTimeFilter::High(std::ops::Bound::Excluded(
+                        end_time,
+                    ))
+                    .binary_expr(Expr::Column(Column::new(
+                        Some(table.table_name.to_owned()),
+                        time_column.clone(),
+                    )));
+
+                    new_filters.push(start_time_filter);
+                    new_filters.push(end_time_filter);
                 }
 
-                new_filters.push(_start_time_filter);
-                new_filters.push(_end_time_filter);
+                let new_filter = new_filters.into_iter().reduce(and);
+                if let Some(new_filter) = new_filter {
+                    let filter =
+                        Filter::try_new(new_filter, Arc::new(LogicalPlan::TableScan(table)))
+                            .unwrap();
+                    Ok(Transformed::yes(LogicalPlan::Filter(filter)))
+                } else {
+                    Ok(Transformed::no(LogicalPlan::TableScan(table)))
+                }
             }
-            let new_filter = new_filters.into_iter().reduce(and);
-            if let Some(new_filter) = new_filter {
-                let filter =
-                    Filter::try_new(new_filter, Arc::new(LogicalPlan::TableScan(table))).unwrap();
-                Ok(Transformed::yes(LogicalPlan::Filter(filter)))
-            } else {
-                Ok(Transformed::no(LogicalPlan::TableScan(table)))
+            _ => {
+                // For all other plan types, continue the transformation recursively
+                // This ensures that subqueries and other nested plans are also transformed
+                Ok(Transformed::no(plan))
             }
         }
-        x => Ok(Transformed::no(x)),
     })
-    .expect("transform only transforms the tablescan")
+    .expect("transform processes all plan nodes")
 }
 
 fn table_contains_any_time_filters(
     table: &datafusion::logical_expr::TableScan,
     time_partition: Option<&String>,
 ) -> bool {
+    let default_timestamp = DEFAULT_TIMESTAMP_KEY.to_string();
+    let time_column = time_partition.unwrap_or(&default_timestamp);
+
     table
         .filters
         .iter()
@@ -658,8 +653,7 @@ fn table_contains_any_time_filters(
         })
         .any(|expr| {
             matches!(&*expr.left, Expr::Column(Column { name, .. })
-            if (time_partition.is_some_and(|field| field == name) ||
-            (time_partition.is_none() && name == event::DEFAULT_TIMESTAMP_KEY)))
+            if name == time_column)
         })
 }
 

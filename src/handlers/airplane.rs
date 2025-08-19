@@ -205,7 +205,7 @@ impl FlightService for AirServiceImpl {
             })?;
         let time = Instant::now();
 
-        let (records, _) = execute(query, &stream_name, false)
+        let (records, _) = execute(query, false)
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
 
