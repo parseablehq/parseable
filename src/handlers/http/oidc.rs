@@ -248,18 +248,21 @@ pub async fn reply_login(
 fn find_existing_user(user_info: &user::UserInfo) -> Option<User> {
     if let Some(sub) = &user_info.sub
         && let Some(user) = Users.get_user(sub)
+        && matches!(user.ty, UserType::OAuth(_))
     {
         return Some(user);
     }
 
     if let Some(name) = &user_info.name
         && let Some(user) = Users.get_user(name)
+        && matches!(user.ty, UserType::OAuth(_))
     {
         return Some(user);
     }
 
     if let Some(email) = &user_info.email
         && let Some(user) = Users.get_user(email)
+        && matches!(user.ty, UserType::OAuth(_))
     {
         return Some(user);
     }
