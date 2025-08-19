@@ -219,6 +219,7 @@ pub async fn reply_login(
         // If no roles were found, use the default role
         final_roles.clone_from(&default_role);
     }
+
     let user = match (existing_user, final_roles) {
         (Some(user), roles) => update_user_if_changed(user, roles, user_info).await?,
         (None, roles) => put_user(&user_id, roles, user_info).await?,
@@ -425,7 +426,7 @@ pub async fn update_user_if_changed(
         entry.clone_from(&user);
         put_metadata(&metadata).await?;
     }
-
+    Users.delete_user(&old_username);
     Users.put_user(user.clone());
     Ok(user)
 }
