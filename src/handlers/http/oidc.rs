@@ -170,10 +170,13 @@ pub async fn reply_login(
         .or_else(|| user_info.email.clone())
         .or_else(|| user_info.sub.clone())
         .expect("OIDC provider did not return a usable identifier (name, email or sub)");
-    let user_id = user_info
-        .sub
-        .clone()
-        .expect("OIDC provider did not return a usable identifier (sub)");
+    let user_id = match user_info.sub.clone() {
+        Some(id) => id,
+        None => {
+            tracing::error!("OIDC provider did not return a sub");
+            return Err(OIDCError::Unauthorized);
+        }
+    };
     let user_info: user::UserInfo = user_info.into();
     let group: HashSet<String> = claims
         .other
@@ -424,6 +427,12 @@ pub async fn update_user_if_changed(
         .find(|x| x.username() == old_username)
     {
         entry.clone_from(&user);
+        // migrate user references inside user groups
+        for group in metadata.user_groups.iter_mut() {
+            if group.users.remove(&old_username) {
+                group.users.insert(user.username().to_string());
+            }
+        }
         put_metadata(&metadata).await?;
     }
     Users.delete_user(&old_username);
