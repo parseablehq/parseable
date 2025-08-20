@@ -39,11 +39,8 @@ pub struct Event {
 }
 
 impl Event {
-    pub fn new(json: Value) -> Self {
-        Self {
-            json,
-            p_timestamp: Utc::now(),
-        }
+    pub fn new(json: Value, p_timestamp: DateTime<Utc>) -> Self {
+        Self { json, p_timestamp }
     }
 }
 

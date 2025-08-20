@@ -403,21 +403,23 @@ impl AlertConfig {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AlertsSummary {
     pub total: u64,
     pub triggered: AlertsInfoByState,
     pub disabled: AlertsInfoByState,
-    #[serde(rename = "not-triggered")]
     pub not_triggered: AlertsInfoByState,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AlertsInfoByState {
     pub total: u64,
     pub alert_info: Vec<AlertsInfo>,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AlertsInfo {
     pub title: String,
     pub id: Ulid,

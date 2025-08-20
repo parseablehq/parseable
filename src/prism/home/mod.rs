@@ -40,8 +40,15 @@ use crate::{
     users::{dashboards::DASHBOARDS, filters::FILTERS},
 };
 
-type StreamMetadataResponse =
-    Result<(String, Vec<ObjectStoreFormat>, TelemetryType), PrismHomeError>;
+type StreamMetadataResponse = Result<
+    (
+        String,
+        Vec<ObjectStoreFormat>,
+        TelemetryType,
+        Option<String>,
+    ),
+    PrismHomeError,
+>;
 
 #[derive(Debug, Serialize, Default)]
 pub struct DatedStats {
@@ -52,12 +59,16 @@ pub struct DatedStats {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DataSet {
     title: String,
     dataset_type: TelemetryType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    time_partition: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HomeResponse {
     pub alerts_summary: AlertsSummary,
     pub stats_details: Vec<DatedStats>,
@@ -120,7 +131,7 @@ pub async fn generate_home_response(
 
     for result in stream_metadata_results {
         match result {
-            Ok((stream, metadata, dataset_type)) => {
+            Ok((stream, metadata, dataset_type, time_partition)) => {
                 // Skip internal streams if the flag is false
                 if !include_internal
                     && metadata
@@ -133,6 +144,7 @@ pub async fn generate_home_response(
                 datasets.push(DataSet {
                     title: stream,
                     dataset_type,
+                    time_partition,
                 });
             }
             Err(e) => {
@@ -204,7 +216,15 @@ fn get_top_5_streams_by_ingestion(
 
 async fn get_stream_metadata(
     stream: String,
-) -> Result<(String, Vec<ObjectStoreFormat>, TelemetryType), PrismHomeError> {
+) -> Result<
+    (
+        String,
+        Vec<ObjectStoreFormat>,
+        TelemetryType,
+        Option<String>,
+    ),
+    PrismHomeError,
+> {
     let path = RelativePathBuf::from_iter([&stream, STREAM_ROOT_DIRECTORY]);
     let obs = PARSEABLE
         .storage
@@ -234,8 +254,9 @@ async fn get_stream_metadata(
     }
 
     let dataset_type = stream_jsons[0].telemetry_type;
+    let time_partition = stream_jsons[0].time_partition.clone();
 
-    Ok((stream, stream_jsons, dataset_type))
+    Ok((stream, stream_jsons, dataset_type, time_partition))
 }
 
 async fn stats_for_date(

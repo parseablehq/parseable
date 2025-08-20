@@ -596,12 +596,8 @@ pub async fn send_stream_delete_request(
 pub async fn send_retention_cleanup_request(
     url: &str,
     ingestor: IngestorMetadata,
-    dates: &Vec<String>,
-) -> Result<String, ObjectStorageError> {
-    let mut first_event_at: String = String::default();
-    if !utils::check_liveness(&ingestor.domain_name).await {
-        return Ok(first_event_at);
-    }
+    dates: &[String],
+) -> Result<(), ObjectStorageError> {
     let resp = INTRA_CLUSTER_CLIENT
         .post(url)
         .header(header::CONTENT_TYPE, "application/json")
@@ -621,20 +617,18 @@ pub async fn send_retention_cleanup_request(
     // if the response is not successful, log the error and return a custom error
     // this could be a bit too much, but we need to be sure it covers all cases
     if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
         error!(
             "failed to perform cleanup on retention: {}\nResponse Returned: {:?}",
-            ingestor.domain_name,
-            resp.status()
+            ingestor.domain_name, body
         );
+        return Err(ObjectStorageError::Custom(format!(
+            "failed to perform cleanup on retention: {}\nResponse Returned: {:?}",
+            ingestor.domain_name, body
+        )));
     }
 
-    let resp_data = resp.bytes().await.map_err(|err| {
-        error!("Fatal: failed to parse response to bytes: {:?}", err);
-        ObjectStorageError::Custom(err.to_string())
-    })?;
-
-    first_event_at = String::from_utf8_lossy(&resp_data).to_string();
-    Ok(first_event_at)
+    Ok(())
 }
 
 /// Fetches cluster information for all nodes (ingestor, indexer, querier and prism)

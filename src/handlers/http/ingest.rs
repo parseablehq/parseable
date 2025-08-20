@@ -137,7 +137,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
     p_custom_fields.insert(USER_AGENT_KEY.to_string(), "parseable".to_string());
     p_custom_fields.insert(FORMAT_KEY.to_string(), LogSource::Pmeta.to_string());
     // For internal streams, use old schema
-    format::json::Event::new(json.into_inner())
+    format::json::Event::new(json.into_inner(), Utc::now())
         .into_event(
             stream_name,
             size as u64,
@@ -522,6 +522,7 @@ mod tests {
     use arrow::datatypes::Int64Type;
     use arrow_array::{ArrayRef, Float64Array, Int64Array, ListArray, StringArray};
     use arrow_schema::{DataType, Field};
+    use chrono::Utc;
     use serde_json::json;
     use std::{collections::HashMap, sync::Arc};
 
@@ -562,7 +563,7 @@ mod tests {
             "b": "hello",
         });
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(
                 &HashMap::default(),
                 false,
@@ -596,7 +597,7 @@ mod tests {
             "c": null
         });
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(
                 &HashMap::default(),
                 false,
@@ -634,7 +635,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
             .unwrap();
 
@@ -667,7 +668,7 @@ mod tests {
         );
 
         assert!(
-            json::Event::new(json)
+            json::Event::new(json, Utc::now())
                 .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
                 .is_err()
         );
@@ -686,7 +687,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
             .unwrap();
 
@@ -712,7 +713,7 @@ mod tests {
             },
         ]);
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(
                 &HashMap::default(),
                 false,
@@ -766,7 +767,7 @@ mod tests {
             },
         ]);
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(
                 &HashMap::default(),
                 false,
@@ -821,7 +822,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
             .unwrap();
 
@@ -871,7 +872,7 @@ mod tests {
         );
 
         assert!(
-            json::Event::new(json)
+            json::Event::new(json, Utc::now())
                 .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
                 .is_err()
         );
@@ -901,7 +902,7 @@ mod tests {
             },
         ]);
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(
                 &HashMap::default(),
                 false,
@@ -979,7 +980,7 @@ mod tests {
             },
         ]);
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(
                 &HashMap::default(),
                 false,
