@@ -59,6 +59,7 @@ pub struct DatedStats {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DataSet {
     title: String,
     dataset_type: TelemetryType,
@@ -67,6 +68,7 @@ pub struct DataSet {
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HomeResponse {
     pub alerts_summary: AlertsSummary,
     pub stats_details: Vec<DatedStats>,
