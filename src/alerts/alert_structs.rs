@@ -270,6 +270,13 @@ impl AlertRequest {
             TARGETS.get_target_by_id(id).await?;
         }
         let datasets = resolve_stream_names(&self.query)?;
+
+        if datasets.len() != 1 {
+            return Err(AlertError::ValidationFailure(format!(
+                "Query should include only one dataset. Found- {datasets:?}"
+            )));
+        }
+
         let config = AlertConfig {
             version: AlertVersion::from(CURRENT_ALERTS_VERSION),
             id: Ulid::new(),

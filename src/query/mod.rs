@@ -345,7 +345,7 @@ impl CountsRequest {
             .get_stream(&self.stream)
             .map_err(|err| anyhow::Error::msg(err.to_string()))?
             .get_time_partition()
-            .unwrap_or_else(|| event::DEFAULT_TIMESTAMP_KEY.to_owned());
+            .unwrap_or(event::DEFAULT_TIMESTAMP_KEY.to_owned());
 
         // get time range
         let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
@@ -445,6 +445,12 @@ impl CountsRequest {
         // unwrap because we have asserted that it is some
         let count_conditions = self.conditions.as_ref().unwrap();
 
+        // get time partition column
+        let time_partition = PARSEABLE
+            .get_stream(&self.stream)?
+            .get_time_partition()
+            .unwrap_or(DEFAULT_TIMESTAMP_KEY.into());
+
         let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
 
         let dur = time_range.end.signed_duration_since(time_range.start);
@@ -452,19 +458,19 @@ impl CountsRequest {
         let date_bin = if dur.num_minutes() <= 60 * 10 {
             // date_bin 1 minute
             format!(
-                "CAST(DATE_BIN('1 minute', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 minute', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 minute' as end_time",
+                "CAST(DATE_BIN('1 minute', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 minute', \"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 minute' as end_time",
                 self.stream
             )
         } else if dur.num_minutes() > 60 * 10 && dur.num_minutes() < 60 * 240 {
             // date_bin 1 hour
             format!(
-                "CAST(DATE_BIN('1 hour', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 hour', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 hour' as end_time",
+                "CAST(DATE_BIN('1 hour', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 hour', \"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 hour' as end_time",
                 self.stream
             )
         } else {
             // date_bin 1 day
             format!(
-                "CAST(DATE_BIN('1 day', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 day', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 day' as end_time",
+                "CAST(DATE_BIN('1 day', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 day', \"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 day' as end_time",
                 self.stream
             )
         };
@@ -653,7 +659,7 @@ fn table_contains_any_time_filters(
         })
         .any(|expr| {
             matches!(&*expr.left, Expr::Column(Column { name, .. })
-            if name == time_column)
+            if name == &default_timestamp || name == time_column)
         })
 }
 
