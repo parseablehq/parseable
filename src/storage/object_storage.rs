@@ -62,8 +62,8 @@ use crate::parseable::{LogStream, PARSEABLE, Stream};
 use crate::stats::FullStats;
 use crate::storage::SETTINGS_ROOT_DIRECTORY;
 use crate::storage::TARGETS_ROOT_DIRECTORY;
+use crate::storage::field_stats::DATASET_STATS_STREAM_NAME;
 use crate::storage::field_stats::calculate_field_stats;
-use crate::utils::DATASET_STATS_STREAM_NAME;
 
 use super::{
     ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, ObjectStorageError, ObjectStoreFormat,

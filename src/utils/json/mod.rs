@@ -75,7 +75,7 @@ fn should_apply_generic_flattening(
 }
 
 /// Applies generic flattening and handles the result for partitioned processing
-fn apply_generic_flattening_for_partition(
+pub fn apply_generic_flattening_for_partition(
     element: Value,
     time_partition: Option<&String>,
     time_partition_limit: Option<NonZeroU32>,
