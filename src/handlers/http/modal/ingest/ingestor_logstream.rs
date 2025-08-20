@@ -51,10 +51,18 @@ pub async fn retention_cleanup(
         return Err(StreamNotFound(stream_name.clone()).into());
     }
 
-    let res = remove_manifest_from_snapshot(storage.clone(), &stream_name, date_list).await;
-    let first_event_at: Option<String> = res.unwrap_or_default();
+    if let Err(err) = remove_manifest_from_snapshot(storage.clone(), &stream_name, date_list).await
+    {
+        return Err(StreamError::Custom {
+            msg: format!(
+                "failed to update snapshot during retention cleanup for stream {}: {}",
+                stream_name, err
+            ),
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+        });
+    }
 
-    Ok((first_event_at, StatusCode::OK))
+    Ok(("Cleanup complete", StatusCode::OK))
 }
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {

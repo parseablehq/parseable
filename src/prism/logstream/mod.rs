@@ -153,19 +153,20 @@ async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, StreamE
     }
 
     let storage = PARSEABLE.storage.get_object_store();
-    // if first_event_at is not found in memory map, check if it exists in the storage
-    // if it exists in the storage, update the first_event_at in memory map
-    let stream_first_event_at = if let Some(first_event_at) =
-        PARSEABLE.get_stream(stream_name)?.get_first_event()
+
+    // Get first and latest event timestamps from storage
+    let (stream_first_event_at, stream_latest_event_at) = match storage
+        .get_first_and_latest_event_from_storage(stream_name)
+        .await
     {
-        Some(first_event_at)
-    } else if let Ok(Some(first_event_at)) = storage.get_first_event_from_storage(stream_name).await
-    {
-        PARSEABLE
-            .update_first_event_at(stream_name, &first_event_at)
-            .await
-    } else {
-        None
+        Ok(result) => result,
+        Err(err) => {
+            warn!(
+                "failed to fetch first/latest event timestamps from storage for stream {}: {}",
+                stream_name, err
+            );
+            (None, None)
+        }
     };
 
     let hash_map = PARSEABLE.streams.read().unwrap();
@@ -180,6 +181,7 @@ async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, StreamE
         stream_type: stream_meta.stream_type,
         created_at: stream_meta.created_at.clone(),
         first_event_at: stream_first_event_at,
+        latest_event_at: stream_latest_event_at,
         time_partition: stream_meta.time_partition.clone(),
         time_partition_limit: stream_meta
             .time_partition_limit

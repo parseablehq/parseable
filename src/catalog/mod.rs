@@ -25,16 +25,13 @@ use rayon::prelude::*;
 use relative_path::RelativePathBuf;
 use snapshot::ManifestItem;
 use std::io::Error as IOError;
-use tracing::{error, info};
+use tracing::error;
 
 use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
     handlers::{
         self,
-        http::{
-            base_path_without_preceding_slash,
-            modal::{NodeMetadata, NodeType},
-        },
+        http::{base_path_without_preceding_slash, cluster::for_each_live_ingestor},
     },
     metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE},
     option::Mode,
@@ -458,7 +455,7 @@ pub async fn remove_manifest_from_snapshot(
     storage: Arc<dyn ObjectStorage>,
     stream_name: &str,
     dates: Vec<String>,
-) -> Result<Option<String>, ObjectStorageError> {
+) -> Result<(), ObjectStorageError> {
     if !dates.is_empty() {
         // get current snapshot
         let mut meta = storage.get_object_store_format(stream_name).await?;
@@ -472,114 +469,29 @@ pub async fn remove_manifest_from_snapshot(
         storage.put_snapshot(stream_name, meta.snapshot).await?;
     }
 
-    // retention is initiated from the querier
-    // request is forwarded to all ingestors to clean up their manifests
-    // no action required for the Index or Prism nodes
-    match PARSEABLE.options.mode {
-        Mode::All | Mode::Ingest => {
-            Ok(get_first_event(storage.clone(), stream_name, Vec::new()).await?)
-        }
-        Mode::Query => Ok(get_first_event(storage, stream_name, dates).await?),
-        Mode::Index | Mode::Prism => Err(ObjectStorageError::UnhandledError(Box::new(
-            std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "Can't remove manifest from within Index or Prism server",
-            ),
-        ))),
-    }
-}
+    if !dates.is_empty() && matches!(PARSEABLE.options.mode, Mode::Query | Mode::Prism) {
+        let stream_name_clone = stream_name.to_string();
+        let dates_clone = dates.clone();
 
-pub async fn get_first_event(
-    storage: Arc<dyn ObjectStorage>,
-    stream_name: &str,
-    dates: Vec<String>,
-) -> Result<Option<String>, ObjectStorageError> {
-    let mut first_event_at: String = String::default();
-    match PARSEABLE.options.mode {
-        Mode::All | Mode::Ingest => {
-            // get current snapshot
-            let stream_first_event = PARSEABLE.get_stream(stream_name)?.get_first_event();
-            if let Some(first_event) = stream_first_event {
-                first_event_at = first_event;
-            } else {
-                let mut meta = storage.get_object_store_format(stream_name).await?;
-                let meta_clone = meta.clone();
-                let manifests = meta_clone.snapshot.manifest_list;
-                let time_partition = meta_clone.time_partition;
-                if manifests.is_empty() {
-                    info!("No manifest found for stream {stream_name}");
-                    return Err(ObjectStorageError::Custom("No manifest found".to_string()));
-                }
-                let manifest = &manifests[0];
-                let path = partition_path(
-                    stream_name,
-                    manifest.time_lower_bound,
-                    manifest.time_upper_bound,
-                );
-                let Some(manifest) = storage.get_manifest(&path).await? else {
-                    return Err(ObjectStorageError::UnhandledError(
-                        "Manifest found in snapshot but not in object-storage"
-                            .to_string()
-                            .into(),
-                    ));
-                };
-                if let Some(first_event) = manifest.files.first() {
-                    let lower_bound = match time_partition {
-                        Some(time_partition) => {
-                            let (lower_bound, _) = get_file_bounds(first_event, time_partition);
-                            lower_bound
-                        }
-                        None => {
-                            let (lower_bound, _) =
-                                get_file_bounds(first_event, DEFAULT_TIMESTAMP_KEY.to_string());
-                            lower_bound
-                        }
-                    };
-                    first_event_at = lower_bound.with_timezone(&Local).to_rfc3339();
-                    meta.first_event_at = Some(first_event_at.clone());
-                    storage.put_stream_manifest(stream_name, &meta).await?;
-                    PARSEABLE
-                        .get_stream(stream_name)?
-                        .set_first_event_at(&first_event_at);
-                }
-            }
-        }
-        Mode::Query => {
-            let ingestor_metadata: Vec<NodeMetadata> =
-                handlers::http::cluster::get_node_info(NodeType::Ingestor)
-                    .await
-                    .map_err(|err| {
-                        error!("Fatal: failed to get ingestor info: {:?}", err);
-                        ObjectStorageError::from(err)
-                    })?;
-            let mut ingestors_first_event_at: Vec<String> = Vec::new();
-            for ingestor in ingestor_metadata {
+        for_each_live_ingestor(move |ingestor| {
+            let stream_name = stream_name_clone.clone();
+            let dates = dates_clone.clone();
+            async move {
                 let url = format!(
                     "{}{}/logstream/{}/retention/cleanup",
                     ingestor.domain_name,
                     base_path_without_preceding_slash(),
                     stream_name
                 );
-                let ingestor_first_event_at =
-                    handlers::http::cluster::send_retention_cleanup_request(
-                        &url,
-                        ingestor.clone(),
-                        &dates,
-                    )
+                handlers::http::cluster::send_retention_cleanup_request(&url, ingestor, &dates)
                     .await?;
-                if !ingestor_first_event_at.is_empty() {
-                    ingestors_first_event_at.push(ingestor_first_event_at);
-                }
+                Ok::<(), ObjectStorageError>(())
             }
-            if ingestors_first_event_at.is_empty() {
-                return Ok(None);
-            }
-            first_event_at = ingestors_first_event_at.iter().min().unwrap().to_string();
-        }
-        _ => {}
+        })
+        .await?;
     }
 
-    Ok(Some(first_event_at))
+    Ok(())
 }
 
 /// Partition the path to which this manifest belongs.

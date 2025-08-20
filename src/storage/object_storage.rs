@@ -72,6 +72,8 @@ use super::{
     STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY, StorageMetadata, retention::Retention,
 };
 
+use crate::event::DEFAULT_TIMESTAMP_KEY;
+
 /// Context for upload operations containing stream information
 pub(crate) struct UploadContext {
     stream: Arc<Stream>,
@@ -839,52 +841,197 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         Ok(merged_log_sources)
     }
 
-    /// Retrieves the earliest first-event-at from the storage for the specified stream.
-    ///
-    /// This function fetches the object-store format from all the stream.json files for the given stream from the storage,
-    /// extracts the `first_event_at` timestamps, and returns the earliest `first_event_at`.
+    /// Retrieves both the first and latest event timestamps from storage for the specified stream.
     ///
     /// # Arguments
     ///
-    /// * `stream_name` - The name of the stream for which `first_event_at` is to be retrieved.
+    /// * `stream_name` - The name of the stream
     ///
     /// # Returns
     ///
-    /// * `Result<Option<String>, ObjectStorageError>` - Returns `Ok(Some(String))` with the earliest
-    ///   first event timestamp if found, `Ok(None)` if no timestamps are found, or an `ObjectStorageError`
-    ///   if an error occurs.
-    ///
-    /// # Examples
-    /// ```ignore
-    /// ```rust
-    /// let result = get_first_event_from_storage("my_stream").await;
-    /// match result {
-    ///     Ok(Some(first_event)) => println!("first-event-at: {}", first_event),
-    ///     Ok(None) => println!("first-event-at not found"),
-    ///     Err(err) => println!("Error: {:?}", err),
-    /// }
-    /// ```
-    async fn get_first_event_from_storage(
+    /// * `Result<(Option<String>, Option<String>), ObjectStorageError>` - Returns tuple of
+    ///   (first_event_at, latest_event_at). Each can be None if no timestamps are found.
+    async fn get_first_and_latest_event_from_storage(
         &self,
         stream_name: &str,
-    ) -> Result<Option<String>, ObjectStorageError> {
-        let mut all_first_events = vec![];
-        let stream_metas = self.get_stream_meta_from_storage(stream_name).await;
-        if let Ok(stream_metas) = stream_metas {
-            for stream_meta in stream_metas.iter() {
-                if let Some(first_event) = &stream_meta.first_event_at {
-                    let first_event = DateTime::parse_from_rfc3339(first_event).unwrap();
-                    let first_event = first_event.with_timezone(&Utc);
-                    all_first_events.push(first_event);
+    ) -> Result<(Option<String>, Option<String>), ObjectStorageError> {
+        // Get time partition for the stream
+        let time_partition = if let Ok(stream) = crate::parseable::PARSEABLE.get_stream(stream_name)
+        {
+            stream.get_time_partition()
+        } else {
+            None
+        };
+
+        // Get parsed stream metadata files
+        let stream_jsons = self.get_stream_meta_from_storage(stream_name).await?;
+
+        // Collect all manifest items from snapshots
+        let mut all_manifest_items = Vec::new();
+        for stream_format in &stream_jsons {
+            let manifest_items = &stream_format.snapshot.manifest_list;
+            all_manifest_items.extend(manifest_items.iter());
+        }
+
+        if all_manifest_items.is_empty() {
+            return Ok((None, None));
+        }
+
+        // Find the manifest items with the lowest and highest time bounds
+        let first_manifest_item = all_manifest_items
+            .iter()
+            .min_by_key(|item| item.time_lower_bound);
+
+        let latest_manifest_item = all_manifest_items
+            .iter()
+            .max_by_key(|item| item.time_upper_bound);
+
+        let partition_column = time_partition.as_deref().unwrap_or(DEFAULT_TIMESTAMP_KEY);
+
+        // Extract first and latest timestamps - check if we can reuse the same manifest
+        let (first_timestamp, latest_timestamp) = if let (Some(first_item), Some(latest_item)) =
+            (first_manifest_item, latest_manifest_item)
+        {
+            if first_item.manifest_path == latest_item.manifest_path {
+                // Same manifest, we can get both min and max in one pass
+                let manifest = self
+                    .load_manifest_from_path(&first_item.manifest_path)
+                    .await?;
+                self.extract_timestamps_from_manifest(&manifest, partition_column)
+            } else {
+                // Different manifests, need to load separately
+                let first_ts = self
+                    .extract_timestamp_from_manifest(
+                        &first_item.manifest_path,
+                        partition_column,
+                        true,
+                    )
+                    .await?;
+                let latest_ts = self
+                    .extract_timestamp_from_manifest(
+                        &latest_item.manifest_path,
+                        partition_column,
+                        false,
+                    )
+                    .await?;
+                (first_ts, latest_ts)
+            }
+        } else {
+            (None, None)
+        };
+
+        let first_event_at = first_timestamp.map(|ts| ts.to_rfc3339());
+        let latest_event_at = latest_timestamp.map(|ts| ts.to_rfc3339());
+
+        Ok((first_event_at, latest_event_at))
+    }
+
+    /// Helper method to load a manifest file from object storage
+    async fn load_manifest_from_path(
+        &self,
+        manifest_path: &str,
+    ) -> Result<Manifest, ObjectStorageError> {
+        use crate::{catalog::manifest::Manifest, query::QUERY_SESSION};
+
+        let object_store = QUERY_SESSION
+            .state()
+            .runtime_env()
+            .object_store_registry
+            .get_store(&self.store_url())
+            .map_err(|e| ObjectStorageError::UnhandledError(Box::new(e)))?;
+
+        let path = object_store::path::Path::parse(manifest_path)
+            .map_err(|e| ObjectStorageError::UnhandledError(Box::new(e)))?;
+
+        let manifest_response = object_store
+            .get(&path)
+            .await
+            .map_err(|e| ObjectStorageError::UnhandledError(Box::new(e)))?;
+
+        let manifest_bytes = manifest_response
+            .bytes()
+            .await
+            .map_err(|e| ObjectStorageError::UnhandledError(Box::new(e)))?;
+
+        let manifest: Manifest = serde_json::from_slice(&manifest_bytes)
+            .map_err(|e| ObjectStorageError::UnhandledError(Box::new(e)))?;
+
+        Ok(manifest)
+    }
+
+    /// Helper method to extract min and max timestamps from a manifest
+    /// Returns (min_timestamp, max_timestamp)
+    fn extract_timestamps_from_manifest(
+        &self,
+        manifest: &Manifest,
+        partition_column: &str,
+    ) -> (Option<DateTime<Utc>>, Option<DateTime<Utc>>) {
+        use crate::catalog::column::TypedStatistics;
+        use chrono::{DateTime, Utc};
+
+        let mut min_timestamp: Option<DateTime<Utc>> = None;
+        let mut max_timestamp: Option<DateTime<Utc>> = None;
+
+        for file in &manifest.files {
+            if let Some(column) = file.columns.iter().find(|col| col.name == partition_column)
+                && let Some(stats) = &column.stats
+            {
+                match stats {
+                    TypedStatistics::Int(int_stats) => {
+                        let min_ts =
+                            DateTime::from_timestamp_millis(int_stats.min).unwrap_or_default();
+                        min_timestamp = Some(match min_timestamp {
+                            Some(existing) => existing.min(min_ts),
+                            None => min_ts,
+                        });
+
+                        let max_ts =
+                            DateTime::from_timestamp_millis(int_stats.max).unwrap_or_default();
+                        max_timestamp = Some(match max_timestamp {
+                            Some(existing) => existing.max(max_ts),
+                            None => max_ts,
+                        });
+                    }
+                    TypedStatistics::String(str_stats) => {
+                        if let Ok(min_ts) = DateTime::parse_from_rfc3339(&str_stats.min) {
+                            let min_ts = min_ts.with_timezone(&Utc);
+                            min_timestamp = Some(match min_timestamp {
+                                Some(existing) => existing.min(min_ts),
+                                None => min_ts,
+                            });
+                        }
+                        if let Ok(max_ts) = DateTime::parse_from_rfc3339(&str_stats.max) {
+                            let max_ts = max_ts.with_timezone(&Utc);
+                            max_timestamp = Some(match max_timestamp {
+                                Some(existing) => existing.max(max_ts),
+                                None => max_ts,
+                            });
+                        }
+                    }
+                    _ => {} // Skip other types
                 }
             }
         }
 
-        if all_first_events.is_empty() {
-            return Ok(None);
-        }
-        let first_event_at = all_first_events.iter().min().unwrap().to_rfc3339();
-        Ok(Some(first_event_at))
+        (min_timestamp, max_timestamp)
+    }
+
+    /// Helper method to extract timestamp from a manifest file
+    async fn extract_timestamp_from_manifest(
+        &self,
+        manifest_path: &str,
+        partition_column: &str,
+        find_min: bool,
+    ) -> Result<Option<DateTime<Utc>>, ObjectStorageError> {
+        let manifest = self.load_manifest_from_path(manifest_path).await?;
+        let (min_timestamp, max_timestamp) =
+            self.extract_timestamps_from_manifest(&manifest, partition_column);
+
+        Ok(if find_min {
+            min_timestamp
+        } else {
+            max_timestamp
+        })
     }
 
     // pick a better name
