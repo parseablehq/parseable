@@ -38,7 +38,7 @@ pub async fn retention_cleanup(
     Json(date_list): Json<Vec<String>>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
-    let storage = PARSEABLE.storage.get_object_store();
+    let storage = PARSEABLE.storage().get_object_store();
     // if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
@@ -62,7 +62,7 @@ pub async fn retention_cleanup(
         });
     }
 
-    Ok(("Cleanup complete", StatusCode::OK))
+    Ok(actix_web::HttpResponse::NoContent().finish())
 }
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {

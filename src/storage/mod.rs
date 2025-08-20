@@ -130,13 +130,11 @@ pub struct ObjectStoreFormat {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct StreamInfo {
-    #[serde(rename = "created-at")]
     pub created_at: String,
-    #[serde(rename = "first-event-at")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub first_event_at: Option<String>,
-    #[serde(rename = "latest-event-at")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latest_event_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

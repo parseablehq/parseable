@@ -152,7 +152,7 @@ async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, StreamE
         return Err(StreamNotFound(stream_name.to_owned()).into());
     }
 
-    let storage = PARSEABLE.storage.get_object_store();
+    let storage = PARSEABLE.storage().get_object_store();
 
     // Get first and latest event timestamps from storage
     let (stream_first_event_at, stream_latest_event_at) = match storage

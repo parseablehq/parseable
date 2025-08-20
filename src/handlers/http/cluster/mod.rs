@@ -622,6 +622,10 @@ pub async fn send_retention_cleanup_request(
             "failed to perform cleanup on retention: {}\nResponse Returned: {:?}",
             ingestor.domain_name, body
         );
+        return Err(ObjectStorageError::Custom(format!(
+            "failed to perform cleanup on retention: {}\nResponse Returned: {:?}",
+            ingestor.domain_name, body
+        )));
     }
 
     Ok(())

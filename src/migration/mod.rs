@@ -366,7 +366,7 @@ async fn setup_logstream_metadata(
         ..
     } = serde_json::from_value(stream_metadata_value).unwrap_or_default();
 
-    let storage = PARSEABLE.storage.get_object_store();
+    let storage = PARSEABLE.storage().get_object_store();
 
     update_data_type_time_partition(arrow_schema, time_partition.as_ref()).await?;
     storage.put_schema(stream, arrow_schema).await?;

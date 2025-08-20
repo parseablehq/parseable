@@ -38,10 +38,8 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
-use tokio::task;
 use tokio::task::JoinSet;
 use tracing::info;
-use tracing::trace;
 use tracing::{error, warn};
 use ulid::Ulid;
 
@@ -96,7 +94,6 @@ impl UploadContext {
 
 /// Result of a single file upload operation
 pub(crate) struct UploadResult {
-    stats_calculated: bool,
     file_path: std::path::PathBuf,
     manifest_file: Option<catalog::manifest::File>,
 }
@@ -135,10 +132,9 @@ async fn upload_single_parquet_file(
     let manifest = catalog::create_from_parquet_file(absolute_path, &path)?;
 
     // Calculate field stats if enabled
-    let stats_calculated = calculate_stats_if_enabled(&stream_name, &path, &schema).await;
+    calculate_stats_if_enabled(&stream_name, &path, &schema).await;
 
     Ok(UploadResult {
-        stats_calculated,
         file_path: path,
         manifest_file: Some(manifest),
     })
@@ -172,19 +168,19 @@ async fn calculate_stats_if_enabled(
     stream_name: &str,
     path: &std::path::Path,
     schema: &Arc<Schema>,
-) -> bool {
+) {
     if stream_name != DATASET_STATS_STREAM_NAME && PARSEABLE.options.collect_dataset_stats {
         let max_field_statistics = PARSEABLE.options.max_field_statistics;
-        match calculate_field_stats(stream_name, path, schema, max_field_statistics).await {
-            Ok(stats) if stats => return true,
-            Err(err) => trace!(
+        if let Err(err) =
+            calculate_field_stats(stream_name, path, schema, max_field_statistics).await
+        {
+            tracing::trace!(
                 "Error calculating field stats for stream {}: {}",
-                stream_name, err
-            ),
-            _ => {}
+                stream_name,
+                err
+            );
         }
     }
-    false
 }
 
 pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync {
@@ -978,19 +974,18 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             {
                 match stats {
                     TypedStatistics::Int(int_stats) => {
-                        let min_ts =
-                            DateTime::from_timestamp_millis(int_stats.min).unwrap_or_default();
-                        min_timestamp = Some(match min_timestamp {
-                            Some(existing) => existing.min(min_ts),
-                            None => min_ts,
-                        });
-
-                        let max_ts =
-                            DateTime::from_timestamp_millis(int_stats.max).unwrap_or_default();
-                        max_timestamp = Some(match max_timestamp {
-                            Some(existing) => existing.max(max_ts),
-                            None => max_ts,
-                        });
+                        if let Some(min_ts) = DateTime::from_timestamp_millis(int_stats.min) {
+                            min_timestamp = Some(match min_timestamp {
+                                Some(existing) => existing.min(min_ts),
+                                None => min_ts,
+                            });
+                        }
+                        if let Some(max_ts) = DateTime::from_timestamp_millis(int_stats.max) {
+                            max_timestamp = Some(match max_timestamp {
+                                Some(existing) => existing.max(max_ts),
+                                None => max_ts,
+                            });
+                        }
                     }
                     TypedStatistics::String(str_stats) => {
                         if let Ok(min_ts) = DateTime::parse_from_rfc3339(&str_stats.min) {
@@ -1070,17 +1065,13 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         let upload_context = UploadContext::new(stream);
 
         // Process parquet files concurrently and collect results
-        let (stats_calculated, manifest_files) =
-            process_parquet_files(&upload_context, stream_name).await?;
+        let manifest_files = process_parquet_files(&upload_context, stream_name).await?;
 
         // Update snapshot with collected manifest files
         update_snapshot_with_manifests(stream_name, manifest_files).await?;
 
         // Process schema files
         process_schema_files(&upload_context, stream_name).await?;
-
-        // Handle stats synchronization if needed
-        handle_stats_sync(stats_calculated).await;
 
         Ok(())
     }
@@ -1090,7 +1081,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 async fn process_parquet_files(
     upload_context: &UploadContext,
     stream_name: &str,
-) -> Result<(bool, Vec<catalog::manifest::File>), ObjectStorageError> {
+) -> Result<Vec<catalog::manifest::File>, ObjectStorageError> {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(100));
     let mut join_set = JoinSet::new();
     let object_store = PARSEABLE.storage().get_object_store();
@@ -1143,16 +1134,12 @@ async fn spawn_parquet_upload_task(
 /// Collects results from all upload tasks
 async fn collect_upload_results(
     mut join_set: JoinSet<Result<UploadResult, ObjectStorageError>>,
-) -> Result<(bool, Vec<catalog::manifest::File>), ObjectStorageError> {
-    let mut stats_calculated = false;
+) -> Result<Vec<catalog::manifest::File>, ObjectStorageError> {
     let mut uploaded_files = Vec::new();
 
     while let Some(result) = join_set.join_next().await {
         match result {
             Ok(Ok(upload_result)) => {
-                if upload_result.stats_calculated {
-                    stats_calculated = true;
-                }
                 if let Some(manifest_file) = upload_result.manifest_file {
                     uploaded_files.push((upload_result.file_path, manifest_file));
                 } else {
@@ -1183,7 +1170,7 @@ async fn collect_upload_results(
         })
         .collect();
 
-    Ok((stats_calculated, manifest_files))
+    Ok(manifest_files)
 }
 
 /// Updates snapshot with collected manifest files
@@ -1213,20 +1200,6 @@ async fn process_schema_files(
         }
     }
     Ok(())
-}
-
-/// Handles stats synchronization if needed
-async fn handle_stats_sync(stats_calculated: bool) {
-    if stats_calculated {
-        // perform local sync for the `pstats` dataset
-        task::spawn(async move {
-            if let Ok(stats_stream) = PARSEABLE.get_stream(DATASET_STATS_STREAM_NAME)
-                && let Err(err) = stats_stream.flush_and_convert(false, false)
-            {
-                error!("Failed in local sync for dataset stats stream: {err}");
-            }
-        });
-    }
 }
 
 /// Builds the stream relative path for a file

@@ -333,7 +333,7 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
         return Err(StreamNotFound(stream_name.clone()).into());
     }
 
-    let storage = PARSEABLE.storage.get_object_store();
+    let storage = PARSEABLE.storage().get_object_store();
 
     // Get first and latest event timestamps from storage
     let (stream_first_event_at, stream_latest_event_at) = match storage
@@ -412,7 +412,7 @@ pub async fn put_stream_hot_tier(
     hot_tier_manager
         .put_hot_tier(&stream_name, &mut hottier)
         .await?;
-    let storage = PARSEABLE.storage.get_object_store();
+    let storage = PARSEABLE.storage().get_object_store();
     let mut stream_metadata = storage.get_object_store_format(&stream_name).await?;
     stream_metadata.hot_tier_enabled = true;
     storage
