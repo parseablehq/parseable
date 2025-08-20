@@ -45,6 +45,7 @@ use ulid::Ulid;
 
 use crate::alerts::AlertConfig;
 use crate::alerts::target::Target;
+use crate::catalog::snapshot::ManifestItem;
 use crate::catalog::{self, manifest::Manifest, snapshot::Snapshot};
 use crate::correlation::{CorrelationConfig, CorrelationError};
 use crate::event::format::LogSource;
@@ -873,14 +874,20 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             return Ok((None, None));
         }
 
-        // Find the manifest items with the lowest and highest time bounds
-        let first_manifest_item = all_manifest_items
-            .iter()
-            .min_by_key(|item| item.time_lower_bound);
-
-        let latest_manifest_item = all_manifest_items
-            .iter()
-            .max_by_key(|item| item.time_upper_bound);
+        // Find min/max in one pass
+        let (mut first_manifest_item, mut latest_manifest_item) = (None, None);
+        for &item in &all_manifest_items {
+            if first_manifest_item
+                .is_none_or(|cur: &ManifestItem| item.time_lower_bound < cur.time_lower_bound)
+            {
+                first_manifest_item = Some(item);
+            }
+            if latest_manifest_item
+                .is_none_or(|cur: &ManifestItem| item.time_upper_bound > cur.time_upper_bound)
+            {
+                latest_manifest_item = Some(item);
+            }
+        }
 
         let partition_column = time_partition.as_deref().unwrap_or(DEFAULT_TIMESTAMP_KEY);
 
