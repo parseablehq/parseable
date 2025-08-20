@@ -80,7 +80,7 @@ impl ParseableSinkProcessor {
         let mut p_custom_fields = HashMap::new();
         p_custom_fields.insert(USER_AGENT_KEY.to_string(), "kafka".to_string());
 
-        let p_event = json::Event::new(Value::Array(json_vec)).into_event(
+        let p_event = json::Event::new(Value::Array(json_vec), Utc::now()).into_event(
             stream_name.to_string(),
             total_payload_size,
             &schema,
