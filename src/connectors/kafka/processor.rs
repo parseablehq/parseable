@@ -27,6 +27,7 @@ use crate::{
     storage::StreamType,
 };
 use async_trait::async_trait;
+use chrono::Utc;
 use futures_util::StreamExt;
 use rdkafka::consumer::{CommitMode, Consumer};
 use serde_json::Value;
