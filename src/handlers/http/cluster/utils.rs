@@ -135,7 +135,7 @@ impl StorageStats {
     }
 }
 
-pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
+pub fn merge_queried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
     // get the stream name
     let stream_name = stats[1].stream.clone();
 

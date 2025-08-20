@@ -56,7 +56,7 @@ use crate::catalog::Snapshot as CatalogSnapshot;
 use crate::catalog::column::{Int64Type, TypedStatistics};
 use crate::catalog::manifest::Manifest;
 use crate::catalog::snapshot::Snapshot;
-use crate::event::{self, DEFAULT_TIMESTAMP_KEY};
+use crate::event::DEFAULT_TIMESTAMP_KEY;
 use crate::handlers::http::query::QueryError;
 use crate::option::Mode;
 use crate::parseable::PARSEABLE;
@@ -345,7 +345,7 @@ impl CountsRequest {
             .get_stream(&self.stream)
             .map_err(|err| anyhow::Error::msg(err.to_string()))?
             .get_time_partition()
-            .unwrap_or(event::DEFAULT_TIMESTAMP_KEY.to_owned());
+            .unwrap_or_else(|| DEFAULT_TIMESTAMP_KEY.to_owned());
 
         // get time range
         let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
@@ -449,7 +449,7 @@ impl CountsRequest {
         let time_partition = PARSEABLE
             .get_stream(&self.stream)?
             .get_time_partition()
-            .unwrap_or(DEFAULT_TIMESTAMP_KEY.into());
+            .unwrap_or_else(|| DEFAULT_TIMESTAMP_KEY.into());
 
         let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
 
@@ -458,20 +458,20 @@ impl CountsRequest {
         let date_bin = if dur.num_minutes() <= 60 * 10 {
             // date_bin 1 minute
             format!(
-                "CAST(DATE_BIN('1 minute', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 minute', \"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 minute' as end_time",
-                self.stream
+                "CAST(DATE_BIN('1 minute', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 minute', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 minute' as end_time",
+                self.stream, self.stream
             )
         } else if dur.num_minutes() > 60 * 10 && dur.num_minutes() < 60 * 240 {
             // date_bin 1 hour
             format!(
-                "CAST(DATE_BIN('1 hour', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 hour', \"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 hour' as end_time",
-                self.stream
+                "CAST(DATE_BIN('1 hour', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 hour', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 hour' as end_time",
+                self.stream, self.stream
             )
         } else {
             // date_bin 1 day
             format!(
-                "CAST(DATE_BIN('1 day', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 day', \"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 day' as end_time",
-                self.stream
+                "CAST(DATE_BIN('1 day', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 day', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 day' as end_time",
+                self.stream, self.stream
             )
         };
 

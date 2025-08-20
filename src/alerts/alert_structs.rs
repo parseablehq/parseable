@@ -273,7 +273,7 @@ impl AlertRequest {
 
         if datasets.len() != 1 {
             return Err(AlertError::ValidationFailure(format!(
-                "Query should include only one dataset. Found- {datasets:?}"
+                "Query should include only one dataset. Found: {datasets:?}"
             )));
         }
 

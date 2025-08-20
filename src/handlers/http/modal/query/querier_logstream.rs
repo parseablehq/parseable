@@ -39,7 +39,7 @@ use crate::{
             base_path_without_preceding_slash,
             cluster::{
                 self, fetch_daily_stats, fetch_stats_from_ingestors, sync_streams_with_ingestors,
-                utils::{IngestionStats, QueriedStats, StorageStats, merge_quried_stats},
+                utils::{IngestionStats, QueriedStats, StorageStats, merge_queried_stats},
             },
             logstream::error::StreamError,
             modal::{NodeMetadata, NodeType},
@@ -118,7 +118,7 @@ pub async fn put_stream(
     body: Bytes,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
-    let _ = CREATE_STREAM_LOCK.lock().await;
+    let _guard = CREATE_STREAM_LOCK.lock().await;
     let headers = PARSEABLE
         .create_update_stream(req.headers(), &body, &stream_name)
         .await?;
@@ -231,7 +231,7 @@ pub async fn get_stats(
 
     let stats = if let Some(mut ingestor_stats) = ingestor_stats {
         ingestor_stats.push(stats);
-        merge_quried_stats(ingestor_stats)
+        merge_queried_stats(ingestor_stats)
     } else {
         stats
     };

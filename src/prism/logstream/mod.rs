@@ -30,7 +30,7 @@ use crate::{
     handlers::http::{
         cluster::{
             fetch_stats_from_ingestors,
-            utils::{IngestionStats, QueriedStats, StorageStats, merge_quried_stats},
+            utils::{IngestionStats, QueriedStats, StorageStats, merge_queried_stats},
         },
         logstream::error::StreamError,
         query::{QueryError, update_schema_when_distributed},
@@ -136,7 +136,7 @@ async fn get_stats(stream_name: &str) -> Result<QueriedStats, PrismLogstreamErro
 
     let stats = if let Some(mut ingestor_stats) = ingestor_stats {
         ingestor_stats.push(stats);
-        merge_quried_stats(ingestor_stats)
+        merge_queried_stats(ingestor_stats)
     } else {
         stats
     };
