@@ -441,15 +441,9 @@ impl CountsRequest {
     }
 
     /// This function will get executed only if self.conditions is some
-    pub async fn get_df_sql(&self) -> Result<String, QueryError> {
+    pub async fn get_df_sql(&self, time_column: String) -> Result<String, QueryError> {
         // unwrap because we have asserted that it is some
         let count_conditions = self.conditions.as_ref().unwrap();
-
-        // get time partition column
-        let time_partition = PARSEABLE
-            .get_stream(&self.stream)?
-            .get_time_partition()
-            .unwrap_or_else(|| DEFAULT_TIMESTAMP_KEY.into());
 
         let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
 
@@ -458,20 +452,20 @@ impl CountsRequest {
         let date_bin = if dur.num_minutes() <= 60 * 10 {
             // date_bin 1 minute
             format!(
-                "CAST(DATE_BIN('1 minute', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 minute', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 minute' as end_time",
-                self.stream, self.stream
+                "CAST(DATE_BIN('1 minute', \"{}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 minute', \"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 minute' as end_time",
+                self.stream
             )
         } else if dur.num_minutes() > 60 * 10 && dur.num_minutes() < 60 * 240 {
             // date_bin 1 hour
             format!(
-                "CAST(DATE_BIN('1 hour', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 hour', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 hour' as end_time",
-                self.stream, self.stream
+                "CAST(DATE_BIN('1 hour', \"{}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 hour', \"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 hour' as end_time",
+                self.stream
             )
         } else {
             // date_bin 1 day
             format!(
-                "CAST(DATE_BIN('1 day', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 day', \"{}\".\"{time_partition}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 day' as end_time",
-                self.stream, self.stream
+                "CAST(DATE_BIN('1 day', \"{}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 day', \"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 day' as end_time",
+                self.stream
             )
         };
 
@@ -492,7 +486,7 @@ impl CountsRequest {
 }
 
 /// Response for the counts API
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Deserialize)]
 pub struct CountsResponse {
     /// Fields in the log stream
     pub fields: Vec<String>,

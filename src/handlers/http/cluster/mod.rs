@@ -1114,7 +1114,7 @@ struct QuerierStatus {
     last_used: Option<Instant>,
 }
 
-async fn get_available_querier() -> Result<QuerierMetadata, QueryError> {
+pub async fn get_available_querier() -> Result<QuerierMetadata, QueryError> {
     // Get all querier metadata
     let querier_metadata: Vec<NodeMetadata> = get_node_info(NodeType::Querier).await?;
 

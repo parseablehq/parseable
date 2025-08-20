@@ -20,28 +20,35 @@ use std::sync::Arc;
 
 use actix_web::http::header::ContentType;
 use arrow_schema::Schema;
-use chrono::Utc;
+use chrono::{TimeDelta, Utc};
 use http::StatusCode;
+use itertools::Itertools;
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use tracing::warn;
 
 use crate::{
     LOCK_EXPECT,
+    alerts::alert_structs::{ConditionConfig, Conditions},
+    event::DEFAULT_TIMESTAMP_KEY,
     handlers::http::{
         cluster::{
             fetch_stats_from_ingestors,
             utils::{IngestionStats, QueriedStats, StorageStats, merge_queried_stats},
         },
         logstream::error::StreamError,
-        query::{QueryError, update_schema_when_distributed},
+        query::{Query, QueryError, get_records_and_fields, update_schema_when_distributed},
     },
     hottier::{HotTierError, HotTierManager, StreamHotTier},
     parseable::{PARSEABLE, StreamNotFound},
-    query::{CountsRequest, CountsResponse, error::ExecuteError},
+    query::{CountConditions, CountsRequest, CountsResponse, error::ExecuteError},
     rbac::{Users, map::SessionKey, role::Action},
     stats,
     storage::{StreamInfo, StreamType, retention::Retention},
-    utils::time::TimeParseError,
+    utils::{
+        arrow::record_batches_to_json,
+        time::{TimeParseError, truncate_to_minute},
+    },
     validator::error::HotTierValidationError,
 };
 
@@ -218,7 +225,7 @@ pub struct PrismDatasetResponse {
 
 /// Request parameters for retrieving Prism dataset information.
 /// Defines which streams to query
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrismDatasetRequest {
     /// List of stream names to query
@@ -292,7 +299,7 @@ impl PrismDatasetRequest {
 
         // Process stream data
         match get_prism_logstream_info(&stream).await {
-            Ok(info) => Ok(Some(self.build_dataset_response(stream, info).await?)),
+            Ok(info) => Ok(Some(self.build_dataset_response(stream, info, &key).await?)),
             Err(err) => Err(err),
         }
     }
@@ -312,12 +319,13 @@ impl PrismDatasetRequest {
         &self,
         stream: String,
         info: PrismLogstreamInfo,
+        key: &SessionKey,
     ) -> Result<PrismDatasetResponse, PrismLogstreamError> {
         // Get hot tier info
         let hottier = self.get_hot_tier_info(&stream).await?;
 
         // Get counts
-        let counts = self.get_counts(&stream).await?;
+        let counts = self.get_counts(&stream, key).await?;
 
         Ok(PrismDatasetResponse {
             stream,
@@ -346,20 +354,84 @@ impl PrismDatasetRequest {
         }
     }
 
-    async fn get_counts(&self, stream: &str) -> Result<CountsResponse, PrismLogstreamError> {
-        let count_request = CountsRequest {
-            stream: stream.to_owned(),
-            start_time: "1h".to_owned(),
-            end_time: "now".to_owned(),
-            num_bins: 10,
-            conditions: None,
+    async fn get_counts(
+        &self,
+        stream: &str,
+        key: &SessionKey,
+    ) -> Result<CountsResponse, PrismLogstreamError> {
+        let end = truncate_to_minute(Utc::now());
+        let start = end - TimeDelta::hours(1);
+
+        let conditions = if PARSEABLE.get_stream(stream)?.get_time_partition().is_some() {
+            Some(CountConditions {
+                conditions: Some(Conditions {
+                    operator: Some(crate::alerts::LogicalOperator::And),
+                    condition_config: vec![
+                        ConditionConfig {
+                            column: DEFAULT_TIMESTAMP_KEY.into(),
+                            operator: crate::alerts::WhereConfigOperator::GreaterThanOrEqual,
+                            value: Some(start.to_rfc3339()),
+                        },
+                        ConditionConfig {
+                            column: DEFAULT_TIMESTAMP_KEY.into(),
+                            operator: crate::alerts::WhereConfigOperator::LessThan,
+                            value: Some(end.to_rfc3339()),
+                        },
+                    ],
+                }),
+                group_by: None,
+            })
+        } else {
+            None
         };
 
-        let records = count_request.get_bin_density().await?;
-        Ok(CountsResponse {
-            fields: vec!["start_time".into(), "end_time".into(), "count".into()],
-            records,
-        })
+        let count_request = CountsRequest {
+            stream: stream.to_owned(),
+            start_time: start.to_rfc3339(),
+            end_time: end.to_rfc3339(),
+            num_bins: 10,
+            conditions,
+        };
+
+        if count_request.conditions.is_some() {
+            // forward request to querier
+            let query = count_request
+                .get_df_sql(DEFAULT_TIMESTAMP_KEY.into())
+                .await?;
+
+            let query_request = Query {
+                query,
+                start_time: start.to_rfc3339(),
+                end_time: end.to_rfc3339(),
+                send_null: true,
+                fields: true,
+                streaming: false,
+                filter_tags: None,
+            };
+
+            let (records, _) = get_records_and_fields(&query_request, key).await?;
+            if let Some(records) = records {
+                let json_records = record_batches_to_json(&records)?;
+                let records = json_records.into_iter().map(Value::Object).collect_vec();
+
+                let res = json!({
+                    "fields": vec!["start_time", "end_time", "count"],
+                    "records": records,
+                });
+
+                Ok(serde_json::from_value(res)?)
+            } else {
+                Err(PrismLogstreamError::Anyhow(anyhow::Error::msg(
+                    "No data returned for counts SQL",
+                )))
+            }
+        } else {
+            let records = count_request.get_bin_density().await?;
+            Ok(CountsResponse {
+                fields: vec!["start_time".into(), "end_time".into(), "count".into()],
+                records,
+            })
+        }
     }
 }
 
@@ -381,6 +453,10 @@ pub enum PrismLogstreamError {
     Execute(#[from] ExecuteError),
     #[error("Auth: {0}")]
     Auth(#[from] actix_web::Error),
+    #[error("SerdeError: {0}")]
+    SerdeError(#[from] serde_json::Error),
+    #[error("ReqwestError: {0}")]
+    ReqwestError(#[from] reqwest::Error),
 }
 
 impl actix_web::ResponseError for PrismLogstreamError {
@@ -393,6 +469,8 @@ impl actix_web::ResponseError for PrismLogstreamError {
             PrismLogstreamError::Query(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PrismLogstreamError::TimeParse(_) => StatusCode::NOT_FOUND,
             PrismLogstreamError::Execute(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PrismLogstreamError::SerdeError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PrismLogstreamError::ReqwestError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PrismLogstreamError::Auth(_) => StatusCode::UNAUTHORIZED,
         }
     }
