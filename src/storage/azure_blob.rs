@@ -698,6 +698,53 @@ impl ObjectStorage for BlobStore {
         Ok(streams)
     }
 
+    async fn list_hours(
+        &self,
+        stream_name: &str,
+        date: &str,
+    ) -> Result<Vec<String>, ObjectStorageError> {
+        let pre = object_store::path::Path::from(format!("{}/{}/", stream_name, date));
+        let resp = self.client.list_with_delimiter(Some(&pre)).await?;
+
+        let hours = resp
+            .common_prefixes
+            .iter()
+            .filter_map(|path| {
+                path.as_ref()
+                    .strip_prefix(&format!("{}/{}/", stream_name, date))
+                    .and_then(|s| s.strip_suffix('/'))
+                    .map(String::from)
+            })
+            .filter(|dir| dir.starts_with("hour="))
+            .collect();
+
+        Ok(hours)
+    }
+
+    async fn list_minutes(
+        &self,
+        stream_name: &str,
+        date: &str,
+        hour: &str,
+    ) -> Result<Vec<String>, ObjectStorageError> {
+        let pre = object_store::path::Path::from(format!("{}/{}/{}/", stream_name, date, hour));
+        let resp = self.client.list_with_delimiter(Some(&pre)).await?;
+
+        let minutes = resp
+            .common_prefixes
+            .iter()
+            .filter_map(|path| {
+                path.as_ref()
+                    .strip_prefix(&format!("{}/{}/{}/", stream_name, date, hour))
+                    .and_then(|s| s.strip_suffix('/'))
+                    .map(String::from)
+            })
+            .filter(|dir| dir.starts_with("minute="))
+            .collect();
+
+        Ok(minutes)
+    }
+
     async fn list_manifest_files(
         &self,
         stream_name: &str,
