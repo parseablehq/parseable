@@ -306,11 +306,18 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     }
 
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError>;
+    /// Lists the immediate “hour=” partition directories under the given date.
+    /// Only immediate child entries named `hour=HH` should be returned (no trailing slash).
+    /// `HH` must be zero-padded two-digit numerals (`"hour=00"` through `"hour=23"`).
     async fn list_hours(
         &self,
         stream_name: &str,
         date: &str,
     ) -> Result<Vec<String>, ObjectStorageError>;
+
+    /// Lists the immediate “minute=” partition directories under the given date/hour.
+    /// Only immediate child entries named `minute=MM` should be returned (no trailing slash).
+    /// `MM` must be zero-padded two-digit numerals (`"minute=00"` through `"minute=59"`).
     async fn list_minutes(
         &self,
         stream_name: &str,
@@ -975,11 +982,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
             // Create timestamp from date, hour, and minute with seconds hardcoded to 00
             let naive_datetime = parsed_date
                 .and_hms_opt(target_hour_value, target_minute, 0)
-                .unwrap_or_else(|| {
-                    parsed_date
-                        .and_hms_opt(target_hour_value, target_minute, 0)
-                        .unwrap_or_else(|| parsed_date.and_hms_opt(0, 0, 0).unwrap())
-                });
+                .unwrap_or_else(|| parsed_date.and_hms_opt(0, 0, 0).unwrap());
 
             return Ok(Some(DateTime::from_naive_utc_and_offset(
                 naive_datetime,
