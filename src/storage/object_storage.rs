@@ -899,15 +899,9 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         let first_timestamp = self
             .extract_timestamp_for_date(stream_name, min_date, true)
             .await?;
-        let latest_timestamp = if min_date == max_date {
-            // Same date, get max timestamp from the same date
-            self.extract_timestamp_for_date(stream_name, max_date, false)
-                .await?
-        } else {
-            // Different dates, get max from the latest date
-            self.extract_timestamp_for_date(stream_name, max_date, false)
-                .await?
-        };
+        let latest_timestamp = self
+            .extract_timestamp_for_date(stream_name, max_date, false)
+            .await?;
 
         let first_event_at = first_timestamp.map(|ts| ts.to_rfc3339());
         let latest_event_at = latest_timestamp.map(|ts| ts.to_rfc3339());
