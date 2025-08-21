@@ -710,10 +710,15 @@ impl ObjectStorage for BlobStore {
             .common_prefixes
             .iter()
             .filter_map(|path| {
-                path.as_ref()
-                    .strip_prefix(&format!("{}/{}/", stream_name, date))
-                    .and_then(|s| s.strip_suffix('/'))
-                    .map(String::from)
+                let path_str = path.as_ref();
+                if let Some(stripped) = path_str.strip_prefix(&format!("{}/{}/", stream_name, date))
+                {
+                    // Remove trailing slash if present, otherwise use as is
+                    let clean_path = stripped.strip_suffix('/').unwrap_or(stripped);
+                    Some(clean_path.to_string())
+                } else {
+                    None
+                }
             })
             .filter(|dir| dir.starts_with("hour="))
             .collect();
@@ -734,10 +739,16 @@ impl ObjectStorage for BlobStore {
             .common_prefixes
             .iter()
             .filter_map(|path| {
-                path.as_ref()
-                    .strip_prefix(&format!("{}/{}/{}/", stream_name, date, hour))
-                    .and_then(|s| s.strip_suffix('/'))
-                    .map(String::from)
+                let path_str = path.as_ref();
+                if let Some(stripped) =
+                    path_str.strip_prefix(&format!("{}/{}/{}/", stream_name, date, hour))
+                {
+                    // Remove trailing slash if present, otherwise use as is
+                    let clean_path = stripped.strip_suffix('/').unwrap_or(stripped);
+                    Some(clean_path.to_string())
+                } else {
+                    None
+                }
             })
             .filter(|dir| dir.starts_with("minute="))
             .collect();
