@@ -422,6 +422,43 @@ impl ObjectStorage for LocalFS {
         Ok(dates.into_iter().flatten().collect())
     }
 
+    async fn list_hours(
+        &self,
+        stream_name: &str,
+        date: &str,
+    ) -> Result<Vec<String>, ObjectStorageError> {
+        let path = self.root.join(stream_name).join(date);
+        let directories = ReadDirStream::new(fs::read_dir(&path).await?);
+        let entries: Vec<DirEntry> = directories.try_collect().await?;
+        let entries = entries.into_iter().map(dir_name);
+        let hours: Vec<_> = FuturesUnordered::from_iter(entries).try_collect().await?;
+        Ok(hours
+            .into_iter()
+            .flatten()
+            .filter(|dir| dir.starts_with("hour="))
+            .collect())
+    }
+
+    async fn list_minutes(
+        &self,
+        stream_name: &str,
+        date: &str,
+        hour: &str,
+    ) -> Result<Vec<String>, ObjectStorageError> {
+        let path = self.root.join(stream_name).join(date).join(hour);
+        // Propagate any read_dir errors instead of swallowing them
+        let directories = ReadDirStream::new(fs::read_dir(&path).await?);
+        let entries: Vec<DirEntry> = directories.try_collect().await?;
+        let entries = entries.into_iter().map(dir_name);
+        let minutes: Vec<_> = FuturesUnordered::from_iter(entries).try_collect().await?;
+        // Filter down to only the "minute=" prefixed directories
+        Ok(minutes
+            .into_iter()
+            .flatten()
+            .filter(|dir| dir.starts_with("minute="))
+            .collect())
+    }
+
     async fn list_manifest_files(
         &self,
         _stream_name: &str,
