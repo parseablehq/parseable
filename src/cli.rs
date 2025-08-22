@@ -475,6 +475,17 @@ pub struct Options {
         help = "OIDC scope to request (default: openid profile email)"
     )]
     pub scope: String,
+
+    // event's maximum chunk age in hours
+    #[arg(
+        long,
+        env = "P_EVENT_MAX_CHUNK_AGE",
+        // Accept 0 to disallow older-than-reference events; cap to one week by default.
+        value_parser = clap::value_parser!(u64).range(0..=168),
+        default_value = "1",
+        help = "Max allowed age gap (in hours) between events within the same node, relative to the reference event"
+    )]
+    pub event_max_chunk_age: u64,
 }
 
 #[derive(Parser, Debug)]
