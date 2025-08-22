@@ -18,6 +18,7 @@
 
 use std::collections::BTreeMap;
 use std::num::NonZeroU32;
+use std::sync::Mutex;
 
 use chrono::{DateTime, Duration, Utc};
 use serde_json::map::Map;
@@ -26,6 +27,9 @@ use serde_json::value::Value;
 use thiserror::Error;
 
 use crate::parseable::PARSEABLE;
+
+// Global variable to track the first timestamp encountered during validation
+static REFERENCE_TIMESTAMP: Mutex<Option<DateTime<Utc>>> = Mutex::new(None);
 
 #[derive(Error, Debug)]
 pub enum JsonFlattenError {
@@ -45,8 +49,12 @@ pub enum JsonFlattenError {
     FieldNotString(String),
     #[error("Field {0} is not in the correct datetime format")]
     InvalidDatetimeFormat(String),
-    #[error("Field {0} value is more than {1} days old")]
-    TimestampTooOld(String, i64),
+    #[error("Field {0} value '{2}' is more than {1} days old")]
+    TimestampTooOld(String, i64, DateTime<Utc>),
+    #[error(
+        "Field {0} timestamp '{2}' is more than {1} hours older than reference timestamp '{3}'"
+    )]
+    TimestampTooOldRelative(String, i64, DateTime<Utc>, DateTime<Utc>),
     #[error("Expected object in array of objects")]
     ExpectedObjectInArray,
     #[error("Found non-object element while flattening array of objects")]
@@ -169,14 +177,43 @@ pub fn validate_time_partition(
             partition_key.to_owned(),
         ));
     };
-    let cutoff_date = Utc::now().naive_utc() - Duration::days(limit_days);
-    if parsed_timestamp.naive_utc() >= cutoff_date {
-        Ok(())
-    } else {
-        Err(JsonFlattenError::TimestampTooOld(
-            partition_key.to_owned(),
-            limit_days,
-        ))
+
+    // Access the global reference timestamp and handle poisoning
+    let mut reference_timestamp = REFERENCE_TIMESTAMP
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+
+    match *reference_timestamp {
+        None => {
+            // First timestamp encountered - validate against cutoff date
+            let cutoff_ts = Utc::now() - Duration::days(limit_days);
+            if parsed_timestamp >= cutoff_ts {
+                // Set the reference timestamp
+                *reference_timestamp = Some(parsed_timestamp);
+                Ok(())
+            } else {
+                Err(JsonFlattenError::TimestampTooOld(
+                    partition_key.to_owned(),
+                    limit_days,
+                    parsed_timestamp,
+                ))
+            }
+        }
+        Some(ref_timestamp) => {
+            // Subsequent timestamps - validate they're not more than configured hours older than reference
+            let max_age_hours = PARSEABLE.options.event_max_chunk_age as i64;
+            let max_age_before_ref = ref_timestamp - Duration::hours(max_age_hours);
+            if parsed_timestamp >= max_age_before_ref {
+                Ok(())
+            } else {
+                Err(JsonFlattenError::TimestampTooOldRelative(
+                    partition_key.to_owned(),
+                    max_age_hours,
+                    parsed_timestamp,
+                    ref_timestamp,
+                ))
+            }
+        }
     }
 }
 

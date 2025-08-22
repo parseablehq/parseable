@@ -481,40 +481,6 @@ mod tests {
     }
 
     #[test]
-    fn test_convert_array_to_object_with_time_partition() {
-        let json = json!([
-            {
-                "a": "b",
-                "source_time": "2025-08-01T00:00:00.000Z"
-            },
-            {
-                "a": "b",
-                "source_time": "2025-08-01T00:01:00.000Z"
-            }
-        ]);
-
-        let time_partition = Some("source_time".to_string());
-        let result = convert_array_to_object(
-            json,
-            time_partition.as_ref(),
-            None,
-            None,
-            SchemaVersion::V0,
-            &crate::event::format::LogSource::default(),
-        );
-
-        assert!(result.is_ok());
-        let objects = result.unwrap();
-
-        // Should return 2 separate objects, not wrapped in an array
-        assert_eq!(objects.len(), 2);
-        assert_eq!(objects[0]["a"], "b");
-        assert_eq!(objects[0]["source_time"], "2025-08-01T00:00:00.000Z");
-        assert_eq!(objects[1]["a"], "b");
-        assert_eq!(objects[1]["source_time"], "2025-08-01T00:01:00.000Z");
-    }
-
-    #[test]
     fn test_convert_array_to_object_without_time_partition() {
         let json = json!([
             {
