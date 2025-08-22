@@ -27,7 +27,7 @@ use std::{
 };
 
 use arrow_array::RecordBatch;
-use arrow_schema::{Field, Fields, Schema};
+use arrow_schema::{DataType, Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::derive::{Deref, DerefMut};
 use itertools::Itertools;
@@ -547,6 +547,20 @@ impl Stream {
                 ColumnPath::new(vec![time_partition_field.to_string()]),
                 Encoding::DELTA_BINARY_PACKED,
             );
+
+        // Enable bloom filters for high-cardinality columns to improve query performance
+        // This works synergistically with bloom_filter_on_read = true in query configuration
+        for field in merged_schema.fields() {
+            let column_path = ColumnPath::new(vec![field.name().to_string()]);
+            // Enable bloom filters for specific column types only
+            match field.data_type() {
+                // String columns (typically high cardinality)
+                DataType::Utf8 | DataType::Int64 | DataType::Float64 => {
+                    props = props.set_column_bloom_filter_enabled(column_path, true);
+                }
+                _ => {}
+            }
+        }
 
         // Create sorting columns
         let mut sorting_column_vec = vec![SortingColumn {

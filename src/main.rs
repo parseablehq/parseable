@@ -17,6 +17,15 @@ use std::process::exit;
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+
+// Use jemalloc as the global allocator when the feature is enabled
+#[cfg(feature = "jemalloc")]
+use tikv_jemallocator::Jemalloc;
+
+#[cfg(feature = "jemalloc")]
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
+
 #[cfg(feature = "kafka")]
 use parseable::connectors;
 use parseable::{
@@ -93,6 +102,12 @@ async fn main() -> anyhow::Result<()> {
 }
 
 pub fn init_logger() {
+    #[cfg(feature = "tokio-console")]
+    {
+        console_subscriber::init();
+        return;
+    }
+
     let filter_layer = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         let default_level = if cfg!(debug_assertions) {
             Level::DEBUG
