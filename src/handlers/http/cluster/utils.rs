@@ -19,6 +19,7 @@
 use crate::{
     INTRA_CLUSTER_CLIENT,
     handlers::http::{base_path_without_preceding_slash, modal::NodeType},
+    prism::logstream::PrismLogstreamError,
 };
 use actix_web::http::header;
 use chrono::{DateTime, Utc};
@@ -135,7 +136,12 @@ impl StorageStats {
     }
 }
 
-pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
+pub fn merge_queried_stats(stats: Vec<QueriedStats>) -> Result<QueriedStats, PrismLogstreamError> {
+    if stats.len() < 2 {
+        return Err(PrismLogstreamError::Anyhow(anyhow::Error::msg(
+            "Expected at least two logstreams in merge_queried_stats",
+        )));
+    }
     // get the stream name
     let stream_name = stats[1].stream.clone();
 
@@ -167,12 +173,12 @@ pub fn merge_quried_stats(stats: Vec<QueriedStats>) -> QueriedStats {
                 deleted_size: acc.deleted_size + x.deleted_size,
             });
 
-    QueriedStats::new(
+    Ok(QueriedStats::new(
         &stream_name,
         min_time,
         cumulative_ingestion,
         cumulative_storage,
-    )
+    ))
 }
 
 pub async fn check_liveness(domain_name: &str) -> bool {

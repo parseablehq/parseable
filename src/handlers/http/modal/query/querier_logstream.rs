@@ -33,14 +33,17 @@ use tracing::{error, warn};
 static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
 
 use crate::{
-    handlers::http::{
-        base_path_without_preceding_slash,
-        cluster::{
-            self, fetch_daily_stats, fetch_stats_from_ingestors, sync_streams_with_ingestors,
-            utils::{IngestionStats, QueriedStats, StorageStats, merge_quried_stats},
+    handlers::{
+        UPDATE_STREAM_KEY,
+        http::{
+            base_path_without_preceding_slash,
+            cluster::{
+                self, fetch_daily_stats, fetch_stats_from_ingestors, sync_streams_with_ingestors,
+                utils::{IngestionStats, QueriedStats, StorageStats, merge_queried_stats},
+            },
+            logstream::error::StreamError,
+            modal::{NodeMetadata, NodeType},
         },
-        logstream::error::StreamError,
-        modal::{NodeMetadata, NodeType},
     },
     hottier::HotTierManager,
     parseable::{PARSEABLE, StreamNotFound},
@@ -115,14 +118,24 @@ pub async fn put_stream(
     body: Bytes,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
-    let _ = CREATE_STREAM_LOCK.lock().await;
+    let _guard = CREATE_STREAM_LOCK.lock().await;
     let headers = PARSEABLE
         .create_update_stream(req.headers(), &body, &stream_name)
         .await?;
 
+    let is_update = if let Some(val) = headers.get(UPDATE_STREAM_KEY) {
+        val.to_str().unwrap() == "true"
+    } else {
+        false
+    };
+
     sync_streams_with_ingestors(headers, body, &stream_name).await?;
 
-    Ok(("Log stream created", StatusCode::OK))
+    if is_update {
+        Ok(("Log stream updated", StatusCode::OK))
+    } else {
+        Ok(("Log stream created", StatusCode::OK))
+    }
 }
 
 pub async fn get_stats(
@@ -218,7 +231,8 @@ pub async fn get_stats(
 
     let stats = if let Some(mut ingestor_stats) = ingestor_stats {
         ingestor_stats.push(stats);
-        merge_quried_stats(ingestor_stats)
+        merge_queried_stats(ingestor_stats)
+            .map_err(|e| StreamError::Anyhow(anyhow::Error::msg(e.to_string())))?
     } else {
         stats
     };

@@ -56,7 +56,7 @@ use crate::catalog::Snapshot as CatalogSnapshot;
 use crate::catalog::column::{Int64Type, TypedStatistics};
 use crate::catalog::manifest::Manifest;
 use crate::catalog::snapshot::Snapshot;
-use crate::event::{self, DEFAULT_TIMESTAMP_KEY};
+use crate::event::DEFAULT_TIMESTAMP_KEY;
 use crate::handlers::http::query::QueryError;
 use crate::option::Mode;
 use crate::parseable::PARSEABLE;
@@ -345,7 +345,7 @@ impl CountsRequest {
             .get_stream(&self.stream)
             .map_err(|err| anyhow::Error::msg(err.to_string()))?
             .get_time_partition()
-            .unwrap_or_else(|| event::DEFAULT_TIMESTAMP_KEY.to_owned());
+            .unwrap_or_else(|| DEFAULT_TIMESTAMP_KEY.to_owned());
 
         // get time range
         let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
@@ -441,7 +441,7 @@ impl CountsRequest {
     }
 
     /// This function will get executed only if self.conditions is some
-    pub async fn get_df_sql(&self) -> Result<String, QueryError> {
+    pub async fn get_df_sql(&self, time_column: String) -> Result<String, QueryError> {
         // unwrap because we have asserted that it is some
         let count_conditions = self.conditions.as_ref().unwrap();
 
@@ -452,19 +452,19 @@ impl CountsRequest {
         let date_bin = if dur.num_minutes() <= 60 * 10 {
             // date_bin 1 minute
             format!(
-                "CAST(DATE_BIN('1 minute', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 minute', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 minute' as end_time",
+                "CAST(DATE_BIN('1 minute', \"{}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 minute', \"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 minute' as end_time",
                 self.stream
             )
         } else if dur.num_minutes() > 60 * 10 && dur.num_minutes() < 60 * 240 {
             // date_bin 1 hour
             format!(
-                "CAST(DATE_BIN('1 hour', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 hour', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 hour' as end_time",
+                "CAST(DATE_BIN('1 hour', \"{}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 hour', \"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 hour' as end_time",
                 self.stream
             )
         } else {
             // date_bin 1 day
             format!(
-                "CAST(DATE_BIN('1 day', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 day', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 day' as end_time",
+                "CAST(DATE_BIN('1 day', \"{}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 day', \"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 day' as end_time",
                 self.stream
             )
         };
@@ -486,7 +486,7 @@ impl CountsRequest {
 }
 
 /// Response for the counts API
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Deserialize)]
 pub struct CountsResponse {
     /// Fields in the log stream
     pub fields: Vec<String>,
@@ -653,7 +653,7 @@ fn table_contains_any_time_filters(
         })
         .any(|expr| {
             matches!(&*expr.left, Expr::Column(Column { name, .. })
-            if name == time_column)
+            if name == &default_timestamp || name == time_column)
         })
 }
 

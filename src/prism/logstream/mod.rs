@@ -30,7 +30,7 @@ use crate::{
     handlers::http::{
         cluster::{
             fetch_stats_from_ingestors,
-            utils::{IngestionStats, QueriedStats, StorageStats, merge_quried_stats},
+            utils::{IngestionStats, QueriedStats, StorageStats, merge_queried_stats},
         },
         logstream::error::StreamError,
         query::{QueryError, update_schema_when_distributed},
@@ -136,7 +136,7 @@ async fn get_stats(stream_name: &str) -> Result<QueriedStats, PrismLogstreamErro
 
     let stats = if let Some(mut ingestor_stats) = ingestor_stats {
         ingestor_stats.push(stats);
-        merge_quried_stats(ingestor_stats)
+        merge_queried_stats(ingestor_stats)?
     } else {
         stats
     };
@@ -218,7 +218,7 @@ pub struct PrismDatasetResponse {
 
 /// Request parameters for retrieving Prism dataset information.
 /// Defines which streams to query
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrismDatasetRequest {
     /// List of stream names to query
@@ -381,6 +381,10 @@ pub enum PrismLogstreamError {
     Execute(#[from] ExecuteError),
     #[error("Auth: {0}")]
     Auth(#[from] actix_web::Error),
+    #[error("SerdeError: {0}")]
+    SerdeError(#[from] serde_json::Error),
+    #[error("ReqwestError: {0}")]
+    ReqwestError(#[from] reqwest::Error),
 }
 
 impl actix_web::ResponseError for PrismLogstreamError {
@@ -393,6 +397,8 @@ impl actix_web::ResponseError for PrismLogstreamError {
             PrismLogstreamError::Query(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PrismLogstreamError::TimeParse(_) => StatusCode::NOT_FOUND,
             PrismLogstreamError::Execute(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PrismLogstreamError::SerdeError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PrismLogstreamError::ReqwestError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PrismLogstreamError::Auth(_) => StatusCode::UNAUTHORIZED,
         }
     }

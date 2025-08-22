@@ -19,6 +19,7 @@
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
 use crate::option::Mode;
+use crate::rbac::map::SessionKey;
 use crate::utils::arrow::record_batches_to_json;
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
@@ -43,7 +44,7 @@ use std::time::Instant;
 use tokio::task::JoinSet;
 use tracing::{error, warn};
 
-use crate::event::commit_schema;
+use crate::event::{DEFAULT_TIMESTAMP_KEY, commit_schema};
 use crate::metrics::QUERY_EXECUTE_TIME;
 use crate::parseable::{PARSEABLE, StreamNotFound};
 use crate::query::error::ExecuteError;
@@ -79,7 +80,7 @@ pub struct Query {
 /// TODO: Improve this function and make this a part of the query API
 pub async fn get_records_and_fields(
     query_request: &Query,
-    req: &HttpRequest,
+    creds: &SessionKey,
 ) -> Result<(Option<Vec<RecordBatch>>, Option<Vec<String>>), QueryError> {
     let session_state = QUERY_SESSION.state();
     let time_range =
@@ -89,8 +90,8 @@ pub async fn get_records_and_fields(
     create_streams_for_distributed(tables.clone()).await?;
 
     let query: LogicalQuery = into_query(query_request, &session_state, time_range).await?;
-    let creds = extract_session_key_from_req(req)?;
-    let permissions = Users.get_permissions(&creds);
+
+    let permissions = Users.get_permissions(creds);
 
     user_auth_for_datasets(&permissions, &tables).await?;
 
@@ -350,7 +351,12 @@ pub async fn get_counts(
     // if the user has given a sql query (counts call with filters applied), then use this flow
     // this could include filters or group by
     if body.conditions.is_some() {
-        let sql = body.get_df_sql().await?;
+        let time_partition = PARSEABLE
+            .get_stream(&body.stream)?
+            .get_time_partition()
+            .unwrap_or_else(|| DEFAULT_TIMESTAMP_KEY.into());
+
+        let sql = body.get_df_sql(time_partition).await?;
 
         let query_request = Query {
             query: sql,
@@ -362,7 +368,9 @@ pub async fn get_counts(
             filter_tags: None,
         };
 
-        let (records, _) = get_records_and_fields(&query_request, &req).await?;
+        let creds = extract_session_key_from_req(&req)?;
+
+        let (records, _) = get_records_and_fields(&query_request, &creds).await?;
 
         if let Some(records) = records {
             let json_records = record_batches_to_json(&records)?;
