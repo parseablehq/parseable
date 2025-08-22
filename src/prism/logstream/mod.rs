@@ -136,7 +136,7 @@ async fn get_stats(stream_name: &str) -> Result<QueriedStats, PrismLogstreamErro
 
     let stats = if let Some(mut ingestor_stats) = ingestor_stats {
         ingestor_stats.push(stats);
-        merge_queried_stats(ingestor_stats)
+        merge_queried_stats(ingestor_stats)?
     } else {
         stats
     };

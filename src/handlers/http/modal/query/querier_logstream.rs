@@ -232,6 +232,7 @@ pub async fn get_stats(
     let stats = if let Some(mut ingestor_stats) = ingestor_stats {
         ingestor_stats.push(stats);
         merge_queried_stats(ingestor_stats)
+            .map_err(|e| StreamError::Anyhow(anyhow::Error::msg(e.to_string())))?
     } else {
         stats
     };
