@@ -29,6 +29,7 @@ use crate::handlers::TelemetryType;
 use crate::metrics::{
     EVENTS_INGESTED, EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
     EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
+    TOTAL_EVENTS_INGESTED_DATE, TOTAL_EVENTS_INGESTED_SIZE_DATE,
 };
 use crate::storage::StreamType;
 use crate::storage::retention::Retention;
@@ -46,19 +47,25 @@ pub fn update_stats(
         .add(num_rows as i64);
     EVENTS_INGESTED_DATE
         .with_label_values(&[stream_name, origin, &parsed_date])
-        .add(num_rows as i64);
+        .inc_by(num_rows as u64);
     EVENTS_INGESTED_SIZE
         .with_label_values(&[stream_name, origin])
         .add(size as i64);
     EVENTS_INGESTED_SIZE_DATE
         .with_label_values(&[stream_name, origin, &parsed_date])
-        .add(size as i64);
+        .inc_by(size);
     LIFETIME_EVENTS_INGESTED
         .with_label_values(&[stream_name, origin])
         .add(num_rows as i64);
     LIFETIME_EVENTS_INGESTED_SIZE
         .with_label_values(&[stream_name, origin])
         .add(size as i64);
+    TOTAL_EVENTS_INGESTED_DATE
+        .with_label_values(&[origin, &parsed_date])
+        .inc_by(num_rows as u64);
+    TOTAL_EVENTS_INGESTED_SIZE_DATE
+        .with_label_values(&[origin, &parsed_date])
+        .inc_by(size);
 }
 
 /// In order to support backward compatability with streams created before v1.6.4,
@@ -173,12 +180,12 @@ pub fn load_daily_metrics(manifests: &Vec<ManifestItem>, stream_name: &str) {
         let storage_size = manifest.storage_size;
         EVENTS_INGESTED_DATE
             .with_label_values(&[stream_name, "json", &manifest_date])
-            .set(events_ingested as i64);
+            .inc_by(events_ingested);
         EVENTS_INGESTED_SIZE_DATE
             .with_label_values(&[stream_name, "json", &manifest_date])
-            .set(ingestion_size as i64);
+            .inc_by(ingestion_size);
         EVENTS_STORAGE_SIZE_DATE
             .with_label_values(&["data", stream_name, "parquet", &manifest_date])
-            .set(storage_size as i64);
+            .inc_by(storage_size);
     }
 }

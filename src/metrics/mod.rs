@@ -30,7 +30,7 @@ pub const METRICS_NAMESPACE: &str = env!("CARGO_PKG_NAME");
 
 pub static EVENTS_INGESTED: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
-        Opts::new("events_ingested", "Events ingested").namespace(METRICS_NAMESPACE),
+        Opts::new("events_ingested", "Events ingested for a stream").namespace(METRICS_NAMESPACE),
         &["stream", "format"],
     )
     .expect("metric can be created")
@@ -38,8 +38,11 @@ pub static EVENTS_INGESTED: Lazy<IntGaugeVec> = Lazy::new(|| {
 
 pub static EVENTS_INGESTED_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
-        Opts::new("events_ingested_size", "Events ingested size bytes")
-            .namespace(METRICS_NAMESPACE),
+        Opts::new(
+            "events_ingested_size",
+            "Events ingested size bytes for a stream",
+        )
+        .namespace(METRICS_NAMESPACE),
         &["stream", "format"],
     )
     .expect("metric can be created")
@@ -47,7 +50,7 @@ pub static EVENTS_INGESTED_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
 
 pub static STORAGE_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
-        Opts::new("storage_size", "Storage size bytes").namespace(METRICS_NAMESPACE),
+        Opts::new("storage_size", "Storage size bytes for a stream").namespace(METRICS_NAMESPACE),
         &["type", "stream", "format"],
     )
     .expect("metric can be created")
@@ -55,7 +58,7 @@ pub static STORAGE_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
 
 pub static EVENTS_DELETED: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
-        Opts::new("events_deleted", "Events deleted").namespace(METRICS_NAMESPACE),
+        Opts::new("events_deleted", "Events deleted for a stream").namespace(METRICS_NAMESPACE),
         &["stream", "format"],
     )
     .expect("metric can be created")
@@ -63,7 +66,11 @@ pub static EVENTS_DELETED: Lazy<IntGaugeVec> = Lazy::new(|| {
 
 pub static EVENTS_DELETED_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
-        Opts::new("events_deleted_size", "Events deleted size bytes").namespace(METRICS_NAMESPACE),
+        Opts::new(
+            "events_deleted_size",
+            "Events deleted size bytes for a stream",
+        )
+        .namespace(METRICS_NAMESPACE),
         &["stream", "format"],
     )
     .expect("metric can be created")
@@ -73,7 +80,7 @@ pub static DELETED_EVENTS_STORAGE_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
         Opts::new(
             "deleted_events_storage_size",
-            "Deleted events storage size bytes",
+            "Deleted events storage size bytes for a stream",
         )
         .namespace(METRICS_NAMESPACE),
         &["type", "stream", "format"],
@@ -83,8 +90,11 @@ pub static DELETED_EVENTS_STORAGE_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
 
 pub static LIFETIME_EVENTS_INGESTED: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
-        Opts::new("lifetime_events_ingested", "Lifetime events ingested")
-            .namespace(METRICS_NAMESPACE),
+        Opts::new(
+            "lifetime_events_ingested",
+            "Lifetime events ingested for a stream",
+        )
+        .namespace(METRICS_NAMESPACE),
         &["stream", "format"],
     )
     .expect("metric can be created")
@@ -94,7 +104,7 @@ pub static LIFETIME_EVENTS_INGESTED_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
         Opts::new(
             "lifetime_events_ingested_size",
-            "Lifetime events ingested size bytes",
+            "Lifetime events ingested size bytes for a stream",
         )
         .namespace(METRICS_NAMESPACE),
         &["stream", "format"],
@@ -106,7 +116,7 @@ pub static LIFETIME_EVENTS_STORAGE_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
         Opts::new(
             "lifetime_events_storage_size",
-            "Lifetime events storage size bytes",
+            "Lifetime events storage size bytes for a stream",
         )
         .namespace(METRICS_NAMESPACE),
         &["type", "stream", "format"],
@@ -114,11 +124,11 @@ pub static LIFETIME_EVENTS_STORAGE_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
-pub static EVENTS_INGESTED_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
-    IntGaugeVec::new(
+pub static EVENTS_INGESTED_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
         Opts::new(
             "events_ingested_date",
-            "Events ingested on a particular date",
+            "Events ingested for a stream on a particular date",
         )
         .namespace(METRICS_NAMESPACE),
         &["stream", "format", "date"],
@@ -126,11 +136,11 @@ pub static EVENTS_INGESTED_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
-pub static EVENTS_INGESTED_SIZE_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
-    IntGaugeVec::new(
+pub static EVENTS_INGESTED_SIZE_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
         Opts::new(
             "events_ingested_size_date",
-            "Events ingested size in bytes on a particular date",
+            "Events ingested size in bytes for a stream on a particular date",
         )
         .namespace(METRICS_NAMESPACE),
         &["stream", "format", "date"],
@@ -138,14 +148,50 @@ pub static EVENTS_INGESTED_SIZE_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
-pub static EVENTS_STORAGE_SIZE_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
-    IntGaugeVec::new(
+pub static EVENTS_STORAGE_SIZE_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
         Opts::new(
             "events_storage_size_date",
-            "Events storage size in bytes on a particular date",
+            "Events storage size in bytes for a stream on a particular date",
         )
         .namespace(METRICS_NAMESPACE),
         &["type", "stream", "format", "date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_EVENTS_INGESTED_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_events_ingested_date",
+            "total events ingested on a particular date",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["format", "date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_EVENTS_INGESTED_SIZE_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_events_ingested_size_date",
+            "Total events ingested size in bytes on a particular date",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["format", "date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_EVENTS_STORAGE_SIZE_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_events_storage_size_date",
+            "Total events storage size in bytes on a particular date",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["format", "date"],
     )
     .expect("metric can be created")
 });
@@ -218,6 +264,15 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(EVENTS_STORAGE_SIZE_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_EVENTS_INGESTED_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_EVENTS_INGESTED_SIZE_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_EVENTS_STORAGE_SIZE_DATE.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(STAGING_FILES.clone()))
