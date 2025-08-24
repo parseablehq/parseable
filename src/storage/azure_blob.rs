@@ -19,7 +19,10 @@
 use std::{
     collections::HashSet,
     path::Path,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -209,13 +212,15 @@ pub struct BlobStore {
 
 impl BlobStore {
     async fn _get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
-        let instant = Instant::now();
+        let time = std::time::Instant::now();
         let resp = self.client.get(&to_object_store_path(path)).await;
-        let elapsed = instant.elapsed().as_secs_f64();
-
+        let elapsed = time.elapsed().as_secs_f64();
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["azure_blob", "GET"])
+            .inc();
         match resp {
             Ok(resp) => {
-                let body = resp.bytes().await.unwrap();
+                let body: Bytes = resp.bytes().await.unwrap();
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["azure_blob", "GET", "200"])
                     .observe(elapsed);
@@ -236,9 +241,12 @@ impl BlobStore {
         path: &RelativePath,
         resource: PutPayload,
     ) -> Result<(), ObjectStorageError> {
-        let instant = Instant::now();
+        let time = std::time::Instant::now();
         let resp = self.client.put(&to_object_store_path(path), resource).await;
-        let elapsed = instant.elapsed().as_secs_f64();
+        let elapsed = time.elapsed().as_secs_f64();
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["azure_blob", "PUT"])
+            .inc();
         match resp {
             Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
@@ -251,18 +259,14 @@ impl BlobStore {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["azure_blob", "PUT", status_code])
                     .observe(elapsed);
-
-                if let object_store::Error::NotFound { source, .. } = &err {
-                    return Err(ObjectStorageError::Custom(
-                        format!("Failed to upload, error: {source:?}").to_string(),
-                    ));
-                }
                 Err(err.into())
             }
         }
     }
 
     async fn _delete_prefix(&self, key: &str) -> Result<(), ObjectStorageError> {
+        let files_scanned = Arc::new(AtomicU64::new(0));
+        let files_deleted = Arc::new(AtomicU64::new(0));
         // Track LIST operation
         let list_start = Instant::now();
         let object_stream = self.client.list(Some(&(key.into())));
@@ -273,19 +277,20 @@ impl BlobStore {
 
         object_stream
             .for_each_concurrent(None, |x| async {
+                files_scanned.fetch_add(1, Ordering::Relaxed);
                 match x {
                     Ok(obj) => {
-                        // Track individual DELETE operation
+                        files_deleted.fetch_add(1, Ordering::Relaxed);
                         let delete_start = Instant::now();
-                        match self.client.delete(&obj.location).await {
+                        let delete_resp = self.client.delete(&obj.location).await;
+                        let delete_elapsed = delete_start.elapsed().as_secs_f64();
+                        match delete_resp {
                             Ok(_) => {
-                                let delete_elapsed = delete_start.elapsed().as_secs_f64();
                                 STORAGE_REQUEST_RESPONSE_TIME
                                     .with_label_values(&["azure_blob", "DELETE", "200"])
                                     .observe(delete_elapsed);
                             }
                             Err(err) => {
-                                let delete_elapsed = delete_start.elapsed().as_secs_f64();
                                 let status_code = error_to_status_code(&err);
                                 STORAGE_REQUEST_RESPONSE_TIME
                                     .with_label_values(&["azure_blob", "DELETE", status_code])
@@ -301,13 +306,18 @@ impl BlobStore {
             })
             .await;
 
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["azure_blob", "LIST"])
+            .inc_by(files_scanned.load(Ordering::Relaxed) as f64);
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["azure_blob", "DELETE"])
+            .inc_by(files_deleted.load(Ordering::Relaxed) as f64);
         Ok(())
     }
 
     async fn _list_dates(&self, stream: &str) -> Result<Vec<String>, ObjectStorageError> {
-        // Track LIST operation
         let list_start = Instant::now();
-        let resp = self
+        let resp: Result<object_store::ListResult, object_store::Error> = self
             .client
             .list_with_delimiter(Some(&(stream.into())))
             .await;
@@ -331,6 +341,10 @@ impl BlobStore {
 
         let common_prefixes = resp.common_prefixes;
 
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["azure_blob", "LIST"])
+            .inc_by(common_prefixes.len() as f64);
+
         // return prefixes at the root level
         let dates: Vec<_> = common_prefixes
             .iter()
@@ -342,37 +356,28 @@ impl BlobStore {
     }
 
     async fn _upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
-        // // TODO: Uncomment this when multipart is fixed
-        // let should_multipart = std::fs::metadata(path)?.len() > MULTIPART_UPLOAD_SIZE as u64;
+        let bytes = tokio::fs::read(path).await?;
 
-        let should_multipart = false;
-
-        if should_multipart {
-            // self._upload_multipart(key, path).await
-            // this branch will never get executed
-            Ok(())
-        } else {
-            let bytes = tokio::fs::read(path).await?;
-
-            let put_start = Instant::now();
-            let result = self.client.put(&key.into(), bytes.into()).await;
-            let put_elapsed = put_start.elapsed().as_secs_f64();
-
-            match result {
-                Ok(result) => {
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["azure_blob", "PUT", "200"])
-                        .observe(put_elapsed);
-                    info!("Uploaded file to Azure Blob Storage: {:?}", result);
-                    Ok(())
-                }
-                Err(err) => {
-                    let status_code = error_to_status_code(&err);
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["azure_blob", "PUT", status_code])
-                        .observe(put_elapsed);
-                    Err(err.into())
-                }
+        let put_start = Instant::now();
+        let result = self.client.put(&key.into(), bytes.into()).await;
+        let put_elapsed = put_start.elapsed().as_secs_f64();
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["azure_blob", "PUT"])
+            .inc();
+        match result {
+            Ok(result) => {
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["azure_blob", "PUT", "200"])
+                    .observe(put_elapsed);
+                info!("Uploaded file to Azure Blob Storage: {:?}", result);
+                Ok(())
+            }
+            Err(err) => {
+                let status_code = error_to_status_code(&err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["azure_blob", "PUT", status_code])
+                    .observe(put_elapsed);
+                Err(err.into())
             }
         }
     }
@@ -549,13 +554,6 @@ impl BlobStore {
 
 #[async_trait]
 impl ObjectStorage for BlobStore {
-    async fn upload_multipart(
-        &self,
-        key: &RelativePath,
-        path: &Path,
-    ) -> Result<(), ObjectStorageError> {
-        self._upload_multipart(key, path).await
-    }
     async fn get_buffered_reader(
         &self,
         _path: &RelativePath,
@@ -567,29 +565,42 @@ impl ObjectStorage for BlobStore {
             ),
         )))
     }
-    async fn head(&self, _path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
-        // Record attempt to access file (even though operation not implemented)
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "HEAD"])
-            .inc();
 
-        Err(ObjectStorageError::UnhandledError(Box::new(
-            std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "Head operation not implemented for Blob Storage yet",
-            ),
-        )))
+    async fn upload_multipart(
+        &self,
+        key: &RelativePath,
+        path: &Path,
+    ) -> Result<(), ObjectStorageError> {
+        self._upload_multipart(key, path).await
+    }
+
+    async fn head(&self, path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
+        let head_start = Instant::now();
+        let result = self.client.head(&to_object_store_path(path)).await;
+        let head_elapsed = head_start.elapsed().as_secs_f64();
+        match &result {
+            Ok(_) => {
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["azure_blob", "HEAD", "200"])
+                    .observe(head_elapsed);
+                // Record single file accessed
+                STORAGE_FILES_SCANNED
+                    .with_label_values(&["azure_blob", "HEAD"])
+                    .inc();
+            }
+            Err(err) => {
+                let status_code = error_to_status_code(err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["azure_blob", "HEAD", status_code])
+                    .observe(head_elapsed);
+            }
+        }
+
+        Ok(result?)
     }
 
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
-        let result = self._get_object(path).await?;
-
-        // Record single file accessed
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "GET"])
-            .inc();
-
-        Ok(result)
+        Ok(self._get_object(path).await?)
     }
 
     async fn get_objects(
@@ -610,21 +621,11 @@ impl ObjectStorage for BlobStore {
         let mut res = vec![];
         let mut files_scanned = 0;
 
+        // Note: We track each streaming list item retrieval
         while let Some(meta_result) = list_stream.next().await {
-            let list_elapsed = list_start.elapsed().as_secs_f64();
-
             let meta = match meta_result {
-                Ok(meta) => {
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["azure_blob", "LIST", "200"])
-                        .observe(list_elapsed);
-                    meta
-                }
+                Ok(meta) => meta,
                 Err(err) => {
-                    let status_code = error_to_status_code(&err);
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["azure_blob", "LIST", status_code])
-                        .observe(list_elapsed);
                     return Err(err.into());
                 }
             };
@@ -642,13 +643,23 @@ impl ObjectStorage for BlobStore {
                         .map_err(ObjectStorageError::PathError)?,
                 )
                 .await?;
+            STORAGE_REQUEST_RESPONSE_TIME
+                .with_label_values(&["azure_blob", "GET", "200"])
+                .observe(list_start.elapsed().as_secs_f64());
+            STORAGE_FILES_SCANNED
+                .with_label_values(&["azure_blob", "GET"])
+                .inc();
 
             res.push(byts);
         }
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["azure_blob", "LIST", "200"])
+            .observe(list_elapsed);
 
         // Record total files scanned
         STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "GET"])
+            .with_label_values(&["azure_blob", "LIST"])
             .inc_by(files_scanned as f64);
 
         Ok(res)
@@ -665,20 +676,9 @@ impl ObjectStorage for BlobStore {
         let mut object_stream = self.client.list(Some(&self.root));
 
         while let Some(meta_result) = object_stream.next().await {
-            let list_elapsed = list_start.elapsed().as_secs_f64();
-
             let meta = match meta_result {
-                Ok(meta) => {
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["azure_blob", "LIST", "200"])
-                        .observe(list_elapsed);
-                    meta
-                }
+                Ok(meta) => meta,
                 Err(err) => {
-                    let status_code = error_to_status_code(&err);
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["azure_blob", "LIST", status_code])
-                        .observe(list_elapsed);
                     return Err(err.into());
                 }
             };
@@ -690,7 +690,10 @@ impl ObjectStorage for BlobStore {
                 path_arr.push(RelativePathBuf::from(meta.location.as_ref()));
             }
         }
-
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["azure_blob", "LIST", "200"])
+            .observe(list_elapsed);
         // Record total files scanned
         STORAGE_FILES_SCANNED
             .with_label_values(&["azure_blob", "LIST"])
@@ -707,11 +710,6 @@ impl ObjectStorage for BlobStore {
         self._put_object(path, resource.into())
             .await
             .map_err(|err| ObjectStorageError::ConnectionError(Box::new(err)))?;
-
-        // Record single file written
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "PUT"])
-            .inc();
 
         Ok(())
     }
@@ -769,6 +767,9 @@ impl ObjectStorage for BlobStore {
                     .observe(head_elapsed);
             }
         }
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["azure_blob", "HEAD"])
+            .inc();
 
         Ok(result.map(|_| ())?)
     }
@@ -785,7 +786,9 @@ impl ObjectStorage for BlobStore {
         let delete_start = Instant::now();
         let result = self.client.delete(&to_object_store_path(&file)).await;
         let delete_elapsed = delete_start.elapsed().as_secs_f64();
-
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["azure_blob", "DELETE"])
+            .inc();
         match result {
             Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
@@ -799,15 +802,7 @@ impl ObjectStorage for BlobStore {
                     .with_label_values(&["azure_blob", "DELETE", status_code])
                     .observe(delete_elapsed);
 
-                // if the object is not found, it is not an error
-                // the given url path was incorrect
-                if matches!(err, object_store::Error::NotFound { .. }) {
-                    error!("Node does not exist");
-                    Err(err.into())
-                } else {
-                    error!("Error deleting node meta file: {:?}", err);
-                    Err(err.into())
-                }
+                Err(err.into())
             }
         }
     }
@@ -868,7 +863,7 @@ impl ObjectStorage for BlobStore {
 
         stream_json_check.try_collect::<()>().await?;
 
-        Ok(dirs.into_iter().collect())
+        Ok(dirs)
     }
 
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError> {
@@ -883,9 +878,14 @@ impl ObjectStorage for BlobStore {
         date: &str,
     ) -> Result<Vec<String>, ObjectStorageError> {
         let pre = object_store::path::Path::from(format!("{}/{}/", stream_name, date));
+        let list_start = Instant::now();
         let resp = self.client.list_with_delimiter(Some(&pre)).await?;
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["azure_blob", "LIST", "200"])
+            .observe(list_elapsed);
 
-        let hours = resp
+        let hours: Vec<String> = resp
             .common_prefixes
             .iter()
             .filter_map(|path| {
@@ -912,9 +912,14 @@ impl ObjectStorage for BlobStore {
         hour: &str,
     ) -> Result<Vec<String>, ObjectStorageError> {
         let pre = object_store::path::Path::from(format!("{}/{}/{}/", stream_name, date, hour));
+        let list_start = Instant::now();
         let resp = self.client.list_with_delimiter(Some(&pre)).await?;
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["azure_blob", "LIST", "200"])
+            .observe(list_elapsed);
 
-        let minutes = resp
+        let minutes: Vec<String> = resp
             .common_prefixes
             .iter()
             .filter_map(|path| {
@@ -945,9 +950,7 @@ impl ObjectStorage for BlobStore {
     // }
 
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
-        self._upload_file(key, path).await?;
-
-        Ok(())
+        Ok(self._upload_file(key, path).await?)
     }
 
     fn absolute_url(&self, prefix: &RelativePath) -> object_store::path::Path {

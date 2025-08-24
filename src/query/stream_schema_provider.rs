@@ -16,11 +16,10 @@
  *
  */
 
-use std::{any::Any, collections::HashMap, ops::Bound, sync::Arc};
+use std::{any::Any, collections::HashMap, ops::Bound, path::PathBuf, sync::Arc};
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef, SortOptions};
-use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, TimeDelta, Timelike, Utc};
 use datafusion::{
     catalog::{SchemaProvider, Session},
@@ -45,10 +44,9 @@ use datafusion::{
     prelude::Expr,
     scalar::ScalarValue,
 };
-use futures_util::{StreamExt, TryFutureExt, TryStreamExt, stream::FuturesOrdered};
+use futures_util::TryFutureExt;
 use itertools::Itertools;
-use object_store::{ObjectStore, path::Path};
-use url::Url;
+use relative_path::RelativePathBuf;
 
 use crate::{
     catalog::{
@@ -59,10 +57,10 @@ use crate::{
     },
     event::DEFAULT_TIMESTAMP_KEY,
     hottier::HotTierManager,
-    metrics::QUERY_CACHE_HIT,
+    metrics::{QUERY_CACHE_HIT, storage::STORAGE_FILES_SCANNED},
     option::Mode,
     parseable::{PARSEABLE, STREAM_EXISTS},
-    storage::{ObjectStorage, ObjectStoreFormat},
+    storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat},
 };
 
 use super::listing_table_builder::ListingTableBuilder;
@@ -91,7 +89,6 @@ impl SchemaProvider for GlobalSchemaProvider {
                     .expect(STREAM_EXISTS)
                     .get_schema(),
                 stream: name.to_owned(),
-                url: self.storage.store_url(),
             })))
         } else {
             Ok(None)
@@ -108,8 +105,6 @@ struct StandardTableProvider {
     schema: SchemaRef,
     // prefix under which to find snapshot
     stream: String,
-    // url to find right instance of object store
-    url: Url,
 }
 
 impl StandardTableProvider {
@@ -276,7 +271,6 @@ impl StandardTableProvider {
         &self,
         execution_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
         glob_storage: Arc<dyn ObjectStorage>,
-        object_store: Arc<dyn ObjectStore>,
         time_filters: &[PartialTimeFilter],
         state: &dyn Session,
         projection: Option<&Vec<usize>>,
@@ -285,7 +279,7 @@ impl StandardTableProvider {
         time_partition: Option<String>,
     ) -> Result<(), DataFusionError> {
         ListingTableBuilder::new(self.stream.to_owned())
-            .populate_via_listing(glob_storage.clone(), object_store, time_filters)
+            .populate_via_listing(glob_storage.clone(), time_filters)
             .and_then(|builder| async {
                 let table = builder.build(
                     self.schema.clone(),
@@ -327,7 +321,7 @@ impl StandardTableProvider {
         &self,
         manifest_files: Vec<File>,
     ) -> (Vec<Vec<PartitionedFile>>, datafusion::common::Statistics) {
-        let target_partition = num_cpus::get();
+        let target_partition: usize = num_cpus::get();
         let mut partitioned_files = Vec::from_iter((0..target_partition).map(|_| Vec::new()));
         let mut column_statistics = HashMap::<String, Option<TypedStatistics>>::new();
         let mut count = 0;
@@ -487,11 +481,6 @@ impl TableProvider for StandardTableProvider {
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut execution_plans = vec![];
-        let object_store = state
-            .runtime_env()
-            .object_store_registry
-            .get_store(&self.url)
-            .unwrap();
         let glob_storage = PARSEABLE.storage.get_object_store();
 
         let object_store_format: ObjectStoreFormat = serde_json::from_slice(
@@ -548,7 +537,6 @@ impl TableProvider for StandardTableProvider {
                 self.legacy_listing_table(
                     &mut execution_plans,
                     glob_storage.clone(),
-                    object_store.clone(),
                     &listing_time_filter,
                     state,
                     projection,
@@ -593,6 +581,11 @@ impl TableProvider for StandardTableProvider {
             QUERY_CACHE_HIT.with_label_values(&[&self.stream]).inc();
             return self.final_plan(execution_plans, projection);
         }
+
+        let parquet_files_to_scan = manifest_files.len();
+        STORAGE_FILES_SCANNED
+            .with_label_values(&[PARSEABLE.storage().name(), "GET"])
+            .inc_by(parquet_files_to_scan as f64);
 
         let (partitioned_files, statistics) = self.partitioned_files(manifest_files);
         self.create_parquet_physical_plan(
@@ -864,24 +857,27 @@ fn extract_timestamp_bound(
 }
 
 pub async fn collect_manifest_files(
-    storage: Arc<dyn ObjectStore>,
+    storage: Arc<dyn ObjectStorage>,
     manifest_urls: Vec<String>,
-) -> Result<Vec<Manifest>, object_store::Error> {
-    let tasks = manifest_urls.into_iter().map(|path| {
-        let path = Path::parse(path).unwrap();
+) -> Result<Vec<Manifest>, ObjectStorageError> {
+    let mut tasks = Vec::new();
+    manifest_urls.into_iter().for_each(|path| {
+        let path = RelativePathBuf::from_path(PathBuf::from(path)).expect("Invalid path");
         let storage = Arc::clone(&storage);
-        async move { storage.get(&path).await }
+        tasks.push(tokio::task::spawn(async move {
+            storage.get_object(&path).await
+        }));
     });
 
-    let resp = FuturesOrdered::from_iter(tasks)
-        .and_then(|res| res.bytes())
-        .collect::<Vec<object_store::Result<Bytes>>>()
-        .await;
+    let mut op = Vec::new();
+    for task in tasks {
+        let file = task.await??;
+        op.push(file);
+    }
 
-    Ok(resp
+    Ok(op
         .into_iter()
-        .flat_map(|res| res.ok())
-        .map(|bytes| serde_json::from_slice(&bytes).unwrap())
+        .map(|res| serde_json::from_slice(&res).expect("Data is invalid for Manifest"))
         .collect())
 }
 

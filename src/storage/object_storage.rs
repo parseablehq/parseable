@@ -50,6 +50,7 @@ use crate::handlers::http::fetch_schema;
 use crate::handlers::http::modal::ingest_server::INGESTOR_EXPECT;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::handlers::http::users::{FILTER_DIR, USERS_ROOT_DIR};
+use crate::metrics::TOTAL_EVENTS_STORAGE_SIZE_DATE;
 use crate::metrics::storage::StorageMetrics;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE};
 use crate::option::Mode;
@@ -169,17 +170,22 @@ fn update_storage_metrics(
 ) -> Result<(), ObjectStorageError> {
     let mut file_date_part = filename.split('.').collect::<Vec<&str>>()[0];
     file_date_part = file_date_part.split('=').collect::<Vec<&str>>()[1];
-    let compressed_size = path.metadata().map_or(0, |meta| meta.len());
-
+    let compressed_size = path
+        .metadata()
+        .map(|m| m.len())
+        .map_err(|e| ObjectStorageError::Custom(format!("metadata failed for {filename}: {e}")))?;
     STORAGE_SIZE
         .with_label_values(&["data", stream_name, "parquet"])
         .add(compressed_size as i64);
     EVENTS_STORAGE_SIZE_DATE
         .with_label_values(&["data", stream_name, "parquet", file_date_part])
-        .add(compressed_size as i64);
+        .inc_by(compressed_size);
     LIFETIME_EVENTS_STORAGE_SIZE
         .with_label_values(&["data", stream_name, "parquet"])
         .add(compressed_size as i64);
+    TOTAL_EVENTS_STORAGE_SIZE_DATE
+        .with_label_values(&["parquet", file_date_part])
+        .inc_by(compressed_size);
 
     Ok(())
 }

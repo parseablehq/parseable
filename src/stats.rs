@@ -20,16 +20,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use once_cell::sync::Lazy;
-use prometheus::IntGaugeVec;
 use prometheus::core::Collector;
 use prometheus::proto::MetricFamily;
+use prometheus::{IntCounterVec, IntGaugeVec};
 use tracing::warn;
 
 use crate::metrics::{
     DELETED_EVENTS_STORAGE_SIZE, EVENTS_DELETED, EVENTS_DELETED_SIZE, EVENTS_INGESTED,
     EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
     EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
-    LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE,
+    LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE, TOTAL_EVENTS_INGESTED_DATE,
+    TOTAL_EVENTS_INGESTED_SIZE_DATE, TOTAL_EVENTS_STORAGE_SIZE_DATE,
 };
 use crate::storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat};
 
@@ -136,6 +137,10 @@ pub async fn update_deleted_stats(
                 "parquet",
                 &manifest_date,
             ]);
+            let _ = TOTAL_EVENTS_INGESTED_DATE.remove_label_values(&["json", &manifest_date]);
+            let _ = TOTAL_EVENTS_INGESTED_SIZE_DATE.remove_label_values(&["json", &manifest_date]);
+            let _ =
+                TOTAL_EVENTS_STORAGE_SIZE_DATE.remove_label_values(&["parquet", &manifest_date]);
             num_row += manifest.events_ingested as i64;
             ingestion_size += manifest.ingestion_size as i64;
             storage_size += manifest.storage_size as i64;
@@ -197,7 +202,7 @@ fn remove_label_values(lazy_static: &Lazy<IntGaugeVec>, event_labels: &[&str]) {
     }
 }
 
-fn delete_with_label_prefix(metrics: &IntGaugeVec, prefix: &[&str]) {
+fn delete_with_label_prefix(metrics: &IntCounterVec, prefix: &[&str]) {
     let families: Vec<MetricFamily> = metrics.collect().into_iter().collect();
     for metric in families.iter().flat_map(|m| m.get_metric()) {
         let label_map: HashMap<&str, &str> = metric
