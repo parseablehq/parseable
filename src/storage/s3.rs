@@ -342,12 +342,13 @@ impl S3 {
     async fn _get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         let time = std::time::Instant::now();
         let resp = self.client.get(&to_object_store_path(path)).await;
-
         let elapsed = time.elapsed().as_secs_f64();
-
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["s3", "GET"])
+            .inc();
         match resp {
             Ok(resp) => {
-                let body = resp.bytes().await.unwrap();
+                let body: Bytes = resp.bytes().await.unwrap();
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["s3", "GET", "200"])
                     .observe(elapsed);
@@ -370,9 +371,10 @@ impl S3 {
     ) -> Result<(), ObjectStorageError> {
         let time = std::time::Instant::now();
         let resp = self.client.put(&to_object_store_path(path), resource).await;
-
         let elapsed = time.elapsed().as_secs_f64();
-
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["s3", "PUT"])
+            .inc();
         match resp {
             Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
@@ -381,23 +383,7 @@ impl S3 {
                 Ok(())
             }
             Err(err) => {
-                let status_code = match &err {
-                    object_store::Error::NotFound { .. } => {
-                        // Check for specific S3 bucket not found error
-                        let source_str = err.to_string();
-                        if source_str.contains("<Code>NoSuchBucket</Code>") {
-                            STORAGE_REQUEST_RESPONSE_TIME
-                                .with_label_values(&["s3", "PUT", "404"])
-                                .observe(elapsed);
-                            return Err(ObjectStorageError::Custom(
-                                format!("Bucket '{}' does not exist in S3.", self.bucket)
-                                    .to_string(),
-                            ));
-                        }
-                        "404"
-                    }
-                    _ => error_to_status_code(&err),
-                };
+                let status_code = error_to_status_code(&err);
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["s3", "PUT", status_code])
                     .observe(elapsed);
@@ -408,7 +394,7 @@ impl S3 {
 
     async fn _delete_prefix(&self, key: &str) -> Result<(), ObjectStorageError> {
         let files_scanned = Arc::new(AtomicU64::new(0));
-
+        let files_deleted = Arc::new(AtomicU64::new(0));
         // Track LIST operation
         let list_start = Instant::now();
         let object_stream = self.client.list(Some(&(key.into())));
@@ -417,23 +403,22 @@ impl S3 {
             .with_label_values(&["s3", "LIST", "200"])
             .observe(list_elapsed);
 
-        let files_scanned_clone = files_scanned.clone();
         object_stream
             .for_each_concurrent(None, |x| async {
+                files_scanned.fetch_add(1, Ordering::Relaxed);
                 match x {
                     Ok(obj) => {
-                        files_scanned_clone.fetch_add(1, Ordering::Relaxed);
-                        // Track individual DELETE operation
+                        files_deleted.fetch_add(1, Ordering::Relaxed);
                         let delete_start = Instant::now();
-                        match self.client.delete(&obj.location).await {
+                        let delete_resp = self.client.delete(&obj.location).await;
+                        let delete_elapsed = delete_start.elapsed().as_secs_f64();
+                        match delete_resp {
                             Ok(_) => {
-                                let delete_elapsed = delete_start.elapsed().as_secs_f64();
                                 STORAGE_REQUEST_RESPONSE_TIME
                                     .with_label_values(&["s3", "DELETE", "200"])
                                     .observe(delete_elapsed);
                             }
                             Err(err) => {
-                                let delete_elapsed = delete_start.elapsed().as_secs_f64();
                                 let status_code = error_to_status_code(&err);
                                 STORAGE_REQUEST_RESPONSE_TIME
                                     .with_label_values(&["s3", "DELETE", status_code])
@@ -449,11 +434,12 @@ impl S3 {
             })
             .await;
 
-        // Record total files scanned
         STORAGE_FILES_SCANNED
             .with_label_values(&["s3", "LIST"])
             .inc_by(files_scanned.load(Ordering::Relaxed) as f64);
-
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["s3", "DELETE"])
+            .inc_by(files_deleted.load(Ordering::Relaxed) as f64);
         Ok(())
     }
 
@@ -461,10 +447,10 @@ impl S3 {
         let mut result_file_list = HashSet::new();
         let mut total_files_scanned = 0u64;
 
-        // Track initial LIST operation
         let list_start = Instant::now();
         let resp = self.client.list_with_delimiter(None).await?;
         let list_elapsed = list_start.elapsed().as_secs_f64();
+        total_files_scanned += resp.objects.len() as u64;
         STORAGE_REQUEST_RESPONSE_TIME
             .with_label_values(&["s3", "LIST", "200"])
             .observe(list_elapsed);
@@ -522,9 +508,8 @@ impl S3 {
     }
 
     async fn _list_dates(&self, stream: &str) -> Result<Vec<String>, ObjectStorageError> {
-        // Track LIST operation
         let list_start = Instant::now();
-        let resp = self
+        let resp: Result<object_store::ListResult, object_store::Error> = self
             .client
             .list_with_delimiter(Some(&(stream.into())))
             .await;
@@ -548,7 +533,6 @@ impl S3 {
 
         let common_prefixes = resp.common_prefixes;
 
-        // Record files scanned (prefixes/directories count as files scanned)
         STORAGE_FILES_SCANNED
             .with_label_values(&["s3", "LIST"])
             .inc_by(common_prefixes.len() as f64);
@@ -580,6 +564,7 @@ impl S3 {
 
         let resp = match resp {
             Ok(resp) => {
+                total_files_scanned += resp.objects.len() as u64;
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["s3", "LIST", "200"])
                     .observe(list_elapsed);
@@ -642,38 +627,30 @@ impl S3 {
 
         Ok(result_file_list)
     }
+
     async fn _upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
-        // // TODO: Uncomment this when multipart is fixed
-        // let should_multipart = std::fs::metadata(path)?.len() > MULTIPART_UPLOAD_SIZE as u64;
+        let bytes = tokio::fs::read(path).await?;
 
-        let should_multipart = false;
-
-        if should_multipart {
-            // self._upload_multipart(key, path).await
-            // this branch will never get executed
-            Ok(())
-        } else {
-            let bytes = tokio::fs::read(path).await?;
-
-            let put_start = Instant::now();
-            let result = self.client.put(&key.into(), bytes.into()).await;
-            let put_elapsed = put_start.elapsed().as_secs_f64();
-
-            match result {
-                Ok(result) => {
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["s3", "PUT", "200"])
-                        .observe(put_elapsed);
-                    info!("Uploaded file to S3: {:?}", result);
-                    Ok(())
-                }
-                Err(err) => {
-                    let status_code = error_to_status_code(&err);
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["s3", "PUT", status_code])
-                        .observe(put_elapsed);
-                    Err(err.into())
-                }
+        let put_start = Instant::now();
+        let result = self.client.put(&key.into(), bytes.into()).await;
+        let put_elapsed = put_start.elapsed().as_secs_f64();
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["s3", "PUT"])
+            .inc();
+        match result {
+            Ok(result) => {
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["s3", "PUT", "200"])
+                    .observe(put_elapsed);
+                info!("Uploaded file to S3: {:?}", result);
+                Ok(())
+            }
+            Err(err) => {
+                let status_code = error_to_status_code(&err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["s3", "PUT", status_code])
+                    .observe(put_elapsed);
+                Err(err.into())
             }
         }
     }
@@ -694,14 +671,14 @@ impl S3 {
         let mut async_writer = match async_writer {
             Ok(writer) => {
                 STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["s3", "PUT_MULTIPART_INIT", "200"])
+                    .with_label_values(&["s3", "PUT_MULTIPART", "200"])
                     .observe(multipart_elapsed);
                 writer
             }
             Err(err) => {
                 let status_code = error_to_status_code(&err);
                 STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["s3", "PUT_MULTIPART_INIT", status_code])
+                    .with_label_values(&["s3", "PUT_MULTIPART", status_code])
                     .observe(multipart_elapsed);
                 return Err(err.into());
             }
@@ -717,7 +694,9 @@ impl S3 {
             let put_start = Instant::now();
             let result = self.client.put(location, data.into()).await;
             let put_elapsed = put_start.elapsed().as_secs_f64();
-
+            STORAGE_FILES_SCANNED
+                .with_label_values(&["s3", "PUT"])
+                .inc();
             match result {
                 Ok(_) => {
                     STORAGE_REQUEST_RESPONSE_TIME
@@ -817,7 +796,9 @@ impl ObjectStorage for S3 {
         let head_start = Instant::now();
         let meta = self.client.head(path).await;
         let head_elapsed = head_start.elapsed().as_secs_f64();
-
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["s3", "HEAD"])
+            .inc();
         let meta = match meta {
             Ok(meta) => {
                 STORAGE_REQUEST_RESPONSE_TIME
@@ -838,6 +819,7 @@ impl ObjectStorage for S3 {
         let buf = object_store::buffered::BufReader::new(store, &meta);
         Ok(buf)
     }
+
     async fn upload_multipart(
         &self,
         key: &RelativePath,
@@ -845,11 +827,14 @@ impl ObjectStorage for S3 {
     ) -> Result<(), ObjectStorageError> {
         self._upload_multipart(key, path).await
     }
+
     async fn head(&self, path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
         let head_start = Instant::now();
         let result = self.client.head(&to_object_store_path(path)).await;
         let head_elapsed = head_start.elapsed().as_secs_f64();
-
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["s3", "HEAD"])
+            .inc();
         match &result {
             Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
@@ -872,14 +857,7 @@ impl ObjectStorage for S3 {
     }
 
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
-        let result = self._get_object(path).await?;
-
-        // Record single file accessed
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "GET"])
-            .inc();
-
-        Ok(result)
+        Ok(self._get_object(path).await?)
     }
 
     async fn get_objects(
@@ -902,20 +880,9 @@ impl ObjectStorage for S3 {
 
         // Note: We track each streaming list item retrieval
         while let Some(meta_result) = list_stream.next().await {
-            let list_elapsed = list_start.elapsed().as_secs_f64();
-
             let meta = match meta_result {
-                Ok(meta) => {
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["s3", "LIST", "200"])
-                        .observe(list_elapsed);
-                    meta
-                }
+                Ok(meta) => meta,
                 Err(err) => {
-                    let status_code = error_to_status_code(&err);
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["s3", "LIST", status_code])
-                        .observe(list_elapsed);
                     return Err(err.into());
                 }
             };
@@ -933,13 +900,23 @@ impl ObjectStorage for S3 {
                         .map_err(ObjectStorageError::PathError)?,
                 )
                 .await?;
+            STORAGE_REQUEST_RESPONSE_TIME
+                .with_label_values(&["s3", "GET", "200"])
+                .observe(list_start.elapsed().as_secs_f64());
+            STORAGE_FILES_SCANNED
+                .with_label_values(&["s3", "GET"])
+                .inc();
 
             res.push(byts);
         }
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["s3", "LIST", "200"])
+            .observe(list_elapsed);
 
         // Record total files scanned
         STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "GET"])
+            .with_label_values(&["s3", "LIST"])
             .inc_by(files_scanned as f64);
 
         Ok(res)
@@ -956,20 +933,9 @@ impl ObjectStorage for S3 {
         let mut object_stream = self.client.list(Some(&self.root));
 
         while let Some(meta_result) = object_stream.next().await {
-            let list_elapsed = list_start.elapsed().as_secs_f64();
-
             let meta = match meta_result {
-                Ok(meta) => {
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["s3", "LIST", "200"])
-                        .observe(list_elapsed);
-                    meta
-                }
+                Ok(meta) => meta,
                 Err(err) => {
-                    let status_code = error_to_status_code(&err);
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["s3", "LIST", status_code])
-                        .observe(list_elapsed);
                     return Err(err.into());
                 }
             };
@@ -981,7 +947,10 @@ impl ObjectStorage for S3 {
                 path_arr.push(RelativePathBuf::from(meta.location.as_ref()));
             }
         }
-
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["s3", "LIST", "200"])
+            .observe(list_elapsed);
         // Record total files scanned
         STORAGE_FILES_SCANNED
             .with_label_values(&["s3", "LIST"])
@@ -1003,20 +972,9 @@ impl ObjectStorage for S3 {
         let mut object_stream = self.client.list(Some(&path));
 
         while let Some(meta_result) = object_stream.next().await {
-            let list_elapsed = list_start.elapsed().as_secs_f64();
-
             let meta = match meta_result {
-                Ok(meta) => {
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["s3", "LIST", "200"])
-                        .observe(list_elapsed);
-                    meta
-                }
+                Ok(meta) => meta,
                 Err(err) => {
-                    let status_code = error_to_status_code(&err);
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["s3", "LIST", status_code])
-                        .observe(list_elapsed);
                     return Err(err.into());
                 }
             };
@@ -1028,6 +986,10 @@ impl ObjectStorage for S3 {
                 path_arr.push(RelativePathBuf::from(meta.location.as_ref()));
             }
         }
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["s3", "LIST", "200"])
+            .observe(list_elapsed);
 
         path_arr.push(RelativePathBuf::from_iter([
             stream_name,
@@ -1051,11 +1013,6 @@ impl ObjectStorage for S3 {
         self._put_object(path, resource.into())
             .await
             .map_err(|err| ObjectStorageError::ConnectionError(Box::new(err)))?;
-
-        // Record single file written
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "PUT"])
-            .inc();
 
         Ok(())
     }
@@ -1113,6 +1070,9 @@ impl ObjectStorage for S3 {
                     .observe(head_elapsed);
             }
         }
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["s3", "HEAD"])
+            .inc();
 
         Ok(result.map(|_| ())?)
     }
@@ -1129,7 +1089,9 @@ impl ObjectStorage for S3 {
         let delete_start = Instant::now();
         let result = self.client.delete(&to_object_store_path(&file)).await;
         let delete_elapsed = delete_start.elapsed().as_secs_f64();
-
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["s3", "DELETE"])
+            .inc();
         match result {
             Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
@@ -1143,15 +1105,7 @@ impl ObjectStorage for S3 {
                     .with_label_values(&["s3", "DELETE", status_code])
                     .observe(delete_elapsed);
 
-                // if the object is not found, it is not an error
-                // the given url path was incorrect
-                if matches!(err, object_store::Error::NotFound { .. }) {
-                    error!("Node does not exist");
-                    Err(err.into())
-                } else {
-                    error!("Error deleting node meta file: {:?}", err);
-                    Err(err.into())
-                }
+                Err(err.into())
             }
         }
     }
@@ -1224,7 +1178,12 @@ impl ObjectStorage for S3 {
         date: &str,
     ) -> Result<Vec<String>, ObjectStorageError> {
         let pre = object_store::path::Path::from(format!("{}/{}/", stream_name, date));
+        let list_start = Instant::now();
         let resp = self.client.list_with_delimiter(Some(&pre)).await?;
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["s3", "LIST", "200"])
+            .observe(list_elapsed);
 
         let hours: Vec<String> = resp
             .common_prefixes
@@ -1253,7 +1212,12 @@ impl ObjectStorage for S3 {
         hour: &str,
     ) -> Result<Vec<String>, ObjectStorageError> {
         let pre = object_store::path::Path::from(format!("{}/{}/{}/", stream_name, date, hour));
+        let list_start = Instant::now();
         let resp = self.client.list_with_delimiter(Some(&pre)).await?;
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["s3", "LIST", "200"])
+            .observe(list_elapsed);
 
         let minutes: Vec<String> = resp
             .common_prefixes
@@ -1286,9 +1250,7 @@ impl ObjectStorage for S3 {
     }
 
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
-        self._upload_file(key, path).await?;
-
-        Ok(())
+        Ok(self._upload_file(key, path).await?)
     }
 
     fn absolute_url(&self, prefix: &RelativePath) -> object_store::path::Path {
