@@ -137,13 +137,19 @@ pub async fn update_deleted_stats(
                 "parquet",
                 &manifest_date,
             ]);
-            let _ = TOTAL_EVENTS_INGESTED_DATE.remove_label_values(&["json", &manifest_date]);
-            let _ = TOTAL_EVENTS_INGESTED_SIZE_DATE.remove_label_values(&["json", &manifest_date]);
-            let _ =
-                TOTAL_EVENTS_STORAGE_SIZE_DATE.remove_label_values(&["parquet", &manifest_date]);
+
             num_row += manifest.events_ingested as i64;
             ingestion_size += manifest.ingestion_size as i64;
             storage_size += manifest.storage_size as i64;
+            TOTAL_EVENTS_INGESTED_DATE
+                .with_label_values(&["json", &manifest_date])
+                .sub(manifest.events_ingested as i64);
+            TOTAL_EVENTS_INGESTED_SIZE_DATE
+                .with_label_values(&["json", &manifest_date])
+                .sub(manifest.ingestion_size as i64);
+            TOTAL_EVENTS_STORAGE_SIZE_DATE
+                .with_label_values(&["parquet", &manifest_date])
+                .sub(manifest.storage_size as i64);
         }
     }
     EVENTS_DELETED

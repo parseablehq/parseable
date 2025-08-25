@@ -62,10 +62,10 @@ pub fn update_stats(
         .add(size as i64);
     TOTAL_EVENTS_INGESTED_DATE
         .with_label_values(&[origin, &parsed_date])
-        .inc_by(num_rows as u64);
+        .add(num_rows as i64);
     TOTAL_EVENTS_INGESTED_SIZE_DATE
         .with_label_values(&[origin, &parsed_date])
-        .inc_by(size);
+        .add(size as i64);
 }
 
 /// In order to support backward compatability with streams created before v1.6.4,
