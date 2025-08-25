@@ -43,7 +43,6 @@ use tracing::info;
 use tracing::{error, warn};
 use ulid::Ulid;
 
-use crate::alerts::AlertConfig;
 use crate::alerts::target::Target;
 use crate::catalog::{self, manifest::Manifest, snapshot::Snapshot};
 use crate::correlation::{CorrelationConfig, CorrelationError};
@@ -458,15 +457,6 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         Ok(())
     }
 
-    async fn put_alert(
-        &self,
-        alert_id: Ulid,
-        alert: &AlertConfig,
-    ) -> Result<(), ObjectStorageError> {
-        self.put_object(&alert_json_path(alert_id), to_bytes(alert))
-            .await
-    }
-
     async fn put_stats(
         &self,
         stream_name: &str,
@@ -535,25 +525,6 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     async fn get_schema(&self, stream_name: &str) -> Result<Schema, ObjectStorageError> {
         let schema_map = self.get_object(&schema_path(stream_name)).await?;
         Ok(serde_json::from_slice(&schema_map)?)
-    }
-
-    async fn get_alerts(&self) -> Result<Vec<AlertConfig>, ObjectStorageError> {
-        let alerts_path = RelativePathBuf::from(ALERTS_ROOT_DIRECTORY);
-        let alerts = self
-            .get_objects(
-                Some(&alerts_path),
-                Box::new(|file_name| file_name.ends_with(".json")),
-            )
-            .await?
-            .iter()
-            .filter_map(|bytes| {
-                serde_json::from_slice(bytes)
-                    .inspect_err(|err| warn!("Expected compatible json, error = {err}"))
-                    .ok()
-            })
-            .collect();
-
-        Ok(alerts)
     }
 
     async fn get_targets(&self) -> Result<Vec<Target>, ObjectStorageError> {

@@ -32,6 +32,7 @@ pub mod handlers;
 pub mod hottier;
 mod livetail;
 mod metadata;
+pub mod metastore;
 pub mod metrics;
 pub mod migration;
 pub mod oidc;

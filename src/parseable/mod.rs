@@ -56,6 +56,9 @@ use crate::{
         },
     },
     metadata::{LogStreamMetadata, SchemaVersion},
+    metastore::{
+        metastore_traits::Metastore, metastores::object_store_metastore::ObjectStoreMetastore,
+    },
     option::Mode,
     static_schema::{StaticSchema, convert_static_schema_to_arrow_schema},
     storage::{
@@ -101,31 +104,58 @@ pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| match Cli::parse().storage 
             .exit();
         }
 
+        // for now create a metastore without using a CLI arg
+        let metastore = ObjectStoreMetastore {
+            storage: args.storage.construct_client(),
+        };
+
         Parseable::new(
             args.options,
             #[cfg(feature = "kafka")]
             args.kafka,
             Arc::new(args.storage),
+            Arc::new(metastore),
         )
     }
-    StorageOptions::S3(args) => Parseable::new(
-        args.options,
-        #[cfg(feature = "kafka")]
-        args.kafka,
-        Arc::new(args.storage),
-    ),
-    StorageOptions::Blob(args) => Parseable::new(
-        args.options,
-        #[cfg(feature = "kafka")]
-        args.kafka,
-        Arc::new(args.storage),
-    ),
-    StorageOptions::Gcs(args) => Parseable::new(
-        args.options,
-        #[cfg(feature = "kafka")]
-        args.kafka,
-        Arc::new(args.storage),
-    ),
+    StorageOptions::S3(args) => {
+        // for now create a metastore without using a CLI arg
+        let metastore = ObjectStoreMetastore {
+            storage: args.storage.construct_client(),
+        };
+        Parseable::new(
+            args.options,
+            #[cfg(feature = "kafka")]
+            args.kafka,
+            Arc::new(args.storage),
+            Arc::new(metastore),
+        )
+    }
+    StorageOptions::Blob(args) => {
+        // for now create a metastore without using a CLI arg
+        let metastore = ObjectStoreMetastore {
+            storage: args.storage.construct_client(),
+        };
+        Parseable::new(
+            args.options,
+            #[cfg(feature = "kafka")]
+            args.kafka,
+            Arc::new(args.storage),
+            Arc::new(metastore),
+        )
+    }
+    StorageOptions::Gcs(args) => {
+        // for now create a metastore without using a CLI arg
+        let metastore = ObjectStoreMetastore {
+            storage: args.storage.construct_client(),
+        };
+        Parseable::new(
+            args.options,
+            #[cfg(feature = "kafka")]
+            args.kafka,
+            Arc::new(args.storage),
+            Arc::new(metastore),
+        )
+    }
 });
 
 /// All state related to parseable, in one place.
@@ -137,6 +167,8 @@ pub struct Parseable {
     /// Metadata and staging realting to each logstreams
     /// A globally shared mapping of `Streams` that parseable is aware of.
     pub streams: Streams,
+    /// metastore
+    pub metastore: Arc<dyn Metastore>,
     /// Used to configure the kafka connector
     #[cfg(feature = "kafka")]
     pub kafka_config: KafkaConfig,
@@ -147,10 +179,12 @@ impl Parseable {
         options: Options,
         #[cfg(feature = "kafka")] kafka_config: KafkaConfig,
         storage: Arc<dyn ObjectStorageProvider>,
+        metastore: Arc<dyn Metastore>,
     ) -> Self {
         Parseable {
             options: Arc::new(options),
             storage,
+            metastore,
             streams: Streams::default(),
             #[cfg(feature = "kafka")]
             kafka_config,
