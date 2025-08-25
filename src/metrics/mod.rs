@@ -160,8 +160,8 @@ pub static EVENTS_STORAGE_SIZE_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
-pub static TOTAL_EVENTS_INGESTED_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
-    IntCounterVec::new(
+pub static TOTAL_EVENTS_INGESTED_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
         Opts::new(
             "total_events_ingested_date",
             "total events ingested on a particular date",
@@ -172,8 +172,8 @@ pub static TOTAL_EVENTS_INGESTED_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
-pub static TOTAL_EVENTS_INGESTED_SIZE_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
-    IntCounterVec::new(
+pub static TOTAL_EVENTS_INGESTED_SIZE_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
         Opts::new(
             "total_events_ingested_size_date",
             "Total events ingested size in bytes on a particular date",
@@ -184,8 +184,8 @@ pub static TOTAL_EVENTS_INGESTED_SIZE_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
-pub static TOTAL_EVENTS_STORAGE_SIZE_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
-    IntCounterVec::new(
+pub static TOTAL_EVENTS_STORAGE_SIZE_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
         Opts::new(
             "total_events_storage_size_date",
             "Total events storage size in bytes on a particular date",

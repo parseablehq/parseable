@@ -44,12 +44,24 @@ pub static STORAGE_FILES_SCANNED: Lazy<CounterVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
+pub static STORAGE_FILES_SCANNED_DATE: Lazy<CounterVec> = Lazy::new(|| {
+    CounterVec::new(
+        Opts::new(
+            "storage_files_scanned_date_total",
+            "Total number of files scanned in storage operations by date",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["provider", "operation", "date"],
+    )
+    .expect("metric can be created")
+});
+
 pub trait StorageMetrics {
     fn register_metrics(&self, handler: &PrometheusMetrics);
 }
 
 pub mod localfs {
-    use crate::storage::FSConfig;
+    use crate::{metrics::storage::STORAGE_FILES_SCANNED_DATE, storage::FSConfig};
 
     use super::{STORAGE_FILES_SCANNED, STORAGE_REQUEST_RESPONSE_TIME, StorageMetrics};
 
@@ -63,12 +75,16 @@ pub mod localfs {
                 .registry
                 .register(Box::new(STORAGE_FILES_SCANNED.clone()))
                 .expect("metric can be registered");
+            handler
+                .registry
+                .register(Box::new(STORAGE_FILES_SCANNED_DATE.clone()))
+                .expect("metric can be registered");
         }
     }
 }
 
 pub mod s3 {
-    use crate::storage::S3Config;
+    use crate::{metrics::storage::STORAGE_FILES_SCANNED_DATE, storage::S3Config};
 
     use super::{STORAGE_FILES_SCANNED, STORAGE_REQUEST_RESPONSE_TIME, StorageMetrics};
 
@@ -82,12 +98,16 @@ pub mod s3 {
                 .registry
                 .register(Box::new(STORAGE_FILES_SCANNED.clone()))
                 .expect("metric can be registered");
+            handler
+                .registry
+                .register(Box::new(STORAGE_FILES_SCANNED_DATE.clone()))
+                .expect("metric can be registered");
         }
     }
 }
 
 pub mod azureblob {
-    use crate::storage::AzureBlobConfig;
+    use crate::{metrics::storage::STORAGE_FILES_SCANNED_DATE, storage::AzureBlobConfig};
 
     use super::{STORAGE_FILES_SCANNED, STORAGE_REQUEST_RESPONSE_TIME, StorageMetrics};
 
@@ -101,12 +121,16 @@ pub mod azureblob {
                 .registry
                 .register(Box::new(STORAGE_FILES_SCANNED.clone()))
                 .expect("metric can be registered");
+            handler
+                .registry
+                .register(Box::new(STORAGE_FILES_SCANNED_DATE.clone()))
+                .expect("metric can be registered");
         }
     }
 }
 
 pub mod gcs {
-    use crate::storage::GcsConfig;
+    use crate::{metrics::storage::STORAGE_FILES_SCANNED_DATE, storage::GcsConfig};
 
     use super::{STORAGE_FILES_SCANNED, STORAGE_REQUEST_RESPONSE_TIME, StorageMetrics};
 
@@ -119,6 +143,10 @@ pub mod gcs {
             handler
                 .registry
                 .register(Box::new(STORAGE_FILES_SCANNED.clone()))
+                .expect("metric can be registered");
+            handler
+                .registry
+                .register(Box::new(STORAGE_FILES_SCANNED_DATE.clone()))
                 .expect("metric can be registered");
         }
     }

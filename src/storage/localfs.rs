@@ -25,6 +25,7 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::Utc;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use fs_extra::file::CopyOptions;
 use futures::{TryStreamExt, stream::FuturesUnordered};
@@ -38,7 +39,10 @@ use tokio_stream::wrappers::ReadDirStream;
 
 use crate::{
     handlers::http::users::USERS_ROOT_DIR,
-    metrics::storage::{STORAGE_FILES_SCANNED, STORAGE_REQUEST_RESPONSE_TIME, StorageMetrics},
+    metrics::storage::{
+        STORAGE_FILES_SCANNED, STORAGE_FILES_SCANNED_DATE, STORAGE_REQUEST_RESPONSE_TIME,
+        StorageMetrics,
+    },
     option::validation,
     parseable::LogStream,
     storage::SETTINGS_ROOT_DIRECTORY,
@@ -134,7 +138,9 @@ impl ObjectStorage for LocalFS {
         STORAGE_FILES_SCANNED
             .with_label_values(&["localfs", "HEAD"])
             .inc();
-
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["localfs", "HEAD", &Utc::now().date_naive().to_string()])
+            .inc();
         Err(ObjectStorageError::UnhandledError(Box::new(
             std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
@@ -179,22 +185,24 @@ impl ObjectStorage for LocalFS {
                 STORAGE_FILES_SCANNED
                     .with_label_values(&["localfs", "GET"])
                     .inc();
+                STORAGE_FILES_SCANNED_DATE
+                    .with_label_values(&["localfs", "GET", &Utc::now().date_naive().to_string()])
+                    .inc();
                 Ok(x.into())
             }
-            Err(e) => match e.kind() {
-                std::io::ErrorKind::NotFound => {
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::NotFound {
                     STORAGE_REQUEST_RESPONSE_TIME
                         .with_label_values(&["localfs", "GET", "404"])
                         .observe(get_elapsed);
                     Err(ObjectStorageError::NoSuchKey(path.to_string()))
-                }
-                _ => {
+                } else {
                     STORAGE_REQUEST_RESPONSE_TIME
                         .with_label_values(&["localfs", "GET", "500"])
                         .observe(get_elapsed);
                     Err(ObjectStorageError::UnhandledError(Box::new(e)))
                 }
-            },
+            }
         };
 
         res
@@ -248,7 +256,9 @@ impl ObjectStorage for LocalFS {
         STORAGE_FILES_SCANNED
             .with_label_values(&["localfs", "LIST"])
             .inc_by(files_scanned as f64);
-
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["localfs", "LIST", &Utc::now().date_naive().to_string()])
+            .inc_by(files_scanned as f64);
         Ok(path_arr)
     }
 
@@ -327,6 +337,9 @@ impl ObjectStorage for LocalFS {
         STORAGE_FILES_SCANNED
             .with_label_values(&["localfs", "GET"])
             .inc_by(files_scanned as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["localfs", "GET", &Utc::now().date_naive().to_string()])
+            .inc_by(files_scanned as f64);
 
         // maybe change the return code
 
@@ -355,6 +368,9 @@ impl ObjectStorage for LocalFS {
                 // Record single file written successfully
                 STORAGE_FILES_SCANNED
                     .with_label_values(&["localfs", "PUT"])
+                    .inc();
+                STORAGE_FILES_SCANNED_DATE
+                    .with_label_values(&["localfs", "PUT", &Utc::now().date_naive().to_string()])
                     .inc();
             }
             Err(_) => {
@@ -411,6 +427,9 @@ impl ObjectStorage for LocalFS {
                 // Record single file deleted successfully
                 STORAGE_FILES_SCANNED
                     .with_label_values(&["localfs", "DELETE"])
+                    .inc();
+                STORAGE_FILES_SCANNED_DATE
+                    .with_label_values(&["localfs", "DELETE", &Utc::now().date_naive().to_string()])
                     .inc();
             }
             Err(err) => {
