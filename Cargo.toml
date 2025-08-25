@@ -58,6 +58,7 @@ sha2 = "0.10.8"
 
 # Serialization and Data Formats
 byteorder = "1.4.3"
+erased-serde = "=0.3.16"
 serde = { version = "1.0", features = ["rc", "derive"] }
 serde_json = "1.0"
 serde_repr = "0.1.17"

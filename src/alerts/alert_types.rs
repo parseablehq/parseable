@@ -170,11 +170,13 @@ impl AlertTrait for ThresholdAlert {
         &mut self,
         new_notification_state: NotificationState,
     ) -> Result<(), AlertError> {
-        let store = PARSEABLE.storage.get_object_store();
         // update state in memory
         self.notification_state = new_notification_state;
         // update on disk
-        store.put_alert(self.id, &self.to_alert_config()).await?;
+        PARSEABLE
+            .metastore
+            .update_object(&self.to_alert_config(), &self.get_id().to_string())
+            .await?;
 
         Ok(())
     }
@@ -184,7 +186,6 @@ impl AlertTrait for ThresholdAlert {
         new_state: AlertState,
         trigger_notif: Option<String>,
     ) -> Result<(), AlertError> {
-        let store = PARSEABLE.storage.get_object_store();
         if self.state.eq(&AlertState::Disabled) {
             warn!(
                 "Alert- {} is currently Disabled. Updating state to {new_state}.",
@@ -199,7 +200,10 @@ impl AlertTrait for ThresholdAlert {
             }
 
             // update on disk
-            store.put_alert(self.id, &self.to_alert_config()).await?;
+            PARSEABLE
+                .metastore
+                .update_object(&self.to_alert_config(), &self.get_id().to_string())
+                .await?;
             // The task should have already been removed from the list of running tasks
             return Ok(());
         }
@@ -232,7 +236,10 @@ impl AlertTrait for ThresholdAlert {
         }
 
         // update on disk
-        store.put_alert(self.id, &self.to_alert_config()).await?;
+        PARSEABLE
+            .metastore
+            .update_object(&self.to_alert_config(), &self.get_id().to_string())
+            .await?;
 
         if trigger_notif.is_some() && self.notification_state.eq(&NotificationState::Notify) {
             trace!("trigger notif on-\n{}", self.state);

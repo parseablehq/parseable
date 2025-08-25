@@ -33,6 +33,7 @@ use crate::{
         alert_traits::AlertTrait,
         target::{NotificationConfig, TARGETS},
     },
+    metastore::metastore_traits::MetastoreObject,
     query::resolve_stream_names,
 };
 
@@ -526,4 +527,10 @@ impl AlertQueryResult {
 #[derive(serde::Deserialize)]
 pub struct NotificationStateRequest {
     pub state: String,
+}
+
+impl MetastoreObject for AlertConfig {
+    // fn get_object(self) -> T {
+    //     return self;
+    // }
 }

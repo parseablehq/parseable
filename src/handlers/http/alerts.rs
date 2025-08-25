@@ -214,11 +214,10 @@ pub async fn post(
     // move on to saving the alert in ObjectStore
     alerts.update(alert).await;
 
-    let path = alert_json_path(*alert.get_id());
-
-    let store = PARSEABLE.storage.get_object_store();
-    let alert_bytes = serde_json::to_vec(&alert.to_alert_config())?;
-    store.put_object(&path, Bytes::from(alert_bytes)).await?;
+    PARSEABLE
+        .metastore
+        .create_object(&alert.to_alert_config(), &alert.get_id().to_string())
+        .await?;
 
     // start the task
     alerts.start_task(alert.clone_box()).await?;
@@ -263,14 +262,10 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
     // validate that the user has access to the tables mentioned in the query
     user_auth_for_query(&session_key, alert.get_query()).await?;
 
-    let store = PARSEABLE.storage.get_object_store();
-    let alert_path = alert_json_path(alert_id);
-
-    // delete from Object Store
-    store
-        .delete_object(&alert_path)
-        .await
-        .map_err(AlertError::ObjectStorage)?;
+    PARSEABLE
+        .metastore
+        .delete_object(alert_json_path(alert_id).as_ref())
+        .await?;
 
     // delete from memory
     alerts.delete(alert_id).await?;

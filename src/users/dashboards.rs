@@ -25,7 +25,8 @@ use tokio::sync::RwLock;
 use ulid::Ulid;
 
 use crate::{
-    handlers::http::users::dashboards::DashboardError, parseable::PARSEABLE,
+    handlers::http::users::dashboards::DashboardError,
+    metastore::metastore_traits::MetastoreObject, parseable::PARSEABLE,
     storage::object_storage::dashboard_path,
 };
 
@@ -65,6 +66,8 @@ pub struct Dashboard {
     dashboard_type: Option<DashboardType>,
     pub tiles: Option<Vec<Tile>>,
 }
+
+impl MetastoreObject for Dashboard {}
 
 impl Dashboard {
     /// set metadata for the dashboard
