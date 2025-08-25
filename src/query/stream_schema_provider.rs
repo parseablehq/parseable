@@ -57,7 +57,10 @@ use crate::{
     },
     event::DEFAULT_TIMESTAMP_KEY,
     hottier::HotTierManager,
-    metrics::{QUERY_CACHE_HIT, storage::STORAGE_FILES_SCANNED},
+    metrics::{
+        QUERY_CACHE_HIT,
+        storage::{STORAGE_FILES_SCANNED, STORAGE_FILES_SCANNED_DATE},
+    },
     option::Mode,
     parseable::{PARSEABLE, STREAM_EXISTS},
     storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat},
@@ -585,6 +588,13 @@ impl TableProvider for StandardTableProvider {
         let parquet_files_to_scan = manifest_files.len();
         STORAGE_FILES_SCANNED
             .with_label_values(&[PARSEABLE.storage().name(), "GET"])
+            .inc_by(parquet_files_to_scan as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&[
+                PARSEABLE.storage().name(),
+                "GET",
+                &Utc::now().date_naive().to_string(),
+            ])
             .inc_by(parquet_files_to_scan as f64);
 
         let (partitioned_files, statistics) = self.partitioned_files(manifest_files);
