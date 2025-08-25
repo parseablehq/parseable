@@ -185,7 +185,7 @@ fn update_storage_metrics(
         .add(compressed_size as i64);
     TOTAL_EVENTS_STORAGE_SIZE_DATE
         .with_label_values(&["parquet", file_date_part])
-        .inc_by(compressed_size);
+        .add(compressed_size as i64);
 
     Ok(())
 }

@@ -30,6 +30,7 @@ use std::{
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::Utc;
 use datafusion::{
     datasource::listing::ListingTableUrl,
     execution::{
@@ -50,7 +51,10 @@ use tokio::{fs::OpenOptions, io::AsyncReadExt};
 use tracing::{error, info};
 
 use crate::{
-    metrics::storage::{STORAGE_FILES_SCANNED, STORAGE_REQUEST_RESPONSE_TIME, StorageMetrics},
+    metrics::storage::{
+        STORAGE_FILES_SCANNED, STORAGE_FILES_SCANNED_DATE, STORAGE_REQUEST_RESPONSE_TIME,
+        StorageMetrics,
+    },
     parseable::LogStream,
 };
 
@@ -345,6 +349,9 @@ impl S3 {
         STORAGE_FILES_SCANNED
             .with_label_values(&["s3", "GET"])
             .inc();
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["s3", "GET", &Utc::now().date_naive().to_string()])
+            .inc();
         match resp {
             Ok(resp) => {
                 let body = resp.bytes().await?;
@@ -373,6 +380,9 @@ impl S3 {
         let elapsed = time.elapsed().as_secs_f64();
         STORAGE_FILES_SCANNED
             .with_label_values(&["s3", "PUT"])
+            .inc();
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["s3", "PUT", &Utc::now().date_naive().to_string()])
             .inc();
         match resp {
             Ok(_) => {
@@ -436,8 +446,14 @@ impl S3 {
         STORAGE_FILES_SCANNED
             .with_label_values(&["s3", "LIST"])
             .inc_by(files_scanned.load(Ordering::Relaxed) as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
+            .inc_by(files_scanned.load(Ordering::Relaxed) as f64);
         STORAGE_FILES_SCANNED
             .with_label_values(&["s3", "DELETE"])
+            .inc_by(files_deleted.load(Ordering::Relaxed) as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["s3", "DELETE", &Utc::now().date_naive().to_string()])
             .inc_by(files_deleted.load(Ordering::Relaxed) as f64);
         Ok(())
     }
@@ -471,6 +487,9 @@ impl S3 {
         STORAGE_FILES_SCANNED
             .with_label_values(&["s3", "LIST"])
             .inc_by(common_prefixes.len() as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
+            .inc_by(common_prefixes.len() as f64);
 
         // return prefixes at the root level
         let dates: Vec<_> = common_prefixes
@@ -490,6 +509,9 @@ impl S3 {
         let put_elapsed = put_start.elapsed().as_secs_f64();
         STORAGE_FILES_SCANNED
             .with_label_values(&["s3", "PUT"])
+            .inc();
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["s3", "PUT", &Utc::now().date_naive().to_string()])
             .inc();
         match result {
             Ok(result) => {
@@ -550,6 +572,9 @@ impl S3 {
             let put_elapsed = put_start.elapsed().as_secs_f64();
             STORAGE_FILES_SCANNED
                 .with_label_values(&["s3", "PUT"])
+                .inc();
+            STORAGE_FILES_SCANNED_DATE
+                .with_label_values(&["s3", "PUT", &Utc::now().date_naive().to_string()])
                 .inc();
             match result {
                 Ok(_) => {
@@ -653,6 +678,9 @@ impl ObjectStorage for S3 {
         STORAGE_FILES_SCANNED
             .with_label_values(&["s3", "HEAD"])
             .inc();
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["s3", "HEAD", &Utc::now().date_naive().to_string()])
+            .inc();
         let meta = match meta {
             Ok(meta) => {
                 STORAGE_REQUEST_RESPONSE_TIME
@@ -689,15 +717,14 @@ impl ObjectStorage for S3 {
         STORAGE_FILES_SCANNED
             .with_label_values(&["s3", "HEAD"])
             .inc();
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["s3", "HEAD", &Utc::now().date_naive().to_string()])
+            .inc();
         match &result {
             Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["s3", "HEAD", "200"])
                     .observe(head_elapsed);
-                // Record single file accessed
-                STORAGE_FILES_SCANNED
-                    .with_label_values(&["s3", "HEAD"])
-                    .inc();
             }
             Err(err) => {
                 let status_code = error_to_status_code(err);
@@ -760,6 +787,9 @@ impl ObjectStorage for S3 {
             STORAGE_FILES_SCANNED
                 .with_label_values(&["s3", "GET"])
                 .inc();
+            STORAGE_FILES_SCANNED_DATE
+                .with_label_values(&["s3", "GET", &Utc::now().date_naive().to_string()])
+                .inc();
 
             res.push(byts);
         }
@@ -771,6 +801,9 @@ impl ObjectStorage for S3 {
         // Record total files scanned
         STORAGE_FILES_SCANNED
             .with_label_values(&["s3", "LIST"])
+            .inc_by(files_scanned as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
             .inc_by(files_scanned as f64);
 
         Ok(res)
@@ -809,6 +842,9 @@ impl ObjectStorage for S3 {
         STORAGE_FILES_SCANNED
             .with_label_values(&["s3", "LIST"])
             .inc_by(files_scanned as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
+            .inc_by(files_scanned as f64);
 
         Ok(path_arr)
     }
@@ -844,6 +880,9 @@ impl ObjectStorage for S3 {
                 // Record single file deleted
                 STORAGE_FILES_SCANNED
                     .with_label_values(&["s3", "DELETE"])
+                    .inc();
+                STORAGE_FILES_SCANNED_DATE
+                    .with_label_values(&["s3", "DELETE", &Utc::now().date_naive().to_string()])
                     .inc();
             }
             Err(err) => {
@@ -881,6 +920,9 @@ impl ObjectStorage for S3 {
         STORAGE_FILES_SCANNED
             .with_label_values(&["s3", "HEAD"])
             .inc();
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["s3", "HEAD", &Utc::now().date_naive().to_string()])
+            .inc();
 
         Ok(result.map(|_| ())?)
     }
@@ -899,6 +941,9 @@ impl ObjectStorage for S3 {
         let delete_elapsed = delete_start.elapsed().as_secs_f64();
         STORAGE_FILES_SCANNED
             .with_label_values(&["s3", "DELETE"])
+            .inc();
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["s3", "DELETE", &Utc::now().date_naive().to_string()])
             .inc();
         match result {
             Ok(_) => {
@@ -935,7 +980,12 @@ impl ObjectStorage for S3 {
             .observe(list_elapsed);
 
         let common_prefixes = resp.common_prefixes; // get all dirs
-
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["s3", "LIST"])
+            .inc_by(common_prefixes.len() as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
+            .inc_by(common_prefixes.len() as f64);
         // return prefixes at the root level
         let dirs: HashSet<_> = common_prefixes
             .iter()
@@ -971,6 +1021,12 @@ impl ObjectStorage for S3 {
             };
             stream_json_check.push(task);
         }
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["s3", "HEAD"])
+            .inc_by(dirs.len() as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["s3", "HEAD", &Utc::now().date_naive().to_string()])
+            .inc_by(dirs.len() as f64);
 
         stream_json_check.try_collect::<()>().await?;
 
@@ -995,6 +1051,12 @@ impl ObjectStorage for S3 {
         STORAGE_REQUEST_RESPONSE_TIME
             .with_label_values(&["s3", "LIST", "200"])
             .observe(list_elapsed);
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["s3", "LIST"])
+            .inc_by(resp.common_prefixes.len() as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
+            .inc_by(resp.common_prefixes.len() as f64);
 
         let hours: Vec<String> = resp
             .common_prefixes
@@ -1029,6 +1091,12 @@ impl ObjectStorage for S3 {
         STORAGE_REQUEST_RESPONSE_TIME
             .with_label_values(&["s3", "LIST", "200"])
             .observe(list_elapsed);
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["s3", "LIST"])
+            .inc_by(resp.common_prefixes.len() as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
+            .inc_by(resp.common_prefixes.len() as f64);
 
         let minutes: Vec<String> = resp
             .common_prefixes
@@ -1094,6 +1162,12 @@ impl ObjectStorage for S3 {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["s3", "LIST", "200"])
                     .observe(list_elapsed);
+                STORAGE_FILES_SCANNED
+                    .with_label_values(&["s3", "LIST"])
+                    .inc_by(resp.common_prefixes.len() as f64);
+                STORAGE_FILES_SCANNED_DATE
+                    .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
+                    .inc_by(resp.common_prefixes.len() as f64);
                 resp
             }
             Err(err) => {
@@ -1128,6 +1202,12 @@ impl ObjectStorage for S3 {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["s3", "LIST", "200"])
                     .observe(list_elapsed);
+                STORAGE_FILES_SCANNED
+                    .with_label_values(&["s3", "LIST"])
+                    .inc_by(resp.common_prefixes.len() as f64);
+                STORAGE_FILES_SCANNED_DATE
+                    .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
+                    .inc_by(resp.common_prefixes.len() as f64);
                 resp
             }
             Err(err) => {
