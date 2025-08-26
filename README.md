@@ -21,7 +21,7 @@ Parseable is a full stack observability platform built to ingest, analyze and ex
 
 <div align="center">
   <a href="http://www.youtube.com/watch?feature=player_embedded&v=gYn3pFAfrVA" target="_blank">
-  <img src="http://img.youtube.com/vi/gYn3pFAfrVA/mqdefault.jpg" alt="Watch the video" width="240" height="180" />
+  <img src="http://img.youtube.com/vi/gYn3pFAfrVA/mqdefault.jpg" alt="Watch the video" width="300" height="240" />
   </a>
 </div>
 
