@@ -52,7 +52,7 @@ use crate::handlers::http::fetch_schema;
 use crate::handlers::http::modal::ingest_server::INGESTOR_EXPECT;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::handlers::http::users::CORRELATION_DIR;
-use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
+use crate::handlers::http::users::{FILTER_DIR, USERS_ROOT_DIR};
 use crate::metrics::storage::StorageMetrics;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE};
 use crate::option::Mode;
@@ -252,30 +252,6 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         }
 
         Ok(filters)
-    }
-
-    async fn get_all_dashboards(
-        &self,
-    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
-        let mut dashboards: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
-
-        let users_dir = RelativePathBuf::from(USERS_ROOT_DIR);
-        for user in self.list_dirs_relative(&users_dir).await? {
-            let dashboards_path = users_dir.join(&user).join("dashboards");
-            let dashboard_bytes = self
-                .get_objects(
-                    Some(&dashboards_path),
-                    Box::new(|file_name| file_name.ends_with(".json")),
-                )
-                .await?;
-
-            dashboards
-                .entry(dashboards_path)
-                .or_default()
-                .extend(dashboard_bytes);
-        }
-
-        Ok(dashboards)
     }
 
     ///fetch all correlations stored in object store
@@ -1221,12 +1197,6 @@ pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
             STREAM_METADATA_FILE_NAME,
         ])
     }
-}
-
-/// if dashboard_id is an empty str it should not append it to the rel path
-#[inline(always)]
-pub fn dashboard_path(user_id: &str, dashboard_file_name: &str) -> RelativePathBuf {
-    RelativePathBuf::from_iter([USERS_ROOT_DIR, user_id, DASHBOARDS_DIR, dashboard_file_name])
 }
 
 /// if filter_id is an empty str it should not append it to the rel path

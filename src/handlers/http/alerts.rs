@@ -216,7 +216,7 @@ pub async fn post(
 
     PARSEABLE
         .metastore
-        .create_object(&alert.to_alert_config(), &alert.get_id().to_string())
+        .put_alert(&alert.to_alert_config())
         .await?;
 
     // start the task

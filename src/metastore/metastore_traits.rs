@@ -32,16 +32,23 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
     async fn list_objects(&self) -> Result<(), MetastoreError>;
     async fn get_object(&self) -> Result<(), MetastoreError>;
     async fn get_objects(&self, parent_path: &str) -> Result<Vec<Bytes>, MetastoreError>;
-    async fn create_object(
-        &self,
-        obj: &dyn MetastoreObject,
-        path: &str,
-    ) -> Result<(), MetastoreError>;
-    async fn update_object(
-        &self,
-        obj: &dyn MetastoreObject,
-        path: &str,
-    ) -> Result<(), MetastoreError>;
+
+    /// alerts
+    async fn get_alerts(&self) -> Result<Vec<Bytes>, MetastoreError>;
+    async fn put_alert(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn delete_alert(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+
+    /// dashboards
+    async fn get_dashboards(&self) -> Result<Vec<Bytes>, MetastoreError>;
+    async fn put_dashboard(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn delete_dashboard(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+
+    /// correlations
+    async fn get_correlations(&self) -> Result<Vec<Bytes>, MetastoreError>;
+    async fn put_correlation(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn delete_correlation(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+
+    /// filters
     async fn delete_object(&self, path: &str) -> Result<(), MetastoreError>;
 }
 
@@ -50,7 +57,8 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
 /// A metastore object can be anything like configurations, user preferences, etc. Basically
 /// anything that  has a defined structure can possibly be treated as an object.
 pub trait MetastoreObject: ErasedSerialize + Sync {
-    // fn get_object(self) -> T;
+    fn get_path(&self) -> String;
+    fn get_id(&self) -> String;
 }
 
 // This macro makes the trait dyn-compatible
