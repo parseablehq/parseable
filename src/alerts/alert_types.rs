@@ -175,7 +175,7 @@ impl AlertTrait for ThresholdAlert {
         // update on disk
         PARSEABLE
             .metastore
-            .update_object(&self.to_alert_config(), &self.get_id().to_string())
+            .put_alert(&self.to_alert_config())
             .await?;
 
         Ok(())
@@ -202,7 +202,7 @@ impl AlertTrait for ThresholdAlert {
             // update on disk
             PARSEABLE
                 .metastore
-                .update_object(&self.to_alert_config(), &self.get_id().to_string())
+                .put_alert(&self.to_alert_config())
                 .await?;
             // The task should have already been removed from the list of running tasks
             return Ok(());
@@ -238,7 +238,7 @@ impl AlertTrait for ThresholdAlert {
         // update on disk
         PARSEABLE
             .metastore
-            .update_object(&self.to_alert_config(), &self.get_id().to_string())
+            .put_alert(&self.to_alert_config())
             .await?;
 
         if trigger_notif.is_some() && self.notification_state.eq(&NotificationState::Notify) {

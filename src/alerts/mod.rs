@@ -63,7 +63,7 @@ use crate::parseable::{PARSEABLE, StreamNotFound};
 use crate::query::{QUERY_SESSION, resolve_stream_names};
 use crate::rbac::map::SessionKey;
 use crate::storage;
-use crate::storage::{ALERTS_ROOT_DIRECTORY, ObjectStorageError};
+use crate::storage::ObjectStorageError;
 use crate::sync::alert_runtime;
 use crate::utils::user_auth_for_query;
 
@@ -136,10 +136,7 @@ impl AlertConfig {
         };
 
         // Save the migrated alert back to storage
-        PARSEABLE
-            .metastore
-            .update_object(&migrated_alert, &basic_fields.id.to_string())
-            .await?;
+        PARSEABLE.metastore.put_alert(&migrated_alert).await?;
 
         Ok(migrated_alert)
     }
@@ -998,11 +995,7 @@ impl AlertManagerTrait for Alerts {
         let mut map = self.alerts.write().await;
 
         // Get alerts path and read raw bytes for migration handling
-        let raw_objects = PARSEABLE
-            .metastore
-            .get_objects(ALERTS_ROOT_DIRECTORY)
-            .await
-            .unwrap_or_default();
+        let raw_objects = PARSEABLE.metastore.get_alerts().await.unwrap_or_default();
 
         for raw_bytes in raw_objects {
             // First, try to parse as JSON Value to check version
