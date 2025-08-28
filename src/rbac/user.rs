@@ -271,6 +271,9 @@ impl UserGroup {
     }
 
     pub fn add_roles(&mut self, roles: HashSet<String>) -> Result<(), RBACError> {
+        if roles.is_empty() {
+            return Ok(());
+        }
         self.roles.extend(roles);
         // also refresh all user sessions
         for username in &self.users {
@@ -280,6 +283,9 @@ impl UserGroup {
     }
 
     pub fn add_users(&mut self, users: HashSet<String>) -> Result<(), RBACError> {
+        if users.is_empty() {
+            return Ok(());
+        }
         self.users.extend(users.clone());
         // also refresh all user sessions
         for username in &users {
@@ -289,6 +295,9 @@ impl UserGroup {
     }
 
     pub fn remove_roles(&mut self, roles: HashSet<String>) -> Result<(), RBACError> {
+        if roles.is_empty() {
+            return Ok(());
+        }
         let old_roles = &self.roles;
         let new_roles = HashSet::from_iter(self.roles.difference(&roles).cloned());
 
@@ -305,14 +314,16 @@ impl UserGroup {
     }
 
     pub fn remove_users(&mut self, users: HashSet<String>) -> Result<(), RBACError> {
-        let old_users = &self.users;
+        if users.is_empty() {
+            return Ok(());
+        }
         let new_users = HashSet::from_iter(self.users.difference(&users).cloned());
-
-        if old_users.eq(&new_users) {
+        let removed_users: HashSet<String> = self.users.intersection(&users).cloned().collect();
+        if removed_users.is_empty() {
             return Ok(());
         }
         // also refresh all user sessions
-        for username in &users {
+        for username in &removed_users {
             mut_sessions().remove_user(username);
         }
         self.users.clone_from(&new_users);
