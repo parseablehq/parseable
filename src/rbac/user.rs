@@ -317,14 +317,13 @@ impl UserGroup {
         if users.is_empty() {
             return Ok(());
         }
-        let old_users = &self.users;
         let new_users = HashSet::from_iter(self.users.difference(&users).cloned());
-
-        if old_users.eq(&new_users) {
+        let removed_users: HashSet<String> = self.users.intersection(&users).cloned().collect();
+        if removed_users.is_empty() {
             return Ok(());
         }
         // also refresh all user sessions
-        for username in &users {
+        for username in &removed_users {
             mut_sessions().remove_user(username);
         }
         self.users.clone_from(&new_users);
