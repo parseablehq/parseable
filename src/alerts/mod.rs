@@ -134,6 +134,7 @@ impl AlertConfig {
             notification_config: NotificationConfig::default(),
             created: Utc::now(),
             tags: None,
+            last_triggered_at: None,
         };
 
         // Save the migrated alert back to storage
