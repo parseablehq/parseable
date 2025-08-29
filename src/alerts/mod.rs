@@ -676,6 +676,13 @@ impl AlertConfig {
             ),
         );
 
+        if let Some(ts) = self.last_triggered_at {
+            map.insert(
+                "lastTriggeredAt".to_string(),
+                serde_json::Value::String(ts.to_string()),
+            );
+        }
+
         map
     }
 }
