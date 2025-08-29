@@ -18,8 +18,9 @@
 
 use crate::{
     handlers::http::rbac::RBACError,
+    metastore::MetastoreError,
     parseable::PARSEABLE,
-    storage::{ObjectStorageError, object_storage::filter_path},
+    storage::ObjectStorageError,
     users::filters::{CURRENT_FILTER_VERSION, FILTERS, Filter},
     utils::{actix::extract_session_key_from_req, get_hash, get_user_from_request},
 };
@@ -28,7 +29,6 @@ use actix_web::{
     http::header::ContentType,
     web::{self, Json, Path},
 };
-use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
 use serde_json::Error as SerdeError;
@@ -64,13 +64,9 @@ pub async fn post(
     filter.filter_id = Some(filter_id.clone());
     filter.user_id = Some(user_id.clone());
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
+
+    PARSEABLE.metastore.put_filter(&filter).await?;
     FILTERS.update(&filter).await;
-
-    let path = filter_path(&user_id, &filter.stream_name, &format!("{filter_id}.json"));
-
-    let store = PARSEABLE.storage.get_object_store();
-    let filter_bytes = serde_json::to_vec(&filter)?;
-    store.put_object(&path, Bytes::from(filter_bytes)).await?;
 
     Ok((web::Json(filter), StatusCode::OK))
 }
@@ -89,13 +85,9 @@ pub async fn update(
     filter.filter_id = Some(filter_id.clone());
     filter.user_id = Some(user_id.clone());
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
+
+    PARSEABLE.metastore.put_filter(&filter).await?;
     FILTERS.update(&filter).await;
-
-    let path = filter_path(&user_id, &filter.stream_name, &format!("{filter_id}.json"));
-
-    let store = PARSEABLE.storage.get_object_store();
-    let filter_bytes = serde_json::to_vec(&filter)?;
-    store.put_object(&path, Bytes::from(filter_bytes)).await?;
 
     Ok((web::Json(filter), StatusCode::OK))
 }
@@ -112,10 +104,7 @@ pub async fn delete(
         .await
         .ok_or(FiltersError::Metadata("Filter does not exist"))?;
 
-    let path = filter_path(&user_id, &filter.stream_name, &format!("{filter_id}.json"));
-    let store = PARSEABLE.storage.get_object_store();
-    store.delete_object(&path).await?;
-
+    PARSEABLE.metastore.delete_filter(&filter).await?;
     FILTERS.delete_filter(&filter_id).await;
 
     Ok(HttpResponse::Ok().finish())
@@ -133,6 +122,8 @@ pub enum FiltersError {
     UserDoesNotExist(#[from] RBACError),
     #[error("Error: {0}")]
     Custom(String),
+    #[error("{0:?}")]
+    MetastoreError(#[from] MetastoreError),
 }
 
 impl actix_web::ResponseError for FiltersError {
@@ -143,12 +134,20 @@ impl actix_web::ResponseError for FiltersError {
             Self::Metadata(_) => StatusCode::BAD_REQUEST,
             Self::UserDoesNotExist(_) => StatusCode::NOT_FOUND,
             Self::Custom(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::MetastoreError(e) => e.status_code(),
         }
     }
 
     fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
-        actix_web::HttpResponse::build(self.status_code())
-            .insert_header(ContentType::plaintext())
-            .body(self.to_string())
+        match self {
+            FiltersError::MetastoreError(metastore_error) => {
+                actix_web::HttpResponse::build(self.status_code())
+                    .insert_header(ContentType::json())
+                    .body(metastore_error.to_string())
+            }
+            _ => actix_web::HttpResponse::build(self.status_code())
+                .insert_header(ContentType::plaintext())
+                .body(self.to_string()),
+        }
     }
 }

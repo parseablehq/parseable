@@ -20,7 +20,7 @@ use bytes::Bytes;
 use erased_serde::Serialize as ErasedSerialize;
 use tonic::async_trait;
 
-use crate::metastore::MetastoreError;
+use crate::{metastore::MetastoreError, users::filters::Filter};
 
 /// A metastore is a logically separated compartment to store metadata for Parseable.
 ///
@@ -42,6 +42,11 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
     async fn get_dashboards(&self) -> Result<Vec<Bytes>, MetastoreError>;
     async fn put_dashboard(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
     async fn delete_dashboard(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+
+    /// filters
+    async fn get_filters(&self) -> Result<Vec<Filter>, MetastoreError>;
+    async fn put_filter(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn delete_filter(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
 
     /// correlations
     async fn get_correlations(&self) -> Result<Vec<Bytes>, MetastoreError>;
