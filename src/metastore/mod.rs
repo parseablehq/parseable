@@ -25,9 +25,8 @@ pub mod metastores;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetastoreErrorDetail {
-    pub flow: String,
+    pub operation: String,
     pub message: String,
-    pub operation: Option<String>,
     pub stream_name: Option<String>,
     pub file_path: Option<String>,
     pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
@@ -39,6 +38,21 @@ pub struct MetastoreErrorDetail {
 pub enum MetastoreError {
     #[error("ObjectStorageError: {0}")]
     ObjectStorageError(#[from] ObjectStorageError),
+
+    #[error("JSON parsing error: {0}")]
+    JsonParseError(#[from] serde_json::Error),
+
+    #[error("JSON schema validation error: {message}")]
+    JsonSchemaError { message: String },
+
+    #[error("Invalid JSON structure: expected {expected}, found {found}")]
+    InvalidJsonStructure { expected: String, found: String },
+
+    #[error("Missing required JSON field: {field}")]
+    MissingJsonField { field: String },
+
+    #[error("Invalid JSON value for field '{field}': {reason}")]
+    InvalidJsonValue { field: String, reason: String },
 
     #[error("{self:?}")]
     ObjectStoreError {
@@ -56,9 +70,8 @@ impl MetastoreError {
                 message,
                 flow,
             } => MetastoreErrorDetail {
-                flow,
+                operation: flow,
                 message,
-                operation: None,
                 stream_name: None,
                 file_path: None,
                 timestamp: Some(chrono::Utc::now()),
@@ -66,13 +79,67 @@ impl MetastoreError {
                 status_code,
             },
             MetastoreError::ObjectStorageError(e) => MetastoreErrorDetail {
-                flow: "ObjectStorageError".to_string(),
+                operation: "ObjectStorageError".to_string(),
                 message: e.to_string(),
-                operation: None,
                 stream_name: None,
                 file_path: None,
                 timestamp: Some(chrono::Utc::now()),
                 metadata: std::collections::HashMap::new(),
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            },
+            MetastoreError::JsonParseError(e) => MetastoreErrorDetail {
+                operation: "JsonParseError".to_string(),
+                message: e.to_string(),
+                stream_name: None,
+                file_path: None,
+                timestamp: Some(chrono::Utc::now()),
+                metadata: std::collections::HashMap::new(),
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            },
+            MetastoreError::JsonSchemaError { message } => MetastoreErrorDetail {
+                operation: "JsonSchemaError".to_string(),
+                message: message.clone(),
+                stream_name: None,
+                file_path: None,
+                timestamp: Some(chrono::Utc::now()),
+                metadata: std::collections::HashMap::new(),
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            },
+            MetastoreError::InvalidJsonStructure { expected, found } => MetastoreErrorDetail {
+                operation: "InvalidJsonStructure".to_string(),
+                message: format!("Expected {}, found {}", expected, found),
+                stream_name: None,
+                file_path: None,
+                timestamp: Some(chrono::Utc::now()),
+                metadata: [
+                    ("expected".to_string(), expected.clone()),
+                    ("found".to_string(), found.clone()),
+                ]
+                .into_iter()
+                .collect(),
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            },
+            MetastoreError::MissingJsonField { field } => MetastoreErrorDetail {
+                operation: "MissingJsonField".to_string(),
+                message: format!("Missing required field: {}", field),
+                stream_name: None,
+                file_path: None,
+                timestamp: Some(chrono::Utc::now()),
+                metadata: [("field".to_string(), field.clone())].into_iter().collect(),
+                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            },
+            MetastoreError::InvalidJsonValue { field, reason } => MetastoreErrorDetail {
+                operation: "InvalidJsonValue".to_string(),
+                message: format!("Invalid value for field '{}': {}", field, reason),
+                stream_name: None,
+                file_path: None,
+                timestamp: Some(chrono::Utc::now()),
+                metadata: [
+                    ("field".to_string(), field.clone()),
+                    ("reason".to_string(), reason.clone()),
+                ]
+                .into_iter()
+                .collect(),
                 status_code: StatusCode::INTERNAL_SERVER_ERROR,
             },
         }
@@ -83,6 +150,17 @@ impl MetastoreError {
             MetastoreError::ObjectStorageError(_object_storage_error) => {
                 StatusCode::INTERNAL_SERVER_ERROR
             }
+            MetastoreError::JsonParseError(_error) => StatusCode::INTERNAL_SERVER_ERROR,
+            MetastoreError::JsonSchemaError { message: _ } => StatusCode::INTERNAL_SERVER_ERROR,
+            MetastoreError::InvalidJsonStructure {
+                expected: _,
+                found: _,
+            } => StatusCode::INTERNAL_SERVER_ERROR,
+            MetastoreError::MissingJsonField { field: _ } => StatusCode::INTERNAL_SERVER_ERROR,
+            MetastoreError::InvalidJsonValue {
+                field: _,
+                reason: _,
+            } => StatusCode::INTERNAL_SERVER_ERROR,
             MetastoreError::ObjectStoreError {
                 status_code,
                 message: _,

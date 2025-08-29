@@ -21,6 +21,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 use relative_path::RelativePathBuf;
 use tonic::async_trait;
+use tracing::warn;
 use ulid::Ulid;
 
 use crate::{
@@ -31,8 +32,9 @@ use crate::{
     },
     storage::{
         ALERTS_ROOT_DIRECTORY, ObjectStorage,
-        object_storage::{alert_json_path, to_bytes},
+        object_storage::{alert_json_path, filter_path, to_bytes},
     },
+    users::filters::{Filter, migrate_v1_v2},
 };
 
 /// Using PARSEABLE's storage as a metastore (default)
@@ -124,6 +126,98 @@ impl Metastore for ObjectStoreMetastore {
 
     async fn delete_dashboard(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
         let path = obj.get_path();
+        Ok(self
+            .storage
+            .delete_object(&RelativePathBuf::from(path))
+            .await?)
+    }
+
+    // for get filters, take care of migration and removal of incorrect/old filters
+    // return deserialized filter
+    async fn get_filters(&self) -> Result<Vec<Filter>, MetastoreError> {
+        let mut this = Vec::new();
+
+        let users_dir = RelativePathBuf::from(USERS_ROOT_DIR);
+
+        for user in self.storage.list_dirs_relative(&users_dir).await? {
+            let stream_dir = users_dir.join(&user).join("filters");
+
+            for stream in self.storage.list_dirs_relative(&stream_dir).await? {
+                let filters_path = stream_dir.join(&stream);
+
+                // read filter object
+                let filter_bytes = self
+                    .storage
+                    .get_objects(
+                        Some(&filters_path),
+                        Box::new(|file_name| file_name.ends_with(".json")),
+                    )
+                    .await?;
+
+                for filter in filter_bytes {
+                    // deserialize into Value
+                    let mut filter_value = serde_json::from_slice::<serde_json::Value>(&filter)?;
+
+                    if let Some(meta) = filter_value.clone().as_object() {
+                        let version = meta.get("version").and_then(|version| version.as_str());
+
+                        if version == Some("v1") {
+                            // delete older version of the filter
+                            self.storage.delete_object(&filters_path).await?;
+
+                            filter_value = migrate_v1_v2(filter_value);
+                            let user_id = filter_value
+                                .as_object()
+                                .unwrap()
+                                .get("user_id")
+                                .and_then(|user_id| user_id.as_str());
+                            let filter_id = filter_value
+                                .as_object()
+                                .unwrap()
+                                .get("filter_id")
+                                .and_then(|filter_id| filter_id.as_str());
+                            let stream_name = filter_value
+                                .as_object()
+                                .unwrap()
+                                .get("stream_name")
+                                .and_then(|stream_name| stream_name.as_str());
+
+                            // if these values are present, create a new file
+                            if let (Some(user_id), Some(stream_name), Some(filter_id)) =
+                                (user_id, stream_name, filter_id)
+                            {
+                                let path =
+                                    filter_path(user_id, stream_name, &format!("{filter_id}.json"));
+                                let filter_bytes = to_bytes(&filter_value);
+                                self.storage.put_object(&path, filter_bytes.clone()).await?;
+                            }
+                        }
+
+                        if let Ok(filter) = serde_json::from_value::<Filter>(filter_value) {
+                            this.retain(|f: &Filter| f.filter_id != filter.filter_id);
+                            this.push(filter);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(this)
+    }
+
+    async fn put_filter(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
+        // we need the path to store in obj store
+        let path = obj.get_path();
+
+        Ok(self
+            .storage
+            .put_object(&RelativePathBuf::from(path), to_bytes(obj))
+            .await?)
+    }
+
+    async fn delete_filter(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
+        let path = obj.get_path();
+        warn!(delete_filter_path=?path);
         Ok(self
             .storage
             .delete_object(&RelativePathBuf::from(path))
