@@ -58,7 +58,7 @@ pub async fn post_user(
 // Handler for DELETE /api/v1/user/delete/{username}
 pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
-    let _ = UPDATE_LOCK.lock().await;
+    let _guard = UPDATE_LOCK.lock().await;
     // fail this request if the user does not exists
     if !Users.contains(&username) {
         return Err(RBACError::UserDoesNotExist);

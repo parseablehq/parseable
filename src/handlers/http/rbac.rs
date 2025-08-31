@@ -124,7 +124,7 @@ pub async fn post_user(
             return Err(RBACError::RolesDoNotExist(non_existent_roles));
         }
     }
-    let _ = UPDATE_LOCK.lock().await;
+    let _guard = UPDATE_LOCK.lock().await;
     if Users.contains(&username)
         || metadata
             .users
@@ -159,7 +159,7 @@ pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Respo
     let mut new_hash = String::default();
     let mut metadata = get_metadata().await?;
 
-    let _ = UPDATE_LOCK.lock().await;
+    let _guard = UPDATE_LOCK.lock().await;
     let user::PassCode { password, hash } = user::Basic::gen_new_password();
     new_password.clone_from(&password);
     new_hash.clone_from(&hash);
@@ -235,7 +235,7 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     if !Users.contains(&username) {
         return Err(RBACError::UserDoesNotExist);
     };
-    let _ = UPDATE_LOCK.lock().await;
+    let _guard = UPDATE_LOCK.lock().await;
 
     // delete from parseable.json first
     let mut metadata = get_metadata().await?;

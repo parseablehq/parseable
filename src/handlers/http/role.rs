@@ -52,7 +52,7 @@ pub async fn put(
     let mut session_refresh_users: HashSet<String> = HashSet::new();
     for user_group in read_user_groups().values() {
         if user_group.roles.contains(&name) {
-            session_refresh_users.extend(user_group.get_usernames());
+            session_refresh_users.extend(user_group.users.iter().map(|u| u.userid().to_string()));
         }
     }
 

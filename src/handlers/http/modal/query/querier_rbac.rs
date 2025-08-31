@@ -32,8 +32,8 @@ use crate::{
     },
     rbac::{
         Users,
-        map::{roles, write_user_groups},
-        user,
+        map::{roles, users, write_user_groups},
+        user::{self, UserType},
     },
     validator,
 };
@@ -74,7 +74,7 @@ pub async fn post_user(
             return Err(RBACError::RolesDoNotExist(non_existant_roles));
         }
     }
-    let _ = UPDATE_LOCK.lock().await;
+    let _guard = UPDATE_LOCK.lock().await;
     if Users.contains(&username)
         || metadata
             .users
@@ -106,7 +106,7 @@ pub async fn post_user(
 // Handler for DELETE /api/v1/user/{username}
 pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
-    let _ = UPDATE_LOCK.lock().await;
+    let _guard = UPDATE_LOCK.lock().await;
     // fail this request if the user does not exists
     if !Users.contains(&username) {
         return Err(RBACError::UserDoesNotExist);
@@ -120,11 +120,21 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     let mut groups_to_update = Vec::new();
     for user_group in user_groups {
         if let Some(ug) = write_user_groups().get_mut(&user_group) {
-            ug.remove_users_by_user_ids(HashSet::from_iter([username.clone()]))?;
-            groups_to_update.push(ug.clone());
+            // Look up the user by display name to get the correct userid
+            if let Some(user) = users().get(&username) {
+                let user_id = match &user.ty {
+                    UserType::Native(basic) => basic.username.clone(),
+                    UserType::OAuth(oauth) => oauth.userid.clone(),
+                };
+                ug.remove_users_by_user_ids(HashSet::from_iter([user_id]))?;
+                groups_to_update.push(ug.clone());
+            } else {
+                // User not found, skip or log as needed
+                continue;
+            }
         } else {
             continue;
-        };
+        }
     }
 
     // For each updated group, replace in place if found; otherwise push
@@ -134,7 +144,7 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
             .iter_mut()
             .find(|ug| ug.name == updated_group.name)
         {
-            *existing = updated_group.clone();
+            existing.clone_from(updated_group);
         } else {
             metadata.user_groups.push(updated_group.clone());
         }
@@ -262,7 +272,7 @@ pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Respo
     let mut new_hash = String::default();
     let mut metadata = get_metadata().await?;
 
-    let _ = UPDATE_LOCK.lock().await;
+    let _guard = UPDATE_LOCK.lock().await;
     let user::PassCode { password, hash } = user::Basic::gen_new_password();
     new_password.clone_from(&password);
     new_hash.clone_from(&hash);

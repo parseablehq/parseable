@@ -204,11 +204,23 @@ impl From<openid::Userinfo> for UserInfo {
 }
 
 /// Represents a user in a UserGroup - simplified structure for both user types
-#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GroupUser {
     pub userid: String,
     pub username: String,
     pub method: String,
+}
+
+impl PartialEq for GroupUser {
+    fn eq(&self, other: &Self) -> bool {
+        self.userid == other.userid
+    }
+}
+impl Eq for GroupUser {}
+impl std::hash::Hash for GroupUser {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.userid.hash(state)
+    }
 }
 
 impl GroupUser {
