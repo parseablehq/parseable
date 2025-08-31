@@ -43,7 +43,7 @@ use tokio::sync::Mutex;
 use super::modal::utils::rbac_utils::{get_metadata, put_metadata};
 
 // async aware lock for updating storage metadata and user map atomically
-static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
+pub(crate) static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[derive(serde::Serialize)]
 struct User {

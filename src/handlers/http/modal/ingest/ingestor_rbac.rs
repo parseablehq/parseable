@@ -19,10 +19,12 @@
 use std::collections::HashSet;
 
 use actix_web::{Responder, web};
-use tokio::sync::Mutex;
 
 use crate::{
-    handlers::http::{modal::utils::rbac_utils::get_metadata, rbac::RBACError},
+    handlers::http::{
+        modal::utils::rbac_utils::get_metadata,
+        rbac::{RBACError, UPDATE_LOCK},
+    },
     rbac::{
         Users,
         map::roles,
@@ -30,9 +32,6 @@ use crate::{
     },
     storage,
 };
-
-// async aware lock for updating storage metadata and user map atomicically
-static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
 
 // Handler for POST /api/v1/user/{username}
 // Creates a new user by username if it does not exists

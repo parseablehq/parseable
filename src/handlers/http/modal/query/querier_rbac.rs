@@ -19,7 +19,6 @@
 use std::collections::HashSet;
 
 use actix_web::{Responder, web};
-use tokio::sync::Mutex;
 
 use crate::{
     handlers::http::{
@@ -28,7 +27,7 @@ use crate::{
             sync_user_deletion_with_ingestors, sync_users_with_roles_with_ingestors,
         },
         modal::utils::rbac_utils::{get_metadata, put_metadata},
-        rbac::RBACError,
+        rbac::{RBACError, UPDATE_LOCK},
     },
     rbac::{
         Users,
@@ -37,9 +36,6 @@ use crate::{
     },
     validator,
 };
-
-// async aware lock for updating storage metadata and user map atomically
-static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
 
 // Handler for POST /api/v1/user/{username}
 // Creates a new user by username if it does not exists
