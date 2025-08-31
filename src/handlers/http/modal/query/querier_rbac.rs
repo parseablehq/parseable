@@ -103,7 +103,7 @@ pub async fn post_user(
     Ok(password)
 }
 
-// Handler for DELETE /api/v1/user/delete/{username}
+// Handler for DELETE /api/v1/user/{username}
 pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
     let _ = UPDATE_LOCK.lock().await;
@@ -120,19 +120,25 @@ pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, 
     let mut groups_to_update = Vec::new();
     for user_group in user_groups {
         if let Some(ug) = write_user_groups().get_mut(&user_group) {
-            ug.remove_users(HashSet::from_iter([username.clone()]))?;
+            ug.remove_users_by_user_ids(HashSet::from_iter([username.clone()]))?;
             groups_to_update.push(ug.clone());
-            // ug.update_in_metadata().await?;
         } else {
             continue;
         };
     }
 
-    // update in metadata user group
-    metadata
-        .user_groups
-        .retain(|x| !groups_to_update.contains(x));
-    metadata.user_groups.extend(groups_to_update);
+    // For each updated group, replace in place if found; otherwise push
+    for updated_group in &groups_to_update {
+        if let Some(existing) = metadata
+            .user_groups
+            .iter_mut()
+            .find(|ug| ug.name == updated_group.name)
+        {
+            *existing = updated_group.clone();
+        } else {
+            metadata.user_groups.push(updated_group.clone());
+        }
+    }
     put_metadata(&metadata).await?;
 
     sync_user_deletion_with_ingestors(&username).await?;

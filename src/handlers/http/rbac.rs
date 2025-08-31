@@ -42,7 +42,7 @@ use tokio::sync::Mutex;
 
 use super::modal::utils::rbac_utils::{get_metadata, put_metadata};
 
-// async aware lock for updating storage metadata and user map atomicically
+// async aware lock for updating storage metadata and user map atomically
 static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[derive(serde::Serialize)]
@@ -66,13 +66,13 @@ impl From<&user::User> for User {
 }
 
 // Handler for GET /api/v1/user
-// returns list of all registerd users
+// returns list of all registered users
 pub async fn list_users() -> impl Responder {
     web::Json(Users.collect_user::<User>())
 }
 
 /// Handler for GET /api/v1/users
-/// returns list of all registerd users along with their roles and other info
+/// returns list of all registered users along with their roles and other info
 pub async fn list_users_prism() -> impl Responder {
     // get all users
     let prism_users = rbac::map::users().values().map(to_prism_user).collect_vec();
@@ -350,7 +350,7 @@ pub async fn remove_roles_from_user(
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename = "camelCase")]
+#[serde(rename_all = "camelCase")]
 pub struct InvalidUserGroupError {
     pub valid_name: bool,
     pub non_existent_roles: Vec<String>,
@@ -390,7 +390,7 @@ pub enum RBACError {
     InvalidUserGroupRequest(Box<InvalidUserGroupError>),
     #[error("{0}")]
     InvalidSyncOperation(String),
-    #[error("User group `{0}` is still being used")]
+    #[error("UserGroup `{0}` is still in use")]
     UserGroupNotEmpty(String),
     #[error("Resource `{0}` is still in use")]
     ResourceInUse(String),

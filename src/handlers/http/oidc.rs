@@ -38,7 +38,7 @@ use crate::{
     rbac::{
         self, Users,
         map::{DEFAULT_ROLE, SessionKey},
-        user::{self, User, UserType},
+        user::{self, GroupUser, User, UserType},
     },
     storage::{self, ObjectStorageError, StorageMetadata},
     utils::actix::extract_session_key_from_req,
@@ -432,12 +432,11 @@ pub async fn update_user_if_changed(
         entry.clone_from(&user);
         // migrate user references inside user groups
         for group in metadata.user_groups.iter_mut() {
-            if group.users.remove(&old_username) {
-                group.users.insert(user.username().to_string());
-            }
+            group.users.retain(|u| u.userid() != old_username);
+            group.users.insert(GroupUser::from_user(&user));
         }
-        put_metadata(&metadata).await?;
     }
+    put_metadata(&metadata).await?;
     Users.delete_user(&old_username);
     Users.put_user(user.clone());
     Ok(user)

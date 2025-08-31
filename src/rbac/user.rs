@@ -203,6 +203,56 @@ impl From<openid::Userinfo> for UserInfo {
     }
 }
 
+/// Represents a user in a UserGroup - simplified structure for both user types
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub struct GroupUser {
+    pub userid: String,
+    pub username: String,
+    pub method: String,
+}
+
+impl GroupUser {
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    pub fn userid(&self) -> &str {
+        &self.userid
+    }
+
+    pub fn is_oauth(&self) -> bool {
+        self.method == "oauth"
+    }
+
+    pub fn user_type(&self) -> &str {
+        if self.is_oauth() { "oauth" } else { "native" }
+    }
+
+    pub fn from_user(user: &User) -> Self {
+        match &user.ty {
+            UserType::Native(Basic { username, .. }) => GroupUser {
+                userid: username.clone(), // Same value for basic users
+                username: username.clone(),
+                method: "native".to_string(),
+            },
+            UserType::OAuth(OAuth { userid, user_info }) => {
+                // For OAuth users, derive the display username from user_info
+                let display_username = user_info
+                    .name
+                    .clone()
+                    .or_else(|| user_info.email.clone())
+                    .unwrap_or_else(|| userid.clone()); // fallback to userid if nothing else available
+
+                GroupUser {
+                    userid: userid.clone(),
+                    username: display_username,
+                    method: "oauth".to_string(),
+                }
+            }
+        }
+    }
+}
+
 /// Logically speaking, UserGroup is a collection of roles and is applied to a collection of users.
 ///
 /// The users present in a group inherit all the roles present in the group for as long as they are a part of the group.
@@ -212,7 +262,7 @@ pub struct UserGroup {
     // #[serde(default = "crate::utils::uid::gen")]
     // pub id: Ulid,
     pub roles: HashSet<String>,
-    pub users: HashSet<String>,
+    pub users: HashSet<GroupUser>,
 }
 
 fn is_valid_group_name(name: &str) -> bool {
@@ -239,9 +289,9 @@ impl UserGroup {
         let mut non_existent_users = Vec::new();
         if !self.users.is_empty() {
             // validate that the users exist
-            for user in &self.users {
-                if !users().contains_key(user) {
-                    non_existent_users.push(user.clone());
+            for group_user in &self.users {
+                if !users().contains_key(group_user.userid()) {
+                    non_existent_users.push(group_user.username().to_string());
                 }
             }
         }
@@ -266,7 +316,7 @@ impl UserGroup {
             Ok(())
         }
     }
-    pub fn new(name: String, roles: HashSet<String>, users: HashSet<String>) -> Self {
+    pub fn new(name: String, roles: HashSet<String>, users: HashSet<GroupUser>) -> Self {
         UserGroup { name, roles, users }
     }
 
@@ -276,20 +326,20 @@ impl UserGroup {
         }
         self.roles.extend(roles);
         // also refresh all user sessions
-        for username in &self.users {
-            mut_sessions().remove_user(username);
+        for group_user in &self.users {
+            mut_sessions().remove_user(group_user.userid());
         }
         Ok(())
     }
 
-    pub fn add_users(&mut self, users: HashSet<String>) -> Result<(), RBACError> {
+    pub fn add_users(&mut self, users: HashSet<GroupUser>) -> Result<(), RBACError> {
         if users.is_empty() {
             return Ok(());
         }
         self.users.extend(users.clone());
         // also refresh all user sessions
-        for username in &users {
-            mut_sessions().remove_user(username);
+        for group_user in &users {
+            mut_sessions().remove_user(group_user.userid());
         }
         Ok(())
     }
@@ -307,28 +357,59 @@ impl UserGroup {
         self.roles.clone_from(&new_roles);
 
         // also refresh all user sessions
-        for username in &self.users {
-            mut_sessions().remove_user(username);
+        for group_user in &self.users {
+            mut_sessions().remove_user(group_user.userid());
         }
         Ok(())
     }
 
-    pub fn remove_users(&mut self, users: HashSet<String>) -> Result<(), RBACError> {
+    pub fn remove_users(&mut self, users: HashSet<GroupUser>) -> Result<(), RBACError> {
         if users.is_empty() {
             return Ok(());
         }
         let new_users = HashSet::from_iter(self.users.difference(&users).cloned());
-        let removed_users: HashSet<String> = self.users.intersection(&users).cloned().collect();
+        let removed_users: HashSet<GroupUser> = self.users.intersection(&users).cloned().collect();
         if removed_users.is_empty() {
             return Ok(());
         }
         // also refresh all user sessions
-        for username in &removed_users {
-            mut_sessions().remove_user(username);
+        for group_user in &removed_users {
+            mut_sessions().remove_user(group_user.userid());
         }
         self.users.clone_from(&new_users);
 
         Ok(())
+    }
+
+    /// Get all usernames in this group
+    pub fn get_usernames(&self) -> Vec<String> {
+        self.users
+            .iter()
+            .map(|u| u.username().to_string())
+            .collect()
+    }
+
+    /// Add users by converting from User references
+    pub fn add_users_from_user_refs(&mut self, user_refs: &[&User]) -> Result<(), RBACError> {
+        let group_users: HashSet<GroupUser> =
+            user_refs.iter().map(|u| GroupUser::from_user(u)).collect();
+        self.add_users(group_users)
+    }
+
+    /// Remove users by user ID
+    pub fn remove_users_by_user_ids(&mut self, user_ids: HashSet<String>) -> Result<(), RBACError> {
+        if user_ids.is_empty() {
+            return Ok(());
+        }
+
+        let users_to_remove: HashSet<GroupUser> = self
+            .users
+            .iter()
+            .filter(|u| user_ids.contains(u.userid()))
+            .cloned()
+            .collect();
+
+        self.remove_users(users_to_remove)
     }
 
     pub async fn update_in_metadata(&self) -> Result<(), RBACError> {

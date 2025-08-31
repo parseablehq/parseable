@@ -50,14 +50,14 @@ pub async fn put(
     // refresh the sessions of all users using this role
     // for this, iterate over all user_groups and users and create a hashset of users
     let mut session_refresh_users: HashSet<String> = HashSet::new();
-    for user_group in read_user_groups().values().cloned() {
+    for user_group in read_user_groups().values() {
         if user_group.roles.contains(&name) {
-            session_refresh_users.extend(user_group.users);
+            session_refresh_users.extend(user_group.get_usernames());
         }
     }
 
     // iterate over all users to see if they have this role
-    for user in users().values().cloned() {
+    for user in users().values() {
         if user.roles.contains(&name) {
             session_refresh_users.insert(user.username().to_string());
         }
