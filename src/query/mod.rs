@@ -26,7 +26,6 @@ use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::resolve_table_references;
 use datafusion::common::tree_node::Transformed;
-use datafusion::error::DataFusionError;
 use datafusion::execution::disk_manager::DiskManagerConfig;
 use datafusion::execution::{SendableRecordBatchStream, SessionState, SessionStateBuilder};
 use datafusion::logical_expr::expr::Alias;
@@ -38,7 +37,6 @@ use datafusion::sql::parser::DFParser;
 use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
-use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::ops::Bound;
@@ -60,7 +58,7 @@ use crate::event::DEFAULT_TIMESTAMP_KEY;
 use crate::handlers::http::query::QueryError;
 use crate::option::Mode;
 use crate::parseable::PARSEABLE;
-use crate::storage::{ObjectStorageProvider, ObjectStoreFormat, STREAM_ROOT_DIRECTORY};
+use crate::storage::{ObjectStorageProvider, ObjectStoreFormat};
 use crate::utils::time::TimeRange;
 
 pub static QUERY_SESSION: Lazy<SessionContext> =
@@ -547,22 +545,21 @@ pub async fn get_manifest_list(
         .unwrap();
 
     // get object store
-    let object_store_format = glob_storage
-        .get_object_store_format(stream_name)
-        .await
-        .map_err(|err| DataFusionError::Plan(err.to_string()))?;
+    let object_store_format: ObjectStoreFormat = serde_json::from_slice(
+        &PARSEABLE
+            .metastore
+            .get_stream_json(stream_name, false)
+            .await?,
+    )?;
 
     // all the manifests will go here
     let mut merged_snapshot: Snapshot = Snapshot::default();
 
     // get a list of manifests
     if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
-        let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
-        let obs = glob_storage
-            .get_objects(
-                Some(&path),
-                Box::new(|file_name| file_name.ends_with("stream.json")),
-            )
+        let obs = PARSEABLE
+            .metastore
+            .get_all_stream_jsons(stream_name, None)
             .await;
         if let Ok(obs) = obs {
             for ob in obs {

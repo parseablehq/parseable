@@ -262,10 +262,7 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
     // validate that the user has access to the tables mentioned in the query
     user_auth_for_query(&session_key, alert.get_query()).await?;
 
-    PARSEABLE
-        .metastore
-        .delete_object(alert_json_path(alert_id).as_ref())
-        .await?;
+    PARSEABLE.metastore.delete_alert(&*alert).await?;
 
     // delete from memory
     alerts.delete(alert_id).await?;

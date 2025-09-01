@@ -114,8 +114,13 @@ pub async fn update_snapshot(
         return Ok(());
     }
 
-    let mut meta = storage.get_object_store_format(stream_name).await?;
-
+    let mut meta: ObjectStoreFormat = serde_json::from_slice(
+        &PARSEABLE
+            .metastore
+            .get_stream_json(stream_name, false)
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
+    )?;
     let partition_groups = group_changes_by_partition(changes, &meta.time_partition);
 
     let new_manifest_entries =
@@ -458,7 +463,14 @@ pub async fn remove_manifest_from_snapshot(
 ) -> Result<(), ObjectStorageError> {
     if !dates.is_empty() {
         // get current snapshot
-        let mut meta = storage.get_object_store_format(stream_name).await?;
+        let mut meta: ObjectStoreFormat = serde_json::from_slice(
+            &PARSEABLE
+                .metastore
+                .get_stream_json(stream_name, false)
+                .await
+                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
+        )?;
+
         let meta_for_stats = meta.clone();
         update_deleted_stats(storage.clone(), stream_name, meta_for_stats, dates.clone()).await?;
         let manifests = &mut meta.snapshot.manifest_list;

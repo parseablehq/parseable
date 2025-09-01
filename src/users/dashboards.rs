@@ -68,7 +68,7 @@ pub struct Dashboard {
 }
 
 impl MetastoreObject for Dashboard {
-    fn get_path(&self) -> String {
+    fn get_object_path(&self) -> String {
         RelativePathBuf::from_iter([
             USERS_ROOT_DIR,
             self.author.as_ref().unwrap(),
@@ -78,7 +78,7 @@ impl MetastoreObject for Dashboard {
         .to_string()
     }
 
-    fn get_id(&self) -> String {
+    fn get_object_id(&self) -> String {
         self.dashboard_id.unwrap().to_string()
     }
 }

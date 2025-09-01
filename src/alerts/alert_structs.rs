@@ -531,11 +531,11 @@ pub struct NotificationStateRequest {
 }
 
 impl MetastoreObject for AlertConfig {
-    fn get_id(&self) -> String {
+    fn get_object_id(&self) -> String {
         self.id.to_string()
     }
 
-    fn get_path(&self) -> String {
+    fn get_object_path(&self) -> String {
         alert_json_path(self.id).to_string()
     }
 }

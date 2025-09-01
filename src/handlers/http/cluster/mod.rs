@@ -45,13 +45,13 @@ use crate::INTRA_CLUSTER_CLIENT;
 use crate::handlers::http::ingest::ingest_internal_stream;
 use crate::handlers::http::query::{Query, QueryError, TIME_ELAPSED_HEADER};
 use crate::metrics::prom_utils::Metrics;
+use crate::option::Mode;
 use crate::parseable::PARSEABLE;
 use crate::rbac::role::model::DefaultPrivilege;
 use crate::rbac::user::User;
 use crate::stats::Stats;
 use crate::storage::{
     ObjectStorage, ObjectStorageError, ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY,
-    STREAM_ROOT_DIRECTORY,
 };
 
 use super::base_path_without_preceding_slash;
@@ -497,16 +497,9 @@ pub fn fetch_daily_stats(
 pub async fn fetch_stats_from_ingestors(
     stream_name: &str,
 ) -> Result<Vec<utils::QueriedStats>, StreamError> {
-    let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
     let obs = PARSEABLE
-        .storage
-        .get_object_store()
-        .get_objects(
-            Some(&path),
-            Box::new(|file_name| {
-                file_name.starts_with(".ingestor") && file_name.ends_with("stream.json")
-            }),
-        )
+        .metastore
+        .get_all_stream_jsons(stream_name, Some(Mode::Ingest))
         .await?;
 
     let mut ingestion_size = 0u64;

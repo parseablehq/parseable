@@ -26,7 +26,6 @@ use actix_web::{
 use bytes::Bytes;
 use chrono::Utc;
 use http::StatusCode;
-use relative_path::RelativePathBuf;
 use tokio::sync::Mutex;
 use tracing::{error, warn};
 
@@ -48,7 +47,7 @@ use crate::{
     hottier::HotTierManager,
     parseable::{PARSEABLE, StreamNotFound},
     stats,
-    storage::{ObjectStoreFormat, STREAM_ROOT_DIRECTORY, StreamType},
+    storage::{ObjectStoreFormat, StreamType},
 };
 const STATS_DATE_QUERY_PARAM: &str = "date";
 
@@ -165,14 +164,9 @@ pub async fn get_stats(
 
         if !date_value.is_empty() {
             // this function requires all the ingestor stream jsons
-            let path = RelativePathBuf::from_iter([&stream_name, STREAM_ROOT_DIRECTORY]);
             let obs = PARSEABLE
-                .storage
-                .get_object_store()
-                .get_objects(
-                    Some(&path),
-                    Box::new(|file_name| file_name.ends_with("stream.json")),
-                )
+                .metastore
+                .get_all_stream_jsons(&stream_name, None)
                 .await?;
 
             let mut stream_jsons = Vec::new();

@@ -35,9 +35,11 @@ use crate::{
         target::{self, NotificationConfig},
     },
     handlers::http::query::create_streams_for_distributed,
+    metastore::metastore_traits::MetastoreObject,
     parseable::PARSEABLE,
     query::resolve_stream_names,
     rbac::map::SessionKey,
+    storage::object_storage::alert_json_path,
     utils::user_auth_for_query,
 };
 
@@ -63,6 +65,16 @@ pub struct ThresholdAlert {
     pub tags: Option<Vec<String>>,
     pub datasets: Vec<String>,
     pub last_triggered_at: Option<DateTime<Utc>>,
+}
+
+impl MetastoreObject for ThresholdAlert {
+    fn get_object_path(&self) -> String {
+        alert_json_path(self.id).to_string()
+    }
+
+    fn get_object_id(&self) -> String {
+        self.id.to_string()
+    }
 }
 
 #[async_trait]

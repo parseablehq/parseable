@@ -46,7 +46,7 @@ use crate::{
 
 use super::{
     ALERTS_ROOT_DIRECTORY, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
-    PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    PARSEABLE_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -182,50 +182,6 @@ impl ObjectStorage for LocalFS {
                 );
             }
         }
-
-        let time = time.elapsed().as_secs_f64();
-        REQUEST_RESPONSE_TIME
-            .with_label_values(&["GET", "200"]) // this might not be the right status code
-            .observe(time);
-
-        Ok(path_arr)
-    }
-
-    async fn get_stream_file_paths(
-        &self,
-        stream_name: &str,
-    ) -> Result<Vec<RelativePathBuf>, ObjectStorageError> {
-        let time = Instant::now();
-        let mut path_arr = vec![];
-
-        // = data/stream_name
-        let stream_dir_path = self.path_in_root(&RelativePathBuf::from(stream_name));
-        let mut entries = fs::read_dir(&stream_dir_path).await?;
-
-        while let Some(entry) = entries.next_entry().await? {
-            let flag = entry
-                .path()
-                .file_name()
-                .ok_or(ObjectStorageError::NoSuchKey(
-                    "Dir Entry Suggests no file present".to_string(),
-                ))?
-                .to_str()
-                .expect("file name is parseable to str")
-                .contains("ingestor");
-
-            if flag {
-                path_arr.push(RelativePathBuf::from_iter([
-                    stream_name,
-                    entry.path().file_name().unwrap().to_str().unwrap(), // checking the error before hand
-                ]));
-            }
-        }
-
-        path_arr.push(RelativePathBuf::from_iter([
-            stream_name,
-            STREAM_METADATA_FILE_NAME,
-        ]));
-        path_arr.push(RelativePathBuf::from_iter([stream_name, SCHEMA_FILE_NAME]));
 
         let time = time.elapsed().as_secs_f64();
         REQUEST_RESPONSE_TIME

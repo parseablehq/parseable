@@ -18,6 +18,7 @@
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
+use crate::metastore::MetastoreError;
 use crate::option::Mode;
 use crate::rbac::map::SessionKey;
 use crate::utils::arrow::record_batches_to_json;
@@ -578,12 +579,15 @@ Description: {0}"#
     NoAvailableQuerier,
     #[error("{0}")]
     ParserError(#[from] ParserError),
+    #[error("{0:?}")]
+    MetastoreError(#[from] MetastoreError),
 }
 
 impl actix_web::ResponseError for QueryError {
     fn status_code(&self) -> http::StatusCode {
         match self {
             QueryError::Execute(_) | QueryError::JsonParse(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            QueryError::MetastoreError(e) => e.status_code(),
             _ => StatusCode::BAD_REQUEST,
         }
     }
