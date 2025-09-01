@@ -17,13 +17,14 @@
  */
 
 use http::StatusCode;
+use serde::Serialize;
 
 use crate::storage::ObjectStorageError;
 
 pub mod metastore_traits;
 pub mod metastores;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct MetastoreErrorDetail {
     pub operation: String,
     pub message: String,
@@ -31,7 +32,7 @@ pub struct MetastoreErrorDetail {
     pub file_path: Option<String>,
     pub timestamp: Option<chrono::DateTime<chrono::Utc>>,
     pub metadata: std::collections::HashMap<String, String>,
-    pub status_code: StatusCode,
+    pub status_code: u16,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -55,7 +56,7 @@ pub enum MetastoreError {
     InvalidJsonValue { field: String, reason: String },
 
     #[error("{self:?}")]
-    ObjectStoreError {
+    Error {
         status_code: StatusCode,
         message: String,
         flow: String,
@@ -63,20 +64,20 @@ pub enum MetastoreError {
 }
 
 impl MetastoreError {
-    pub fn to_detail(self) -> MetastoreErrorDetail {
+    pub fn to_detail(&self) -> MetastoreErrorDetail {
         match self {
-            MetastoreError::ObjectStoreError {
+            MetastoreError::Error {
                 status_code,
                 message,
                 flow,
             } => MetastoreErrorDetail {
-                operation: flow,
-                message,
+                operation: flow.clone(),
+                message: message.clone(),
                 stream_name: None,
                 file_path: None,
                 timestamp: Some(chrono::Utc::now()),
                 metadata: std::collections::HashMap::new(),
-                status_code,
+                status_code: status_code.as_u16(),
             },
             MetastoreError::ObjectStorageError(e) => MetastoreErrorDetail {
                 operation: "ObjectStorageError".to_string(),
@@ -85,7 +86,7 @@ impl MetastoreError {
                 file_path: None,
                 timestamp: Some(chrono::Utc::now()),
                 metadata: std::collections::HashMap::new(),
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                status_code: 500,
             },
             MetastoreError::JsonParseError(e) => MetastoreErrorDetail {
                 operation: "JsonParseError".to_string(),
@@ -94,7 +95,7 @@ impl MetastoreError {
                 file_path: None,
                 timestamp: Some(chrono::Utc::now()),
                 metadata: std::collections::HashMap::new(),
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                status_code: 500,
             },
             MetastoreError::JsonSchemaError { message } => MetastoreErrorDetail {
                 operation: "JsonSchemaError".to_string(),
@@ -103,7 +104,7 @@ impl MetastoreError {
                 file_path: None,
                 timestamp: Some(chrono::Utc::now()),
                 metadata: std::collections::HashMap::new(),
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                status_code: 500,
             },
             MetastoreError::InvalidJsonStructure { expected, found } => MetastoreErrorDetail {
                 operation: "InvalidJsonStructure".to_string(),
@@ -117,7 +118,7 @@ impl MetastoreError {
                 ]
                 .into_iter()
                 .collect(),
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                status_code: 500,
             },
             MetastoreError::MissingJsonField { field } => MetastoreErrorDetail {
                 operation: "MissingJsonField".to_string(),
@@ -126,7 +127,7 @@ impl MetastoreError {
                 file_path: None,
                 timestamp: Some(chrono::Utc::now()),
                 metadata: [("field".to_string(), field.clone())].into_iter().collect(),
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                status_code: 500,
             },
             MetastoreError::InvalidJsonValue { field, reason } => MetastoreErrorDetail {
                 operation: "InvalidJsonValue".to_string(),
@@ -140,7 +141,7 @@ impl MetastoreError {
                 ]
                 .into_iter()
                 .collect(),
-                status_code: StatusCode::INTERNAL_SERVER_ERROR,
+                status_code: 500,
             },
         }
     }
@@ -161,7 +162,7 @@ impl MetastoreError {
                 field: _,
                 reason: _,
             } => StatusCode::INTERNAL_SERVER_ERROR,
-            MetastoreError::ObjectStoreError {
+            MetastoreError::Error {
                 status_code,
                 message: _,
                 flow: _,

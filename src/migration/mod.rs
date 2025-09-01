@@ -238,8 +238,7 @@ async fn fetch_or_create_stream_metadata(
     stream: &str,
     storage: &dyn ObjectStorage,
 ) -> anyhow::Result<Bytes> {
-    let path = stream_json_path(stream);
-    if let Ok(stream_metadata) = storage.get_object(&path).await {
+    if let Ok(stream_metadata) = PARSEABLE.metastore.get_stream_json(stream, false).await {
         Ok(stream_metadata)
     } else {
         let querier_stream = storage

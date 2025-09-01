@@ -19,6 +19,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use http::StatusCode;
 use relative_path::RelativePathBuf;
 use tonic::async_trait;
 use tracing::warn;
@@ -30,9 +31,10 @@ use crate::{
         MetastoreError,
         metastore_traits::{Metastore, MetastoreObject},
     },
+    option::Mode,
     storage::{
-        ALERTS_ROOT_DIRECTORY, ObjectStorage,
-        object_storage::{alert_json_path, filter_path, to_bytes},
+        ALERTS_ROOT_DIRECTORY, ObjectStorage, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+        object_storage::{alert_json_path, filter_path, stream_json_path, to_bytes},
     },
     users::filters::{Filter, migrate_v1_v2},
 };
@@ -81,13 +83,13 @@ impl Metastore for ObjectStoreMetastore {
 
     /// This function puts an alert in the object store at the given path
     async fn put_alert(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
-        let path = alert_json_path(Ulid::from_string(&obj.get_id()).unwrap());
+        let path = alert_json_path(Ulid::from_string(&obj.get_object_id()).unwrap());
 
         Ok(self.storage.put_object(&path, to_bytes(obj)).await?)
     }
 
     async fn delete_alert(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
-        let path = obj.get_path();
+        let path = obj.get_object_path();
         Ok(self
             .storage
             .delete_object(&RelativePathBuf::from(path))
@@ -116,7 +118,7 @@ impl Metastore for ObjectStoreMetastore {
 
     async fn put_dashboard(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
         // we need the path to store in obj store
-        let path = obj.get_path();
+        let path = obj.get_object_path();
 
         Ok(self
             .storage
@@ -125,7 +127,7 @@ impl Metastore for ObjectStoreMetastore {
     }
 
     async fn delete_dashboard(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
-        let path = obj.get_path();
+        let path = obj.get_object_path();
         Ok(self
             .storage
             .delete_object(&RelativePathBuf::from(path))
@@ -207,7 +209,7 @@ impl Metastore for ObjectStoreMetastore {
 
     async fn put_filter(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
         // we need the path to store in obj store
-        let path = obj.get_path();
+        let path = obj.get_object_path();
 
         Ok(self
             .storage
@@ -216,7 +218,7 @@ impl Metastore for ObjectStoreMetastore {
     }
 
     async fn delete_filter(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
-        let path = obj.get_path();
+        let path = obj.get_object_path();
         warn!(delete_filter_path=?path);
         Ok(self
             .storage
@@ -236,10 +238,67 @@ impl Metastore for ObjectStoreMetastore {
         unimplemented!()
     }
 
-    async fn delete_object(&self, path: &str) -> Result<(), MetastoreError> {
+    async fn get_stream_json(
+        &self,
+        stream_name: &str,
+        get_base: bool,
+    ) -> Result<Bytes, MetastoreError> {
+        let path = if get_base {
+            RelativePathBuf::from_iter([
+                stream_name,
+                STREAM_ROOT_DIRECTORY,
+                STREAM_METADATA_FILE_NAME,
+            ])
+        } else {
+            stream_json_path(stream_name)
+        };
+        Ok(self.storage.get_object(&path).await?)
+    }
+
+    async fn get_all_stream_jsons(
+        &self,
+        stream_name: &str,
+        mode: Option<Mode>,
+    ) -> Result<Vec<Bytes>, MetastoreError> {
+        let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
+        if let Some(mode) = mode {
+            if mode.eq(&Mode::Ingest) {
+                Ok(self
+                    .storage
+                    .get_objects(
+                        Some(&path),
+                        Box::new(|file_name| {
+                            file_name.starts_with(".ingestor") && file_name.ends_with("stream.json")
+                        }),
+                    )
+                    .await?)
+            } else {
+                return Err(MetastoreError::Error {
+                    status_code: StatusCode::BAD_REQUEST,
+                    message: "Incorrect server mode passed as input. Only `Ingest` is allowed."
+                        .into(),
+                    flow: "get_all_streams with mode".into(),
+                });
+            }
+        } else {
+            Ok(self
+                .storage
+                .get_objects(
+                    Some(&path),
+                    Box::new(|file_name| file_name.ends_with("stream.json")),
+                )
+                .await?)
+        }
+    }
+
+    async fn put_stream_json(
+        &self,
+        obj: &dyn MetastoreObject,
+        stream_name: &str,
+    ) -> Result<(), MetastoreError> {
         Ok(self
             .storage
-            .delete_object(&RelativePathBuf::from(path))
+            .put_object(&stream_json_path(stream_name), to_bytes(obj))
             .await?)
     }
 }

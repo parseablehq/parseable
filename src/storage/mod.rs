@@ -26,6 +26,7 @@ use crate::{
     event::format::LogSourceEntry,
     handlers::TelemetryType,
     metadata::SchemaVersion,
+    metastore::{MetastoreErrorDetail, metastore_traits::MetastoreObject},
     option::StandaloneWithDistributed,
     parseable::StreamNotFound,
     stats::FullStats,
@@ -127,6 +128,16 @@ pub struct ObjectStoreFormat {
     pub log_source: Vec<LogSourceEntry>,
     #[serde(default)]
     pub telemetry_type: TelemetryType,
+}
+
+impl MetastoreObject for ObjectStoreFormat {
+    fn get_object_path(&self) -> String {
+        unimplemented!()
+    }
+
+    fn get_object_id(&self) -> String {
+        unimplemented!()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -274,6 +285,9 @@ pub enum ObjectStorageError {
 
     #[error("JoinError: {0}")]
     JoinError(#[from] JoinError),
+
+    #[error("MetastoerError: {0:?}")]
+    MetastoreError(Box<MetastoreErrorDetail>),
 }
 
 pub fn to_object_store_path(path: &RelativePath) -> Path {

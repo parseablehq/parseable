@@ -47,7 +47,7 @@ pub struct Filter {
 }
 
 impl MetastoreObject for Filter {
-    fn get_path(&self) -> String {
+    fn get_object_path(&self) -> String {
         filter_path(
             self.user_id.as_ref().unwrap(),
             &self.stream_name,
@@ -56,7 +56,7 @@ impl MetastoreObject for Filter {
         .to_string()
     }
 
-    fn get_id(&self) -> String {
+    fn get_object_id(&self) -> String {
         self.filter_id.as_ref().unwrap().clone()
     }
 }

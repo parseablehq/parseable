@@ -20,7 +20,7 @@ use bytes::Bytes;
 use erased_serde::Serialize as ErasedSerialize;
 use tonic::async_trait;
 
-use crate::{metastore::MetastoreError, users::filters::Filter};
+use crate::{metastore::MetastoreError, option::Mode, users::filters::Filter};
 
 /// A metastore is a logically separated compartment to store metadata for Parseable.
 ///
@@ -53,8 +53,32 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
     async fn put_correlation(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
     async fn delete_correlation(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
 
-    /// filters
-    async fn delete_object(&self, path: &str) -> Result<(), MetastoreError>;
+    /// stream metadata
+    /// `get_base` when set to true, will fetch the stream.json present at the base of
+    /// the stream (independent of Mode of server)
+    ///
+    /// Otherwise the metastore will fetch whichever file is relevant to the current server mode
+    async fn get_stream_json(
+        &self,
+        stream_name: &str,
+        get_base: bool,
+    ) -> Result<Bytes, MetastoreError>;
+    async fn put_stream_json(
+        &self,
+        obj: &dyn MetastoreObject,
+        stream_name: &str,
+    ) -> Result<(), MetastoreError>;
+    /// This function will fetch multiple stream jsons
+    ///
+    /// If mode is set to `Some(Ingest)`, then it will fetch all the ingestor stream jsons for the given stream
+    ///
+    /// If set to `None`, it will fetch all the stream jsons present in that stream
+    async fn get_all_stream_jsons(
+        &self,
+        stream_name: &str,
+        mode: Option<Mode>,
+    ) -> Result<Vec<Bytes>, MetastoreError>;
+    // async fn delete_correlation(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
 }
 
 /// This trait allows a struct to get treated as a Metastore Object
@@ -62,8 +86,8 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
 /// A metastore object can be anything like configurations, user preferences, etc. Basically
 /// anything that  has a defined structure can possibly be treated as an object.
 pub trait MetastoreObject: ErasedSerialize + Sync {
-    fn get_path(&self) -> String;
-    fn get_id(&self) -> String;
+    fn get_object_path(&self) -> String;
+    fn get_object_id(&self) -> String;
 }
 
 // This macro makes the trait dyn-compatible

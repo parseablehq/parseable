@@ -53,7 +53,7 @@ use crate::{
 
 use super::{
     CONNECT_TIMEOUT_SECS, MIN_MULTIPART_UPLOAD_SIZE, ObjectStorage, ObjectStorageError,
-    ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, SCHEMA_FILE_NAME,
+    ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS,
     STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY, metrics_layer::MetricLayer,
     object_storage::parseable_json_path, to_object_store_path,
 };
@@ -568,37 +568,6 @@ impl ObjectStorage for BlobStore {
                 path_arr.push(RelativePathBuf::from(meta.location.as_ref()));
             }
         }
-
-        let time = time.elapsed().as_secs_f64();
-        REQUEST_RESPONSE_TIME
-            .with_label_values(&["GET", "200"])
-            .observe(time);
-
-        Ok(path_arr)
-    }
-
-    async fn get_stream_file_paths(
-        &self,
-        stream_name: &str,
-    ) -> Result<Vec<RelativePathBuf>, ObjectStorageError> {
-        let time = Instant::now();
-        let mut path_arr = vec![];
-        let path = to_object_store_path(&RelativePathBuf::from(stream_name));
-        let mut object_stream = self.client.list(Some(&path));
-
-        while let Some(meta) = object_stream.next().await.transpose()? {
-            let flag = meta.location.filename().unwrap().starts_with(".ingestor");
-
-            if flag {
-                path_arr.push(RelativePathBuf::from(meta.location.as_ref()));
-            }
-        }
-
-        path_arr.push(RelativePathBuf::from_iter([
-            stream_name,
-            STREAM_METADATA_FILE_NAME,
-        ]));
-        path_arr.push(RelativePathBuf::from_iter([stream_name, SCHEMA_FILE_NAME]));
 
         let time = time.elapsed().as_secs_f64();
         REQUEST_RESPONSE_TIME
