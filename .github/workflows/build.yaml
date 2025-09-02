@@ -96,7 +96,6 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           brew install \
-            cmake \
             llvm \
             pkg-config \
             zstd \
