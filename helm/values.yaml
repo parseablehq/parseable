@@ -46,12 +46,6 @@ parseable:
         requests:
           cpu: 250m
           memory: 1Gi
-  ## Enable audit logging on parseable nodes
-  auditLogging:
-    enabled: false
-    p_server: "http://parseable-ingestor-service.parseable.svc.cluster.local"
-    p_username: "admin"
-    p_password: "admin"
 
   ## Add environment variables to the Parseable Deployment
   env:
