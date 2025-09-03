@@ -43,7 +43,7 @@ const USER_ID_COOKIE_NAME: &str = "user_id";
 const LOG_SOURCE_KINESIS: &str = "kinesis";
 
 // AWS Kinesis constants
-const KINESIS_COMMON_ATTRIBUTES_KEY: &str = "x-amz-firehose-common-attributes";
+pub const KINESIS_COMMON_ATTRIBUTES_KEY: &str = "x-amz-firehose-common-attributes";
 
 // constants for content type values
 pub const CONTENT_TYPE_JSON: &str = "application/json";

@@ -13,23 +13,27 @@
 [![Docs](https://img.shields.io/badge/stable%20docs-parseable.com%2Fdocs-brightgreen?style=flat&color=%2373DC8C&label=Docs)](https://logg.ing/docs)
 [![Build](https://img.shields.io/github/checks-status/parseablehq/parseable/main?style=flat&color=%2373DC8C&label=Checks)](https://github.com/parseablehq/parseable/actions)
 
-[Key Concepts](https://www.parseable.com/docs/key-concepts) | [Features](https://www.parseable.com/docs/features/alerts) | [Documentation](https://www.parseable.com/docs) | [Demo](https://demo.parseable.com/login?q=eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJhZG1pbiJ9) | [FAQ](https://www.parseable.com/docs/key-concepts/data-model#faq)
+[Key Concepts](https://www.parseable.com/docs/key-concepts) | [Features](https://www.parseable.com/docs/features/alerts) | [Documentation](https://www.parseable.com/docs) | [Demo](https://demo.parseable.com/login) | [FAQ](https://www.parseable.com/docs/key-concepts/data-model#faq)
 
 </div>
 
-ParseableDB is a disk **_less_**, cloud native database for logs, observability, security, and compliance. ParseableDB is built with focus on simplicity & resource efficiency. It is useful for use cases where **complete data ownership, data security and privacy are paramount**.
+Parseable is a full stack observability platform built to ingest, analyze and extract insights from all types of telemetry (MELT) data. You can run Parseable on your local machine, in the cloud, or as a managed service. To experience Parseable UI, checkout [demo.parseable.com ↗︎](https://demo.parseable.com/login).
 
-To experience Prism(Parseable UI), checkout [demo.parseable.com ↗︎](https://demo.parseable.com/login?q=eyJ1c2VybmFtZSI6ImFkbWluIiwicGFzc3dvcmQiOiJhZG1pbiJ9).
+<div align="center">
+  <a href="http://www.youtube.com/watch?feature=player_embedded&v=gYn3pFAfrVA" target="_blank">
+  <img src="http://img.youtube.com/vi/gYn3pFAfrVA/mqdefault.jpg" alt="Watch the video" width="300" height="240" />
+  </a>
+</div>
 
 ## Quickstart :zap:
 
-### Run ParseableDB
+### Run Parseable
 
 <details>
 <summary><a href="https://www.parseable.com/docs/quickstart/docker">Docker Image</a></summary>
 <p>
 
-Get started with ParseableDB Docker with a single command:
+Get started with Parseable Docker image with a single command:
 
 ```bash
 docker run -p 8000:8000 \
@@ -44,7 +48,7 @@ docker run -p 8000:8000 \
 <summary><a href="https://www.parseable.com/docs/quickstart/binary">Executable Binary</a></summary>
 <p>
 
-Download and run the ParseableDB binary on your laptop:
+Download and run the Parseable binary on your laptop:
 
 - Linux or MacOS
 
@@ -63,7 +67,7 @@ powershell -c "irm https://logg.ing/install-windows | iex"
 
 ### Ingestion and query
 
-Once you have ParseableDB running, ingest data with the below command. This will send logs to the `demo` stream. You can see the logs in the dashboard.
+Once you have Parseable running, ingest data with the below command. This will send logs to the `demo` stream. You can see the logs in the dashboard.
 
 ```bash
 curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
@@ -85,10 +89,10 @@ Access the UI at [http://localhost:8000 ↗︎](http://localhost:8000). You can 
 
 For quickstart, refer the [quickstart section ↗︎](#quickstart-zap).
 
-This section elaborates available options to run ParseableDB in production or development environments.
+This section elaborates available options to run Parseable in production or development environments.
 
-- Distributed ParseableDB on Kubernetes: [Helm Installation](https://www.parseable.com/docs/installation/distributed/k8s-helm).
-- Distributed ParseableDB on AWS EC2 / VMs / Linux: [Binary Installation](https://www.parseable.com/docs/installation/distributed/linux).
+- Distributed Parseable on Kubernetes: [Helm Installation](https://www.parseable.com/docs/installation/distributed/k8s-helm).
+- Distributed Parseable on AWS EC2 / VMs / Linux: [Binary Installation](https://www.parseable.com/docs/installation/distributed/linux).
 
 ## Features :rocket:
 
@@ -98,20 +102,6 @@ This section elaborates available options to run ParseableDB in production or de
 - [Role based access control ↗︎](https://www.parseable.com/docs/features/rbac)
 - [OAuth2 support ↗︎](https://www.parseable.com/docs/features/oepnid)
 - [OpenTelemetry support ↗︎](https://www.parseable.com/docs/OpenTelemetry/logs)
-
-## How do people use Parseable :bulb:
-
-- **Log Analytics** - Not all logs are created equal. For example application logs are seldom useful after a few days pass, but if same application also logs all the user interactions, that data is very valuable for product managers, and can be stored for a longer period. Several businesses store such high value logs and slice / dice them as needed.
-
-- **Audit & Compliance** - Organizations that need to store logs in a secure, compliant manner. Parseable's direct to S3 bucket storage mode ensures that logs are stored in a secure, cost effective manner, and can be accessed only by authorized users, while all the data is queryable in real-time.
-
-- **Observability & Monitoring** - A very large chunk of observability data is logs. Organizations that need to monitor their systems, applications, and infrastructure in real-time use Parseable as the primary log storage system so they get timely alerts, and can analyze logs in real-time.
-
-## Motivation :dart:
-
-Traditionally, logging has been seen as a text search problem. Log volumes were not high, and data ingestion or storage were not really issues. This led us to today, where all the logging platforms are primarily text search engines.
-
-But with log data growing exponentially, today's log data challenges involve whole lot more – Data ingestion, storage, and observation, all at scale. We are building Parseable to address these challenges.
 
 ## Verify images :writing_hand:
 
