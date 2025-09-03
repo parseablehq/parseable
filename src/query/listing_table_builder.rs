@@ -16,7 +16,7 @@
  *
  */
 
-use std::{collections::HashMap, ops::Bound, pin::Pin, sync::Arc};
+use std::{ops::Bound, sync::Arc};
 
 use arrow_schema::Schema;
 use datafusion::{
@@ -27,9 +27,7 @@ use datafusion::{
     error::DataFusionError,
     logical_expr::col,
 };
-use futures_util::{Future, TryStreamExt, stream::FuturesUnordered};
 use itertools::Itertools;
-use object_store::{ObjectMeta, ObjectStore, path::Path};
 
 use crate::{
     OBJECT_STORE_DATA_GRANULARITY, event::DEFAULT_TIMESTAMP_KEY, storage::ObjectStorage,
@@ -56,7 +54,6 @@ impl ListingTableBuilder {
     pub async fn populate_via_listing(
         self,
         storage: Arc<dyn ObjectStorage>,
-        client: Arc<dyn ObjectStore>,
         time_filters: &[PartialTimeFilter],
     ) -> Result<Self, DataFusionError> {
         // Extract the minimum start time from the time filters.
@@ -90,67 +87,28 @@ impl ListingTableBuilder {
         let prefixes = TimeRange::new(start_time.and_utc(), end_time.and_utc())
             .generate_prefixes(OBJECT_STORE_DATA_GRANULARITY);
 
-        // Categorizes prefixes into "minute" and general resolve lists.
-        let mut minute_resolve = HashMap::<String, Vec<String>>::new();
-        let mut all_resolve = Vec::new();
+        // Build all prefixes as relative paths
+        let prefixes: Vec<_> = prefixes
+            .into_iter()
+            .map(|prefix| {
+                relative_path::RelativePathBuf::from(format!("{}/{}", &self.stream, prefix))
+            })
+            .collect();
+
+        // Use storage.list_dirs_relative for all prefixes and flatten results
+        let mut listing = Vec::new();
         for prefix in prefixes {
-            let path = relative_path::RelativePathBuf::from(format!("{}/{}", &self.stream, prefix));
-            let prefix = storage.absolute_url(path.as_relative_path()).to_string();
-            if let Some(pos) = prefix.rfind("minute") {
-                let hour_prefix = &prefix[..pos];
-                minute_resolve
-                    .entry(hour_prefix.to_owned())
-                    .or_default()
-                    .push(prefix);
-            } else {
-                all_resolve.push(prefix);
+            match storage.list_dirs_relative(&prefix).await {
+                Ok(paths) => {
+                    listing.extend(paths.into_iter().map(|p| p.to_string()));
+                }
+                Err(e) => {
+                    return Err(DataFusionError::External(Box::new(e)));
+                }
             }
         }
 
-        /// Resolve all prefixes asynchronously and collect the object metadata.
-        type ResolveFuture =
-            Pin<Box<dyn Future<Output = Result<Vec<ObjectMeta>, object_store::Error>> + Send>>;
-        let tasks: FuturesUnordered<ResolveFuture> = FuturesUnordered::new();
-        for (listing_prefix, prefixes) in minute_resolve {
-            let client = Arc::clone(&client);
-            tasks.push(Box::pin(async move {
-                let path = Path::from(listing_prefix);
-                let mut objects = client.list(Some(&path)).try_collect::<Vec<_>>().await?;
-
-                objects.retain(|obj| {
-                    prefixes.iter().any(|prefix| {
-                        obj.location
-                            .prefix_matches(&object_store::path::Path::from(prefix.as_ref()))
-                    })
-                });
-
-                Ok(objects)
-            }));
-        }
-
-        for prefix in all_resolve {
-            let client = Arc::clone(&client);
-            tasks.push(Box::pin(async move {
-                client
-                    .list(Some(&object_store::path::Path::from(prefix)))
-                    .try_collect::<Vec<_>>()
-                    .await
-            }));
-        }
-
-        let listing = tasks
-            .try_collect::<Vec<Vec<ObjectMeta>>>()
-            .await
-            .map_err(|err| DataFusionError::External(Box::new(err)))?
-            .into_iter()
-            .flat_map(|res| {
-                res.into_iter()
-                    .map(|obj| obj.location.to_string())
-                    .collect::<Vec<String>>()
-            })
-            .sorted()
-            .rev()
-            .collect_vec();
+        let listing = listing.into_iter().sorted().rev().collect_vec();
 
         Ok(Self {
             stream: self.stream,

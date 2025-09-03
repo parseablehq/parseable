@@ -514,13 +514,6 @@ pub async fn get_manifest_list(
 ) -> Result<Vec<Manifest>, QueryError> {
     let glob_storage = PARSEABLE.storage.get_object_store();
 
-    let object_store = QUERY_SESSION
-        .state()
-        .runtime_env()
-        .object_store_registry
-        .get_store(&glob_storage.store_url())
-        .unwrap();
-
     // get object store
     let object_store_format = glob_storage
         .get_object_store_format(stream_name)
@@ -560,7 +553,7 @@ pub async fn get_manifest_list(
     ];
 
     let all_manifest_files = collect_manifest_files(
-        object_store,
+        glob_storage,
         merged_snapshot
             .manifests(&time_filter)
             .into_iter()

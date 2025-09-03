@@ -19,17 +19,24 @@
 use std::{
     collections::{BTreeMap, HashSet},
     path::Path,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, Instant},
 };
 
 use crate::{
     handlers::http::users::USERS_ROOT_DIR,
-    metrics::storage::{StorageMetrics, gcs::REQUEST_RESPONSE_TIME},
+    metrics::storage::{
+        STORAGE_FILES_SCANNED, STORAGE_FILES_SCANNED_DATE, STORAGE_REQUEST_RESPONSE_TIME,
+        StorageMetrics,
+    },
     parseable::LogStream,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::Utc;
 use datafusion::{
     datasource::listing::ListingTableUrl,
     execution::{
@@ -53,7 +60,7 @@ use super::{
     CONNECT_TIMEOUT_SECS, MIN_MULTIPART_UPLOAD_SIZE, ObjectStorage, ObjectStorageError,
     ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, SCHEMA_FILE_NAME,
     STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY, metrics_layer::MetricLayer,
-    object_storage::parseable_json_path, to_object_store_path,
+    metrics_layer::error_to_status_code, object_storage::parseable_json_path, to_object_store_path,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -129,7 +136,7 @@ impl ObjectStorageProvider for GcsConfig {
 
         // limit objectstore to a concurrent request limit
         let gcs = LimitStore::new(gcs, super::MAX_OBJECT_STORE_REQUESTS);
-        let gcs = MetricLayer::new(gcs);
+        let gcs = MetricLayer::new(gcs, "gcs");
 
         let object_store_registry = DefaultObjectStoreRegistry::new();
         // Register GCS client under the "gs://" scheme so DataFusion can route
@@ -175,24 +182,28 @@ pub struct Gcs {
 
 impl Gcs {
     async fn _get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
-        let instant = Instant::now();
-
+        let time = std::time::Instant::now();
         let resp = self.client.get(&to_object_store_path(path)).await;
-
+        let elapsed = time.elapsed().as_secs_f64();
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "GET"])
+            .inc();
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "GET", &Utc::now().date_naive().to_string()])
+            .inc();
         match resp {
             Ok(resp) => {
-                let time = instant.elapsed().as_secs_f64();
-                REQUEST_RESPONSE_TIME
-                    .with_label_values(&["GET", "200"])
-                    .observe(time);
-                let body = resp.bytes().await.unwrap();
+                let body: Bytes = resp.bytes().await.unwrap();
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "GET", "200"])
+                    .observe(elapsed);
                 Ok(body)
             }
             Err(err) => {
-                let time = instant.elapsed().as_secs_f64();
-                REQUEST_RESPONSE_TIME
-                    .with_label_values(&["GET", "400"])
-                    .observe(time);
+                let status_code = error_to_status_code(&err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "GET", status_code])
+                    .observe(elapsed);
                 Err(err.into())
             }
         }
@@ -203,50 +214,100 @@ impl Gcs {
         path: &RelativePath,
         resource: PutPayload,
     ) -> Result<(), ObjectStorageError> {
-        let time = Instant::now();
+        let time = std::time::Instant::now();
         let resp = self.client.put(&to_object_store_path(path), resource).await;
-        let status = if resp.is_ok() { "200" } else { "400" };
-        let time = time.elapsed().as_secs_f64();
-        REQUEST_RESPONSE_TIME
-            .with_label_values(&["PUT", status])
-            .observe(time);
-
-        if let Err(object_store::Error::NotFound { source, .. }) = &resp {
-            let source_str = source.to_string();
-            if source_str.contains("<Code>NoSuchBucket</Code>") {
-                return Err(ObjectStorageError::Custom(
-                    format!("Bucket '{}' does not exist in GCS.", self.bucket).to_string(),
-                ));
+        let elapsed = time.elapsed().as_secs_f64();
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "PUT"])
+            .inc();
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "PUT", &Utc::now().date_naive().to_string()])
+            .inc();
+        match resp {
+            Ok(_) => {
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "PUT", "200"])
+                    .observe(elapsed);
+                Ok(())
+            }
+            Err(err) => {
+                let status_code = error_to_status_code(&err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "PUT", status_code])
+                    .observe(elapsed);
+                Err(err.into())
             }
         }
-
-        resp.map(|_| ()).map_err(|err| err.into())
     }
 
     async fn _delete_prefix(&self, key: &str) -> Result<(), ObjectStorageError> {
+        let files_scanned = Arc::new(AtomicU64::new(0));
+        let files_deleted = Arc::new(AtomicU64::new(0));
+        // Track LIST operation
+        let list_start = Instant::now();
         let object_stream = self.client.list(Some(&(key.into())));
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["gcs", "LIST", "200"])
+            .observe(list_elapsed);
 
         object_stream
             .for_each_concurrent(None, |x| async {
+                files_scanned.fetch_add(1, Ordering::Relaxed);
                 match x {
                     Ok(obj) => {
-                        if (self.client.delete(&obj.location).await).is_err() {
-                            error!("Failed to fetch object during delete stream");
+                        files_deleted.fetch_add(1, Ordering::Relaxed);
+                        let delete_start = Instant::now();
+                        let delete_resp = self.client.delete(&obj.location).await;
+                        let delete_elapsed = delete_start.elapsed().as_secs_f64();
+                        match delete_resp {
+                            Ok(_) => {
+                                STORAGE_REQUEST_RESPONSE_TIME
+                                    .with_label_values(&["gcs", "DELETE", "200"])
+                                    .observe(delete_elapsed);
+                            }
+                            Err(err) => {
+                                let status_code = error_to_status_code(&err);
+                                STORAGE_REQUEST_RESPONSE_TIME
+                                    .with_label_values(&["gcs", "DELETE", status_code])
+                                    .observe(delete_elapsed);
+                                error!("Failed to delete object during delete stream: {:?}", err);
+                            }
                         }
                     }
-                    Err(_) => {
-                        error!("Failed to fetch object during delete stream");
+                    Err(err) => {
+                        error!("Failed to fetch object during delete stream: {:?}", err);
                     }
                 };
             })
             .await;
 
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "LIST"])
+            .inc_by(files_scanned.load(Ordering::Relaxed) as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "LIST", &Utc::now().date_naive().to_string()])
+            .inc_by(files_scanned.load(Ordering::Relaxed) as f64);
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "DELETE"])
+            .inc_by(files_deleted.load(Ordering::Relaxed) as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "DELETE", &Utc::now().date_naive().to_string()])
+            .inc_by(files_deleted.load(Ordering::Relaxed) as f64);
         Ok(())
     }
 
     async fn _list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
         let mut result_file_list = HashSet::new();
+        let mut total_files_scanned = 0u64;
+
+        let list_start = Instant::now();
         let resp = self.client.list_with_delimiter(None).await?;
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        total_files_scanned += resp.objects.len() as u64;
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["gcs", "LIST", "200"])
+            .observe(list_elapsed);
 
         let streams = resp
             .common_prefixes
@@ -259,26 +320,82 @@ impl Gcs {
         for stream in streams {
             let stream_path =
                 object_store::path::Path::from(format!("{}/{}", &stream, STREAM_ROOT_DIRECTORY));
-            let resp = self.client.list_with_delimiter(Some(&stream_path)).await?;
-            if resp
-                .objects
-                .iter()
-                .any(|name| name.location.filename().unwrap().ends_with("stream.json"))
-            {
-                result_file_list.insert(stream);
+
+            // Track individual LIST operations for each stream
+            let stream_list_start = Instant::now();
+            let resp = self.client.list_with_delimiter(Some(&stream_path)).await;
+            let stream_list_elapsed = stream_list_start.elapsed().as_secs_f64();
+
+            match &resp {
+                Ok(resp) => {
+                    STORAGE_REQUEST_RESPONSE_TIME
+                        .with_label_values(&["gcs", "LIST", "200"])
+                        .observe(stream_list_elapsed);
+
+                    total_files_scanned += resp.objects.len() as u64;
+                    if resp
+                        .objects
+                        .iter()
+                        .any(|name| name.location.filename().unwrap().ends_with("stream.json"))
+                    {
+                        result_file_list.insert(stream);
+                    }
+                }
+                Err(err) => {
+                    let status_code = error_to_status_code(err);
+                    STORAGE_REQUEST_RESPONSE_TIME
+                        .with_label_values(&["gcs", "LIST", status_code])
+                        .observe(stream_list_elapsed);
+                    return Err(ObjectStorageError::UnhandledError(Box::new(
+                        std::io::Error::other(format!("List operation failed: {}", err)),
+                    )));
+                }
             }
         }
+
+        // Record total files scanned across all operations
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "LIST"])
+            .inc_by(total_files_scanned as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "LIST", &Utc::now().date_naive().to_string()])
+            .inc_by(total_files_scanned as f64);
 
         Ok(result_file_list)
     }
 
     async fn _list_dates(&self, stream: &str) -> Result<Vec<String>, ObjectStorageError> {
-        let resp = self
+        let list_start = Instant::now();
+        let resp: Result<object_store::ListResult, object_store::Error> = self
             .client
             .list_with_delimiter(Some(&(stream.into())))
-            .await?;
+            .await;
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+
+        let resp = match resp {
+            Ok(resp) => {
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "LIST", "200"])
+                    .observe(list_elapsed);
+                resp
+            }
+            Err(err) => {
+                let status_code = error_to_status_code(&err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "LIST", status_code])
+                    .observe(list_elapsed);
+                return Err(err.into());
+            }
+        };
 
         let common_prefixes = resp.common_prefixes;
+
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "LIST"])
+            .inc_by(common_prefixes.len() as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "LIST", &Utc::now().date_naive().to_string()])
+            .inc_by(common_prefixes.len() as f64);
 
         // return prefixes at the root level
         let dates: Vec<_> = common_prefixes
@@ -295,10 +412,32 @@ impl Gcs {
         stream: &str,
     ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
         let mut result_file_list: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut total_files_scanned = 0u64;
+
+        // Track initial LIST operation
+        let list_start = Instant::now();
         let resp = self
             .client
             .list_with_delimiter(Some(&(stream.into())))
-            .await?;
+            .await;
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+
+        let resp = match resp {
+            Ok(resp) => {
+                total_files_scanned += resp.objects.len() as u64;
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "LIST", "200"])
+                    .observe(list_elapsed);
+                resp
+            }
+            Err(err) => {
+                let status_code = error_to_status_code(&err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "LIST", status_code])
+                    .observe(list_elapsed);
+                return Err(err.into());
+            }
+        };
 
         let dates = resp
             .common_prefixes
@@ -307,32 +446,79 @@ impl Gcs {
             .filter(|name| name.as_ref() != stream && name.as_ref() != STREAM_ROOT_DIRECTORY)
             .map(|name| name.as_ref().to_string())
             .collect::<Vec<_>>();
+
         for date in dates {
             let date_path = object_store::path::Path::from(format!("{}/{}", stream, &date));
-            let resp = self.client.list_with_delimiter(Some(&date_path)).await?;
-            let manifests: Vec<String> = resp
-                .objects
-                .iter()
-                .filter(|name| name.location.filename().unwrap().ends_with("manifest.json"))
-                .map(|name| name.location.to_string())
-                .collect();
-            result_file_list.entry(date).or_default().extend(manifests);
+
+            // Track individual LIST operation for each date
+            let date_list_start = Instant::now();
+            let resp = self.client.list_with_delimiter(Some(&date_path)).await;
+            let date_list_elapsed = date_list_start.elapsed().as_secs_f64();
+
+            match resp {
+                Ok(resp) => {
+                    STORAGE_REQUEST_RESPONSE_TIME
+                        .with_label_values(&["gcs", "LIST", "200"])
+                        .observe(date_list_elapsed);
+
+                    total_files_scanned += resp.objects.len() as u64;
+                    let manifests: Vec<String> = resp
+                        .objects
+                        .iter()
+                        .filter(|name| name.location.filename().unwrap().ends_with("manifest.json"))
+                        .map(|name| name.location.to_string())
+                        .collect();
+                    result_file_list.entry(date).or_default().extend(manifests);
+                }
+                Err(err) => {
+                    let status_code = error_to_status_code(&err);
+                    STORAGE_REQUEST_RESPONSE_TIME
+                        .with_label_values(&["gcs", "LIST", status_code])
+                        .observe(date_list_elapsed);
+                    return Err(err.into());
+                }
+            }
         }
+
+        // Record total files scanned across all date operations
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "LIST"])
+            .inc_by(total_files_scanned as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "LIST", &Utc::now().date_naive().to_string()])
+            .inc_by(total_files_scanned as f64);
+
         Ok(result_file_list)
     }
+
     async fn _upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
-        let instant = Instant::now();
-
         let bytes = tokio::fs::read(path).await?;
-        let result = self.client.put(&key.into(), bytes.into()).await?;
-        info!("Uploaded file to GCS: {:?}", result);
 
-        let time = instant.elapsed().as_secs_f64();
-        REQUEST_RESPONSE_TIME
-            .with_label_values(&["UPLOAD_PARQUET", "200"])
-            .observe(time);
-
-        Ok(())
+        let put_start = Instant::now();
+        let result = self.client.put(&key.into(), bytes.into()).await;
+        let put_elapsed = put_start.elapsed().as_secs_f64();
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "PUT"])
+            .inc();
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "PUT", &Utc::now().date_naive().to_string()])
+            .inc();
+        match result {
+            Ok(result) => {
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "PUT", "200"])
+                    .observe(put_elapsed);
+                info!("Uploaded file to GCS: {:?}", result);
+                Ok(())
+            }
+            Err(err) => {
+                let status_code = error_to_status_code(&err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "PUT", status_code])
+                    .observe(put_elapsed);
+                Err(err.into())
+            }
+        }
     }
 
     async fn _upload_multipart(
@@ -343,14 +529,52 @@ impl Gcs {
         let mut file = OpenOptions::new().read(true).open(path).await?;
         let location = &to_object_store_path(key);
 
-        let mut async_writer = self.client.put_multipart(location).await?;
+        // Track multipart initiation
+        let multipart_start = Instant::now();
+        let async_writer = self.client.put_multipart(location).await;
+        let multipart_elapsed = multipart_start.elapsed().as_secs_f64();
+
+        let mut async_writer = match async_writer {
+            Ok(writer) => {
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "PUT_MULTIPART_INIT", "200"])
+                    .observe(multipart_elapsed);
+                writer
+            }
+            Err(err) => {
+                let status_code = error_to_status_code(&err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "PUT_MULTIPART_INIT", status_code])
+                    .observe(multipart_elapsed);
+                return Err(err.into());
+            }
+        };
 
         let meta = file.metadata().await?;
         let total_size = meta.len() as usize;
         if total_size < MIN_MULTIPART_UPLOAD_SIZE {
             let mut data = Vec::new();
             file.read_to_end(&mut data).await?;
-            self.client.put(location, data.into()).await?;
+
+            // Track single PUT operation for small files
+            let put_start = Instant::now();
+            let result = self.client.put(location, data.into()).await;
+            let put_elapsed = put_start.elapsed().as_secs_f64();
+
+            match result {
+                Ok(_) => {
+                    STORAGE_REQUEST_RESPONSE_TIME
+                        .with_label_values(&["gcs", "PUT", "200"])
+                        .observe(put_elapsed);
+                }
+                Err(err) => {
+                    let status_code = error_to_status_code(&err);
+                    STORAGE_REQUEST_RESPONSE_TIME
+                        .with_label_values(&["gcs", "PUT", status_code])
+                        .observe(put_elapsed);
+                    return Err(err.into());
+                }
+            }
             return Ok(());
         } else {
             let mut data = Vec::new();
@@ -360,7 +584,7 @@ impl Gcs {
             let num_full_parts = total_size / MIN_MULTIPART_UPLOAD_SIZE;
             let total_parts = num_full_parts + if has_final_partial_part { 1 } else { 0 };
 
-            // Upload each part
+            // Upload each part with metrics
             for part_number in 0..(total_parts) {
                 let start_pos = part_number * MIN_MULTIPART_UPLOAD_SIZE;
                 let end_pos = if part_number == num_full_parts && has_final_partial_part {
@@ -374,10 +598,37 @@ impl Gcs {
                 // Extract this part's data
                 let part_data = data[start_pos..end_pos].to_vec();
 
-                // Upload the part
-                async_writer.put_part(part_data.into()).await?;
+                // Track individual part upload
+                let part_start = Instant::now();
+                let result = async_writer.put_part(part_data.into()).await;
+                let part_elapsed = part_start.elapsed().as_secs_f64();
+
+                match result {
+                    Ok(_) => {
+                        STORAGE_REQUEST_RESPONSE_TIME
+                            .with_label_values(&["gcs", "PUT_MULTIPART_PART", "200"])
+                            .observe(part_elapsed);
+                    }
+                    Err(err) => {
+                        let status_code = error_to_status_code(&err);
+                        STORAGE_REQUEST_RESPONSE_TIME
+                            .with_label_values(&["gcs", "PUT_MULTIPART_PART", status_code])
+                            .observe(part_elapsed);
+                        return Err(err.into());
+                    }
+                }
             }
-            if let Err(err) = async_writer.complete().await {
+
+            // Track multipart completion
+            let complete_start = Instant::now();
+            let complete_result = async_writer.complete().await;
+            let complete_elapsed = complete_start.elapsed().as_secs_f64();
+
+            if let Err(err) = complete_result {
+                let status_code = error_to_status_code(&err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "PUT_MULTIPART_COMPLETE", status_code])
+                    .observe(complete_elapsed);
                 if let Err(abort_err) = async_writer.abort().await {
                     error!(
                         "Failed to abort multipart upload after completion failure: {:?}",
@@ -385,7 +636,11 @@ impl Gcs {
                     );
                 }
                 return Err(err.into());
-            };
+            } else {
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "PUT_MULTIPART_COMPLETE", "200"])
+                    .observe(complete_elapsed);
+            }
         }
         Ok(())
     }
@@ -398,12 +653,37 @@ impl ObjectStorage for Gcs {
         path: &RelativePath,
     ) -> Result<BufReader, ObjectStorageError> {
         let path = &to_object_store_path(path);
-        let meta = self.client.head(path).await?;
+
+        let head_start = Instant::now();
+        let meta = self.client.head(path).await;
+        let head_elapsed = head_start.elapsed().as_secs_f64();
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "HEAD"])
+            .inc();
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "HEAD", &Utc::now().date_naive().to_string()])
+            .inc();
+        let meta = match meta {
+            Ok(meta) => {
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "HEAD", "200"])
+                    .observe(head_elapsed);
+                meta
+            }
+            Err(err) => {
+                let status_code = error_to_status_code(&err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "HEAD", status_code])
+                    .observe(head_elapsed);
+                return Err(err.into());
+            }
+        };
 
         let store: Arc<dyn ObjectStore> = self.client.clone();
         let buf = object_store::buffered::BufReader::new(store, &meta);
         Ok(buf)
     }
+
     async fn upload_multipart(
         &self,
         key: &RelativePath,
@@ -411,8 +691,32 @@ impl ObjectStorage for Gcs {
     ) -> Result<(), ObjectStorageError> {
         self._upload_multipart(key, path).await
     }
+
     async fn head(&self, path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
-        Ok(self.client.head(&to_object_store_path(path)).await?)
+        let head_start = Instant::now();
+        let result = self.client.head(&to_object_store_path(path)).await;
+        let head_elapsed = head_start.elapsed().as_secs_f64();
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "HEAD"])
+            .inc();
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "HEAD", &Utc::now().date_naive().to_string()])
+            .inc();
+        match &result {
+            Ok(_) => {
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "HEAD", "200"])
+                    .observe(head_elapsed);
+            }
+            Err(err) => {
+                let status_code = error_to_status_code(err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "HEAD", status_code])
+                    .observe(head_elapsed);
+            }
+        }
+
+        Ok(result?)
     }
 
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
@@ -424,19 +728,29 @@ impl ObjectStorage for Gcs {
         base_path: Option<&RelativePath>,
         filter_func: Box<dyn Fn(String) -> bool + Send>,
     ) -> Result<Vec<Bytes>, ObjectStorageError> {
-        let instant = Instant::now();
-
         let prefix = if let Some(base_path) = base_path {
             to_object_store_path(base_path)
         } else {
             self.root.clone()
         };
 
+        // Track list operation
+        let list_start = Instant::now();
         let mut list_stream = self.client.list(Some(&prefix));
 
         let mut res = vec![];
+        let mut files_scanned = 0;
 
-        while let Some(meta) = list_stream.next().await.transpose()? {
+        // Note: We track each streaming list item retrieval
+        while let Some(meta_result) = list_stream.next().await {
+            let meta = match meta_result {
+                Ok(meta) => meta,
+                Err(err) => {
+                    return Err(err.into());
+                }
+            };
+
+            files_scanned += 1;
             let ingestor_file = filter_func(meta.location.filename().unwrap().to_string());
 
             if !ingestor_file {
@@ -449,14 +763,30 @@ impl ObjectStorage for Gcs {
                         .map_err(ObjectStorageError::PathError)?,
                 )
                 .await?;
+            STORAGE_REQUEST_RESPONSE_TIME
+                .with_label_values(&["gcs", "GET", "200"])
+                .observe(list_start.elapsed().as_secs_f64());
+            STORAGE_FILES_SCANNED
+                .with_label_values(&["gcs", "GET"])
+                .inc();
+            STORAGE_FILES_SCANNED_DATE
+                .with_label_values(&["gcs", "GET", &Utc::now().date_naive().to_string()])
+                .inc();
 
             res.push(byts);
         }
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["gcs", "LIST", "200"])
+            .observe(list_elapsed);
 
-        let instant = instant.elapsed().as_secs_f64();
-        REQUEST_RESPONSE_TIME
-            .with_label_values(&["GET", "200"])
-            .observe(instant);
+        // Record total files scanned
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "LIST"])
+            .inc_by(files_scanned as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "LIST", &Utc::now().date_naive().to_string()])
+            .inc_by(files_scanned as f64);
 
         Ok(res)
     }
@@ -464,23 +794,39 @@ impl ObjectStorage for Gcs {
     async fn get_ingestor_meta_file_paths(
         &self,
     ) -> Result<Vec<RelativePathBuf>, ObjectStorageError> {
-        let time = Instant::now();
         let mut path_arr = vec![];
+        let mut files_scanned = 0;
+
+        // Track list operation
+        let list_start = Instant::now();
         let mut object_stream = self.client.list(Some(&self.root));
 
-        while let Some(meta) = object_stream.next().await.transpose()? {
+        while let Some(meta_result) = object_stream.next().await {
+            let meta = match meta_result {
+                Ok(meta) => meta,
+                Err(err) => {
+                    return Err(err.into());
+                }
+            };
+
+            files_scanned += 1;
             let flag = meta.location.filename().unwrap().starts_with("ingestor");
 
             if flag {
                 path_arr.push(RelativePathBuf::from(meta.location.as_ref()));
             }
         }
-
-        let time = time.elapsed().as_secs_f64();
-        REQUEST_RESPONSE_TIME
-            .with_label_values(&["GET", "200"])
-            .observe(time);
-
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["gcs", "LIST", "200"])
+            .observe(list_elapsed);
+        // Record total files scanned
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "LIST"])
+            .inc_by(files_scanned as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "LIST", &Utc::now().date_naive().to_string()])
+            .inc_by(files_scanned as f64);
         Ok(path_arr)
     }
 
@@ -488,18 +834,33 @@ impl ObjectStorage for Gcs {
         &self,
         stream_name: &str,
     ) -> Result<Vec<RelativePathBuf>, ObjectStorageError> {
-        let time = Instant::now();
         let mut path_arr = vec![];
+        let mut files_scanned = 0;
         let path = to_object_store_path(&RelativePathBuf::from(stream_name));
+
+        // Track list operation
+        let list_start = Instant::now();
         let mut object_stream = self.client.list(Some(&path));
 
-        while let Some(meta) = object_stream.next().await.transpose()? {
+        while let Some(meta_result) = object_stream.next().await {
+            let meta = match meta_result {
+                Ok(meta) => meta,
+                Err(err) => {
+                    return Err(err.into());
+                }
+            };
+
+            files_scanned += 1;
             let flag = meta.location.filename().unwrap().starts_with(".ingestor");
 
             if flag {
                 path_arr.push(RelativePathBuf::from(meta.location.as_ref()));
             }
         }
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["gcs", "LIST", "200"])
+            .observe(list_elapsed);
 
         path_arr.push(RelativePathBuf::from_iter([
             stream_name,
@@ -507,11 +868,13 @@ impl ObjectStorage for Gcs {
         ]));
         path_arr.push(RelativePathBuf::from_iter([stream_name, SCHEMA_FILE_NAME]));
 
-        let time = time.elapsed().as_secs_f64();
-        REQUEST_RESPONSE_TIME
-            .with_label_values(&["GET", "200"])
-            .observe(time);
-
+        // Record total files scanned
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "LIST"])
+            .inc_by(files_scanned as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "LIST", &Utc::now().date_naive().to_string()])
+            .inc_by(files_scanned as f64);
         Ok(path_arr)
     }
 
@@ -534,15 +897,63 @@ impl ObjectStorage for Gcs {
     }
 
     async fn delete_object(&self, path: &RelativePath) -> Result<(), ObjectStorageError> {
-        Ok(self.client.delete(&to_object_store_path(path)).await?)
+        let delete_start = Instant::now();
+        let result = self.client.delete(&to_object_store_path(path)).await;
+        let delete_elapsed = delete_start.elapsed().as_secs_f64();
+
+        match &result {
+            Ok(_) => {
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "DELETE", "200"])
+                    .observe(delete_elapsed);
+                // Record single file deleted
+                STORAGE_FILES_SCANNED
+                    .with_label_values(&["gcs", "DELETE"])
+                    .inc();
+                STORAGE_FILES_SCANNED_DATE
+                    .with_label_values(&["gcs", "DELETE", &Utc::now().date_naive().to_string()])
+                    .inc();
+            }
+            Err(err) => {
+                let status_code = error_to_status_code(err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "DELETE", status_code])
+                    .observe(delete_elapsed);
+            }
+        }
+
+        Ok(result?)
     }
 
     async fn check(&self) -> Result<(), ObjectStorageError> {
-        Ok(self
+        let head_start = Instant::now();
+        let result = self
             .client
             .head(&to_object_store_path(&parseable_json_path()))
-            .await
-            .map(|_| ())?)
+            .await;
+        let head_elapsed = head_start.elapsed().as_secs_f64();
+
+        match &result {
+            Ok(_) => {
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "HEAD", "200"])
+                    .observe(head_elapsed);
+            }
+            Err(err) => {
+                let status_code = error_to_status_code(err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "HEAD", status_code])
+                    .observe(head_elapsed);
+            }
+        }
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "HEAD"])
+            .inc();
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "HEAD", &Utc::now().date_naive().to_string()])
+            .inc();
+
+        Ok(result.map(|_| ())?)
     }
 
     async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
@@ -553,18 +964,30 @@ impl ObjectStorage for Gcs {
 
     async fn try_delete_node_meta(&self, node_filename: String) -> Result<(), ObjectStorageError> {
         let file = RelativePathBuf::from(&node_filename);
-        match self.client.delete(&to_object_store_path(&file)).await {
-            Ok(_) => Ok(()),
+
+        let delete_start = Instant::now();
+        let result = self.client.delete(&to_object_store_path(&file)).await;
+        let delete_elapsed = delete_start.elapsed().as_secs_f64();
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "DELETE"])
+            .inc();
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "DELETE", &Utc::now().date_naive().to_string()])
+            .inc();
+        match result {
+            Ok(_) => {
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "DELETE", "200"])
+                    .observe(delete_elapsed);
+                Ok(())
+            }
             Err(err) => {
-                // if the object is not found, it is not an error
-                // the given url path was incorrect
-                if matches!(err, object_store::Error::NotFound { .. }) {
-                    error!("Node does not exist");
-                    Err(err.into())
-                } else {
-                    error!("Error deleting node meta file: {:?}", err);
-                    Err(err.into())
-                }
+                let status_code = error_to_status_code(&err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "DELETE", status_code])
+                    .observe(delete_elapsed);
+
+                Err(err.into())
             }
         }
     }
@@ -574,10 +997,21 @@ impl ObjectStorage for Gcs {
     }
 
     async fn list_old_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
+        // Track LIST operation
+        let list_start = Instant::now();
         let resp = self.client.list_with_delimiter(None).await?;
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["gcs", "LIST", "200"])
+            .observe(list_elapsed);
 
         let common_prefixes = resp.common_prefixes; // get all dirs
-
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "LIST"])
+            .inc_by(common_prefixes.len() as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "LIST", &Utc::now().date_naive().to_string()])
+            .inc_by(common_prefixes.len() as f64);
         // return prefixes at the root level
         let dirs: HashSet<_> = common_prefixes
             .iter()
@@ -590,9 +1024,35 @@ impl ObjectStorage for Gcs {
 
         for dir in &dirs {
             let key = format!("{dir}/{STREAM_METADATA_FILE_NAME}");
-            let task = async move { self.client.head(&StorePath::from(key)).await.map(|_| ()) };
+            let task = async move {
+                let head_start = Instant::now();
+                let result = self.client.head(&StorePath::from(key)).await;
+                let head_elapsed = head_start.elapsed().as_secs_f64();
+
+                match &result {
+                    Ok(_) => {
+                        STORAGE_REQUEST_RESPONSE_TIME
+                            .with_label_values(&["gcs", "HEAD", "200"])
+                            .observe(head_elapsed);
+                    }
+                    Err(err) => {
+                        let status_code = error_to_status_code(err);
+                        STORAGE_REQUEST_RESPONSE_TIME
+                            .with_label_values(&["gcs", "HEAD", status_code])
+                            .observe(head_elapsed);
+                    }
+                }
+
+                result.map(|_| ())
+            };
             stream_json_check.push(task);
         }
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "HEAD"])
+            .inc_by(dirs.len() as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "HEAD", &Utc::now().date_naive().to_string()])
+            .inc_by(dirs.len() as f64);
 
         stream_json_check.try_collect::<()>().await?;
 
@@ -611,9 +1071,19 @@ impl ObjectStorage for Gcs {
         date: &str,
     ) -> Result<Vec<String>, ObjectStorageError> {
         let pre = object_store::path::Path::from(format!("{}/{}/", stream_name, date));
+        let list_start = Instant::now();
         let resp = self.client.list_with_delimiter(Some(&pre)).await?;
-
-        let hours = resp
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["gcs", "LIST", "200"])
+            .observe(list_elapsed);
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "LIST"])
+            .inc_by(resp.common_prefixes.len() as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "LIST", &Utc::now().date_naive().to_string()])
+            .inc_by(resp.common_prefixes.len() as f64);
+        let hours: Vec<String> = resp
             .common_prefixes
             .iter()
             .filter_map(|path| {
@@ -640,9 +1110,19 @@ impl ObjectStorage for Gcs {
         hour: &str,
     ) -> Result<Vec<String>, ObjectStorageError> {
         let pre = object_store::path::Path::from(format!("{}/{}/{}/", stream_name, date, hour));
+        let list_start = Instant::now();
         let resp = self.client.list_with_delimiter(Some(&pre)).await?;
-
-        let minutes = resp
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["gcs", "LIST", "200"])
+            .observe(list_elapsed);
+        STORAGE_FILES_SCANNED
+            .with_label_values(&["gcs", "LIST"])
+            .inc_by(resp.common_prefixes.len() as f64);
+        STORAGE_FILES_SCANNED_DATE
+            .with_label_values(&["gcs", "LIST", &Utc::now().date_naive().to_string()])
+            .inc_by(resp.common_prefixes.len() as f64);
+        let minutes: Vec<String> = resp
             .common_prefixes
             .iter()
             .filter_map(|path| {
@@ -673,9 +1153,7 @@ impl ObjectStorage for Gcs {
     }
 
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
-        self._upload_file(key, path).await?;
-
-        Ok(())
+        Ok(self._upload_file(key, path).await?)
     }
 
     fn absolute_url(&self, prefix: &RelativePath) -> object_store::path::Path {
@@ -698,7 +1176,32 @@ impl ObjectStorage for Gcs {
 
     async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError> {
         let pre = object_store::path::Path::from("/");
-        let resp = self.client.list_with_delimiter(Some(&pre)).await?;
+
+        let list_start = Instant::now();
+        let resp = self.client.list_with_delimiter(Some(&pre)).await;
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+
+        let resp = match resp {
+            Ok(resp) => {
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "LIST", "200"])
+                    .observe(list_elapsed);
+                STORAGE_FILES_SCANNED
+                    .with_label_values(&["gcs", "LIST"])
+                    .inc_by(resp.common_prefixes.len() as f64);
+                STORAGE_FILES_SCANNED_DATE
+                    .with_label_values(&["gcs", "LIST", &Utc::now().date_naive().to_string()])
+                    .inc_by(resp.common_prefixes.len() as f64);
+                resp
+            }
+            Err(err) => {
+                let status_code = error_to_status_code(&err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "LIST", status_code])
+                    .observe(list_elapsed);
+                return Err(err.into());
+            }
+        };
 
         Ok(resp
             .common_prefixes
@@ -713,7 +1216,32 @@ impl ObjectStorage for Gcs {
         relative_path: &RelativePath,
     ) -> Result<Vec<String>, ObjectStorageError> {
         let prefix = object_store::path::Path::from(relative_path.as_str());
-        let resp = self.client.list_with_delimiter(Some(&prefix)).await?;
+
+        let list_start = Instant::now();
+        let resp = self.client.list_with_delimiter(Some(&prefix)).await;
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+
+        let resp = match resp {
+            Ok(resp) => {
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "LIST", "200"])
+                    .observe(list_elapsed);
+                STORAGE_FILES_SCANNED
+                    .with_label_values(&["gcs", "LIST"])
+                    .inc_by(resp.common_prefixes.len() as f64);
+                STORAGE_FILES_SCANNED_DATE
+                    .with_label_values(&["gcs", "LIST", &Utc::now().date_naive().to_string()])
+                    .inc_by(resp.common_prefixes.len() as f64);
+                resp
+            }
+            Err(err) => {
+                let status_code = error_to_status_code(&err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["gcs", "LIST", status_code])
+                    .observe(list_elapsed);
+                return Err(err.into());
+            }
+        };
 
         Ok(resp
             .common_prefixes
