@@ -253,7 +253,7 @@ pub async fn sync_users_with_roles_with_ingestors(
 
         async move {
             let res = INTRA_CLUSTER_CLIENT
-                .put(url)
+                .patch(url)
                 .header(header::AUTHORIZATION, &ingestor.token)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(role_data)
