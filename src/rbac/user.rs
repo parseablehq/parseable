@@ -407,10 +407,7 @@ impl UserGroup {
 
     /// Get all user IDs in this group
     pub fn get_userids(&self) -> Vec<String> {
-        self.users
-            .iter()
-            .map(|u| u.userid().to_string())
-            .collect()
+        self.users.iter().map(|u| u.userid().to_string()).collect()
     }
 
     /// Add users by converting from User references

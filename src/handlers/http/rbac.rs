@@ -224,7 +224,7 @@ pub async fn get_role(userid: web::Path<String>) -> Result<impl Responder, RBACE
 // Handler for DELETE /api/v1/user/delete/{userid}
 pub async fn delete_user(userid: web::Path<String>) -> Result<impl Responder, RBACError> {
     let userid = userid.into_inner();
-
+    let _guard = UPDATE_LOCK.lock().await;
     // if user is a part of any groups then don't allow deletion
     if !Users.get_user_groups(&userid).is_empty() {
         return Err(RBACError::InvalidDeletionRequest(format!(
@@ -242,8 +242,6 @@ pub async fn delete_user(userid: web::Path<String>) -> Result<impl Responder, RB
     } else {
         return Err(RBACError::UserDoesNotExist);
     };
-
-    let _guard = UPDATE_LOCK.lock().await;
 
     // delete from parseable.json first
     let mut metadata = get_metadata().await?;
