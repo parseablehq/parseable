@@ -298,10 +298,10 @@ impl Query {
 /// Record of counts for a given time bin.
 #[derive(Debug, Serialize, Clone, Deserialize)]
 pub struct CountsRecord {
-    #[serde(rename(deserialize = "_bin_start_time_", serialize = "start_time"))]
+    #[serde(alias = "_bin_start_time_")]
     /// Start time of the bin
     pub start_time: String,
-    #[serde(rename(deserialize = "_bin_end_time_", serialize = "end_time"))]
+    #[serde(alias = "_bin_end_time_")]
     /// End time of the bin
     pub end_time: String,
     /// Number of logs in the bin
