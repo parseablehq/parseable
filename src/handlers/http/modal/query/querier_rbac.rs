@@ -71,15 +71,13 @@ pub async fn post_user(
         }
     }
     let _guard = UPDATE_LOCK.lock().await;
-    if Users.contains(&username) {
-        if Users.contains(&username)
-            || metadata.users.iter().any(|user| match &user.ty {
-                UserType::Native(basic) => basic.username == username,
-                UserType::OAuth(_) => false, // OAuth users should be created differently
-            })
-        {
-            return Err(RBACError::UserExists);
-        }
+    if Users.contains(&username) && Users.contains(&username)
+        || metadata.users.iter().any(|user| match &user.ty {
+            UserType::Native(basic) => basic.username == username,
+            UserType::OAuth(_) => false, // OAuth users should be created differently
+        })
+    {
+        return Err(RBACError::UserExists);
     }
 
     let (user, password) = user::User::new_basic(username.clone());
@@ -126,20 +124,17 @@ pub async fn delete_user(userid: web::Path<String>) -> Result<impl Responder, RB
     let user_groups = Users.get_user_groups(&userid);
     let mut groups_to_update = Vec::new();
     for user_group in user_groups {
-        if let Some(ug) = write_user_groups().get_mut(&user_group) {
-            // Look up the user by display name to get the correct userid
-            if let Some(user) = users().get(&userid) {
-                let userid = match &user.ty {
-                    UserType::Native(basic) => basic.username.clone(),
-                    UserType::OAuth(oauth) => oauth.userid.clone(),
-                };
-                ug.remove_users_by_user_ids(HashSet::from_iter([userid]))?;
-                groups_to_update.push(ug.clone());
-            } else {
-                // User not found, skip or log as needed
-                continue;
-            }
+        if let Some(ug) = write_user_groups().get_mut(&user_group)
+            && let Some(user) = users().get(&userid)
+        {
+            let userid = match &user.ty {
+                UserType::Native(basic) => basic.username.clone(),
+                UserType::OAuth(oauth) => oauth.userid.clone(),
+            };
+            ug.remove_users_by_user_ids(HashSet::from_iter([userid]))?;
+            groups_to_update.push(ug.clone());
         } else {
+            // User not found, skip or log as needed
             continue;
         }
     }

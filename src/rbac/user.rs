@@ -315,7 +315,7 @@ impl UserGroup {
             // validate that the users exist
             for group_user in &self.users {
                 if !users().contains_key(group_user.userid()) {
-                    non_existent_users.push(group_user.username().to_string());
+                    non_existent_users.push(group_user.userid().to_string());
                 }
             }
         }
@@ -405,11 +405,11 @@ impl UserGroup {
         Ok(())
     }
 
-    /// Get all usernames in this group
-    pub fn get_usernames(&self) -> Vec<String> {
+    /// Get all user IDs in this group
+    pub fn get_userids(&self) -> Vec<String> {
         self.users
             .iter()
-            .map(|u| u.username().to_string())
+            .map(|u| u.userid().to_string())
             .collect()
     }
 

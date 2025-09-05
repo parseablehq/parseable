@@ -125,15 +125,13 @@ pub async fn post_user(
         }
     }
     let _guard = UPDATE_LOCK.lock().await;
-    if Users.contains(&username) {
-        if Users.contains(&username)
-            || metadata.users.iter().any(|user| match &user.ty {
-                UserType::Native(basic) => basic.username == username,
-                UserType::OAuth(_) => false, // OAuth users should be created differently
-            })
-        {
-            return Err(RBACError::UserExists);
-        }
+    if Users.contains(&username) && Users.contains(&username)
+        || metadata.users.iter().any(|user| match &user.ty {
+            UserType::Native(basic) => basic.username == username,
+            UserType::OAuth(_) => false, // OAuth users should be created differently
+        })
+    {
+        return Err(RBACError::UserExists);
     }
 
     let (user, password) = user::User::new_basic(username.clone());
