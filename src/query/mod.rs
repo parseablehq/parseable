@@ -43,6 +43,7 @@ use std::ops::Bound;
 use std::sync::Arc;
 use sysinfo::System;
 use tokio::runtime::Runtime;
+use tracing::warn;
 
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
@@ -571,8 +572,12 @@ pub async fn get_manifest_list(
         PartialTimeFilter::High(Bound::Included(time_range.end.naive_utc())),
     ];
 
+    warn!(merged_snapshot=?merged_snapshot);
+    warn!(time_filter=?time_filter);
+
     let mut all_manifest_files = Vec::new();
     for manifest_item in merged_snapshot.manifests(&time_filter) {
+        warn!(manifest_item=?manifest_item);
         all_manifest_files.push(
             PARSEABLE
                 .metastore
@@ -580,6 +585,7 @@ pub async fn get_manifest_list(
                     stream_name,
                     manifest_item.time_lower_bound,
                     manifest_item.time_upper_bound,
+                    Some(manifest_item.manifest_path),
                 )
                 .await?
                 .expect("Data is invalid for Manifest"),

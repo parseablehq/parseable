@@ -148,25 +148,13 @@ impl MetastoreError {
 
     pub fn status_code(&self) -> StatusCode {
         match self {
-            MetastoreError::ObjectStorageError(_object_storage_error) => {
-                StatusCode::INTERNAL_SERVER_ERROR
-            }
-            MetastoreError::JsonParseError(_error) => StatusCode::INTERNAL_SERVER_ERROR,
-            MetastoreError::JsonSchemaError { message: _ } => StatusCode::INTERNAL_SERVER_ERROR,
-            MetastoreError::InvalidJsonStructure {
-                expected: _,
-                found: _,
-            } => StatusCode::INTERNAL_SERVER_ERROR,
-            MetastoreError::MissingJsonField { field: _ } => StatusCode::INTERNAL_SERVER_ERROR,
-            MetastoreError::InvalidJsonValue {
-                field: _,
-                reason: _,
-            } => StatusCode::INTERNAL_SERVER_ERROR,
-            MetastoreError::Error {
-                status_code,
-                message: _,
-                flow: _,
-            } => *status_code,
+            MetastoreError::ObjectStorageError(..) => StatusCode::INTERNAL_SERVER_ERROR,
+            MetastoreError::JsonParseError(..) => StatusCode::INTERNAL_SERVER_ERROR,
+            MetastoreError::JsonSchemaError { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            MetastoreError::InvalidJsonStructure { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            MetastoreError::MissingJsonField { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            MetastoreError::InvalidJsonValue { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            MetastoreError::Error { status_code, .. } => *status_code,
         }
     }
 }

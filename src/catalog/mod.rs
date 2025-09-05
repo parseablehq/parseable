@@ -307,6 +307,7 @@ async fn handle_existing_partition(
                 stream_name,
                 manifests[pos].time_lower_bound,
                 manifests[pos].time_upper_bound,
+                Some(manifests[pos].manifest_path.clone()),
             )
             .await
             .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?

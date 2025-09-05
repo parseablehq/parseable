@@ -100,6 +100,7 @@ pub async fn fetch_parquet_file_paths(
                     stream,
                     manifest_item.time_lower_bound,
                     manifest_item.time_upper_bound,
+                    Some(manifest_item.manifest_path),
                 )
                 .await
                 .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
