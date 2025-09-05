@@ -184,7 +184,7 @@ impl IngestServer {
         web::scope("/user")
             .service(
                 web::resource("/{username}/sync")
-                    // PUT /user/{username}/sync => Sync creation of a new user
+                    // POST /user/{username}/sync => Sync creation of a new user
                     .route(
                         web::post()
                             .to(ingestor_rbac::post_user)

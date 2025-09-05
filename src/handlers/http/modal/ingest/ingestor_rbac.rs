@@ -18,7 +18,8 @@
 
 use std::collections::HashSet;
 
-use actix_web::{HttpResponse, Responder, web};
+use actix_web::{HttpResponse, web};
+use http::StatusCode;
 
 use crate::{
     handlers::http::{
@@ -27,7 +28,7 @@ use crate::{
     },
     rbac::{
         Users,
-        map::{roles, users},
+        map::roles,
         user::{self, User as ParseableUser},
     },
     storage,
@@ -38,10 +39,9 @@ use crate::{
 pub async fn post_user(
     username: web::Path<String>,
     body: Option<web::Json<serde_json::Value>>,
-) -> Result<impl Responder, RBACError> {
+) -> Result<HttpResponse, RBACError> {
     let username = username.into_inner();
 
-    let generated_password = String::default();
     let metadata = get_metadata().await?;
     if let Some(body) = body {
         let user: ParseableUser = serde_json::from_value(body.into_inner())?;
@@ -51,22 +51,15 @@ pub async fn post_user(
         Users.add_roles(&username, created_role.clone());
     }
 
-    Ok(HttpResponse::Ok().json(generated_password))
+    Ok(HttpResponse::Ok().status(StatusCode::OK).finish())
 }
 
 // Handler for DELETE /api/v1/user/delete/{userid}
-pub async fn delete_user(userid: web::Path<String>) -> Result<impl Responder, RBACError> {
+pub async fn delete_user(userid: web::Path<String>) -> Result<HttpResponse, RBACError> {
     let userid = userid.into_inner();
     let _guard = UPDATE_LOCK.lock().await;
     // fail this request if the user does not exists
     if !Users.contains(&userid) {
-        return Err(RBACError::UserDoesNotExist);
-    };
-
-    // find username by userid, for native users, username is userid, for oauth users, we need to look up
-    let username = if let Some(user) = users().get(&userid) {
-        user.username_by_userid()
-    } else {
         return Err(RBACError::UserDoesNotExist);
     };
 
@@ -78,25 +71,18 @@ pub async fn delete_user(userid: web::Path<String>) -> Result<impl Responder, RB
 
     // update in mem table
     Users.delete_user(&userid);
-    Ok(HttpResponse::Ok().json(format!("deleted user: {username}")))
+    Ok(HttpResponse::Ok().status(StatusCode::OK).finish())
 }
 
 // Handler PATCH /user/{userid}/role/sync/add => Add roles to a user
 pub async fn add_roles_to_user(
     userid: web::Path<String>,
     roles_to_add: web::Json<HashSet<String>>,
-) -> Result<String, RBACError> {
+) -> Result<HttpResponse, RBACError> {
     let userid = userid.into_inner();
     let roles_to_add = roles_to_add.into_inner();
 
     if !Users.contains(&userid) {
-        return Err(RBACError::UserDoesNotExist);
-    };
-
-    // find username by userid, for native users, username is userid, for oauth users, we need to look up
-    let username = if let Some(user) = users().get(&userid) {
-        user.username_by_userid()
-    } else {
         return Err(RBACError::UserDoesNotExist);
     };
 
@@ -128,25 +114,18 @@ pub async fn add_roles_to_user(
     let _ = storage::put_staging_metadata(&metadata);
     // update in mem table
     Users.add_roles(&userid.clone(), roles_to_add.clone());
-    Ok(format!("Roles updated successfully for {username}"))
+    Ok(HttpResponse::Ok().status(StatusCode::OK).finish())
 }
 
 // Handler PATCH /user/{userid}/role/sync/add => Add roles to a user
 pub async fn remove_roles_from_user(
     userid: web::Path<String>,
     roles_to_remove: web::Json<HashSet<String>>,
-) -> Result<String, RBACError> {
+) -> Result<HttpResponse, RBACError> {
     let userid = userid.into_inner();
     let roles_to_remove = roles_to_remove.into_inner();
 
     if !Users.contains(&userid) {
-        return Err(RBACError::UserDoesNotExist);
-    };
-
-    // find username by userid, for native users, username is userid, for oauth users, we need to look up
-    let username = if let Some(user) = users().get(&userid) {
-        user.username_by_userid()
-    } else {
         return Err(RBACError::UserDoesNotExist);
     };
 
@@ -192,12 +171,12 @@ pub async fn remove_roles_from_user(
     // update in mem table
     Users.remove_roles(&userid.clone(), roles_to_remove.clone());
 
-    Ok(format!("Roles updated successfully for {username}"))
+    Ok(HttpResponse::Ok().status(StatusCode::OK).finish())
 }
 
 // Handler for POST /api/v1/user/{username}/generate-new-password
 // Resets password for the user to a newly generated one and returns it
-pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Responder, RBACError> {
+pub async fn post_gen_password(username: web::Path<String>) -> Result<HttpResponse, RBACError> {
     let username = username.into_inner();
     let mut new_hash = String::default();
     let mut metadata = get_metadata().await?;
@@ -217,5 +196,5 @@ pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Respo
         return Err(RBACError::UserDoesNotExist);
     }
     Users.change_password_hash(&username, &new_hash);
-    Ok(HttpResponse::Ok().json("Updated"))
+    Ok(HttpResponse::Ok().status(StatusCode::OK).finish())
 }
