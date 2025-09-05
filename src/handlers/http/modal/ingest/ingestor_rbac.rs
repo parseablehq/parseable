@@ -117,7 +117,7 @@ pub async fn add_roles_to_user(
     Ok(HttpResponse::Ok().status(StatusCode::OK).finish())
 }
 
-// Handler PATCH /user/{userid}/role/sync/add => Add roles to a user
+// Handler PATCH /user/{userid}/role/sync/remove => Remove roles to a user
 pub async fn remove_roles_from_user(
     userid: web::Path<String>,
     roles_to_remove: web::Json<HashSet<String>>,
