@@ -20,7 +20,11 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     rbac::{
-        self, map::{read_user_groups, roles, users}, role::model::DefaultPrivilege, user::{self, UserType}, utils::to_prism_user, Users
+        self, Users,
+        map::{read_user_groups, roles, users},
+        role::model::DefaultPrivilege,
+        user::{self, UserType},
+        utils::to_prism_user,
     },
     storage::ObjectStorageError,
     validator::{self, error::UsernameValidationError},
