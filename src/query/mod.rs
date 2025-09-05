@@ -298,8 +298,10 @@ impl Query {
 /// Record of counts for a given time bin.
 #[derive(Debug, Serialize, Clone, Deserialize)]
 pub struct CountsRecord {
+    #[serde(rename(deserialize = "_bin_start_time_", serialize = "start_time"))]
     /// Start time of the bin
     pub start_time: String,
+    #[serde(rename(deserialize = "_bin_end_time_", serialize = "end_time"))]
     /// End time of the bin
     pub end_time: String,
     /// Number of logs in the bin
@@ -449,36 +451,45 @@ impl CountsRequest {
 
         let dur = time_range.end.signed_duration_since(time_range.start);
 
-        let date_bin = if dur.num_minutes() <= 60 * 10 {
-            // date_bin 1 minute
+        let table_name = &self.stream;
+        let start_time_col_name = "_bin_start_time_";
+        let end_time_col_name = "_bin_end_time_";
+        let date_bin = if dur.num_minutes() <= 60 * 1 {
+            // less than 1 hour = 1 min bin
             format!(
-                "CAST(DATE_BIN('1 minute', \"{}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 minute', \"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 minute' as end_time",
-                self.stream
+                "CAST(DATE_BIN('1m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('1m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1m' as {end_time_col_name}"
             )
-        } else if dur.num_minutes() > 60 * 10 && dur.num_minutes() < 60 * 240 {
-            // date_bin 1 hour
+        } else if dur.num_minutes() > 60 * 1 && dur.num_minutes() < 60 * 24 {
+            // between 1 hour and 1 day = 5 min bin
             format!(
-                "CAST(DATE_BIN('1 hour', \"{}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 hour', \"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 hour' as end_time",
-                self.stream
+                "CAST(DATE_BIN('5m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('5m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '5m' as {end_time_col_name}"
+            )
+        } else if dur.num_minutes() > 60 * 24 && dur.num_minutes() < 60 * 24 * 3 {
+            // between 1 day and 3 day = 1 hour bin
+            format!(
+                "CAST(DATE_BIN('1h', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('1h', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1h' as {end_time_col_name}"
+            )
+        } else if dur.num_minutes() > 60 * 24 * 3 && dur.num_minutes() < 60 * 24 * 10 {
+            // between 3 day and 10 day = 4 hour bin
+            format!(
+                "CAST(DATE_BIN('4h', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('4h', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '4h' as {end_time_col_name}"
             )
         } else {
-            // date_bin 1 day
+            // 1 day
             format!(
-                "CAST(DATE_BIN('1 day', \"{}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 day', \"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 day' as end_time",
-                self.stream
+                "CAST(DATE_BIN('1d', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('1d', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1d' as {end_time_col_name}"
             )
         };
 
         let query = if let Some(conditions) = &count_conditions.conditions {
             let f = get_filter_string(conditions).map_err(QueryError::CustomError)?;
             format!(
-                "SELECT {date_bin}, COUNT(*) as count FROM \"{}\" WHERE {} GROUP BY end_time,start_time ORDER BY end_time",
-                self.stream, f
+                "SELECT {date_bin}, COUNT(*) as count FROM \"{table_name}\" WHERE {} GROUP BY {end_time_col_name},{start_time_col_name} ORDER BY {end_time_col_name}",
+                f
             )
         } else {
             format!(
-                "SELECT {date_bin}, COUNT(*) as count FROM \"{}\" GROUP BY end_time,start_time ORDER BY end_time",
-                self.stream
+                "SELECT {date_bin}, COUNT(*) as count FROM \"{table_name}\" GROUP BY {end_time_col_name},{start_time_col_name} ORDER BY {end_time_col_name}",
             )
         };
         Ok(query)
