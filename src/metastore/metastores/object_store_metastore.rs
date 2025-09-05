@@ -414,9 +414,15 @@ impl Metastore for ObjectStoreMetastore {
         stream_name: &str,
         lower_bound: DateTime<Utc>,
         upper_bound: DateTime<Utc>,
+        manifest_url: Option<String>,
     ) -> Result<Option<Manifest>, MetastoreError> {
-        let path = partition_path(stream_name, lower_bound, upper_bound);
-        let path = manifest_path(path.as_str());
+        let path = match manifest_url {
+            Some(url) => RelativePathBuf::from(url),
+            None => {
+                let path = partition_path(stream_name, lower_bound, upper_bound);
+                manifest_path(path.as_str())
+            }
+        };
         match self.storage.get_object(&path).await {
             Ok(bytes) => {
                 let manifest = serde_json::from_slice(&bytes)?;
@@ -425,6 +431,18 @@ impl Metastore for ObjectStoreMetastore {
             Err(ObjectStorageError::NoSuchKey(_)) => Ok(None),
             Err(err) => Err(MetastoreError::ObjectStorageError(err)),
         }
+        // let path = partition_path(stream_name, lower_bound, upper_bound);
+        // // // need a 'ends with `manifest.json` condition here'
+        // // let obs = self
+        // //     .storage
+        // //     .get_objects(
+        // //         path,
+        // //         Box::new(|file_name| file_name.ends_with("manifest.json")),
+        // //     )
+        // //     .await?;
+        // warn!(partition_path=?path);
+        // let path = manifest_path(path.as_str());
+        // warn!(manifest_path=?path);
     }
 
     /// Get the path for a specific `Manifest` file

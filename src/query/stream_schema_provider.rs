@@ -421,6 +421,7 @@ async fn collect_from_snapshot(
                     stream_name,
                     manifest_item.time_lower_bound,
                     manifest_item.time_upper_bound,
+                    Some(manifest_item.manifest_path),
                 )
                 .await
                 .map_err(|e| DataFusionError::Plan(e.to_string()))?

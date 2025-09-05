@@ -101,6 +101,7 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         stream_name: &str,
         lower_bound: DateTime<Utc>,
         upper_bound: DateTime<Utc>,
+        manifest_url: Option<String>,
     ) -> Result<Option<Manifest>, MetastoreError>;
     async fn put_manifest(
         &self,
