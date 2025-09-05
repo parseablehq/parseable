@@ -286,7 +286,7 @@ pub enum ObjectStorageError {
     #[error("JoinError: {0}")]
     JoinError(#[from] JoinError),
 
-    #[error("MetastoerError: {0:?}")]
+    #[error("MetastoreError: {0:?}")]
     MetastoreError(Box<MetastoreErrorDetail>),
 }
 

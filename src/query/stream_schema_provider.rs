@@ -407,20 +407,26 @@ impl StandardTableProvider {
 async fn collect_from_snapshot(
     snapshot: &Snapshot,
     time_filters: &[PartialTimeFilter],
-    object_store: Arc<dyn ObjectStore>,
     filters: &[Expr],
     limit: Option<usize>,
+    stream_name: &str,
 ) -> Result<Vec<File>, DataFusionError> {
-    let items = snapshot.manifests(time_filters);
-    let manifest_files = collect_manifest_files(
-        object_store,
-        items
-            .into_iter()
-            .sorted_by_key(|file| file.time_lower_bound)
-            .map(|item| item.manifest_path)
-            .collect(),
-    )
-    .await?;
+    let mut manifest_files = Vec::new();
+
+    for manifest_item in snapshot.manifests(time_filters) {
+        manifest_files.push(
+            PARSEABLE
+                .metastore
+                .get_manifest(
+                    stream_name,
+                    manifest_item.time_lower_bound,
+                    manifest_item.time_upper_bound,
+                )
+                .await
+                .map_err(|e| DataFusionError::Plan(e.to_string()))?
+                .expect("Data is invalid for Manifest"),
+        )
+    }
 
     let mut manifest_files: Vec<_> = manifest_files
         .into_iter()
@@ -549,9 +555,9 @@ impl TableProvider for StandardTableProvider {
         let mut manifest_files = collect_from_snapshot(
             &merged_snapshot,
             &time_filters,
-            object_store,
             filters,
             limit,
+            &self.stream,
         )
         .await?;
 

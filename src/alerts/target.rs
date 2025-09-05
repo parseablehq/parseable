@@ -24,7 +24,6 @@ use std::{
 
 use async_trait::async_trait;
 use base64::Engine;
-use bytes::Bytes;
 use chrono::Utc;
 use http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
 use itertools::Itertools;
@@ -38,6 +37,7 @@ use url::Url;
 
 use crate::{
     alerts::{AlertError, AlertState, Context, alert_traits::CallableTarget},
+    metastore::metastore_traits::MetastoreObject,
     parseable::PARSEABLE,
     storage::object_storage::target_json_path,
 };
@@ -57,10 +57,9 @@ impl TargetConfigs {
     /// Loads alerts from disk, blocks
     pub async fn load(&self) -> anyhow::Result<()> {
         let mut map = self.target_configs.write().await;
-        let store = PARSEABLE.storage.get_object_store();
 
-        for alert in store.get_targets().await.unwrap_or_default() {
-            map.insert(alert.id, alert);
+        for target in PARSEABLE.metastore.get_targets().await.unwrap_or_default() {
+            map.insert(target.id, target);
         }
 
         Ok(())
@@ -69,12 +68,7 @@ impl TargetConfigs {
     pub async fn update(&self, target: Target) -> Result<(), AlertError> {
         let mut map = self.target_configs.write().await;
         map.insert(target.id, target.clone());
-
-        let path = target_json_path(&target.id);
-
-        let store = PARSEABLE.storage.get_object_store();
-        let target_bytes = serde_json::to_vec(&target)?;
-        store.put_object(&path, Bytes::from(target_bytes)).await?;
+        PARSEABLE.metastore.put_target(&target).await?;
         Ok(())
     }
 
@@ -121,9 +115,7 @@ impl TargetConfigs {
             .await
             .remove(target_id)
             .ok_or(AlertError::InvalidTargetID(target_id.to_string()))?;
-        let path = target_json_path(&target.id);
-        let store = PARSEABLE.storage.get_object_store();
-        store.delete_object(&path).await?;
+        PARSEABLE.metastore.delete_target(&target).await?;
         Ok(target)
     }
 }
@@ -337,6 +329,16 @@ impl Target {
             }
             *state.lock().unwrap() = TimeoutState::default();
         });
+    }
+}
+
+impl MetastoreObject for Target {
+    fn get_object_path(&self) -> String {
+        target_json_path(&self.id).to_string()
+    }
+
+    fn get_object_id(&self) -> String {
+        self.id.to_string()
     }
 }
 

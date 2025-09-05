@@ -88,8 +88,7 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, StreamError> {
 
     // list all streams from storage
     let res = PARSEABLE
-        .storage
-        .get_object_store()
+        .metastore
         .list_streams()
         .await
         .unwrap()
@@ -412,7 +411,7 @@ pub async fn put_stream_hot_tier(
     hot_tier_manager
         .put_hot_tier(&stream_name, &mut hottier)
         .await?;
-    let storage = PARSEABLE.storage().get_object_store();
+
     let mut stream_metadata: ObjectStoreFormat = serde_json::from_slice(
         &PARSEABLE
             .metastore
@@ -420,8 +419,10 @@ pub async fn put_stream_hot_tier(
             .await?,
     )?;
     stream_metadata.hot_tier_enabled = true;
-    storage
-        .put_stream_manifest(&stream_name, &stream_metadata)
+
+    PARSEABLE
+        .metastore
+        .put_stream_json(&stream_metadata, &stream_name)
         .await?;
 
     Ok((
@@ -569,7 +570,7 @@ pub mod error {
         HotTierError(#[from] HotTierError),
         #[error("Invalid query parameter: {0}")]
         InvalidQueryParameter(String),
-        #[error("{0:?}")]
+        #[error(transparent)]
         MetastoreError(#[from] MetastoreError),
     }
 

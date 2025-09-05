@@ -17,7 +17,7 @@
  */
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -28,7 +28,7 @@ use bytes::Bytes;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use fs_extra::file::CopyOptions;
 use futures::{TryStreamExt, stream::FuturesUnordered};
-use object_store::{ObjectMeta, buffered::BufReader};
+use object_store::{ListResult, ObjectMeta, buffered::BufReader};
 use relative_path::{RelativePath, RelativePathBuf};
 use tokio::{
     fs::{self, DirEntry, OpenOptions},
@@ -415,14 +415,6 @@ impl ObjectStorage for LocalFS {
             .collect())
     }
 
-    async fn list_manifest_files(
-        &self,
-        _stream_name: &str,
-    ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
-        //unimplemented
-        Ok(BTreeMap::new())
-    }
-
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
         let op = CopyOptions {
             overwrite: true,
@@ -454,6 +446,18 @@ impl ObjectStorage for LocalFS {
 
     fn store_url(&self) -> url::Url {
         url::Url::parse("file:///").unwrap()
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        _prefix: Option<object_store::path::Path>,
+    ) -> Result<ListResult, ObjectStorageError> {
+        Err(ObjectStorageError::UnhandledError(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "list_with_delimiter is not implemented for LocalFS",
+            ),
+        )))
     }
 
     fn get_bucket_name(&self) -> String {

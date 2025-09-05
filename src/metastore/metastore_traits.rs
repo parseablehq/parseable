@@ -16,11 +16,18 @@
  *
  */
 
+use std::collections::{BTreeMap, HashSet};
+
+use arrow_schema::Schema;
 use bytes::Bytes;
+use chrono::{DateTime, Utc};
 use erased_serde::Serialize as ErasedSerialize;
 use tonic::async_trait;
 
-use crate::{metastore::MetastoreError, option::Mode, users::filters::Filter};
+use crate::{
+    alerts::target::Target, catalog::manifest::Manifest, handlers::http::modal::NodeType,
+    metastore::MetastoreError, option::Mode, users::filters::Filter,
+};
 
 /// A metastore is a logically separated compartment to store metadata for Parseable.
 ///
@@ -37,6 +44,11 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
     async fn get_alerts(&self) -> Result<Vec<Bytes>, MetastoreError>;
     async fn put_alert(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
     async fn delete_alert(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+
+    /// targets
+    async fn get_targets(&self) -> Result<Vec<Target>, MetastoreError>;
+    async fn put_target(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn delete_target(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
 
     /// dashboards
     async fn get_dashboards(&self) -> Result<Vec<Bytes>, MetastoreError>;
@@ -78,7 +90,59 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         stream_name: &str,
         mode: Option<Mode>,
     ) -> Result<Vec<Bytes>, MetastoreError>;
-    // async fn delete_correlation(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+
+    /// manifest
+    async fn get_all_manifest_files(
+        &self,
+        stream_name: &str,
+    ) -> Result<BTreeMap<String, Vec<Manifest>>, MetastoreError>;
+    async fn get_manifest(
+        &self,
+        stream_name: &str,
+        lower_bound: DateTime<Utc>,
+        upper_bound: DateTime<Utc>,
+    ) -> Result<Option<Manifest>, MetastoreError>;
+    async fn put_manifest(
+        &self,
+        obj: &dyn MetastoreObject,
+        stream_name: &str,
+        lower_bound: DateTime<Utc>,
+        upper_bound: DateTime<Utc>,
+    ) -> Result<(), MetastoreError>;
+    async fn delete_manifest(
+        &self,
+        stream_name: &str,
+        lower_bound: DateTime<Utc>,
+        upper_bound: DateTime<Utc>,
+    ) -> Result<(), MetastoreError>;
+    async fn get_manifest_path(
+        &self,
+        stream_name: &str,
+        lower_bound: DateTime<Utc>,
+        upper_bound: DateTime<Utc>,
+    ) -> Result<String, MetastoreError>;
+
+    /// schema
+    /// This function will fetch all schemas for the given stream
+    async fn get_all_schemas(&self, stream_name: &str) -> Result<Vec<Schema>, MetastoreError>;
+    async fn get_schema(&self, stream_name: &str) -> Result<Bytes, MetastoreError>;
+    async fn put_schema(&self, obj: Schema, stream_name: &str) -> Result<(), MetastoreError>;
+
+    /// parseable metadata
+    async fn get_parseable_metadata(&self) -> Result<Option<Bytes>, MetastoreError>;
+    async fn get_ingestor_metadata(&self) -> Result<Vec<Bytes>, MetastoreError>;
+    async fn put_parseable_metadata(&self, obj: &dyn MetastoreObject)
+    -> Result<(), MetastoreError>;
+
+    /// node metadata
+    async fn get_node_metadata(&self, node_type: NodeType) -> Result<Vec<Bytes>, MetastoreError>;
+    async fn delete_node_metadata(
+        &self,
+        domain_name: &str,
+        node_type: NodeType,
+    ) -> Result<bool, MetastoreError>;
+    async fn put_node_metadata(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn list_streams(&self) -> Result<HashSet<String>, MetastoreError>;
 }
 
 /// This trait allows a struct to get treated as a Metastore Object

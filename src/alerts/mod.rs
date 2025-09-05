@@ -948,7 +948,7 @@ pub enum AlertError {
     Unimplemented(String),
     #[error("{0}")]
     ValidationFailure(String),
-    #[error("{0}")]
+    #[error(transparent)]
     MetastoreError(#[from] MetastoreError),
 }
 
@@ -1245,8 +1245,6 @@ impl AlertManagerTrait for Alerts {
         alert_id: Ulid,
         new_notification_state: NotificationState,
     ) -> Result<(), AlertError> {
-        // let store = PARSEABLE.storage.get_object_store();
-
         // read and modify alert
         let mut write_access = self.alerts.write().await;
         let mut alert: Box<dyn AlertTrait> = if let Some(alert) = write_access.get(&alert_id) {

@@ -142,12 +142,12 @@ pub async fn get_default() -> Result<impl Responder, RoleError> {
 
 async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
     let metadata = PARSEABLE
-        .storage
-        .get_object_store()
-        .get_metadata()
-        .await?
+        .metastore
+        .get_parseable_metadata()
+        .await
+        .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
         .expect("metadata is initialized");
-    Ok(metadata)
+    Ok(serde_json::from_slice::<StorageMetadata>(&metadata)?)
 }
 
 async fn put_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageError> {

@@ -35,6 +35,7 @@ use crate::handlers::{
     STREAM_NAME_HEADER_KEY, TELEMETRY_TYPE_KEY, TelemetryType,
 };
 use crate::metadata::SchemaVersion;
+use crate::metastore::MetastoreError;
 use crate::option::Mode;
 use crate::otel::logs::OTEL_LOG_KNOWN_FIELD_LIST;
 use crate::otel::metrics::OTEL_METRICS_KNOWN_FIELD_LIST;
@@ -475,6 +476,8 @@ pub enum PostError {
     InvalidQueryParameter,
     #[error("Missing query parameter")]
     MissingQueryParameter,
+    #[error(transparent)]
+    MetastoreError(#[from] MetastoreError),
 }
 
 impl actix_web::ResponseError for PostError {
@@ -506,13 +509,21 @@ impl actix_web::ResponseError for PostError {
             PostError::FieldsCountLimitExceeded(_, _, _) => StatusCode::BAD_REQUEST,
             PostError::InvalidQueryParameter => StatusCode::BAD_REQUEST,
             PostError::MissingQueryParameter => StatusCode::BAD_REQUEST,
+            PostError::MetastoreError(e) => e.status_code(),
         }
     }
 
     fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
-        actix_web::HttpResponse::build(self.status_code())
-            .insert_header(ContentType::plaintext())
-            .body(self.to_string())
+        match self {
+            PostError::MetastoreError(metastore_error) => {
+                actix_web::HttpResponse::build(metastore_error.status_code())
+                    .insert_header(ContentType::json())
+                    .json(metastore_error.to_detail())
+            }
+            _ => actix_web::HttpResponse::build(self.status_code())
+                .insert_header(ContentType::plaintext())
+                .body(self.to_string()),
+        }
     }
 }
 

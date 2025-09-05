@@ -336,8 +336,7 @@ pub async fn generate_home_search_response(
 // Helper functions to split the work
 async fn get_stream_titles(key: &SessionKey) -> Result<Vec<String>, PrismHomeError> {
     let stream_titles: Vec<String> = PARSEABLE
-        .storage
-        .get_object_store()
+        .metastore
         .list_streams()
         .await
         .map_err(|e| PrismHomeError::Anyhow(anyhow::Error::new(e)))?
@@ -477,7 +476,7 @@ pub enum PrismHomeError {
     ObjectStorageError(#[from] ObjectStorageError),
     #[error("Invalid query parameter: {0}")]
     InvalidQueryParameter(String),
-    #[error("{0:?}")]
+    #[error(transparent)]
     MetastoreError(#[from] MetastoreError),
 }
 

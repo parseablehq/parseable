@@ -17,7 +17,7 @@
  */
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     fmt::Display,
     path::Path,
     str::FromStr,
@@ -36,7 +36,7 @@ use datafusion::{
 };
 use futures::{StreamExt, TryStreamExt, stream::FuturesUnordered};
 use object_store::{
-    BackoffConfig, ClientOptions, ObjectMeta, ObjectStore, PutPayload, RetryConfig,
+    BackoffConfig, ClientOptions, ListResult, ObjectMeta, ObjectStore, PutPayload, RetryConfig,
     aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum},
     buffered::BufReader,
     limit::LimitStore,
@@ -47,7 +47,6 @@ use tokio::{fs::OpenOptions, io::AsyncReadExt};
 use tracing::{error, info};
 
 use crate::{
-    handlers::http::users::USERS_ROOT_DIR,
     metrics::storage::{StorageMetrics, azureblob::REQUEST_RESPONSE_TIME},
     parseable::LogStream,
 };
@@ -55,8 +54,8 @@ use crate::{
 use super::{
     CONNECT_TIMEOUT_SECS, MIN_MULTIPART_UPLOAD_SIZE, ObjectStorage, ObjectStorageError,
     ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS,
-    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY, metrics_layer::MetricLayer,
-    object_storage::parseable_json_path, to_object_store_path,
+    STREAM_METADATA_FILE_NAME, metrics_layer::MetricLayer, object_storage::parseable_json_path,
+    to_object_store_path,
 };
 
 // in bytes
@@ -406,34 +405,6 @@ impl S3 {
         Ok(())
     }
 
-    async fn _list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
-        let mut result_file_list = HashSet::new();
-        let resp = self.client.list_with_delimiter(None).await?;
-
-        let streams = resp
-            .common_prefixes
-            .iter()
-            .flat_map(|path| path.parts())
-            .map(|name| name.as_ref().to_string())
-            .filter(|name| name != PARSEABLE_ROOT_DIRECTORY && name != USERS_ROOT_DIR)
-            .collect::<Vec<_>>();
-
-        for stream in streams {
-            let stream_path =
-                object_store::path::Path::from(format!("{}/{}", &stream, STREAM_ROOT_DIRECTORY));
-            let resp = self.client.list_with_delimiter(Some(&stream_path)).await?;
-            if resp
-                .objects
-                .iter()
-                .any(|name| name.location.filename().unwrap().ends_with("stream.json"))
-            {
-                result_file_list.insert(stream);
-            }
-        }
-
-        Ok(result_file_list)
-    }
-
     async fn _list_dates(&self, stream: &str) -> Result<Vec<String>, ObjectStorageError> {
         let resp = self
             .client
@@ -452,36 +423,40 @@ impl S3 {
         Ok(dates)
     }
 
-    async fn _list_manifest_files(
-        &self,
-        stream: &str,
-    ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
-        let mut result_file_list: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let resp = self
-            .client
-            .list_with_delimiter(Some(&(stream.into())))
-            .await?;
+    // async fn _list_manifest_files(
+    //     &self,
+    //     stream: &str,
+    // ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
+    //     let mut result_file_list: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    //     let resp = self
+    //         .client
+    //         .list_with_delimiter(Some(&(stream.into())))
+    //         .await?;
+    //     warn!(resp=?resp);
+    //     let dates = resp
+    //         .common_prefixes
+    //         .iter()
+    //         .flat_map(|path| path.parts())
+    //         .filter(|name| name.as_ref() != stream && name.as_ref() != STREAM_ROOT_DIRECTORY)
+    //         .map(|name| name.as_ref().to_string())
+    //         .collect::<Vec<_>>();
+    //     warn!(dates=?dates);
 
-        let dates = resp
-            .common_prefixes
-            .iter()
-            .flat_map(|path| path.parts())
-            .filter(|name| name.as_ref() != stream && name.as_ref() != STREAM_ROOT_DIRECTORY)
-            .map(|name| name.as_ref().to_string())
-            .collect::<Vec<_>>();
-        for date in dates {
-            let date_path = object_store::path::Path::from(format!("{}/{}", stream, &date));
-            let resp = self.client.list_with_delimiter(Some(&date_path)).await?;
-            let manifests: Vec<String> = resp
-                .objects
-                .iter()
-                .filter(|name| name.location.filename().unwrap().ends_with("manifest.json"))
-                .map(|name| name.location.to_string())
-                .collect();
-            result_file_list.entry(date).or_default().extend(manifests);
-        }
-        Ok(result_file_list)
-    }
+    //     for date in dates {
+    //         let date_path = object_store::path::Path::from(format!("{}/{}", stream, &date));
+    //         let resp = self.client.list_with_delimiter(Some(&date_path)).await?;
+    //         warn!(date_path=?resp);
+    //         let manifests: Vec<String> = resp
+    //             .objects
+    //             .iter()
+    //             .filter(|name| name.location.filename().unwrap().ends_with("manifest.json"))
+    //             .map(|name| name.location.to_string())
+    //             .collect();
+    //         result_file_list.entry(date).or_default().extend(manifests);
+    //     }
+    //     Ok(result_file_list)
+    // }
+
     async fn _upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
         let instant = Instant::now();
 
@@ -715,7 +690,10 @@ impl ObjectStorage for S3 {
     }
 
     async fn list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
-        self._list_streams().await
+        // self._list_streams().await
+        Err(ObjectStorageError::Custom(
+            "S3 doesn't implement list_streams".into(),
+        ))
     }
 
     async fn list_old_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
@@ -808,14 +786,14 @@ impl ObjectStorage for S3 {
         Ok(minutes)
     }
 
-    async fn list_manifest_files(
-        &self,
-        stream_name: &str,
-    ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
-        let files = self._list_manifest_files(stream_name).await?;
+    // async fn list_manifest_files(
+    //     &self,
+    //     stream_name: &str,
+    // ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
+    //     let files = self._list_manifest_files(stream_name).await?;
 
-        Ok(files)
-    }
+    //     Ok(files)
+    // }
 
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
         self._upload_file(key, path).await?;
@@ -870,6 +848,13 @@ impl ObjectStorage for S3 {
 
     fn get_bucket_name(&self) -> String {
         self.bucket.clone()
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<object_store::path::Path>,
+    ) -> Result<ListResult, ObjectStorageError> {
+        Ok(self.client.list_with_delimiter(prefix.as_ref()).await?)
     }
 }
 

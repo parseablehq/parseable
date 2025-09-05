@@ -41,7 +41,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::ops::Bound;
 use std::sync::Arc;
-use stream_schema_provider::collect_manifest_files;
 use sysinfo::System;
 use tokio::runtime::Runtime;
 
@@ -535,15 +534,6 @@ pub async fn get_manifest_list(
     stream_name: &str,
     time_range: &TimeRange,
 ) -> Result<Vec<Manifest>, QueryError> {
-    let glob_storage = PARSEABLE.storage.get_object_store();
-
-    let object_store = QUERY_SESSION
-        .state()
-        .runtime_env()
-        .object_store_registry
-        .get_store(&glob_storage.store_url())
-        .unwrap();
-
     // get object store
     let object_store_format: ObjectStoreFormat = serde_json::from_slice(
         &PARSEABLE
@@ -581,17 +571,32 @@ pub async fn get_manifest_list(
         PartialTimeFilter::High(Bound::Included(time_range.end.naive_utc())),
     ];
 
-    let all_manifest_files = collect_manifest_files(
-        object_store,
-        merged_snapshot
-            .manifests(&time_filter)
-            .into_iter()
-            .sorted_by_key(|file| file.time_lower_bound)
-            .map(|item| item.manifest_path)
-            .collect(),
-    )
-    .await
-    .map_err(|err| anyhow::Error::msg(err.to_string()))?;
+    let mut all_manifest_files = Vec::new();
+    for manifest_item in merged_snapshot.manifests(&time_filter) {
+        all_manifest_files.push(
+            PARSEABLE
+                .metastore
+                .get_manifest(
+                    stream_name,
+                    manifest_item.time_lower_bound,
+                    manifest_item.time_upper_bound,
+                )
+                .await?
+                .expect("Data is invalid for Manifest"),
+        );
+    }
+
+    // let all_manifest_files = collect_manifest_files(
+    //     object_store,
+    //     merged_snapshot
+    //         .manifests(&time_filter)
+    //         .into_iter()
+    //         .sorted_by_key(|file| file.time_lower_bound)
+    //         .map(|item| item.manifest_path)
+    //         .collect(),
+    // )
+    // .await
+    // .map_err(|err| anyhow::Error::msg(err.to_string()))?;
 
     Ok(all_manifest_files)
 }

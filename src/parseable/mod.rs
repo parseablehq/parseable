@@ -63,7 +63,7 @@ use crate::{
     static_schema::{StaticSchema, convert_static_schema_to_arrow_schema},
     storage::{
         ObjectStorageError, ObjectStorageProvider, ObjectStoreFormat, Owner, Permisssion,
-        StreamType, object_storage::parseable_json_path,
+        StreamType,
     },
     validator,
 };
@@ -237,10 +237,14 @@ impl Parseable {
     // if the proper data directory is provided, or s3 bucket is provided etc
     pub async fn validate_storage(&self) -> Result<Option<Bytes>, ObjectStorageError> {
         let obj_store = self.storage.get_object_store();
-        let rel_path = parseable_json_path();
         let mut has_parseable_json = false;
-        let parseable_json_result = obj_store.get_object(&rel_path).await;
-        if parseable_json_result.is_ok() {
+        let parseable_json_result = self
+            .metastore
+            .get_parseable_metadata()
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
+
+        if parseable_json_result.is_some() {
             has_parseable_json = true;
         }
 
@@ -251,12 +255,12 @@ impl Parseable {
             Err(_) => false,
         };
 
-        let has_streams = obj_store.list_streams().await.is_ok();
+        let has_streams = PARSEABLE.metastore.list_streams().await.is_ok();
         if !has_dirs && !has_parseable_json {
             return Ok(None);
         }
         if has_streams {
-            return Ok(Some(parseable_json_result.unwrap()));
+            return Ok(parseable_json_result);
         }
 
         if self.storage.name() == "drive" {
@@ -319,13 +323,13 @@ impl Parseable {
     ) -> Result<bool, StreamError> {
         // Proceed to create log stream if it doesn't exist
         let storage = self.storage.get_object_store();
-        let streams = storage.list_streams().await?;
+        let streams = PARSEABLE.metastore.list_streams().await?;
         if !streams.contains(stream_name) {
             return Ok(false);
         }
         let (stream_metadata_bytes, schema_bytes) = try_join!(
             storage.create_stream_from_ingestor(stream_name),
-            storage.create_schema_from_storage(stream_name)
+            storage.create_schema_from_metastore(stream_name)
         )?;
 
         let stream_metadata = if stream_metadata_bytes.is_empty() {
