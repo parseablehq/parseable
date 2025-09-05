@@ -18,7 +18,7 @@
 
 use std::collections::HashSet;
 
-use actix_web::{Responder, web};
+use actix_web::{HttpResponse, Responder, web};
 
 use crate::{
     handlers::http::{
@@ -51,7 +51,7 @@ pub async fn post_user(
         Users.add_roles(&username, created_role.clone());
     }
 
-    Ok(generated_password)
+    Ok(HttpResponse::Ok().json(generated_password))
 }
 
 // Handler for DELETE /api/v1/user/delete/{userid}
@@ -78,7 +78,7 @@ pub async fn delete_user(userid: web::Path<String>) -> Result<impl Responder, RB
 
     // update in mem table
     Users.delete_user(&userid);
-    Ok(format!("deleted user: {username}"))
+    Ok(HttpResponse::Ok().json(format!("deleted user: {username}")))
 }
 
 // Handler PATCH /user/{userid}/role/sync/add => Add roles to a user
@@ -128,7 +128,6 @@ pub async fn add_roles_to_user(
     let _ = storage::put_staging_metadata(&metadata);
     // update in mem table
     Users.add_roles(&userid.clone(), roles_to_add.clone());
-
     Ok(format!("Roles updated successfully for {username}"))
 }
 
@@ -218,6 +217,5 @@ pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Respo
         return Err(RBACError::UserDoesNotExist);
     }
     Users.change_password_hash(&username, &new_hash);
-
-    Ok("Updated")
+    Ok(HttpResponse::Ok().json("Updated"))
 }

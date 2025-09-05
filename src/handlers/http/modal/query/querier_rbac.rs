@@ -18,7 +18,7 @@
 
 use std::collections::HashSet;
 
-use actix_web::{Responder, web};
+use actix_web::{HttpResponse, Responder, web};
 
 use crate::{
     handlers::http::{
@@ -157,7 +157,7 @@ pub async fn delete_user(userid: web::Path<String>) -> Result<impl Responder, RB
 
     // update in mem table
     Users.delete_user(&userid);
-    Ok(format!("deleted user: {username}"))
+    Ok(HttpResponse::Ok().json(format!("deleted user: {username}")))
 }
 
 // Handler PATCH /user/{userid}/role/add => Add roles to a user
@@ -218,7 +218,7 @@ pub async fn add_roles_to_user(
 pub async fn remove_roles_from_user(
     userid: web::Path<String>,
     roles_to_remove: web::Json<HashSet<String>>,
-) -> Result<String, RBACError> {
+) -> Result<impl Responder, RBACError> {
     let userid = userid.into_inner();
     let roles_to_remove = roles_to_remove.into_inner();
 
@@ -279,7 +279,7 @@ pub async fn remove_roles_from_user(
 
     sync_users_with_roles_with_ingestors(&userid, &roles_to_remove, "remove").await?;
 
-    Ok(format!("Roles updated successfully for {username}"))
+    Ok(HttpResponse::Ok().json(format!("Roles updated successfully for {username}")))
 }
 
 // Handler for POST /api/v1/user/{username}/generate-new-password

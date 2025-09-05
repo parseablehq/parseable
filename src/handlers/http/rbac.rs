@@ -30,7 +30,7 @@ use crate::{
     validator::{self, error::UsernameValidationError},
 };
 use actix_web::{
-    Responder,
+    HttpResponse, Responder,
     http::header::ContentType,
     web::{self, Path},
 };
@@ -251,14 +251,14 @@ pub async fn delete_user(userid: web::Path<String>) -> Result<impl Responder, RB
 
     // update in mem table
     Users.delete_user(&userid);
-    Ok(format!("deleted user: {username}"))
+    Ok(HttpResponse::Ok().json(format!("deleted user: {username}")))
 }
 
 // Handler PATCH /user/{userid}/role/add => Add roles to a user
 pub async fn add_roles_to_user(
     userid: web::Path<String>,
     roles_to_add: web::Json<HashSet<String>>,
-) -> Result<String, RBACError> {
+) -> Result<impl Responder, RBACError> {
     let userid = userid.into_inner();
     let roles_to_add = roles_to_add.into_inner();
 
@@ -303,14 +303,14 @@ pub async fn add_roles_to_user(
     // update in mem table
     Users.add_roles(&userid.clone(), roles_to_add);
 
-    Ok(format!("Roles updated successfully for {username}"))
+    Ok(HttpResponse::Ok().json(format!("Roles updated successfully for {username}")))
 }
 
 // Handler PATCH /user/{userid}/role/remove => Remove roles from a user
 pub async fn remove_roles_from_user(
     userid: web::Path<String>,
     roles_to_remove: web::Json<HashSet<String>>,
-) -> Result<String, RBACError> {
+) -> Result<impl Responder, RBACError> {
     let userid = userid.into_inner();
     let roles_to_remove = roles_to_remove.into_inner();
 
@@ -367,7 +367,7 @@ pub async fn remove_roles_from_user(
     // update in mem table
     Users.remove_roles(&userid.clone(), roles_to_remove);
 
-    Ok(format!("Roles updated successfully for {username}"))
+    Ok(HttpResponse::Ok().json(format!("Roles updated successfully for {username}")))
 }
 
 #[derive(Debug, Serialize)]
