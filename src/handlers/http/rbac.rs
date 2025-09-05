@@ -185,6 +185,7 @@ pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Respo
 // Handler for GET /api/v1/user/{userid}/role
 // returns role for a user if that user exists
 pub async fn get_role(userid: web::Path<String>) -> Result<impl Responder, RBACError> {
+    let userid = userid.into_inner();
     if !Users.contains(&userid) {
         return Err(RBACError::UserDoesNotExist);
     };

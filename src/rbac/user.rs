@@ -69,11 +69,7 @@ impl User {
     pub fn new_oauth(userid: String, roles: HashSet<String>, user_info: UserInfo) -> Self {
         Self {
             ty: UserType::OAuth(OAuth {
-                userid: user_info
-                    .sub
-                    .clone()
-                    .or_else(|| user_info.name.clone())
-                    .unwrap_or(userid),
+                userid: user_info.sub.clone().unwrap_or(userid),
                 user_info,
             }),
             roles,
