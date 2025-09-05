@@ -200,7 +200,7 @@ impl QueryServer {
                             .to(querier_rbac::post_user)
                             .authorize(Action::PutUser),
                     )
-                    // DELETE /user/{username} => Delete a user
+                    // DELETE /user/{userid} => Delete a user
                     .route(
                         web::delete()
                             .to(querier_rbac::delete_user)
@@ -209,15 +209,15 @@ impl QueryServer {
                     .wrap(DisAllowRootUser),
             )
             .service(
-                web::resource("/{username}/role").route(
+                web::resource("/{userid}/role").route(
                     web::get()
                         .to(rbac::get_role)
                         .authorize_for_user(Action::GetUserRoles),
                 ),
             )
             .service(
-                web::resource("/{username}/role/add")
-                    // PATCH /user/{username}/role/add => Add roles to a user
+                web::resource("/{userid}/role/add")
+                    // PATCH /user/{userid}/role/add => Add roles to a user
                     .route(
                         web::patch()
                             .to(rbac::add_roles_to_user)
@@ -226,8 +226,8 @@ impl QueryServer {
                     ),
             )
             .service(
-                web::resource("/{username}/role/remove")
-                    // PATCH /user/{username}/role/remove => Remove roles from a user
+                web::resource("/{userid}/role/remove")
+                    // PATCH /user/{userid}/role/remove => Remove roles from a user
                     .route(
                         web::patch()
                             .to(rbac::remove_roles_from_user)

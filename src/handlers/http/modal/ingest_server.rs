@@ -184,13 +184,13 @@ impl IngestServer {
         web::scope("/user")
             .service(
                 web::resource("/{username}/sync")
-                    // PUT /user/{username}/sync => Sync creation of a new user
+                    // POST /user/{username}/sync => Sync creation of a new user
                     .route(
                         web::post()
                             .to(ingestor_rbac::post_user)
                             .authorize(Action::PutUser),
                     )
-                    // DELETE /user/{username} => Sync deletion of a user
+                    // DELETE /user/{userid} => Sync deletion of a user
                     .route(
                         web::delete()
                             .to(ingestor_rbac::delete_user)
@@ -199,8 +199,8 @@ impl IngestServer {
                     .wrap(DisAllowRootUser),
             )
             .service(
-                web::resource("/{username}/role/sync/add")
-                    // PATCH /user/{username}/role/sync/add => Add roles to a user
+                web::resource("/{userid}/role/sync/add")
+                    // PATCH /user/{userid}/role/sync/add => Add roles to a user
                     .route(
                         web::patch()
                             .to(ingestor_rbac::add_roles_to_user)
@@ -209,8 +209,8 @@ impl IngestServer {
                     ),
             )
             .service(
-                web::resource("/{username}/role/sync/remove")
-                    // PATCH /user/{username}/role/sync/remove => Remove roles from a user
+                web::resource("/{userid}/role/sync/remove")
+                    // PATCH /user/{userid}/role/sync/remove => Remove roles from a user
                     .route(
                         web::patch()
                             .to(ingestor_rbac::remove_roles_from_user)
