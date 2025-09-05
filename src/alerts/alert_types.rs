@@ -64,6 +64,7 @@ pub struct ThresholdAlert {
     pub created: DateTime<Utc>,
     pub tags: Option<Vec<String>>,
     pub datasets: Vec<String>,
+    pub last_triggered_at: Option<DateTime<Utc>>,
 }
 
 impl MetastoreObject for ThresholdAlert {
@@ -205,6 +206,11 @@ impl AlertTrait for ThresholdAlert {
             // update state in memory
             self.state = new_state;
 
+            // if new state is `Triggered`, change triggered at
+            if new_state.eq(&AlertState::Triggered) {
+                self.last_triggered_at = Some(Utc::now());
+            }
+
             // update on disk
             PARSEABLE
                 .metastore
@@ -235,6 +241,11 @@ impl AlertTrait for ThresholdAlert {
 
         // update state in memory
         self.state = new_state;
+
+        // if new state is `Triggered`, change triggered at
+        if new_state.eq(&AlertState::Triggered) {
+            self.last_triggered_at = Some(Utc::now());
+        }
 
         // update on disk
         PARSEABLE
@@ -386,6 +397,7 @@ impl From<AlertConfig> for ThresholdAlert {
             created: value.created,
             tags: value.tags,
             datasets: value.datasets,
+            last_triggered_at: value.last_triggered_at,
         }
     }
 }
@@ -408,6 +420,7 @@ impl From<ThresholdAlert> for AlertConfig {
             created: val.created,
             tags: val.tags,
             datasets: val.datasets,
+            last_triggered_at: val.last_triggered_at,
         }
     }
 }

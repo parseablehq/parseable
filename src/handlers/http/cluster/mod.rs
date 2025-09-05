@@ -217,7 +217,7 @@ pub async fn get_demo_data_from_ingestor(action: &str) -> Result<(), PostError> 
 
 // forward the role update request to all ingestors to keep them in sync
 pub async fn sync_users_with_roles_with_ingestors(
-    username: &str,
+    userid: &str,
     role: &HashSet<String>,
     operation: &str,
 ) -> Result<(), RBACError> {
@@ -231,7 +231,7 @@ pub async fn sync_users_with_roles_with_ingestors(
         RBACError::SerdeError(err)
     })?;
 
-    let username = username.to_owned();
+    let userid = userid.to_owned();
 
     let op = operation.to_string();
 
@@ -240,7 +240,7 @@ pub async fn sync_users_with_roles_with_ingestors(
             "{}{}/user/{}/role/sync/{}",
             ingestor.domain_name,
             base_path_without_preceding_slash(),
-            username,
+            userid,
             op
         );
 
@@ -248,7 +248,7 @@ pub async fn sync_users_with_roles_with_ingestors(
 
         async move {
             let res = INTRA_CLUSTER_CLIENT
-                .put(url)
+                .patch(url)
                 .header(header::AUTHORIZATION, &ingestor.token)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(role_data)
@@ -277,15 +277,15 @@ pub async fn sync_users_with_roles_with_ingestors(
 }
 
 // forward the delete user request to all ingestors to keep them in sync
-pub async fn sync_user_deletion_with_ingestors(username: &str) -> Result<(), RBACError> {
-    let username = username.to_owned();
+pub async fn sync_user_deletion_with_ingestors(userid: &str) -> Result<(), RBACError> {
+    let userid = userid.to_owned();
 
     for_each_live_ingestor(move |ingestor| {
         let url = format!(
             "{}{}/user/{}/sync",
             ingestor.domain_name,
             base_path_without_preceding_slash(),
-            username
+            userid
         );
 
         async move {
@@ -326,21 +326,21 @@ pub async fn sync_user_creation_with_ingestors(
     if let Some(role) = role {
         user.roles.clone_from(role);
     }
-    let username = user.username();
+    let userid = user.userid();
 
     let user_data = to_vec(&user).map_err(|err| {
         error!("Fatal: failed to serialize user: {:?}", err);
         RBACError::SerdeError(err)
     })?;
 
-    let username = username.to_string();
+    let userid = userid.to_string();
 
     for_each_live_ingestor(move |ingestor| {
         let url = format!(
             "{}{}/user/{}/sync",
             ingestor.domain_name,
             base_path_without_preceding_slash(),
-            username
+            userid
         );
 
         let user_data = user_data.clone();

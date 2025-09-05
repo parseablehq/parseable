@@ -394,21 +394,6 @@ pub struct Options {
     #[command(flatten)]
     pub oidc: Option<OidcConfig>,
 
-    // Audit logging
-    #[arg(
-        long,
-        env = "P_AUDIT_LOGGER",
-        value_parser = validation::url,
-        help = "Audit logger endpoint"
-    )]
-    pub audit_logger: Option<Url>,
-
-    #[arg(long, env = "P_AUDIT_USERNAME", help = "Audit logger username")]
-    pub audit_username: Option<String>,
-
-    #[arg(long, env = "P_AUDIT_PASSWORD", help = "Audit logger password")]
-    pub audit_password: Option<String>,
-
     #[arg(long, env = "P_MS_CLARITY_TAG", help = "Tag for MS Clarity")]
     pub ms_clarity_tag: Option<String>,
 

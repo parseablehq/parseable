@@ -318,6 +318,7 @@ impl AlertRequest {
             notification_config: self.notification_config,
             created: Utc::now(),
             tags: self.tags,
+            last_triggered_at: None,
         };
         Ok(config)
     }
@@ -344,6 +345,7 @@ pub struct AlertConfig {
     pub notification_config: NotificationConfig,
     pub created: DateTime<Utc>,
     pub tags: Option<Vec<String>>,
+    pub last_triggered_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -369,6 +371,7 @@ pub struct AlertConfigResponse {
     pub notification_config: NotificationConfig,
     pub created: DateTime<Utc>,
     pub tags: Option<Vec<String>>,
+    pub last_triggered_at: Option<DateTime<Utc>>,
 }
 
 impl AlertConfig {
@@ -407,6 +410,7 @@ impl AlertConfig {
             notification_config: self.notification_config,
             created: self.created,
             tags: self.tags,
+            last_triggered_at: self.last_triggered_at,
         }
     }
 }

@@ -123,7 +123,7 @@ pub fn init(metadata: &StorageMetadata) {
 
     let mut users = Users::from(users);
     let admin = user::get_admin_user();
-    let admin_username = admin.username().to_owned();
+    let admin_username = admin.userid().to_owned();
     users.insert(admin);
 
     let mut sessions = Sessions::default();
@@ -274,8 +274,8 @@ impl Sessions {
         })
     }
 
-    pub fn get_username(&self, key: &SessionKey) -> Option<&String> {
-        self.active_sessions.get(key).map(|(username, _)| username)
+    pub fn get_userid(&self, key: &SessionKey) -> Option<&String> {
+        self.active_sessions.get(key).map(|(userid, _)| userid)
     }
 }
 
@@ -286,7 +286,7 @@ pub struct Users(HashMap<String, User>);
 
 impl Users {
     pub fn insert(&mut self, user: User) {
-        self.0.insert(user.username().to_owned(), user);
+        self.0.insert(user.userid().to_owned(), user);
     }
 }
 
@@ -296,7 +296,7 @@ impl From<Vec<User>> for Users {
         map.extend(
             users
                 .into_iter()
-                .map(|user| (user.username().to_owned(), user)),
+                .map(|user| (user.userid().to_owned(), user)),
         );
         map
     }

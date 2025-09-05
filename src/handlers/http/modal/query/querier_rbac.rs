@@ -18,8 +18,7 @@
 
 use std::collections::HashSet;
 
-use actix_web::{Responder, web};
-use tokio::sync::Mutex;
+use actix_web::{HttpResponse, Responder, web};
 
 use crate::{
     handlers::http::{
@@ -28,18 +27,15 @@ use crate::{
             sync_user_deletion_with_ingestors, sync_users_with_roles_with_ingestors,
         },
         modal::utils::rbac_utils::{get_metadata, put_metadata},
-        rbac::RBACError,
+        rbac::{RBACError, UPDATE_LOCK},
     },
     rbac::{
         Users,
-        map::{roles, write_user_groups},
-        user,
+        map::{roles, users, write_user_groups},
+        user::{self, UserType},
     },
     validator,
 };
-
-// async aware lock for updating storage metadata and user map atomically
-static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
 
 // Handler for POST /api/v1/user/{username}
 // Creates a new user by username if it does not exists
@@ -74,12 +70,12 @@ pub async fn post_user(
             return Err(RBACError::RolesDoNotExist(non_existant_roles));
         }
     }
-    let _ = UPDATE_LOCK.lock().await;
+    let _guard = UPDATE_LOCK.lock().await;
     if Users.contains(&username)
         || metadata
             .users
             .iter()
-            .any(|user| user.username() == username)
+            .any(|user| matches!(&user.ty, UserType::Native(basic) if basic.username == username))
     {
         return Err(RBACError::UserExists);
     }
@@ -103,54 +99,83 @@ pub async fn post_user(
     Ok(password)
 }
 
-// Handler for DELETE /api/v1/user/delete/{username}
-pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
-    let username = username.into_inner();
-    let _ = UPDATE_LOCK.lock().await;
+// Handler for DELETE /api/v1/user/{userid}
+pub async fn delete_user(userid: web::Path<String>) -> Result<impl Responder, RBACError> {
+    let userid = userid.into_inner();
+
+    let _guard = UPDATE_LOCK.lock().await;
     // fail this request if the user does not exists
-    if !Users.contains(&username) {
+    if !Users.contains(&userid) {
         return Err(RBACError::UserDoesNotExist);
     };
+
+    // find username by userid, for native users, username is userid, for oauth users, we need to look up
+    let username = if let Some(user) = users().get(&userid) {
+        user.username_by_userid()
+    } else {
+        return Err(RBACError::UserDoesNotExist);
+    };
+
     // delete from parseable.json first
     let mut metadata = get_metadata().await?;
-    metadata.users.retain(|user| user.username() != username);
+    metadata.users.retain(|user| user.userid() != userid);
 
     // also delete from user groups
-    let user_groups = Users.get_user_groups(&username);
+    let user_groups = Users.get_user_groups(&userid);
     let mut groups_to_update = Vec::new();
     for user_group in user_groups {
-        if let Some(ug) = write_user_groups().get_mut(&user_group) {
-            ug.remove_users(HashSet::from_iter([username.clone()]))?;
+        if let Some(ug) = write_user_groups().get_mut(&user_group)
+            && let Some(user) = users().get(&userid)
+        {
+            let userid = match &user.ty {
+                UserType::Native(basic) => basic.username.clone(),
+                UserType::OAuth(oauth) => oauth.userid.clone(),
+            };
+            ug.remove_users_by_user_ids(HashSet::from_iter([userid]))?;
             groups_to_update.push(ug.clone());
-            // ug.update_in_metadata().await?;
         } else {
+            // User not found, skip or log as needed
             continue;
-        };
+        }
     }
 
-    // update in metadata user group
-    metadata
-        .user_groups
-        .retain(|x| !groups_to_update.contains(x));
-    metadata.user_groups.extend(groups_to_update);
+    // For each updated group, replace in place if found; otherwise push
+    for updated_group in &groups_to_update {
+        if let Some(existing) = metadata
+            .user_groups
+            .iter_mut()
+            .find(|ug| ug.name == updated_group.name)
+        {
+            existing.clone_from(updated_group);
+        } else {
+            metadata.user_groups.push(updated_group.clone());
+        }
+    }
     put_metadata(&metadata).await?;
 
-    sync_user_deletion_with_ingestors(&username).await?;
+    sync_user_deletion_with_ingestors(&userid).await?;
 
     // update in mem table
-    Users.delete_user(&username);
-    Ok(format!("deleted user: {username}"))
+    Users.delete_user(&userid);
+    Ok(HttpResponse::Ok().json(format!("deleted user: {username}")))
 }
 
-// Handler PATCH /user/{username}/role/add => Add roles to a user
+// Handler PATCH /user/{userid}/role/add => Add roles to a user
 pub async fn add_roles_to_user(
-    username: web::Path<String>,
+    userid: web::Path<String>,
     roles_to_add: web::Json<HashSet<String>>,
 ) -> Result<String, RBACError> {
-    let username = username.into_inner();
+    let userid = userid.into_inner();
     let roles_to_add = roles_to_add.into_inner();
 
-    if !Users.contains(&username) {
+    if !Users.contains(&userid) {
+        return Err(RBACError::UserDoesNotExist);
+    };
+
+    // find username by userid, for native users, username is userid, for oauth users, we need to look up
+    let username = if let Some(user) = users().get(&userid) {
+        user.username_by_userid()
+    } else {
         return Err(RBACError::UserDoesNotExist);
     };
 
@@ -172,7 +197,7 @@ pub async fn add_roles_to_user(
     if let Some(user) = metadata
         .users
         .iter_mut()
-        .find(|user| user.username() == username)
+        .find(|user| user.userid() == userid)
     {
         user.roles.extend(roles_to_add.clone());
     } else {
@@ -182,22 +207,31 @@ pub async fn add_roles_to_user(
 
     put_metadata(&metadata).await?;
     // update in mem table
-    Users.add_roles(&username.clone(), roles_to_add.clone());
+    Users.add_roles(&userid.clone(), roles_to_add.clone());
 
-    sync_users_with_roles_with_ingestors(&username, &roles_to_add, "add").await?;
+    sync_users_with_roles_with_ingestors(&userid, &roles_to_add, "add").await?;
 
     Ok(format!("Roles updated successfully for {username}"))
 }
 
-// Handler PATCH /user/{username}/role/remove => Remove roles from a user
+// Handler PATCH /user/{userid}/role/remove => Remove roles from a user
 pub async fn remove_roles_from_user(
-    username: web::Path<String>,
+    userid: web::Path<String>,
     roles_to_remove: web::Json<HashSet<String>>,
-) -> Result<String, RBACError> {
-    let username = username.into_inner();
+) -> Result<impl Responder, RBACError> {
+    let userid = userid.into_inner();
     let roles_to_remove = roles_to_remove.into_inner();
 
-    if !Users.contains(&username) {
+    let _guard = UPDATE_LOCK.lock().await;
+
+    if !Users.contains(&userid) {
+        return Err(RBACError::UserDoesNotExist);
+    };
+
+    // find username by userid, for native users, username is userid, for oauth users, we need to look up
+    let username = if let Some(user) = users().get(&userid) {
+        user.username_by_userid()
+    } else {
         return Err(RBACError::UserDoesNotExist);
     };
 
@@ -215,7 +249,7 @@ pub async fn remove_roles_from_user(
     }
 
     // check for role not present with user
-    let user_roles: HashSet<String> = HashSet::from_iter(Users.get_role(&username));
+    let user_roles: HashSet<String> = HashSet::from_iter(Users.get_role(&userid));
     let roles_not_with_user: HashSet<String> =
         HashSet::from_iter(roles_to_remove.difference(&user_roles).cloned());
     if !roles_not_with_user.is_empty() {
@@ -229,7 +263,7 @@ pub async fn remove_roles_from_user(
     if let Some(user) = metadata
         .users
         .iter_mut()
-        .find(|user| user.username() == username)
+        .find(|user| user.userid() == userid)
     {
         let diff: HashSet<String> =
             HashSet::from_iter(user.roles.difference(&roles_to_remove).cloned());
@@ -241,11 +275,11 @@ pub async fn remove_roles_from_user(
 
     put_metadata(&metadata).await?;
     // update in mem table
-    Users.remove_roles(&username.clone(), roles_to_remove.clone());
+    Users.remove_roles(&userid.clone(), roles_to_remove.clone());
 
-    sync_users_with_roles_with_ingestors(&username, &roles_to_remove, "remove").await?;
+    sync_users_with_roles_with_ingestors(&userid, &roles_to_remove, "remove").await?;
 
-    Ok(format!("Roles updated successfully for {username}"))
+    Ok(HttpResponse::Ok().json(format!("Roles updated successfully for {username}")))
 }
 
 // Handler for POST /api/v1/user/{username}/generate-new-password
@@ -256,7 +290,7 @@ pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Respo
     let mut new_hash = String::default();
     let mut metadata = get_metadata().await?;
 
-    let _ = UPDATE_LOCK.lock().await;
+    let _guard = UPDATE_LOCK.lock().await;
     let user::PassCode { password, hash } = user::Basic::gen_new_password();
     new_password.clone_from(&password);
     new_hash.clone_from(&hash);

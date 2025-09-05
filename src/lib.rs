@@ -19,7 +19,6 @@
 pub mod about;
 pub mod alerts;
 pub mod analytics;
-pub mod audit;
 pub mod banner;
 pub mod catalog;
 mod cli;

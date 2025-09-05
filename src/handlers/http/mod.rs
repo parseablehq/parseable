@@ -30,7 +30,6 @@ use self::query::Query;
 
 pub mod about;
 pub mod alerts;
-mod audit;
 pub mod cluster;
 pub mod correlation;
 pub mod demo_data;
