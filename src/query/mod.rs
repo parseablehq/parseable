@@ -298,10 +298,10 @@ impl Query {
 /// Record of counts for a given time bin.
 #[derive(Debug, Serialize, Clone, Deserialize)]
 pub struct CountsRecord {
-    #[serde(rename(deserialize = "_bin_start_time_", serialize = "start_time"))]
+    #[serde(alias = "_bin_start_time_")]
     /// Start time of the bin
     pub start_time: String,
-    #[serde(rename(deserialize = "_bin_end_time_", serialize = "end_time"))]
+    #[serde(alias = "_bin_end_time_")]
     /// End time of the bin
     pub end_time: String,
     /// Number of logs in the bin
@@ -454,12 +454,12 @@ impl CountsRequest {
         let table_name = &self.stream;
         let start_time_col_name = "_bin_start_time_";
         let end_time_col_name = "_bin_end_time_";
-        let date_bin = if dur.num_minutes() <= 60 * 1 {
+        let date_bin = if dur.num_minutes() <= 60 {
             // less than 1 hour = 1 min bin
             format!(
                 "CAST(DATE_BIN('1m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('1m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1m' as {end_time_col_name}"
             )
-        } else if dur.num_minutes() > 60 * 1 && dur.num_minutes() < 60 * 24 {
+        } else if dur.num_minutes() > 60 && dur.num_minutes() < 60 * 24 {
             // between 1 hour and 1 day = 5 min bin
             format!(
                 "CAST(DATE_BIN('5m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('5m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '5m' as {end_time_col_name}"
