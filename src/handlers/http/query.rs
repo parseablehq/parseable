@@ -579,7 +579,7 @@ Description: {0}"#
     NoAvailableQuerier,
     #[error("{0}")]
     ParserError(#[from] ParserError),
-    #[error("{0:?}")]
+    #[error(transparent)]
     MetastoreError(#[from] MetastoreError),
 }
 

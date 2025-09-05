@@ -122,7 +122,7 @@ pub enum FiltersError {
     UserDoesNotExist(#[from] RBACError),
     #[error("Error: {0}")]
     Custom(String),
-    #[error("{0:?}")]
+    #[error(transparent)]
     MetastoreError(#[from] MetastoreError),
 }
 
@@ -143,7 +143,7 @@ impl actix_web::ResponseError for FiltersError {
             FiltersError::MetastoreError(metastore_error) => {
                 actix_web::HttpResponse::build(self.status_code())
                     .insert_header(ContentType::json())
-                    .body(metastore_error.to_string())
+                    .json(metastore_error.to_detail())
             }
             _ => actix_web::HttpResponse::build(self.status_code())
                 .insert_header(ContentType::plaintext())

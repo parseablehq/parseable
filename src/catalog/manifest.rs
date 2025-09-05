@@ -21,6 +21,8 @@ use std::collections::HashMap;
 use itertools::Itertools;
 use parquet::{file::reader::FileReader, format::SortingColumn};
 
+use crate::metastore::metastore_traits::MetastoreObject;
+
 use super::column::Column;
 
 #[derive(
@@ -85,6 +87,16 @@ impl Manifest {
         } else {
             self.files.push(change)
         }
+    }
+}
+
+impl MetastoreObject for Manifest {
+    fn get_object_path(&self) -> String {
+        unimplemented!()
+    }
+
+    fn get_object_id(&self) -> String {
+        unimplemented!()
     }
 }
 

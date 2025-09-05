@@ -249,7 +249,7 @@ pub enum DashboardError {
     Unauthorized,
     #[error("Invalid query parameter")]
     InvalidQueryParameter,
-    #[error("{0:?}")]
+    #[error(transparent)]
     MetastoreError(#[from] MetastoreError),
 }
 
@@ -269,10 +269,8 @@ impl actix_web::ResponseError for DashboardError {
 
     fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
         match self {
-            DashboardError::MetastoreError(metastore_error) => {
-                actix_web::HttpResponse::build(self.status_code())
-                    .insert_header(ContentType::json())
-                    .body(metastore_error.to_string())
+            DashboardError::MetastoreError(e) => {
+                actix_web::HttpResponse::build(self.status_code()).json(e.to_detail())
             }
             _ => actix_web::HttpResponse::build(self.status_code())
                 .insert_header(ContentType::plaintext())

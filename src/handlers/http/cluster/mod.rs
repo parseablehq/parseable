@@ -33,7 +33,6 @@ use chrono::Utc;
 use clokwerk::{AsyncScheduler, Interval};
 use http::{StatusCode, header as http_header};
 use itertools::Itertools;
-use relative_path::RelativePathBuf;
 use serde::de::{DeserializeOwned, Error};
 use serde_json::error::Error as SerdeError;
 use serde_json::{Value as JsonValue, to_vec};
@@ -50,16 +49,12 @@ use crate::parseable::PARSEABLE;
 use crate::rbac::role::model::DefaultPrivilege;
 use crate::rbac::user::User;
 use crate::stats::Stats;
-use crate::storage::{
-    ObjectStorage, ObjectStorageError, ObjectStoreFormat, PARSEABLE_ROOT_DIRECTORY,
-};
+use crate::storage::{ObjectStorageError, ObjectStoreFormat};
 
 use super::base_path_without_preceding_slash;
 use super::ingest::PostError;
 use super::logstream::error::StreamError;
-use super::modal::{
-    IndexerMetadata, IngestorMetadata, Metadata, NodeMetadata, NodeType, QuerierMetadata,
-};
+use super::modal::{IngestorMetadata, Metadata, NodeMetadata, NodeType, QuerierMetadata};
 use super::rbac::RBACError;
 use super::role::RoleError;
 
@@ -785,15 +780,9 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
 pub async fn get_node_info<T: Metadata + DeserializeOwned>(
     node_type: NodeType,
 ) -> anyhow::Result<Vec<T>> {
-    let store = PARSEABLE.storage.get_object_store();
-    let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
-    let prefix_owned = node_type.to_string();
-
-    let metadata = store
-        .get_objects(
-            Some(&root_path),
-            Box::new(move |file_name| file_name.starts_with(&prefix_owned)), // Use the owned copy
-        )
+    let metadata = PARSEABLE
+        .metastore
+        .get_node_metadata(node_type)
         .await?
         .iter()
         .filter_map(|x| match serde_json::from_slice::<T>(x) {
@@ -820,26 +809,30 @@ pub async fn remove_node(node_url: Path<String>) -> Result<impl Responder, PostE
             "The node is currently live and cannot be removed"
         )));
     }
-    let object_store = PARSEABLE.storage.get_object_store();
 
     // Delete ingestor metadata
-    let removed_ingestor =
-        remove_node_metadata::<IngestorMetadata>(&object_store, &domain_name, NodeType::Ingestor)
-            .await?;
+    let removed_ingestor = PARSEABLE
+        .metastore
+        .delete_node_metadata(&domain_name, NodeType::Ingestor)
+        .await?;
 
     // Delete indexer metadata
-    let removed_indexer =
-        remove_node_metadata::<IndexerMetadata>(&object_store, &domain_name, NodeType::Indexer)
-            .await?;
+    let removed_indexer = PARSEABLE
+        .metastore
+        .delete_node_metadata(&domain_name, NodeType::Indexer)
+        .await?;
 
     // Delete querier metadata
-    let removed_querier =
-        remove_node_metadata::<QuerierMetadata>(&object_store, &domain_name, NodeType::Querier)
-            .await?;
+    let removed_querier = PARSEABLE
+        .metastore
+        .delete_node_metadata(&domain_name, NodeType::Querier)
+        .await?;
 
     // Delete prism metadata
-    let removed_prism =
-        remove_node_metadata::<NodeMetadata>(&object_store, &domain_name, NodeType::Prism).await?;
+    let removed_prism = PARSEABLE
+        .metastore
+        .delete_node_metadata(&domain_name, NodeType::Prism)
+        .await?;
 
     if removed_ingestor || removed_indexer || removed_querier || removed_prism {
         return Ok((
@@ -850,45 +843,6 @@ pub async fn remove_node(node_url: Path<String>) -> Result<impl Responder, PostE
     Err(PostError::Invalid(anyhow::anyhow!(
         "node {domain_name} not found"
     )))
-}
-
-/// Removes node metadata from the object store
-/// Returns true if the metadata was removed, false if it was not found
-async fn remove_node_metadata<T: Metadata + DeserializeOwned + Default>(
-    object_store: &Arc<dyn ObjectStorage>,
-    domain_name: &str,
-    node_type: NodeType,
-) -> Result<bool, PostError> {
-    let metadatas = object_store
-        .get_objects(
-            Some(&RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY)),
-            Box::new(move |file_name| file_name.starts_with(&node_type.to_string())),
-        )
-        .await?;
-
-    let node_metadatas = metadatas
-        .iter()
-        .filter_map(|elem| match serde_json::from_slice::<T>(elem) {
-            Ok(meta) if meta.domain_name() == domain_name => Some(meta),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-
-    if node_metadatas.is_empty() {
-        return Ok(false);
-    }
-
-    let node_meta_filename = node_metadatas[0].file_path().to_string();
-    match object_store.try_delete_node_meta(node_meta_filename).await {
-        Ok(_) => Ok(true),
-        Err(err) => {
-            if matches!(err, ObjectStorageError::IoError(_)) {
-                Ok(false)
-            } else {
-                Err(PostError::ObjectStorageError(err))
-            }
-        }
-    }
 }
 
 /// Fetches metrics for a single node

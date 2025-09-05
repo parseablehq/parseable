@@ -28,14 +28,12 @@ use crate::{
         target::Retry,
     },
     parseable::PARSEABLE,
-    storage::object_storage::alert_json_path,
     utils::{actix::extract_session_key_from_req, user_auth_for_query},
 };
 use actix_web::{
     HttpRequest, Responder,
     web::{self, Json, Path},
 };
-use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use ulid::Ulid;
 
@@ -466,10 +464,10 @@ pub async fn modify_alert(
     new_alert.validate(&session_key).await?;
 
     // Perform I/O operations
-    let path = alert_json_path(*new_alert.get_id());
-    let store = PARSEABLE.storage.get_object_store();
-    let alert_bytes = serde_json::to_vec(&new_alert.to_alert_config())?;
-    store.put_object(&path, Bytes::from(alert_bytes)).await?;
+    PARSEABLE
+        .metastore
+        .put_alert(&new_alert.to_alert_config())
+        .await?;
 
     let is_disabled = new_alert.get_state().eq(&AlertState::Disabled);
     // Now perform the atomic operations

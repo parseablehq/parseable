@@ -28,13 +28,14 @@ use relative_path::RelativePathBuf;
 use std::io;
 
 use crate::{
+    metastore::metastore_traits::MetastoreObject,
     option::Mode,
     parseable::{JOIN_COMMUNITY, PARSEABLE},
     rbac::{
         role::model::DefaultPrivilege,
         user::{User, UserGroup},
     },
-    storage::ObjectStorageError,
+    storage::{ObjectStorageError, object_storage::parseable_json_path},
     utils::uid,
 };
 
@@ -101,6 +102,16 @@ impl StorageMetadata {
         };
 
         STORAGE_METADATA.set(metadata).expect("only set once")
+    }
+}
+
+impl MetastoreObject for StorageMetadata {
+    fn get_object_path(&self) -> String {
+        parseable_json_path().to_string()
+    }
+
+    fn get_object_id(&self) -> String {
+        unimplemented!()
     }
 }
 
@@ -279,8 +290,11 @@ pub fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {
 }
 
 pub async fn put_remote_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageError> {
-    let client = PARSEABLE.storage.get_object_store();
-    client.put_metadata(metadata).await
+    PARSEABLE
+        .metastore
+        .put_parseable_metadata(metadata)
+        .await
+        .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))
 }
 
 pub fn put_staging_metadata(meta: &StorageMetadata) -> io::Result<()> {
