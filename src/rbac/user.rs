@@ -66,14 +66,14 @@ impl User {
         )
     }
 
-    pub fn new_oauth(username: String, roles: HashSet<String>, user_info: UserInfo) -> Self {
+    pub fn new_oauth(userid: String, roles: HashSet<String>, user_info: UserInfo) -> Self {
         Self {
             ty: UserType::OAuth(OAuth {
                 userid: user_info
                     .sub
                     .clone()
                     .or_else(|| user_info.name.clone())
-                    .unwrap_or(username),
+                    .unwrap_or(userid),
                 user_info,
             }),
             roles,
@@ -81,13 +81,25 @@ impl User {
         }
     }
 
-    pub fn username(&self) -> &str {
+    pub fn userid(&self) -> &str {
         match self.ty {
             UserType::Native(Basic { ref username, .. }) => username,
-            UserType::OAuth(OAuth {
-                userid: ref username,
-                ..
-            }) => username,
+            UserType::OAuth(OAuth { ref userid, .. }) => userid,
+        }
+    }
+
+    pub fn username_by_userid(&self) -> String {
+        match &self.ty {
+            UserType::Native(basic) => basic.username.clone(),
+            UserType::OAuth(oauth) => {
+                let user_info = oauth.user_info.clone();
+                user_info.name.clone().unwrap_or_else(|| {
+                    user_info
+                        .email
+                        .clone()
+                        .unwrap_or_else(|| oauth.userid.clone())
+                })
+            }
         }
     }
 

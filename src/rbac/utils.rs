@@ -30,12 +30,12 @@ use super::{
 
 pub fn to_prism_user(user: &User) -> UsersPrism {
     let (id, username, method, email, picture) = match &user.ty {
-        UserType::Native(_) => (user.username(), user.username(), "native", None, None),
+        UserType::Native(_) => (user.userid(), user.userid(), "native", None, None),
         UserType::OAuth(oauth) => {
-            let username = user.username();
-            let display_name = oauth.user_info.name.as_deref().unwrap_or(username);
+            let userid = user.userid();
+            let display_name = oauth.user_info.name.as_deref().unwrap_or(userid);
             (
-                username,
+                userid,
                 display_name,
                 "oauth",
                 oauth.user_info.email.clone(),
@@ -56,7 +56,7 @@ pub fn to_prism_user(user: &User) -> UsersPrism {
     let mut group_roles: HashMap<String, HashMap<String, Vec<DefaultPrivilege>>> = HashMap::new();
     let mut user_groups = HashSet::new();
     // user might be part of some user groups, fetch the roles from there as well
-    for user_group in Users.get_user_groups(user.username()) {
+    for user_group in Users.get_user_groups(user.userid()) {
         if let Some(group) = read_user_groups().get(&user_group) {
             let ug_roles: HashMap<String, Vec<DefaultPrivilege>> = group
                 .roles

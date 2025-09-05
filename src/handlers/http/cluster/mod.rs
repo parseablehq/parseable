@@ -331,21 +331,21 @@ pub async fn sync_user_creation_with_ingestors(
     if let Some(role) = role {
         user.roles.clone_from(role);
     }
-    let username = user.username();
+    let userid = user.userid();
 
     let user_data = to_vec(&user).map_err(|err| {
         error!("Fatal: failed to serialize user: {:?}", err);
         RBACError::SerdeError(err)
     })?;
 
-    let username = username.to_string();
+    let userid = userid.to_string();
 
     for_each_live_ingestor(move |ingestor| {
         let url = format!(
             "{}{}/user/{}/sync",
             ingestor.domain_name,
             base_path_without_preceding_slash(),
-            username
+            userid
         );
 
         let user_data = user_data.clone();

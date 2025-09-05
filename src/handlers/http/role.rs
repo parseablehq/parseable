@@ -59,12 +59,12 @@ pub async fn put(
     // iterate over all users to see if they have this role
     for user in users().values() {
         if user.roles.contains(&name) {
-            session_refresh_users.insert(user.username().to_string());
+            session_refresh_users.insert(user.userid().to_string());
         }
     }
 
-    for username in session_refresh_users {
-        mut_sessions().remove_user(&username);
+    for userid in session_refresh_users {
+        mut_sessions().remove_user(&userid);
     }
 
     Ok(HttpResponse::Ok().finish())

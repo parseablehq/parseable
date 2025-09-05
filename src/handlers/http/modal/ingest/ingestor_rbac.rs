@@ -27,7 +27,7 @@ use crate::{
     },
     rbac::{
         Users,
-        map::roles,
+        map::{roles, users},
         user::{self, User as ParseableUser},
     },
     storage,
@@ -54,34 +54,49 @@ pub async fn post_user(
     Ok(generated_password)
 }
 
-// Handler for DELETE /api/v1/user/delete/{username}
-pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
-    let username = username.into_inner();
+// Handler for DELETE /api/v1/user/delete/{userid}
+pub async fn delete_user(userid: web::Path<String>) -> Result<impl Responder, RBACError> {
+    let userid = userid.into_inner();
     let _guard = UPDATE_LOCK.lock().await;
     // fail this request if the user does not exists
-    if !Users.contains(&username) {
+    if !Users.contains(&userid) {
         return Err(RBACError::UserDoesNotExist);
     };
+
+    // find username by userid, for native users, username is userid, for oauth users, we need to look up
+    let username = if let Some(user) = users().get(&userid) {
+        user.username_by_userid()
+    } else {
+        return Err(RBACError::UserDoesNotExist);
+    };
+
     // delete from parseable.json first
     let mut metadata = get_metadata().await?;
-    metadata.users.retain(|user| user.username() != username);
+    metadata.users.retain(|user| user.userid() != userid);
 
     let _ = storage::put_staging_metadata(&metadata);
 
     // update in mem table
-    Users.delete_user(&username);
+    Users.delete_user(&userid);
     Ok(format!("deleted user: {username}"))
 }
 
-// Handler PATCH /user/{username}/role/sync/add => Add roles to a user
+// Handler PATCH /user/{userid}/role/sync/add => Add roles to a user
 pub async fn add_roles_to_user(
-    username: web::Path<String>,
+    userid: web::Path<String>,
     roles_to_add: web::Json<HashSet<String>>,
 ) -> Result<String, RBACError> {
-    let username = username.into_inner();
+    let userid = userid.into_inner();
     let roles_to_add = roles_to_add.into_inner();
 
-    if !Users.contains(&username) {
+    if !Users.contains(&userid) {
+        return Err(RBACError::UserDoesNotExist);
+    };
+
+    // find username by userid, for native users, username is userid, for oauth users, we need to look up
+    let username = if let Some(user) = users().get(&userid) {
+        user.username_by_userid()
+    } else {
         return Err(RBACError::UserDoesNotExist);
     };
 
@@ -102,7 +117,7 @@ pub async fn add_roles_to_user(
     if let Some(user) = metadata
         .users
         .iter_mut()
-        .find(|user| user.username() == username)
+        .find(|user| user.userid() == userid)
     {
         user.roles.extend(roles_to_add.clone());
     } else {
@@ -112,20 +127,27 @@ pub async fn add_roles_to_user(
 
     let _ = storage::put_staging_metadata(&metadata);
     // update in mem table
-    Users.add_roles(&username.clone(), roles_to_add.clone());
+    Users.add_roles(&userid.clone(), roles_to_add.clone());
 
     Ok(format!("Roles updated successfully for {username}"))
 }
 
-// Handler PATCH /user/{username}/role/sync/add => Add roles to a user
+// Handler PATCH /user/{userid}/role/sync/add => Add roles to a user
 pub async fn remove_roles_from_user(
-    username: web::Path<String>,
+    userid: web::Path<String>,
     roles_to_remove: web::Json<HashSet<String>>,
 ) -> Result<String, RBACError> {
-    let username = username.into_inner();
+    let userid = userid.into_inner();
     let roles_to_remove = roles_to_remove.into_inner();
 
-    if !Users.contains(&username) {
+    if !Users.contains(&userid) {
+        return Err(RBACError::UserDoesNotExist);
+    };
+
+    // find username by userid, for native users, username is userid, for oauth users, we need to look up
+    let username = if let Some(user) = users().get(&userid) {
+        user.username_by_userid()
+    } else {
         return Err(RBACError::UserDoesNotExist);
     };
 
@@ -142,7 +164,7 @@ pub async fn remove_roles_from_user(
     }
 
     // check that user actually has these roles
-    let user_roles: HashSet<String> = HashSet::from_iter(Users.get_role(&username));
+    let user_roles: HashSet<String> = HashSet::from_iter(Users.get_role(&userid));
     let roles_not_with_user: HashSet<String> =
         HashSet::from_iter(roles_to_remove.difference(&user_roles).cloned());
 
@@ -152,12 +174,12 @@ pub async fn remove_roles_from_user(
         )));
     }
 
-    // update parseable.json first
+    // update parseable.json in staging first
     let mut metadata = get_metadata().await?;
     if let Some(user) = metadata
         .users
         .iter_mut()
-        .find(|user| user.username() == username)
+        .find(|user| user.userid() == userid)
     {
         let diff: HashSet<String> =
             HashSet::from_iter(user.roles.difference(&roles_to_remove).cloned());
@@ -169,7 +191,7 @@ pub async fn remove_roles_from_user(
 
     let _ = storage::put_staging_metadata(&metadata);
     // update in mem table
-    Users.remove_roles(&username.clone(), roles_to_remove.clone());
+    Users.remove_roles(&userid.clone(), roles_to_remove.clone());
 
     Ok(format!("Roles updated successfully for {username}"))
 }

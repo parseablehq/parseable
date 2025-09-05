@@ -367,7 +367,7 @@ pub async fn request_token(
 // put new user in metadata if does not exits
 // update local cache
 pub async fn put_user(
-    username: &str,
+    userid: &str,
     group: HashSet<String>,
     user_info: user::UserInfo,
 ) -> Result<User, ObjectStorageError> {
@@ -376,10 +376,10 @@ pub async fn put_user(
     let user = metadata
         .users
         .iter()
-        .find(|user| user.username() == username)
+        .find(|user| user.userid() == userid)
         .cloned()
         .unwrap_or_else(|| {
-            let user = User::new_oauth(username.to_owned(), group, user_info);
+            let user = User::new_oauth(userid.to_owned(), group, user_info);
             metadata.users.push(user.clone());
             user
         });
@@ -395,7 +395,7 @@ pub async fn update_user_if_changed(
     user_info: user::UserInfo,
 ) -> Result<User, ObjectStorageError> {
     // Store the old username before modifying the user object
-    let old_username = user.username().to_string();
+    let old_username = user.userid().to_string();
     let User { ty, roles, .. } = &mut user;
     let UserType::OAuth(oauth_user) = ty else {
         unreachable!()
@@ -427,7 +427,7 @@ pub async fn update_user_if_changed(
     if let Some(entry) = metadata
         .users
         .iter_mut()
-        .find(|x| x.username() == old_username)
+        .find(|x| x.userid() == old_username)
     {
         entry.clone_from(&user);
         // migrate user references inside user groups
