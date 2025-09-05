@@ -168,6 +168,8 @@ pub async fn add_roles_to_user(
     let userid = userid.into_inner();
     let roles_to_add = roles_to_add.into_inner();
 
+    let _guard = UPDATE_LOCK.lock().await;
+
     if !Users.contains(&userid) {
         return Err(RBACError::UserDoesNotExist);
     };
@@ -222,6 +224,8 @@ pub async fn remove_roles_from_user(
     let userid = userid.into_inner();
     let roles_to_remove = roles_to_remove.into_inner();
 
+    let _guard = UPDATE_LOCK.lock().await;
+    
     if !Users.contains(&userid) {
         return Err(RBACError::UserDoesNotExist);
     };
