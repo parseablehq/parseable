@@ -43,6 +43,11 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
     async fn put_alert(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
     async fn delete_alert(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
 
+    /// llmconfig
+    async fn get_llmconfigs(&self) -> Result<Vec<Bytes>, MetastoreError>;
+    async fn put_llmconfig(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn delete_llmconfig(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+
     /// targets
     async fn get_targets(&self) -> Result<Vec<Target>, MetastoreError>;
     async fn put_target(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;

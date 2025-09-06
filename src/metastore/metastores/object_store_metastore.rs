@@ -114,6 +114,39 @@ impl Metastore for ObjectStoreMetastore {
             .await?)
     }
 
+    /// This function fetches all the llmconfigs from the underlying object store
+    async fn get_llmconfigs(&self) -> Result<Vec<Bytes>, MetastoreError> {
+        let base_path = RelativePathBuf::from_iter([SETTINGS_ROOT_DIRECTORY, "llmconfigs"]);
+        let conf_bytes = self
+            .storage
+            .get_objects(
+                Some(&base_path),
+                Box::new(|file_name| file_name.ends_with(".json")),
+            )
+            .await?;
+
+        Ok(conf_bytes)
+    }
+
+    /// This function puts an llmconfig in the object store at the given path
+    async fn put_llmconfig(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
+        let path = obj.get_object_path();
+
+        Ok(self
+            .storage
+            .put_object(&RelativePathBuf::from(path), to_bytes(obj))
+            .await?)
+    }
+
+    /// Delete an llmconfig
+    async fn delete_llmconfig(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
+        let path = obj.get_object_path();
+        Ok(self
+            .storage
+            .delete_object(&RelativePathBuf::from(path))
+            .await?)
+    }
+
     /// Fetch all dashboards
     async fn get_dashboards(&self) -> Result<Vec<Bytes>, MetastoreError> {
         let mut dashboards = Vec::new();
