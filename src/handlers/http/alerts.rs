@@ -28,14 +28,12 @@ use crate::{
         target::Retry,
     },
     parseable::PARSEABLE,
-    storage::object_storage::alert_json_path,
     utils::{actix::extract_session_key_from_req, user_auth_for_query},
 };
 use actix_web::{
     HttpRequest, Responder,
     web::{self, Json, Path},
 };
-use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use ulid::Ulid;
 
@@ -210,15 +208,14 @@ pub async fn post(
 
     alert.validate(&session_key).await?;
 
-    // now that we've validated that the user can run this query
-    // move on to saving the alert in ObjectStore
+    // update persistent storage first
+    PARSEABLE
+        .metastore
+        .put_alert(&alert.to_alert_config())
+        .await?;
+
+    // update in memory
     alerts.update(alert).await;
-
-    let path = alert_json_path(*alert.get_id());
-
-    let store = PARSEABLE.storage.get_object_store();
-    let alert_bytes = serde_json::to_vec(&alert.to_alert_config())?;
-    store.put_object(&path, Bytes::from(alert_bytes)).await?;
 
     // start the task
     alerts.start_task(alert.clone_box()).await?;
@@ -263,14 +260,7 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
     // validate that the user has access to the tables mentioned in the query
     user_auth_for_query(&session_key, alert.get_query()).await?;
 
-    let store = PARSEABLE.storage.get_object_store();
-    let alert_path = alert_json_path(alert_id);
-
-    // delete from Object Store
-    store
-        .delete_object(&alert_path)
-        .await
-        .map_err(AlertError::ObjectStorage)?;
+    PARSEABLE.metastore.delete_alert(&*alert).await?;
 
     // delete from memory
     alerts.delete(alert_id).await?;
@@ -474,10 +464,10 @@ pub async fn modify_alert(
     new_alert.validate(&session_key).await?;
 
     // Perform I/O operations
-    let path = alert_json_path(*new_alert.get_id());
-    let store = PARSEABLE.storage.get_object_store();
-    let alert_bytes = serde_json::to_vec(&new_alert.to_alert_config())?;
-    store.put_object(&path, Bytes::from(alert_bytes)).await?;
+    PARSEABLE
+        .metastore
+        .put_alert(&new_alert.to_alert_config())
+        .await?;
 
     let is_disabled = new_alert.get_state().eq(&AlertState::Disabled);
     // Now perform the atomic operations

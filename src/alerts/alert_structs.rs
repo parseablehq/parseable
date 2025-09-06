@@ -33,7 +33,9 @@ use crate::{
         alert_traits::AlertTrait,
         target::{NotificationConfig, TARGETS},
     },
+    metastore::metastore_traits::MetastoreObject,
     query::resolve_stream_names,
+    storage::object_storage::alert_json_path,
 };
 
 /// Helper struct for basic alert fields during migration
@@ -526,4 +528,14 @@ impl AlertQueryResult {
 #[derive(serde::Deserialize)]
 pub struct NotificationStateRequest {
     pub state: String,
+}
+
+impl MetastoreObject for AlertConfig {
+    fn get_object_id(&self) -> String {
+        self.id.to_string()
+    }
+
+    fn get_object_path(&self) -> String {
+        alert_json_path(self.id).to_string()
+    }
 }

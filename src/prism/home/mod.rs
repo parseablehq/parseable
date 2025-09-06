@@ -22,7 +22,6 @@ use actix_web::http::header::ContentType;
 use chrono::Utc;
 use http::StatusCode;
 use itertools::Itertools;
-use relative_path::RelativePathBuf;
 use serde::Serialize;
 use tracing::error;
 
@@ -33,10 +32,11 @@ use crate::{
         TelemetryType,
         http::{cluster::fetch_daily_stats, logstream::error::StreamError},
     },
+    metastore::MetastoreError,
     parseable::PARSEABLE,
     rbac::{Users, map::SessionKey, role::Action},
     stats::Stats,
-    storage::{ObjectStorageError, ObjectStoreFormat, STREAM_ROOT_DIRECTORY, StreamType},
+    storage::{ObjectStorageError, ObjectStoreFormat, StreamType},
     users::{dashboards::DASHBOARDS, filters::FILTERS},
 };
 
@@ -225,14 +225,9 @@ async fn get_stream_metadata(
     ),
     PrismHomeError,
 > {
-    let path = RelativePathBuf::from_iter([&stream, STREAM_ROOT_DIRECTORY]);
     let obs = PARSEABLE
-        .storage
-        .get_object_store()
-        .get_objects(
-            Some(&path),
-            Box::new(|file_name| file_name.ends_with("stream.json")),
-        )
+        .metastore
+        .get_all_stream_jsons(&stream, None)
         .await?;
 
     let mut stream_jsons = Vec::new();
@@ -341,8 +336,7 @@ pub async fn generate_home_search_response(
 // Helper functions to split the work
 async fn get_stream_titles(key: &SessionKey) -> Result<Vec<String>, PrismHomeError> {
     let stream_titles: Vec<String> = PARSEABLE
-        .storage
-        .get_object_store()
+        .metastore
         .list_streams()
         .await
         .map_err(|e| PrismHomeError::Anyhow(anyhow::Error::new(e)))?
@@ -482,6 +476,8 @@ pub enum PrismHomeError {
     ObjectStorageError(#[from] ObjectStorageError),
     #[error("Invalid query parameter: {0}")]
     InvalidQueryParameter(String),
+    #[error(transparent)]
+    MetastoreError(#[from] MetastoreError),
 }
 
 impl actix_web::ResponseError for PrismHomeError {
@@ -493,12 +489,18 @@ impl actix_web::ResponseError for PrismHomeError {
             PrismHomeError::StreamError(e) => e.status_code(),
             PrismHomeError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PrismHomeError::InvalidQueryParameter(_) => StatusCode::BAD_REQUEST,
+            PrismHomeError::MetastoreError(e) => e.status_code(),
         }
     }
 
     fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
-        actix_web::HttpResponse::build(self.status_code())
-            .insert_header(ContentType::plaintext())
-            .body(self.to_string())
+        match self {
+            PrismHomeError::MetastoreError(e) => actix_web::HttpResponse::build(e.status_code())
+                .insert_header(ContentType::json())
+                .json(e.to_detail()),
+            _ => actix_web::HttpResponse::build(self.status_code())
+                .insert_header(ContentType::plaintext())
+                .body(self.to_string()),
+        }
     }
 }

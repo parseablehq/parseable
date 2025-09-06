@@ -17,14 +17,13 @@
  */
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };
 
 use crate::{
-    handlers::http::users::USERS_ROOT_DIR,
     metrics::storage::{StorageMetrics, gcs::REQUEST_RESPONSE_TIME},
     parseable::LogStream,
 };
@@ -39,7 +38,7 @@ use datafusion::{
 };
 use futures::{StreamExt, TryStreamExt, stream::FuturesUnordered};
 use object_store::{
-    BackoffConfig, ClientOptions, ObjectMeta, ObjectStore, PutPayload, RetryConfig,
+    BackoffConfig, ClientOptions, ListResult, ObjectMeta, ObjectStore, PutPayload, RetryConfig,
     buffered::BufReader,
     gcp::{GoogleCloudStorage, GoogleCloudStorageBuilder},
     limit::LimitStore,
@@ -51,9 +50,9 @@ use tracing::{error, info};
 
 use super::{
     CONNECT_TIMEOUT_SECS, MIN_MULTIPART_UPLOAD_SIZE, ObjectStorage, ObjectStorageError,
-    ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, SCHEMA_FILE_NAME,
-    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY, metrics_layer::MetricLayer,
-    object_storage::parseable_json_path, to_object_store_path,
+    ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS,
+    STREAM_METADATA_FILE_NAME, metrics_layer::MetricLayer, object_storage::parseable_json_path,
+    to_object_store_path,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -244,33 +243,33 @@ impl Gcs {
         Ok(())
     }
 
-    async fn _list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
-        let mut result_file_list = HashSet::new();
-        let resp = self.client.list_with_delimiter(None).await?;
+    // async fn _list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
+    //     let mut result_file_list = HashSet::new();
+    //     let resp = self.client.list_with_delimiter(None).await?;
 
-        let streams = resp
-            .common_prefixes
-            .iter()
-            .flat_map(|path| path.parts())
-            .map(|name| name.as_ref().to_string())
-            .filter(|name| name != PARSEABLE_ROOT_DIRECTORY && name != USERS_ROOT_DIR)
-            .collect::<Vec<_>>();
+    //     let streams = resp
+    //         .common_prefixes
+    //         .iter()
+    //         .flat_map(|path| path.parts())
+    //         .map(|name| name.as_ref().to_string())
+    //         .filter(|name| name != PARSEABLE_ROOT_DIRECTORY && name != USERS_ROOT_DIR)
+    //         .collect::<Vec<_>>();
 
-        for stream in streams {
-            let stream_path =
-                object_store::path::Path::from(format!("{}/{}", &stream, STREAM_ROOT_DIRECTORY));
-            let resp = self.client.list_with_delimiter(Some(&stream_path)).await?;
-            if resp
-                .objects
-                .iter()
-                .any(|name| name.location.filename().unwrap().ends_with("stream.json"))
-            {
-                result_file_list.insert(stream);
-            }
-        }
+    //     for stream in streams {
+    //         let stream_path =
+    //             object_store::path::Path::from(format!("{}/{}", &stream, STREAM_ROOT_DIRECTORY));
+    //         let resp = self.client.list_with_delimiter(Some(&stream_path)).await?;
+    //         if resp
+    //             .objects
+    //             .iter()
+    //             .any(|name| name.location.filename().unwrap().ends_with("stream.json"))
+    //         {
+    //             result_file_list.insert(stream);
+    //         }
+    //     }
 
-        Ok(result_file_list)
-    }
+    //     Ok(result_file_list)
+    // }
 
     async fn _list_dates(&self, stream: &str) -> Result<Vec<String>, ObjectStorageError> {
         let resp = self
@@ -288,37 +287,6 @@ impl Gcs {
             .collect();
 
         Ok(dates)
-    }
-
-    async fn _list_manifest_files(
-        &self,
-        stream: &str,
-    ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
-        let mut result_file_list: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let resp = self
-            .client
-            .list_with_delimiter(Some(&(stream.into())))
-            .await?;
-
-        let dates = resp
-            .common_prefixes
-            .iter()
-            .flat_map(|path| path.parts())
-            .filter(|name| name.as_ref() != stream && name.as_ref() != STREAM_ROOT_DIRECTORY)
-            .map(|name| name.as_ref().to_string())
-            .collect::<Vec<_>>();
-        for date in dates {
-            let date_path = object_store::path::Path::from(format!("{}/{}", stream, &date));
-            let resp = self.client.list_with_delimiter(Some(&date_path)).await?;
-            let manifests: Vec<String> = resp
-                .objects
-                .iter()
-                .filter(|name| name.location.filename().unwrap().ends_with("manifest.json"))
-                .map(|name| name.location.to_string())
-                .collect();
-            result_file_list.entry(date).or_default().extend(manifests);
-        }
-        Ok(result_file_list)
     }
     async fn _upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
         let instant = Instant::now();
@@ -484,37 +452,6 @@ impl ObjectStorage for Gcs {
         Ok(path_arr)
     }
 
-    async fn get_stream_file_paths(
-        &self,
-        stream_name: &str,
-    ) -> Result<Vec<RelativePathBuf>, ObjectStorageError> {
-        let time = Instant::now();
-        let mut path_arr = vec![];
-        let path = to_object_store_path(&RelativePathBuf::from(stream_name));
-        let mut object_stream = self.client.list(Some(&path));
-
-        while let Some(meta) = object_stream.next().await.transpose()? {
-            let flag = meta.location.filename().unwrap().starts_with(".ingestor");
-
-            if flag {
-                path_arr.push(RelativePathBuf::from(meta.location.as_ref()));
-            }
-        }
-
-        path_arr.push(RelativePathBuf::from_iter([
-            stream_name,
-            STREAM_METADATA_FILE_NAME,
-        ]));
-        path_arr.push(RelativePathBuf::from_iter([stream_name, SCHEMA_FILE_NAME]));
-
-        let time = time.elapsed().as_secs_f64();
-        REQUEST_RESPONSE_TIME
-            .with_label_values(&["GET", "200"])
-            .observe(time);
-
-        Ok(path_arr)
-    }
-
     async fn put_object(
         &self,
         path: &RelativePath,
@@ -570,7 +507,10 @@ impl ObjectStorage for Gcs {
     }
 
     async fn list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
-        self._list_streams().await
+        // self._list_streams().await
+        Err(ObjectStorageError::Custom(
+            "GCS doesn't implement list_streams".into(),
+        ))
     }
 
     async fn list_old_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
@@ -663,15 +603,6 @@ impl ObjectStorage for Gcs {
         Ok(minutes)
     }
 
-    async fn list_manifest_files(
-        &self,
-        stream_name: &str,
-    ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
-        let files = self._list_manifest_files(stream_name).await?;
-
-        Ok(files)
-    }
-
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
         self._upload_file(key, path).await?;
 
@@ -721,6 +652,13 @@ impl ObjectStorage for Gcs {
             .flat_map(|path| path.parts())
             .map(|name| name.as_ref().to_string())
             .collect::<Vec<_>>())
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        prefix: Option<object_store::path::Path>,
+    ) -> Result<ListResult, ObjectStorageError> {
+        Ok(self.client.list_with_delimiter(prefix.as_ref()).await?)
     }
 
     fn get_bucket_name(&self) -> String {

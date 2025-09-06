@@ -22,6 +22,7 @@ use crate::{
         alert_enums::NotificationState,
         alert_structs::{Context, ThresholdConfig},
     },
+    metastore::metastore_traits::MetastoreObject,
     rbac::map::SessionKey,
 };
 use chrono::{DateTime, Utc};
@@ -47,7 +48,7 @@ pub trait MessageCreation {
 }
 
 #[async_trait]
-pub trait AlertTrait: Debug + Send + Sync {
+pub trait AlertTrait: Debug + Send + Sync + MetastoreObject {
     async fn eval_alert(&self) -> Result<Option<String>, AlertError>;
     async fn validate(&self, session_key: &SessionKey) -> Result<(), AlertError>;
     async fn update_notification_state(

@@ -26,7 +26,6 @@ use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use base64::Engine;
 use bytes::Bytes;
-use relative_path::RelativePathBuf;
 use serde_json::Value;
 use tokio::sync::OnceCell;
 use tokio::sync::oneshot;
@@ -46,7 +45,7 @@ use crate::{
     migration,
     parseable::PARSEABLE,
     rbac::role::Action,
-    storage::{ObjectStorageError, PARSEABLE_ROOT_DIRECTORY, object_storage::parseable_json_path},
+    storage::ObjectStorageError,
     sync,
 };
 
@@ -289,36 +288,24 @@ impl IngestServer {
 }
 
 // check for querier state. Is it there, or was it there in the past
-// this should happen before the set the ingestor metadata
+// this should happen before we set the ingestor metadata
 pub async fn check_querier_state() -> anyhow::Result<Option<Bytes>, ObjectStorageError> {
     // how do we check for querier state?
     // based on the work flow of the system, the querier will always need to start first
     // i.e the querier will create the `.parseable.json` file
     let parseable_json = PARSEABLE
-        .storage
-        .get_object_store()
-        .get_object(&parseable_json_path())
+        .metastore
+        .get_parseable_metadata()
         .await
-        .map_err(|_| {
-            ObjectStorageError::Custom(
-                "Query Server has not been started yet. Please start the querier server first."
-                    .to_string(),
-            )
-        })?;
+        .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
-    Ok(Some(parseable_json))
+    Ok(parseable_json)
 }
 
 async fn validate_credentials() -> anyhow::Result<()> {
     // check if your creds match with others
-    let store = PARSEABLE.storage.get_object_store();
-    let base_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
-    let ingestor_metadata = store
-        .get_objects(
-            Some(&base_path),
-            Box::new(|file_name| file_name.starts_with("ingestor")),
-        )
-        .await?;
+    let ingestor_metadata = PARSEABLE.metastore.get_ingestor_metadata().await?;
+
     if !ingestor_metadata.is_empty() {
         let ingestor_metadata_value: Value =
             serde_json::from_slice(&ingestor_metadata[0]).expect("ingestor.json is valid json");
