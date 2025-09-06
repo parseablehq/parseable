@@ -95,7 +95,7 @@ impl MetastoreError {
                 file_path: None,
                 timestamp: Some(chrono::Utc::now()),
                 metadata: std::collections::HashMap::new(),
-                status_code: 500,
+                status_code: 400,
             },
             MetastoreError::JsonSchemaError { message } => MetastoreErrorDetail {
                 operation: "JsonSchemaError".to_string(),
@@ -104,7 +104,7 @@ impl MetastoreError {
                 file_path: None,
                 timestamp: Some(chrono::Utc::now()),
                 metadata: std::collections::HashMap::new(),
-                status_code: 500,
+                status_code: 400,
             },
             MetastoreError::InvalidJsonStructure { expected, found } => MetastoreErrorDetail {
                 operation: "InvalidJsonStructure".to_string(),
@@ -118,7 +118,7 @@ impl MetastoreError {
                 ]
                 .into_iter()
                 .collect(),
-                status_code: 500,
+                status_code: 400,
             },
             MetastoreError::MissingJsonField { field } => MetastoreErrorDetail {
                 operation: "MissingJsonField".to_string(),
@@ -127,7 +127,7 @@ impl MetastoreError {
                 file_path: None,
                 timestamp: Some(chrono::Utc::now()),
                 metadata: [("field".to_string(), field.clone())].into_iter().collect(),
-                status_code: 500,
+                status_code: 400,
             },
             MetastoreError::InvalidJsonValue { field, reason } => MetastoreErrorDetail {
                 operation: "InvalidJsonValue".to_string(),
@@ -141,7 +141,7 @@ impl MetastoreError {
                 ]
                 .into_iter()
                 .collect(),
-                status_code: 500,
+                status_code: 400,
             },
         }
     }

@@ -208,14 +208,14 @@ pub async fn post(
 
     alert.validate(&session_key).await?;
 
-    // now that we've validated that the user can run this query
-    // move on to saving the alert in ObjectStore
-    alerts.update(alert).await;
-
+    // update persistent storage first
     PARSEABLE
         .metastore
         .put_alert(&alert.to_alert_config())
         .await?;
+
+    // update in memory
+    alerts.update(alert).await;
 
     // start the task
     alerts.start_task(alert.clone_box()).await?;

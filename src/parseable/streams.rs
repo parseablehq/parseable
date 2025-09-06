@@ -660,7 +660,7 @@ impl Stream {
             return Ok(None);
         }
 
-        Ok(Some(Schema::try_merge(schemas).unwrap()))
+        Ok(Some(Schema::try_merge(schemas)?))
     }
 
     fn write_parquet_part_file(

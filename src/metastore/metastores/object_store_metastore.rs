@@ -68,16 +68,6 @@ impl Metastore for ObjectStoreMetastore {
         unimplemented!()
     }
 
-    /// Might implement later
-    async fn list_objects(&self) -> Result<(), MetastoreError> {
-        unimplemented!()
-    }
-
-    /// Might implement later
-    async fn get_object(&self) -> Result<(), MetastoreError> {
-        unimplemented!()
-    }
-
     /// Fetch mutiple .json objects
     async fn get_objects(&self, parent_path: &str) -> Result<Vec<Bytes>, MetastoreError> {
         Ok(self
@@ -105,7 +95,12 @@ impl Metastore for ObjectStoreMetastore {
 
     /// This function puts an alert in the object store at the given path
     async fn put_alert(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
-        let path = alert_json_path(Ulid::from_string(&obj.get_object_id()).unwrap());
+        let id = Ulid::from_string(&obj.get_object_id()).map_err(|e| MetastoreError::Error {
+            status_code: StatusCode::BAD_REQUEST,
+            message: e.to_string(),
+            flow: "put_alert".into(),
+        })?;
+        let path = alert_json_path(id);
 
         Ok(self.storage.put_object(&path, to_bytes(obj)).await?)
     }
@@ -536,7 +531,10 @@ impl Metastore for ObjectStoreMetastore {
             .await?
             .iter()
             // we should be able to unwrap as we know the data is valid schema
-            .map(|byte_obj| serde_json::from_slice(byte_obj).expect("data is valid json"))
+            .map(|byte_obj| {
+                serde_json::from_slice(byte_obj)
+                    .unwrap_or_else(|_| panic!("got an invalid schema for stream: {stream_name}"))
+            })
             .collect())
     }
 
@@ -661,6 +659,7 @@ impl Metastore for ObjectStoreMetastore {
                 .await
                 .map_err(MetastoreError::ObjectStorageError)
         } else {
+            // not local-disk, object storage
             let mut result_file_list = HashSet::new();
             let resp = self.storage.list_with_delimiter(None).await?;
 
@@ -669,7 +668,12 @@ impl Metastore for ObjectStoreMetastore {
                 .iter()
                 .flat_map(|path| path.parts())
                 .map(|name| name.as_ref().to_string())
-                .filter(|name| name != PARSEABLE_ROOT_DIRECTORY && name != USERS_ROOT_DIR)
+                .filter(|name| {
+                    name != PARSEABLE_ROOT_DIRECTORY
+                        && name != USERS_ROOT_DIR
+                        && name != SETTINGS_ROOT_DIRECTORY
+                        && name != ALERTS_ROOT_DIRECTORY
+                })
                 .collect::<Vec<_>>();
 
             for stream in streams {

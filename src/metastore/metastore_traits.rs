@@ -36,8 +36,6 @@ use crate::{
 #[async_trait]
 pub trait Metastore: std::fmt::Debug + Send + Sync {
     async fn initiate_connection(&self) -> Result<(), MetastoreError>;
-    async fn list_objects(&self) -> Result<(), MetastoreError>;
-    async fn get_object(&self) -> Result<(), MetastoreError>;
     async fn get_objects(&self, parent_path: &str) -> Result<Vec<Bytes>, MetastoreError>;
 
     /// alerts

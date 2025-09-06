@@ -995,7 +995,7 @@ impl AlertManagerTrait for Alerts {
         let mut map = self.alerts.write().await;
 
         // Get alerts path and read raw bytes for migration handling
-        let raw_objects = PARSEABLE.metastore.get_alerts().await.unwrap_or_default();
+        let raw_objects = PARSEABLE.metastore.get_alerts().await?;
 
         for raw_bytes in raw_objects {
             // First, try to parse as JSON Value to check version

@@ -414,19 +414,26 @@ async fn collect_from_snapshot(
     let mut manifest_files = Vec::new();
 
     for manifest_item in snapshot.manifests(time_filters) {
-        manifest_files.push(
-            PARSEABLE
-                .metastore
-                .get_manifest(
-                    stream_name,
-                    manifest_item.time_lower_bound,
-                    manifest_item.time_upper_bound,
-                    Some(manifest_item.manifest_path),
-                )
-                .await
-                .map_err(|e| DataFusionError::Plan(e.to_string()))?
-                .expect("Data is invalid for Manifest"),
-        )
+        let manifest_opt = PARSEABLE
+            .metastore
+            .get_manifest(
+                stream_name,
+                manifest_item.time_lower_bound,
+                manifest_item.time_upper_bound,
+                Some(manifest_item.manifest_path),
+            )
+            .await
+            .map_err(|e| DataFusionError::Plan(e.to_string()))?;
+        if let Some(manifest) = manifest_opt {
+            manifest_files.push(manifest);
+        } else {
+            tracing::warn!(
+                "Manifest missing for stream={} [{:?} - {:?}]",
+                stream_name,
+                manifest_item.time_lower_bound,
+                manifest_item.time_upper_bound
+            );
+        }
     }
 
     let mut manifest_files: Vec<_> = manifest_files
