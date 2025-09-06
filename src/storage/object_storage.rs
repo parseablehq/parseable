@@ -274,17 +274,6 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         prefix: Option<object_store::path::Path>,
     ) -> Result<ListResult, ObjectStorageError>;
 
-    // async fn put_schema(
-    //     &self,
-    //     stream_name: &str,
-    //     schema: &Schema,
-    // ) -> Result<(), ObjectStorageError> {
-    //     self.put_object(&schema_path(stream_name), to_bytes(schema))
-    //         .await?;
-
-    //     Ok(())
-    // }
-
     async fn create_stream(
         &self,
         stream_name: &str,

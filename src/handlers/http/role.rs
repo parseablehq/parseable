@@ -146,7 +146,7 @@ async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorage
         .get_parseable_metadata()
         .await
         .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
-        .expect("metadata is initialized");
+        .ok_or_else(|| ObjectStorageError::Custom("parseable metadata not initialized".into()))?;
     Ok(serde_json::from_slice::<StorageMetadata>(&metadata)?)
 }
 

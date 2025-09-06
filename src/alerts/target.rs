@@ -56,9 +56,9 @@ pub struct TargetConfigs {
 impl TargetConfigs {
     /// Loads alerts from disk, blocks
     pub async fn load(&self) -> anyhow::Result<()> {
+        let targets = PARSEABLE.metastore.get_targets().await?;
         let mut map = self.target_configs.write().await;
-
-        for target in PARSEABLE.metastore.get_targets().await.unwrap_or_default() {
+        for target in targets {
             map.insert(target.id, target);
         }
 
@@ -66,9 +66,9 @@ impl TargetConfigs {
     }
 
     pub async fn update(&self, target: Target) -> Result<(), AlertError> {
+        PARSEABLE.metastore.put_target(&target).await?;
         let mut map = self.target_configs.write().await;
         map.insert(target.id, target.clone());
-        PARSEABLE.metastore.put_target(&target).await?;
         Ok(())
     }
 
