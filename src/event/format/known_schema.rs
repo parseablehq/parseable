@@ -513,4 +513,82 @@ mod tests {
         assert!(!obj.contains_key("level"));
         assert!(!obj.contains_key("timestamp"));
     }
+
+    #[test]
+    fn test_rust_server_logs() {
+        let processor = EventProcessor::new(FORMATS_JSON);
+        let schema = processor
+            .schema_definitions
+            .get("rust_server_logs")
+            .unwrap();
+
+        let test_logs = vec![
+            // Current parseable format with ThreadId
+            "2025-09-06T10:43:01.628980875Z  WARN main ThreadId(01) parseable::handlers::http::cluster:919: node http://0.0.0.0:8010/ is not live",
+            "2025-09-06T10:44:12.62276265Z ERROR actix-rt|system:0|arbiter:17 ThreadId(163) parseable_enterprise::http::handlers::query:43: JsonParse(\"Datafusion Error: Schema error: No field named a. Valid fields are serverlogs.log\")",
+            "2025-09-06T05:16:46.092071318Z ERROR actix-rt|system:0|arbiter:21 ThreadId(167) parseable_enterprise::http::handlers::query:43: JsonParse(\"Datafusion Error: Schema error: No field named ansible.host.ip\")",
+            "2025-09-06T11:22:07.500864363Z  WARN                         main ThreadId(01) parseable_enterprise:70: Received shutdown signal, notifying server to shut down...",
+            // env_logger format
+            "[2025-09-06T10:43:01.628980875Z INFO  parseable::storage] Initializing storage backend",
+            "[2025-09-06T10:43:01.628980875Z ERROR parseable::http::ingest] Failed to parse JSON",
+            // Simple tracing format (no ThreadId)
+            "2025-09-06T10:43:01.628980875Z  INFO parseable::storage::s3: Storage configured successfully",
+            "2025-09-06T10:43:01.628980875Z DEBUG parseable::query::engine: Query executed in 45ms",
+        ];
+
+        for (i, log_text) in test_logs.iter().enumerate() {
+            let mut obj = Map::new();
+            let log_field = "raw_log";
+            obj.insert(log_field.to_string(), Value::String(log_text.to_string()));
+
+            let result = schema.check_or_extract(&mut obj, Some(log_field));
+            assert!(
+                result.is_some(),
+                "Failed to extract fields from rust server log {}: {}",
+                i + 1,
+                log_text
+            );
+
+            // Verify basic fields that should be present in all formats
+            assert!(
+                obj.contains_key("timestamp"),
+                "Missing timestamp field for log {}",
+                i + 1
+            );
+            assert!(
+                obj.contains_key("level"),
+                "Missing level field for log {}",
+                i + 1
+            );
+            assert!(
+                obj.contains_key("body"),
+                "Missing body field for log {}",
+                i + 1
+            );
+            assert!(
+                obj.contains_key("module"),
+                "Missing module field for log {}",
+                i + 1
+            );
+
+            // ThreadId and line_number are only present in the first format (logs 0-3)
+            if i < 4 {
+                assert!(
+                    obj.contains_key("logger_context"),
+                    "Missing logger_context field for log {}",
+                    i + 1
+                );
+                assert!(
+                    obj.contains_key("thread_id"),
+                    "Missing thread_id field for log {}",
+                    i + 1
+                );
+                assert!(
+                    obj.contains_key("line_number"),
+                    "Missing line_number field for log {}",
+                    i + 1
+                );
+            }
+        }
+    }
 }
