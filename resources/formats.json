@@ -1464,5 +1464,40 @@
         ]
       }
     ]
+  },
+  {
+    "name": "rust_server_logs",
+    "regex": [
+      {
+        "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z)\\s+(?P<level>\\w+)\\s+(?P<logger_context>\\S+)\\s+(?P<thread_id>ThreadId\\(\\d+\\))\\s+(?P<module>.*?):(?P<line_number>\\d+):\\s+(?P<body>.*)",
+        "fields": [
+          "timestamp",
+          "level",
+          "logger_context",
+          "thread_id",
+          "module",
+          "line_number",
+          "body"
+        ]
+      },
+      {
+        "pattern": "^\\[(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}[^ ]+) (?P<level>\\w+)\\s+(?P<module>[^\\]]+)\\]\\s+(?P<body>.*)",
+        "fields": [
+          "timestamp",
+          "level",
+          "module",
+          "body"
+        ]
+      },
+      {
+        "pattern": "^(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z?)\\s+(?P<level>\\w+)\\s+(?P<module>\\S+?):\\s+(?P<body>.*)",
+        "fields": [
+          "timestamp",
+          "level",
+          "module",
+          "body"
+        ]
+      }
+    ]
   }
 ]
