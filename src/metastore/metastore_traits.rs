@@ -21,6 +21,7 @@ use std::collections::{BTreeMap, HashSet};
 use arrow_schema::Schema;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use erased_serde::Serialize as ErasedSerialize;
 use tonic::async_trait;
 
@@ -57,6 +58,11 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
     async fn get_dashboards(&self) -> Result<Vec<Bytes>, MetastoreError>;
     async fn put_dashboard(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
     async fn delete_dashboard(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+
+    /// chats
+    async fn get_chats(&self) -> Result<DashMap<String, Vec<Bytes>>, MetastoreError>;
+    async fn put_chat(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn delete_chat(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
 
     /// filters
     async fn get_filters(&self) -> Result<Vec<Filter>, MetastoreError>;

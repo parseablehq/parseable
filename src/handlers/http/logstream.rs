@@ -90,8 +90,7 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let res = PARSEABLE
         .metastore
         .list_streams()
-        .await
-        .unwrap()
+        .await?
         .into_iter()
         .filter(|logstream| {
             Users.authorize(key.clone(), Action::ListStream, Some(logstream), None)

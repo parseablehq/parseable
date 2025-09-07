@@ -24,6 +24,7 @@ use std::{
 use arrow_schema::Schema;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use dashmap::DashMap;
 use http::StatusCode;
 use relative_path::RelativePathBuf;
 use tonic::async_trait;
@@ -181,6 +182,54 @@ impl Metastore for ObjectStoreMetastore {
 
     /// Delete a dashboard
     async fn delete_dashboard(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
+        let path = obj.get_object_path();
+        Ok(self
+            .storage
+            .delete_object(&RelativePathBuf::from(path))
+            .await?)
+    }
+
+    /// Fetch all chats
+    async fn get_chats(&self) -> Result<DashMap<String, Vec<Bytes>>, MetastoreError> {
+        let all_user_chats = DashMap::new();
+
+        let users_dir = RelativePathBuf::from(USERS_ROOT_DIR);
+        for user in self.storage.list_dirs_relative(&users_dir).await? {
+            if user.starts_with(".") {
+                continue;
+            }
+            let mut chats = Vec::new();
+            let chats_path = users_dir.join(&user).join("chats");
+            let user_chats = self
+                .storage
+                .get_objects(
+                    Some(&chats_path),
+                    Box::new(|file_name| file_name.ends_with(".json")),
+                )
+                .await?;
+            for chat in user_chats {
+                chats.push(chat);
+            }
+
+            all_user_chats.insert(user, chats);
+        }
+
+        Ok(all_user_chats)
+    }
+
+    /// Save a chat
+    async fn put_chat(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
+        // we need the path to store in obj store
+        let path = obj.get_object_path();
+
+        Ok(self
+            .storage
+            .put_object(&RelativePathBuf::from(path), to_bytes(obj))
+            .await?)
+    }
+
+    /// Delete a chat
+    async fn delete_chat(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
         let path = obj.get_object_path();
         Ok(self
             .storage

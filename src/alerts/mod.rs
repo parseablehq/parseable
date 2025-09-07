@@ -992,10 +992,10 @@ impl actix_web::ResponseError for AlertError {
 impl AlertManagerTrait for Alerts {
     /// Loads alerts from disk, blocks
     async fn load(&self) -> anyhow::Result<()> {
-        let mut map = self.alerts.write().await;
-
         // Get alerts path and read raw bytes for migration handling
         let raw_objects = PARSEABLE.metastore.get_alerts().await?;
+
+        let mut map = self.alerts.write().await;
 
         for raw_bytes in raw_objects {
             // First, try to parse as JSON Value to check version

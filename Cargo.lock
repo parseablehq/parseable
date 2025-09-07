@@ -3492,6 +3492,7 @@ dependencies = [
  "clokwerk",
  "cookie 0.18.1",
  "crossterm",
+ "dashmap",
  "datafusion",
  "derive_more 1.0.0",
  "erased-serde",

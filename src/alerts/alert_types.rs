@@ -182,14 +182,14 @@ impl AlertTrait for ThresholdAlert {
         &mut self,
         new_notification_state: NotificationState,
     ) -> Result<(), AlertError> {
+        // update state in memory
+        self.notification_state = new_notification_state;
+
         // update on disk
         PARSEABLE
             .metastore
             .put_alert(&self.to_alert_config())
             .await?;
-        // update state in memory
-        self.notification_state = new_notification_state;
-
         Ok(())
     }
 

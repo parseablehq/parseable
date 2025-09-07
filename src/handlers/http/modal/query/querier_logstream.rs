@@ -163,7 +163,6 @@ pub async fn get_stats(
         })?;
 
         if !date_value.is_empty() {
-            // this function requires all the ingestor stream jsons
             let obs = PARSEABLE
                 .metastore
                 .get_all_stream_jsons(&stream_name, None)
