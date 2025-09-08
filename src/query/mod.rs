@@ -332,6 +332,8 @@ pub struct CountsRequest {
     pub start_time: String,
     /// Excluded end time for counts query
     pub end_time: String,
+    /// optional number of bins to divide the time range into
+    pub num_bins: Option<u64>,
     /// Conditions
     pub conditions: Option<CountConditions>,
 }
@@ -400,19 +402,23 @@ impl CountsRequest {
             .signed_duration_since(time_range.start)
             .num_minutes() as u64;
 
-        // create number of bins based on total minutes
-        let num_bins = if total_minutes <= 60 * 5 {
-            // till 5 hours, 1 bin = 1 min
-            total_minutes
-        } else if total_minutes <= 60 * 24 {
-            // till 1 day, 1 bin = 5 min
-            total_minutes.div_ceil(5)
-        } else if total_minutes <= 60 * 24 * 10 {
-            // till 10 days, 1 bin = 1 hour
-            total_minutes.div_ceil(60)
+        let num_bins = if let Some(num_bins) = self.num_bins {
+            num_bins
         } else {
-            // > 10 days, 1 bin = 1 day
-            total_minutes.div_ceil(1440)
+            // create number of bins based on total minutes
+            if total_minutes <= 60 * 5 {
+                // till 5 hours, 1 bin = 1 min
+                total_minutes
+            } else if total_minutes <= 60 * 24 {
+                // till 1 day, 1 bin = 5 min
+                total_minutes.div_ceil(5)
+            } else if total_minutes <= 60 * 24 * 10 {
+                // till 10 days, 1 bin = 1 hour
+                total_minutes.div_ceil(60)
+            } else {
+                // > 10 days, 1 bin = 1 day
+                total_minutes.div_ceil(1440)
+            }
         };
 
         // divide minutes by num bins to get minutes per bin
