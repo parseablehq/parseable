@@ -167,7 +167,6 @@ async fn handle_count_query(
         stream: table_name.to_string(),
         start_time: query_request.start_time.clone(),
         end_time: query_request.end_time.clone(),
-        num_bins: 1,
         conditions: None,
     };
     let count_records = counts_req.get_bin_density().await?;

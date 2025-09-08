@@ -332,8 +332,6 @@ pub struct CountsRequest {
     pub start_time: String,
     /// Excluded end time for counts query
     pub end_time: String,
-    /// Number of bins to divide the time range into
-    pub num_bins: u64,
     /// Conditions
     pub conditions: Option<CountConditions>,
 }
@@ -402,9 +400,24 @@ impl CountsRequest {
             .signed_duration_since(time_range.start)
             .num_minutes() as u64;
 
+        // create number of bins based on total minutes
+        let num_bins = if total_minutes <= 60 * 5 {
+            // till 5 hours, 1 bin = 1 min
+            total_minutes
+        } else if total_minutes <= 60 * 24 {
+            // till 1 day, 1 bin = 5 min
+            total_minutes.div_ceil(5)
+        } else if total_minutes <= 60 * 24 * 10 {
+            // till 10 days, 1 bin = 1 hour
+            total_minutes.div_ceil(60)
+        } else {
+            // > 10 days, 1 bin = 1 day
+            total_minutes.div_ceil(1440)
+        };
+
         // divide minutes by num bins to get minutes per bin
-        let quotient = total_minutes / self.num_bins;
-        let remainder = total_minutes % self.num_bins;
+        let quotient = total_minutes / num_bins;
+        let remainder = total_minutes % num_bins;
         let have_remainder = remainder > 0;
 
         // now create multiple bounds [startTime, endTime)
@@ -414,9 +427,9 @@ impl CountsRequest {
         let mut start = time_range.start;
 
         let loop_end = if have_remainder {
-            self.num_bins
+            num_bins
         } else {
-            self.num_bins - 1
+            num_bins - 1
         };
 
         // Create bins for all but the last date
@@ -454,25 +467,20 @@ impl CountsRequest {
         let table_name = &self.stream;
         let start_time_col_name = "_bin_start_time_";
         let end_time_col_name = "_bin_end_time_";
-        let date_bin = if dur.num_minutes() <= 60 {
-            // less than 1 hour = 1 min bin
+        let date_bin = if dur.num_minutes() <= 60 * 5 {
+            // less than 5 hour = 1 min bin
             format!(
                 "CAST(DATE_BIN('1m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('1m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1m' as {end_time_col_name}"
             )
-        } else if dur.num_minutes() > 60 && dur.num_minutes() < 60 * 24 {
-            // between 1 hour and 1 day = 5 min bin
+        } else if dur.num_minutes() <= 60 * 24 {
+            // 1 day = 5 min bin
             format!(
                 "CAST(DATE_BIN('5m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('5m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '5m' as {end_time_col_name}"
             )
-        } else if dur.num_minutes() > 60 * 24 && dur.num_minutes() < 60 * 24 * 3 {
-            // between 1 day and 3 day = 1 hour bin
+        } else if dur.num_minutes() < 60 * 24 * 10 {
+            // 10 days = 1 hour bin
             format!(
                 "CAST(DATE_BIN('1h', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('1h', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1h' as {end_time_col_name}"
-            )
-        } else if dur.num_minutes() > 60 * 24 * 3 && dur.num_minutes() < 60 * 24 * 10 {
-            // between 3 day and 10 day = 4 hour bin
-            format!(
-                "CAST(DATE_BIN('4h', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('4h', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '4h' as {end_time_col_name}"
             )
         } else {
             // 1 day

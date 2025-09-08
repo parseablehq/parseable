@@ -351,7 +351,6 @@ impl PrismDatasetRequest {
             stream: stream.to_owned(),
             start_time: "1h".to_owned(),
             end_time: "now".to_owned(),
-            num_bins: 10,
             conditions: None,
         };
 
