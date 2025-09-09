@@ -30,11 +30,7 @@ use object_store::{
     PutOptions, PutPayload, PutResult, Result as ObjectStoreResult, path::Path,
 };
 
-/* NOTE: Keeping these imports as they would make migration to object_store 0.10.0 easier
-use object_store::{MultipartUpload, PutMultipartOpts, PutPayload}
-*/
-
-use crate::metrics::storage::STORAGE_REQUEST_RESPONSE_TIME;
+use crate::metrics::STORAGE_REQUEST_RESPONSE_TIME;
 
 // Public helper function to map object_store errors to HTTP status codes
 pub fn error_to_status_code(err: &object_store::Error) -> &'static str {
