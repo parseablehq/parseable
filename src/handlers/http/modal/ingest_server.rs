@@ -116,8 +116,6 @@ impl ParseableServer for IngestServer {
             })
             .await;
 
-        PARSEABLE.storage.register_store_metrics(prometheus);
-
         migration::run_migration(&PARSEABLE).await?;
 
         // local sync on init

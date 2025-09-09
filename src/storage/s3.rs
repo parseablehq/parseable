@@ -48,12 +48,12 @@ use object_store::{
 };
 use relative_path::{RelativePath, RelativePathBuf};
 use tokio::{fs::OpenOptions, io::AsyncReadExt};
-use tracing::{error, info};
+use tracing::error;
 
 use crate::{
-    metrics::storage::{
-        STORAGE_FILES_SCANNED, STORAGE_FILES_SCANNED_DATE, STORAGE_REQUEST_RESPONSE_TIME,
-        StorageMetrics,
+    metrics::{
+        STORAGE_REQUEST_RESPONSE_TIME, increment_files_scanned_in_object_store_calls_by_date,
+        increment_object_store_calls_by_date,
     },
     parseable::LogStream,
 };
@@ -328,10 +328,6 @@ impl ObjectStorageProvider for S3Config {
     fn get_endpoint(&self) -> String {
         format!("{}/{}", self.endpoint_url, self.bucket_name)
     }
-
-    fn register_store_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {
-        self.register_metrics(handler)
-    }
 }
 
 #[derive(Debug)]
@@ -346,18 +342,21 @@ impl S3 {
         let time = std::time::Instant::now();
         let resp = self.client.get(&to_object_store_path(path)).await;
         let elapsed = time.elapsed().as_secs_f64();
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "GET"])
-            .inc();
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["s3", "GET", &Utc::now().date_naive().to_string()])
-            .inc();
+
+        increment_object_store_calls_by_date("s3", "GET", &Utc::now().date_naive().to_string());
+
         match resp {
             Ok(resp) => {
                 let body = resp.bytes().await?;
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["s3", "GET", "200"])
                     .observe(elapsed);
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "s3",
+                    "GET",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
                 Ok(body)
             }
             Err(err) => {
@@ -378,17 +377,19 @@ impl S3 {
         let time = std::time::Instant::now();
         let resp = self.client.put(&to_object_store_path(path), resource).await;
         let elapsed = time.elapsed().as_secs_f64();
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "PUT"])
-            .inc();
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["s3", "PUT", &Utc::now().date_naive().to_string()])
-            .inc();
+
+        increment_object_store_calls_by_date("s3", "PUT", &Utc::now().date_naive().to_string());
         match resp {
             Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["s3", "PUT", "200"])
                     .observe(elapsed);
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "s3",
+                    "PUT",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
                 Ok(())
             }
             Err(err) => {
@@ -411,16 +412,23 @@ impl S3 {
         STORAGE_REQUEST_RESPONSE_TIME
             .with_label_values(&["s3", "LIST", "200"])
             .observe(list_elapsed);
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
 
         object_stream
             .for_each_concurrent(None, |x| async {
                 files_scanned.fetch_add(1, Ordering::Relaxed);
+
                 match x {
                     Ok(obj) => {
                         files_deleted.fetch_add(1, Ordering::Relaxed);
                         let delete_start = Instant::now();
                         let delete_resp = self.client.delete(&obj.location).await;
                         let delete_elapsed = delete_start.elapsed().as_secs_f64();
+                        increment_object_store_calls_by_date(
+                            "s3",
+                            "DELETE",
+                            &Utc::now().date_naive().to_string(),
+                        );
                         match delete_resp {
                             Ok(_) => {
                                 STORAGE_REQUEST_RESPONSE_TIME
@@ -443,18 +451,19 @@ impl S3 {
             })
             .await;
 
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "LIST"])
-            .inc_by(files_scanned.load(Ordering::Relaxed) as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
-            .inc_by(files_scanned.load(Ordering::Relaxed) as f64);
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "DELETE"])
-            .inc_by(files_deleted.load(Ordering::Relaxed) as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["s3", "DELETE", &Utc::now().date_naive().to_string()])
-            .inc_by(files_deleted.load(Ordering::Relaxed) as f64);
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "LIST",
+            files_scanned.load(Ordering::Relaxed),
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "DELETE",
+            files_deleted.load(Ordering::Relaxed),
+            &Utc::now().date_naive().to_string(),
+        );
+        // Note: Individual DELETE calls are tracked inside the concurrent loop
         Ok(())
     }
 
@@ -465,6 +474,7 @@ impl S3 {
             .list_with_delimiter(Some(&(stream.into())))
             .await;
         let list_elapsed = list_start.elapsed().as_secs_f64();
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
 
         let resp = match resp {
             Ok(resp) => {
@@ -484,12 +494,12 @@ impl S3 {
 
         let common_prefixes = resp.common_prefixes;
 
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "LIST"])
-            .inc_by(common_prefixes.len() as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
-            .inc_by(common_prefixes.len() as f64);
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "LIST",
+            common_prefixes.len() as u64,
+            &Utc::now().date_naive().to_string(),
+        );
 
         // return prefixes at the root level
         let dates: Vec<_> = common_prefixes
@@ -507,18 +517,19 @@ impl S3 {
         let put_start = Instant::now();
         let result = self.client.put(&key.into(), bytes.into()).await;
         let put_elapsed = put_start.elapsed().as_secs_f64();
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "PUT"])
-            .inc();
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["s3", "PUT", &Utc::now().date_naive().to_string()])
-            .inc();
+
+        increment_object_store_calls_by_date("s3", "PUT", &Utc::now().date_naive().to_string());
         match result {
-            Ok(result) => {
+            Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["s3", "PUT", "200"])
                     .observe(put_elapsed);
-                info!("Uploaded file to S3: {:?}", result);
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "s3",
+                    "PUT",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
                 Ok(())
             }
             Err(err) => {
@@ -543,12 +554,17 @@ impl S3 {
         let multipart_start = Instant::now();
         let async_writer = self.client.put_multipart(location).await;
         let multipart_elapsed = multipart_start.elapsed().as_secs_f64();
-
+        increment_object_store_calls_by_date(
+            "s3",
+            "PUT_MULTIPART",
+            &Utc::now().date_naive().to_string(),
+        );
         let mut async_writer = match async_writer {
             Ok(writer) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["s3", "PUT_MULTIPART", "200"])
                     .observe(multipart_elapsed);
+
                 writer
             }
             Err(err) => {
@@ -570,17 +586,19 @@ impl S3 {
             let put_start = Instant::now();
             let result = self.client.put(location, data.into()).await;
             let put_elapsed = put_start.elapsed().as_secs_f64();
-            STORAGE_FILES_SCANNED
-                .with_label_values(&["s3", "PUT"])
-                .inc();
-            STORAGE_FILES_SCANNED_DATE
-                .with_label_values(&["s3", "PUT", &Utc::now().date_naive().to_string()])
-                .inc();
+
+            increment_object_store_calls_by_date("s3", "PUT", &Utc::now().date_naive().to_string());
             match result {
                 Ok(_) => {
                     STORAGE_REQUEST_RESPONSE_TIME
                         .with_label_values(&["s3", "PUT", "200"])
                         .observe(put_elapsed);
+                    increment_files_scanned_in_object_store_calls_by_date(
+                        "s3",
+                        "PUT",
+                        1,
+                        &Utc::now().date_naive().to_string(),
+                    );
                 }
                 Err(err) => {
                     let status_code = error_to_status_code(&err);
@@ -622,17 +640,27 @@ impl S3 {
                 let part_start = Instant::now();
                 let result = async_writer.put_part(part_data.into()).await;
                 let part_elapsed = part_start.elapsed().as_secs_f64();
-
+                increment_object_store_calls_by_date(
+                    "s3",
+                    "PUT_MULTIPART",
+                    &Utc::now().date_naive().to_string(),
+                );
                 match result {
                     Ok(_) => {
                         STORAGE_REQUEST_RESPONSE_TIME
-                            .with_label_values(&["s3", "PUT_MULTIPART_PART", "200"])
+                            .with_label_values(&["s3", "PUT_MULTIPART", "200"])
                             .observe(part_elapsed);
+                        increment_files_scanned_in_object_store_calls_by_date(
+                            "s3",
+                            "PUT_MULTIPART",
+                            1,
+                            &Utc::now().date_naive().to_string(),
+                        );
                     }
                     Err(err) => {
                         let status_code = error_to_status_code(&err);
                         STORAGE_REQUEST_RESPONSE_TIME
-                            .with_label_values(&["s3", "PUT_MULTIPART_PART", status_code])
+                            .with_label_values(&["s3", "PUT_MULTIPART", status_code])
                             .observe(part_elapsed);
                         return Err(err.into());
                     }
@@ -675,17 +703,19 @@ impl ObjectStorage for S3 {
         let head_start = Instant::now();
         let meta = self.client.head(path).await;
         let head_elapsed = head_start.elapsed().as_secs_f64();
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "HEAD"])
-            .inc();
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["s3", "HEAD", &Utc::now().date_naive().to_string()])
-            .inc();
+
+        increment_object_store_calls_by_date("s3", "HEAD", &Utc::now().date_naive().to_string());
         let meta = match meta {
             Ok(meta) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["s3", "HEAD", "200"])
                     .observe(head_elapsed);
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "s3",
+                    "HEAD",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
                 meta
             }
             Err(err) => {
@@ -714,17 +744,19 @@ impl ObjectStorage for S3 {
         let head_start = Instant::now();
         let result = self.client.head(&to_object_store_path(path)).await;
         let head_elapsed = head_start.elapsed().as_secs_f64();
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "HEAD"])
-            .inc();
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["s3", "HEAD", &Utc::now().date_naive().to_string()])
-            .inc();
+
+        increment_object_store_calls_by_date("s3", "HEAD", &Utc::now().date_naive().to_string());
         match &result {
             Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["s3", "HEAD", "200"])
                     .observe(head_elapsed);
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "s3",
+                    "HEAD",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
             }
             Err(err) => {
                 let status_code = error_to_status_code(err);
@@ -784,13 +816,13 @@ impl ObjectStorage for S3 {
             STORAGE_REQUEST_RESPONSE_TIME
                 .with_label_values(&["s3", "GET", "200"])
                 .observe(list_start.elapsed().as_secs_f64());
-            STORAGE_FILES_SCANNED
-                .with_label_values(&["s3", "GET"])
-                .inc();
-            STORAGE_FILES_SCANNED_DATE
-                .with_label_values(&["s3", "GET", &Utc::now().date_naive().to_string()])
-                .inc();
-
+            increment_files_scanned_in_object_store_calls_by_date(
+                "s3",
+                "GET",
+                1,
+                &Utc::now().date_naive().to_string(),
+            );
+            increment_object_store_calls_by_date("s3", "GET", &Utc::now().date_naive().to_string());
             res.push(byts);
         }
         let list_elapsed = list_start.elapsed().as_secs_f64();
@@ -799,13 +831,13 @@ impl ObjectStorage for S3 {
             .observe(list_elapsed);
 
         // Record total files scanned
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "LIST"])
-            .inc_by(files_scanned as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
-            .inc_by(files_scanned as f64);
-
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "LIST",
+            files_scanned as u64,
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
         Ok(res)
     }
 
@@ -818,6 +850,7 @@ impl ObjectStorage for S3 {
         // Track list operation
         let list_start = Instant::now();
         let mut object_stream = self.client.list(Some(&self.root));
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
 
         while let Some(meta_result) = object_stream.next().await {
             let meta = match meta_result {
@@ -839,13 +872,12 @@ impl ObjectStorage for S3 {
             .with_label_values(&["s3", "LIST", "200"])
             .observe(list_elapsed);
         // Record total files scanned
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "LIST"])
-            .inc_by(files_scanned as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
-            .inc_by(files_scanned as f64);
-
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "LIST",
+            files_scanned as u64,
+            &Utc::now().date_naive().to_string(),
+        );
         Ok(path_arr)
     }
 
@@ -871,19 +903,19 @@ impl ObjectStorage for S3 {
         let delete_start = Instant::now();
         let result = self.client.delete(&to_object_store_path(path)).await;
         let delete_elapsed = delete_start.elapsed().as_secs_f64();
-
+        increment_object_store_calls_by_date("s3", "DELETE", &Utc::now().date_naive().to_string());
         match &result {
             Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["s3", "DELETE", "200"])
                     .observe(delete_elapsed);
                 // Record single file deleted
-                STORAGE_FILES_SCANNED
-                    .with_label_values(&["s3", "DELETE"])
-                    .inc();
-                STORAGE_FILES_SCANNED_DATE
-                    .with_label_values(&["s3", "DELETE", &Utc::now().date_naive().to_string()])
-                    .inc();
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "s3",
+                    "DELETE",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
             }
             Err(err) => {
                 let status_code = error_to_status_code(err);
@@ -903,12 +935,19 @@ impl ObjectStorage for S3 {
             .head(&to_object_store_path(&parseable_json_path()))
             .await;
         let head_elapsed = head_start.elapsed().as_secs_f64();
+        increment_object_store_calls_by_date("s3", "HEAD", &Utc::now().date_naive().to_string());
 
         match &result {
             Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["s3", "HEAD", "200"])
                     .observe(head_elapsed);
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "s3",
+                    "HEAD",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
             }
             Err(err) => {
                 let status_code = error_to_status_code(err);
@@ -917,12 +956,6 @@ impl ObjectStorage for S3 {
                     .observe(head_elapsed);
             }
         }
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "HEAD"])
-            .inc();
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["s3", "HEAD", &Utc::now().date_naive().to_string()])
-            .inc();
 
         Ok(result.map(|_| ())?)
     }
@@ -939,17 +972,19 @@ impl ObjectStorage for S3 {
         let delete_start = Instant::now();
         let result = self.client.delete(&to_object_store_path(&file)).await;
         let delete_elapsed = delete_start.elapsed().as_secs_f64();
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "DELETE"])
-            .inc();
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["s3", "DELETE", &Utc::now().date_naive().to_string()])
-            .inc();
+
+        increment_object_store_calls_by_date("s3", "DELETE", &Utc::now().date_naive().to_string());
         match result {
             Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["s3", "DELETE", "200"])
                     .observe(delete_elapsed);
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "s3",
+                    "DELETE",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
                 Ok(())
             }
             Err(err) => {
@@ -980,12 +1015,13 @@ impl ObjectStorage for S3 {
             .observe(list_elapsed);
 
         let common_prefixes = resp.common_prefixes; // get all dirs
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "LIST"])
-            .inc_by(common_prefixes.len() as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
-            .inc_by(common_prefixes.len() as f64);
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "LIST",
+            common_prefixes.len() as u64,
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
         // return prefixes at the root level
         let dirs: HashSet<_> = common_prefixes
             .iter()
@@ -1002,7 +1038,11 @@ impl ObjectStorage for S3 {
                 let head_start = Instant::now();
                 let result = self.client.head(&StorePath::from(key)).await;
                 let head_elapsed = head_start.elapsed().as_secs_f64();
-
+                increment_object_store_calls_by_date(
+                    "s3",
+                    "HEAD",
+                    &Utc::now().date_naive().to_string(),
+                );
                 match &result {
                     Ok(_) => {
                         STORAGE_REQUEST_RESPONSE_TIME
@@ -1021,13 +1061,12 @@ impl ObjectStorage for S3 {
             };
             stream_json_check.push(task);
         }
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "HEAD"])
-            .inc_by(dirs.len() as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["s3", "HEAD", &Utc::now().date_naive().to_string()])
-            .inc_by(dirs.len() as f64);
-
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "HEAD",
+            dirs.len() as u64,
+            &Utc::now().date_naive().to_string(),
+        );
         stream_json_check.try_collect::<()>().await?;
 
         Ok(dirs)
@@ -1051,12 +1090,13 @@ impl ObjectStorage for S3 {
         STORAGE_REQUEST_RESPONSE_TIME
             .with_label_values(&["s3", "LIST", "200"])
             .observe(list_elapsed);
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "LIST"])
-            .inc_by(resp.common_prefixes.len() as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
-            .inc_by(resp.common_prefixes.len() as f64);
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "LIST",
+            resp.common_prefixes.len() as u64,
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
 
         let hours: Vec<String> = resp
             .common_prefixes
@@ -1091,13 +1131,13 @@ impl ObjectStorage for S3 {
         STORAGE_REQUEST_RESPONSE_TIME
             .with_label_values(&["s3", "LIST", "200"])
             .observe(list_elapsed);
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["s3", "LIST"])
-            .inc_by(resp.common_prefixes.len() as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
-            .inc_by(resp.common_prefixes.len() as f64);
-
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "LIST",
+            resp.common_prefixes.len() as u64,
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
         let minutes: Vec<String> = resp
             .common_prefixes
             .iter()
@@ -1156,18 +1196,19 @@ impl ObjectStorage for S3 {
         let list_start = Instant::now();
         let resp = self.client.list_with_delimiter(Some(&pre)).await;
         let list_elapsed = list_start.elapsed().as_secs_f64();
-
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
         let resp = match resp {
             Ok(resp) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["s3", "LIST", "200"])
                     .observe(list_elapsed);
-                STORAGE_FILES_SCANNED
-                    .with_label_values(&["s3", "LIST"])
-                    .inc_by(resp.common_prefixes.len() as f64);
-                STORAGE_FILES_SCANNED_DATE
-                    .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
-                    .inc_by(resp.common_prefixes.len() as f64);
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "s3",
+                    "LIST",
+                    resp.common_prefixes.len() as u64,
+                    &Utc::now().date_naive().to_string(),
+                );
+
                 resp
             }
             Err(err) => {
@@ -1196,18 +1237,19 @@ impl ObjectStorage for S3 {
         let list_start = Instant::now();
         let resp = self.client.list_with_delimiter(Some(&prefix)).await;
         let list_elapsed = list_start.elapsed().as_secs_f64();
-
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
         let resp = match resp {
             Ok(resp) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["s3", "LIST", "200"])
                     .observe(list_elapsed);
-                STORAGE_FILES_SCANNED
-                    .with_label_values(&["s3", "LIST"])
-                    .inc_by(resp.common_prefixes.len() as f64);
-                STORAGE_FILES_SCANNED_DATE
-                    .with_label_values(&["s3", "LIST", &Utc::now().date_naive().to_string()])
-                    .inc_by(resp.common_prefixes.len() as f64);
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "s3",
+                    "LIST",
+                    resp.common_prefixes.len() as u64,
+                    &Utc::now().date_naive().to_string(),
+                );
+
                 resp
             }
             Err(err) => {

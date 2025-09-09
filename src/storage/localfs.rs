@@ -39,9 +39,9 @@ use tokio_stream::wrappers::ReadDirStream;
 
 use crate::{
     handlers::http::users::USERS_ROOT_DIR,
-    metrics::storage::{
-        STORAGE_FILES_SCANNED, STORAGE_FILES_SCANNED_DATE, STORAGE_REQUEST_RESPONSE_TIME,
-        StorageMetrics,
+    metrics::{
+        STORAGE_REQUEST_RESPONSE_TIME, increment_files_scanned_in_object_store_calls_by_date,
+        increment_object_store_calls_by_date,
     },
     option::validation,
     parseable::LogStream,
@@ -88,10 +88,6 @@ impl ObjectStorageProvider for FSConfig {
     fn get_endpoint(&self) -> String {
         self.root.to_str().unwrap().to_string()
     }
-
-    fn register_store_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {
-        self.register_metrics(handler);
-    }
 }
 
 #[derive(Debug)]
@@ -135,12 +131,17 @@ impl ObjectStorage for LocalFS {
     }
     async fn head(&self, _path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
         // Record attempt to access file (even though operation not implemented)
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["localfs", "HEAD"])
-            .inc();
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["localfs", "HEAD", &Utc::now().date_naive().to_string()])
-            .inc();
+        increment_files_scanned_in_object_store_calls_by_date(
+            "localfs",
+            "HEAD",
+            1,
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_object_store_calls_by_date(
+            "localfs",
+            "HEAD",
+            &Utc::now().date_naive().to_string(),
+        );
         Err(ObjectStorageError::UnhandledError(Box::new(
             std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
@@ -182,12 +183,17 @@ impl ObjectStorage for LocalFS {
                     .with_label_values(&["localfs", "GET", "200"])
                     .observe(get_elapsed);
                 // Record single file accessed successfully
-                STORAGE_FILES_SCANNED
-                    .with_label_values(&["localfs", "GET"])
-                    .inc();
-                STORAGE_FILES_SCANNED_DATE
-                    .with_label_values(&["localfs", "GET", &Utc::now().date_naive().to_string()])
-                    .inc();
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "localfs",
+                    "GET",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
+                increment_object_store_calls_by_date(
+                    "localfs",
+                    "GET",
+                    &Utc::now().date_naive().to_string(),
+                );
                 Ok(x.into())
             }
             Err(e) => {
@@ -253,12 +259,17 @@ impl ObjectStorage for LocalFS {
         }
 
         // Record total files scanned
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["localfs", "LIST"])
-            .inc_by(files_scanned as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["localfs", "LIST", &Utc::now().date_naive().to_string()])
-            .inc_by(files_scanned as f64);
+        increment_files_scanned_in_object_store_calls_by_date(
+            "localfs",
+            "LIST",
+            files_scanned,
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_object_store_calls_by_date(
+            "localfs",
+            "LIST",
+            &Utc::now().date_naive().to_string(),
+        );
         Ok(path_arr)
     }
 
@@ -334,14 +345,17 @@ impl ObjectStorage for LocalFS {
         }
 
         // Record total files scanned
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["localfs", "GET"])
-            .inc_by(files_scanned as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["localfs", "GET", &Utc::now().date_naive().to_string()])
-            .inc_by(files_scanned as f64);
-
-        // maybe change the return code
+        increment_files_scanned_in_object_store_calls_by_date(
+            "localfs",
+            "GET",
+            files_scanned as u64,
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_object_store_calls_by_date(
+            "localfs",
+            "GET",
+            &Utc::now().date_naive().to_string(),
+        );
 
         Ok(res)
     }
@@ -366,12 +380,17 @@ impl ObjectStorage for LocalFS {
                     .with_label_values(&["localfs", "PUT", "200"])
                     .observe(put_elapsed);
                 // Record single file written successfully
-                STORAGE_FILES_SCANNED
-                    .with_label_values(&["localfs", "PUT"])
-                    .inc();
-                STORAGE_FILES_SCANNED_DATE
-                    .with_label_values(&["localfs", "PUT", &Utc::now().date_naive().to_string()])
-                    .inc();
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "localfs",
+                    "PUT",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
+                increment_object_store_calls_by_date(
+                    "localfs",
+                    "PUT",
+                    &Utc::now().date_naive().to_string(),
+                );
             }
             Err(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
@@ -425,12 +444,17 @@ impl ObjectStorage for LocalFS {
                     .with_label_values(&["localfs", "DELETE", "200"])
                     .observe(delete_elapsed);
                 // Record single file deleted successfully
-                STORAGE_FILES_SCANNED
-                    .with_label_values(&["localfs", "DELETE"])
-                    .inc();
-                STORAGE_FILES_SCANNED_DATE
-                    .with_label_values(&["localfs", "DELETE", &Utc::now().date_naive().to_string()])
-                    .inc();
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "localfs",
+                    "DELETE",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
+                increment_object_store_calls_by_date(
+                    "localfs",
+                    "DELETE",
+                    &Utc::now().date_naive().to_string(),
+                );
             }
             Err(err) => {
                 let status_code = match err.kind() {
@@ -458,6 +482,11 @@ impl ObjectStorage for LocalFS {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["localfs", "HEAD", "200"])
                     .observe(check_elapsed);
+                increment_object_store_calls_by_date(
+                    "localfs",
+                    "HEAD",
+                    &Utc::now().date_naive().to_string(),
+                );
             }
             Err(err) => {
                 let status_code = match err.kind() {
@@ -549,6 +578,11 @@ impl ObjectStorage for LocalFS {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["localfs", "LIST", "200"])
                     .observe(list_elapsed);
+                increment_object_store_calls_by_date(
+                    "localfs",
+                    "LIST",
+                    &Utc::now().date_naive().to_string(),
+                );
                 ReadDirStream::new(read_dir)
             }
             Err(err) => {
@@ -595,6 +629,11 @@ impl ObjectStorage for LocalFS {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["localfs", "LIST", "200"])
                     .observe(list_elapsed);
+                increment_object_store_calls_by_date(
+                    "localfs",
+                    "LIST",
+                    &Utc::now().date_naive().to_string(),
+                );
                 ReadDirStream::new(read_dir)
             }
             Err(err) => {
@@ -722,6 +761,11 @@ impl ObjectStorage for LocalFS {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["localfs", "LIST", "200"])
                     .observe(list_elapsed);
+                increment_object_store_calls_by_date(
+                    "localfs",
+                    "LIST",
+                    &Utc::now().date_naive().to_string(),
+                );
                 read_dir
             }
             Err(err) => {
@@ -802,6 +846,11 @@ impl ObjectStorage for LocalFS {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["localfs", "PUT", "200"])
                     .observe(upload_elapsed);
+                increment_object_store_calls_by_date(
+                    "localfs",
+                    "PUT",
+                    &Utc::now().date_naive().to_string(),
+                );
                 Ok(())
             }
             Err(err) => {

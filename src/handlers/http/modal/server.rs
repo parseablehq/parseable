@@ -128,8 +128,6 @@ impl ParseableServer for Server {
         prometheus: &PrometheusMetrics,
         shutdown_rx: oneshot::Receiver<()>,
     ) -> anyhow::Result<()> {
-        PARSEABLE.storage.register_store_metrics(prometheus);
-
         migration::run_migration(&PARSEABLE).await?;
 
         // load on init

@@ -58,8 +58,9 @@ use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
     hottier::HotTierManager,
     metrics::{
-        QUERY_CACHE_HIT,
-        storage::{STORAGE_FILES_SCANNED, STORAGE_FILES_SCANNED_DATE},
+        QUERY_CACHE_HIT, increment_bytes_scanned_in_query_by_date,
+        increment_files_scanned_in_object_store_calls_by_date,
+        increment_files_scanned_in_query_by_date,
     },
     option::Mode,
     parseable::{PARSEABLE, STREAM_EXISTS},
@@ -328,6 +329,8 @@ impl StandardTableProvider {
         let mut partitioned_files = Vec::from_iter((0..target_partition).map(|_| Vec::new()));
         let mut column_statistics = HashMap::<String, Option<TypedStatistics>>::new();
         let mut count = 0;
+        let mut total_file_size = 0u64;
+        let mut file_count = 0u64;
         for (index, file) in manifest_files
             .into_iter()
             .enumerate()
@@ -338,8 +341,13 @@ impl StandardTableProvider {
                 mut file_path,
                 num_rows,
                 columns,
+                file_size,
                 ..
             } = file;
+
+            // Track billing metrics for files scanned in query
+            file_count += 1;
+            total_file_size += file_size;
 
             // object_store::path::Path doesn't automatically deal with Windows path separators
             // to do that, we are using from_absolute_path() which takes into consideration the underlying filesystem
@@ -396,6 +404,11 @@ impl StandardTableProvider {
             total_byte_size: Precision::Absent,
             column_statistics: statistics,
         };
+
+        // Track billing metrics for query scan
+        let current_date = chrono::Utc::now().date_naive().to_string();
+        increment_files_scanned_in_query_by_date(file_count, &current_date);
+        increment_bytes_scanned_in_query_by_date(total_file_size, &current_date);
 
         (partitioned_files, statistics)
     }
@@ -586,16 +599,12 @@ impl TableProvider for StandardTableProvider {
         }
 
         let parquet_files_to_scan = manifest_files.len();
-        STORAGE_FILES_SCANNED
-            .with_label_values(&[PARSEABLE.storage().name(), "GET"])
-            .inc_by(parquet_files_to_scan as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&[
-                PARSEABLE.storage().name(),
-                "GET",
-                &Utc::now().date_naive().to_string(),
-            ])
-            .inc_by(parquet_files_to_scan as f64);
+        increment_files_scanned_in_object_store_calls_by_date(
+            PARSEABLE.storage().name(),
+            "GET",
+            parquet_files_to_scan as u64,
+            &Utc::now().date_naive().to_string(),
+        );
 
         let (partitioned_files, statistics) = self.partitioned_files(manifest_files);
         self.create_parquet_physical_plan(

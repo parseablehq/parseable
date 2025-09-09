@@ -16,7 +16,6 @@
  *
  */
 
-use actix_web_prometheus::PrometheusMetrics;
 use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -51,7 +50,8 @@ use crate::handlers::http::modal::ingest_server::INGESTOR_EXPECT;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::handlers::http::users::{FILTER_DIR, USERS_ROOT_DIR};
 use crate::metrics::TOTAL_EVENTS_STORAGE_SIZE_DATE;
-use crate::metrics::storage::StorageMetrics;
+use crate::metrics::increment_parquets_stored_by_date;
+use crate::metrics::increment_parquets_stored_size_by_date;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE};
 use crate::option::Mode;
 use crate::parseable::{LogStream, PARSEABLE, Stream};
@@ -187,6 +187,10 @@ fn update_storage_metrics(
         .with_label_values(&["parquet", file_date_part])
         .add(compressed_size as i64);
 
+    // billing metrics for parquet storage
+    increment_parquets_stored_by_date(file_date_part);
+    increment_parquets_stored_size_by_date(compressed_size, file_date_part);
+
     Ok(())
 }
 
@@ -248,7 +252,7 @@ async fn validate_uploaded_parquet_file(
     }
 }
 
-pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync {
+pub trait ObjectStorageProvider: std::fmt::Debug + Send + Sync {
     fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder;
     fn construct_client(&self) -> Arc<dyn ObjectStorage>;
     fn get_object_store(&self) -> Arc<dyn ObjectStorage> {
@@ -257,7 +261,6 @@ pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync 
         STORE.get_or_init(|| self.construct_client()).clone()
     }
     fn get_endpoint(&self) -> String;
-    fn register_store_metrics(&self, handler: &PrometheusMetrics);
     fn name(&self) -> &'static str;
 }
 
