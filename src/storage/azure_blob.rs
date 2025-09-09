@@ -17,7 +17,7 @@
  */
 
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet},
     path::Path,
     sync::{
         Arc,
@@ -46,15 +46,17 @@ use object_store::{
 };
 use relative_path::{RelativePath, RelativePathBuf};
 use tokio::{fs::OpenOptions, io::AsyncReadExt};
-use tracing::{error, info};
+use tracing::error;
 use url::Url;
 
 use crate::{
-    metrics::storage::{
-        STORAGE_FILES_SCANNED, STORAGE_FILES_SCANNED_DATE, STORAGE_REQUEST_RESPONSE_TIME,
-        StorageMetrics,
+    handlers::http::users::USERS_ROOT_DIR,
+    metrics::{
+        STORAGE_REQUEST_RESPONSE_TIME, increment_files_scanned_in_object_store_calls_by_date,
+        increment_object_store_calls_by_date,
     },
     parseable::LogStream,
+    storage::STREAM_ROOT_DIRECTORY,
 };
 
 use super::{
@@ -198,10 +200,6 @@ impl ObjectStorageProvider for AzureBlobConfig {
     fn get_endpoint(&self) -> String {
         self.endpoint_url.clone()
     }
-
-    fn register_store_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {
-        self.register_metrics(handler)
-    }
 }
 
 // ObjStoreClient is generic client to enable interactions with different cloudprovider's
@@ -219,18 +217,25 @@ impl BlobStore {
         let time = std::time::Instant::now();
         let resp = self.client.get(&to_object_store_path(path)).await;
         let elapsed = time.elapsed().as_secs_f64();
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "GET"])
-            .inc();
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["azure_blob", "GET", &Utc::now().date_naive().to_string()])
-            .inc();
+
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "GET",
+            &Utc::now().date_naive().to_string(),
+        );
+
         match resp {
             Ok(resp) => {
                 let body: Bytes = resp.bytes().await.unwrap();
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["azure_blob", "GET", "200"])
                     .observe(elapsed);
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "azure_blob",
+                    "GET",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
                 Ok(body)
             }
             Err(err) => {
@@ -251,17 +256,23 @@ impl BlobStore {
         let time = std::time::Instant::now();
         let resp = self.client.put(&to_object_store_path(path), resource).await;
         let elapsed = time.elapsed().as_secs_f64();
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "PUT"])
-            .inc();
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["azure_blob", "PUT", &Utc::now().date_naive().to_string()])
-            .inc();
+
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "PUT",
+            &Utc::now().date_naive().to_string(),
+        );
         match resp {
             Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["azure_blob", "PUT", "200"])
                     .observe(elapsed);
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "azure_blob",
+                    "PUT",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
                 Ok(())
             }
             Err(err) => {
@@ -284,16 +295,27 @@ impl BlobStore {
         STORAGE_REQUEST_RESPONSE_TIME
             .with_label_values(&["azure_blob", "LIST", "200"])
             .observe(list_elapsed);
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            &Utc::now().date_naive().to_string(),
+        );
 
         object_stream
             .for_each_concurrent(None, |x| async {
                 files_scanned.fetch_add(1, Ordering::Relaxed);
+
                 match x {
                     Ok(obj) => {
                         files_deleted.fetch_add(1, Ordering::Relaxed);
                         let delete_start = Instant::now();
                         let delete_resp = self.client.delete(&obj.location).await;
                         let delete_elapsed = delete_start.elapsed().as_secs_f64();
+                        increment_object_store_calls_by_date(
+                            "azure_blob",
+                            "DELETE",
+                            &Utc::now().date_naive().to_string(),
+                        );
                         match delete_resp {
                             Ok(_) => {
                                 STORAGE_REQUEST_RESPONSE_TIME
@@ -316,19 +338,96 @@ impl BlobStore {
             })
             .await;
 
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "LIST"])
-            .inc_by(files_scanned.load(Ordering::Relaxed) as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["azure_blob", "LIST", &Utc::now().date_naive().to_string()])
-            .inc_by(files_scanned.load(Ordering::Relaxed) as f64);
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "DELETE"])
-            .inc_by(files_deleted.load(Ordering::Relaxed) as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["azure_blob", "DELETE", &Utc::now().date_naive().to_string()])
-            .inc_by(files_deleted.load(Ordering::Relaxed) as f64);
+        increment_files_scanned_in_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            files_scanned.load(Ordering::Relaxed),
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_files_scanned_in_object_store_calls_by_date(
+            "azure_blob",
+            "DELETE",
+            files_deleted.load(Ordering::Relaxed),
+            &Utc::now().date_naive().to_string(),
+        );
+        // Note: Individual DELETE calls are tracked inside the concurrent loop
         Ok(())
+    }
+
+    async fn _list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
+        let mut result_file_list = HashSet::new();
+        let mut total_files_scanned = 0u64;
+
+        let list_start = Instant::now();
+        let resp = self.client.list_with_delimiter(None).await?;
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        total_files_scanned += resp.objects.len() as u64;
+        STORAGE_REQUEST_RESPONSE_TIME
+            .with_label_values(&["azure_blob", "LIST", "200"])
+            .observe(list_elapsed);
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            &Utc::now().date_naive().to_string(),
+        );
+
+        let streams = resp
+            .common_prefixes
+            .iter()
+            .flat_map(|path| path.parts())
+            .map(|name| name.as_ref().to_string())
+            .filter(|name| name != PARSEABLE_ROOT_DIRECTORY && name != USERS_ROOT_DIR)
+            .collect::<Vec<_>>();
+
+        for stream in streams {
+            let stream_path =
+                object_store::path::Path::from(format!("{}/{}", &stream, STREAM_ROOT_DIRECTORY));
+
+            // Track individual LIST operations for each stream
+            let stream_list_start = Instant::now();
+            let resp = self.client.list_with_delimiter(Some(&stream_path)).await;
+            let stream_list_elapsed = stream_list_start.elapsed().as_secs_f64();
+            increment_object_store_calls_by_date(
+                "azure_blob",
+                "LIST",
+                &Utc::now().date_naive().to_string(),
+            );
+            match &resp {
+                Ok(resp) => {
+                    STORAGE_REQUEST_RESPONSE_TIME
+                        .with_label_values(&["azure_blob", "LIST", "200"])
+                        .observe(stream_list_elapsed);
+
+                    total_files_scanned += resp.objects.len() as u64;
+                    if resp
+                        .objects
+                        .iter()
+                        .any(|name| name.location.filename().unwrap().ends_with("stream.json"))
+                    {
+                        result_file_list.insert(stream);
+                    }
+                }
+                Err(err) => {
+                    let status_code = error_to_status_code(err);
+                    STORAGE_REQUEST_RESPONSE_TIME
+                        .with_label_values(&["azure_blob", "LIST", status_code])
+                        .observe(stream_list_elapsed);
+
+                    return Err(ObjectStorageError::UnhandledError(Box::new(
+                        std::io::Error::other(format!("List operation failed: {}", err)),
+                    )));
+                }
+            }
+        }
+
+        // Record total files scanned across all operations
+        increment_files_scanned_in_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            total_files_scanned,
+            &Utc::now().date_naive().to_string(),
+        );
+        Ok(result_file_list)
     }
 
     async fn _list_dates(&self, stream: &str) -> Result<Vec<String>, ObjectStorageError> {
@@ -338,6 +437,11 @@ impl BlobStore {
             .list_with_delimiter(Some(&(stream.into())))
             .await;
         let list_elapsed = list_start.elapsed().as_secs_f64();
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            &Utc::now().date_naive().to_string(),
+        );
 
         let resp = match resp {
             Ok(resp) => {
@@ -357,12 +461,12 @@ impl BlobStore {
 
         let common_prefixes = resp.common_prefixes;
 
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "LIST"])
-            .inc_by(common_prefixes.len() as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["azure_blob", "LIST", &Utc::now().date_naive().to_string()])
-            .inc_by(common_prefixes.len() as f64);
+        increment_files_scanned_in_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            common_prefixes.len() as u64,
+            &Utc::now().date_naive().to_string(),
+        );
 
         // return prefixes at the root level
         let dates: Vec<_> = common_prefixes
@@ -374,24 +478,121 @@ impl BlobStore {
         Ok(dates)
     }
 
+    async fn _list_manifest_files(
+        &self,
+        stream: &str,
+    ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
+        let mut result_file_list: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut total_files_scanned = 0u64;
+
+        // Track initial LIST operation
+        let list_start = Instant::now();
+        let resp = self
+            .client
+            .list_with_delimiter(Some(&(stream.into())))
+            .await;
+        let list_elapsed = list_start.elapsed().as_secs_f64();
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            &Utc::now().date_naive().to_string(),
+        );
+        let resp = match resp {
+            Ok(resp) => {
+                total_files_scanned += resp.objects.len() as u64;
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["azure_blob", "LIST", "200"])
+                    .observe(list_elapsed);
+
+                resp
+            }
+            Err(err) => {
+                let status_code = error_to_status_code(&err);
+                STORAGE_REQUEST_RESPONSE_TIME
+                    .with_label_values(&["azure_blob", "LIST", status_code])
+                    .observe(list_elapsed);
+                return Err(err.into());
+            }
+        };
+
+        let dates = resp
+            .common_prefixes
+            .iter()
+            .flat_map(|path| path.parts())
+            .filter(|name| name.as_ref() != stream && name.as_ref() != STREAM_ROOT_DIRECTORY)
+            .map(|name| name.as_ref().to_string())
+            .collect::<Vec<_>>();
+
+        for date in dates {
+            let date_path = object_store::path::Path::from(format!("{}/{}", stream, &date));
+
+            // Track individual LIST operation for each date
+            let date_list_start = Instant::now();
+            let resp = self.client.list_with_delimiter(Some(&date_path)).await;
+            let date_list_elapsed = date_list_start.elapsed().as_secs_f64();
+            increment_object_store_calls_by_date(
+                "azure_blob",
+                "LIST",
+                &Utc::now().date_naive().to_string(),
+            );
+            match resp {
+                Ok(resp) => {
+                    STORAGE_REQUEST_RESPONSE_TIME
+                        .with_label_values(&["azure_blob", "LIST", "200"])
+                        .observe(date_list_elapsed);
+
+                    total_files_scanned += resp.objects.len() as u64;
+                    let manifests: Vec<String> = resp
+                        .objects
+                        .iter()
+                        .filter(|name| name.location.filename().unwrap().ends_with("manifest.json"))
+                        .map(|name| name.location.to_string())
+                        .collect();
+                    result_file_list.entry(date).or_default().extend(manifests);
+                }
+                Err(err) => {
+                    let status_code = error_to_status_code(&err);
+                    STORAGE_REQUEST_RESPONSE_TIME
+                        .with_label_values(&["azure_blob", "LIST", status_code])
+                        .observe(date_list_elapsed);
+                    return Err(err.into());
+                }
+            }
+        }
+
+        // Record total files scanned across all date operations
+        increment_files_scanned_in_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            total_files_scanned,
+            &Utc::now().date_naive().to_string(),
+        );
+        Ok(result_file_list)
+    }
+
     async fn _upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
         let bytes = tokio::fs::read(path).await?;
 
         let put_start = Instant::now();
         let result = self.client.put(&key.into(), bytes.into()).await;
         let put_elapsed = put_start.elapsed().as_secs_f64();
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "PUT"])
-            .inc();
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["azure_blob", "PUT", &Utc::now().date_naive().to_string()])
-            .inc();
+
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "PUT",
+            &Utc::now().date_naive().to_string(),
+        );
         match result {
-            Ok(result) => {
+            Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["azure_blob", "PUT", "200"])
                     .observe(put_elapsed);
-                info!("Uploaded file to Azure Blob Storage: {:?}", result);
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "azure_blob",
+                    "PUT",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
                 Ok(())
             }
             Err(err) => {
@@ -416,18 +617,22 @@ impl BlobStore {
         let multipart_start = Instant::now();
         let async_writer = self.client.put_multipart(location).await;
         let multipart_elapsed = multipart_start.elapsed().as_secs_f64();
-
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "PUT_MULTIPART",
+            &Utc::now().date_naive().to_string(),
+        );
         let mut async_writer = match async_writer {
             Ok(writer) => {
                 STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["azure_blob", "PUT_MULTIPART_INIT", "200"])
+                    .with_label_values(&["azure_blob", "PUT_MULTIPART", "200"])
                     .observe(multipart_elapsed);
                 writer
             }
             Err(err) => {
                 let status_code = error_to_status_code(&err);
                 STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["azure_blob", "PUT_MULTIPART_INIT", status_code])
+                    .with_label_values(&["azure_blob", "PUT_MULTIPART", status_code])
                     .observe(multipart_elapsed);
                 return Err(err.into());
             }
@@ -443,12 +648,23 @@ impl BlobStore {
             let put_start = Instant::now();
             let result = self.client.put(location, data.into()).await;
             let put_elapsed = put_start.elapsed().as_secs_f64();
+            increment_object_store_calls_by_date(
+                "azure_blob",
+                "PUT",
+                &Utc::now().date_naive().to_string(),
+            );
 
             match result {
                 Ok(_) => {
                     STORAGE_REQUEST_RESPONSE_TIME
                         .with_label_values(&["azure_blob", "PUT", "200"])
                         .observe(put_elapsed);
+                    increment_files_scanned_in_object_store_calls_by_date(
+                        "azure_blob",
+                        "PUT",
+                        1,
+                        &Utc::now().date_naive().to_string(),
+                    );
                 }
                 Err(err) => {
                     let status_code = error_to_status_code(&err);
@@ -489,17 +705,21 @@ impl BlobStore {
                 let part_start = Instant::now();
                 let result = async_writer.put_part(part_data.into()).await;
                 let part_elapsed = part_start.elapsed().as_secs_f64();
-
+                increment_object_store_calls_by_date(
+                    "azure_blob",
+                    "PUT_MULTIPART",
+                    &Utc::now().date_naive().to_string(),
+                );
                 match result {
                     Ok(_) => {
                         STORAGE_REQUEST_RESPONSE_TIME
-                            .with_label_values(&["azure_blob", "PUT_MULTIPART_PART", "200"])
+                            .with_label_values(&["azure_blob", "PUT_MULTIPART", "200"])
                             .observe(part_elapsed);
                     }
                     Err(err) => {
                         let status_code = error_to_status_code(&err);
                         STORAGE_REQUEST_RESPONSE_TIME
-                            .with_label_values(&["azure_blob", "PUT_MULTIPART_PART", status_code])
+                            .with_label_values(&["azure_blob", "PUT_MULTIPART", status_code])
                             .observe(part_elapsed);
                         return Err(err.into());
                     }
@@ -557,22 +777,23 @@ impl ObjectStorage for BlobStore {
         let head_start = Instant::now();
         let result = self.client.head(&to_object_store_path(path)).await;
         let head_elapsed = head_start.elapsed().as_secs_f64();
+
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "HEAD",
+            &Utc::now().date_naive().to_string(),
+        );
         match &result {
             Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["azure_blob", "HEAD", "200"])
                     .observe(head_elapsed);
-                // Record single file accessed
-                STORAGE_FILES_SCANNED
-                    .with_label_values(&["azure_blob", "HEAD"])
-                    .inc();
-                STORAGE_FILES_SCANNED_DATE
-                    .with_label_values(&[
-                        "azure_blob",
-                        "HEAD",
-                        &Utc::now().date_naive().to_string(),
-                    ])
-                    .inc();
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "azure_blob",
+                    "HEAD",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
             }
             Err(err) => {
                 let status_code = error_to_status_code(err);
@@ -632,13 +853,17 @@ impl ObjectStorage for BlobStore {
             STORAGE_REQUEST_RESPONSE_TIME
                 .with_label_values(&["azure_blob", "GET", "200"])
                 .observe(list_start.elapsed().as_secs_f64());
-            STORAGE_FILES_SCANNED
-                .with_label_values(&["azure_blob", "GET"])
-                .inc();
-            STORAGE_FILES_SCANNED_DATE
-                .with_label_values(&["azure_blob", "GET", &Utc::now().date_naive().to_string()])
-                .inc();
-
+            increment_files_scanned_in_object_store_calls_by_date(
+                "azure_blob",
+                "GET",
+                1,
+                &Utc::now().date_naive().to_string(),
+            );
+            increment_object_store_calls_by_date(
+                "azure_blob",
+                "GET",
+                &Utc::now().date_naive().to_string(),
+            );
             res.push(byts);
         }
         let list_elapsed = list_start.elapsed().as_secs_f64();
@@ -647,13 +872,17 @@ impl ObjectStorage for BlobStore {
             .observe(list_elapsed);
 
         // Record total files scanned
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "LIST"])
-            .inc_by(files_scanned as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["azure_blob", "LIST", &Utc::now().date_naive().to_string()])
-            .inc_by(files_scanned as f64);
-
+        increment_files_scanned_in_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            files_scanned as u64,
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            &Utc::now().date_naive().to_string(),
+        );
         Ok(res)
     }
 
@@ -666,6 +895,11 @@ impl ObjectStorage for BlobStore {
         // Track list operation
         let list_start = Instant::now();
         let mut object_stream = self.client.list(Some(&self.root));
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            &Utc::now().date_naive().to_string(),
+        );
 
         while let Some(meta_result) = object_stream.next().await {
             let meta = match meta_result {
@@ -687,13 +921,12 @@ impl ObjectStorage for BlobStore {
             .with_label_values(&["azure_blob", "LIST", "200"])
             .observe(list_elapsed);
         // Record total files scanned
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "LIST"])
-            .inc_by(files_scanned as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["azure_blob", "LIST", &Utc::now().date_naive().to_string()])
-            .inc_by(files_scanned as f64);
-
+        increment_files_scanned_in_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            files_scanned as u64,
+            &Utc::now().date_naive().to_string(),
+        );
         Ok(path_arr)
     }
 
@@ -719,23 +952,23 @@ impl ObjectStorage for BlobStore {
         let delete_start = Instant::now();
         let result = self.client.delete(&to_object_store_path(path)).await;
         let delete_elapsed = delete_start.elapsed().as_secs_f64();
-
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "DELETE",
+            &Utc::now().date_naive().to_string(),
+        );
         match &result {
             Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["azure_blob", "DELETE", "200"])
                     .observe(delete_elapsed);
                 // Record single file deleted
-                STORAGE_FILES_SCANNED
-                    .with_label_values(&["azure_blob", "DELETE"])
-                    .inc();
-                STORAGE_FILES_SCANNED_DATE
-                    .with_label_values(&[
-                        "azure_blob",
-                        "DELETE",
-                        &Utc::now().date_naive().to_string(),
-                    ])
-                    .inc();
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "azure_blob",
+                    "DELETE",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
             }
             Err(err) => {
                 let status_code = error_to_status_code(err);
@@ -755,12 +988,23 @@ impl ObjectStorage for BlobStore {
             .head(&to_object_store_path(&parseable_json_path()))
             .await;
         let head_elapsed = head_start.elapsed().as_secs_f64();
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "HEAD",
+            &Utc::now().date_naive().to_string(),
+        );
 
         match &result {
             Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["azure_blob", "HEAD", "200"])
                     .observe(head_elapsed);
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "azure_blob",
+                    "HEAD",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
             }
             Err(err) => {
                 let status_code = error_to_status_code(err);
@@ -769,12 +1013,6 @@ impl ObjectStorage for BlobStore {
                     .observe(head_elapsed);
             }
         }
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "HEAD"])
-            .inc();
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["azure_blob", "HEAD", &Utc::now().date_naive().to_string()])
-            .inc();
 
         Ok(result.map(|_| ())?)
     }
@@ -791,17 +1029,23 @@ impl ObjectStorage for BlobStore {
         let delete_start = Instant::now();
         let result = self.client.delete(&to_object_store_path(&file)).await;
         let delete_elapsed = delete_start.elapsed().as_secs_f64();
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "DELETE"])
-            .inc();
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["azure_blob", "DELETE", &Utc::now().date_naive().to_string()])
-            .inc();
+
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "DELETE",
+            &Utc::now().date_naive().to_string(),
+        );
         match result {
             Ok(_) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["azure_blob", "DELETE", "200"])
                     .observe(delete_elapsed);
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "azure_blob",
+                    "DELETE",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
                 Ok(())
             }
             Err(err) => {
@@ -832,12 +1076,17 @@ impl ObjectStorage for BlobStore {
             .observe(list_elapsed);
 
         let common_prefixes = resp.common_prefixes; // get all dirs
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "LIST"])
-            .inc_by(common_prefixes.len() as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["azure_blob", "LIST", &Utc::now().date_naive().to_string()])
-            .inc_by(common_prefixes.len() as f64);
+        increment_files_scanned_in_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            common_prefixes.len() as u64,
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            &Utc::now().date_naive().to_string(),
+        );
         // return prefixes at the root level
         let dirs: HashSet<_> = common_prefixes
             .iter()
@@ -854,7 +1103,11 @@ impl ObjectStorage for BlobStore {
                 let head_start = Instant::now();
                 let result = self.client.head(&StorePath::from(key)).await;
                 let head_elapsed = head_start.elapsed().as_secs_f64();
-
+                increment_object_store_calls_by_date(
+                    "azure_blob",
+                    "HEAD",
+                    &Utc::now().date_naive().to_string(),
+                );
                 match &result {
                     Ok(_) => {
                         STORAGE_REQUEST_RESPONSE_TIME
@@ -873,13 +1126,12 @@ impl ObjectStorage for BlobStore {
             };
             stream_json_check.push(task);
         }
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "HEAD"])
-            .inc_by(dirs.len() as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["azure_blob", "HEAD", &Utc::now().date_naive().to_string()])
-            .inc_by(dirs.len() as f64);
-
+        increment_files_scanned_in_object_store_calls_by_date(
+            "azure_blob",
+            "HEAD",
+            dirs.len() as u64,
+            &Utc::now().date_naive().to_string(),
+        );
         stream_json_check.try_collect::<()>().await?;
 
         Ok(dirs)
@@ -903,12 +1155,17 @@ impl ObjectStorage for BlobStore {
         STORAGE_REQUEST_RESPONSE_TIME
             .with_label_values(&["azure_blob", "LIST", "200"])
             .observe(list_elapsed);
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "LIST"])
-            .inc_by(resp.common_prefixes.len() as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["azure_blob", "LIST", &Utc::now().date_naive().to_string()])
-            .inc_by(resp.common_prefixes.len() as f64);
+        increment_files_scanned_in_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            resp.common_prefixes.len() as u64,
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            &Utc::now().date_naive().to_string(),
+        );
 
         let hours: Vec<String> = resp
             .common_prefixes
@@ -943,13 +1200,17 @@ impl ObjectStorage for BlobStore {
         STORAGE_REQUEST_RESPONSE_TIME
             .with_label_values(&["azure_blob", "LIST", "200"])
             .observe(list_elapsed);
-        STORAGE_FILES_SCANNED
-            .with_label_values(&["azure_blob", "LIST"])
-            .inc_by(resp.common_prefixes.len() as f64);
-        STORAGE_FILES_SCANNED_DATE
-            .with_label_values(&["azure_blob", "LIST", &Utc::now().date_naive().to_string()])
-            .inc_by(resp.common_prefixes.len() as f64);
-
+        increment_files_scanned_in_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            resp.common_prefixes.len() as u64,
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            &Utc::now().date_naive().to_string(),
+        );
         let minutes: Vec<String> = resp
             .common_prefixes
             .iter()
@@ -1012,22 +1273,23 @@ impl ObjectStorage for BlobStore {
         let list_start = Instant::now();
         let resp = self.client.list_with_delimiter(Some(&pre)).await;
         let list_elapsed = list_start.elapsed().as_secs_f64();
-
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            &Utc::now().date_naive().to_string(),
+        );
         let resp = match resp {
             Ok(resp) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["azure_blob", "LIST", "200"])
                     .observe(list_elapsed);
-                STORAGE_FILES_SCANNED
-                    .with_label_values(&["azure_blob", "LIST"])
-                    .inc_by(resp.common_prefixes.len() as f64);
-                STORAGE_FILES_SCANNED_DATE
-                    .with_label_values(&[
-                        "azure_blob",
-                        "LIST",
-                        &Utc::now().date_naive().to_string(),
-                    ])
-                    .inc_by(resp.common_prefixes.len() as f64);
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "azure_blob",
+                    "LIST",
+                    resp.common_prefixes.len() as u64,
+                    &Utc::now().date_naive().to_string(),
+                );
+
                 resp
             }
             Err(err) => {
@@ -1056,22 +1318,23 @@ impl ObjectStorage for BlobStore {
         let list_start = Instant::now();
         let resp = self.client.list_with_delimiter(Some(&prefix)).await;
         let list_elapsed = list_start.elapsed().as_secs_f64();
-
+        increment_object_store_calls_by_date(
+            "azure_blob",
+            "LIST",
+            &Utc::now().date_naive().to_string(),
+        );
         let resp = match resp {
             Ok(resp) => {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["azure_blob", "LIST", "200"])
                     .observe(list_elapsed);
-                STORAGE_FILES_SCANNED
-                    .with_label_values(&["azure_blob", "LIST"])
-                    .inc_by(resp.common_prefixes.len() as f64);
-                STORAGE_FILES_SCANNED_DATE
-                    .with_label_values(&[
-                        "azure_blob",
-                        "LIST",
-                        &Utc::now().date_naive().to_string(),
-                    ])
-                    .inc_by(resp.common_prefixes.len() as f64);
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "azure_blob",
+                    "LIST",
+                    resp.common_prefixes.len() as u64,
+                    &Utc::now().date_naive().to_string(),
+                );
+
                 resp
             }
             Err(err) => {

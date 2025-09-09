@@ -17,8 +17,6 @@
  */
 
 pub mod prom_utils;
-pub mod storage;
-
 use crate::{handlers::http::metrics_path, stats::FullStats};
 use actix_web::Responder;
 use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
@@ -228,6 +226,125 @@ pub static ALERTS_STATES: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
+// Billing Metrics - Counter type metrics for billing/usage tracking
+pub static TOTAL_EVENTS_INGESTED_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_events_ingested_by_date",
+            "Total events ingested by date (Counter for billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_EVENTS_INGESTED_SIZE_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_events_ingested_size_by_date",
+            "Total events ingested size in bytes by date (Counter for billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_PARQUETS_STORED_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_parquets_stored_by_date",
+            "Total parquet files stored by date (Counter for billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_PARQUETS_STORED_SIZE_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_parquets_stored_size_by_date",
+            "Total parquet files stored size in bytes by date (Counter for billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_QUERY_CALLS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_query_calls_by_date",
+            "Total query calls by date (Counter for billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_FILES_SCANNED_IN_QUERY_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_files_scanned_in_query_by_date",
+            "Total files scanned in queries by date (Counter for billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_BYTES_SCANNED_IN_QUERY_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_bytes_scanned_in_query_by_date",
+            "Total bytes scanned in queries by date (Counter for billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_OBJECT_STORE_CALLS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_object_store_calls_by_date",
+            "Total object store calls by date (Counter for billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["provider", "method", "date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE: Lazy<IntCounterVec> =
+    Lazy::new(|| {
+        IntCounterVec::new(
+            Opts::new(
+                "total_files_scanned_in_object_store_calls_by_date",
+                "Total files scanned in object store calls by date (Counter for billing)",
+            )
+            .namespace(METRICS_NAMESPACE),
+            &["provider", "method", "date"],
+        )
+        .expect("metric can be created")
+    });
+
+pub static STORAGE_REQUEST_RESPONSE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
+    HistogramVec::new(
+        HistogramOpts::new("storage_request_response_time", "Storage Request Latency")
+            .namespace(METRICS_NAMESPACE),
+        &["provider", "method", "status"],
+    )
+    .expect("metric can be created")
+});
+
 fn custom_metrics(registry: &Registry) {
     registry
         .register(Box::new(EVENTS_INGESTED.clone()))
@@ -286,6 +403,39 @@ fn custom_metrics(registry: &Registry) {
     registry
         .register(Box::new(ALERTS_STATES.clone()))
         .expect("metric can be registered");
+    // Register billing metrics
+    registry
+        .register(Box::new(TOTAL_EVENTS_INGESTED_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_EVENTS_INGESTED_SIZE_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_PARQUETS_STORED_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_PARQUETS_STORED_SIZE_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_QUERY_CALLS_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_FILES_SCANNED_IN_QUERY_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_BYTES_SCANNED_IN_QUERY_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_OBJECT_STORE_CALLS_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(
+            TOTAL_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE.clone(),
+        ))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(STORAGE_REQUEST_RESPONSE_TIME.clone()))
+        .expect("metric can be registered");
 }
 
 pub fn build_metrics_handler() -> PrometheusMetrics {
@@ -343,6 +493,64 @@ pub async fn fetch_stats_from_storage(stream_name: &str, stats: FullStats) {
     LIFETIME_EVENTS_STORAGE_SIZE
         .with_label_values(&["data", stream_name, "parquet"])
         .set(stats.lifetime_stats.storage as i64);
+}
+
+// Helper functions for tracking billing metrics
+pub fn increment_events_ingested_by_date(count: u64, date: &str) {
+    TOTAL_EVENTS_INGESTED_BY_DATE
+        .with_label_values(&[date])
+        .inc_by(count);
+}
+
+pub fn increment_events_ingested_size_by_date(size: u64, date: &str) {
+    TOTAL_EVENTS_INGESTED_SIZE_BY_DATE
+        .with_label_values(&[date])
+        .inc_by(size);
+}
+
+pub fn increment_parquets_stored_by_date(date: &str) {
+    TOTAL_PARQUETS_STORED_BY_DATE
+        .with_label_values(&[date])
+        .inc();
+}
+
+pub fn increment_parquets_stored_size_by_date(size: u64, date: &str) {
+    TOTAL_PARQUETS_STORED_SIZE_BY_DATE
+        .with_label_values(&[date])
+        .inc_by(size);
+}
+
+pub fn increment_query_calls_by_date(date: &str) {
+    TOTAL_QUERY_CALLS_BY_DATE.with_label_values(&[date]).inc();
+}
+
+pub fn increment_files_scanned_in_query_by_date(count: u64, date: &str) {
+    TOTAL_FILES_SCANNED_IN_QUERY_BY_DATE
+        .with_label_values(&[date])
+        .inc_by(count);
+}
+
+pub fn increment_bytes_scanned_in_query_by_date(bytes: u64, date: &str) {
+    TOTAL_BYTES_SCANNED_IN_QUERY_BY_DATE
+        .with_label_values(&[date])
+        .inc_by(bytes);
+}
+
+pub fn increment_object_store_calls_by_date(provider: &str, method: &str, date: &str) {
+    TOTAL_OBJECT_STORE_CALLS_BY_DATE
+        .with_label_values(&[provider, method, date])
+        .inc();
+}
+
+pub fn increment_files_scanned_in_object_store_calls_by_date(
+    provider: &str,
+    method: &str,
+    count: u64,
+    date: &str,
+) {
+    TOTAL_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE
+        .with_label_values(&[provider, method, date])
+        .inc_by(count);
 }
 
 use actix_web::HttpResponse;
