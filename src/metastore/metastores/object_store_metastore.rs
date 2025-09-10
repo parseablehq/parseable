@@ -733,7 +733,7 @@ impl Metastore for ObjectStoreMetastore {
 
     async fn list_streams(&self) -> Result<HashSet<String>, MetastoreError> {
         // using LocalFS list_streams because it doesn't implement list_with_delimiter
-        if PARSEABLE.get_storage_mode_string() == "drive" {
+        if PARSEABLE.storage.name() == "drive" {
             PARSEABLE
                 .storage
                 .get_object_store()

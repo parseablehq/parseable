@@ -579,13 +579,15 @@ pub async fn get_manifest_list(
                 stream_name,
                 manifest_item.time_lower_bound,
                 manifest_item.time_upper_bound,
-                Some(manifest_item.manifest_path),
+                Some(manifest_item.manifest_path.clone()),
             )
             .await?;
         let manifest = manifest_opt.ok_or_else(|| {
             QueryError::CustomError(format!(
-                "Manifest not found for {stream_name} [{} - {}]",
-                manifest_item.time_lower_bound, manifest_item.time_upper_bound
+                "Manifest not found for {stream_name} [{} - {}], path- {}",
+                manifest_item.time_lower_bound,
+                manifest_item.time_upper_bound,
+                manifest_item.manifest_path
             ))
         })?;
         all_manifest_files.push(manifest);

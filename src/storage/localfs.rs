@@ -139,7 +139,19 @@ impl ObjectStorage for LocalFS {
     }
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         let time = Instant::now();
-        let file_path = self.path_in_root(path);
+        let file_path = if path.to_string().contains(&self.root.to_str().unwrap()[1..]) {
+            #[cfg(windows)]
+            {
+                path.to_path("")
+            }
+            #[cfg(not(windows))]
+            {
+                path.to_path("/")
+            }
+        } else {
+            self.path_in_root(path)
+        };
+
         let res: Result<Bytes, ObjectStorageError> = match fs::read(file_path).await {
             Ok(x) => Ok(x.into()),
             Err(e) => match e.kind() {
