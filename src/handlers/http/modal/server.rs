@@ -641,7 +641,7 @@ impl Server {
             )
             .service(
                 web::resource("/{username}")
-                    // PUT /user/{username} => Create a new user
+                    // POST /user/{username} => Create a new user
                     .route(
                         web::post()
                             .to(http::rbac::post_user)
