@@ -51,24 +51,17 @@ pub async fn post_user(
     let user_roles: HashSet<String> = if let Some(body) = body {
         serde_json::from_value(body.into_inner())?
     } else {
-        return Err(RBACError::RoleValidationError);
+        HashSet::new()
     };
 
-    if user_roles.is_empty() {
-        return Err(RBACError::RoleValidationError);
-    } else {
-        let mut non_existant_roles = Vec::new();
-        user_roles
-            .iter()
-            .map(|r| {
-                if !roles().contains_key(r) {
-                    non_existant_roles.push(r.clone());
-                }
-            })
-            .for_each(drop);
-        if !non_existant_roles.is_empty() {
-            return Err(RBACError::RolesDoNotExist(non_existant_roles));
+    let mut non_existent_roles = Vec::new();
+    for role in &user_roles {
+        if !roles().contains_key(role) {
+            non_existent_roles.push(role.clone());
         }
+    }
+    if !non_existent_roles.is_empty() {
+        return Err(RBACError::RolesDoNotExist(non_existent_roles));
     }
     let _guard = UPDATE_LOCK.lock().await;
     if Users.contains(&username)
@@ -77,7 +70,7 @@ pub async fn post_user(
             .iter()
             .any(|user| matches!(&user.ty, UserType::Native(basic) if basic.username == username))
     {
-        return Err(RBACError::UserExists);
+        return Err(RBACError::UserExists(username));
     }
 
     let (user, password) = user::User::new_basic(username.clone());
@@ -89,12 +82,13 @@ pub async fn post_user(
     Users.put_user(user.clone());
 
     sync_user_creation_with_ingestors(user, &Some(user_roles)).await?;
-
-    add_roles_to_user(
-        web::Path::<String>::from(username.clone()),
-        web::Json(created_role),
-    )
-    .await?;
+    if !created_role.is_empty() {
+        add_roles_to_user(
+            web::Path::<String>::from(username.clone()),
+            web::Json(created_role),
+        )
+        .await?;
+    }
 
     Ok(password)
 }

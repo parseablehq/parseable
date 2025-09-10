@@ -194,7 +194,7 @@ impl QueryServer {
             )
             .service(
                 web::resource("/{username}")
-                    // PUT /user/{username} => Create a new user
+                    // POST /user/{username} => Create a new user
                     .route(
                         web::post()
                             .to(querier_rbac::post_user)
