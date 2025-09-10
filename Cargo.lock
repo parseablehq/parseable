@@ -3456,7 +3456,7 @@ dependencies = [
 
 [[package]]
 name = "parseable"
-version = "2.4.1"
+version = "2.4.2"
 dependencies = [
  "actix-cors",
  "actix-web",

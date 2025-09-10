@@ -303,10 +303,15 @@ pub async fn update_notification_state(
                 (Utc::now() + duration).to_rfc3339()
             } else if let Ok(timestamp) = DateTime::<Utc>::from_str(&new_notification_state.state) {
                 // must be datetime utc then
+                if timestamp < Utc::now() {
+                    return Err(AlertError::InvalidStateChange(
+                        "Invalid notification state change request. Provided time is < Now".into(),
+                    ));
+                }
                 timestamp.to_rfc3339()
             } else {
                 return Err(AlertError::InvalidStateChange(format!(
-                    "Invalid notification state change request. Expected `notify` or human-time or UTC datetime. Got `{}`",
+                    "Invalid notification state change request. Expected `notify`, `indefinite` or human-time or UTC datetime. Got `{}`",
                     &new_notification_state.state
                 )));
             };
@@ -474,11 +479,16 @@ pub async fn modify_alert(
     let alert_bytes = serde_json::to_vec(&new_alert.to_alert_config())?;
     store.put_object(&path, Bytes::from(alert_bytes)).await?;
 
+    let is_disabled = new_alert.get_state().eq(&AlertState::Disabled);
     // Now perform the atomic operations
     alerts.delete_task(alert_id).await?;
     alerts.delete(alert_id).await?;
     alerts.update(&*new_alert).await;
-    alerts.start_task(new_alert.clone_box()).await?;
+
+    // only restart the task if the state was not set to disabled
+    if !is_disabled {
+        alerts.start_task(new_alert.clone_box()).await?;
+    }
 
     let config = new_alert.to_alert_config().to_response();
     Ok(web::Json(config))

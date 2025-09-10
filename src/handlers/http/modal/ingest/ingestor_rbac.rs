@@ -18,11 +18,14 @@
 
 use std::collections::HashSet;
 
-use actix_web::{Responder, web};
-use tokio::sync::Mutex;
+use actix_web::{HttpResponse, web};
+use http::StatusCode;
 
 use crate::{
-    handlers::http::{modal::utils::rbac_utils::get_metadata, rbac::RBACError},
+    handlers::http::{
+        modal::utils::rbac_utils::get_metadata,
+        rbac::{RBACError, UPDATE_LOCK},
+    },
     rbac::{
         Users,
         map::roles,
@@ -31,18 +34,14 @@ use crate::{
     storage,
 };
 
-// async aware lock for updating storage metadata and user map atomicically
-static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
-
 // Handler for POST /api/v1/user/{username}
 // Creates a new user by username if it does not exists
 pub async fn post_user(
     username: web::Path<String>,
     body: Option<web::Json<serde_json::Value>>,
-) -> Result<impl Responder, RBACError> {
+) -> Result<HttpResponse, RBACError> {
     let username = username.into_inner();
 
-    let generated_password = String::default();
     let metadata = get_metadata().await?;
     if let Some(body) = body {
         let user: ParseableUser = serde_json::from_value(body.into_inner())?;
@@ -52,37 +51,38 @@ pub async fn post_user(
         Users.add_roles(&username, created_role.clone());
     }
 
-    Ok(generated_password)
+    Ok(HttpResponse::Ok().status(StatusCode::OK).finish())
 }
 
-// Handler for DELETE /api/v1/user/delete/{username}
-pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
-    let username = username.into_inner();
-    let _ = UPDATE_LOCK.lock().await;
+// Handler for DELETE /api/v1/user/delete/{userid}
+pub async fn delete_user(userid: web::Path<String>) -> Result<HttpResponse, RBACError> {
+    let userid = userid.into_inner();
+    let _guard = UPDATE_LOCK.lock().await;
     // fail this request if the user does not exists
-    if !Users.contains(&username) {
+    if !Users.contains(&userid) {
         return Err(RBACError::UserDoesNotExist);
     };
+
     // delete from parseable.json first
     let mut metadata = get_metadata().await?;
-    metadata.users.retain(|user| user.username() != username);
+    metadata.users.retain(|user| user.userid() != userid);
 
     let _ = storage::put_staging_metadata(&metadata);
 
     // update in mem table
-    Users.delete_user(&username);
-    Ok(format!("deleted user: {username}"))
+    Users.delete_user(&userid);
+    Ok(HttpResponse::Ok().status(StatusCode::OK).finish())
 }
 
-// Handler PATCH /user/{username}/role/sync/add => Add roles to a user
+// Handler PATCH /user/{userid}/role/sync/add => Add roles to a user
 pub async fn add_roles_to_user(
-    username: web::Path<String>,
+    userid: web::Path<String>,
     roles_to_add: web::Json<HashSet<String>>,
-) -> Result<String, RBACError> {
-    let username = username.into_inner();
+) -> Result<HttpResponse, RBACError> {
+    let userid = userid.into_inner();
     let roles_to_add = roles_to_add.into_inner();
 
-    if !Users.contains(&username) {
+    if !Users.contains(&userid) {
         return Err(RBACError::UserDoesNotExist);
     };
 
@@ -103,7 +103,7 @@ pub async fn add_roles_to_user(
     if let Some(user) = metadata
         .users
         .iter_mut()
-        .find(|user| user.username() == username)
+        .find(|user| user.userid() == userid)
     {
         user.roles.extend(roles_to_add.clone());
     } else {
@@ -113,20 +113,19 @@ pub async fn add_roles_to_user(
 
     let _ = storage::put_staging_metadata(&metadata);
     // update in mem table
-    Users.add_roles(&username.clone(), roles_to_add.clone());
-
-    Ok(format!("Roles updated successfully for {username}"))
+    Users.add_roles(&userid.clone(), roles_to_add.clone());
+    Ok(HttpResponse::Ok().status(StatusCode::OK).finish())
 }
 
-// Handler PATCH /user/{username}/role/sync/add => Add roles to a user
+// Handler PATCH /user/{userid}/role/sync/remove => Remove roles to a user
 pub async fn remove_roles_from_user(
-    username: web::Path<String>,
+    userid: web::Path<String>,
     roles_to_remove: web::Json<HashSet<String>>,
-) -> Result<String, RBACError> {
-    let username = username.into_inner();
+) -> Result<HttpResponse, RBACError> {
+    let userid = userid.into_inner();
     let roles_to_remove = roles_to_remove.into_inner();
 
-    if !Users.contains(&username) {
+    if !Users.contains(&userid) {
         return Err(RBACError::UserDoesNotExist);
     };
 
@@ -143,7 +142,7 @@ pub async fn remove_roles_from_user(
     }
 
     // check that user actually has these roles
-    let user_roles: HashSet<String> = HashSet::from_iter(Users.get_role(&username));
+    let user_roles: HashSet<String> = HashSet::from_iter(Users.get_role(&userid));
     let roles_not_with_user: HashSet<String> =
         HashSet::from_iter(roles_to_remove.difference(&user_roles).cloned());
 
@@ -153,12 +152,12 @@ pub async fn remove_roles_from_user(
         )));
     }
 
-    // update parseable.json first
+    // update parseable.json in staging first
     let mut metadata = get_metadata().await?;
     if let Some(user) = metadata
         .users
         .iter_mut()
-        .find(|user| user.username() == username)
+        .find(|user| user.userid() == userid)
     {
         let diff: HashSet<String> =
             HashSet::from_iter(user.roles.difference(&roles_to_remove).cloned());
@@ -170,14 +169,14 @@ pub async fn remove_roles_from_user(
 
     let _ = storage::put_staging_metadata(&metadata);
     // update in mem table
-    Users.remove_roles(&username.clone(), roles_to_remove.clone());
+    Users.remove_roles(&userid.clone(), roles_to_remove.clone());
 
-    Ok(format!("Roles updated successfully for {username}"))
+    Ok(HttpResponse::Ok().status(StatusCode::OK).finish())
 }
 
 // Handler for POST /api/v1/user/{username}/generate-new-password
 // Resets password for the user to a newly generated one and returns it
-pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Responder, RBACError> {
+pub async fn post_gen_password(username: web::Path<String>) -> Result<HttpResponse, RBACError> {
     let username = username.into_inner();
     let mut new_hash = String::default();
     let mut metadata = get_metadata().await?;
@@ -197,6 +196,5 @@ pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Respo
         return Err(RBACError::UserDoesNotExist);
     }
     Users.change_password_hash(&username, &new_hash);
-
-    Ok("Updated")
+    Ok(HttpResponse::Ok().status(StatusCode::OK).finish())
 }
