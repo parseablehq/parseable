@@ -106,7 +106,6 @@ fn get_file_bounds(
 }
 
 pub async fn update_snapshot(
-    storage: Arc<dyn ObjectStorage>,
     stream_name: &str,
     changes: Vec<manifest::File>,
 ) -> Result<(), ObjectStorageError> {
@@ -114,14 +113,19 @@ pub async fn update_snapshot(
         return Ok(());
     }
 
-    let mut meta = storage.get_object_store_format(stream_name).await?;
-
+    let mut meta: ObjectStoreFormat = serde_json::from_slice(
+        &PARSEABLE
+            .metastore
+            .get_stream_json(stream_name, false)
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
+    )?;
     let partition_groups = group_changes_by_partition(changes, &meta.time_partition);
 
     let new_manifest_entries =
-        process_partition_groups(partition_groups, &mut meta, storage.clone(), stream_name).await?;
+        process_partition_groups(partition_groups, &mut meta, stream_name).await?;
 
-    finalize_snapshot_update(meta, new_manifest_entries, storage, stream_name).await
+    finalize_snapshot_update(meta, new_manifest_entries, stream_name).await
 }
 
 /// Groups manifest file changes by time partitions using Rayon for parallel processing
@@ -209,7 +213,6 @@ fn extract_partition_metrics(stream_name: &str, partition_lower: DateTime<Utc>) 
 async fn process_partition_groups(
     partition_groups: HashMap<(DateTime<Utc>, DateTime<Utc>), Vec<manifest::File>>,
     meta: &mut ObjectStoreFormat,
-    storage: Arc<dyn ObjectStorage>,
     stream_name: &str,
 ) -> Result<Vec<snapshot::ManifestItem>, ObjectStorageError> {
     let mut new_manifest_entries = Vec::new();
@@ -222,7 +225,6 @@ async fn process_partition_groups(
             partition_lower,
             partition_changes,
             meta,
-            storage.clone(),
             stream_name,
             events_ingested,
             ingestion_size,
@@ -244,7 +246,6 @@ async fn process_single_partition(
     partition_lower: DateTime<Utc>,
     partition_changes: Vec<manifest::File>,
     meta: &mut ObjectStoreFormat,
-    storage: Arc<dyn ObjectStorage>,
     stream_name: &str,
     events_ingested: u64,
     ingestion_size: u64,
@@ -258,7 +259,6 @@ async fn process_single_partition(
         handle_existing_partition(
             pos,
             partition_changes,
-            storage,
             stream_name,
             meta,
             events_ingested,
@@ -272,7 +272,6 @@ async fn process_single_partition(
         create_manifest(
             partition_lower,
             partition_changes,
-            storage,
             stream_name,
             false,
             meta.clone(),
@@ -289,7 +288,6 @@ async fn process_single_partition(
 async fn handle_existing_partition(
     pos: usize,
     partition_changes: Vec<manifest::File>,
-    storage: Arc<dyn ObjectStorage>,
     stream_name: &str,
     meta: &mut ObjectStoreFormat,
     events_ingested: u64,
@@ -298,22 +296,36 @@ async fn handle_existing_partition(
     partition_lower: DateTime<Utc>,
 ) -> Result<Option<snapshot::ManifestItem>, ObjectStorageError> {
     let manifests = &mut meta.snapshot.manifest_list;
-    let path = partition_path(
-        stream_name,
-        manifests[pos].time_lower_bound,
-        manifests[pos].time_upper_bound,
-    );
 
     let manifest_file_name = manifest_path("").to_string();
     let should_update = manifests[pos].manifest_path.contains(&manifest_file_name);
 
     if should_update {
-        if let Some(mut manifest) = storage.get_manifest(&path).await? {
+        if let Some(mut manifest) = PARSEABLE
+            .metastore
+            .get_manifest(
+                stream_name,
+                manifests[pos].time_lower_bound,
+                manifests[pos].time_upper_bound,
+                Some(manifests[pos].manifest_path.clone()),
+            )
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
+        {
             // Update existing manifest
             for change in partition_changes {
                 manifest.apply_change(change);
             }
-            storage.put_manifest(&path, manifest).await?;
+            PARSEABLE
+                .metastore
+                .put_manifest(
+                    &manifest,
+                    stream_name,
+                    manifests[pos].time_lower_bound,
+                    manifests[pos].time_upper_bound,
+                )
+                .await
+                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
             manifests[pos].events_ingested = events_ingested;
             manifests[pos].ingestion_size = ingestion_size;
@@ -324,7 +336,6 @@ async fn handle_existing_partition(
             create_manifest(
                 partition_lower,
                 partition_changes,
-                storage,
                 stream_name,
                 false,
                 meta.clone(),
@@ -339,7 +350,6 @@ async fn handle_existing_partition(
         create_manifest(
             partition_lower,
             partition_changes,
-            storage,
             stream_name,
             false,
             ObjectStoreFormat::default(),
@@ -355,7 +365,6 @@ async fn handle_existing_partition(
 async fn finalize_snapshot_update(
     mut meta: ObjectStoreFormat,
     new_manifest_entries: Vec<snapshot::ManifestItem>,
-    storage: Arc<dyn ObjectStorage>,
     stream_name: &str,
 ) -> Result<(), ObjectStorageError> {
     // Add all new manifest entries to the snapshot
@@ -365,7 +374,11 @@ async fn finalize_snapshot_update(
     if let Some(stats) = stats {
         meta.stats = stats;
     }
-    storage.put_stream_manifest(stream_name, &meta).await?;
+    PARSEABLE
+        .metastore
+        .put_stream_json(&meta, stream_name)
+        .await
+        .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
     Ok(())
 }
 
@@ -373,7 +386,6 @@ async fn finalize_snapshot_update(
 async fn create_manifest(
     lower_bound: DateTime<Utc>,
     changes: Vec<manifest::File>,
-    storage: Arc<dyn ObjectStorage>,
     stream_name: &str,
     update_snapshot: bool,
     mut meta: ObjectStoreFormat,
@@ -419,15 +431,19 @@ async fn create_manifest(
         }
     }
 
-    let manifest_file_name = manifest_path("").to_string();
-    let path = partition_path(stream_name, lower_bound, upper_bound).join(&manifest_file_name);
-    storage
-        .put_object(&path, serde_json::to_vec(&manifest)?.into())
-        .await?;
+    PARSEABLE
+        .metastore
+        .put_manifest(&manifest, stream_name, lower_bound, upper_bound)
+        .await
+        .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
-    let path_url = storage.absolute_url(&path);
+    let path_url = &PARSEABLE
+        .metastore
+        .get_manifest_path(stream_name, lower_bound, upper_bound)
+        .await
+        .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
     let new_snapshot_entry = snapshot::ManifestItem {
-        manifest_path: path_url.to_string(),
+        manifest_path: path_url.to_owned(),
         time_lower_bound: lower_bound,
         time_upper_bound: upper_bound,
         events_ingested,
@@ -444,7 +460,13 @@ async fn create_manifest(
             meta.stats = stats;
         }
         meta.first_event_at = first_event_at;
-        storage.put_stream_manifest(stream_name, &meta).await?;
+
+        PARSEABLE
+            .metastore
+            .put_stream_json(&meta, stream_name)
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
+
         Ok(None)
     } else {
         Ok(Some(new_snapshot_entry))
@@ -458,7 +480,14 @@ pub async fn remove_manifest_from_snapshot(
 ) -> Result<(), ObjectStorageError> {
     if !dates.is_empty() {
         // get current snapshot
-        let mut meta = storage.get_object_store_format(stream_name).await?;
+        let mut meta: ObjectStoreFormat = serde_json::from_slice(
+            &PARSEABLE
+                .metastore
+                .get_stream_json(stream_name, false)
+                .await
+                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
+        )?;
+
         let meta_for_stats = meta.clone();
         update_deleted_stats(storage.clone(), stream_name, meta_for_stats, dates.clone()).await?;
         let manifests = &mut meta.snapshot.manifest_list;

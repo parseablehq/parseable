@@ -28,7 +28,7 @@ use crate::rbac::Users;
 use crate::rbac::role::Action;
 use crate::stats::{Stats, event_labels_date, storage_size_labels_date};
 use crate::storage::retention::Retention;
-use crate::storage::{StreamInfo, StreamType};
+use crate::storage::{ObjectStoreFormat, StreamInfo, StreamType};
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::json::flatten::{
     self, convert_to_array, generic_flattening, has_more_than_max_allowed_levels,
@@ -88,11 +88,9 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, StreamError> {
 
     // list all streams from storage
     let res = PARSEABLE
-        .storage
-        .get_object_store()
+        .metastore
         .list_streams()
-        .await
-        .unwrap()
+        .await?
         .into_iter()
         .filter(|logstream| {
             Users.authorize(key.clone(), Action::ListStream, Some(logstream), None)
@@ -412,11 +410,18 @@ pub async fn put_stream_hot_tier(
     hot_tier_manager
         .put_hot_tier(&stream_name, &mut hottier)
         .await?;
-    let storage = PARSEABLE.storage().get_object_store();
-    let mut stream_metadata = storage.get_object_store_format(&stream_name).await?;
+
+    let mut stream_metadata: ObjectStoreFormat = serde_json::from_slice(
+        &PARSEABLE
+            .metastore
+            .get_stream_json(&stream_name, false)
+            .await?,
+    )?;
     stream_metadata.hot_tier_enabled = true;
-    storage
-        .put_stream_manifest(&stream_name, &stream_metadata)
+
+    PARSEABLE
+        .metastore
+        .put_stream_json(&stream_metadata, &stream_name)
         .await?;
 
     Ok((
@@ -468,6 +473,19 @@ pub async fn delete_stream_hot_tier(
 
     hot_tier_manager.delete_hot_tier(&stream_name).await?;
 
+    let mut stream_metadata: ObjectStoreFormat = serde_json::from_slice(
+        &PARSEABLE
+            .metastore
+            .get_stream_json(&stream_name, false)
+            .await?,
+    )?;
+    stream_metadata.hot_tier_enabled = false;
+
+    PARSEABLE
+        .metastore
+        .put_stream_json(&stream_metadata, &stream_name)
+        .await?;
+
     Ok((
         format!("hot tier deleted for stream {stream_name}"),
         StatusCode::OK,
@@ -491,6 +509,7 @@ pub mod error {
 
     use crate::{
         hottier::HotTierError,
+        metastore::MetastoreError,
         parseable::StreamNotFound,
         storage::ObjectStorageError,
         validator::error::{
@@ -563,6 +582,8 @@ pub mod error {
         HotTierError(#[from] HotTierError),
         #[error("Invalid query parameter: {0}")]
         InvalidQueryParameter(String),
+        #[error(transparent)]
+        MetastoreError(#[from] MetastoreError),
     }
 
     impl actix_web::ResponseError for StreamError {
@@ -599,13 +620,21 @@ pub mod error {
                 StreamError::HotTierValidation(_) => StatusCode::BAD_REQUEST,
                 StreamError::HotTierError(_) => StatusCode::INTERNAL_SERVER_ERROR,
                 StreamError::InvalidQueryParameter(_) => StatusCode::BAD_REQUEST,
+                StreamError::MetastoreError(e) => e.status_code(),
             }
         }
 
         fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
-            actix_web::HttpResponse::build(self.status_code())
-                .insert_header(ContentType::plaintext())
-                .body(self.to_string())
+            match self {
+                StreamError::MetastoreError(metastore_error) => {
+                    actix_web::HttpResponse::build(metastore_error.status_code())
+                        .insert_header(ContentType::json())
+                        .json(metastore_error.to_detail())
+                }
+                _ => actix_web::HttpResponse::build(self.status_code())
+                    .insert_header(ContentType::plaintext())
+                    .body(self.to_string()),
+            }
         }
     }
 }

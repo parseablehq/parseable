@@ -35,9 +35,11 @@ use crate::{
         target::{self, NotificationConfig},
     },
     handlers::http::query::create_streams_for_distributed,
+    metastore::metastore_traits::MetastoreObject,
     parseable::PARSEABLE,
     query::resolve_stream_names,
     rbac::map::SessionKey,
+    storage::object_storage::alert_json_path,
     utils::user_auth_for_query,
 };
 
@@ -63,6 +65,16 @@ pub struct ThresholdAlert {
     pub tags: Option<Vec<String>>,
     pub datasets: Vec<String>,
     pub last_triggered_at: Option<DateTime<Utc>>,
+}
+
+impl MetastoreObject for ThresholdAlert {
+    fn get_object_path(&self) -> String {
+        alert_json_path(self.id).to_string()
+    }
+
+    fn get_object_id(&self) -> String {
+        self.id.to_string()
+    }
 }
 
 #[async_trait]
@@ -170,12 +182,14 @@ impl AlertTrait for ThresholdAlert {
         &mut self,
         new_notification_state: NotificationState,
     ) -> Result<(), AlertError> {
-        let store = PARSEABLE.storage.get_object_store();
         // update state in memory
         self.notification_state = new_notification_state;
-        // update on disk
-        store.put_alert(self.id, &self.to_alert_config()).await?;
 
+        // update on disk
+        PARSEABLE
+            .metastore
+            .put_alert(&self.to_alert_config())
+            .await?;
         Ok(())
     }
 
@@ -184,7 +198,6 @@ impl AlertTrait for ThresholdAlert {
         new_state: AlertState,
         trigger_notif: Option<String>,
     ) -> Result<(), AlertError> {
-        let store = PARSEABLE.storage.get_object_store();
         if self.state.eq(&AlertState::Disabled) {
             warn!(
                 "Alert- {} is currently Disabled. Updating state to {new_state}.",
@@ -199,7 +212,10 @@ impl AlertTrait for ThresholdAlert {
             }
 
             // update on disk
-            store.put_alert(self.id, &self.to_alert_config()).await?;
+            PARSEABLE
+                .metastore
+                .put_alert(&self.to_alert_config())
+                .await?;
             // The task should have already been removed from the list of running tasks
             return Ok(());
         }
@@ -232,7 +248,10 @@ impl AlertTrait for ThresholdAlert {
         }
 
         // update on disk
-        store.put_alert(self.id, &self.to_alert_config()).await?;
+        PARSEABLE
+            .metastore
+            .put_alert(&self.to_alert_config())
+            .await?;
 
         if trigger_notif.is_some() && self.notification_state.eq(&NotificationState::Notify) {
             trace!("trigger notif on-\n{}", self.state);

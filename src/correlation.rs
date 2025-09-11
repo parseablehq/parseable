@@ -35,6 +35,7 @@ use crate::{
         rbac::RBACError,
         users::{CORRELATION_DIR, USERS_ROOT_DIR},
     },
+    metastore::{MetastoreError, metastore_traits::MetastoreObject},
     parseable::PARSEABLE,
     query::QUERY_SESSION,
     rbac::{Users, map::SessionKey},
@@ -53,13 +54,12 @@ pub struct Correlations(RwLock<CorrelationMap>);
 impl Correlations {
     // Load correlations from storage
     pub async fn load(&self) -> anyhow::Result<()> {
-        let store = PARSEABLE.storage.get_object_store();
-        let all_correlations = store.get_all_correlations().await.unwrap_or_default();
+        let all_correlations = PARSEABLE.metastore.get_correlations().await?;
 
         let mut guard = self.write().await;
 
-        for correlations_bytes in all_correlations.values().flatten() {
-            let correlation = match serde_json::from_slice::<CorrelationConfig>(correlations_bytes)
+        for correlations_bytes in all_correlations {
+            let correlation = match serde_json::from_slice::<CorrelationConfig>(&correlations_bytes)
             {
                 Ok(c) => c,
                 Err(e) => {
@@ -119,14 +119,8 @@ impl Correlations {
         correlation.id = get_hash(Utc::now().timestamp_micros().to_string().as_str());
         correlation.validate(session_key).await?;
 
-        // Update in storage
-        let correlation_bytes = serde_json::to_vec(&correlation)?.into();
-        let path = correlation.path();
-        PARSEABLE
-            .storage
-            .get_object_store()
-            .put_object(&path, correlation_bytes)
-            .await?;
+        // Update in metastore
+        PARSEABLE.metastore.put_correlation(&correlation).await?;
 
         // Update in memory
         self.write()
@@ -154,13 +148,10 @@ impl Correlations {
         correlation.validate(session_key).await?;
         updated_correlation.update(correlation);
 
-        // Update in storage
-        let correlation_bytes = serde_json::to_vec(&updated_correlation)?.into();
-        let path = updated_correlation.path();
+        // Update in metastore
         PARSEABLE
-            .storage
-            .get_object_store()
-            .put_object(&path, correlation_bytes)
+            .metastore
+            .put_correlation(&updated_correlation)
             .await?;
 
         // Update in memory
@@ -185,16 +176,11 @@ impl Correlations {
             ))));
         }
 
+        // Delete from storage
+        PARSEABLE.metastore.delete_correlation(&correlation).await?;
+
         // Delete from memory
         self.write().await.remove(&correlation.id);
-
-        // Delete from storage
-        let path = correlation.path();
-        PARSEABLE
-            .storage
-            .get_object_store()
-            .delete_object(&path)
-            .await?;
 
         Ok(())
     }
@@ -225,6 +211,16 @@ pub struct CorrelationConfig {
     pub filter: Option<FilterQuery>,
     pub start_time: Option<String>,
     pub end_time: Option<String>,
+}
+
+impl MetastoreObject for CorrelationConfig {
+    fn get_object_path(&self) -> String {
+        self.path().to_string()
+    }
+
+    fn get_object_id(&self) -> String {
+        self.id.clone()
+    }
 }
 
 impl CorrelationConfig {
@@ -334,6 +330,8 @@ pub enum CorrelationError {
     DataFusion(#[from] DataFusionError),
     #[error("{0}")]
     ActixError(#[from] Error),
+    #[error(transparent)]
+    MetastoreError(#[from] MetastoreError),
 }
 
 impl actix_web::ResponseError for CorrelationError {
@@ -347,13 +345,21 @@ impl actix_web::ResponseError for CorrelationError {
             Self::Unauthorized => StatusCode::BAD_REQUEST,
             Self::DataFusion(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::ActixError(_) => StatusCode::BAD_REQUEST,
+            Self::MetastoreError(e) => e.status_code(),
         }
     }
 
     fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
-        actix_web::HttpResponse::build(self.status_code())
-            .insert_header(ContentType::plaintext())
-            .body(self.to_string())
+        match self {
+            CorrelationError::MetastoreError(e) => {
+                actix_web::HttpResponse::build(self.status_code())
+                    .insert_header(ContentType::json())
+                    .json(e.to_detail())
+            }
+            _ => actix_web::HttpResponse::build(self.status_code())
+                .insert_header(ContentType::plaintext())
+                .body(self.to_string()),
+        }
     }
 }
 

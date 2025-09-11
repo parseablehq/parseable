@@ -56,13 +56,14 @@ use crate::alerts::alert_traits::{AlertManagerTrait, AlertTrait};
 use crate::alerts::alert_types::ThresholdAlert;
 use crate::alerts::target::{NotificationConfig, TARGETS};
 use crate::handlers::http::fetch_schema;
+use crate::metastore::MetastoreError;
 // use crate::handlers::http::query::create_streams_for_distributed;
 // use crate::option::Mode;
 use crate::parseable::{PARSEABLE, StreamNotFound};
 use crate::query::{QUERY_SESSION, resolve_stream_names};
 use crate::rbac::map::SessionKey;
 use crate::storage;
-use crate::storage::{ALERTS_ROOT_DIRECTORY, ObjectStorageError};
+use crate::storage::ObjectStorageError;
 use crate::sync::alert_runtime;
 use crate::utils::user_auth_for_query;
 
@@ -103,10 +104,7 @@ pub fn create_default_alerts_manager() -> Alerts {
 
 impl AlertConfig {
     /// Migration function to convert v1 alerts to v2 structure
-    pub async fn migrate_from_v1(
-        alert_json: &JsonValue,
-        store: &dyn crate::storage::ObjectStorage,
-    ) -> Result<AlertConfig, AlertError> {
+    pub async fn migrate_from_v1(alert_json: &JsonValue) -> Result<AlertConfig, AlertError> {
         let basic_fields = Self::parse_basic_fields(alert_json)?;
         let alert_info = format!("Alert '{}' (ID: {})", basic_fields.title, basic_fields.id);
 
@@ -138,7 +136,7 @@ impl AlertConfig {
         };
 
         // Save the migrated alert back to storage
-        store.put_alert(basic_fields.id, &migrated_alert).await?;
+        PARSEABLE.metastore.put_alert(&migrated_alert).await?;
 
         Ok(migrated_alert)
     }
@@ -950,6 +948,8 @@ pub enum AlertError {
     Unimplemented(String),
     #[error("{0}")]
     ValidationFailure(String),
+    #[error(transparent)]
+    MetastoreError(#[from] MetastoreError),
 }
 
 impl actix_web::ResponseError for AlertError {
@@ -977,6 +977,7 @@ impl actix_web::ResponseError for AlertError {
             Self::ArrowError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Unimplemented(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::NotPresentInOSS(_) => StatusCode::BAD_REQUEST,
+            Self::MetastoreError(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
 
@@ -991,19 +992,10 @@ impl actix_web::ResponseError for AlertError {
 impl AlertManagerTrait for Alerts {
     /// Loads alerts from disk, blocks
     async fn load(&self) -> anyhow::Result<()> {
-        let mut map = self.alerts.write().await;
-        let store = PARSEABLE.storage.get_object_store();
-
         // Get alerts path and read raw bytes for migration handling
-        let relative_path = relative_path::RelativePathBuf::from(ALERTS_ROOT_DIRECTORY);
+        let raw_objects = PARSEABLE.metastore.get_alerts().await?;
 
-        let raw_objects = store
-            .get_objects(
-                Some(&relative_path),
-                Box::new(|file_name| file_name.ends_with(".json")),
-            )
-            .await
-            .unwrap_or_default();
+        let mut map = self.alerts.write().await;
 
         for raw_bytes in raw_objects {
             // First, try to parse as JSON Value to check version
@@ -1022,7 +1014,7 @@ impl AlertManagerTrait for Alerts {
                     || json_value.get("stream").is_some()
                 {
                     // This is a v1 alert that needs migration
-                    match AlertConfig::migrate_from_v1(&json_value, store.as_ref()).await {
+                    match AlertConfig::migrate_from_v1(&json_value).await {
                         Ok(migrated) => migrated,
                         Err(e) => {
                             error!("Failed to migrate v1 alert: {e}");
@@ -1042,7 +1034,7 @@ impl AlertManagerTrait for Alerts {
             } else {
                 // No version field, assume v1 and migrate
                 warn!("Found alert without version field, assuming v1 and migrating");
-                match AlertConfig::migrate_from_v1(&json_value, store.as_ref()).await {
+                match AlertConfig::migrate_from_v1(&json_value).await {
                     Ok(migrated) => migrated,
                     Err(e) => {
                         error!("Failed to migrate alert without version: {e}");
@@ -1253,8 +1245,6 @@ impl AlertManagerTrait for Alerts {
         alert_id: Ulid,
         new_notification_state: NotificationState,
     ) -> Result<(), AlertError> {
-        // let store = PARSEABLE.storage.get_object_store();
-
         // read and modify alert
         let mut write_access = self.alerts.write().await;
         let mut alert: Box<dyn AlertTrait> = if let Some(alert) = write_access.get(&alert_id) {

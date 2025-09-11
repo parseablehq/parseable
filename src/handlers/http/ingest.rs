@@ -35,6 +35,7 @@ use crate::handlers::{
     STREAM_NAME_HEADER_KEY, TELEMETRY_TYPE_KEY, TelemetryType,
 };
 use crate::metadata::SchemaVersion;
+use crate::metastore::MetastoreError;
 use crate::option::Mode;
 use crate::otel::logs::OTEL_LOG_KNOWN_FIELD_LIST;
 use crate::otel::metrics::OTEL_METRICS_KNOWN_FIELD_LIST;
@@ -475,44 +476,56 @@ pub enum PostError {
     InvalidQueryParameter,
     #[error("Missing query parameter")]
     MissingQueryParameter,
+    #[error(transparent)]
+    MetastoreError(#[from] MetastoreError),
 }
 
 impl actix_web::ResponseError for PostError {
     fn status_code(&self) -> http::StatusCode {
+        use PostError::*;
         match self {
-            PostError::SerdeError(_) => StatusCode::BAD_REQUEST,
-            PostError::Header(_) => StatusCode::BAD_REQUEST,
-            PostError::Event(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::Invalid(_) => StatusCode::BAD_REQUEST,
-            PostError::CreateStream(CreateStreamError::StreamNameValidation(_)) => {
-                StatusCode::BAD_REQUEST
-            }
-            PostError::CreateStream(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::StreamNotFound(_) => StatusCode::NOT_FOUND,
-            PostError::CustomError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::NetworkError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::DashboardError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::FiltersError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::StreamError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::JsonFlattenError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::OtelNotSupported => StatusCode::BAD_REQUEST,
-            PostError::InternalStream(_) => StatusCode::BAD_REQUEST,
-            PostError::IncorrectLogSource(_) => StatusCode::BAD_REQUEST,
-            PostError::IngestionNotAllowed => StatusCode::BAD_REQUEST,
-            PostError::MissingTimePartition(_) => StatusCode::BAD_REQUEST,
-            PostError::KnownFormat(_) => StatusCode::BAD_REQUEST,
-            PostError::IncorrectLogFormat(_) => StatusCode::BAD_REQUEST,
-            PostError::FieldsCountLimitExceeded(_, _, _) => StatusCode::BAD_REQUEST,
-            PostError::InvalidQueryParameter => StatusCode::BAD_REQUEST,
-            PostError::MissingQueryParameter => StatusCode::BAD_REQUEST,
+            SerdeError(_)
+            | Header(_)
+            | Invalid(_)
+            | InternalStream(_)
+            | IncorrectLogSource(_)
+            | IngestionNotAllowed
+            | MissingTimePartition(_)
+            | KnownFormat(_)
+            | IncorrectLogFormat(_)
+            | FieldsCountLimitExceeded(_, _, _)
+            | InvalidQueryParameter
+            | MissingQueryParameter
+            | CreateStream(CreateStreamError::StreamNameValidation(_))
+            | OtelNotSupported => StatusCode::BAD_REQUEST,
+
+            Event(_)
+            | CreateStream(_)
+            | CustomError(_)
+            | NetworkError(_)
+            | ObjectStorageError(_)
+            | DashboardError(_)
+            | FiltersError(_)
+            | StreamError(_)
+            | JsonFlattenError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+
+            StreamNotFound(_) => StatusCode::NOT_FOUND,
+
+            MetastoreError(e) => e.status_code(),
         }
     }
 
     fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
-        actix_web::HttpResponse::build(self.status_code())
-            .insert_header(ContentType::plaintext())
-            .body(self.to_string())
+        match self {
+            PostError::MetastoreError(metastore_error) => {
+                actix_web::HttpResponse::build(metastore_error.status_code())
+                    .insert_header(ContentType::json())
+                    .json(metastore_error.to_detail())
+            }
+            _ => actix_web::HttpResponse::build(self.status_code())
+                .insert_header(ContentType::plaintext())
+                .body(self.to_string()),
+        }
     }
 }
 

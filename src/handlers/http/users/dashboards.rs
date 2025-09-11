@@ -20,6 +20,7 @@ use std::collections::HashMap;
 
 use crate::{
     handlers::http::rbac::RBACError,
+    metastore::MetastoreError,
     storage::ObjectStorageError,
     users::dashboards::{DASHBOARDS, Dashboard, Tile, validate_dashboard_id},
     utils::{get_hash, get_user_from_request},
@@ -248,6 +249,8 @@ pub enum DashboardError {
     Unauthorized,
     #[error("Invalid query parameter")]
     InvalidQueryParameter,
+    #[error(transparent)]
+    MetastoreError(#[from] MetastoreError),
 }
 
 impl actix_web::ResponseError for DashboardError {
@@ -260,12 +263,18 @@ impl actix_web::ResponseError for DashboardError {
             Self::Custom(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::InvalidQueryParameter => StatusCode::BAD_REQUEST,
+            Self::MetastoreError(e) => e.status_code(),
         }
     }
 
     fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
-        actix_web::HttpResponse::build(self.status_code())
-            .insert_header(ContentType::plaintext())
-            .body(self.to_string())
+        match self {
+            DashboardError::MetastoreError(e) => {
+                actix_web::HttpResponse::build(self.status_code()).json(e.to_detail())
+            }
+            _ => actix_web::HttpResponse::build(self.status_code())
+                .insert_header(ContentType::plaintext())
+                .body(self.to_string()),
+        }
     }
 }

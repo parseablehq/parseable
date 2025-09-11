@@ -21,11 +21,10 @@ use actix_web::Responder;
 use arrow_schema::Schema;
 use cluster::get_node_info;
 use http::StatusCode;
-use itertools::Itertools;
 use modal::{NodeMetadata, NodeType};
 use serde_json::Value;
 
-use crate::{INTRA_CLUSTER_CLIENT, parseable::PARSEABLE, storage::STREAM_ROOT_DIRECTORY};
+use crate::{INTRA_CLUSTER_CLIENT, parseable::PARSEABLE};
 
 use self::query::Query;
 
@@ -89,19 +88,7 @@ pub fn base_path_without_preceding_slash() -> String {
 ///
 /// An `anyhow::Result` containing the `arrow_schema::Schema` for the specified stream.
 pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Schema> {
-    let path_prefix =
-        relative_path::RelativePathBuf::from(format!("{stream_name}/{STREAM_ROOT_DIRECTORY}"));
-    let store = PARSEABLE.storage.get_object_store();
-    let res: Vec<Schema> = store
-        .get_objects(
-            Some(&path_prefix),
-            Box::new(|file_name: String| file_name.contains(".schema")),
-        )
-        .await?
-        .iter()
-        // we should be able to unwrap as we know the data is valid schema
-        .map(|byte_obj| serde_json::from_slice(byte_obj).expect("data is valid json"))
-        .collect_vec();
+    let res: Vec<Schema> = PARSEABLE.metastore.get_all_schemas(stream_name).await?;
 
     let new_schema = Schema::try_merge(res)?;
     Ok(new_schema)

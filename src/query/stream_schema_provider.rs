@@ -48,7 +48,6 @@ use datafusion::{
 use futures_util::{StreamExt, TryFutureExt, TryStreamExt, stream::FuturesOrdered};
 use itertools::Itertools;
 use object_store::{ObjectStore, path::Path};
-use relative_path::RelativePathBuf;
 use url::Url;
 
 use crate::{
@@ -63,7 +62,7 @@ use crate::{
     metrics::QUERY_CACHE_HIT,
     option::Mode,
     parseable::{PARSEABLE, STREAM_EXISTS},
-    storage::{ObjectStorage, ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
+    storage::{ObjectStorage, ObjectStoreFormat},
 };
 
 use super::listing_table_builder::ListingTableBuilder;
@@ -408,20 +407,34 @@ impl StandardTableProvider {
 async fn collect_from_snapshot(
     snapshot: &Snapshot,
     time_filters: &[PartialTimeFilter],
-    object_store: Arc<dyn ObjectStore>,
     filters: &[Expr],
     limit: Option<usize>,
+    stream_name: &str,
 ) -> Result<Vec<File>, DataFusionError> {
-    let items = snapshot.manifests(time_filters);
-    let manifest_files = collect_manifest_files(
-        object_store,
-        items
-            .into_iter()
-            .sorted_by_key(|file| file.time_lower_bound)
-            .map(|item| item.manifest_path)
-            .collect(),
-    )
-    .await?;
+    let mut manifest_files = Vec::new();
+
+    for manifest_item in snapshot.manifests(time_filters) {
+        let manifest_opt = PARSEABLE
+            .metastore
+            .get_manifest(
+                stream_name,
+                manifest_item.time_lower_bound,
+                manifest_item.time_upper_bound,
+                Some(manifest_item.manifest_path),
+            )
+            .await
+            .map_err(|e| DataFusionError::Plan(e.to_string()))?;
+        if let Some(manifest) = manifest_opt {
+            manifest_files.push(manifest);
+        } else {
+            tracing::warn!(
+                "Manifest missing for stream={} [{:?} - {:?}]",
+                stream_name,
+                manifest_item.time_lower_bound,
+                manifest_item.time_upper_bound
+            );
+        }
+    }
 
     let mut manifest_files: Vec<_> = manifest_files
         .into_iter()
@@ -481,10 +494,15 @@ impl TableProvider for StandardTableProvider {
             .unwrap();
         let glob_storage = PARSEABLE.storage.get_object_store();
 
-        let object_store_format = glob_storage
-            .get_object_store_format(&self.stream)
-            .await
-            .map_err(|err| DataFusionError::Plan(err.to_string()))?;
+        let object_store_format: ObjectStoreFormat = serde_json::from_slice(
+            &PARSEABLE
+                .metastore
+                .get_stream_json(&self.stream, false)
+                .await
+                .map_err(|e| DataFusionError::Plan(e.to_string()))?,
+        )
+        .map_err(|e| DataFusionError::Plan(e.to_string()))?;
+
         let time_partition = object_store_format.time_partition;
         let mut time_filters = extract_primary_filter(filters, &time_partition);
         if is_within_staging_window(&time_filters) {
@@ -500,12 +518,9 @@ impl TableProvider for StandardTableProvider {
         };
         let mut merged_snapshot = Snapshot::default();
         if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
-            let path = RelativePathBuf::from_iter([&self.stream, STREAM_ROOT_DIRECTORY]);
-            let obs = glob_storage
-                .get_objects(
-                    Some(&path),
-                    Box::new(|file_name| file_name.ends_with("stream.json")),
-                )
+            let obs = PARSEABLE
+                .metastore
+                .get_all_stream_jsons(&self.stream, None)
                 .await;
             if let Ok(obs) = obs {
                 for ob in obs {
@@ -548,9 +563,9 @@ impl TableProvider for StandardTableProvider {
         let mut manifest_files = collect_from_snapshot(
             &merged_snapshot,
             &time_filters,
-            object_store,
             filters,
             limit,
+            &self.stream,
         )
         .await?;
 

@@ -26,7 +26,6 @@ use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::catalog::resolve_table_references;
 use datafusion::common::tree_node::Transformed;
-use datafusion::error::DataFusionError;
 use datafusion::execution::disk_manager::DiskManagerConfig;
 use datafusion::execution::{SendableRecordBatchStream, SessionState, SessionStateBuilder};
 use datafusion::logical_expr::expr::Alias;
@@ -38,12 +37,10 @@ use datafusion::sql::parser::DFParser;
 use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
-use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::ops::Bound;
 use std::sync::Arc;
-use stream_schema_provider::collect_manifest_files;
 use sysinfo::System;
 use tokio::runtime::Runtime;
 
@@ -60,7 +57,7 @@ use crate::event::DEFAULT_TIMESTAMP_KEY;
 use crate::handlers::http::query::QueryError;
 use crate::option::Mode;
 use crate::parseable::PARSEABLE;
-use crate::storage::{ObjectStorageProvider, ObjectStoreFormat, STREAM_ROOT_DIRECTORY};
+use crate::storage::{ObjectStorageProvider, ObjectStoreFormat};
 use crate::utils::time::TimeRange;
 
 pub static QUERY_SESSION: Lazy<SessionContext> =
@@ -537,32 +534,22 @@ pub async fn get_manifest_list(
     stream_name: &str,
     time_range: &TimeRange,
 ) -> Result<Vec<Manifest>, QueryError> {
-    let glob_storage = PARSEABLE.storage.get_object_store();
-
-    let object_store = QUERY_SESSION
-        .state()
-        .runtime_env()
-        .object_store_registry
-        .get_store(&glob_storage.store_url())
-        .unwrap();
-
     // get object store
-    let object_store_format = glob_storage
-        .get_object_store_format(stream_name)
-        .await
-        .map_err(|err| DataFusionError::Plan(err.to_string()))?;
+    let object_store_format: ObjectStoreFormat = serde_json::from_slice(
+        &PARSEABLE
+            .metastore
+            .get_stream_json(stream_name, false)
+            .await?,
+    )?;
 
     // all the manifests will go here
     let mut merged_snapshot: Snapshot = Snapshot::default();
 
     // get a list of manifests
     if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
-        let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
-        let obs = glob_storage
-            .get_objects(
-                Some(&path),
-                Box::new(|file_name| file_name.ends_with("stream.json")),
-            )
+        let obs = PARSEABLE
+            .metastore
+            .get_all_stream_jsons(stream_name, None)
             .await;
         if let Ok(obs) = obs {
             for ob in obs {
@@ -584,17 +571,27 @@ pub async fn get_manifest_list(
         PartialTimeFilter::High(Bound::Included(time_range.end.naive_utc())),
     ];
 
-    let all_manifest_files = collect_manifest_files(
-        object_store,
-        merged_snapshot
-            .manifests(&time_filter)
-            .into_iter()
-            .sorted_by_key(|file| file.time_lower_bound)
-            .map(|item| item.manifest_path)
-            .collect(),
-    )
-    .await
-    .map_err(|err| anyhow::Error::msg(err.to_string()))?;
+    let mut all_manifest_files = Vec::new();
+    for manifest_item in merged_snapshot.manifests(&time_filter) {
+        let manifest_opt = PARSEABLE
+            .metastore
+            .get_manifest(
+                stream_name,
+                manifest_item.time_lower_bound,
+                manifest_item.time_upper_bound,
+                Some(manifest_item.manifest_path.clone()),
+            )
+            .await?;
+        let manifest = manifest_opt.ok_or_else(|| {
+            QueryError::CustomError(format!(
+                "Manifest not found for {stream_name} [{} - {}], path- {}",
+                manifest_item.time_lower_bound,
+                manifest_item.time_upper_bound,
+                manifest_item.manifest_path
+            ))
+        })?;
+        all_manifest_files.push(manifest);
+    }
 
     Ok(all_manifest_files)
 }

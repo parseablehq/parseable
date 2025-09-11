@@ -37,6 +37,7 @@ use crate::{
     alerts::{ALERTS, get_alert_manager, target::TARGETS},
     cli::Options,
     correlation::CORRELATIONS,
+    metastore::metastore_traits::MetastoreObject,
     oidc::Claims,
     option::Mode,
     parseable::PARSEABLE,
@@ -272,6 +273,16 @@ pub struct NodeMetadata {
     pub node_type: NodeType,
 }
 
+impl MetastoreObject for NodeMetadata {
+    fn get_object_path(&self) -> String {
+        self.file_path().to_string()
+    }
+
+    fn get_object_id(&self) -> String {
+        self.node_id.clone()
+    }
+}
+
 impl NodeMetadata {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -309,7 +320,7 @@ impl NodeMetadata {
         }
 
         // Attempt to load metadata from storage
-        let storage_metas = Self::load_from_storage(node_type_str.to_string()).await;
+        let storage_metas = Self::load_from_storage(node_type.clone()).await;
         let url = PARSEABLE.options.get_url(node_type.to_mode());
         let port = url.port().unwrap_or(80).to_string();
         let url = url.to_string();
@@ -336,10 +347,7 @@ impl NodeMetadata {
         meta.put_on_disk(staging_path)
             .expect("Couldn't write updated metadata to disk");
 
-        let path = meta.file_path();
-        let resource = serde_json::to_vec(&meta)?.into();
-        let store = PARSEABLE.storage.get_object_store();
-        store.put_object(&path, resource).await?;
+        PARSEABLE.metastore.put_node_metadata(&meta).await?;
 
         Ok(Arc::new(meta))
     }
@@ -349,26 +357,13 @@ impl NodeMetadata {
         meta.put_on_disk(staging_path)
             .expect("Couldn't write new metadata to disk");
 
-        let path = meta.file_path();
-        let resource = serde_json::to_vec(&meta)?.into();
-        let store = PARSEABLE.storage.get_object_store();
-        store.put_object(&path, resource).await?;
+        PARSEABLE.metastore.put_node_metadata(&meta).await?;
 
         Ok(Arc::new(meta))
     }
 
-    async fn load_from_storage(node_type: String) -> Vec<NodeMetadata> {
-        let path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
-        let glob_storage = PARSEABLE.storage.get_object_store();
-        let obs = glob_storage
-            .get_objects(
-                Some(&path),
-                Box::new({
-                    let node_type = node_type.clone();
-                    move |file_name| file_name.contains(&node_type)
-                }),
-            )
-            .await;
+    async fn load_from_storage(node_type: NodeType) -> Vec<NodeMetadata> {
+        let obs = PARSEABLE.metastore.get_node_metadata(node_type).await;
 
         let mut metadata = vec![];
         if let Ok(obs) = obs {

@@ -58,6 +58,7 @@ sha2 = "0.10.8"
 
 # Serialization and Data Formats
 byteorder = "1.4.3"
+erased-serde = "=0.3.16"
 serde = { version = "1.0", features = ["rc", "derive"] }
 serde_json = "1.0"
 serde_repr = "0.1.17"
@@ -141,6 +142,7 @@ futures-core = "0.3.31"
 tempfile = "3.20.0"
 lazy_static = "1.4.0"
 prost = "0.13.1"
+dashmap = "6.1.0"
 
 [build-dependencies]
 cargo_toml = "0.21"

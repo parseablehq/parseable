@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::collections::HashMap;
 
 use chrono::{TimeZone, Utc};
 use datafusion::{common::Column, prelude::Expr};
@@ -7,15 +7,11 @@ use relative_path::RelativePathBuf;
 
 use crate::query::stream_schema_provider::extract_primary_filter;
 use crate::{
-    catalog::{
-        Snapshot,
-        manifest::{File, Manifest},
-        snapshot,
-    },
+    catalog::{Snapshot, manifest::File, snapshot},
     event,
     parseable::PARSEABLE,
     query::{PartialTimeFilter, stream_schema_provider::ManifestExt},
-    storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
+    storage::{ObjectStorageError, ObjectStoreFormat},
     utils::time::TimeRange,
 };
 
@@ -66,9 +62,13 @@ pub async fn fetch_parquet_file_paths(
     stream: &str,
     time_range: &TimeRange,
 ) -> Result<HashMap<RelativePathBuf, Vec<File>>, ObjectStorageError> {
-    let glob_storage = PARSEABLE.storage.get_object_store();
-
-    let object_store_format = glob_storage.get_object_store_format(stream).await?;
+    let object_store_format: ObjectStoreFormat = serde_json::from_slice(
+        &PARSEABLE
+            .metastore
+            .get_stream_json(stream, false)
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
+    )?;
 
     let time_partition = object_store_format.time_partition;
 
@@ -78,13 +78,7 @@ pub async fn fetch_parquet_file_paths(
 
     let mut merged_snapshot: snapshot::Snapshot = snapshot::Snapshot::default();
 
-    let path = RelativePathBuf::from_iter([stream, STREAM_ROOT_DIRECTORY]);
-    let obs = glob_storage
-        .get_objects(
-            Some(&path),
-            Box::new(|file_name| file_name.ends_with("stream.json")),
-        )
-        .await;
+    let obs = PARSEABLE.metastore.get_all_stream_jsons(stream, None).await;
     if let Ok(obs) = obs {
         for ob in obs {
             if let Ok(object_store_format) = serde_json::from_slice::<ObjectStoreFormat>(&ob) {
@@ -96,16 +90,23 @@ pub async fn fetch_parquet_file_paths(
         }
     }
 
-    let manifest_files = collect_manifest_files(
-        glob_storage,
-        merged_snapshot
-            .manifests(&time_filters)
-            .into_iter()
-            .sorted_by_key(|file| file.time_lower_bound)
-            .map(|item| item.manifest_path)
-            .collect(),
-    )
-    .await?;
+    let mut manifest_files = Vec::new();
+
+    for manifest_item in merged_snapshot.manifests(&time_filters) {
+        manifest_files.push(
+            PARSEABLE
+                .metastore
+                .get_manifest(
+                    stream,
+                    manifest_item.time_lower_bound,
+                    manifest_item.time_upper_bound,
+                    Some(manifest_item.manifest_path),
+                )
+                .await
+                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
+                .expect("Data is invalid for Manifest"),
+        )
+    }
 
     let mut parquet_files: HashMap<RelativePathBuf, Vec<File>> = HashMap::new();
 
@@ -154,29 +155,4 @@ pub async fn fetch_parquet_file_paths(
         .for_each(|_| {});
 
     Ok(parquet_files)
-}
-
-async fn collect_manifest_files(
-    storage: Arc<dyn ObjectStorage>,
-    manifest_urls: Vec<String>,
-) -> Result<Vec<Manifest>, ObjectStorageError> {
-    let mut tasks = Vec::new();
-    manifest_urls.into_iter().for_each(|path| {
-        let path = RelativePathBuf::from_path(PathBuf::from(path)).expect("Invalid path");
-        let storage = Arc::clone(&storage);
-        tasks.push(tokio::task::spawn(async move {
-            storage.get_object(&path).await
-        }));
-    });
-
-    let mut op = Vec::new();
-    for task in tasks {
-        let file = task.await??;
-        op.push(file);
-    }
-
-    Ok(op
-        .into_iter()
-        .map(|res| serde_json::from_slice(&res).expect("Data is invalid for Manifest"))
-        .collect())
 }

@@ -16,17 +16,18 @@
  *
  */
 
-use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use once_cell::sync::Lazy;
+use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::RwLock;
 use ulid::Ulid;
 
 use crate::{
-    handlers::http::users::dashboards::DashboardError, parseable::PARSEABLE,
-    storage::object_storage::dashboard_path,
+    handlers::http::users::{DASHBOARDS_DIR, USERS_ROOT_DIR, dashboards::DashboardError},
+    metastore::metastore_traits::MetastoreObject,
+    parseable::PARSEABLE,
 };
 
 pub static DASHBOARDS: Lazy<Dashboards> = Lazy::new(Dashboards::default);
@@ -64,6 +65,22 @@ pub struct Dashboard {
     pub is_favorite: Option<bool>, // whether the dashboard is marked as favorite, default is false
     dashboard_type: Option<DashboardType>,
     pub tiles: Option<Vec<Tile>>,
+}
+
+impl MetastoreObject for Dashboard {
+    fn get_object_path(&self) -> String {
+        RelativePathBuf::from_iter([
+            USERS_ROOT_DIR,
+            self.author.as_ref().unwrap(),
+            DASHBOARDS_DIR,
+            &format!("{}.json", self.dashboard_id.unwrap()),
+        ])
+        .to_string()
+    }
+
+    fn get_object_id(&self) -> String {
+        self.dashboard_id.unwrap().to_string()
+    }
 }
 
 impl Dashboard {
@@ -161,31 +178,27 @@ impl Dashboards {
     /// This function is called on server start
     pub async fn load(&self) -> anyhow::Result<()> {
         let mut this = vec![];
-        let store = PARSEABLE.storage.get_object_store();
-        let all_dashboards = store.get_all_dashboards().await.unwrap_or_default();
 
-        for (_, dashboards) in all_dashboards {
-            for dashboard in dashboards {
-                if dashboard.is_empty() {
+        let all_dashboards = PARSEABLE.metastore.get_dashboards().await?;
+
+        for dashboard in all_dashboards {
+            if dashboard.is_empty() {
+                continue;
+            }
+
+            let dashboard_value = match serde_json::from_slice::<serde_json::Value>(&dashboard) {
+                Ok(value) => value,
+                Err(err) => {
+                    tracing::warn!("Failed to parse dashboard JSON: {}", err);
                     continue;
                 }
+            };
 
-                let dashboard_value = match serde_json::from_slice::<serde_json::Value>(&dashboard)
-                {
-                    Ok(value) => value,
-                    Err(err) => {
-                        tracing::warn!("Failed to parse dashboard JSON: {}", err);
-                        continue;
-                    }
-                };
-
-                if let Ok(dashboard) = serde_json::from_value::<Dashboard>(dashboard_value.clone())
-                {
-                    this.retain(|d: &Dashboard| d.dashboard_id != dashboard.dashboard_id);
-                    this.push(dashboard);
-                } else {
-                    tracing::warn!("Failed to deserialize dashboard: {:?}", dashboard_value);
-                }
+            if let Ok(dashboard) = serde_json::from_value::<Dashboard>(dashboard_value.clone()) {
+                this.retain(|d: &Dashboard| d.dashboard_id != dashboard.dashboard_id);
+                this.push(dashboard);
+            } else {
+                tracing::warn!("Failed to deserialize dashboard: {:?}", dashboard_value);
             }
         }
 
@@ -199,19 +212,10 @@ impl Dashboards {
     /// This function is called when creating or updating a dashboard
     async fn save_dashboard(
         &self,
-        user_id: &str,
+        // user_id: &str,
         dashboard: &Dashboard,
     ) -> Result<(), DashboardError> {
-        let dashboard_id = dashboard
-            .dashboard_id
-            .ok_or(DashboardError::Metadata("Dashboard ID must be provided"))?;
-
-        let path = dashboard_path(user_id, &format!("{dashboard_id}.json"));
-        let store = PARSEABLE.storage.get_object_store();
-        let dashboard_bytes = serde_json::to_vec(&dashboard)?;
-        store
-            .put_object(&path, Bytes::from(dashboard_bytes))
-            .await?;
+        PARSEABLE.metastore.put_dashboard(dashboard).await?;
 
         Ok(())
     }
@@ -237,7 +241,7 @@ impl Dashboards {
             return Err(DashboardError::Metadata("Dashboard title must be unique"));
         }
 
-        self.save_dashboard(user_id, dashboard).await?;
+        self.save_dashboard(dashboard).await?;
 
         dashboards.push(dashboard.clone());
 
@@ -276,7 +280,7 @@ impl Dashboards {
             return Err(DashboardError::Metadata("Dashboard title must be unique"));
         }
 
-        self.save_dashboard(user_id, dashboard).await?;
+        self.save_dashboard(dashboard).await?;
 
         dashboards.retain(|d| d.dashboard_id != Some(dashboard_id));
         dashboards.push(dashboard.clone());
@@ -292,13 +296,15 @@ impl Dashboards {
         user_id: &str,
         dashboard_id: Ulid,
     ) -> Result<(), DashboardError> {
-        self.ensure_dashboard_ownership(dashboard_id, user_id)
+        let obj = self.ensure_dashboard_ownership(dashboard_id, user_id)
             .await?;
 
-        let path = dashboard_path(user_id, &format!("{dashboard_id}.json"));
-        let store = PARSEABLE.storage.get_object_store();
-        store.delete_object(&path).await?;
+        {
+            // validation has happened, dashboard exists and can be deleted by the user
+            PARSEABLE.metastore.delete_dashboard(&obj).await?;
+        }
 
+        // delete from in-memory
         self.0
             .write()
             .await

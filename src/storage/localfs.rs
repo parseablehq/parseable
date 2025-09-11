@@ -17,7 +17,7 @@
  */
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
     time::Instant,
@@ -28,7 +28,7 @@ use bytes::Bytes;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use fs_extra::file::CopyOptions;
 use futures::{TryStreamExt, stream::FuturesUnordered};
-use object_store::{ObjectMeta, buffered::BufReader};
+use object_store::{ListResult, ObjectMeta, buffered::BufReader};
 use relative_path::{RelativePath, RelativePathBuf};
 use tokio::{
     fs::{self, DirEntry, OpenOptions},
@@ -46,7 +46,7 @@ use crate::{
 
 use super::{
     ALERTS_ROOT_DIRECTORY, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
-    PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    PARSEABLE_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -139,7 +139,30 @@ impl ObjectStorage for LocalFS {
     }
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         let time = Instant::now();
-        let file_path = self.path_in_root(path);
+
+        let file_path;
+
+        // this is for the `get_manifest()` function because inside a snapshot, we store the absolute path (without `/`) on linux based OS
+        // `home/user/.../manifest.json`
+        // on windows, the path is stored with the drive letter
+        // `D:\\parseable\\data..\\manifest.json`
+        // thus, we need to check if the root of localfs is already present in the path
+        #[cfg(windows)]
+        {
+            // in windows the absolute path (self.root) doesn't matter because we store the complete path
+            file_path = path.to_path("");
+        }
+        #[cfg(not(windows))]
+        {
+            // absolute path (self.root) will always start with `/`
+            let root_str = self.root.to_str().unwrap();
+            file_path = if path.to_string().contains(&root_str[1..]) && root_str.len() > 1 {
+                path.to_path("/")
+            } else {
+                self.path_in_root(path)
+            };
+        }
+
         let res: Result<Bytes, ObjectStorageError> = match fs::read(file_path).await {
             Ok(x) => Ok(x.into()),
             Err(e) => match e.kind() {
@@ -182,50 +205,6 @@ impl ObjectStorage for LocalFS {
                 );
             }
         }
-
-        let time = time.elapsed().as_secs_f64();
-        REQUEST_RESPONSE_TIME
-            .with_label_values(&["GET", "200"]) // this might not be the right status code
-            .observe(time);
-
-        Ok(path_arr)
-    }
-
-    async fn get_stream_file_paths(
-        &self,
-        stream_name: &str,
-    ) -> Result<Vec<RelativePathBuf>, ObjectStorageError> {
-        let time = Instant::now();
-        let mut path_arr = vec![];
-
-        // = data/stream_name
-        let stream_dir_path = self.path_in_root(&RelativePathBuf::from(stream_name));
-        let mut entries = fs::read_dir(&stream_dir_path).await?;
-
-        while let Some(entry) = entries.next_entry().await? {
-            let flag = entry
-                .path()
-                .file_name()
-                .ok_or(ObjectStorageError::NoSuchKey(
-                    "Dir Entry Suggests no file present".to_string(),
-                ))?
-                .to_str()
-                .expect("file name is parseable to str")
-                .contains("ingestor");
-
-            if flag {
-                path_arr.push(RelativePathBuf::from_iter([
-                    stream_name,
-                    entry.path().file_name().unwrap().to_str().unwrap(), // checking the error before hand
-                ]));
-            }
-        }
-
-        path_arr.push(RelativePathBuf::from_iter([
-            stream_name,
-            STREAM_METADATA_FILE_NAME,
-        ]));
-        path_arr.push(RelativePathBuf::from_iter([stream_name, SCHEMA_FILE_NAME]));
 
         let time = time.elapsed().as_secs_f64();
         REQUEST_RESPONSE_TIME
@@ -459,14 +438,6 @@ impl ObjectStorage for LocalFS {
             .collect())
     }
 
-    async fn list_manifest_files(
-        &self,
-        _stream_name: &str,
-    ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
-        //unimplemented
-        Ok(BTreeMap::new())
-    }
-
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
         let op = CopyOptions {
             overwrite: true,
@@ -498,6 +469,18 @@ impl ObjectStorage for LocalFS {
 
     fn store_url(&self) -> url::Url {
         url::Url::parse("file:///").unwrap()
+    }
+
+    async fn list_with_delimiter(
+        &self,
+        _prefix: Option<object_store::path::Path>,
+    ) -> Result<ListResult, ObjectStorageError> {
+        Err(ObjectStorageError::UnhandledError(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "list_with_delimiter is not implemented for LocalFS",
+            ),
+        )))
     }
 
     fn get_bucket_name(&self) -> String {

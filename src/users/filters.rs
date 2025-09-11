@@ -23,7 +23,7 @@ use tokio::sync::RwLock;
 
 use super::TimeFilter;
 use crate::{
-    migration::to_bytes,
+    metastore::metastore_traits::MetastoreObject,
     parseable::PARSEABLE,
     rbac::{Users, map::SessionKey},
     storage::object_storage::filter_path,
@@ -44,6 +44,21 @@ pub struct Filter {
     /// all other fields are variable and can be added as needed
     #[serde(flatten)]
     pub other_fields: Option<serde_json::Map<String, Value>>,
+}
+
+impl MetastoreObject for Filter {
+    fn get_object_path(&self) -> String {
+        filter_path(
+            self.user_id.as_ref().unwrap(),
+            &self.stream_name,
+            &format!("{}.json", self.filter_id.as_ref().unwrap()),
+        )
+        .to_string()
+    }
+
+    fn get_object_id(&self) -> String {
+        self.filter_id.as_ref().unwrap().clone()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
@@ -98,58 +113,10 @@ pub struct Filters(RwLock<Vec<Filter>>);
 
 impl Filters {
     pub async fn load(&self) -> anyhow::Result<()> {
-        let mut this = vec![];
-        let store = PARSEABLE.storage.get_object_store();
-        let all_filters = store.get_all_saved_filters().await.unwrap_or_default();
-        for (filter_relative_path, filters) in all_filters {
-            for filter in filters {
-                if filter.is_empty() {
-                    continue;
-                }
-                let mut filter_value = serde_json::from_slice::<serde_json::Value>(&filter)?;
-                if let Some(meta) = filter_value.clone().as_object() {
-                    let version = meta.get("version").and_then(|version| version.as_str());
-
-                    if version == Some("v1") {
-                        //delete older version of the filter
-                        store.delete_object(&filter_relative_path).await?;
-
-                        filter_value = migrate_v1_v2(filter_value);
-                        let user_id = filter_value
-                            .as_object()
-                            .unwrap()
-                            .get("user_id")
-                            .and_then(|user_id| user_id.as_str());
-                        let filter_id = filter_value
-                            .as_object()
-                            .unwrap()
-                            .get("filter_id")
-                            .and_then(|filter_id| filter_id.as_str());
-                        let stream_name = filter_value
-                            .as_object()
-                            .unwrap()
-                            .get("stream_name")
-                            .and_then(|stream_name| stream_name.as_str());
-                        if let (Some(user_id), Some(stream_name), Some(filter_id)) =
-                            (user_id, stream_name, filter_id)
-                        {
-                            let path =
-                                filter_path(user_id, stream_name, &format!("{filter_id}.json"));
-                            let filter_bytes = to_bytes(&filter_value);
-                            store.put_object(&path, filter_bytes.clone()).await?;
-                        }
-                    }
-
-                    if let Ok(filter) = serde_json::from_value::<Filter>(filter_value) {
-                        this.retain(|f: &Filter| f.filter_id != filter.filter_id);
-                        this.push(filter);
-                    }
-                }
-            }
-        }
+        let all_filters = PARSEABLE.metastore.get_filters().await.unwrap_or_default();
 
         let mut s = self.0.write().await;
-        s.append(&mut this);
+        s.extend(all_filters);
 
         Ok(())
     }
@@ -205,7 +172,7 @@ impl Filters {
     }
 }
 
-fn migrate_v1_v2(mut filter_meta: Value) -> Value {
+pub fn migrate_v1_v2(mut filter_meta: Value) -> Value {
     let filter_meta_map = filter_meta.as_object_mut().unwrap();
     let user_id = filter_meta_map.get("user_id").unwrap().clone();
     let str_user_id = user_id.as_str().unwrap();

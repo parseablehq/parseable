@@ -20,14 +20,13 @@ use std::{
     collections::BTreeMap,
     io,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use crate::{
     catalog::manifest::{File, Manifest},
     handlers::http::cluster::INTERNAL_STREAM_NAME,
     parseable::PARSEABLE,
-    storage::{ObjectStorage, ObjectStorageError, field_stats::DATASET_STATS_STREAM_NAME},
+    storage::{ObjectStorageError, field_stats::DATASET_STATS_STREAM_NAME},
     utils::{extract_datetime, human_size::bytes_to_human_size},
     validator::error::HotTierValidationError,
 };
@@ -273,35 +272,37 @@ impl HotTierManager {
         Ok(())
     }
 
-    ///process the hot tier files for the stream
+    /// process the hot tier files for the stream
     /// delete the files from the hot tier directory if the available date range is outside the hot tier range
     async fn process_stream(&self, stream: String) -> Result<(), HotTierError> {
         let stream_hot_tier = self.get_hot_tier(&stream).await?;
         let mut parquet_file_size = stream_hot_tier.used_size;
 
-        let object_store = PARSEABLE.storage.get_object_store();
-        let mut s3_manifest_file_list = object_store.list_manifest_files(&stream).await?;
-        self.process_manifest(
-            &stream,
-            &mut s3_manifest_file_list,
-            &mut parquet_file_size,
-            object_store.clone(),
-        )
-        .await?;
+        let mut s3_manifest_file_list = PARSEABLE
+            .metastore
+            .get_all_manifest_files(&stream)
+            .await
+            .map_err(|e| {
+            HotTierError::ObjectStorageError(ObjectStorageError::MetastoreError(Box::new(
+                e.to_detail(),
+            )))
+        })?;
+
+        self.process_manifest(&stream, &mut s3_manifest_file_list, &mut parquet_file_size)
+            .await?;
 
         Ok(())
     }
 
-    ///process the hot tier files for the date for the stream
-    /// collect all manifests from S3 for the date, sort the parquet file list
+    /// process the hot tier files for the date for the stream
+    /// collect all manifests from metastore for the date, sort the parquet file list
     /// in order to download the latest files first
     /// download the parquet files if not present in hot tier directory
     async fn process_manifest(
         &self,
         stream: &str,
-        manifest_files_to_download: &mut BTreeMap<String, Vec<String>>,
+        manifest_files_to_download: &mut BTreeMap<String, Vec<Manifest>>,
         parquet_file_size: &mut u64,
-        object_store: Arc<dyn ObjectStorage>,
     ) -> Result<(), HotTierError> {
         if manifest_files_to_download.is_empty() {
             return Ok(());
@@ -309,13 +310,10 @@ impl HotTierManager {
         for (str_date, manifest_files) in manifest_files_to_download.iter().rev() {
             let mut storage_combined_manifest = Manifest::default();
 
-            for manifest_file in manifest_files {
-                let manifest_path: RelativePathBuf = RelativePathBuf::from(manifest_file.clone());
-                let storage_manifest_bytes = object_store.get_object(&manifest_path).await?;
-                let storage_manifest: Manifest = serde_json::from_slice(&storage_manifest_bytes)?;
+            for storage_manifest in manifest_files {
                 storage_combined_manifest
                     .files
-                    .extend(storage_manifest.files);
+                    .extend(storage_manifest.files.clone());
             }
 
             storage_combined_manifest
@@ -352,7 +350,7 @@ impl HotTierManager {
         Ok(())
     }
 
-    ///process the parquet file for the stream
+    /// process the parquet file for the stream
     /// check if the disk is available to download the parquet file
     /// if not available, delete the oldest entry from the hot tier directory
     /// download the parquet file from S3 to the hot tier directory
