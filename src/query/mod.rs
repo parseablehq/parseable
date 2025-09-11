@@ -39,6 +39,7 @@ use itertools::Itertools;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::cmp;
 use std::ops::Bound;
 use std::sync::Arc;
 use sysinfo::System;
@@ -140,8 +141,18 @@ impl Query {
             .with_parquet_pruning(true)
             .with_prefer_existing_sort(true)
             //batch size has been made configurable via environment variable
-            //default value is 20000
-            .with_batch_size(PARSEABLE.options.execution_batch_size);
+            //default value is 20000 - tuned for streaming decode and memory efficiency
+            .with_batch_size(PARSEABLE.options.execution_batch_size)
+            // Enable target partitions to better utilize available CPU cores
+            // Use a reasonable default based on available parallelism
+            .with_target_partitions(cmp::max(
+                1,
+                std::thread::available_parallelism()
+                    .map(|p| p.get())
+                    .unwrap_or(4),
+            ));
+
+        // Additional optimizations for query performance
 
         // Pushdown filters allows DF to push the filters as far down in the plan as possible
         // and thus, reducing the number of rows decoded
@@ -162,6 +173,18 @@ impl Query {
             .execution
             .parquet
             .schema_force_view_types = true;
+
+        // Enable bloom filter support for better pruning of high-cardinality columns
+        config.options_mut().execution.parquet.bloom_filter_on_read = true;
+
+        config.options_mut().execution.parquet.metadata_size_hint = Some(64 * 1024); // 64KB hint
+
+        // Memory optimizations that work well with boundary-aligned filter pushdown
+        // Enable page index to reduce memory usage for time-range queries through better pruning
+        config.options_mut().execution.parquet.enable_page_index = true;
+
+        // Ensure metadata is not skipped to enable better filter pushdown and pruning
+        config.options_mut().execution.parquet.skip_metadata = false;
 
         SessionStateBuilder::new()
             .with_default_features()
