@@ -280,7 +280,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         meta: ObjectStoreFormat,
         schema: Arc<Schema>,
     ) -> Result<String, ObjectStorageError> {
-        let s = &*schema.clone();
+        let s: Schema = schema.as_ref().clone();
         PARSEABLE
             .metastore
             .put_schema(s.clone(), stream_name)
@@ -955,7 +955,7 @@ fn stream_relative_path(
 }
 
 pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
-    let object_store = PARSEABLE.storage.get_object_store();
+    let object_store = PARSEABLE.storage().get_object_store();
     for stream_name in PARSEABLE.streams.list() {
         let object_store = object_store.clone();
         joinset.spawn(async move {
@@ -989,7 +989,7 @@ pub async fn commit_schema_to_storage(
         schema,
         serde_json::from_slice::<Schema>(&stream_schema)?,
     ])
-    .unwrap();
+    .map_err(|e| ObjectStorageError::Custom(e.to_string()))?;
 
     PARSEABLE
         .metastore

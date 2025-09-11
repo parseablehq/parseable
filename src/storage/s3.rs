@@ -346,7 +346,7 @@ impl S3 {
                 REQUEST_RESPONSE_TIME
                     .with_label_values(&["GET", "200"])
                     .observe(time);
-                let body = resp.bytes().await.unwrap();
+                let body = resp.bytes().await?;
                 Ok(body)
             }
             Err(err) => {

@@ -139,18 +139,29 @@ impl ObjectStorage for LocalFS {
     }
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         let time = Instant::now();
-        let file_path = if path.to_string().contains(&self.root.to_str().unwrap()[1..]) {
-            #[cfg(windows)]
-            {
-                path.to_path("")
-            }
-            #[cfg(not(windows))]
-            {
+
+        let file_path;
+
+        // this is for the `get_manifest()` function because inside a snapshot, we store the absolute path (without `/`) on linux based OS
+        // `home/user/.../manifest.json`
+        // on windows, the path is stored with the drive letter
+        // `D:\\parseable\\data..\\manifest.json`
+        // thus, we need to check if the root of localfs is already present in the path
+        #[cfg(windows)]
+        {
+            // in windows the absolute path (self.root) doesn't matter because we store the complete path
+            file_path = path.to_path("");
+        }
+        #[cfg(not(windows))]
+        {
+            // absolute path (self.root) will always start with `/`
+            let root_str = self.root.to_str().unwrap();
+            file_path = if path.to_string().contains(&root_str[1..]) && root_str.len() > 1 {
                 path.to_path("/")
-            }
-        } else {
-            self.path_in_root(path)
-        };
+            } else {
+                self.path_in_root(path)
+            };
+        }
 
         let res: Result<Bytes, ObjectStorageError> = match fs::read(file_path).await {
             Ok(x) => Ok(x.into()),

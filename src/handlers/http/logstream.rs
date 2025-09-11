@@ -473,6 +473,19 @@ pub async fn delete_stream_hot_tier(
 
     hot_tier_manager.delete_hot_tier(&stream_name).await?;
 
+    let mut stream_metadata: ObjectStoreFormat = serde_json::from_slice(
+        &PARSEABLE
+            .metastore
+            .get_stream_json(&stream_name, false)
+            .await?,
+    )?;
+    stream_metadata.hot_tier_enabled = false;
+
+    PARSEABLE
+        .metastore
+        .put_stream_json(&stream_metadata, &stream_name)
+        .await?;
+
     Ok((
         format!("hot tier deleted for stream {stream_name}"),
         StatusCode::OK,

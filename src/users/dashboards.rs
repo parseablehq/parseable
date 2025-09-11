@@ -296,12 +296,11 @@ impl Dashboards {
         user_id: &str,
         dashboard_id: Ulid,
     ) -> Result<(), DashboardError> {
-        self.ensure_dashboard_ownership(dashboard_id, user_id)
+        let obj = self.ensure_dashboard_ownership(dashboard_id, user_id)
             .await?;
 
         {
             // validation has happened, dashboard exists and can be deleted by the user
-            let obj = self.get_dashboard(dashboard_id).await.unwrap();
             PARSEABLE.metastore.delete_dashboard(&obj).await?;
         }
 
