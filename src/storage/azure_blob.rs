@@ -224,7 +224,7 @@ impl BlobStore {
 
         match resp {
             Ok(resp) => {
-                let body: Bytes = resp.bytes().await.unwrap();
+                let body: Bytes = resp.bytes().await?;
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["azure_blob", "GET", "200"])
                     .observe(elapsed);
@@ -1061,15 +1061,6 @@ impl ObjectStorage for BlobStore {
 
         Ok(minutes)
     }
-
-    // async fn list_manifest_files(
-    //     &self,
-    //     stream_name: &str,
-    // ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
-    //     let files = self._list_manifest_files(stream_name).await?;
-
-    //     Ok(files)
-    // }
 
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
         Ok(self._upload_file(key, path).await?)

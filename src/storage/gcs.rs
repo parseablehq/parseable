@@ -185,7 +185,7 @@ impl Gcs {
 
         match resp {
             Ok(resp) => {
-                let body: Bytes = resp.bytes().await.unwrap();
+                let body: Bytes = resp.bytes().await?;
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["gcs", "GET", "200"])
                     .observe(elapsed);

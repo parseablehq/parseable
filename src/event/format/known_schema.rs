@@ -515,25 +515,19 @@ mod tests {
     }
 
     #[test]
-    fn test_rust_server_logs() {
+    fn test_parseable_server_logs() {
         let processor = EventProcessor::new(FORMATS_JSON);
         let schema = processor
             .schema_definitions
-            .get("rust_server_logs")
+            .get("parseable_server_logs")
             .unwrap();
 
         let test_logs = vec![
             // Current parseable format with ThreadId
-            "2025-09-06T10:43:01.628980875Z  WARN main ThreadId(01) parseable::handlers::http::cluster:919: node http://0.0.0.0:8010/ is not live",
-            "2025-09-06T10:44:12.62276265Z ERROR actix-rt|system:0|arbiter:17 ThreadId(163) parseable_enterprise::http::handlers::query:43: JsonParse(\"Datafusion Error: Schema error: No field named a. Valid fields are serverlogs.log\")",
-            "2025-09-06T05:16:46.092071318Z ERROR actix-rt|system:0|arbiter:21 ThreadId(167) parseable_enterprise::http::handlers::query:43: JsonParse(\"Datafusion Error: Schema error: No field named ansible.host.ip\")",
-            "2025-09-06T11:22:07.500864363Z  WARN                         main ThreadId(01) parseable_enterprise:70: Received shutdown signal, notifying server to shut down...",
-            // env_logger format
-            "[2025-09-06T10:43:01.628980875Z INFO  parseable::storage] Initializing storage backend",
-            "[2025-09-06T10:43:01.628980875Z ERROR parseable::http::ingest] Failed to parse JSON",
-            // Simple tracing format (no ThreadId)
-            "2025-09-06T10:43:01.628980875Z  INFO parseable::storage::s3: Storage configured successfully",
-            "2025-09-06T10:43:01.628980875Z DEBUG parseable::query::engine: Query executed in 45ms",
+            "01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 2025-09-06T10:43:01.628980875Z  WARN main ThreadId(01) parseable::handlers::http::cluster:919: node http://0.0.0.0:8010/ is not live",
+            "01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 2025-09-06T10:44:12.62276265Z ERROR actix-rt|system:0|arbiter:17 ThreadId(163) parseable_enterprise::http::handlers::query:43: JsonParse(\"Datafusion Error: Schema error: No field named a. Valid fields are serverlogs.log\")",
+            "01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 2025-09-06T05:16:46.092071318Z ERROR actix-rt|system:0|arbiter:21 ThreadId(167) parseable_enterprise::http::handlers::query:43: JsonParse(\"Datafusion Error: Schema error: No field named ansible.host.ip\")",
+            "01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 2025-09-06T11:22:07.500864363Z  WARN                         main ThreadId(01) parseable_enterprise:70: Received shutdown signal, notifying server to shut down...",
         ];
 
         for (i, log_text) in test_logs.iter().enumerate() {

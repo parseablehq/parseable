@@ -1159,15 +1159,6 @@ impl ObjectStorage for S3 {
         Ok(minutes)
     }
 
-    // async fn list_manifest_files(
-    //     &self,
-    //     stream_name: &str,
-    // ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
-    //     let files = self._list_manifest_files(stream_name).await?;
-
-    //     Ok(files)
-    // }
-
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
         Ok(self._upload_file(key, path).await?)
     }
