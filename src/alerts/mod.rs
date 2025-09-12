@@ -1335,10 +1335,10 @@ impl AlertManagerTrait for Alerts {
 }
 
 // TODO: add RBAC
-pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
+pub async fn get_alerts_summary(key: &SessionKey) -> Result<AlertsSummary, AlertError> {
     let guard = ALERTS.read().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
-        alerts.get_all_alerts().await
+        alerts.list_alerts_for_user(key.clone(), vec![]).await?
     } else {
         return Err(AlertError::CustomError("No AlertManager registered".into()));
     };
@@ -1354,30 +1354,30 @@ pub async fn get_alerts_summary() -> Result<AlertsSummary, AlertError> {
 
     // find total alerts for each state
     // get title, id and state of each alert for that state
-    for (_, alert) in alerts.iter() {
-        match alert.get_state() {
+    for alert in alerts.iter() {
+        match alert.state {
             AlertState::Triggered => {
                 triggered += 1;
                 triggered_alerts.push(AlertsInfo {
-                    title: alert.get_title().to_string(),
-                    id: *alert.get_id(),
-                    severity: alert.get_severity().clone(),
+                    title: alert.title.clone(),
+                    id: alert.id,
+                    severity: alert.severity.clone(),
                 });
             }
             AlertState::Disabled => {
                 disabled += 1;
                 disabled_alerts.push(AlertsInfo {
-                    title: alert.get_title().to_string(),
-                    id: *alert.get_id(),
-                    severity: alert.get_severity().clone(),
+                    title: alert.title.clone(),
+                    id: alert.id,
+                    severity: alert.severity.clone(),
                 });
             }
             AlertState::NotTriggered => {
                 not_triggered += 1;
                 not_triggered_alerts.push(AlertsInfo {
-                    title: alert.get_title().to_string(),
-                    id: *alert.get_id(),
-                    severity: alert.get_severity().clone(),
+                    title: alert.title.clone(),
+                    id: alert.id,
+                    severity: alert.severity.clone(),
                 });
             }
         }
