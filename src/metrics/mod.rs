@@ -336,6 +336,117 @@ pub static TOTAL_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE: Lazy<IntCounterVec
         .expect("metric can be created")
     });
 
+// Cluster Billing Metrics - Gauge type metrics for cluster-wide aggregated billing data
+pub static TOTAL_CLUSTER_EVENTS_INGESTED_BY_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "total_cluster_events_ingested_by_date",
+            "Total cluster events ingested by date (Gauge for cluster billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_CLUSTER_EVENTS_INGESTED_SIZE_BY_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "total_cluster_events_ingested_size_by_date",
+            "Total cluster events ingested size in bytes by date (Gauge for cluster billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_CLUSTER_PARQUETS_STORED_BY_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "total_cluster_parquets_stored_by_date",
+            "Total cluster parquet files stored by date (Gauge for cluster billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_CLUSTER_PARQUETS_STORED_SIZE_BY_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "total_cluster_parquets_stored_size_by_date",
+            "Total cluster parquet files stored size in bytes by date (Gauge for cluster billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_CLUSTER_QUERY_CALLS_BY_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "total_cluster_query_calls_by_date",
+            "Total cluster query calls by date (Gauge for cluster billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_CLUSTER_FILES_SCANNED_IN_QUERY_BY_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "total_cluster_files_scanned_in_query_by_date",
+            "Total cluster files scanned in queries by date (Gauge for cluster billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_CLUSTER_BYTES_SCANNED_IN_QUERY_BY_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "total_cluster_bytes_scanned_in_query_by_date",
+            "Total cluster bytes scanned in queries by date (Gauge for cluster billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_CLUSTER_OBJECT_STORE_CALLS_BY_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "total_cluster_object_store_calls_by_date",
+            "Total cluster object store calls by date (Gauge for cluster billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["provider", "method", "date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_CLUSTER_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE: Lazy<IntGaugeVec> = Lazy::new(
+    || {
+        IntGaugeVec::new(
+            Opts::new(
+                "total_cluster_files_scanned_in_object_store_calls_by_date",
+                "Total cluster files scanned in object store calls by date (Gauge for cluster billing)",
+            )
+            .namespace(METRICS_NAMESPACE),
+            &["provider", "method", "date"],
+        )
+        .expect("metric can be created")
+    },
+);
+
 pub static STORAGE_REQUEST_RESPONSE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
     HistogramVec::new(
         HistogramOpts::new("storage_request_response_time", "Storage Request Latency")
@@ -431,6 +542,40 @@ fn custom_metrics(registry: &Registry) {
     registry
         .register(Box::new(
             TOTAL_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE.clone(),
+        ))
+        .expect("metric can be registered");
+    // Register cluster billing metrics
+    registry
+        .register(Box::new(TOTAL_CLUSTER_EVENTS_INGESTED_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_CLUSTER_EVENTS_INGESTED_SIZE_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_CLUSTER_PARQUETS_STORED_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_CLUSTER_PARQUETS_STORED_SIZE_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_CLUSTER_QUERY_CALLS_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(
+            TOTAL_CLUSTER_FILES_SCANNED_IN_QUERY_BY_DATE.clone(),
+        ))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(
+            TOTAL_CLUSTER_BYTES_SCANNED_IN_QUERY_BY_DATE.clone(),
+        ))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_CLUSTER_OBJECT_STORE_CALLS_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(
+            TOTAL_CLUSTER_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE.clone(),
         ))
         .expect("metric can be registered");
     registry
