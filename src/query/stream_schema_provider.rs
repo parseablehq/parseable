@@ -16,7 +16,7 @@
  *
  */
 
-use std::{any::Any, collections::HashMap, ops::Bound, path::PathBuf, sync::Arc};
+use std::{any::Any, collections::HashMap, ops::Bound, sync::Arc};
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef, SortOptions};
@@ -46,13 +46,12 @@ use datafusion::{
 };
 use futures_util::TryFutureExt;
 use itertools::Itertools;
-use relative_path::RelativePathBuf;
 
 use crate::{
     catalog::{
         ManifestFile, Snapshot as CatalogSnapshot,
         column::{Column, TypedStatistics},
-        manifest::{File, Manifest},
+        manifest::File,
         snapshot::{ManifestItem, Snapshot},
     },
     event::DEFAULT_TIMESTAMP_KEY,
@@ -64,7 +63,7 @@ use crate::{
     },
     option::Mode,
     parseable::{PARSEABLE, STREAM_EXISTS},
-    storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat},
+    storage::{ObjectStorage, ObjectStoreFormat},
 };
 
 use super::listing_table_builder::ListingTableBuilder;
@@ -869,35 +868,10 @@ fn extract_timestamp_bound(
             DateTime::from_timestamp_nanos(*value).naive_utc(),
         )),
         ScalarValue::Utf8(Some(str_value)) if is_time_partition => {
-            Some((binexpr.op, str_value.parse::<NaiveDateTime>().unwrap()))
+            Some((binexpr.op, str_value.parse().unwrap()))
         }
         _ => None,
     }
-}
-
-pub async fn collect_manifest_files(
-    storage: Arc<dyn ObjectStorage>,
-    manifest_urls: Vec<String>,
-) -> Result<Vec<Manifest>, ObjectStorageError> {
-    let mut tasks = Vec::new();
-    manifest_urls.into_iter().for_each(|path| {
-        let path = RelativePathBuf::from_path(PathBuf::from(path)).expect("Invalid path");
-        let storage = Arc::clone(&storage);
-        tasks.push(tokio::task::spawn(async move {
-            storage.get_object(&path).await
-        }));
-    });
-
-    let mut op = Vec::new();
-    for task in tasks {
-        let file = task.await??;
-        op.push(file);
-    }
-
-    Ok(op
-        .into_iter()
-        .map(|res| serde_json::from_slice(&res).expect("Data is invalid for Manifest"))
-        .collect())
 }
 
 // Extract start time and end time from filter predicate
