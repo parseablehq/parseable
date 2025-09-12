@@ -193,17 +193,17 @@ fn extract_partition_metrics(stream_name: &str, partition_lower: DateTime<Utc>) 
 
     let events_ingested = EVENTS_INGESTED_DATE
         .get_metric_with_label_values(&event_labels)
-        .map(|metric| metric.get() as u64)
+        .map(|metric| metric.get())
         .unwrap_or(0);
 
     let ingestion_size = EVENTS_INGESTED_SIZE_DATE
         .get_metric_with_label_values(&event_labels)
-        .map(|metric| metric.get() as u64)
+        .map(|metric| metric.get())
         .unwrap_or(0);
 
     let storage_size = EVENTS_STORAGE_SIZE_DATE
         .get_metric_with_label_values(&storage_labels)
-        .map(|metric| metric.get() as u64)
+        .map(|metric| metric.get())
         .unwrap_or(0);
 
     (events_ingested, ingestion_size, storage_size)

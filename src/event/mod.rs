@@ -28,6 +28,7 @@ use self::error::EventError;
 use crate::{
     LOCK_EXPECT,
     metadata::update_stats,
+    metrics::{increment_events_ingested_by_date, increment_events_ingested_size_by_date},
     parseable::{PARSEABLE, StagingError},
     storage::StreamType,
 };
@@ -87,6 +88,11 @@ impl Event {
             self.rb.num_rows(),
             self.parsed_timestamp.date(),
         );
+
+        // Track billing metrics for event ingestion
+        let date_string = self.parsed_timestamp.date().to_string();
+        increment_events_ingested_by_date(self.rb.num_rows() as u64, &date_string);
+        increment_events_ingested_size_by_date(self.origin_size, &date_string);
 
         crate::livetail::LIVETAIL.process(&self.stream_name, &self.rb);
 

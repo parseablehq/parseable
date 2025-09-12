@@ -106,7 +106,6 @@ impl ParseableServer for QueryServer {
         prometheus: &PrometheusMetrics,
         shutdown_rx: oneshot::Receiver<()>,
     ) -> anyhow::Result<()> {
-        PARSEABLE.storage.register_store_metrics(prometheus);
         // write the ingestor metadata to storage
         QUERIER_META
             .get_or_init(|| async {
