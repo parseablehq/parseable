@@ -103,7 +103,7 @@ pub async fn generate_home_response(
 ) -> Result<HomeResponse, PrismHomeError> {
     // Execute these operations concurrently
     let (stream_titles_result, alerts_summary_result) =
-        tokio::join!(get_stream_titles(key), get_alerts_summary());
+        tokio::join!(get_stream_titles(key), get_alerts_summary(key));
 
     let stream_titles = stream_titles_result?;
     let alerts_summary = alerts_summary_result?;

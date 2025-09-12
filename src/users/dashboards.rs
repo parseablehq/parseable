@@ -296,7 +296,8 @@ impl Dashboards {
         user_id: &str,
         dashboard_id: Ulid,
     ) -> Result<(), DashboardError> {
-        let obj = self.ensure_dashboard_ownership(dashboard_id, user_id)
+        let obj = self
+            .ensure_dashboard_ownership(dashboard_id, user_id)
             .await?;
 
         {
