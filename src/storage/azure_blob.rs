@@ -17,7 +17,7 @@
  */
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::HashSet,
     path::Path,
     sync::{
         Arc,
@@ -50,13 +50,11 @@ use tracing::error;
 use url::Url;
 
 use crate::{
-    handlers::http::users::USERS_ROOT_DIR,
     metrics::{
         STORAGE_REQUEST_RESPONSE_TIME, increment_files_scanned_in_object_store_calls_by_date,
         increment_object_store_calls_by_date,
     },
     parseable::LogStream,
-    storage::STREAM_ROOT_DIRECTORY,
 };
 
 use super::{
@@ -354,82 +352,6 @@ impl BlobStore {
         Ok(())
     }
 
-    async fn _list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
-        let mut result_file_list = HashSet::new();
-        let mut total_files_scanned = 0u64;
-
-        let list_start = Instant::now();
-        let resp = self.client.list_with_delimiter(None).await?;
-        let list_elapsed = list_start.elapsed().as_secs_f64();
-        total_files_scanned += resp.objects.len() as u64;
-        STORAGE_REQUEST_RESPONSE_TIME
-            .with_label_values(&["azure_blob", "LIST", "200"])
-            .observe(list_elapsed);
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "LIST",
-            &Utc::now().date_naive().to_string(),
-        );
-
-        let streams = resp
-            .common_prefixes
-            .iter()
-            .flat_map(|path| path.parts())
-            .map(|name| name.as_ref().to_string())
-            .filter(|name| name != PARSEABLE_ROOT_DIRECTORY && name != USERS_ROOT_DIR)
-            .collect::<Vec<_>>();
-
-        for stream in streams {
-            let stream_path =
-                object_store::path::Path::from(format!("{}/{}", &stream, STREAM_ROOT_DIRECTORY));
-
-            // Track individual LIST operations for each stream
-            let stream_list_start = Instant::now();
-            let resp = self.client.list_with_delimiter(Some(&stream_path)).await;
-            let stream_list_elapsed = stream_list_start.elapsed().as_secs_f64();
-            increment_object_store_calls_by_date(
-                "azure_blob",
-                "LIST",
-                &Utc::now().date_naive().to_string(),
-            );
-            match &resp {
-                Ok(resp) => {
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["azure_blob", "LIST", "200"])
-                        .observe(stream_list_elapsed);
-
-                    total_files_scanned += resp.objects.len() as u64;
-                    if resp
-                        .objects
-                        .iter()
-                        .any(|name| name.location.filename().unwrap().ends_with("stream.json"))
-                    {
-                        result_file_list.insert(stream);
-                    }
-                }
-                Err(err) => {
-                    let status_code = error_to_status_code(err);
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["azure_blob", "LIST", status_code])
-                        .observe(stream_list_elapsed);
-
-                    return Err(ObjectStorageError::UnhandledError(Box::new(
-                        std::io::Error::other(format!("List operation failed: {}", err)),
-                    )));
-                }
-            }
-        }
-
-        // Record total files scanned across all operations
-        increment_files_scanned_in_object_store_calls_by_date(
-            "azure_blob",
-            "LIST",
-            total_files_scanned,
-            &Utc::now().date_naive().to_string(),
-        );
-        Ok(result_file_list)
-    }
-
     async fn _list_dates(&self, stream: &str) -> Result<Vec<String>, ObjectStorageError> {
         let list_start = Instant::now();
         let resp: Result<object_store::ListResult, object_store::Error> = self
@@ -476,98 +398,6 @@ impl BlobStore {
             .collect();
 
         Ok(dates)
-    }
-
-    async fn _list_manifest_files(
-        &self,
-        stream: &str,
-    ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
-        let mut result_file_list: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        let mut total_files_scanned = 0u64;
-
-        // Track initial LIST operation
-        let list_start = Instant::now();
-        let resp = self
-            .client
-            .list_with_delimiter(Some(&(stream.into())))
-            .await;
-        let list_elapsed = list_start.elapsed().as_secs_f64();
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "LIST",
-            &Utc::now().date_naive().to_string(),
-        );
-        let resp = match resp {
-            Ok(resp) => {
-                total_files_scanned += resp.objects.len() as u64;
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["azure_blob", "LIST", "200"])
-                    .observe(list_elapsed);
-
-                resp
-            }
-            Err(err) => {
-                let status_code = error_to_status_code(&err);
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["azure_blob", "LIST", status_code])
-                    .observe(list_elapsed);
-                return Err(err.into());
-            }
-        };
-
-        let dates = resp
-            .common_prefixes
-            .iter()
-            .flat_map(|path| path.parts())
-            .filter(|name| name.as_ref() != stream && name.as_ref() != STREAM_ROOT_DIRECTORY)
-            .map(|name| name.as_ref().to_string())
-            .collect::<Vec<_>>();
-
-        for date in dates {
-            let date_path = object_store::path::Path::from(format!("{}/{}", stream, &date));
-
-            // Track individual LIST operation for each date
-            let date_list_start = Instant::now();
-            let resp = self.client.list_with_delimiter(Some(&date_path)).await;
-            let date_list_elapsed = date_list_start.elapsed().as_secs_f64();
-            increment_object_store_calls_by_date(
-                "azure_blob",
-                "LIST",
-                &Utc::now().date_naive().to_string(),
-            );
-            match resp {
-                Ok(resp) => {
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["azure_blob", "LIST", "200"])
-                        .observe(date_list_elapsed);
-
-                    total_files_scanned += resp.objects.len() as u64;
-                    let manifests: Vec<String> = resp
-                        .objects
-                        .iter()
-                        .filter(|name| name.location.filename().unwrap().ends_with("manifest.json"))
-                        .map(|name| name.location.to_string())
-                        .collect();
-                    result_file_list.entry(date).or_default().extend(manifests);
-                }
-                Err(err) => {
-                    let status_code = error_to_status_code(&err);
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["azure_blob", "LIST", status_code])
-                        .observe(date_list_elapsed);
-                    return Err(err.into());
-                }
-            }
-        }
-
-        // Record total files scanned across all date operations
-        increment_files_scanned_in_object_store_calls_by_date(
-            "azure_blob",
-            "LIST",
-            total_files_scanned,
-            &Utc::now().date_naive().to_string(),
-        );
-        Ok(result_file_list)
     }
 
     async fn _upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
