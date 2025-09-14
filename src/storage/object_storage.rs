@@ -106,6 +106,12 @@ async fn upload_single_parquet_file(
         .to_str()
         .expect("filename is valid string");
 
+    // Get the local file size for validation
+    let local_file_size = path
+        .metadata()
+        .map_err(|e| ObjectStorageError::Custom(format!("Failed to get local file metadata: {e}")))?
+        .len();
+
     // Upload the file
     store
         .upload_multipart(&RelativePathBuf::from(&stream_relative_path), &path)
@@ -114,6 +120,27 @@ async fn upload_single_parquet_file(
             error!("Failed to upload file {filename:?} to {stream_relative_path}: {e}");
             ObjectStorageError::Custom(format!("Failed to upload {filename}: {e}"))
         })?;
+
+    // Validate the uploaded file size matches local file
+    let upload_is_valid = validate_uploaded_parquet_file(
+        &store,
+        &stream_relative_path,
+        local_file_size,
+        &stream_name,
+    )
+    .await?;
+
+    if !upload_is_valid {
+        // Upload validation failed, clean up the uploaded file and return error
+        let _ = store
+            .delete_object(&RelativePathBuf::from(&stream_relative_path))
+            .await;
+        error!("Upload size validation failed for file {filename:?}, deleted from object storage");
+        return Ok(UploadResult {
+            file_path: path,
+            manifest_file: None, // This will trigger local file cleanup
+        });
+    }
 
     // Update storage metrics
     update_storage_metrics(&path, &stream_name, filename)?;
@@ -173,6 +200,44 @@ async fn calculate_stats_if_enabled(
                 stream_name,
                 err
             );
+        }
+    }
+}
+
+/// Validates that a parquet file uploaded to object storage matches the staging file size
+async fn validate_uploaded_parquet_file(
+    store: &Arc<dyn ObjectStorage>,
+    stream_relative_path: &str,
+    expected_size: u64,
+    stream_name: &str,
+) -> Result<bool, ObjectStorageError> {
+    // Verify the file exists and has the expected size
+    match store
+        .head(&RelativePathBuf::from(stream_relative_path))
+        .await
+    {
+        Ok(metadata) => {
+            if metadata.size as u64 != expected_size {
+                warn!(
+                    "Uploaded file size mismatch for stream {}: expected {}, got {}",
+                    stream_name, expected_size, metadata.size
+                );
+                Ok(false)
+            } else {
+                tracing::trace!(
+                    "Uploaded parquet file size validated successfully for stream {}, size: {}",
+                    stream_name,
+                    expected_size
+                );
+                Ok(true)
+            }
+        }
+        Err(e) => {
+            error!(
+                "Failed to get metadata for uploaded file in stream {}: {e}",
+                stream_name
+            );
+            Ok(false)
         }
     }
 }
@@ -880,14 +945,15 @@ async fn collect_upload_results(
                 if let Some(manifest_file) = upload_result.manifest_file {
                     uploaded_files.push((upload_result.file_path, manifest_file));
                 } else {
-                    // File failed to upload, clean up
-                    if let Err(e) = remove_file(upload_result.file_path) {
-                        warn!("Failed to remove staged file: {e}");
-                    }
+                    // File failed in upload size validation, preserve staging file for retry
+                    error!(
+                        "Parquet file upload size validation failed for {:?}, preserving in staging for retry",
+                        upload_result.file_path
+                    );
                 }
             }
             Ok(Err(e)) => {
-                error!("Error processing parquet file: {e}");
+                error!("Error uploading parquet file: {e}");
                 return Err(e);
             }
             Err(e) => {
