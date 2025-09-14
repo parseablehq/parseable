@@ -991,7 +991,10 @@ impl Stream {
         shutdown_signal: bool,
     ) -> Result<(), StagingError> {
         let start_flush = Instant::now();
-        self.flush(shutdown_signal);
+        // Force flush for init or shutdown signals to convert all .part files to .arrows
+        // For regular cycles, use false to only flush non-current writers
+        let forced = init_signal || shutdown_signal;
+        self.flush(forced);
         trace!(
             "Flushing stream ({}) took: {}s",
             self.stream_name,
