@@ -138,7 +138,7 @@ async fn upload_single_parquet_file(
         error!("Upload size validation failed for file {filename:?}, deleted from object storage");
         return Ok(UploadResult {
             file_path: path,
-            manifest_file: None, // This will trigger local file cleanup
+            manifest_file: None, // Preserve staging file for retry; no manifest created
         });
     }
 

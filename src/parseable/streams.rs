@@ -721,10 +721,8 @@ impl Stream {
         match std::fs::File::open(path) {
             Ok(file) => match SerializedFileReader::new(file) {
                 Ok(reader) => {
-                    if reader.metadata().file_metadata().num_rows() < 0 {
-                        error!(
-                            "Invalid row count in parquet file {path:?} for stream {stream_name}"
-                        );
+                    if reader.metadata().file_metadata().num_rows() == 0 {
+                        error!("Invalid parquet file {path:?} for stream {stream_name}");
                         false
                     } else {
                         true
