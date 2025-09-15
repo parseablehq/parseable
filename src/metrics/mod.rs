@@ -231,7 +231,7 @@ pub static TOTAL_EVENTS_INGESTED_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         Opts::new(
             "total_events_ingested_by_date",
-            "Total events ingested by date (Counter for billing)",
+            "Total events ingested by date",
         )
         .namespace(METRICS_NAMESPACE),
         &["date"],
@@ -243,7 +243,7 @@ pub static TOTAL_EVENTS_INGESTED_SIZE_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|
     IntCounterVec::new(
         Opts::new(
             "total_events_ingested_size_by_date",
-            "Total events ingested size in bytes by date (Counter for billing)",
+            "Total events ingested size in bytes by date",
         )
         .namespace(METRICS_NAMESPACE),
         &["date"],
@@ -255,7 +255,7 @@ pub static TOTAL_PARQUETS_STORED_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         Opts::new(
             "total_parquets_stored_by_date",
-            "Total parquet files stored by date (Counter for billing)",
+            "Total parquet files stored by date",
         )
         .namespace(METRICS_NAMESPACE),
         &["date"],
@@ -267,7 +267,7 @@ pub static TOTAL_PARQUETS_STORED_SIZE_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|
     IntCounterVec::new(
         Opts::new(
             "total_parquets_stored_size_by_date",
-            "Total parquet files stored size in bytes by date (Counter for billing)",
+            "Total parquet files stored size in bytes by date",
         )
         .namespace(METRICS_NAMESPACE),
         &["date"],
@@ -277,11 +277,8 @@ pub static TOTAL_PARQUETS_STORED_SIZE_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|
 
 pub static TOTAL_QUERY_CALLS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
-        Opts::new(
-            "total_query_calls_by_date",
-            "Total query calls by date (Counter for billing)",
-        )
-        .namespace(METRICS_NAMESPACE),
+        Opts::new("total_query_calls_by_date", "Total query calls by date")
+            .namespace(METRICS_NAMESPACE),
         &["date"],
     )
     .expect("metric can be created")
@@ -291,7 +288,7 @@ pub static TOTAL_FILES_SCANNED_IN_QUERY_BY_DATE: Lazy<IntCounterVec> = Lazy::new
     IntCounterVec::new(
         Opts::new(
             "total_files_scanned_in_query_by_date",
-            "Total files scanned in queries by date (Counter for billing)",
+            "Total files scanned in queries by date",
         )
         .namespace(METRICS_NAMESPACE),
         &["date"],
@@ -303,7 +300,7 @@ pub static TOTAL_BYTES_SCANNED_IN_QUERY_BY_DATE: Lazy<IntCounterVec> = Lazy::new
     IntCounterVec::new(
         Opts::new(
             "total_bytes_scanned_in_query_by_date",
-            "Total bytes scanned in queries by date (Counter for billing)",
+            "Total bytes scanned in queries by date",
         )
         .namespace(METRICS_NAMESPACE),
         &["date"],
@@ -315,7 +312,7 @@ pub static TOTAL_OBJECT_STORE_CALLS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| 
     IntCounterVec::new(
         Opts::new(
             "total_object_store_calls_by_date",
-            "Total object store calls by date (Counter for billing)",
+            "Total object store calls by date",
         )
         .namespace(METRICS_NAMESPACE),
         &["provider", "method", "date"],
@@ -328,13 +325,37 @@ pub static TOTAL_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE: Lazy<IntCounterVec
         IntCounterVec::new(
             Opts::new(
                 "total_files_scanned_in_object_store_calls_by_date",
-                "Total files scanned in object store calls by date (Counter for billing)",
+                "Total files scanned in object store calls by date",
             )
             .namespace(METRICS_NAMESPACE),
             &["provider", "method", "date"],
         )
         .expect("metric can be created")
     });
+
+pub static TOTAL_INPUT_LLM_TOKENS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_input_llm_tokens_by_date",
+            "Total input LLM tokens used by date",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["provider", "model", "date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_OUTPUT_LLM_TOKENS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_output_llm_tokens_by_date",
+            "Total output LLM tokens used by date",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["provider", "model", "date"],
+    )
+    .expect("metric can be created")
+});
 
 // Cluster Billing Metrics - Gauge type metrics for cluster-wide aggregated billing data
 pub static TOTAL_CLUSTER_EVENTS_INGESTED_BY_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
@@ -544,6 +565,12 @@ fn custom_metrics(registry: &Registry) {
             TOTAL_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE.clone(),
         ))
         .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_INPUT_LLM_TOKENS_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_OUTPUT_LLM_TOKENS_BY_DATE.clone()))
+        .expect("metric can be registered");
     // Register cluster billing metrics
     registry
         .register(Box::new(TOTAL_CLUSTER_EVENTS_INGESTED_BY_DATE.clone()))
@@ -696,6 +723,18 @@ pub fn increment_files_scanned_in_object_store_calls_by_date(
     TOTAL_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE
         .with_label_values(&[provider, method, date])
         .inc_by(count);
+}
+
+pub fn increment_input_llm_tokens_by_date(provider: &str, model: &str, tokens: u64, date: &str) {
+    TOTAL_INPUT_LLM_TOKENS_BY_DATE
+        .with_label_values(&[provider, model, date])
+        .inc_by(tokens);
+}
+
+pub fn increment_output_llm_tokens_by_date(provider: &str, model: &str, tokens: u64, date: &str) {
+    TOTAL_OUTPUT_LLM_TOKENS_BY_DATE
+        .with_label_values(&[provider, model, date])
+        .inc_by(tokens);
 }
 
 use actix_web::HttpResponse;
