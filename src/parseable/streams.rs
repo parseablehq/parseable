@@ -34,7 +34,10 @@ use itertools::Itertools;
 use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
-    file::{FOOTER_SIZE, properties::WriterProperties},
+    file::{
+        FOOTER_SIZE, properties::WriterProperties, reader::FileReader,
+        serialized_reader::SerializedFileReader,
+    },
     format::SortingColumn,
     schema::types::ColumnPath,
 };
@@ -409,7 +412,7 @@ impl Stream {
             .map(|file| file.path())
             .filter(|file| {
                 file.extension().is_some_and(|ext| ext.eq("parquet"))
-                    && std::fs::metadata(file).is_ok_and(|meta| meta.len() > FOOTER_SIZE as u64)
+                    && Self::is_valid_parquet_file(file, &self.stream_name)
             })
             .collect()
     }
@@ -649,7 +652,7 @@ impl Stream {
                 continue;
             }
 
-            if let Err(e) = self.finalize_parquet_file(&part_path, &parquet_path) {
+            if let Err(e) = std::fs::rename(&part_path, &parquet_path) {
                 error!("Couldn't rename part file: {part_path:?} -> {parquet_path:?}, error = {e}");
             } else {
                 self.cleanup_arrow_files_and_dir(&arrow_files);
@@ -682,12 +685,10 @@ impl Stream {
         }
         writer.close()?;
 
-        if part_file.metadata().expect("File was just created").len()
-            < parquet::file::FOOTER_SIZE as u64
-        {
+        if !Self::is_valid_parquet_file(part_path, &self.stream_name) {
             error!(
-                "Invalid parquet file {part_path:?} detected for stream {}, removing it",
-                &self.stream_name
+                "Invalid parquet file {part_path:?} detected for stream {stream_name}, removing it",
+                stream_name = &self.stream_name
             );
             remove_file(part_path).expect("File should be removable if it is invalid");
             return Ok(false);
@@ -696,8 +697,47 @@ impl Stream {
         Ok(true)
     }
 
-    fn finalize_parquet_file(&self, part_path: &Path, parquet_path: &Path) -> std::io::Result<()> {
-        std::fs::rename(part_path, parquet_path)
+    /// function to validate parquet files
+    fn is_valid_parquet_file(path: &Path, stream_name: &str) -> bool {
+        // First check file size as a quick validation
+        match path.metadata() {
+            Ok(meta) if meta.len() < FOOTER_SIZE as u64 => {
+                error!(
+                    "Invalid parquet file {path:?} detected for stream {stream_name}, size: {} bytes",
+                    meta.len()
+                );
+                return false;
+            }
+            Err(e) => {
+                error!(
+                    "Cannot read metadata for parquet file {path:?} for stream {stream_name}: {e}"
+                );
+                return false;
+            }
+            _ => {} // File size is adequate, continue validation
+        }
+
+        // Try to open and read the parquet file metadata to verify it's valid
+        match std::fs::File::open(path) {
+            Ok(file) => match SerializedFileReader::new(file) {
+                Ok(reader) => {
+                    if reader.metadata().file_metadata().num_rows() == 0 {
+                        error!("Invalid parquet file {path:?} for stream {stream_name}");
+                        false
+                    } else {
+                        true
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to read parquet file {path:?} for stream {stream_name}: {e}");
+                    false
+                }
+            },
+            Err(e) => {
+                error!("Failed to open parquet file {path:?} for stream {stream_name}: {e}");
+                false
+            }
+        }
     }
 
     fn cleanup_arrow_files_and_dir(&self, arrow_files: &[PathBuf]) {
@@ -951,7 +991,10 @@ impl Stream {
         shutdown_signal: bool,
     ) -> Result<(), StagingError> {
         let start_flush = Instant::now();
-        self.flush(shutdown_signal);
+        // Force flush for init or shutdown signals to convert all .part files to .arrows
+        // For regular cycles, use false to only flush non-current writers
+        let forced = init_signal || shutdown_signal;
+        self.flush(forced);
         trace!(
             "Flushing stream ({}) took: {}s",
             self.stream_name,
