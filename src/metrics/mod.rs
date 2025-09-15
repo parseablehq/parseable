@@ -468,6 +468,30 @@ pub static TOTAL_CLUSTER_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE: Lazy<IntGa
     },
 );
 
+pub static TOTAL_CLUSTER_INPUT_LLM_TOKENS_BY_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "total_cluster_input_llm_tokens_by_date",
+            "Total cluster input LLM tokens used by date (Gauge for cluster billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["provider", "model", "date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_CLUSTER_OUTPUT_LLM_TOKENS_BY_DATE: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "total_cluster_output_llm_tokens_by_date",
+            "Total cluster output LLM tokens used by date (Gauge for cluster billing)",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["provider", "model", "date"],
+    )
+    .expect("metric can be created")
+});
+
 pub static STORAGE_REQUEST_RESPONSE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
     HistogramVec::new(
         HistogramOpts::new("storage_request_response_time", "Storage Request Latency")
@@ -604,6 +628,12 @@ fn custom_metrics(registry: &Registry) {
         .register(Box::new(
             TOTAL_CLUSTER_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE.clone(),
         ))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_CLUSTER_INPUT_LLM_TOKENS_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_CLUSTER_OUTPUT_LLM_TOKENS_BY_DATE.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(STORAGE_REQUEST_RESPONSE_TIME.clone()))
