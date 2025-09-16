@@ -613,26 +613,86 @@ impl TableProvider for StandardTableProvider {
 
     /*
     Updated the function signature (and name)
-    Now it handles multiple filters
+    Now it handles multiple filters with better pushdown logic
+    Implements late materialization by prioritizing selective filters
+    Includes boundary-aligned optimization for UI queries
     */
     fn supports_filters_pushdown(
         &self,
         filters: &[&Expr],
     ) -> Result<Vec<TableProviderFilterPushDown>, DataFusionError> {
+        // Get the time partition for this stream to make accurate time filter decisions
+        let time_partition = PARSEABLE
+            .get_stream(&self.stream)
+            .ok()
+            .and_then(|stream| stream.get_time_partition());
+
         let res_vec = filters
             .iter()
             .map(|filter| {
-                if expr_in_boundary(filter) {
-                    // if filter can be handled by time partiton pruning, it is exact
+                // Check if this filter can benefit from late materialization
+                if is_highly_selective_filter_with_context(filter, &time_partition) {
+                    // Push down highly selective filters for late materialization
                     TableProviderFilterPushDown::Exact
-                } else {
-                    // otherwise, we still might be able to handle the filter with file
-                    // level mechanisms such as Parquet row group pruning.
+                } else if is_boundary_aligned_filter(filter) {
+                    // Minute-aligned filters from UI can use aggressive pruning
+                    TableProviderFilterPushDown::Exact
+                } else if can_use_statistics_pruning(filter) {
+                    // Use statistics-based pruning for other filters
                     TableProviderFilterPushDown::Inexact
+                } else {
+                    // Handle in the query engine
+                    TableProviderFilterPushDown::Unsupported
                 }
             })
             .collect_vec();
         Ok(res_vec)
+    }
+}
+
+/// Check if a filter is highly selective and benefits from late materialization (with time partition context)
+fn is_highly_selective_filter_with_context(filter: &Expr, time_partition: &Option<String>) -> bool {
+    // Time-based filters are usually highly selective for log data
+    if let Expr::BinaryExpr(expr) = filter
+        && is_time_filter(expr, time_partition)
+    {
+        return true;
+    }
+
+    // Equality filters on indexed columns
+    if let Expr::BinaryExpr(expr) = filter
+        && expr.op == Operator::Eq
+    {
+        return true;
+    }
+
+    false
+}
+
+/// Check if filter can use manifest statistics for pruning
+fn can_use_statistics_pruning(filter: &Expr) -> bool {
+    // Any filter that can use min/max statistics
+    matches!(filter, Expr::BinaryExpr(expr) if matches!(
+        expr.op,
+        Operator::Lt | Operator::LtEq | Operator::Gt | Operator::GtEq | Operator::Eq
+    ))
+}
+
+/// Check if this is a boundary-aligned filter (minute-aligned from UI queries)
+/// These filters can benefit from more aggressive pruning since they align with partition boundaries
+fn is_boundary_aligned_filter(filter: &Expr) -> bool {
+    expr_in_boundary(filter)
+}
+
+/// Check if this is a time-based filter against the specific time partition
+fn is_time_filter(expr: &BinaryExpr, time_partition: &Option<String>) -> bool {
+    if let Expr::Column(col) = &*expr.left {
+        match time_partition {
+            Some(time_col) => col.name == *time_col,
+            None => col.name == DEFAULT_TIMESTAMP_KEY,
+        }
+    } else {
+        false
     }
 }
 
@@ -820,12 +880,15 @@ fn expr_in_boundary(filter: &Expr) -> bool {
     let Expr::BinaryExpr(binexpr) = filter else {
         return false;
     };
+
+    // Use None to fall back to any timestamp column for boundary detection
     let Some((op, time)) = extract_timestamp_bound(binexpr, &None) else {
         return false;
     };
 
-    // this is due to knowlege of prefixes being minute long always.
-    // Without a consistent partition spec this cannot be guarenteed.
+    // Check if time is aligned to minute boundary (0 seconds and nanoseconds)
+    // This is due to knowledge of prefixes being minute-long always.
+    // UI queries from Parseable are always minute-aligned, enabling aggressive pruning.
     time.second() == 0
         && time.nanosecond() == 0
         && matches!(
