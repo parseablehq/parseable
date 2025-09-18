@@ -120,7 +120,7 @@ pub async fn post_user(
         return Err(RBACError::RolesDoNotExist(non_existent_roles));
     }
     let _guard = UPDATE_LOCK.lock().await;
-    if Users.contains(&username) && Users.contains(&username)
+    if Users.contains(&username)
         || metadata.users.iter().any(|user| match &user.ty {
             UserType::Native(basic) => basic.username == username,
             UserType::OAuth(_) => false, // OAuth users should be created differently

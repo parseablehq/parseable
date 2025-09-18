@@ -192,7 +192,7 @@ pub mod error {
         #[error("Username should be between 3 and 64 chars long")]
         InvalidLength,
         #[error(
-            "Username contains invalid characters. Please use lowercase, alphanumeric or underscore"
+            "Username contains invalid characters. Only alphanumeric characters and _, -, ., , are allowed"
         )]
         SpecialChar,
         #[error("Username should start with an alphanumeric character")]
