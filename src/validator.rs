@@ -102,13 +102,6 @@ pub fn user_role_name(name: &str) -> Result<(), UsernameValidationError> {
 
     let chars: Vec<char> = name.chars().collect();
 
-    // Check first character (must be alphanumeric)
-    if let Some(first_char) = chars.first()
-        && !first_char.is_ascii_alphanumeric()
-    {
-        return Err(UsernameValidationError::InvalidStartChar);
-    }
-
     // Check last character (must be alphanumeric)
     if let Some(last_char) = chars.last()
         && !last_char.is_ascii_alphanumeric()
