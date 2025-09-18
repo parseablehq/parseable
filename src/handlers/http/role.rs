@@ -32,7 +32,7 @@ use crate::{
         role::model::DefaultPrivilege,
     },
     storage::{self, ObjectStorageError, StorageMetadata},
-    validator,
+    validator::{self, error::UsernameValidationError},
 };
 
 // Handler for PUT /api/v1/role/{name}
@@ -43,7 +43,7 @@ pub async fn put(
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     // validate the role name
-    validator::user_role_name(&name).map_err(|e| RoleError::Anyhow(e.into()))?;
+    validator::user_role_name(&name).map_err(RoleError::ValidationError)?;
     let mut metadata = get_metadata().await?;
     metadata.roles.insert(name.clone(), privileges.clone());
 
@@ -171,6 +171,8 @@ pub enum RoleError {
     SerdeError(#[from] serde_json::Error),
     #[error("Network Error: {0}")]
     Network(#[from] reqwest::Error),
+    #[error("Validation Error: {0}")]
+    ValidationError(#[from] UsernameValidationError),
 }
 
 impl actix_web::ResponseError for RoleError {
@@ -181,6 +183,7 @@ impl actix_web::ResponseError for RoleError {
             Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::SerdeError(_) => StatusCode::BAD_REQUEST,
             Self::Network(_) => StatusCode::BAD_GATEWAY,
+            Self::ValidationError(_) => StatusCode::BAD_REQUEST,
         }
     }
 

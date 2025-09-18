@@ -125,7 +125,7 @@ pub fn user_role_name(name: &str) -> Result<(), UsernameValidationError> {
                 prev_was_special = false;
             }
             // Allow specific special characters
-            '_' | '-' | '.' => {
+            '_' | '-' | '.' | ',' => {
                 if prev_was_special {
                     return Err(UsernameValidationError::ConsecutiveSpecialChars);
                 }
@@ -200,7 +200,7 @@ pub mod error {
         #[error("Username should end with an alphanumeric character")]
         InvalidEndChar,
         #[error(
-            "Username contains invalid characters. Only alphanumeric characters and _, -, . are allowed"
+            "Username contains invalid characters. Only alphanumeric characters and _, -, ., , are allowed"
         )]
         InvalidCharacter,
         #[error("Username contains consecutive special characters")]

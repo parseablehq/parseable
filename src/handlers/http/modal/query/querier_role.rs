@@ -44,7 +44,7 @@ pub async fn put(
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     // validate the role name
-    validator::user_role_name(&name).map_err(|e| RoleError::Anyhow(e.into()))?;
+    validator::user_role_name(&name).map_err(RoleError::ValidationError)?;
     let mut metadata = get_metadata().await?;
     metadata.roles.insert(name.clone(), privileges.clone());
 
