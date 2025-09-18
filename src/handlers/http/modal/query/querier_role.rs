@@ -33,6 +33,7 @@ use crate::{
         map::{mut_roles, mut_sessions, read_user_groups, users},
         role::model::DefaultPrivilege,
     },
+    validator,
 };
 
 // Handler for PUT /api/v1/role/{name}
@@ -42,6 +43,8 @@ pub async fn put(
     Json(privileges): Json<Vec<DefaultPrivilege>>,
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
+    // validate the role name
+    validator::user_role_name(&name).map_err(|e| RoleError::Anyhow(e.into()))?;
     let mut metadata = get_metadata().await?;
     metadata.roles.insert(name.clone(), privileges.clone());
 

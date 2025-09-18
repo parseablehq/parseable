@@ -44,10 +44,9 @@ pub async fn post_user(
     body: Option<web::Json<serde_json::Value>>,
 ) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
-
+    validator::user_role_name(&username)?;
     let mut metadata = get_metadata().await?;
 
-    validator::user_name(&username)?;
     let user_roles: HashSet<String> = if let Some(body) = body {
         serde_json::from_value(body.into_inner())?
     } else {
