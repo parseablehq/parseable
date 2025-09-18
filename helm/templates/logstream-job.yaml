@@ -47,7 +47,7 @@ spec:
             {{- end }}
             {{- end }}
             {{- else}}
-            {{- range $secret := .Values.parseable.s3ModeSecret }}
+            {{- range $secret := .Values.parseable.s3ModeSecret.secrets }}
             {{- range $key := $secret.keys }}
             {{- $envPrefix := $secret.prefix | default "" | upper }}
             {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
