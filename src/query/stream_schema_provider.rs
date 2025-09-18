@@ -58,7 +58,6 @@ use crate::{
     hottier::HotTierManager,
     metrics::{
         QUERY_CACHE_HIT, increment_bytes_scanned_in_query_by_date,
-        increment_files_scanned_in_object_store_calls_by_date,
         increment_files_scanned_in_query_by_date,
     },
     option::Mode,
@@ -597,14 +596,6 @@ impl TableProvider for StandardTableProvider {
             return self.final_plan(execution_plans, projection);
         }
 
-        let parquet_files_to_scan = manifest_files.len();
-        increment_files_scanned_in_object_store_calls_by_date(
-            PARSEABLE.storage().name(),
-            "GET",
-            parquet_files_to_scan as u64,
-            &Utc::now().date_naive().to_string(),
-        );
-
         let (partitioned_files, statistics) = self.partitioned_files(manifest_files);
         self.create_parquet_physical_plan(
             &mut execution_plans,
@@ -868,7 +859,10 @@ fn extract_timestamp_bound(
             DateTime::from_timestamp_nanos(*value).naive_utc(),
         )),
         ScalarValue::Utf8(Some(str_value)) if is_time_partition => {
-            Some((binexpr.op, str_value.parse().unwrap()))
+            match str_value.parse::<NaiveDateTime>() {
+                Ok(dt) => Some((binexpr.op, dt)),
+                Err(_) => None,
+            }
         }
         _ => None,
     }

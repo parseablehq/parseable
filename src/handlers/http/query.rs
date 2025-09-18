@@ -345,10 +345,6 @@ pub async fn get_counts(
     req: HttpRequest,
     counts_request: Json<CountsRequest>,
 ) -> Result<impl Responder, QueryError> {
-    // Track billing metrics for query calls
-    let current_date = chrono::Utc::now().date_naive().to_string();
-    increment_query_calls_by_date(&current_date);
-
     let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);
 
@@ -356,7 +352,9 @@ pub async fn get_counts(
 
     // does user have access to table?
     user_auth_for_datasets(&permissions, std::slice::from_ref(&body.stream)).await?;
-
+    // Track billing metrics for query calls
+    let current_date = chrono::Utc::now().date_naive().to_string();
+    increment_query_calls_by_date(&current_date);
     // if the user has given a sql query (counts call with filters applied), then use this flow
     // this could include filters or group by
     if body.conditions.is_some() {

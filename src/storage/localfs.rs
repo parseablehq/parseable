@@ -515,6 +515,11 @@ impl ObjectStorage for LocalFS {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["localfs", "DELETE", "200"])
                     .observe(delete_elapsed);
+                increment_object_store_calls_by_date(
+                    "localfs",
+                    "DELETE",
+                    &Utc::now().date_naive().to_string(),
+                );
             }
             Err(err) => {
                 let status_code = match err.kind() {
@@ -543,6 +548,11 @@ impl ObjectStorage for LocalFS {
                 STORAGE_REQUEST_RESPONSE_TIME
                     .with_label_values(&["localfs", "DELETE", "200"])
                     .observe(delete_elapsed);
+                increment_object_store_calls_by_date(
+                    "localfs",
+                    "DELETE",
+                    &Utc::now().date_naive().to_string(),
+                );
             }
             Err(err) => {
                 let status_code = match err.kind() {
