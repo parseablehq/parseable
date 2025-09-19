@@ -218,7 +218,7 @@ impl ObjectStorage for LocalFS {
     async fn get_objects(
         &self,
         base_path: Option<&RelativePath>,
-        filter_func: Box<(dyn Fn(String) -> bool + std::marker::Send + 'static)>,
+        filter_func: Box<dyn Fn(String) -> bool + std::marker::Send + 'static>,
     ) -> Result<Vec<Bytes>, ObjectStorageError> {
         let time = Instant::now();
 
