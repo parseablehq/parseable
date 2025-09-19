@@ -44,10 +44,9 @@ pub async fn post_user(
     body: Option<web::Json<serde_json::Value>>,
 ) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
-
+    validator::user_role_name(&username)?;
     let mut metadata = get_metadata().await?;
 
-    validator::user_name(&username)?;
     let user_roles: HashSet<String> = if let Some(body) = body {
         serde_json::from_value(body.into_inner())?
     } else {
@@ -173,17 +172,17 @@ pub async fn add_roles_to_user(
         return Err(RBACError::UserDoesNotExist);
     };
 
-    let mut non_existant_roles = Vec::new();
+    let mut non_existent_roles = Vec::new();
 
     // check if the role exists
     roles_to_add.iter().for_each(|r| {
         if roles().get(r).is_none() {
-            non_existant_roles.push(r.clone());
+            non_existent_roles.push(r.clone());
         }
     });
 
-    if !non_existant_roles.is_empty() {
-        return Err(RBACError::RolesDoNotExist(non_existant_roles));
+    if !non_existent_roles.is_empty() {
+        return Err(RBACError::RolesDoNotExist(non_existent_roles));
     }
 
     // update parseable.json first
@@ -229,17 +228,17 @@ pub async fn remove_roles_from_user(
         return Err(RBACError::UserDoesNotExist);
     };
 
-    let mut non_existant_roles = Vec::new();
+    let mut non_existent_roles = Vec::new();
 
     // check if the role exists
     roles_to_remove.iter().for_each(|r| {
         if roles().get(r).is_none() {
-            non_existant_roles.push(r.clone());
+            non_existent_roles.push(r.clone());
         }
     });
 
-    if !non_existant_roles.is_empty() {
-        return Err(RBACError::RolesDoNotExist(non_existant_roles));
+    if !non_existent_roles.is_empty() {
+        return Err(RBACError::RolesDoNotExist(non_existent_roles));
     }
 
     // check for role not present with user

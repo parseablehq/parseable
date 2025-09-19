@@ -101,10 +101,9 @@ pub async fn post_user(
     body: Option<web::Json<serde_json::Value>>,
 ) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
-
+    validator::user_role_name(&username)?;
     let mut metadata = get_metadata().await?;
 
-    validator::user_name(&username)?;
     let user_roles: HashSet<String> = if let Some(body) = body {
         serde_json::from_value(body.into_inner())?
     } else {
@@ -121,7 +120,7 @@ pub async fn post_user(
         return Err(RBACError::RolesDoNotExist(non_existent_roles));
     }
     let _guard = UPDATE_LOCK.lock().await;
-    if Users.contains(&username) && Users.contains(&username)
+    if Users.contains(&username)
         || metadata.users.iter().any(|user| match &user.ty {
             UserType::Native(basic) => basic.username == username,
             UserType::OAuth(_) => false, // OAuth users should be created differently
