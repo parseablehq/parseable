@@ -56,8 +56,6 @@ pub struct Fields {
     metadata: HashMap<String, String>,
 }
 
-#[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Metadata {}
 pub fn convert_static_schema_to_arrow_schema(
     static_schema: StaticSchema,
     time_partition: &str,

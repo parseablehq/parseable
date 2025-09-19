@@ -239,7 +239,7 @@ impl ObjectStorage for LocalFS {
     async fn get_objects(
         &self,
         base_path: Option<&RelativePath>,
-        filter_func: Box<(dyn Fn(String) -> bool + std::marker::Send + 'static)>,
+        filter_func: Box<dyn Fn(String) -> bool + std::marker::Send + 'static>,
     ) -> Result<Vec<Bytes>, ObjectStorageError> {
         let prefix = if let Some(path) = base_path {
             path.to_path(&self.root)
@@ -278,6 +278,18 @@ impl ObjectStorage for LocalFS {
             let file_result = fs::read(entry.path()).await;
             match file_result {
                 Ok(file) => {
+                    // Record total files scanned
+                    increment_files_scanned_in_object_store_calls_by_date(
+                        "localfs",
+                        "GET",
+                        1,
+                        &Utc::now().date_naive().to_string(),
+                    );
+                    increment_object_store_calls_by_date(
+                        "localfs",
+                        "GET",
+                        &Utc::now().date_naive().to_string(),
+                    );
                     res.push(file.into());
                 }
                 Err(err) => {
@@ -286,16 +298,15 @@ impl ObjectStorage for LocalFS {
             }
         }
 
-        // Record total files scanned
         increment_files_scanned_in_object_store_calls_by_date(
             "localfs",
-            "GET",
+            "LIST",
             files_scanned as u64,
             &Utc::now().date_naive().to_string(),
         );
         increment_object_store_calls_by_date(
             "localfs",
-            "GET",
+            "LIST",
             &Utc::now().date_naive().to_string(),
         );
 
