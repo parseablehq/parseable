@@ -324,7 +324,7 @@ impl Gcs {
             let mut data = Vec::new();
             file.read_to_end(&mut data).await?;
 
-            let has_final_partial_part = total_size % MIN_MULTIPART_UPLOAD_SIZE > 0;
+            let has_final_partial_part = !total_size.is_multiple_of(MIN_MULTIPART_UPLOAD_SIZE);
             let num_full_parts = total_size / MIN_MULTIPART_UPLOAD_SIZE;
             let total_parts = num_full_parts + if has_final_partial_part { 1 } else { 0 };
 
