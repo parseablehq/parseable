@@ -20,7 +20,6 @@ use std::{
     collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Instant,
 };
 
 use async_trait::async_trait;
@@ -40,8 +39,7 @@ use tokio_stream::wrappers::ReadDirStream;
 use crate::{
     handlers::http::users::USERS_ROOT_DIR,
     metrics::{
-        STORAGE_REQUEST_RESPONSE_TIME, increment_files_scanned_in_object_store_calls_by_date,
-        increment_object_store_calls_by_date,
+        increment_files_scanned_in_object_store_calls_by_date, increment_object_store_calls_by_date,
     },
     option::validation,
     parseable::LogStream,
@@ -130,18 +128,6 @@ impl ObjectStorage for LocalFS {
         )))
     }
     async fn head(&self, _path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
-        // Record attempt to access file (even though operation not implemented)
-        increment_files_scanned_in_object_store_calls_by_date(
-            "localfs",
-            "HEAD",
-            1,
-            &Utc::now().date_naive().to_string(),
-        );
-        increment_object_store_calls_by_date(
-            "localfs",
-            "HEAD",
-            &Utc::now().date_naive().to_string(),
-        );
         Err(ObjectStorageError::UnhandledError(Box::new(
             std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
@@ -173,15 +159,9 @@ impl ObjectStorage for LocalFS {
             };
         }
 
-        let get_start = Instant::now();
         let file_result = fs::read(file_path).await;
-        let get_elapsed = get_start.elapsed().as_secs_f64();
-
         let res: Result<Bytes, ObjectStorageError> = match file_result {
             Ok(x) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "GET", "200"])
-                    .observe(get_elapsed);
                 // Record single file accessed successfully
                 increment_files_scanned_in_object_store_calls_by_date(
                     "localfs",
@@ -198,14 +178,8 @@ impl ObjectStorage for LocalFS {
             }
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::NotFound {
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["localfs", "GET", "404"])
-                        .observe(get_elapsed);
                     Err(ObjectStorageError::NoSuchKey(path.to_string()))
                 } else {
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["localfs", "GET", "500"])
-                        .observe(get_elapsed);
                     Err(ObjectStorageError::UnhandledError(Box::new(e)))
                 }
             }
@@ -220,22 +194,10 @@ impl ObjectStorage for LocalFS {
         let mut path_arr = vec![];
         let mut files_scanned = 0u64;
 
-        // Track list operation
-        let list_start = Instant::now();
         let entries_result = fs::read_dir(&self.root).await;
-        let list_elapsed = list_start.elapsed().as_secs_f64();
-
         let mut entries = match entries_result {
-            Ok(entries) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "LIST", "200"])
-                    .observe(list_elapsed);
-                entries
-            }
+            Ok(entries) => entries,
             Err(err) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "LIST", "404"])
-                    .observe(list_elapsed);
                 return Err(err.into());
             }
         };
@@ -279,7 +241,6 @@ impl ObjectStorage for LocalFS {
         base_path: Option<&RelativePath>,
         filter_func: Box<dyn Fn(String) -> bool + std::marker::Send + 'static>,
     ) -> Result<Vec<Bytes>, ObjectStorageError> {
-        let list_start = Instant::now();
         let prefix = if let Some(path) = base_path {
             path.to_path(&self.root)
         } else {
@@ -287,19 +248,9 @@ impl ObjectStorage for LocalFS {
         };
 
         let entries_result = fs::read_dir(&prefix).await;
-        let list_elapsed = list_start.elapsed().as_secs_f64();
-
         let mut entries = match entries_result {
-            Ok(entries) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "LIST", "200"])
-                    .observe(list_elapsed);
-                entries
-            }
+            Ok(entries) => entries,
             Err(err) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "LIST", "404"])
-                    .observe(list_elapsed);
                 return Err(err.into());
             }
         };
@@ -324,21 +275,12 @@ impl ObjectStorage for LocalFS {
                 continue;
             }
 
-            let file_read_start = Instant::now();
             let file_result = fs::read(entry.path()).await;
-            let file_read_elapsed = file_read_start.elapsed().as_secs_f64();
-
             match file_result {
                 Ok(file) => {
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["localfs", "GET", "200"])
-                        .observe(file_read_elapsed);
                     res.push(file.into());
                 }
                 Err(err) => {
-                    STORAGE_REQUEST_RESPONSE_TIME
-                        .with_label_values(&["localfs", "GET", "404"])
-                        .observe(file_read_elapsed);
                     return Err(err.into());
                 }
             }
@@ -370,33 +312,20 @@ impl ObjectStorage for LocalFS {
             fs::create_dir_all(parent).await?;
         }
 
-        let put_start = Instant::now();
         let res = fs::write(path, resource).await;
-        let put_elapsed = put_start.elapsed().as_secs_f64();
-
-        match &res {
-            Ok(_) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "PUT", "200"])
-                    .observe(put_elapsed);
-                // Record single file written successfully
-                increment_files_scanned_in_object_store_calls_by_date(
-                    "localfs",
-                    "PUT",
-                    1,
-                    &Utc::now().date_naive().to_string(),
-                );
-                increment_object_store_calls_by_date(
-                    "localfs",
-                    "PUT",
-                    &Utc::now().date_naive().to_string(),
-                );
-            }
-            Err(_) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "PUT", "500"])
-                    .observe(put_elapsed);
-            }
+        if res.is_ok() {
+            // Record single file written successfully
+            increment_files_scanned_in_object_store_calls_by_date(
+                "localfs",
+                "PUT",
+                1,
+                &Utc::now().date_naive().to_string(),
+            );
+            increment_object_store_calls_by_date(
+                "localfs",
+                "PUT",
+                &Utc::now().date_naive().to_string(),
+            );
         }
 
         res.map_err(Into::into)
@@ -405,28 +334,14 @@ impl ObjectStorage for LocalFS {
     async fn delete_prefix(&self, path: &RelativePath) -> Result<(), ObjectStorageError> {
         let path = self.path_in_root(path);
 
-        let delete_start = Instant::now();
         let result = tokio::fs::remove_dir_all(path).await;
-        let delete_elapsed = delete_start.elapsed().as_secs_f64();
-
-        match &result {
-            Ok(_) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "DELETE", "200"])
-                    .observe(delete_elapsed);
-            }
-            Err(err) => {
-                let status_code = match err.kind() {
-                    std::io::ErrorKind::NotFound => "404",
-                    std::io::ErrorKind::PermissionDenied => "403",
-                    _ => "500",
-                };
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "DELETE", status_code])
-                    .observe(delete_elapsed);
-            }
+        if result.is_ok() {
+            increment_object_store_calls_by_date(
+                "localfs",
+                "DELETE",
+                &Utc::now().date_naive().to_string(),
+            );
         }
-
         result?;
         Ok(())
     }
@@ -434,38 +349,20 @@ impl ObjectStorage for LocalFS {
     async fn delete_object(&self, path: &RelativePath) -> Result<(), ObjectStorageError> {
         let path = self.path_in_root(path);
 
-        let delete_start = Instant::now();
         let result = tokio::fs::remove_file(path).await;
-        let delete_elapsed = delete_start.elapsed().as_secs_f64();
-
-        match &result {
-            Ok(_) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "DELETE", "200"])
-                    .observe(delete_elapsed);
-                // Record single file deleted successfully
-                increment_files_scanned_in_object_store_calls_by_date(
-                    "localfs",
-                    "DELETE",
-                    1,
-                    &Utc::now().date_naive().to_string(),
-                );
-                increment_object_store_calls_by_date(
-                    "localfs",
-                    "DELETE",
-                    &Utc::now().date_naive().to_string(),
-                );
-            }
-            Err(err) => {
-                let status_code = match err.kind() {
-                    std::io::ErrorKind::NotFound => "404",
-                    std::io::ErrorKind::PermissionDenied => "403",
-                    _ => "500",
-                };
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "DELETE", status_code])
-                    .observe(delete_elapsed);
-            }
+        if result.is_ok() {
+            // Record single file deleted successfully
+            increment_files_scanned_in_object_store_calls_by_date(
+                "localfs",
+                "DELETE",
+                1,
+                &Utc::now().date_naive().to_string(),
+            );
+            increment_object_store_calls_by_date(
+                "localfs",
+                "DELETE",
+                &Utc::now().date_naive().to_string(),
+            );
         }
 
         result?;
@@ -473,31 +370,13 @@ impl ObjectStorage for LocalFS {
     }
 
     async fn check(&self) -> Result<(), ObjectStorageError> {
-        let check_start = Instant::now();
         let result = fs::create_dir_all(&self.root).await;
-        let check_elapsed = check_start.elapsed().as_secs_f64();
-
-        match &result {
-            Ok(_) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "HEAD", "200"])
-                    .observe(check_elapsed);
-                increment_object_store_calls_by_date(
-                    "localfs",
-                    "HEAD",
-                    &Utc::now().date_naive().to_string(),
-                );
-            }
-            Err(err) => {
-                let status_code = match err.kind() {
-                    std::io::ErrorKind::PermissionDenied => "403",
-                    std::io::ErrorKind::NotFound => "404",
-                    _ => "500",
-                };
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "HEAD", status_code])
-                    .observe(check_elapsed);
-            }
+        if result.is_ok() {
+            increment_object_store_calls_by_date(
+                "localfs",
+                "HEAD",
+                &Utc::now().date_naive().to_string(),
+            );
         }
 
         result.map_err(|e| ObjectStorageError::UnhandledError(e.into()))
@@ -506,31 +385,13 @@ impl ObjectStorage for LocalFS {
     async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
         let path = self.root.join(stream_name);
 
-        let delete_start = Instant::now();
         let result = fs::remove_dir_all(path).await;
-        let delete_elapsed = delete_start.elapsed().as_secs_f64();
-
-        match &result {
-            Ok(_) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "DELETE", "200"])
-                    .observe(delete_elapsed);
-                increment_object_store_calls_by_date(
-                    "localfs",
-                    "DELETE",
-                    &Utc::now().date_naive().to_string(),
-                );
-            }
-            Err(err) => {
-                let status_code = match err.kind() {
-                    std::io::ErrorKind::NotFound => "404",
-                    std::io::ErrorKind::PermissionDenied => "403",
-                    _ => "500",
-                };
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "DELETE", status_code])
-                    .observe(delete_elapsed);
-            }
+        if result.is_ok() {
+            increment_object_store_calls_by_date(
+                "localfs",
+                "DELETE",
+                &Utc::now().date_naive().to_string(),
+            );
         }
 
         Ok(result?)
@@ -539,39 +400,19 @@ impl ObjectStorage for LocalFS {
     async fn try_delete_node_meta(&self, node_filename: String) -> Result<(), ObjectStorageError> {
         let path = self.root.join(node_filename);
 
-        let delete_start = Instant::now();
         let result = fs::remove_file(path).await;
-        let delete_elapsed = delete_start.elapsed().as_secs_f64();
-
-        match &result {
-            Ok(_) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "DELETE", "200"])
-                    .observe(delete_elapsed);
-                increment_object_store_calls_by_date(
-                    "localfs",
-                    "DELETE",
-                    &Utc::now().date_naive().to_string(),
-                );
-            }
-            Err(err) => {
-                let status_code = match err.kind() {
-                    std::io::ErrorKind::NotFound => "404",
-                    std::io::ErrorKind::PermissionDenied => "403",
-                    _ => "500",
-                };
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "DELETE", status_code])
-                    .observe(delete_elapsed);
-            }
+        if result.is_ok() {
+            increment_object_store_calls_by_date(
+                "localfs",
+                "DELETE",
+                &Utc::now().date_naive().to_string(),
+            );
         }
 
         Ok(result?)
     }
 
     async fn list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
-        let list_start = Instant::now();
-
         let ignore_dir = &[
             "lost+found",
             PARSEABLE_ROOT_DIRECTORY,
@@ -581,13 +422,8 @@ impl ObjectStorage for LocalFS {
         ];
 
         let result = fs::read_dir(&self.root).await;
-        let list_elapsed = list_start.elapsed().as_secs_f64();
-
         let directories = match result {
             Ok(read_dir) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "LIST", "200"])
-                    .observe(list_elapsed);
                 increment_object_store_calls_by_date(
                     "localfs",
                     "LIST",
@@ -596,14 +432,6 @@ impl ObjectStorage for LocalFS {
                 ReadDirStream::new(read_dir)
             }
             Err(err) => {
-                let status_code = match err.kind() {
-                    std::io::ErrorKind::NotFound => "404",
-                    std::io::ErrorKind::PermissionDenied => "403",
-                    _ => "500",
-                };
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "LIST", status_code])
-                    .observe(list_elapsed);
                 return Err(err.into());
             }
         };
@@ -622,8 +450,6 @@ impl ObjectStorage for LocalFS {
     }
 
     async fn list_old_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
-        let list_start = Instant::now();
-
         let ignore_dir = &[
             "lost+found",
             PARSEABLE_ROOT_DIRECTORY,
@@ -632,13 +458,8 @@ impl ObjectStorage for LocalFS {
         ];
 
         let result = fs::read_dir(&self.root).await;
-        let list_elapsed = list_start.elapsed().as_secs_f64();
-
         let directories = match result {
             Ok(read_dir) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "LIST", "200"])
-                    .observe(list_elapsed);
                 increment_object_store_calls_by_date(
                     "localfs",
                     "LIST",
@@ -647,14 +468,6 @@ impl ObjectStorage for LocalFS {
                 ReadDirStream::new(read_dir)
             }
             Err(err) => {
-                let status_code = match err.kind() {
-                    std::io::ErrorKind::NotFound => "404",
-                    std::io::ErrorKind::PermissionDenied => "403",
-                    _ => "500",
-                };
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "LIST", status_code])
-                    .observe(list_elapsed);
                 return Err(err.into());
             }
         };
@@ -673,26 +486,17 @@ impl ObjectStorage for LocalFS {
     }
 
     async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError> {
-        let list_start = Instant::now();
         let result = fs::read_dir(&self.root).await;
-        let list_elapsed = list_start.elapsed().as_secs_f64();
-
         let read_dir = match result {
             Ok(read_dir) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "LIST", "200"])
-                    .observe(list_elapsed);
+                increment_object_store_calls_by_date(
+                    "localfs",
+                    "LIST",
+                    &Utc::now().date_naive().to_string(),
+                );
                 read_dir
             }
             Err(err) => {
-                let status_code = match err.kind() {
-                    std::io::ErrorKind::NotFound => "404",
-                    std::io::ErrorKind::PermissionDenied => "403",
-                    _ => "500",
-                };
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "LIST", status_code])
-                    .observe(list_elapsed);
                 return Err(err.into());
             }
         };
@@ -719,26 +523,10 @@ impl ObjectStorage for LocalFS {
     ) -> Result<Vec<String>, ObjectStorageError> {
         let root = self.root.join(relative_path.as_str());
 
-        let list_start = Instant::now();
         let result = fs::read_dir(root).await;
-        let list_elapsed = list_start.elapsed().as_secs_f64();
-
         let read_dir = match result {
-            Ok(read_dir) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "LIST", "200"])
-                    .observe(list_elapsed);
-                read_dir
-            }
+            Ok(read_dir) => read_dir,
             Err(err) => {
-                let status_code = match err.kind() {
-                    std::io::ErrorKind::NotFound => "404",
-                    std::io::ErrorKind::PermissionDenied => "403",
-                    _ => "500",
-                };
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "LIST", status_code])
-                    .observe(list_elapsed);
                 return Err(err.into());
             }
         };
@@ -762,15 +550,9 @@ impl ObjectStorage for LocalFS {
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError> {
         let path = self.root.join(stream_name);
 
-        let list_start = Instant::now();
         let result = fs::read_dir(&path).await;
-        let list_elapsed = list_start.elapsed().as_secs_f64();
-
         let read_dir = match result {
             Ok(read_dir) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "LIST", "200"])
-                    .observe(list_elapsed);
                 increment_object_store_calls_by_date(
                     "localfs",
                     "LIST",
@@ -779,14 +561,6 @@ impl ObjectStorage for LocalFS {
                 read_dir
             }
             Err(err) => {
-                let status_code = match err.kind() {
-                    std::io::ErrorKind::NotFound => "404",
-                    std::io::ErrorKind::PermissionDenied => "403",
-                    _ => "500",
-                };
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "LIST", status_code])
-                    .observe(list_elapsed);
                 return Err(err.into());
             }
         };
@@ -837,7 +611,6 @@ impl ObjectStorage for LocalFS {
     }
 
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
-        let upload_start = Instant::now();
         let op = CopyOptions {
             overwrite: true,
             skip_exist: true,
@@ -849,13 +622,8 @@ impl ObjectStorage for LocalFS {
         }
 
         let result = fs_extra::file::copy(path, to_path, &op);
-        let upload_elapsed = upload_start.elapsed().as_secs_f64();
-
         match result {
             Ok(_) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "PUT", "200"])
-                    .observe(upload_elapsed);
                 increment_object_store_calls_by_date(
                     "localfs",
                     "PUT",
@@ -863,12 +631,7 @@ impl ObjectStorage for LocalFS {
                 );
                 Ok(())
             }
-            Err(err) => {
-                STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&["localfs", "PUT", "500"])
-                    .observe(upload_elapsed);
-                Err(err.into())
-            }
+            Err(err) => Err(err.into()),
         }
     }
 
