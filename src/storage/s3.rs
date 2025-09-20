@@ -21,12 +21,16 @@ use std::{
     fmt::Display,
     path::Path,
     str::FromStr,
-    sync::Arc,
-    time::{Duration, Instant},
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
 };
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::Utc;
 use datafusion::{
     datasource::listing::ListingTableUrl,
     execution::{
@@ -44,10 +48,12 @@ use object_store::{
 };
 use relative_path::{RelativePath, RelativePathBuf};
 use tokio::{fs::OpenOptions, io::AsyncReadExt};
-use tracing::{error, info};
+use tracing::error;
 
 use crate::{
-    metrics::storage::{StorageMetrics, azureblob::REQUEST_RESPONSE_TIME},
+    metrics::{
+        increment_files_scanned_in_object_store_calls_by_date, increment_object_store_calls_by_date,
+    },
     parseable::LogStream,
 };
 
@@ -299,7 +305,7 @@ impl ObjectStorageProvider for S3Config {
 
         // limit objectstore to a concurrent request limit
         let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
-        let s3 = MetricLayer::new(s3);
+        let s3 = MetricLayer::new(s3, "s3");
 
         let object_store_registry = DefaultObjectStoreRegistry::new();
         let url = ObjectStoreUrl::parse(format!("s3://{}", &self.bucket_name)).unwrap();
@@ -321,10 +327,6 @@ impl ObjectStorageProvider for S3Config {
     fn get_endpoint(&self) -> String {
         format!("{}/{}", self.endpoint_url, self.bucket_name)
     }
-
-    fn register_store_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {
-        self.register_metrics(handler)
-    }
 }
 
 #[derive(Debug)]
@@ -336,26 +338,21 @@ pub struct S3 {
 
 impl S3 {
     async fn _get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
-        let instant = Instant::now();
-
         let resp = self.client.get(&to_object_store_path(path)).await;
+        increment_object_store_calls_by_date("s3", "GET", &Utc::now().date_naive().to_string());
 
         match resp {
             Ok(resp) => {
-                let time = instant.elapsed().as_secs_f64();
-                REQUEST_RESPONSE_TIME
-                    .with_label_values(&["GET", "200"])
-                    .observe(time);
                 let body = resp.bytes().await?;
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "s3",
+                    "GET",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
                 Ok(body)
             }
-            Err(err) => {
-                let time = instant.elapsed().as_secs_f64();
-                REQUEST_RESPONSE_TIME
-                    .with_label_values(&["GET", "400"])
-                    .observe(time);
-                Err(err.into())
-            }
+            Err(err) => Err(err.into()),
         }
     }
 
@@ -364,54 +361,93 @@ impl S3 {
         path: &RelativePath,
         resource: PutPayload,
     ) -> Result<(), ObjectStorageError> {
-        let time = Instant::now();
         let resp = self.client.put(&to_object_store_path(path), resource).await;
-        let status = if resp.is_ok() { "200" } else { "400" };
-        let time = time.elapsed().as_secs_f64();
-        REQUEST_RESPONSE_TIME
-            .with_label_values(&["PUT", status])
-            .observe(time);
-
-        if let Err(object_store::Error::NotFound { source, .. }) = &resp {
-            let source_str = source.to_string();
-            if source_str.contains("<Code>NoSuchBucket</Code>") {
-                return Err(ObjectStorageError::Custom(
-                    format!("Bucket '{}' does not exist in S3.", self.bucket).to_string(),
-                ));
+        increment_object_store_calls_by_date("s3", "PUT", &Utc::now().date_naive().to_string());
+        match resp {
+            Ok(_) => {
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "s3",
+                    "PUT",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
+                Ok(())
             }
+            Err(err) => Err(err.into()),
         }
-
-        resp.map(|_| ()).map_err(|err| err.into())
     }
 
     async fn _delete_prefix(&self, key: &str) -> Result<(), ObjectStorageError> {
+        let files_scanned = Arc::new(AtomicU64::new(0));
+        let files_deleted = Arc::new(AtomicU64::new(0));
+        // Track LIST operation
         let object_stream = self.client.list(Some(&(key.into())));
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
 
         object_stream
             .for_each_concurrent(None, |x| async {
+                files_scanned.fetch_add(1, Ordering::Relaxed);
+
                 match x {
                     Ok(obj) => {
-                        if (self.client.delete(&obj.location).await).is_err() {
-                            error!("Failed to fetch object during delete stream");
+                        files_deleted.fetch_add(1, Ordering::Relaxed);
+                        let delete_resp = self.client.delete(&obj.location).await;
+                        increment_object_store_calls_by_date(
+                            "s3",
+                            "DELETE",
+                            &Utc::now().date_naive().to_string(),
+                        );
+                        if delete_resp.is_err() {
+                            error!(
+                                "Failed to delete object during delete stream: {:?}",
+                                delete_resp
+                            );
                         }
                     }
-                    Err(_) => {
-                        error!("Failed to fetch object during delete stream");
+                    Err(err) => {
+                        error!("Failed to fetch object during delete stream: {:?}", err);
                     }
                 };
             })
             .await;
 
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "LIST",
+            files_scanned.load(Ordering::Relaxed),
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "DELETE",
+            files_deleted.load(Ordering::Relaxed),
+            &Utc::now().date_naive().to_string(),
+        );
         Ok(())
     }
 
     async fn _list_dates(&self, stream: &str) -> Result<Vec<String>, ObjectStorageError> {
-        let resp = self
+        let resp: Result<object_store::ListResult, object_store::Error> = self
             .client
             .list_with_delimiter(Some(&(stream.into())))
-            .await?;
+            .await;
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
+
+        let resp = match resp {
+            Ok(resp) => resp,
+            Err(err) => {
+                return Err(err.into());
+            }
+        };
 
         let common_prefixes = resp.common_prefixes;
+
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "LIST",
+            common_prefixes.len() as u64,
+            &Utc::now().date_naive().to_string(),
+        );
 
         // return prefixes at the root level
         let dates: Vec<_> = common_prefixes
@@ -423,66 +459,23 @@ impl S3 {
         Ok(dates)
     }
 
-    // async fn _list_manifest_files(
-    //     &self,
-    //     stream: &str,
-    // ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
-    //     let mut result_file_list: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    //     let resp = self
-    //         .client
-    //         .list_with_delimiter(Some(&(stream.into())))
-    //         .await?;
-    //     warn!(resp=?resp);
-    //     let dates = resp
-    //         .common_prefixes
-    //         .iter()
-    //         .flat_map(|path| path.parts())
-    //         .filter(|name| name.as_ref() != stream && name.as_ref() != STREAM_ROOT_DIRECTORY)
-    //         .map(|name| name.as_ref().to_string())
-    //         .collect::<Vec<_>>();
-    //     warn!(dates=?dates);
-
-    //     for date in dates {
-    //         let date_path = object_store::path::Path::from(format!("{}/{}", stream, &date));
-    //         let resp = self.client.list_with_delimiter(Some(&date_path)).await?;
-    //         warn!(date_path=?resp);
-    //         let manifests: Vec<String> = resp
-    //             .objects
-    //             .iter()
-    //             .filter(|name| name.location.filename().unwrap().ends_with("manifest.json"))
-    //             .map(|name| name.location.to_string())
-    //             .collect();
-    //         result_file_list.entry(date).or_default().extend(manifests);
-    //     }
-    //     Ok(result_file_list)
-    // }
-
     async fn _upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
-        let instant = Instant::now();
+        let bytes = tokio::fs::read(path).await?;
 
-        // // TODO: Uncomment this when multipart is fixed
-        // let should_multipart = std::fs::metadata(path)?.len() > MULTIPART_UPLOAD_SIZE as u64;
-
-        let should_multipart = false;
-
-        let res = if should_multipart {
-            // self._upload_multipart(key, path).await
-            // this branch will never get executed
-            Ok(())
-        } else {
-            let bytes = tokio::fs::read(path).await?;
-            let result = self.client.put(&key.into(), bytes.into()).await?;
-            info!("Uploaded file to S3: {:?}", result);
-            Ok(())
-        };
-
-        let status = if res.is_ok() { "200" } else { "400" };
-        let time = instant.elapsed().as_secs_f64();
-        REQUEST_RESPONSE_TIME
-            .with_label_values(&["UPLOAD_PARQUET", status])
-            .observe(time);
-
-        res
+        let result = self.client.put(&key.into(), bytes.into()).await;
+        increment_object_store_calls_by_date("s3", "PUT", &Utc::now().date_naive().to_string());
+        match result {
+            Ok(_) => {
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "s3",
+                    "PUT",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
+                Ok(())
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     async fn _upload_multipart(
@@ -493,14 +486,43 @@ impl S3 {
         let mut file = OpenOptions::new().read(true).open(path).await?;
         let location = &to_object_store_path(key);
 
-        let mut async_writer = self.client.put_multipart(location).await?;
+        // Track multipart initiation
+        let async_writer = self.client.put_multipart(location).await;
+        increment_object_store_calls_by_date(
+            "s3",
+            "PUT_MULTIPART",
+            &Utc::now().date_naive().to_string(),
+        );
+        let mut async_writer = match async_writer {
+            Ok(writer) => writer,
+            Err(err) => {
+                return Err(err.into());
+            }
+        };
 
         let meta = file.metadata().await?;
         let total_size = meta.len() as usize;
         if total_size < MIN_MULTIPART_UPLOAD_SIZE {
             let mut data = Vec::new();
             file.read_to_end(&mut data).await?;
-            self.client.put(location, data.into()).await?;
+
+            // Track single PUT operation for small files
+            let result = self.client.put(location, data.into()).await;
+            increment_object_store_calls_by_date("s3", "PUT", &Utc::now().date_naive().to_string());
+            match result {
+                Ok(_) => {
+                    increment_files_scanned_in_object_store_calls_by_date(
+                        "s3",
+                        "PUT",
+                        1,
+                        &Utc::now().date_naive().to_string(),
+                    );
+                }
+                Err(err) => {
+                    return Err(err.into());
+                }
+            }
+
             // async_writer.put_part(data.into()).await?;
             // async_writer.complete().await?;
             return Ok(());
@@ -514,7 +536,7 @@ impl S3 {
             let num_full_parts = total_size / MIN_MULTIPART_UPLOAD_SIZE;
             let total_parts = num_full_parts + if has_final_partial_part { 1 } else { 0 };
 
-            // Upload each part
+            // Upload each part with metrics
             for part_number in 0..(total_parts) {
                 let start_pos = part_number * MIN_MULTIPART_UPLOAD_SIZE;
                 let end_pos = if part_number == num_full_parts && has_final_partial_part {
@@ -528,15 +550,27 @@ impl S3 {
                 // Extract this part's data
                 let part_data = data[start_pos..end_pos].to_vec();
 
-                // Upload the part
-                async_writer.put_part(part_data.into()).await?;
+                // Track individual part upload
+                let result = async_writer.put_part(part_data.into()).await;
+                increment_object_store_calls_by_date(
+                    "s3",
+                    "PUT_MULTIPART",
+                    &Utc::now().date_naive().to_string(),
+                );
+                if result.is_err() {
+                    return Err(result.err().unwrap().into());
+                }
 
                 // upload_parts.push(part_number as u64 + 1);
             }
-            if let Err(err) = async_writer.complete().await {
+
+            // Track multipart completion
+            let complete_result = async_writer.complete().await;
+            if let Err(err) = complete_result {
                 error!("Failed to complete multipart upload. {:?}", err);
                 async_writer.abort().await?;
-            };
+                return Err(err.into());
+            }
         }
         Ok(())
     }
@@ -549,12 +583,28 @@ impl ObjectStorage for S3 {
         path: &RelativePath,
     ) -> Result<BufReader, ObjectStorageError> {
         let path = &to_object_store_path(path);
-        let meta = self.client.head(path).await?;
+        let meta = self.client.head(path).await;
+        increment_object_store_calls_by_date("s3", "HEAD", &Utc::now().date_naive().to_string());
+        let meta = match meta {
+            Ok(meta) => {
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "s3",
+                    "HEAD",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
+                meta
+            }
+            Err(err) => {
+                return Err(err.into());
+            }
+        };
 
         let store: Arc<dyn ObjectStore> = Arc::new(self.client.clone());
         let buf = object_store::buffered::BufReader::new(store, &meta);
         Ok(buf)
     }
+
     async fn upload_multipart(
         &self,
         key: &RelativePath,
@@ -562,8 +612,20 @@ impl ObjectStorage for S3 {
     ) -> Result<(), ObjectStorageError> {
         self._upload_multipart(key, path).await
     }
+
     async fn head(&self, path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
-        Ok(self.client.head(&to_object_store_path(path)).await?)
+        let result = self.client.head(&to_object_store_path(path)).await;
+        increment_object_store_calls_by_date("s3", "HEAD", &Utc::now().date_naive().to_string());
+        if result.is_ok() {
+            increment_files_scanned_in_object_store_calls_by_date(
+                "s3",
+                "HEAD",
+                1,
+                &Utc::now().date_naive().to_string(),
+            );
+        }
+
+        Ok(result?)
     }
 
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
@@ -575,8 +637,6 @@ impl ObjectStorage for S3 {
         base_path: Option<&RelativePath>,
         filter_func: Box<dyn Fn(String) -> bool + Send>,
     ) -> Result<Vec<Bytes>, ObjectStorageError> {
-        let instant = Instant::now();
-
         let prefix = if let Some(base_path) = base_path {
             to_object_store_path(base_path)
         } else {
@@ -586,8 +646,18 @@ impl ObjectStorage for S3 {
         let mut list_stream = self.client.list(Some(&prefix));
 
         let mut res = vec![];
+        let mut files_scanned = 0;
 
-        while let Some(meta) = list_stream.next().await.transpose()? {
+        // Note: We track each streaming list item retrieval
+        while let Some(meta_result) = list_stream.next().await {
+            let meta = match meta_result {
+                Ok(meta) => meta,
+                Err(err) => {
+                    return Err(err.into());
+                }
+            };
+
+            files_scanned += 1;
             let ingestor_file = filter_func(meta.location.filename().unwrap().to_string());
 
             if !ingestor_file {
@@ -600,38 +670,57 @@ impl ObjectStorage for S3 {
                         .map_err(ObjectStorageError::PathError)?,
                 )
                 .await?;
-
+            increment_files_scanned_in_object_store_calls_by_date(
+                "s3",
+                "GET",
+                1,
+                &Utc::now().date_naive().to_string(),
+            );
+            increment_object_store_calls_by_date("s3", "GET", &Utc::now().date_naive().to_string());
             res.push(byts);
         }
-
-        let instant = instant.elapsed().as_secs_f64();
-        REQUEST_RESPONSE_TIME
-            .with_label_values(&["GET", "200"])
-            .observe(instant);
-
+        // Record total files scanned
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "LIST",
+            files_scanned as u64,
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
         Ok(res)
     }
 
     async fn get_ingestor_meta_file_paths(
         &self,
     ) -> Result<Vec<RelativePathBuf>, ObjectStorageError> {
-        let time = Instant::now();
         let mut path_arr = vec![];
-        let mut object_stream = self.client.list(Some(&self.root));
+        let mut files_scanned = 0;
 
-        while let Some(meta) = object_stream.next().await.transpose()? {
+        let mut object_stream = self.client.list(Some(&self.root));
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
+
+        while let Some(meta_result) = object_stream.next().await {
+            let meta = match meta_result {
+                Ok(meta) => meta,
+                Err(err) => {
+                    return Err(err.into());
+                }
+            };
+
+            files_scanned += 1;
             let flag = meta.location.filename().unwrap().starts_with("ingestor");
 
             if flag {
                 path_arr.push(RelativePathBuf::from(meta.location.as_ref()));
             }
         }
-
-        let time = time.elapsed().as_secs_f64();
-        REQUEST_RESPONSE_TIME
-            .with_label_values(&["GET", "200"])
-            .observe(time);
-
+        // Record total files scanned
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "LIST",
+            files_scanned as u64,
+            &Utc::now().date_naive().to_string(),
+        );
         Ok(path_arr)
     }
 
@@ -654,15 +743,37 @@ impl ObjectStorage for S3 {
     }
 
     async fn delete_object(&self, path: &RelativePath) -> Result<(), ObjectStorageError> {
-        Ok(self.client.delete(&to_object_store_path(path)).await?)
+        let result = self.client.delete(&to_object_store_path(path)).await;
+        increment_object_store_calls_by_date("s3", "DELETE", &Utc::now().date_naive().to_string());
+        if result.is_ok() {
+            increment_files_scanned_in_object_store_calls_by_date(
+                "s3",
+                "DELETE",
+                1,
+                &Utc::now().date_naive().to_string(),
+            );
+        }
+
+        Ok(result?)
     }
 
     async fn check(&self) -> Result<(), ObjectStorageError> {
-        Ok(self
+        let result = self
             .client
             .head(&to_object_store_path(&parseable_json_path()))
-            .await
-            .map(|_| ())?)
+            .await;
+        increment_object_store_calls_by_date("s3", "HEAD", &Utc::now().date_naive().to_string());
+
+        if result.is_ok() {
+            increment_files_scanned_in_object_store_calls_by_date(
+                "s3",
+                "HEAD",
+                1,
+                &Utc::now().date_naive().to_string(),
+            );
+        }
+
+        Ok(result.map(|_| ())?)
     }
 
     async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
@@ -673,19 +784,20 @@ impl ObjectStorage for S3 {
 
     async fn try_delete_node_meta(&self, node_filename: String) -> Result<(), ObjectStorageError> {
         let file = RelativePathBuf::from(&node_filename);
-        match self.client.delete(&to_object_store_path(&file)).await {
-            Ok(_) => Ok(()),
-            Err(err) => {
-                // if the object is not found, it is not an error
-                // the given url path was incorrect
-                if matches!(err, object_store::Error::NotFound { .. }) {
-                    error!("Node does not exist");
-                    Err(err.into())
-                } else {
-                    error!("Error deleting node meta file: {:?}", err);
-                    Err(err.into())
-                }
+
+        let result = self.client.delete(&to_object_store_path(&file)).await;
+        increment_object_store_calls_by_date("s3", "DELETE", &Utc::now().date_naive().to_string());
+        match result {
+            Ok(_) => {
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "s3",
+                    "DELETE",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
+                Ok(())
             }
+            Err(err) => Err(err.into()),
         }
     }
 
@@ -698,9 +810,14 @@ impl ObjectStorage for S3 {
 
     async fn list_old_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
         let resp = self.client.list_with_delimiter(None).await?;
-
         let common_prefixes = resp.common_prefixes; // get all dirs
-
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "LIST",
+            common_prefixes.len() as u64,
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
         // return prefixes at the root level
         let dirs: HashSet<_> = common_prefixes
             .iter()
@@ -713,10 +830,23 @@ impl ObjectStorage for S3 {
 
         for dir in &dirs {
             let key = format!("{dir}/{STREAM_METADATA_FILE_NAME}");
-            let task = async move { self.client.head(&StorePath::from(key)).await.map(|_| ()) };
+            let task = async move {
+                let result = self.client.head(&StorePath::from(key)).await;
+                increment_object_store_calls_by_date(
+                    "s3",
+                    "HEAD",
+                    &Utc::now().date_naive().to_string(),
+                );
+                result.map(|_| ())
+            };
             stream_json_check.push(task);
         }
-
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "HEAD",
+            dirs.len() as u64,
+            &Utc::now().date_naive().to_string(),
+        );
         stream_json_check.try_collect::<()>().await?;
 
         Ok(dirs)
@@ -735,6 +865,13 @@ impl ObjectStorage for S3 {
     ) -> Result<Vec<String>, ObjectStorageError> {
         let pre = object_store::path::Path::from(format!("{}/{}/", stream_name, date));
         let resp = self.client.list_with_delimiter(Some(&pre)).await?;
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "LIST",
+            resp.common_prefixes.len() as u64,
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
 
         let hours: Vec<String> = resp
             .common_prefixes
@@ -764,7 +901,13 @@ impl ObjectStorage for S3 {
     ) -> Result<Vec<String>, ObjectStorageError> {
         let pre = object_store::path::Path::from(format!("{}/{}/{}/", stream_name, date, hour));
         let resp = self.client.list_with_delimiter(Some(&pre)).await?;
-
+        increment_files_scanned_in_object_store_calls_by_date(
+            "s3",
+            "LIST",
+            resp.common_prefixes.len() as u64,
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
         let minutes: Vec<String> = resp
             .common_prefixes
             .iter()
@@ -786,19 +929,8 @@ impl ObjectStorage for S3 {
         Ok(minutes)
     }
 
-    // async fn list_manifest_files(
-    //     &self,
-    //     stream_name: &str,
-    // ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError> {
-    //     let files = self._list_manifest_files(stream_name).await?;
-
-    //     Ok(files)
-    // }
-
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
-        self._upload_file(key, path).await?;
-
-        Ok(())
+        Ok(self._upload_file(key, path).await?)
     }
 
     fn absolute_url(&self, prefix: &RelativePath) -> object_store::path::Path {
@@ -821,7 +953,23 @@ impl ObjectStorage for S3 {
 
     async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError> {
         let pre = object_store::path::Path::from("/");
-        let resp = self.client.list_with_delimiter(Some(&pre)).await?;
+        let resp = self.client.list_with_delimiter(Some(&pre)).await;
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
+        let resp = match resp {
+            Ok(resp) => {
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "s3",
+                    "LIST",
+                    resp.common_prefixes.len() as u64,
+                    &Utc::now().date_naive().to_string(),
+                );
+
+                resp
+            }
+            Err(err) => {
+                return Err(err.into());
+            }
+        };
 
         Ok(resp
             .common_prefixes
@@ -836,7 +984,24 @@ impl ObjectStorage for S3 {
         relative_path: &RelativePath,
     ) -> Result<Vec<String>, ObjectStorageError> {
         let prefix = object_store::path::Path::from(relative_path.as_str());
-        let resp = self.client.list_with_delimiter(Some(&prefix)).await?;
+
+        let resp = self.client.list_with_delimiter(Some(&prefix)).await;
+        increment_object_store_calls_by_date("s3", "LIST", &Utc::now().date_naive().to_string());
+        let resp = match resp {
+            Ok(resp) => {
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "s3",
+                    "LIST",
+                    resp.common_prefixes.len() as u64,
+                    &Utc::now().date_naive().to_string(),
+                );
+
+                resp
+            }
+            Err(err) => {
+                return Err(err.into());
+            }
+        };
 
         Ok(resp
             .common_prefixes
