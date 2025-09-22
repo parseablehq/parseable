@@ -118,7 +118,7 @@ pub fn user_role_name(name: &str) -> Result<(), UsernameValidationError> {
                 prev_was_special = false;
             }
             // Allow specific special characters
-            '_' | '-' | '.' => {
+            '_' | '-' | '.' | '@' => {
                 if prev_was_special {
                     return Err(UsernameValidationError::ConsecutiveSpecialChars);
                 }
