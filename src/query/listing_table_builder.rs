@@ -100,7 +100,7 @@ impl ListingTableBuilder {
         for prefix in prefixes {
             match storage.list_dirs_relative(&prefix).await {
                 Ok(paths) => {
-                    listing.extend(paths.into_iter().map(|p| p.to_string()));
+                    listing.extend(paths.into_iter().map(|p| prefix.join(p).to_string()));
                 }
                 Err(e) => {
                     return Err(DataFusionError::External(Box::new(e)));
