@@ -29,8 +29,7 @@ use crate::metrics::{
     DELETED_EVENTS_STORAGE_SIZE, EVENTS_DELETED, EVENTS_DELETED_SIZE, EVENTS_INGESTED,
     EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
     EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
-    LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE, TOTAL_EVENTS_INGESTED_DATE,
-    TOTAL_EVENTS_INGESTED_SIZE_DATE, TOTAL_EVENTS_STORAGE_SIZE_DATE,
+    LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE,
 };
 use crate::storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat};
 
@@ -141,15 +140,6 @@ pub async fn update_deleted_stats(
             num_row += manifest.events_ingested as i64;
             ingestion_size += manifest.ingestion_size as i64;
             storage_size += manifest.storage_size as i64;
-            TOTAL_EVENTS_INGESTED_DATE
-                .with_label_values(&["json", &manifest_date])
-                .sub(manifest.events_ingested as i64);
-            TOTAL_EVENTS_INGESTED_SIZE_DATE
-                .with_label_values(&["json", &manifest_date])
-                .sub(manifest.ingestion_size as i64);
-            TOTAL_EVENTS_STORAGE_SIZE_DATE
-                .with_label_values(&["parquet", &manifest_date])
-                .sub(manifest.storage_size as i64);
         }
     }
     EVENTS_DELETED

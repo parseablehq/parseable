@@ -29,7 +29,6 @@ use crate::handlers::TelemetryType;
 use crate::metrics::{
     EVENTS_INGESTED, EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
     EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
-    TOTAL_EVENTS_INGESTED_DATE, TOTAL_EVENTS_INGESTED_SIZE_DATE,
 };
 use crate::storage::StreamType;
 use crate::storage::retention::Retention;
@@ -59,12 +58,6 @@ pub fn update_stats(
         .add(num_rows as i64);
     LIFETIME_EVENTS_INGESTED_SIZE
         .with_label_values(&[stream_name, origin])
-        .add(size as i64);
-    TOTAL_EVENTS_INGESTED_DATE
-        .with_label_values(&[origin, &parsed_date])
-        .add(num_rows as i64);
-    TOTAL_EVENTS_INGESTED_SIZE_DATE
-        .with_label_values(&[origin, &parsed_date])
         .add(size as i64);
 }
 

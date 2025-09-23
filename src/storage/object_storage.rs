@@ -49,7 +49,6 @@ use crate::handlers::http::fetch_schema;
 use crate::handlers::http::modal::ingest_server::INGESTOR_EXPECT;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
 use crate::handlers::http::users::{FILTER_DIR, USERS_ROOT_DIR};
-use crate::metrics::TOTAL_EVENTS_STORAGE_SIZE_DATE;
 use crate::metrics::increment_parquets_stored_by_date;
 use crate::metrics::increment_parquets_stored_size_by_date;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE};
@@ -182,9 +181,6 @@ fn update_storage_metrics(
         .inc_by(compressed_size);
     LIFETIME_EVENTS_STORAGE_SIZE
         .with_label_values(&["data", stream_name, "parquet"])
-        .add(compressed_size as i64);
-    TOTAL_EVENTS_STORAGE_SIZE_DATE
-        .with_label_values(&["parquet", file_date_part])
         .add(compressed_size as i64);
 
     // billing metrics for parquet storage
