@@ -46,13 +46,13 @@ pub fn update_stats(
         .add(num_rows as i64);
     EVENTS_INGESTED_DATE
         .with_label_values(&[stream_name, origin, &parsed_date])
-        .add(num_rows as i64);
+        .inc_by(num_rows as u64);
     EVENTS_INGESTED_SIZE
         .with_label_values(&[stream_name, origin])
         .add(size as i64);
     EVENTS_INGESTED_SIZE_DATE
         .with_label_values(&[stream_name, origin, &parsed_date])
-        .add(size as i64);
+        .inc_by(size);
     LIFETIME_EVENTS_INGESTED
         .with_label_values(&[stream_name, origin])
         .add(num_rows as i64);
@@ -173,12 +173,12 @@ pub fn load_daily_metrics(manifests: &Vec<ManifestItem>, stream_name: &str) {
         let storage_size = manifest.storage_size;
         EVENTS_INGESTED_DATE
             .with_label_values(&[stream_name, "json", &manifest_date])
-            .set(events_ingested as i64);
+            .inc_by(events_ingested);
         EVENTS_INGESTED_SIZE_DATE
             .with_label_values(&[stream_name, "json", &manifest_date])
-            .set(ingestion_size as i64);
+            .inc_by(ingestion_size);
         EVENTS_STORAGE_SIZE_DATE
             .with_label_values(&["data", stream_name, "parquet", &manifest_date])
-            .set(storage_size as i64);
+            .inc_by(storage_size);
     }
 }
