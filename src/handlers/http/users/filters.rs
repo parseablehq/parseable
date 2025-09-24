@@ -29,9 +29,9 @@ use actix_web::{
     http::header::ContentType,
     web::{self, Json, Path},
 };
-use chrono::Utc;
 use http::StatusCode;
 use serde_json::Error as SerdeError;
+use ulid::Ulid;
 
 pub async fn list(req: HttpRequest) -> Result<impl Responder, FiltersError> {
     let key =
@@ -51,7 +51,9 @@ pub async fn get(
         return Ok((web::Json(filter), StatusCode::OK));
     }
 
-    Err(FiltersError::Metadata("Filter does not exist"))
+    Err(FiltersError::Metadata(
+        "Filter does not exist or user is not authorized",
+    ))
 }
 
 pub async fn post(
@@ -60,7 +62,7 @@ pub async fn post(
 ) -> Result<impl Responder, FiltersError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
-    let filter_id = get_hash(Utc::now().timestamp_micros().to_string().as_str());
+    let filter_id = Ulid::new().to_string();
     filter.filter_id = Some(filter_id.clone());
     filter.user_id = Some(user_id.clone());
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
@@ -80,7 +82,9 @@ pub async fn update(
     user_id = get_hash(&user_id);
     let filter_id = filter_id.into_inner();
     if FILTERS.get_filter(&filter_id, &user_id).await.is_none() {
-        return Err(FiltersError::Metadata("Filter does not exist"));
+        return Err(FiltersError::Metadata(
+            "Filter does not exist or user is not authorized",
+        ));
     }
     filter.filter_id = Some(filter_id.clone());
     filter.user_id = Some(user_id.clone());
@@ -102,7 +106,9 @@ pub async fn delete(
     let filter = FILTERS
         .get_filter(&filter_id, &user_id)
         .await
-        .ok_or(FiltersError::Metadata("Filter does not exist"))?;
+        .ok_or(FiltersError::Metadata(
+            "Filter does not exist or user is not authorized",
+        ))?;
 
     PARSEABLE.metastore.delete_filter(&filter).await?;
     FILTERS.delete_filter(&filter_id).await;
