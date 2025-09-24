@@ -437,7 +437,7 @@ impl CallableTarget for SlackWebHook {
 
         let alert = match payload.alert_info.alert_state {
             AlertState::Triggered => {
-                serde_json::json!({ "text": payload.default_alert_string() })
+                serde_json::json!({ "text": payload.message })
             }
             AlertState::NotTriggered => {
                 serde_json::json!({ "text": payload.default_resolved_string() })
@@ -476,7 +476,7 @@ impl CallableTarget for OtherWebHook {
             .expect("Client can be constructed on this system");
 
         let alert = match payload.alert_info.alert_state {
-            AlertState::Triggered => payload.default_alert_string(),
+            AlertState::Triggered => payload.message.clone(),
             AlertState::NotTriggered => payload.default_resolved_string(),
             AlertState::Disabled => payload.default_disabled_string(),
         };

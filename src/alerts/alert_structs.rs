@@ -74,16 +74,6 @@ impl Context {
         }
     }
 
-    pub(crate) fn default_alert_string(&self) -> String {
-        format!(
-            "AlertName: {}\nTriggered TimeStamp: {}\nSeverity: {}\n{}",
-            self.alert_info.alert_name,
-            Utc::now().to_rfc3339(),
-            self.alert_info.severity,
-            self.message
-        )
-    }
-
     pub(crate) fn default_resolved_string(&self) -> String {
         format!("{} is now `not-triggered` ", self.alert_info.alert_name)
     }
