@@ -20,9 +20,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use once_cell::sync::Lazy;
-use prometheus::IntGaugeVec;
 use prometheus::core::Collector;
 use prometheus::proto::MetricFamily;
+use prometheus::{IntCounterVec, IntGaugeVec};
 use tracing::warn;
 
 use crate::metrics::{
@@ -136,6 +136,7 @@ pub async fn update_deleted_stats(
                 "parquet",
                 &manifest_date,
             ]);
+
             num_row += manifest.events_ingested as i64;
             ingestion_size += manifest.ingestion_size as i64;
             storage_size += manifest.storage_size as i64;
@@ -197,7 +198,7 @@ fn remove_label_values(lazy_static: &Lazy<IntGaugeVec>, event_labels: &[&str]) {
     }
 }
 
-fn delete_with_label_prefix(metrics: &IntGaugeVec, prefix: &[&str]) {
+fn delete_with_label_prefix(metrics: &IntCounterVec, prefix: &[&str]) {
     let families: Vec<MetricFamily> = metrics.collect().into_iter().collect();
     for metric in families.iter().flat_map(|m| m.get_metric()) {
         let label_map: HashMap<&str, &str> = metric

@@ -46,7 +46,7 @@ use tokio::task::JoinSet;
 use tracing::{error, warn};
 
 use crate::event::{DEFAULT_TIMESTAMP_KEY, commit_schema};
-use crate::metrics::QUERY_EXECUTE_TIME;
+use crate::metrics::{QUERY_EXECUTE_TIME, increment_query_calls_by_date};
 use crate::parseable::{PARSEABLE, StreamNotFound};
 use crate::query::error::ExecuteError;
 use crate::query::{CountsRequest, Query as LogicalQuery, execute};
@@ -122,6 +122,10 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
 
     user_auth_for_datasets(&permissions, &tables).await?;
     let time = Instant::now();
+
+    // Track billing metrics for query calls
+    let current_date = chrono::Utc::now().date_naive().to_string();
+    increment_query_calls_by_date(&current_date);
 
     // if the query is `select count(*) from <dataset>`
     // we use the `get_bin_density` method to get the count of records in the dataset
@@ -348,7 +352,9 @@ pub async fn get_counts(
 
     // does user have access to table?
     user_auth_for_datasets(&permissions, std::slice::from_ref(&body.stream)).await?;
-
+    // Track billing metrics for query calls
+    let current_date = chrono::Utc::now().date_naive().to_string();
+    increment_query_calls_by_date(&current_date);
     // if the user has given a sql query (counts call with filters applied), then use this flow
     // this could include filters or group by
     if body.conditions.is_some() {

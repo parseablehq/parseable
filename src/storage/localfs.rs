@@ -20,11 +20,11 @@ use std::{
     collections::HashSet,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Instant,
 };
 
 use async_trait::async_trait;
 use bytes::Bytes;
+use chrono::Utc;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use fs_extra::file::CopyOptions;
 use futures::{TryStreamExt, stream::FuturesUnordered};
@@ -38,7 +38,9 @@ use tokio_stream::wrappers::ReadDirStream;
 
 use crate::{
     handlers::http::users::USERS_ROOT_DIR,
-    metrics::storage::{StorageMetrics, azureblob::REQUEST_RESPONSE_TIME},
+    metrics::{
+        increment_files_scanned_in_object_store_calls_by_date, increment_object_store_calls_by_date,
+    },
     option::validation,
     parseable::LogStream,
     storage::SETTINGS_ROOT_DIRECTORY,
@@ -83,10 +85,6 @@ impl ObjectStorageProvider for FSConfig {
 
     fn get_endpoint(&self) -> String {
         self.root.to_str().unwrap().to_string()
-    }
-
-    fn register_store_metrics(&self, handler: &actix_web_prometheus::PrometheusMetrics) {
-        self.register_metrics(handler);
     }
 }
 
@@ -138,8 +136,6 @@ impl ObjectStorage for LocalFS {
         )))
     }
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
-        let time = Instant::now();
-
         let file_path;
 
         // this is for the `get_manifest()` function because inside a snapshot, we store the absolute path (without `/`) on linux based OS
@@ -163,33 +159,51 @@ impl ObjectStorage for LocalFS {
             };
         }
 
-        let res: Result<Bytes, ObjectStorageError> = match fs::read(file_path).await {
-            Ok(x) => Ok(x.into()),
-            Err(e) => match e.kind() {
-                std::io::ErrorKind::NotFound => {
+        let file_result = fs::read(file_path).await;
+        let res: Result<Bytes, ObjectStorageError> = match file_result {
+            Ok(x) => {
+                // Record single file accessed successfully
+                increment_files_scanned_in_object_store_calls_by_date(
+                    "localfs",
+                    "GET",
+                    1,
+                    &Utc::now().date_naive().to_string(),
+                );
+                increment_object_store_calls_by_date(
+                    "localfs",
+                    "GET",
+                    &Utc::now().date_naive().to_string(),
+                );
+                Ok(x.into())
+            }
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::NotFound {
                     Err(ObjectStorageError::NoSuchKey(path.to_string()))
+                } else {
+                    Err(ObjectStorageError::UnhandledError(Box::new(e)))
                 }
-                _ => Err(ObjectStorageError::UnhandledError(Box::new(e))),
-            },
+            }
         };
 
-        let status = if res.is_ok() { "200" } else { "400" };
-        let time = time.elapsed().as_secs_f64();
-        REQUEST_RESPONSE_TIME
-            .with_label_values(&["GET", status])
-            .observe(time);
         res
     }
 
     async fn get_ingestor_meta_file_paths(
         &self,
     ) -> Result<Vec<RelativePathBuf>, ObjectStorageError> {
-        let time = Instant::now();
-
         let mut path_arr = vec![];
-        let mut entries = fs::read_dir(&self.root).await?;
+        let mut files_scanned = 0u64;
+
+        let entries_result = fs::read_dir(&self.root).await;
+        let mut entries = match entries_result {
+            Ok(entries) => entries,
+            Err(err) => {
+                return Err(err.into());
+            }
+        };
 
         while let Some(entry) = entries.next_entry().await? {
+            files_scanned += 1;
             let flag = entry
                 .path()
                 .file_name()
@@ -206,11 +220,18 @@ impl ObjectStorage for LocalFS {
             }
         }
 
-        let time = time.elapsed().as_secs_f64();
-        REQUEST_RESPONSE_TIME
-            .with_label_values(&["GET", "200"]) // this might not be the right status code
-            .observe(time);
-
+        // Record total files scanned
+        increment_files_scanned_in_object_store_calls_by_date(
+            "localfs",
+            "LIST",
+            files_scanned,
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_object_store_calls_by_date(
+            "localfs",
+            "LIST",
+            &Utc::now().date_naive().to_string(),
+        );
         Ok(path_arr)
     }
 
@@ -220,16 +241,22 @@ impl ObjectStorage for LocalFS {
         base_path: Option<&RelativePath>,
         filter_func: Box<dyn Fn(String) -> bool + std::marker::Send + 'static>,
     ) -> Result<Vec<Bytes>, ObjectStorageError> {
-        let time = Instant::now();
-
         let prefix = if let Some(path) = base_path {
             path.to_path(&self.root)
         } else {
             self.root.clone()
         };
 
-        let mut entries = fs::read_dir(&prefix).await?;
+        let entries_result = fs::read_dir(&prefix).await;
+        let mut entries = match entries_result {
+            Ok(entries) => entries,
+            Err(err) => {
+                return Err(err.into());
+            }
+        };
+
         let mut res = Vec::new();
+        let mut files_scanned = 0;
         while let Some(entry) = entries.next_entry().await? {
             let path = entry
                 .path()
@@ -240,22 +267,48 @@ impl ObjectStorage for LocalFS {
                 .to_str()
                 .expect("file name is parseable to str")
                 .to_owned();
+
+            files_scanned += 1;
             let ingestor_file = filter_func(path);
 
             if !ingestor_file {
                 continue;
             }
 
-            let file = fs::read(entry.path()).await?;
-            res.push(file.into());
+            let file_result = fs::read(entry.path()).await;
+            match file_result {
+                Ok(file) => {
+                    // Record total files scanned
+                    increment_files_scanned_in_object_store_calls_by_date(
+                        "localfs",
+                        "GET",
+                        1,
+                        &Utc::now().date_naive().to_string(),
+                    );
+                    increment_object_store_calls_by_date(
+                        "localfs",
+                        "GET",
+                        &Utc::now().date_naive().to_string(),
+                    );
+                    res.push(file.into());
+                }
+                Err(err) => {
+                    return Err(err.into());
+                }
+            }
         }
 
-        // maybe change the return code
-        let status = if res.is_empty() { "200" } else { "400" };
-        let time = time.elapsed().as_secs_f64();
-        REQUEST_RESPONSE_TIME
-            .with_label_values(&["GET", status])
-            .observe(time);
+        increment_files_scanned_in_object_store_calls_by_date(
+            "localfs",
+            "LIST",
+            files_scanned as u64,
+            &Utc::now().date_naive().to_string(),
+        );
+        increment_object_store_calls_by_date(
+            "localfs",
+            "LIST",
+            &Utc::now().date_naive().to_string(),
+        );
 
         Ok(res)
     }
@@ -265,49 +318,109 @@ impl ObjectStorage for LocalFS {
         path: &RelativePath,
         resource: Bytes,
     ) -> Result<(), ObjectStorageError> {
-        let time = Instant::now();
-
         let path = self.path_in_root(path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
         }
-        let res = fs::write(path, resource).await;
 
-        let status = if res.is_ok() { "200" } else { "400" };
-        let time = time.elapsed().as_secs_f64();
-        REQUEST_RESPONSE_TIME
-            .with_label_values(&["PUT", status])
-            .observe(time);
+        let res = fs::write(path, resource).await;
+        if res.is_ok() {
+            // Record single file written successfully
+            increment_files_scanned_in_object_store_calls_by_date(
+                "localfs",
+                "PUT",
+                1,
+                &Utc::now().date_naive().to_string(),
+            );
+            increment_object_store_calls_by_date(
+                "localfs",
+                "PUT",
+                &Utc::now().date_naive().to_string(),
+            );
+        }
 
         res.map_err(Into::into)
     }
 
     async fn delete_prefix(&self, path: &RelativePath) -> Result<(), ObjectStorageError> {
         let path = self.path_in_root(path);
-        tokio::fs::remove_dir_all(path).await?;
+
+        let result = tokio::fs::remove_dir_all(path).await;
+        if result.is_ok() {
+            increment_object_store_calls_by_date(
+                "localfs",
+                "DELETE",
+                &Utc::now().date_naive().to_string(),
+            );
+        }
+        result?;
         Ok(())
     }
 
     async fn delete_object(&self, path: &RelativePath) -> Result<(), ObjectStorageError> {
         let path = self.path_in_root(path);
-        tokio::fs::remove_file(path).await?;
+
+        let result = tokio::fs::remove_file(path).await;
+        if result.is_ok() {
+            // Record single file deleted successfully
+            increment_files_scanned_in_object_store_calls_by_date(
+                "localfs",
+                "DELETE",
+                1,
+                &Utc::now().date_naive().to_string(),
+            );
+            increment_object_store_calls_by_date(
+                "localfs",
+                "DELETE",
+                &Utc::now().date_naive().to_string(),
+            );
+        }
+
+        result?;
         Ok(())
     }
 
     async fn check(&self) -> Result<(), ObjectStorageError> {
-        fs::create_dir_all(&self.root)
-            .await
-            .map_err(|e| ObjectStorageError::UnhandledError(e.into()))
+        let result = fs::create_dir_all(&self.root).await;
+        if result.is_ok() {
+            increment_object_store_calls_by_date(
+                "localfs",
+                "HEAD",
+                &Utc::now().date_naive().to_string(),
+            );
+        }
+
+        result.map_err(|e| ObjectStorageError::UnhandledError(e.into()))
     }
 
     async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
         let path = self.root.join(stream_name);
-        Ok(fs::remove_dir_all(path).await?)
+
+        let result = fs::remove_dir_all(path).await;
+        if result.is_ok() {
+            increment_object_store_calls_by_date(
+                "localfs",
+                "DELETE",
+                &Utc::now().date_naive().to_string(),
+            );
+        }
+
+        Ok(result?)
     }
 
     async fn try_delete_node_meta(&self, node_filename: String) -> Result<(), ObjectStorageError> {
         let path = self.root.join(node_filename);
-        Ok(fs::remove_file(path).await?)
+
+        let result = fs::remove_file(path).await;
+        if result.is_ok() {
+            increment_object_store_calls_by_date(
+                "localfs",
+                "DELETE",
+                &Utc::now().date_naive().to_string(),
+            );
+        }
+
+        Ok(result?)
     }
 
     async fn list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
@@ -318,7 +431,22 @@ impl ObjectStorage for LocalFS {
             ALERTS_ROOT_DIRECTORY,
             SETTINGS_ROOT_DIRECTORY,
         ];
-        let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
+
+        let result = fs::read_dir(&self.root).await;
+        let directories = match result {
+            Ok(read_dir) => {
+                increment_object_store_calls_by_date(
+                    "localfs",
+                    "LIST",
+                    &Utc::now().date_naive().to_string(),
+                );
+                ReadDirStream::new(read_dir)
+            }
+            Err(err) => {
+                return Err(err.into());
+            }
+        };
+
         let entries: Vec<DirEntry> = directories.try_collect().await?;
         let entries = entries
             .into_iter()
@@ -339,7 +467,22 @@ impl ObjectStorage for LocalFS {
             ALERTS_ROOT_DIRECTORY,
             SETTINGS_ROOT_DIRECTORY,
         ];
-        let directories = ReadDirStream::new(fs::read_dir(&self.root).await?);
+
+        let result = fs::read_dir(&self.root).await;
+        let directories = match result {
+            Ok(read_dir) => {
+                increment_object_store_calls_by_date(
+                    "localfs",
+                    "LIST",
+                    &Utc::now().date_naive().to_string(),
+                );
+                ReadDirStream::new(read_dir)
+            }
+            Err(err) => {
+                return Err(err.into());
+            }
+        };
+
         let entries: Vec<DirEntry> = directories.try_collect().await?;
         let entries = entries
             .into_iter()
@@ -354,7 +497,22 @@ impl ObjectStorage for LocalFS {
     }
 
     async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError> {
-        let dirs = ReadDirStream::new(fs::read_dir(&self.root).await?)
+        let result = fs::read_dir(&self.root).await;
+        let read_dir = match result {
+            Ok(read_dir) => {
+                increment_object_store_calls_by_date(
+                    "localfs",
+                    "LIST",
+                    &Utc::now().date_naive().to_string(),
+                );
+                read_dir
+            }
+            Err(err) => {
+                return Err(err.into());
+            }
+        };
+
+        let dirs = ReadDirStream::new(read_dir)
             .try_collect::<Vec<DirEntry>>()
             .await?
             .into_iter()
@@ -375,7 +533,16 @@ impl ObjectStorage for LocalFS {
         relative_path: &RelativePath,
     ) -> Result<Vec<String>, ObjectStorageError> {
         let root = self.root.join(relative_path.as_str());
-        let dirs = ReadDirStream::new(fs::read_dir(root).await?)
+
+        let result = fs::read_dir(root).await;
+        let read_dir = match result {
+            Ok(read_dir) => read_dir,
+            Err(err) => {
+                return Err(err.into());
+            }
+        };
+
+        let dirs = ReadDirStream::new(read_dir)
             .try_collect::<Vec<DirEntry>>()
             .await?
             .into_iter()
@@ -393,7 +560,23 @@ impl ObjectStorage for LocalFS {
 
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError> {
         let path = self.root.join(stream_name);
-        let directories = ReadDirStream::new(fs::read_dir(&path).await?);
+
+        let result = fs::read_dir(&path).await;
+        let read_dir = match result {
+            Ok(read_dir) => {
+                increment_object_store_calls_by_date(
+                    "localfs",
+                    "LIST",
+                    &Utc::now().date_naive().to_string(),
+                );
+                read_dir
+            }
+            Err(err) => {
+                return Err(err.into());
+            }
+        };
+
+        let directories = ReadDirStream::new(read_dir);
         let entries: Vec<DirEntry> = directories.try_collect().await?;
         let entries = entries.into_iter().map(dir_name);
         let dates: Vec<_> = FuturesUnordered::from_iter(entries).try_collect().await?;
@@ -448,8 +631,19 @@ impl ObjectStorage for LocalFS {
         if let Some(path) = to_path.parent() {
             fs::create_dir_all(path).await?;
         }
-        let _ = fs_extra::file::copy(path, to_path, &op)?;
-        Ok(())
+
+        let result = fs_extra::file::copy(path, to_path, &op);
+        match result {
+            Ok(_) => {
+                increment_object_store_calls_by_date(
+                    "localfs",
+                    "PUT",
+                    &Utc::now().date_naive().to_string(),
+                );
+                Ok(())
+            }
+            Err(err) => Err(err.into()),
+        }
     }
 
     fn absolute_url(&self, prefix: &RelativePath) -> object_store::path::Path {

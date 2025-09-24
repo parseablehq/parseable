@@ -20,7 +20,6 @@ use std::{any::Any, collections::HashMap, ops::Bound, sync::Arc};
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef, SortOptions};
-use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, TimeDelta, Timelike, Utc};
 use datafusion::{
     catalog::{SchemaProvider, Session},
@@ -45,21 +44,22 @@ use datafusion::{
     prelude::Expr,
     scalar::ScalarValue,
 };
-use futures_util::{StreamExt, TryFutureExt, TryStreamExt, stream::FuturesOrdered};
+use futures_util::TryFutureExt;
 use itertools::Itertools;
-use object_store::{ObjectStore, path::Path};
-use url::Url;
 
 use crate::{
     catalog::{
         ManifestFile, Snapshot as CatalogSnapshot,
         column::{Column, TypedStatistics},
-        manifest::{File, Manifest},
+        manifest::File,
         snapshot::{ManifestItem, Snapshot},
     },
     event::DEFAULT_TIMESTAMP_KEY,
     hottier::HotTierManager,
-    metrics::QUERY_CACHE_HIT,
+    metrics::{
+        QUERY_CACHE_HIT, increment_bytes_scanned_in_query_by_date,
+        increment_files_scanned_in_query_by_date,
+    },
     option::Mode,
     parseable::{PARSEABLE, STREAM_EXISTS},
     storage::{ObjectStorage, ObjectStoreFormat},
@@ -91,7 +91,6 @@ impl SchemaProvider for GlobalSchemaProvider {
                     .expect(STREAM_EXISTS)
                     .get_schema(),
                 stream: name.to_owned(),
-                url: self.storage.store_url(),
             })))
         } else {
             Ok(None)
@@ -108,8 +107,6 @@ struct StandardTableProvider {
     schema: SchemaRef,
     // prefix under which to find snapshot
     stream: String,
-    // url to find right instance of object store
-    url: Url,
 }
 
 impl StandardTableProvider {
@@ -276,7 +273,6 @@ impl StandardTableProvider {
         &self,
         execution_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
         glob_storage: Arc<dyn ObjectStorage>,
-        object_store: Arc<dyn ObjectStore>,
         time_filters: &[PartialTimeFilter],
         state: &dyn Session,
         projection: Option<&Vec<usize>>,
@@ -285,7 +281,7 @@ impl StandardTableProvider {
         time_partition: Option<String>,
     ) -> Result<(), DataFusionError> {
         ListingTableBuilder::new(self.stream.to_owned())
-            .populate_via_listing(glob_storage.clone(), object_store, time_filters)
+            .populate_via_listing(glob_storage.clone(), time_filters)
             .and_then(|builder| async {
                 let table = builder.build(
                     self.schema.clone(),
@@ -327,10 +323,12 @@ impl StandardTableProvider {
         &self,
         manifest_files: Vec<File>,
     ) -> (Vec<Vec<PartitionedFile>>, datafusion::common::Statistics) {
-        let target_partition = num_cpus::get();
+        let target_partition: usize = num_cpus::get();
         let mut partitioned_files = Vec::from_iter((0..target_partition).map(|_| Vec::new()));
         let mut column_statistics = HashMap::<String, Option<TypedStatistics>>::new();
         let mut count = 0;
+        let mut total_file_size = 0u64;
+        let mut file_count = 0u64;
         for (index, file) in manifest_files
             .into_iter()
             .enumerate()
@@ -341,8 +339,13 @@ impl StandardTableProvider {
                 mut file_path,
                 num_rows,
                 columns,
+                file_size,
                 ..
             } = file;
+
+            // Track billing metrics for files scanned in query
+            file_count += 1;
+            total_file_size += file_size;
 
             // object_store::path::Path doesn't automatically deal with Windows path separators
             // to do that, we are using from_absolute_path() which takes into consideration the underlying filesystem
@@ -399,6 +402,11 @@ impl StandardTableProvider {
             total_byte_size: Precision::Absent,
             column_statistics: statistics,
         };
+
+        // Track billing metrics for query scan
+        let current_date = chrono::Utc::now().date_naive().to_string();
+        increment_files_scanned_in_query_by_date(file_count, &current_date);
+        increment_bytes_scanned_in_query_by_date(total_file_size, &current_date);
 
         (partitioned_files, statistics)
     }
@@ -487,11 +495,6 @@ impl TableProvider for StandardTableProvider {
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut execution_plans = vec![];
-        let object_store = state
-            .runtime_env()
-            .object_store_registry
-            .get_store(&self.url)
-            .unwrap();
         let glob_storage = PARSEABLE.storage.get_object_store();
 
         let object_store_format: ObjectStoreFormat = serde_json::from_slice(
@@ -548,7 +551,6 @@ impl TableProvider for StandardTableProvider {
                 self.legacy_listing_table(
                     &mut execution_plans,
                     glob_storage.clone(),
-                    object_store.clone(),
                     &listing_time_filter,
                     state,
                     projection,
@@ -857,32 +859,13 @@ fn extract_timestamp_bound(
             DateTime::from_timestamp_nanos(*value).naive_utc(),
         )),
         ScalarValue::Utf8(Some(str_value)) if is_time_partition => {
-            Some((binexpr.op, str_value.parse::<NaiveDateTime>().unwrap()))
+            match str_value.parse::<NaiveDateTime>() {
+                Ok(dt) => Some((binexpr.op, dt)),
+                Err(_) => None,
+            }
         }
         _ => None,
     }
-}
-
-pub async fn collect_manifest_files(
-    storage: Arc<dyn ObjectStore>,
-    manifest_urls: Vec<String>,
-) -> Result<Vec<Manifest>, object_store::Error> {
-    let tasks = manifest_urls.into_iter().map(|path| {
-        let path = Path::parse(path).unwrap();
-        let storage = Arc::clone(&storage);
-        async move { storage.get(&path).await }
-    });
-
-    let resp = FuturesOrdered::from_iter(tasks)
-        .and_then(|res| res.bytes())
-        .collect::<Vec<object_store::Result<Bytes>>>()
-        .await;
-
-    Ok(resp
-        .into_iter()
-        .flat_map(|res| res.ok())
-        .map(|bytes| serde_json::from_slice(&bytes).unwrap())
-        .collect())
 }
 
 // Extract start time and end time from filter predicate
