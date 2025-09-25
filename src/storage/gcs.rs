@@ -494,17 +494,6 @@ impl ObjectStorage for Gcs {
                         .map_err(ObjectStorageError::PathError)?,
                 )
                 .await?;
-            increment_files_scanned_in_object_store_calls_by_date(
-                "GET",
-                1,
-                &Utc::now().date_naive().to_string(),
-            );
-            increment_bytes_scanned_in_object_store_calls_by_date(
-                "GET",
-                byts.len() as u64,
-                &Utc::now().date_naive().to_string(),
-            );
-            increment_object_store_calls_by_date("GET", &Utc::now().date_naive().to_string());
             res.push(byts);
         }
 

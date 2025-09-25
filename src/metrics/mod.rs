@@ -317,7 +317,7 @@ pub static TOTAL_INPUT_LLM_TOKENS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
             "Total input LLM tokens used by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["model", "date"],
+        &["provider", "model", "date"],
     )
     .expect("metric can be created")
 });
