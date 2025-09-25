@@ -322,13 +322,7 @@ impl Gcs {
         let mut file = OpenOptions::new().read(true).open(path).await?;
         let location = &to_object_store_path(key);
 
-        // Track multipart initiation
         let async_writer = self.client.put_multipart(location).await;
-        increment_object_store_calls_by_date(
-            "gcs",
-            "PUT_MULTIPART",
-            &Utc::now().date_naive().to_string(),
-        );
         let mut async_writer = match async_writer {
             Ok(writer) => writer,
             Err(err) => {
@@ -387,14 +381,14 @@ impl Gcs {
 
                 // Track individual part upload
                 let result = async_writer.put_part(part_data.into()).await;
+                if result.is_err() {
+                    return Err(result.err().unwrap().into());
+                }
                 increment_object_store_calls_by_date(
                     "gcs",
                     "PUT_MULTIPART",
                     &Utc::now().date_naive().to_string(),
                 );
-                if result.is_err() {
-                    return Err(result.err().unwrap().into());
-                }
             }
 
             // Track multipart completion
