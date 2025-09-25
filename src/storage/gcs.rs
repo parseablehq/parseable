@@ -28,7 +28,9 @@ use std::{
 
 use crate::{
     metrics::{
-        increment_files_scanned_in_object_store_calls_by_date, increment_object_store_calls_by_date,
+        increment_bytes_scanned_in_object_store_calls_by_date,
+        increment_files_scanned_in_object_store_calls_by_date,
+        increment_object_store_calls_by_date,
     },
     parseable::LogStream,
 };
@@ -177,14 +179,18 @@ pub struct Gcs {
 impl Gcs {
     async fn _get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         let resp = self.client.get(&to_object_store_path(path)).await;
-        increment_object_store_calls_by_date("gcs", "GET", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("GET", &Utc::now().date_naive().to_string());
         match resp {
             Ok(resp) => {
                 let body: Bytes = resp.bytes().await?;
                 increment_files_scanned_in_object_store_calls_by_date(
-                    "gcs",
                     "GET",
                     1,
+                    &Utc::now().date_naive().to_string(),
+                );
+                increment_bytes_scanned_in_object_store_calls_by_date(
+                    "GET",
+                    body.len() as u64,
                     &Utc::now().date_naive().to_string(),
                 );
                 Ok(body)
@@ -199,11 +205,10 @@ impl Gcs {
         resource: PutPayload,
     ) -> Result<(), ObjectStorageError> {
         let resp = self.client.put(&to_object_store_path(path), resource).await;
-        increment_object_store_calls_by_date("gcs", "PUT", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("PUT", &Utc::now().date_naive().to_string());
         match resp {
             Ok(_) => {
                 increment_files_scanned_in_object_store_calls_by_date(
-                    "gcs",
                     "PUT",
                     1,
                     &Utc::now().date_naive().to_string(),
@@ -219,7 +224,7 @@ impl Gcs {
         let files_deleted = Arc::new(AtomicU64::new(0));
         // Track LIST operation
         let object_stream = self.client.list(Some(&(key.into())));
-        increment_object_store_calls_by_date("gcs", "LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
         object_stream
             .for_each_concurrent(None, |x| async {
                 files_scanned.fetch_add(1, Ordering::Relaxed);
@@ -229,7 +234,6 @@ impl Gcs {
                         files_deleted.fetch_add(1, Ordering::Relaxed);
                         let delete_resp = self.client.delete(&obj.location).await;
                         increment_object_store_calls_by_date(
-                            "gcs",
                             "DELETE",
                             &Utc::now().date_naive().to_string(),
                         );
@@ -248,13 +252,11 @@ impl Gcs {
             .await;
 
         increment_files_scanned_in_object_store_calls_by_date(
-            "gcs",
             "LIST",
             files_scanned.load(Ordering::Relaxed),
             &Utc::now().date_naive().to_string(),
         );
         increment_files_scanned_in_object_store_calls_by_date(
-            "gcs",
             "DELETE",
             files_deleted.load(Ordering::Relaxed),
             &Utc::now().date_naive().to_string(),
@@ -267,7 +269,7 @@ impl Gcs {
             .client
             .list_with_delimiter(Some(&(stream.into())))
             .await;
-        increment_object_store_calls_by_date("gcs", "LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
 
         let resp = match resp {
             Ok(resp) => resp,
@@ -279,7 +281,6 @@ impl Gcs {
         let common_prefixes = resp.common_prefixes;
 
         increment_files_scanned_in_object_store_calls_by_date(
-            "gcs",
             "LIST",
             common_prefixes.len() as u64,
             &Utc::now().date_naive().to_string(),
@@ -299,11 +300,10 @@ impl Gcs {
         let bytes = tokio::fs::read(path).await?;
 
         let result = self.client.put(&key.into(), bytes.into()).await;
-        increment_object_store_calls_by_date("gcs", "PUT", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("PUT", &Utc::now().date_naive().to_string());
         match result {
             Ok(_) => {
                 increment_files_scanned_in_object_store_calls_by_date(
-                    "gcs",
                     "PUT",
                     1,
                     &Utc::now().date_naive().to_string(),
@@ -338,15 +338,10 @@ impl Gcs {
 
             // Track single PUT operation for small files
             let result = self.client.put(location, data.into()).await;
-            increment_object_store_calls_by_date(
-                "gcs",
-                "PUT",
-                &Utc::now().date_naive().to_string(),
-            );
+            increment_object_store_calls_by_date("PUT", &Utc::now().date_naive().to_string());
             match result {
                 Ok(_) => {
                     increment_files_scanned_in_object_store_calls_by_date(
-                        "gcs",
                         "PUT",
                         1,
                         &Utc::now().date_naive().to_string(),
@@ -385,7 +380,6 @@ impl Gcs {
                     return Err(result.err().unwrap().into());
                 }
                 increment_object_store_calls_by_date(
-                    "gcs",
                     "PUT_MULTIPART",
                     &Utc::now().date_naive().to_string(),
                 );
@@ -416,11 +410,10 @@ impl ObjectStorage for Gcs {
         let path = &to_object_store_path(path);
 
         let meta = self.client.head(path).await;
-        increment_object_store_calls_by_date("gcs", "HEAD", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("HEAD", &Utc::now().date_naive().to_string());
         let meta = match meta {
             Ok(meta) => {
                 increment_files_scanned_in_object_store_calls_by_date(
-                    "gcs",
                     "HEAD",
                     1,
                     &Utc::now().date_naive().to_string(),
@@ -447,10 +440,9 @@ impl ObjectStorage for Gcs {
 
     async fn head(&self, path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
         let result = self.client.head(&to_object_store_path(path)).await;
-        increment_object_store_calls_by_date("gcs", "HEAD", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("HEAD", &Utc::now().date_naive().to_string());
         if result.is_ok() {
             increment_files_scanned_in_object_store_calls_by_date(
-                "gcs",
                 "HEAD",
                 1,
                 &Utc::now().date_naive().to_string(),
@@ -503,27 +495,26 @@ impl ObjectStorage for Gcs {
                 )
                 .await?;
             increment_files_scanned_in_object_store_calls_by_date(
-                "gcs",
                 "GET",
                 1,
                 &Utc::now().date_naive().to_string(),
             );
-            increment_object_store_calls_by_date(
-                "gcs",
+            increment_bytes_scanned_in_object_store_calls_by_date(
                 "GET",
+                byts.len() as u64,
                 &Utc::now().date_naive().to_string(),
             );
+            increment_object_store_calls_by_date("GET", &Utc::now().date_naive().to_string());
             res.push(byts);
         }
 
         // Record total files scanned
         increment_files_scanned_in_object_store_calls_by_date(
-            "gcs",
             "LIST",
             files_scanned as u64,
             &Utc::now().date_naive().to_string(),
         );
-        increment_object_store_calls_by_date("gcs", "LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
         Ok(res)
     }
 
@@ -534,7 +525,7 @@ impl ObjectStorage for Gcs {
         let mut files_scanned = 0;
 
         let mut object_stream = self.client.list(Some(&self.root));
-        increment_object_store_calls_by_date("gcs", "LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
 
         while let Some(meta_result) = object_stream.next().await {
             let meta = match meta_result {
@@ -553,7 +544,6 @@ impl ObjectStorage for Gcs {
         }
         // Record total files scanned
         increment_files_scanned_in_object_store_calls_by_date(
-            "gcs",
             "LIST",
             files_scanned as u64,
             &Utc::now().date_naive().to_string(),
@@ -581,10 +571,9 @@ impl ObjectStorage for Gcs {
 
     async fn delete_object(&self, path: &RelativePath) -> Result<(), ObjectStorageError> {
         let result = self.client.delete(&to_object_store_path(path)).await;
-        increment_object_store_calls_by_date("gcs", "DELETE", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("DELETE", &Utc::now().date_naive().to_string());
         if result.is_ok() {
             increment_files_scanned_in_object_store_calls_by_date(
-                "gcs",
                 "DELETE",
                 1,
                 &Utc::now().date_naive().to_string(),
@@ -599,11 +588,10 @@ impl ObjectStorage for Gcs {
             .client
             .head(&to_object_store_path(&parseable_json_path()))
             .await;
-        increment_object_store_calls_by_date("gcs", "HEAD", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("HEAD", &Utc::now().date_naive().to_string());
 
         if result.is_ok() {
             increment_files_scanned_in_object_store_calls_by_date(
-                "gcs",
                 "HEAD",
                 1,
                 &Utc::now().date_naive().to_string(),
@@ -623,11 +611,10 @@ impl ObjectStorage for Gcs {
         let file = RelativePathBuf::from(&node_filename);
 
         let result = self.client.delete(&to_object_store_path(&file)).await;
-        increment_object_store_calls_by_date("gcs", "DELETE", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("DELETE", &Utc::now().date_naive().to_string());
         match result {
             Ok(_) => {
                 increment_files_scanned_in_object_store_calls_by_date(
-                    "gcs",
                     "DELETE",
                     1,
                     &Utc::now().date_naive().to_string(),
@@ -649,12 +636,11 @@ impl ObjectStorage for Gcs {
         let resp = self.client.list_with_delimiter(None).await?;
         let common_prefixes = resp.common_prefixes; // get all dirs
         increment_files_scanned_in_object_store_calls_by_date(
-            "gcs",
             "LIST",
             common_prefixes.len() as u64,
             &Utc::now().date_naive().to_string(),
         );
-        increment_object_store_calls_by_date("gcs", "LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
         // return prefixes at the root level
         let dirs: HashSet<_> = common_prefixes
             .iter()
@@ -669,17 +655,12 @@ impl ObjectStorage for Gcs {
             let key = format!("{dir}/{STREAM_METADATA_FILE_NAME}");
             let task = async move {
                 let result = self.client.head(&StorePath::from(key)).await;
-                increment_object_store_calls_by_date(
-                    "gcs",
-                    "HEAD",
-                    &Utc::now().date_naive().to_string(),
-                );
+                increment_object_store_calls_by_date("HEAD", &Utc::now().date_naive().to_string());
                 result.map(|_| ())
             };
             stream_json_check.push(task);
         }
         increment_files_scanned_in_object_store_calls_by_date(
-            "gcs",
             "HEAD",
             dirs.len() as u64,
             &Utc::now().date_naive().to_string(),
@@ -703,12 +684,11 @@ impl ObjectStorage for Gcs {
         let pre = object_store::path::Path::from(format!("{}/{}/", stream_name, date));
         let resp = self.client.list_with_delimiter(Some(&pre)).await?;
         increment_files_scanned_in_object_store_calls_by_date(
-            "gcs",
             "LIST",
             resp.common_prefixes.len() as u64,
             &Utc::now().date_naive().to_string(),
         );
-        increment_object_store_calls_by_date("gcs", "LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
 
         let hours: Vec<String> = resp
             .common_prefixes
@@ -739,12 +719,11 @@ impl ObjectStorage for Gcs {
         let pre = object_store::path::Path::from(format!("{}/{}/{}/", stream_name, date, hour));
         let resp = self.client.list_with_delimiter(Some(&pre)).await?;
         increment_files_scanned_in_object_store_calls_by_date(
-            "gcs",
             "LIST",
             resp.common_prefixes.len() as u64,
             &Utc::now().date_naive().to_string(),
         );
-        increment_object_store_calls_by_date("gcs", "LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
         let minutes: Vec<String> = resp
             .common_prefixes
             .iter()
@@ -792,11 +771,10 @@ impl ObjectStorage for Gcs {
         let pre = object_store::path::Path::from("/");
 
         let resp = self.client.list_with_delimiter(Some(&pre)).await;
-        increment_object_store_calls_by_date("gcs", "LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
         let resp = match resp {
             Ok(resp) => {
                 increment_files_scanned_in_object_store_calls_by_date(
-                    "gcs",
                     "LIST",
                     resp.common_prefixes.len() as u64,
                     &Utc::now().date_naive().to_string(),
@@ -824,11 +802,10 @@ impl ObjectStorage for Gcs {
         let prefix = object_store::path::Path::from(relative_path.as_str());
 
         let resp = self.client.list_with_delimiter(Some(&prefix)).await;
-        increment_object_store_calls_by_date("gcs", "LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
         let resp = match resp {
             Ok(resp) => {
                 increment_files_scanned_in_object_store_calls_by_date(
-                    "gcs",
                     "LIST",
                     resp.common_prefixes.len() as u64,
                     &Utc::now().date_naive().to_string(),

@@ -51,7 +51,9 @@ use url::Url;
 
 use crate::{
     metrics::{
-        increment_files_scanned_in_object_store_calls_by_date, increment_object_store_calls_by_date,
+        increment_bytes_scanned_in_object_store_calls_by_date,
+        increment_files_scanned_in_object_store_calls_by_date,
+        increment_object_store_calls_by_date,
     },
     parseable::LogStream,
 };
@@ -212,19 +214,19 @@ pub struct BlobStore {
 impl BlobStore {
     async fn _get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         let resp = self.client.get(&to_object_store_path(path)).await;
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "GET",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("GET", &Utc::now().date_naive().to_string());
 
         match resp {
             Ok(resp) => {
                 let body: Bytes = resp.bytes().await?;
                 increment_files_scanned_in_object_store_calls_by_date(
-                    "azure_blob",
                     "GET",
                     1,
+                    &Utc::now().date_naive().to_string(),
+                );
+                increment_bytes_scanned_in_object_store_calls_by_date(
+                    "GET",
+                    body.len() as u64,
                     &Utc::now().date_naive().to_string(),
                 );
                 Ok(body)
@@ -239,15 +241,10 @@ impl BlobStore {
         resource: PutPayload,
     ) -> Result<(), ObjectStorageError> {
         let resp = self.client.put(&to_object_store_path(path), resource).await;
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "PUT",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("PUT", &Utc::now().date_naive().to_string());
         match resp {
             Ok(_) => {
                 increment_files_scanned_in_object_store_calls_by_date(
-                    "azure_blob",
                     "PUT",
                     1,
                     &Utc::now().date_naive().to_string(),
@@ -262,11 +259,7 @@ impl BlobStore {
         let files_scanned = Arc::new(AtomicU64::new(0));
         let files_deleted = Arc::new(AtomicU64::new(0));
         let object_stream = self.client.list(Some(&(key.into())));
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "LIST",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
 
         object_stream
             .for_each_concurrent(None, |x| async {
@@ -277,7 +270,6 @@ impl BlobStore {
                         files_deleted.fetch_add(1, Ordering::Relaxed);
                         let delete_resp = self.client.delete(&obj.location).await;
                         increment_object_store_calls_by_date(
-                            "azure_blob",
                             "DELETE",
                             &Utc::now().date_naive().to_string(),
                         );
@@ -296,13 +288,11 @@ impl BlobStore {
             .await;
 
         increment_files_scanned_in_object_store_calls_by_date(
-            "azure_blob",
             "LIST",
             files_scanned.load(Ordering::Relaxed),
             &Utc::now().date_naive().to_string(),
         );
         increment_files_scanned_in_object_store_calls_by_date(
-            "azure_blob",
             "DELETE",
             files_deleted.load(Ordering::Relaxed),
             &Utc::now().date_naive().to_string(),
@@ -315,11 +305,7 @@ impl BlobStore {
             .client
             .list_with_delimiter(Some(&(stream.into())))
             .await;
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "LIST",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
 
         let resp = match resp {
             Ok(resp) => resp,
@@ -331,7 +317,6 @@ impl BlobStore {
         let common_prefixes = resp.common_prefixes;
 
         increment_files_scanned_in_object_store_calls_by_date(
-            "azure_blob",
             "LIST",
             common_prefixes.len() as u64,
             &Utc::now().date_naive().to_string(),
@@ -351,15 +336,10 @@ impl BlobStore {
         let bytes = tokio::fs::read(path).await?;
 
         let result = self.client.put(&key.into(), bytes.into()).await;
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "PUT",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("PUT", &Utc::now().date_naive().to_string());
         match result {
             Ok(_) => {
                 increment_files_scanned_in_object_store_calls_by_date(
-                    "azure_blob",
                     "PUT",
                     1,
                     &Utc::now().date_naive().to_string(),
@@ -392,16 +372,11 @@ impl BlobStore {
             let mut data = Vec::new();
             file.read_to_end(&mut data).await?;
             let result = self.client.put(location, data.into()).await;
-            increment_object_store_calls_by_date(
-                "azure_blob",
-                "PUT",
-                &Utc::now().date_naive().to_string(),
-            );
+            increment_object_store_calls_by_date("PUT", &Utc::now().date_naive().to_string());
 
             match result {
                 Ok(_) => {
                     increment_files_scanned_in_object_store_calls_by_date(
-                        "azure_blob",
                         "PUT",
                         1,
                         &Utc::now().date_naive().to_string(),
@@ -443,7 +418,6 @@ impl BlobStore {
                     return Err(result.err().unwrap().into());
                 }
                 increment_object_store_calls_by_date(
-                    "azure_blob",
                     "PUT_MULTIPART",
                     &Utc::now().date_naive().to_string(),
                 );
@@ -485,14 +459,9 @@ impl ObjectStorage for BlobStore {
 
     async fn head(&self, path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
         let result = self.client.head(&to_object_store_path(path)).await;
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "HEAD",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("HEAD", &Utc::now().date_naive().to_string());
         if result.is_ok() {
             increment_files_scanned_in_object_store_calls_by_date(
-                "azure_blob",
                 "HEAD",
                 1,
                 &Utc::now().date_naive().to_string(),
@@ -545,31 +514,26 @@ impl ObjectStorage for BlobStore {
                 )
                 .await?;
             increment_files_scanned_in_object_store_calls_by_date(
-                "azure_blob",
                 "GET",
                 1,
                 &Utc::now().date_naive().to_string(),
             );
-            increment_object_store_calls_by_date(
-                "azure_blob",
+            increment_bytes_scanned_in_object_store_calls_by_date(
                 "GET",
+                byts.len() as u64,
                 &Utc::now().date_naive().to_string(),
             );
+            increment_object_store_calls_by_date("GET", &Utc::now().date_naive().to_string());
             res.push(byts);
         }
 
         // Record total files scanned
         increment_files_scanned_in_object_store_calls_by_date(
-            "azure_blob",
             "LIST",
             files_scanned as u64,
             &Utc::now().date_naive().to_string(),
         );
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "LIST",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
         Ok(res)
     }
 
@@ -580,11 +544,7 @@ impl ObjectStorage for BlobStore {
         let mut files_scanned = 0;
 
         let mut object_stream = self.client.list(Some(&self.root));
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "LIST",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
 
         while let Some(meta_result) = object_stream.next().await {
             let meta = match meta_result {
@@ -603,7 +563,6 @@ impl ObjectStorage for BlobStore {
         }
         // Record total files scanned
         increment_files_scanned_in_object_store_calls_by_date(
-            "azure_blob",
             "LIST",
             files_scanned as u64,
             &Utc::now().date_naive().to_string(),
@@ -631,14 +590,9 @@ impl ObjectStorage for BlobStore {
 
     async fn delete_object(&self, path: &RelativePath) -> Result<(), ObjectStorageError> {
         let result = self.client.delete(&to_object_store_path(path)).await;
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "DELETE",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("DELETE", &Utc::now().date_naive().to_string());
         if result.is_ok() {
             increment_files_scanned_in_object_store_calls_by_date(
-                "azure_blob",
                 "DELETE",
                 1,
                 &Utc::now().date_naive().to_string(),
@@ -653,14 +607,9 @@ impl ObjectStorage for BlobStore {
             .client
             .head(&to_object_store_path(&parseable_json_path()))
             .await;
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "HEAD",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("HEAD", &Utc::now().date_naive().to_string());
         if result.is_ok() {
             increment_files_scanned_in_object_store_calls_by_date(
-                "azure_blob",
                 "HEAD",
                 1,
                 &Utc::now().date_naive().to_string(),
@@ -680,15 +629,10 @@ impl ObjectStorage for BlobStore {
         let file = RelativePathBuf::from(&node_filename);
 
         let result = self.client.delete(&to_object_store_path(&file)).await;
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "DELETE",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("DELETE", &Utc::now().date_naive().to_string());
         match result {
             Ok(_) => {
                 increment_files_scanned_in_object_store_calls_by_date(
-                    "azure_blob",
                     "DELETE",
                     1,
                     &Utc::now().date_naive().to_string(),
@@ -711,16 +655,11 @@ impl ObjectStorage for BlobStore {
 
         let common_prefixes = resp.common_prefixes; // get all dirs
         increment_files_scanned_in_object_store_calls_by_date(
-            "azure_blob",
             "LIST",
             common_prefixes.len() as u64,
             &Utc::now().date_naive().to_string(),
         );
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "LIST",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
         // return prefixes at the root level
         let dirs: HashSet<_> = common_prefixes
             .iter()
@@ -735,17 +674,12 @@ impl ObjectStorage for BlobStore {
             let key = format!("{dir}/{STREAM_METADATA_FILE_NAME}");
             let task = async move {
                 let result = self.client.head(&StorePath::from(key)).await;
-                increment_object_store_calls_by_date(
-                    "azure_blob",
-                    "HEAD",
-                    &Utc::now().date_naive().to_string(),
-                );
+                increment_object_store_calls_by_date("HEAD", &Utc::now().date_naive().to_string());
                 result.map(|_| ())
             };
             stream_json_check.push(task);
         }
         increment_files_scanned_in_object_store_calls_by_date(
-            "azure_blob",
             "HEAD",
             dirs.len() as u64,
             &Utc::now().date_naive().to_string(),
@@ -769,16 +703,11 @@ impl ObjectStorage for BlobStore {
         let pre = object_store::path::Path::from(format!("{}/{}/", stream_name, date));
         let resp = self.client.list_with_delimiter(Some(&pre)).await?;
         increment_files_scanned_in_object_store_calls_by_date(
-            "azure_blob",
             "LIST",
             resp.common_prefixes.len() as u64,
             &Utc::now().date_naive().to_string(),
         );
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "LIST",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
 
         let hours: Vec<String> = resp
             .common_prefixes
@@ -809,16 +738,11 @@ impl ObjectStorage for BlobStore {
         let pre = object_store::path::Path::from(format!("{}/{}/{}/", stream_name, date, hour));
         let resp = self.client.list_with_delimiter(Some(&pre)).await?;
         increment_files_scanned_in_object_store_calls_by_date(
-            "azure_blob",
             "LIST",
             resp.common_prefixes.len() as u64,
             &Utc::now().date_naive().to_string(),
         );
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "LIST",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
         let minutes: Vec<String> = resp
             .common_prefixes
             .iter()
@@ -870,15 +794,10 @@ impl ObjectStorage for BlobStore {
         let pre = object_store::path::Path::from("/");
 
         let resp = self.client.list_with_delimiter(Some(&pre)).await;
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "LIST",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
         let resp = match resp {
             Ok(resp) => {
                 increment_files_scanned_in_object_store_calls_by_date(
-                    "azure_blob",
                     "LIST",
                     resp.common_prefixes.len() as u64,
                     &Utc::now().date_naive().to_string(),
@@ -905,15 +824,10 @@ impl ObjectStorage for BlobStore {
     ) -> Result<Vec<String>, ObjectStorageError> {
         let prefix = object_store::path::Path::from(relative_path.as_str());
         let resp = self.client.list_with_delimiter(Some(&prefix)).await;
-        increment_object_store_calls_by_date(
-            "azure_blob",
-            "LIST",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
         let resp = match resp {
             Ok(resp) => {
                 increment_files_scanned_in_object_store_calls_by_date(
-                    "azure_blob",
                     "LIST",
                     resp.common_prefixes.len() as u64,
                     &Utc::now().date_naive().to_string(),

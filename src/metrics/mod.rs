@@ -279,7 +279,7 @@ pub static TOTAL_OBJECT_STORE_CALLS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| 
             "Total object store calls by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["provider", "method", "date"],
+        &["method", "date"],
     )
     .expect("metric can be created")
 });
@@ -292,7 +292,20 @@ pub static TOTAL_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE: Lazy<IntCounterVec
                 "Total files scanned in object store calls by date",
             )
             .namespace(METRICS_NAMESPACE),
-            &["provider", "method", "date"],
+            &["method", "date"],
+        )
+        .expect("metric can be created")
+    });
+
+pub static TOTAL_BYTES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE: Lazy<IntCounterVec> =
+    Lazy::new(|| {
+        IntCounterVec::new(
+            Opts::new(
+                "total_bytes_scanned_in_object_store_calls_by_date",
+                "Total bytes scanned in object store calls by date",
+            )
+            .namespace(METRICS_NAMESPACE),
+            &["method", "date"],
         )
         .expect("metric can be created")
     });
@@ -304,7 +317,7 @@ pub static TOTAL_INPUT_LLM_TOKENS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
             "Total input LLM tokens used by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["provider", "model", "date"],
+        &["model", "date"],
     )
     .expect("metric can be created")
 });
@@ -407,6 +420,11 @@ fn custom_metrics(registry: &Registry) {
     registry
         .register(Box::new(
             TOTAL_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE.clone(),
+        ))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(
+            TOTAL_BYTES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE.clone(),
         ))
         .expect("metric can be registered");
     registry
@@ -518,21 +536,22 @@ pub fn increment_bytes_scanned_in_query_by_date(bytes: u64, date: &str) {
         .inc_by(bytes);
 }
 
-pub fn increment_object_store_calls_by_date(provider: &str, method: &str, date: &str) {
+pub fn increment_object_store_calls_by_date(method: &str, date: &str) {
     TOTAL_OBJECT_STORE_CALLS_BY_DATE
-        .with_label_values(&[provider, method, date])
+        .with_label_values(&[method, date])
         .inc();
 }
 
-pub fn increment_files_scanned_in_object_store_calls_by_date(
-    provider: &str,
-    method: &str,
-    count: u64,
-    date: &str,
-) {
+pub fn increment_files_scanned_in_object_store_calls_by_date(method: &str, count: u64, date: &str) {
     TOTAL_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE
-        .with_label_values(&[provider, method, date])
+        .with_label_values(&[method, date])
         .inc_by(count);
+}
+
+pub fn increment_bytes_scanned_in_object_store_calls_by_date(method: &str, bytes: u64, date: &str) {
+    TOTAL_BYTES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE
+        .with_label_values(&[method, date])
+        .inc_by(bytes);
 }
 
 pub fn increment_input_llm_tokens_by_date(provider: &str, model: &str, tokens: u64, date: &str) {
