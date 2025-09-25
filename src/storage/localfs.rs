@@ -164,16 +164,11 @@ impl ObjectStorage for LocalFS {
             Ok(x) => {
                 // Record single file accessed successfully
                 increment_files_scanned_in_object_store_calls_by_date(
-                    "localfs",
                     "GET",
                     1,
                     &Utc::now().date_naive().to_string(),
                 );
-                increment_object_store_calls_by_date(
-                    "localfs",
-                    "GET",
-                    &Utc::now().date_naive().to_string(),
-                );
+                increment_object_store_calls_by_date("GET", &Utc::now().date_naive().to_string());
                 Ok(x.into())
             }
             Err(e) => {
@@ -222,16 +217,11 @@ impl ObjectStorage for LocalFS {
 
         // Record total files scanned
         increment_files_scanned_in_object_store_calls_by_date(
-            "localfs",
             "LIST",
             files_scanned,
             &Utc::now().date_naive().to_string(),
         );
-        increment_object_store_calls_by_date(
-            "localfs",
-            "LIST",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
         Ok(path_arr)
     }
 
@@ -280,13 +270,11 @@ impl ObjectStorage for LocalFS {
                 Ok(file) => {
                     // Record total files scanned
                     increment_files_scanned_in_object_store_calls_by_date(
-                        "localfs",
                         "GET",
                         1,
                         &Utc::now().date_naive().to_string(),
                     );
                     increment_object_store_calls_by_date(
-                        "localfs",
                         "GET",
                         &Utc::now().date_naive().to_string(),
                     );
@@ -299,16 +287,11 @@ impl ObjectStorage for LocalFS {
         }
 
         increment_files_scanned_in_object_store_calls_by_date(
-            "localfs",
             "LIST",
             files_scanned as u64,
             &Utc::now().date_naive().to_string(),
         );
-        increment_object_store_calls_by_date(
-            "localfs",
-            "LIST",
-            &Utc::now().date_naive().to_string(),
-        );
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
 
         Ok(res)
     }
@@ -327,16 +310,11 @@ impl ObjectStorage for LocalFS {
         if res.is_ok() {
             // Record single file written successfully
             increment_files_scanned_in_object_store_calls_by_date(
-                "localfs",
                 "PUT",
                 1,
                 &Utc::now().date_naive().to_string(),
             );
-            increment_object_store_calls_by_date(
-                "localfs",
-                "PUT",
-                &Utc::now().date_naive().to_string(),
-            );
+            increment_object_store_calls_by_date("PUT", &Utc::now().date_naive().to_string());
         }
 
         res.map_err(Into::into)
@@ -347,11 +325,7 @@ impl ObjectStorage for LocalFS {
 
         let result = tokio::fs::remove_dir_all(path).await;
         if result.is_ok() {
-            increment_object_store_calls_by_date(
-                "localfs",
-                "DELETE",
-                &Utc::now().date_naive().to_string(),
-            );
+            increment_object_store_calls_by_date("DELETE", &Utc::now().date_naive().to_string());
         }
         result?;
         Ok(())
@@ -364,16 +338,11 @@ impl ObjectStorage for LocalFS {
         if result.is_ok() {
             // Record single file deleted successfully
             increment_files_scanned_in_object_store_calls_by_date(
-                "localfs",
                 "DELETE",
                 1,
                 &Utc::now().date_naive().to_string(),
             );
-            increment_object_store_calls_by_date(
-                "localfs",
-                "DELETE",
-                &Utc::now().date_naive().to_string(),
-            );
+            increment_object_store_calls_by_date("DELETE", &Utc::now().date_naive().to_string());
         }
 
         result?;
@@ -383,11 +352,7 @@ impl ObjectStorage for LocalFS {
     async fn check(&self) -> Result<(), ObjectStorageError> {
         let result = fs::create_dir_all(&self.root).await;
         if result.is_ok() {
-            increment_object_store_calls_by_date(
-                "localfs",
-                "HEAD",
-                &Utc::now().date_naive().to_string(),
-            );
+            increment_object_store_calls_by_date("HEAD", &Utc::now().date_naive().to_string());
         }
 
         result.map_err(|e| ObjectStorageError::UnhandledError(e.into()))
@@ -398,11 +363,7 @@ impl ObjectStorage for LocalFS {
 
         let result = fs::remove_dir_all(path).await;
         if result.is_ok() {
-            increment_object_store_calls_by_date(
-                "localfs",
-                "DELETE",
-                &Utc::now().date_naive().to_string(),
-            );
+            increment_object_store_calls_by_date("DELETE", &Utc::now().date_naive().to_string());
         }
 
         Ok(result?)
@@ -413,11 +374,7 @@ impl ObjectStorage for LocalFS {
 
         let result = fs::remove_file(path).await;
         if result.is_ok() {
-            increment_object_store_calls_by_date(
-                "localfs",
-                "DELETE",
-                &Utc::now().date_naive().to_string(),
-            );
+            increment_object_store_calls_by_date("DELETE", &Utc::now().date_naive().to_string());
         }
 
         Ok(result?)
@@ -435,11 +392,7 @@ impl ObjectStorage for LocalFS {
         let result = fs::read_dir(&self.root).await;
         let directories = match result {
             Ok(read_dir) => {
-                increment_object_store_calls_by_date(
-                    "localfs",
-                    "LIST",
-                    &Utc::now().date_naive().to_string(),
-                );
+                increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
                 ReadDirStream::new(read_dir)
             }
             Err(err) => {
@@ -471,11 +424,7 @@ impl ObjectStorage for LocalFS {
         let result = fs::read_dir(&self.root).await;
         let directories = match result {
             Ok(read_dir) => {
-                increment_object_store_calls_by_date(
-                    "localfs",
-                    "LIST",
-                    &Utc::now().date_naive().to_string(),
-                );
+                increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
                 ReadDirStream::new(read_dir)
             }
             Err(err) => {
@@ -500,11 +449,7 @@ impl ObjectStorage for LocalFS {
         let result = fs::read_dir(&self.root).await;
         let read_dir = match result {
             Ok(read_dir) => {
-                increment_object_store_calls_by_date(
-                    "localfs",
-                    "LIST",
-                    &Utc::now().date_naive().to_string(),
-                );
+                increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
                 read_dir
             }
             Err(err) => {
@@ -564,11 +509,7 @@ impl ObjectStorage for LocalFS {
         let result = fs::read_dir(&path).await;
         let read_dir = match result {
             Ok(read_dir) => {
-                increment_object_store_calls_by_date(
-                    "localfs",
-                    "LIST",
-                    &Utc::now().date_naive().to_string(),
-                );
+                increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
                 read_dir
             }
             Err(err) => {
@@ -635,11 +576,7 @@ impl ObjectStorage for LocalFS {
         let result = fs_extra::file::copy(path, to_path, &op);
         match result {
             Ok(_) => {
-                increment_object_store_calls_by_date(
-                    "localfs",
-                    "PUT",
-                    &Utc::now().date_naive().to_string(),
-                );
+                increment_object_store_calls_by_date("PUT", &Utc::now().date_naive().to_string());
                 Ok(())
             }
             Err(err) => Err(err.into()),
