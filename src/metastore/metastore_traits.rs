@@ -24,10 +24,15 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use erased_serde::Serialize as ErasedSerialize;
 use tonic::async_trait;
+use ulid::Ulid;
 
 use crate::{
-    alerts::target::Target, catalog::manifest::Manifest, handlers::http::modal::NodeType,
-    metastore::MetastoreError, option::Mode, users::filters::Filter,
+    alerts::{alert_structs::AlertStateEntry, target::Target},
+    catalog::manifest::Manifest,
+    handlers::http::modal::NodeType,
+    metastore::MetastoreError,
+    option::Mode,
+    users::filters::Filter,
 };
 
 /// A metastore is a logically separated compartment to store metadata for Parseable.
@@ -43,6 +48,15 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
     async fn get_alerts(&self) -> Result<Vec<Bytes>, MetastoreError>;
     async fn put_alert(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
     async fn delete_alert(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+
+    /// alerts state
+    async fn get_alert_states(&self) -> Result<Vec<AlertStateEntry>, MetastoreError>;
+    async fn get_alert_state_entry(
+        &self,
+        alert_id: &Ulid,
+    ) -> Result<Option<AlertStateEntry>, MetastoreError>;
+    async fn put_alert_state(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn delete_alert_state(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
 
     /// llmconfig
     async fn get_llmconfigs(&self) -> Result<Vec<Bytes>, MetastoreError>;

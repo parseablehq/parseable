@@ -49,8 +49,9 @@ pub use crate::alerts::alert_enums::{
     LogicalOperator, NotificationState, Severity, WhereConfigOperator,
 };
 pub use crate::alerts::alert_structs::{
-    AlertConfig, AlertInfo, AlertRequest, Alerts, AlertsInfo, AlertsInfoByState, AlertsSummary,
-    BasicAlertFields, Context, DeploymentInfo, RollingWindow, ThresholdConfig,
+    AlertConfig, AlertInfo, AlertRequest, AlertStateEntry, Alerts, AlertsInfo, AlertsInfoByState,
+    AlertsSummary, BasicAlertFields, Context, DeploymentInfo, RollingWindow, StateTransition,
+    ThresholdConfig,
 };
 use crate::alerts::alert_traits::{AlertManagerTrait, AlertTrait};
 use crate::alerts::alert_types::ThresholdAlert;

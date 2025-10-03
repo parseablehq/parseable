@@ -28,7 +28,7 @@ use crate::{
         AlertConfig, AlertError, AlertState, AlertType, AlertVersion, EvalConfig, Severity,
         ThresholdConfig,
         alert_enums::NotificationState,
-        alert_structs::GroupResult,
+        alert_structs::{AlertStateEntry, GroupResult},
         alert_traits::{AlertTrait, MessageCreation},
         alerts_utils::{evaluate_condition, execute_alert_query, extract_time_range},
         get_number_of_agg_exprs,
@@ -216,7 +216,11 @@ impl AlertTrait for ThresholdAlert {
                 .metastore
                 .put_alert(&self.to_alert_config())
                 .await?;
-            // The task should have already been removed from the list of running tasks
+            let state_entry = AlertStateEntry::new(self.id, self.state);
+            PARSEABLE
+                .metastore
+                .put_alert_state(&state_entry as &dyn MetastoreObject)
+                .await?;
             return Ok(());
         }
 
@@ -251,6 +255,12 @@ impl AlertTrait for ThresholdAlert {
         PARSEABLE
             .metastore
             .put_alert(&self.to_alert_config())
+            .await?;
+        let state_entry = AlertStateEntry::new(self.id, self.state);
+
+        PARSEABLE
+            .metastore
+            .put_alert_state(&state_entry as &dyn MetastoreObject)
             .await?;
 
         if trigger_notif.is_some() && self.notification_state.eq(&NotificationState::Notify) {

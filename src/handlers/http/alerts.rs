@@ -22,11 +22,12 @@ use crate::{
     alerts::{
         ALERTS, AlertError, AlertState, Severity,
         alert_enums::{AlertType, NotificationState},
-        alert_structs::{AlertConfig, AlertRequest, NotificationStateRequest},
+        alert_structs::{AlertConfig, AlertRequest, AlertStateEntry, NotificationStateRequest},
         alert_traits::AlertTrait,
         alert_types::ThresholdAlert,
         target::Retry,
     },
+    metastore::metastore_traits::MetastoreObject,
     parseable::PARSEABLE,
     utils::{actix::extract_session_key_from_req, user_auth_for_query},
 };
@@ -214,6 +215,13 @@ pub async fn post(
         .put_alert(&alert.to_alert_config())
         .await?;
 
+    // create initial alert state entry (default to NotTriggered)
+    let state_entry = AlertStateEntry::new(*alert.get_id(), AlertState::NotTriggered);
+    PARSEABLE
+        .metastore
+        .put_alert_state(&state_entry as &dyn MetastoreObject)
+        .await?;
+
     // update in memory
     alerts.update(alert).await;
 
@@ -261,6 +269,13 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
     user_auth_for_query(&session_key, alert.get_query()).await?;
 
     PARSEABLE.metastore.delete_alert(&*alert).await?;
+
+    // delete the associated alert state
+    let state_to_delete = AlertStateEntry::new(alert_id, AlertState::NotTriggered); // state doesn't matter for deletion
+    PARSEABLE
+        .metastore
+        .delete_alert_state(&state_to_delete as &dyn MetastoreObject)
+        .await?;
 
     // delete from memory
     alerts.delete(alert_id).await?;

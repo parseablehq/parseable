@@ -35,7 +35,7 @@ use crate::{
     },
     metastore::metastore_traits::MetastoreObject,
     query::resolve_stream_names,
-    storage::object_storage::alert_json_path,
+    storage::object_storage::{alert_json_path, alert_state_json_path},
 };
 
 /// Helper struct for basic alert fields during migration
@@ -518,6 +518,79 @@ impl AlertQueryResult {
 #[derive(serde::Deserialize)]
 pub struct NotificationStateRequest {
     pub state: String,
+}
+
+/// Represents a single state transition
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StateTransition {
+    /// The alert state
+    pub state: AlertState,
+    /// Timestamp when this state was set/updated
+    pub last_updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct AlertStateEntry {
+    /// The unique identifier for the alert
+    pub alert_id: Ulid,
+    pub states: Vec<StateTransition>,
+}
+
+impl StateTransition {
+    /// Creates a new state transition with the current timestamp
+    pub fn new(state: AlertState) -> Self {
+        Self {
+            state,
+            last_updated_at: Utc::now(),
+        }
+    }
+}
+
+impl AlertStateEntry {
+    /// Creates a new alert state entry with an initial state
+    pub fn new(alert_id: Ulid, initial_state: AlertState) -> Self {
+        Self {
+            alert_id,
+            states: vec![StateTransition::new(initial_state)],
+        }
+    }
+
+    /// Updates the state (only adds new entry if state has changed)
+    /// Returns true if the state was changed, false if it remained the same
+    pub fn update_state(&mut self, new_state: AlertState) -> bool {
+        match self.states.last() {
+            Some(last_transition) => {
+                if last_transition.state != new_state {
+                    // State changed - add new transition
+                    self.states.push(StateTransition::new(new_state));
+                    true
+                } else {
+                    // If state hasn't changed, do nothing - preserve the original timestamp
+                    false
+                }
+            }
+            None => {
+                // No previous states - add the first one
+                self.states.push(StateTransition::new(new_state));
+                true
+            }
+        }
+    }
+
+    /// Gets the current (latest) state
+    pub fn current_state(&self) -> Option<&StateTransition> {
+        self.states.last()
+    }
+}
+
+impl MetastoreObject for AlertStateEntry {
+    fn get_object_id(&self) -> String {
+        self.alert_id.to_string()
+    }
+
+    fn get_object_path(&self) -> String {
+        alert_state_json_path(self.alert_id).to_string()
+    }
 }
 
 impl MetastoreObject for AlertConfig {
