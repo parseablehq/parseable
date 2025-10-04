@@ -127,13 +127,31 @@ impl ObjectStorage for LocalFS {
             ),
         )))
     }
-    async fn head(&self, _path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
-        Err(ObjectStorageError::UnhandledError(Box::new(
-            std::io::Error::new(
-                std::io::ErrorKind::Unsupported,
-                "Head operation not implemented for LocalFS yet",
-            ),
-        )))
+    async fn head(&self, path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
+        let file_path = self.path_in_root(path);
+
+        // Check if file exists and get metadata
+        match fs::metadata(&file_path).await {
+            Ok(metadata) => {
+                // Convert the relative path to object store path format
+                let location = object_store::path::Path::from(path.as_str());
+
+                // Create ObjectMeta with file information
+                let object_meta = ObjectMeta {
+                    location,
+                    last_modified: metadata
+                        .modified()
+                        .map_err(ObjectStorageError::IoError)?
+                        .into(),
+                    size: metadata.len() as usize,
+                    e_tag: None,
+                    version: None,
+                };
+
+                Ok(object_meta)
+            }
+            Err(e) => Err(ObjectStorageError::IoError(e)),
+        }
     }
     async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
         let file_path;

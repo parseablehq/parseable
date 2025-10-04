@@ -32,7 +32,7 @@ use tracing::warn;
 use ulid::Ulid;
 
 use crate::{
-    alerts::target::Target,
+    alerts::{alert_structs::AlertStateEntry, target::Target},
     catalog::{manifest::Manifest, partition_path},
     handlers::http::{
         modal::{Metadata, NodeMetadata, NodeType},
@@ -49,8 +49,8 @@ use crate::{
         SETTINGS_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
         TARGETS_ROOT_DIRECTORY,
         object_storage::{
-            alert_json_path, filter_path, manifest_path, parseable_json_path, schema_path,
-            stream_json_path, to_bytes,
+            alert_json_path, alert_state_json_path, filter_path, manifest_path,
+            parseable_json_path, schema_path, stream_json_path, to_bytes,
         },
     },
     users::filters::{Filter, migrate_v1_v2},
@@ -108,6 +108,102 @@ impl Metastore for ObjectStoreMetastore {
 
     /// Delete an alert
     async fn delete_alert(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
+        let path = obj.get_object_path();
+        Ok(self
+            .storage
+            .delete_object(&RelativePathBuf::from(path))
+            .await?)
+    }
+
+    /// alerts state
+    async fn get_alert_states(&self) -> Result<Vec<AlertStateEntry>, MetastoreError> {
+        let base_path = RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY]);
+        let alert_state_bytes = self
+            .storage
+            .get_objects(
+                Some(&base_path),
+                Box::new(|file_name| {
+                    file_name.starts_with("alert_state_") && file_name.ends_with(".json")
+                }),
+            )
+            .await?;
+
+        let mut alert_states = Vec::new();
+        for bytes in alert_state_bytes {
+            if let Ok(entry) = serde_json::from_slice::<AlertStateEntry>(&bytes) {
+                alert_states.push(entry);
+            }
+        }
+        Ok(alert_states)
+    }
+
+    async fn get_alert_state_entry(
+        &self,
+        alert_id: &Ulid,
+    ) -> Result<Option<AlertStateEntry>, MetastoreError> {
+        let path = alert_state_json_path(*alert_id);
+        match self.storage.get_object(&path).await {
+            Ok(bytes) => {
+                if let Ok(entry) = serde_json::from_slice::<AlertStateEntry>(&bytes) {
+                    Ok(Some(entry))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(ObjectStorageError::NoSuchKey(_)) => Ok(None),
+            Err(e) => Err(MetastoreError::ObjectStorageError(e)),
+        }
+    }
+
+    async fn put_alert_state(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
+        let id = Ulid::from_string(&obj.get_object_id()).map_err(|e| MetastoreError::Error {
+            status_code: StatusCode::BAD_REQUEST,
+            message: e.to_string(),
+            flow: "put_alert_state".into(),
+        })?;
+        let path = alert_state_json_path(id);
+
+        // Parse the new state entry from the MetastoreObject
+        let new_state_entry: AlertStateEntry = serde_json::from_slice(&to_bytes(obj))?;
+        let new_state = new_state_entry
+            .current_state()
+            .ok_or_else(|| MetastoreError::InvalidJsonStructure {
+                expected: "AlertStateEntry with at least one state".to_string(),
+                found: "AlertStateEntry with empty states".to_string(),
+            })?
+            .state;
+
+        // Try to read existing file
+        let mut alert_entry = match self.storage.get_object(&path).await {
+            Ok(existing_bytes) => {
+                if let Ok(entry) = serde_json::from_slice::<AlertStateEntry>(&existing_bytes) {
+                    entry
+                } else {
+                    // Create new entry if parsing fails or file doesn't exist
+                    AlertStateEntry::new(id, new_state)
+                }
+            }
+            Err(_) => {
+                // File doesn't exist, create new entry
+                AlertStateEntry::new(id, new_state)
+            }
+        };
+
+        // Update the state and only save if it actually changed
+        let state_changed = alert_entry.update_state(new_state);
+
+        if state_changed {
+            let updated_bytes =
+                serde_json::to_vec(&alert_entry).map_err(MetastoreError::JsonParseError)?;
+
+            self.storage.put_object(&path, updated_bytes.into()).await?;
+        }
+
+        Ok(())
+    }
+
+    /// Delete an alert state file
+    async fn delete_alert_state(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
         let path = obj.get_object_path();
         Ok(self
             .storage

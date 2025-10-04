@@ -1142,6 +1142,16 @@ pub fn target_json_path(target_id: &Ulid) -> RelativePathBuf {
     ])
 }
 
+/// Constructs the path for storing alert state JSON files
+/// Format: ".parseable/alerts/alert_state_{alert_id}.json"
+#[inline(always)]
+pub fn alert_state_json_path(alert_id: Ulid) -> RelativePathBuf {
+    RelativePathBuf::from_iter([
+        ALERTS_ROOT_DIRECTORY,
+        &format!("alert_state_{alert_id}.json"),
+    ])
+}
+
 #[inline(always)]
 pub fn manifest_path(prefix: &str) -> RelativePathBuf {
     let hostname = hostname::get()
