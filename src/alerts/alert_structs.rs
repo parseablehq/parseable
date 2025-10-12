@@ -515,13 +515,132 @@ impl AlertQueryResult {
     }
 }
 
-#[derive(serde::Deserialize)]
+#[derive(Deserialize)]
 pub struct NotificationStateRequest {
     pub state: String,
 }
 
+/// MTTR (Mean Time To Recovery) statistics
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MTTRStats {
+    /// Total number of incidents (triggered -> not-triggered cycles)
+    pub total_incidents: usize,
+    /// Mean recovery time in seconds
+    pub mean_seconds: f64,
+    /// Median recovery time in seconds
+    pub median_seconds: f64,
+    /// Minimum recovery time in seconds
+    pub min_seconds: f64,
+    /// Maximum recovery time in seconds
+    pub max_seconds: f64,
+    /// All individual recovery times in seconds
+    pub recovery_times_seconds: Vec<i64>,
+}
+
+impl MTTRStats {
+    /// Check if there are no incidents recorded
+    pub fn is_empty(&self) -> bool {
+        self.total_incidents == 0
+    }
+
+    /// Create MTTRStats from a list of recovery times
+    pub fn from_recovery_times(recovery_times: Vec<i64>) -> MTTRStats {
+        if recovery_times.is_empty() {
+            return MTTRStats::default();
+        }
+
+        let total_incidents = recovery_times.len();
+        let total_recovery_time: i64 = recovery_times.iter().sum();
+        let mean_seconds = total_recovery_time as f64 / total_incidents as f64;
+
+        let min_seconds = *recovery_times.iter().min().unwrap() as f64;
+        let max_seconds = *recovery_times.iter().max().unwrap() as f64;
+
+        // Calculate median
+        let median_seconds = if total_incidents == 1 {
+            recovery_times[0] as f64
+        } else {
+            let mut sorted_times = recovery_times.clone();
+            sorted_times.sort_unstable();
+
+            if total_incidents.is_multiple_of(2) {
+                let mid = total_incidents / 2;
+                (sorted_times[mid - 1] + sorted_times[mid]) as f64 / 2.0
+            } else {
+                sorted_times[total_incidents / 2] as f64
+            }
+        };
+
+        MTTRStats {
+            total_incidents,
+            mean_seconds,
+            median_seconds,
+            min_seconds,
+            max_seconds,
+            recovery_times_seconds: recovery_times,
+        }
+    }
+}
+
+impl Default for MTTRStats {
+    fn default() -> Self {
+        Self {
+            total_incidents: 0,
+            mean_seconds: 0.0,
+            median_seconds: 0.0,
+            min_seconds: 0.0,
+            max_seconds: 0.0,
+            recovery_times_seconds: Vec::new(),
+        }
+    }
+}
+
+/// Aggregated MTTR statistics across multiple alerts
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AggregatedMTTRStats {
+    /// Overall MTTR statistics
+    pub overall: MTTRStats,
+    /// Number of alerts included in the calculation
+    pub total_alerts: usize,
+    /// Number of alerts that had incidents
+    pub alerts_with_incidents: usize,
+    /// Per-alert breakdown (optional, for detailed analysis)
+    pub per_alert_stats: HashMap<String, MTTRStats>,
+}
+
+impl AggregatedMTTRStats {
+    /// Calculate aggregated MTTR stats from multiple alert state entries
+    pub fn from_alert_states(alert_states: Vec<AlertStateEntry>) -> Self {
+        let mut all_recovery_times = Vec::new();
+        let mut per_alert_stats = HashMap::new();
+        let mut alerts_with_incidents = 0;
+
+        for alert_state in &alert_states {
+            let alert_stats = alert_state.get_mttr_stats();
+
+            if !alert_stats.is_empty() {
+                alerts_with_incidents += 1;
+                all_recovery_times.extend(alert_stats.recovery_times_seconds.iter());
+
+                per_alert_stats.insert(alert_state.alert_id.to_string(), alert_stats);
+            }
+        }
+
+        let overall = MTTRStats::from_recovery_times(all_recovery_times);
+
+        Self {
+            overall,
+            total_alerts: alert_states.len(),
+            alerts_with_incidents,
+            per_alert_stats,
+        }
+    }
+}
+
 /// Represents a single state transition
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StateTransition {
     /// The alert state
     pub state: AlertState,
@@ -529,7 +648,7 @@ pub struct StateTransition {
     pub last_updated_at: DateTime<Utc>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AlertStateEntry {
     /// The unique identifier for the alert
     pub alert_id: Ulid,
@@ -580,6 +699,94 @@ impl AlertStateEntry {
     /// Gets the current (latest) state
     pub fn current_state(&self) -> Option<&StateTransition> {
         self.states.last()
+    }
+
+    /// Get all recovery times (in seconds) from triggered to not-triggered
+    /// Returns recovery times in chronological order
+    pub fn get_recovery_times(&self) -> Vec<i64> {
+        let mut recovery_times = Vec::new();
+        let mut trigger_time: Option<DateTime<Utc>> = None;
+
+        // Create a sorted view without mutating the original
+        let mut sorted_states = self.states.clone();
+        sorted_states.sort_by(|a, b| a.last_updated_at.cmp(&b.last_updated_at));
+
+        for transition in &sorted_states {
+            match transition.state {
+                AlertState::Triggered => {
+                    // Record when alert was triggered
+                    trigger_time = Some(transition.last_updated_at);
+                }
+                AlertState::NotTriggered => {
+                    // If we have a trigger time, calculate recovery time
+                    if let Some(triggered_at) = trigger_time {
+                        let recovery_duration = transition
+                            .last_updated_at
+                            .signed_duration_since(triggered_at);
+                        let recovery_seconds = recovery_duration.num_seconds();
+
+                        // Only include positive durations (validation against clock issues)
+                        if recovery_seconds > 0 {
+                            recovery_times.push(recovery_seconds);
+                        } else {
+                            tracing::warn!(
+                                "Negative or zero recovery time detected: {} seconds. Triggered at: {}, Recovered at: {}",
+                                recovery_seconds,
+                                triggered_at,
+                                transition.last_updated_at
+                            );
+                        }
+                        trigger_time = None; // Reset for next cycle
+                    }
+                }
+                AlertState::Disabled => {
+                    // Ignore disabled state - it doesn't affect MTTR calculation
+                    // until it's explicitly resolved (moves to not-triggered)
+                }
+            }
+        }
+
+        recovery_times
+    }
+
+    /// This is the method that is used for MTTR statistics
+    pub fn get_mttr_stats(&self) -> MTTRStats {
+        let recovery_times = self.get_recovery_times();
+
+        if recovery_times.is_empty() {
+            return MTTRStats::default();
+        }
+
+        let total_incidents = recovery_times.len();
+        let total_recovery_time: i64 = recovery_times.iter().sum();
+        let mean_seconds = total_recovery_time as f64 / total_incidents as f64;
+
+        let min_seconds = *recovery_times.iter().min().unwrap() as f64;
+        let max_seconds = *recovery_times.iter().max().unwrap() as f64;
+
+        // Calculate median more efficiently
+        let median_seconds = if total_incidents == 1 {
+            recovery_times[0] as f64
+        } else {
+            let mut sorted_times = recovery_times.clone();
+            sorted_times.sort_unstable(); // Unstable sort is faster for primitive types
+
+            if total_incidents.is_multiple_of(2) {
+                let mid = total_incidents / 2;
+                (sorted_times[mid - 1] + sorted_times[mid]) as f64 / 2.0
+            } else {
+                sorted_times[total_incidents / 2] as f64
+            }
+        };
+
+        MTTRStats {
+            total_incidents,
+            mean_seconds,
+            median_seconds,
+            min_seconds,
+            max_seconds,
+            recovery_times_seconds: recovery_times,
+        }
     }
 }
 
