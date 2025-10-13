@@ -173,31 +173,30 @@ impl Metastore for ObjectStoreMetastore {
             })?
             .state;
 
-        // Try to read existing file
-        let mut alert_entry = match self.storage.get_object(&path).await {
-            Ok(existing_bytes) => {
-                if let Ok(entry) = serde_json::from_slice::<AlertStateEntry>(&existing_bytes) {
-                    entry
-                } else {
-                    // Create new entry if parsing fails or file doesn't exist
-                    AlertStateEntry::new(id, new_state)
+        // Try to read and parse existing file
+        if let Ok(existing_bytes) = self.storage.get_object(&path).await {
+            // File exists - try to parse and update
+            if let Ok(mut existing_entry) =
+                serde_json::from_slice::<AlertStateEntry>(&existing_bytes)
+            {
+                // Update the state and only save if it actually changed
+                let state_changed = existing_entry.update_state(new_state);
+
+                if state_changed {
+                    let updated_bytes = serde_json::to_vec(&existing_entry)
+                        .map_err(MetastoreError::JsonParseError)?;
+
+                    self.storage.put_object(&path, updated_bytes.into()).await?;
                 }
+                return Ok(());
             }
-            Err(_) => {
-                // File doesn't exist, create new entry
-                AlertStateEntry::new(id, new_state)
-            }
-        };
-
-        // Update the state and only save if it actually changed
-        let state_changed = alert_entry.update_state(new_state);
-
-        if state_changed {
-            let updated_bytes =
-                serde_json::to_vec(&alert_entry).map_err(MetastoreError::JsonParseError)?;
-
-            self.storage.put_object(&path, updated_bytes.into()).await?;
         }
+
+        // Create and save new entry (either file didn't exist or parsing failed)
+        let new_entry = AlertStateEntry::new(id, new_state);
+        let new_bytes = serde_json::to_vec(&new_entry).map_err(MetastoreError::JsonParseError)?;
+
+        self.storage.put_object(&path, new_bytes.into()).await?;
 
         Ok(())
     }
