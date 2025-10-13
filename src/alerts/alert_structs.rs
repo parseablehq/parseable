@@ -752,41 +752,7 @@ impl AlertStateEntry {
     /// This is the method that is used for MTTR statistics
     pub fn get_mttr_stats(&self) -> MTTRStats {
         let recovery_times = self.get_recovery_times();
-
-        if recovery_times.is_empty() {
-            return MTTRStats::default();
-        }
-
-        let total_incidents = recovery_times.len();
-        let total_recovery_time: i64 = recovery_times.iter().sum();
-        let mean_seconds = total_recovery_time as f64 / total_incidents as f64;
-
-        let min_seconds = *recovery_times.iter().min().unwrap() as f64;
-        let max_seconds = *recovery_times.iter().max().unwrap() as f64;
-
-        // Calculate median more efficiently
-        let median_seconds = if total_incidents == 1 {
-            recovery_times[0] as f64
-        } else {
-            let mut sorted_times = recovery_times.clone();
-            sorted_times.sort_unstable(); // Unstable sort is faster for primitive types
-
-            if total_incidents.is_multiple_of(2) {
-                let mid = total_incidents / 2;
-                (sorted_times[mid - 1] + sorted_times[mid]) as f64 / 2.0
-            } else {
-                sorted_times[total_incidents / 2] as f64
-            }
-        };
-
-        MTTRStats {
-            total_incidents,
-            mean_seconds,
-            median_seconds,
-            min_seconds,
-            max_seconds,
-            recovery_times_seconds: recovery_times,
-        }
+        MTTRStats::from_recovery_times(recovery_times)
     }
 }
 
