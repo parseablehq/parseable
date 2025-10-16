@@ -444,9 +444,9 @@ mod tests {
     fn test_flatten_status_code_mapping() {
         // Test that status codes are correctly mapped to descriptions
         let test_cases = vec![
-            (0, "STATUS_CODE_UNSET"),
-            (1, "STATUS_CODE_OK"),
-            (2, "STATUS_CODE_ERROR"),
+            (0, "UNSET"),
+            (1, "OK"),
+            (2, "ERROR"),
             (999, ""), // Unknown status code should return empty string
         ];
 
@@ -481,12 +481,12 @@ mod tests {
     fn test_flatten_span_kind_mapping() {
         // Test that span kinds are correctly mapped to descriptions
         let test_cases = vec![
-            (0, "SPAN_KIND_UNSPECIFIED"),
-            (1, "SPAN_KIND_INTERNAL"),
-            (2, "SPAN_KIND_SERVER"),
-            (3, "SPAN_KIND_CLIENT"),
-            (4, "SPAN_KIND_PRODUCER"),
-            (5, "SPAN_KIND_CONSUMER"),
+            (0, "UNSPECIFIED"),
+            (1, "INTERNAL"),
+            (2, "SERVER"),
+            (3, "CLIENT"),
+            (4, "PRODUCER"),
+            (5, "CONSUMER"),
             (999, ""), // Unknown kind should return empty string
         ];
 
@@ -511,10 +511,10 @@ mod tests {
     fn test_flatten_flags_mapping() {
         // Test that flags are correctly mapped to descriptions
         let test_cases = vec![
-            (0, "SPAN_FLAGS_DO_NOT_USE"),
-            (255, "SPAN_FLAGS_TRACE_FLAGS_MASK"),
-            (256, "SPAN_FLAGS_CONTEXT_HAS_IS_REMOTE_MASK"),
-            (512, "SPAN_FLAGS_CONTEXT_IS_REMOTE_MASK"),
+            (0, "DO_NOT_USE"),
+            (255, "TRACE_FLAGS_MASK"),
+            (256, "CONTEXT_HAS_IS_REMOTE_MASK"),
+            (512, "CONTEXT_IS_REMOTE_MASK"),
             (999, ""), // Unknown flag should return empty string
         ];
 
@@ -686,7 +686,7 @@ mod tests {
             );
             assert_eq!(
                 record.get("span_kind_description").unwrap(),
-                &Value::String("SPAN_KIND_SERVER".to_string()),
+                &Value::String("SERVER".to_string()),
                 "All records should contain span kind description"
             );
             assert!(
@@ -927,7 +927,7 @@ mod tests {
         );
         assert_eq!(
             record.get("span_kind_description").unwrap(),
-            &Value::String("SPAN_KIND_CLIENT".to_string()),
+            &Value::String("CLIENT".to_string()),
             "Should contain span kind description"
         );
         assert_eq!(
@@ -937,7 +937,7 @@ mod tests {
         );
         assert_eq!(
             record.get("span_status_description").unwrap(),
-            &Value::String("STATUS_CODE_OK".to_string()),
+            &Value::String("OK".to_string()),
             "Should contain status description"
         );
     }
@@ -964,12 +964,14 @@ mod tests {
             "event_name",
             "event_time_unix_nano",
             "event_dropped_attributes_count",
+            "event_duration_ms",
             "link_span_id",
             "link_trace_id",
             "link_dropped_attributes_count",
             "span_dropped_events_count",
             "span_dropped_links_count",
             "span_dropped_attributes_count",
+            "span_duration_ms",
             "span_trace_state",
             "span_flags",
             "span_flags_description",
