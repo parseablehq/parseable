@@ -471,6 +471,10 @@ impl ObjectStorage for LocalFS {
                 read_dir
             }
             Err(err) => {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    return Ok(Vec::new());
+                }
+
                 return Err(err.into());
             }
         };
@@ -501,6 +505,10 @@ impl ObjectStorage for LocalFS {
         let read_dir = match result {
             Ok(read_dir) => read_dir,
             Err(err) => {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    return Ok(Vec::new());
+                }
+
                 return Err(err.into());
             }
         };
@@ -531,6 +539,10 @@ impl ObjectStorage for LocalFS {
                 read_dir
             }
             Err(err) => {
+                if err.kind() == std::io::ErrorKind::NotFound {
+                    return Ok(Vec::new());
+                }
+
                 return Err(err.into());
             }
         };
