@@ -193,7 +193,7 @@ fn flatten_events(events: &[Event], span_start_time_unix_nano: u64) -> Vec<Map<S
                 "event_duration_ms".to_string(),
                 Value::Number(
                     serde_json::Number::from_f64(duration_ms)
-                        .unwrap_or(serde_json::Number::from(0)),
+                        .unwrap_or_else(|| serde_json::Number::from(0)),
                 ),
             );
 
@@ -357,7 +357,8 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
     span_record_json.insert(
         "span_duration_ms".to_string(),
         Value::Number(
-            serde_json::Number::from_f64(duration_ms).unwrap_or(serde_json::Number::from(0)),
+            serde_json::Number::from_f64(duration_ms)
+                .unwrap_or_else(|| serde_json::Number::from(0)),
         ),
     );
 
