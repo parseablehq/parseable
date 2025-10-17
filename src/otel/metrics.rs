@@ -620,9 +620,9 @@ fn flatten_aggregation_temporality(aggregation_temporality: i32) -> Map<String, 
         Value::Number(aggregation_temporality.into()),
     );
     let description = match aggregation_temporality {
-        0 => "AGGREGATION_TEMPORALITY_UNSPECIFIED",
-        1 => "AGGREGATION_TEMPORALITY_DELTA",
-        2 => "AGGREGATION_TEMPORALITY_CUMULATIVE",
+        0 => "UNSPECIFIED",
+        1 => "DELTA",
+        2 => "CUMULATIVE",
         _ => "",
     };
     aggregation_temporality_json.insert(
@@ -637,8 +637,8 @@ fn flatten_data_point_flags(flags: u32) -> Map<String, Value> {
     let mut data_point_flags_json = Map::new();
     data_point_flags_json.insert("data_point_flags".to_string(), Value::Number(flags.into()));
     let description = match flags {
-        0 => "DATA_POINT_FLAGS_DO_NOT_USE",
-        1 => "DATA_POINT_FLAGS_NO_RECORDED_VALUE_MASK",
+        0 => "DO_NOT_USE",
+        1 => "NO_RECORDED_VALUE_MASK",
         _ => "",
     };
     data_point_flags_json.insert(

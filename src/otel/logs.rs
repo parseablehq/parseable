@@ -55,9 +55,15 @@ fn flatten_severity(severity_number: i32) -> Map<String, Value> {
         Value::Number(severity_number.into()),
     );
     let severity = SeverityNumber::try_from(severity_number).unwrap();
+    let severity_text = severity.as_str_name().to_string();
     severity_json.insert(
         "severity_text".to_string(),
-        Value::String(severity.as_str_name().to_string()),
+        Value::String(
+            severity_text
+                .strip_prefix("SEVERITY_NUMBER_")
+                .unwrap_or(&severity_text)
+                .to_string(),
+        ),
     );
     severity_json
 }
