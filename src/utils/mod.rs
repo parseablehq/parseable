@@ -149,12 +149,18 @@ pub async fn user_auth_for_datasets(
 pub fn is_admin(req: &HttpRequest) -> Result<bool, anyhow::Error> {
     let session_key =
         extract_session_key_from_req(req).map_err(|e| anyhow::Error::msg(e.to_string()))?;
-    let userid = if let Some(u) = Users.get_userid_from_session(&session_key) {
-        u
-    } else {
-        return Err(anyhow::Error::msg("User not found"));
-    };
-    let permissions = Users.get_role(&userid);
 
-    Ok(permissions.contains(&String::from("admin")))
+    let permissions = Users.get_permissions(&session_key);
+
+    // Check if user has admin permissions (Action::All on All resources)
+    for permission in permissions.iter() {
+        match permission {
+            Permission::Resource(Action::All, ParseableResourceType::All) => {
+                return Ok(true);
+            }
+            _ => continue,
+        }
+    }
+
+    Ok(false)
 }
