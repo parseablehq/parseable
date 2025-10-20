@@ -19,7 +19,7 @@
 
 use crate::{
     catalog::snapshot::CURRENT_SNAPSHOT_VERSION,
-    handlers::{TelemetryType, http::cluster::INTERNAL_STREAM_NAME},
+    handlers::{TelemetryType, http::cluster::PMETA_STREAM_NAME},
     storage,
 };
 use serde_json::{Value, json};
@@ -160,7 +160,7 @@ pub fn v4_v5(mut stream_metadata: Value, stream_name: &str) -> Value {
     );
     let stream_type = stream_metadata_map.get("stream_type");
     if stream_type.is_none() {
-        if stream_name.eq(INTERNAL_STREAM_NAME) {
+        if stream_name.eq(PMETA_STREAM_NAME) {
             stream_metadata_map.insert(
                 "stream_type".to_owned(),
                 Value::String(storage::StreamType::Internal.to_string()),

@@ -604,6 +604,15 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         &self,
         stream_name: &str,
     ) -> Result<Bytes, ObjectStorageError> {
+        // create only when stream name not found in memory
+        if PARSEABLE.get_stream(stream_name).is_ok() {
+            let stream_metadata_bytes = PARSEABLE
+                .metastore
+                .get_stream_json(stream_name, false)
+                .await
+                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
+            return Ok(stream_metadata_bytes);
+        }
         let mut all_log_sources: Vec<LogSourceEntry> = Vec::new();
 
         if let Some(stream_metadata_obs) = PARSEABLE
