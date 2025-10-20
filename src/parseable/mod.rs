@@ -418,6 +418,11 @@ impl Parseable {
 
         // Check if either stream creation failed
         if internal_stream_result.is_err() || billing_stream_result.is_err() {
+            tracing::error!(
+                "Failed to create internal streams: {:?}, {:?}",
+                internal_stream_result.as_ref().err(),
+                billing_stream_result.as_ref().err()
+            );
             return Ok(());
         }
 
