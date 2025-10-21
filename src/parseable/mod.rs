@@ -49,7 +49,9 @@ use crate::{
     handlers::{
         STREAM_TYPE_KEY, TelemetryType,
         http::{
-            cluster::{INTERNAL_STREAM_NAME, sync_streams_with_ingestors},
+            cluster::{
+                BILLING_METRICS_STREAM_NAME, PMETA_STREAM_NAME, sync_streams_with_ingestors,
+            },
             ingest::PostError,
             logstream::error::{CreateStreamError, StreamError},
             modal::{ingest_server::INGESTOR_META, utils::logstream_utils::PutStreamHeaders},
@@ -393,18 +395,38 @@ impl Parseable {
 
     pub async fn create_internal_stream_if_not_exists(&self) -> Result<(), StreamError> {
         let log_source_entry = LogSourceEntry::new(LogSource::Pmeta, HashSet::new());
-        match self
+        let internal_stream_result = self
             .create_stream_if_not_exists(
-                INTERNAL_STREAM_NAME,
+                PMETA_STREAM_NAME,
                 StreamType::Internal,
                 None,
                 vec![log_source_entry],
                 TelemetryType::Logs,
             )
-            .await
-        {
-            Err(_) | Ok(true) => return Ok(()),
-            _ => {}
+            .await;
+
+        let log_source_entry = LogSourceEntry::new(LogSource::Json, HashSet::new());
+        let billing_stream_result = self
+            .create_stream_if_not_exists(
+                BILLING_METRICS_STREAM_NAME,
+                StreamType::Internal,
+                None,
+                vec![log_source_entry],
+                TelemetryType::Logs,
+            )
+            .await;
+
+        // Check if either stream creation failed
+        if let Err(e) = &internal_stream_result {
+            tracing::error!("Failed to create pmeta stream: {:?}", e);
+        }
+        if let Err(e) = &billing_stream_result {
+            tracing::error!("Failed to create billing stream: {:?}", e);
+        }
+
+        // Check if both streams already existed
+        if matches!(internal_stream_result, Ok(true)) && matches!(billing_stream_result, Ok(true)) {
+            return Ok(());
         }
 
         let mut header_map = HeaderMap::new();
@@ -413,7 +435,23 @@ impl Parseable {
             HeaderValue::from_str(&StreamType::Internal.to_string()).unwrap(),
         );
         header_map.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        sync_streams_with_ingestors(header_map, Bytes::new(), INTERNAL_STREAM_NAME).await?;
+
+        // Sync only the streams that were created successfully
+        if matches!(internal_stream_result, Ok(false))
+            && let Err(e) =
+                sync_streams_with_ingestors(header_map.clone(), Bytes::new(), PMETA_STREAM_NAME)
+                    .await
+        {
+            tracing::error!("Failed to sync pmeta stream with ingestors: {:?}", e);
+        }
+
+        if matches!(billing_stream_result, Ok(false))
+            && let Err(e) =
+                sync_streams_with_ingestors(header_map, Bytes::new(), BILLING_METRICS_STREAM_NAME)
+                    .await
+        {
+            tracing::error!("Failed to sync billing stream with ingestors: {:?}", e);
+        }
 
         Ok(())
     }

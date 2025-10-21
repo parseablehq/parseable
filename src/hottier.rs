@@ -24,7 +24,7 @@ use std::{
 
 use crate::{
     catalog::manifest::{File, Manifest},
-    handlers::http::cluster::INTERNAL_STREAM_NAME,
+    handlers::http::cluster::PMETA_STREAM_NAME,
     parseable::PARSEABLE,
     storage::{ObjectStorageError, field_stats::DATASET_STATS_STREAM_NAME},
     utils::{extract_datetime, human_size::bytes_to_human_size},
@@ -697,7 +697,7 @@ impl HotTierManager {
     }
 
     pub async fn put_internal_stream_hot_tier(&self) -> Result<(), HotTierError> {
-        if !self.check_stream_hot_tier_exists(INTERNAL_STREAM_NAME) {
+        if !self.check_stream_hot_tier_exists(PMETA_STREAM_NAME) {
             let mut stream_hot_tier = StreamHotTier {
                 version: Some(CURRENT_HOT_TIER_VERSION.to_string()),
                 size: INTERNAL_STREAM_HOT_TIER_SIZE_BYTES,
@@ -705,7 +705,7 @@ impl HotTierManager {
                 available_size: INTERNAL_STREAM_HOT_TIER_SIZE_BYTES,
                 oldest_date_time_entry: None,
             };
-            self.put_hot_tier(INTERNAL_STREAM_NAME, &mut stream_hot_tier)
+            self.put_hot_tier(PMETA_STREAM_NAME, &mut stream_hot_tier)
                 .await?;
         }
         Ok(())
