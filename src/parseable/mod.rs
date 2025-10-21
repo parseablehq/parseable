@@ -417,13 +417,11 @@ impl Parseable {
             .await;
 
         // Check if either stream creation failed
-        if internal_stream_result.is_err() || billing_stream_result.is_err() {
-            tracing::error!(
-                "Failed to create internal streams: {:?}, {:?}",
-                internal_stream_result.as_ref().err(),
-                billing_stream_result.as_ref().err()
-            );
-            return Ok(());
+        if let Err(e) = &internal_stream_result {
+            tracing::error!("Failed to create pmeta stream: {:?}", e);
+        }
+        if let Err(e) = &billing_stream_result {
+            tracing::error!("Failed to create billing stream: {:?}", e);
         }
 
         // Check if both streams already existed
@@ -437,8 +435,23 @@ impl Parseable {
             HeaderValue::from_str(&StreamType::Internal.to_string()).unwrap(),
         );
         header_map.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        sync_streams_with_ingestors(header_map.clone(), Bytes::new(), PMETA_STREAM_NAME).await?;
-        sync_streams_with_ingestors(header_map, Bytes::new(), BILLING_METRICS_STREAM_NAME).await?;
+
+        // Sync only the streams that were created successfully
+        if matches!(internal_stream_result, Ok(false))
+            && let Err(e) =
+                sync_streams_with_ingestors(header_map.clone(), Bytes::new(), PMETA_STREAM_NAME)
+                    .await
+        {
+            tracing::error!("Failed to sync pmeta stream with ingestors: {:?}", e);
+        }
+
+        if matches!(billing_stream_result, Ok(false))
+            && let Err(e) =
+                sync_streams_with_ingestors(header_map, Bytes::new(), BILLING_METRICS_STREAM_NAME)
+                    .await
+        {
+            tracing::error!("Failed to sync billing stream with ingestors: {:?}", e);
+        }
 
         Ok(())
     }
