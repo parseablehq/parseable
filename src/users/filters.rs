@@ -132,13 +132,19 @@ impl Filters {
         s.retain(|f| f.filter_id != Some(filter_id.to_string()));
     }
 
-    pub async fn get_filter(&self, filter_id: &str, user_id: &str) -> Option<Filter> {
+    pub async fn get_filter(
+        &self,
+        filter_id: &str,
+        user_id: &str,
+        is_admin: bool,
+    ) -> Option<Filter> {
         self.0
             .read()
             .await
             .iter()
             .find(|f| {
-                f.filter_id == Some(filter_id.to_string()) && f.user_id == Some(user_id.to_string())
+                f.filter_id == Some(filter_id.to_string())
+                    && (f.user_id == Some(user_id.to_string()) || is_admin)
             })
             .cloned()
     }

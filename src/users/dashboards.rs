@@ -295,9 +295,10 @@ impl Dashboards {
         &self,
         user_id: &str,
         dashboard_id: Ulid,
+        is_admin: bool,
     ) -> Result<(), DashboardError> {
         let obj = self
-            .ensure_dashboard_ownership(dashboard_id, user_id)
+            .ensure_dashboard_ownership(dashboard_id, user_id, is_admin)
             .await?;
 
         {
@@ -335,6 +336,7 @@ impl Dashboards {
         &self,
         dashboard_id: Ulid,
         user_id: &str,
+        is_admin: bool,
     ) -> Option<Dashboard> {
         self.0
             .read()
@@ -344,7 +346,7 @@ impl Dashboards {
                 d.dashboard_id
                     .as_ref()
                     .is_some_and(|id| *id == dashboard_id)
-                    && d.author == Some(user_id.to_string())
+                    && (d.author == Some(user_id.to_string()) || is_admin)
             })
             .cloned()
     }
@@ -409,8 +411,9 @@ impl Dashboards {
         &self,
         dashboard_id: Ulid,
         user_id: &str,
+        is_admin: bool,
     ) -> Result<Dashboard, DashboardError> {
-        self.get_dashboard_by_user(dashboard_id, user_id)
+        self.get_dashboard_by_user(dashboard_id, user_id, is_admin)
             .await
             .ok_or_else(|| {
                 DashboardError::Metadata(

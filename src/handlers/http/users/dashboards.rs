@@ -23,7 +23,7 @@ use crate::{
     metastore::MetastoreError,
     storage::ObjectStorageError,
     users::dashboards::{DASHBOARDS, Dashboard, Tile, validate_dashboard_id},
-    utils::{get_hash, get_user_from_request},
+    utils::{get_hash, get_user_from_request, is_admin},
 };
 use actix_web::{
     HttpRequest, HttpResponse, Responder,
@@ -104,8 +104,10 @@ pub async fn update_dashboard(
 ) -> Result<impl Responder, DashboardError> {
     let user_id = get_hash(&get_user_from_request(&req)?);
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
+    let is_admin = is_admin(&req).map_err(|e| DashboardError::Custom(e.to_string()))?;
+
     let mut existing_dashboard = DASHBOARDS
-        .get_dashboard_by_user(dashboard_id, &user_id)
+        .get_dashboard_by_user(dashboard_id, &user_id, is_admin)
         .await
         .ok_or(DashboardError::Metadata(
             "Dashboard does not exist or user is not authorized",
@@ -189,9 +191,13 @@ pub async fn delete_dashboard(
     dashboard_id: Path<String>,
 ) -> Result<HttpResponse, DashboardError> {
     let user_id = get_hash(&get_user_from_request(&req)?);
+    let is_admin = is_admin(&req).map_err(|e| DashboardError::Custom(e.to_string()))?;
+
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
 
-    DASHBOARDS.delete_dashboard(&user_id, dashboard_id).await?;
+    DASHBOARDS
+        .delete_dashboard(&user_id, dashboard_id, is_admin)
+        .await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -207,9 +213,10 @@ pub async fn add_tile(
 
     let user_id = get_hash(&get_user_from_request(&req)?);
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
+    let is_admin = is_admin(&req).map_err(|e| DashboardError::Custom(e.to_string()))?;
 
     let mut dashboard = DASHBOARDS
-        .get_dashboard_by_user(dashboard_id, &user_id)
+        .get_dashboard_by_user(dashboard_id, &user_id, is_admin)
         .await
         .ok_or(DashboardError::Unauthorized)?;
 

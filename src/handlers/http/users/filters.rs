@@ -22,7 +22,7 @@ use crate::{
     parseable::PARSEABLE,
     storage::ObjectStorageError,
     users::filters::{CURRENT_FILTER_VERSION, FILTERS, Filter},
-    utils::{actix::extract_session_key_from_req, get_hash, get_user_from_request},
+    utils::{actix::extract_session_key_from_req, get_hash, get_user_from_request, is_admin},
 };
 use actix_web::{
     HttpRequest, HttpResponse, Responder,
@@ -46,8 +46,11 @@ pub async fn get(
 ) -> Result<impl Responder, FiltersError> {
     let user_id = get_user_from_request(&req)?;
     let filter_id = filter_id.into_inner();
-
-    if let Some(filter) = FILTERS.get_filter(&filter_id, &get_hash(&user_id)).await {
+    let is_admin = is_admin(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
+    if let Some(filter) = FILTERS
+        .get_filter(&filter_id, &get_hash(&user_id), is_admin)
+        .await
+    {
         return Ok((web::Json(filter), StatusCode::OK));
     }
 
@@ -81,7 +84,13 @@ pub async fn update(
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
     let filter_id = filter_id.into_inner();
-    if FILTERS.get_filter(&filter_id, &user_id).await.is_none() {
+    let is_admin = is_admin(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
+
+    if FILTERS
+        .get_filter(&filter_id, &user_id, is_admin)
+        .await
+        .is_none()
+    {
         return Err(FiltersError::Metadata(
             "Filter does not exist or user is not authorized",
         ));
@@ -103,8 +112,9 @@ pub async fn delete(
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
     let filter_id = filter_id.into_inner();
+    let is_admin = is_admin(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
     let filter = FILTERS
-        .get_filter(&filter_id, &user_id)
+        .get_filter(&filter_id, &user_id, is_admin)
         .await
         .ok_or(FiltersError::Metadata(
             "Filter does not exist or user is not authorized",
