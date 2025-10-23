@@ -16,7 +16,7 @@
  *
  */
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use arrow_schema::Schema;
 use bytes::Bytes;
@@ -43,6 +43,25 @@ use crate::{
 pub trait Metastore: std::fmt::Debug + Send + Sync {
     async fn initiate_connection(&self) -> Result<(), MetastoreError>;
     async fn get_objects(&self, parent_path: &str) -> Result<Vec<Bytes>, MetastoreError>;
+
+    /// overview
+    async fn get_overviews(&self) -> Result<HashMap<String, Option<Bytes>>, MetastoreError>;
+    async fn put_overview(
+        &self,
+        obj: &dyn MetastoreObject,
+        stream: &str,
+    ) -> Result<(), MetastoreError>;
+    async fn delete_overview(&self, stream: &str) -> Result<(), MetastoreError>;
+
+    /// keystone
+    async fn get_keystones(&self) -> Result<Vec<Bytes>, MetastoreError>;
+    async fn put_keystone(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn delete_keystone(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+
+    /// conversations
+    async fn get_conversations(&self) -> Result<Vec<Bytes>, MetastoreError>;
+    async fn put_conversation(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn delete_conversation(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
 
     /// alerts
     async fn get_alerts(&self) -> Result<Vec<Bytes>, MetastoreError>;

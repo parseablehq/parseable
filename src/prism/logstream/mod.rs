@@ -144,7 +144,7 @@ async fn get_stats(stream_name: &str) -> Result<QueriedStats, PrismLogstreamErro
     Ok(stats)
 }
 
-async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, StreamError> {
+pub async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, StreamError> {
     // For query mode, if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
