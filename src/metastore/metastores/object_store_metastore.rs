@@ -17,7 +17,7 @@
  */
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -78,6 +78,102 @@ impl Metastore for ObjectStoreMetastore {
                 Box::new(|file_name| file_name.ends_with(".json")),
             )
             .await?)
+    }
+
+    /// This function fetches all the overviews from the underlying object store
+    async fn get_overviews(&self) -> Result<HashMap<String, Option<Bytes>>, MetastoreError> {
+        let streams = self.list_streams().await?;
+
+        let mut all_overviews = HashMap::new();
+        for stream in streams {
+            let overview_path = RelativePathBuf::from_iter([&stream, "overview"]);
+
+            // if the file doesn't exist, load an empty overview
+            let overview = (self.storage.get_object(&overview_path).await).ok();
+
+            all_overviews.insert(stream, overview);
+        }
+
+        Ok(all_overviews)
+    }
+
+    /// This function puts an overview in the object store at the given path
+    async fn put_overview(
+        &self,
+        obj: &dyn MetastoreObject,
+        stream: &str,
+    ) -> Result<(), MetastoreError> {
+        let path = RelativePathBuf::from_iter([stream, "overview"]);
+        Ok(self.storage.put_object(&path, to_bytes(obj)).await?)
+    }
+
+    /// Delete an overview
+    async fn delete_overview(&self, stream: &str) -> Result<(), MetastoreError> {
+        let path = RelativePathBuf::from_iter([stream, "overview"]);
+        Ok(self
+            .storage
+            .delete_object(&path)
+            .await?)
+    }
+
+    /// This function fetches all the keystones from the underlying object store
+    async fn get_keystones(&self) -> Result<Vec<Bytes>, MetastoreError> {
+        let keystone_path = RelativePathBuf::from_iter([".keystone"]);
+        let keystones = self
+            .storage
+            .get_objects(
+                Some(&keystone_path),
+                Box::new(|file_name| {
+                    file_name.ends_with(".json") && !file_name.starts_with("conv_")
+                }),
+            )
+            .await?;
+
+        Ok(keystones)
+    }
+
+    /// This function puts a keystone in the object store at the given path
+    async fn put_keystone(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
+        let id = obj.get_object_id();
+        let path = RelativePathBuf::from_iter([".keystone", &format!("{id}.json")]);
+        Ok(self.storage.put_object(&path, to_bytes(obj)).await?)
+    }
+
+    /// Delete a keystone
+    async fn delete_keystone(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
+        let id = obj.get_object_id();
+        let path = RelativePathBuf::from_iter([".keystone", &format!("{id}.json")]);
+        Ok(self.storage.delete_object(&path).await?)
+    }
+
+    /// This function fetches all the conversations from the underlying object store
+    async fn get_conversations(&self) -> Result<Vec<Bytes>, MetastoreError> {
+        let keystone_path = RelativePathBuf::from_iter([".keystone"]);
+        let conversations = self
+            .storage
+            .get_objects(
+                Some(&keystone_path),
+                Box::new(|file_name| {
+                    file_name.ends_with(".json") && file_name.starts_with("conv_")
+                }),
+            )
+            .await?;
+
+        Ok(conversations)
+    }
+
+    /// This function puts a conversation in the object store at the given path
+    async fn put_conversation(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
+        let id = obj.get_object_id();
+        let path = RelativePathBuf::from_iter([".keystone", &format!("conv_{id}.json")]);
+        Ok(self.storage.put_object(&path, to_bytes(obj)).await?)
+    }
+
+    /// Delete a conversation
+    async fn delete_conversation(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
+        let id = obj.get_object_id();
+        let path = RelativePathBuf::from_iter([".keystone", &format!("conv_{id}.json")]);
+        Ok(self.storage.delete_object(&path).await?)
     }
 
     /// This function fetches all the alerts from the underlying object store
