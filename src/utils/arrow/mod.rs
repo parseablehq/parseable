@@ -48,7 +48,12 @@ use crate::event::DEFAULT_TIMESTAMP_KEY;
 ///
 /// A vector of JSON objects representing the record batches.
 pub fn record_batches_to_json(records: &[RecordBatch]) -> Result<Vec<Map<String, Value>>> {
-    let buf = vec![];
+    // Early return for empty records to avoid unnecessary allocations
+    if records.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let buf = Vec::with_capacity(records.len() * 1024); // Pre-allocate with reasonable capacity
     let mut writer = arrow_json::ArrayWriter::new(buf);
     for record in records {
         writer.write(record)?;
@@ -57,8 +62,11 @@ pub fn record_batches_to_json(records: &[RecordBatch]) -> Result<Vec<Map<String,
 
     let buf = writer.into_inner();
 
-    let json_rows: Vec<Map<String, Value>> =
-        serde_json::from_reader(buf.as_slice()).unwrap_or_default();
+    // Use a cursor to avoid extra allocations during parsing
+    let json_rows: Vec<Map<String, Value>> = {
+        let cursor = std::io::Cursor::new(buf);
+        serde_json::from_reader(cursor).unwrap_or_else(|_| Vec::with_capacity(0))
+    };
 
     Ok(json_rows)
 }
