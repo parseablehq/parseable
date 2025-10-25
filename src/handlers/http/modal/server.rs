@@ -154,6 +154,9 @@ impl ParseableServer for Server {
             analytics::init_analytics_scheduler()?;
         }
 
+        // Initialize memory release scheduler
+        crate::memory::init_memory_release_scheduler()?;
+
         tokio::spawn(handlers::livetail::server());
         tokio::spawn(handlers::airplane::server());
 

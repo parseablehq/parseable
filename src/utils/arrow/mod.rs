@@ -65,7 +65,7 @@ pub fn record_batches_to_json(records: &[RecordBatch]) -> Result<Vec<Map<String,
     // Use a cursor to avoid extra allocations during parsing
     let json_rows: Vec<Map<String, Value>> = {
         let cursor = std::io::Cursor::new(buf);
-        serde_json::from_reader(cursor).unwrap_or_else(|_| Vec::with_capacity(0))
+        serde_json::from_reader(cursor)?
     };
 
     Ok(json_rows)

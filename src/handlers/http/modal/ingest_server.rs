@@ -129,6 +129,9 @@ impl ParseableServer for IngestServer {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         thread::spawn(|| sync::handler(cancel_rx));
 
+        // Initialize memory release scheduler
+        crate::memory::init_memory_release_scheduler()?;
+
         tokio::spawn(airplane::server());
 
         // Ingestors shouldn't have to deal with OpenId auth flow

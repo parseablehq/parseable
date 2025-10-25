@@ -16,14 +16,10 @@
  *
  */
 
-use std::ffi::CString;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
-
 use crate::{handlers::http::query::QueryError, utils::arrow::record_batches_to_json};
 use datafusion::arrow::record_batch::RecordBatch;
 use serde_json::{Value, json};
-use tracing::{debug, info, warn};
+use tracing::info;
 
 pub struct QueryResponse {
     pub records: Vec<RecordBatch>,
@@ -68,51 +64,5 @@ impl QueryResponse {
         };
 
         Ok(response)
-    }
-}
-
-impl Drop for QueryResponse {
-    fn drop(&mut self) {
-        force_memory_release();
-    }
-}
-
-// Rate-limited memory release with proper error handling
-static LAST_PURGE: Mutex<Option<Instant>> = Mutex::new(None);
-const PURGE_INTERVAL: Duration = Duration::from_secs(3600); // 1 hour
-pub fn force_memory_release() {
-    {
-        let mut last_purge = LAST_PURGE.lock().unwrap();
-        if let Some(last) = *last_purge {
-            if last.elapsed() < PURGE_INTERVAL {
-                return;
-            }
-        }
-        *last_purge = Some(Instant::now());
-    }
-
-    // Advance epoch to refresh statistics and trigger potential cleanup
-    if let Err(e) = tikv_jemalloc_ctl::epoch::mib().and_then(|mib| mib.advance()) {
-        warn!("Failed to advance jemalloc epoch: {:?}", e);
-    }
-
-    // Purge all arenas using MALLCTL_ARENAS_ALL
-    if let Ok(arena_purge) = CString::new("arena.4096.purge") {
-        unsafe {
-            let ret = tikv_jemalloc_sys::mallctl(
-                arena_purge.as_ptr(),
-                std::ptr::null_mut(), // oldp (not reading)
-                std::ptr::null_mut(), // oldlenp (not reading)
-                std::ptr::null_mut(), // newp (void operation)
-                0,                    // newlen (void operation)
-            );
-            if ret != 0 {
-                warn!("Arena purge failed with code: {}", ret);
-            } else {
-                debug!("Successfully purged all jemalloc arenas");
-            }
-        }
-    } else {
-        warn!("Failed to create CString for arena purge");
     }
 }

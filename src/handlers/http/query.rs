@@ -51,7 +51,7 @@ use crate::query::error::ExecuteError;
 use crate::query::{CountsRequest, Query as LogicalQuery, execute};
 use crate::query::{QUERY_SESSION, resolve_stream_names};
 use crate::rbac::Users;
-use crate::response::{QueryResponse, force_memory_release};
+use crate::response::QueryResponse;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::time::{TimeParseError, TimeRange};
@@ -245,8 +245,8 @@ async fn handle_non_streaming_query(
         .insert_header((TIME_ELAPSED_HEADER, total_time.as_str()))
         .json(response);
 
-    // Force memory release after HTTP response is fully created
-    force_memory_release();
+    // // Force memory release after HTTP response is fully created
+    // force_memory_release();
 
     Ok(http_response)
 }
@@ -345,8 +345,6 @@ fn create_batch_processor(
             // Convert to bytes and explicitly drop the response object
             let bytes_result = Bytes::from(format!("{response}\n"));
             drop(response); // Explicit cleanup
-
-            force_memory_release();
 
             Ok(bytes_result)
         }
