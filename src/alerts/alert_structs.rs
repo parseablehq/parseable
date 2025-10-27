@@ -18,7 +18,7 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::{RwLock, mpsc};
@@ -36,7 +36,7 @@ use crate::{
     },
     metastore::metastore_traits::MetastoreObject,
     query::resolve_stream_names,
-    storage::object_storage::{alert_json_path, alert_state_json_path},
+    storage::object_storage::{alert_json_path, alert_state_json_path, mttr_json_path},
 };
 
 const RESERVED_FIELDS: &[&str] = &[
@@ -695,6 +695,32 @@ pub struct AggregatedMTTRStats {
     pub per_alert_stats: HashMap<String, MTTRStats>,
 }
 
+/// Daily MTTR statistics for a specific date
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DailyMTTRStats {
+    /// Date in YYYY-MM-DD format
+    pub date: NaiveDate,
+    /// Aggregated MTTR statistics for this date
+    pub stats: AggregatedMTTRStats,
+}
+
+/// MTTR history containing array of daily MTTR objects
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MTTRHistory {
+    /// Array of daily MTTR statistics
+    pub daily_stats: Vec<DailyMTTRStats>,
+}
+
+/// Query parameters for MTTR API endpoint
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MTTRQueryParams {
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+}
+
 impl AggregatedMTTRStats {
     /// Calculate aggregated MTTR stats from multiple alert state entries
     pub fn from_alert_states(alert_states: Vec<AlertStateEntry>) -> Self {
@@ -858,5 +884,15 @@ impl MetastoreObject for AlertConfig {
 
     fn get_object_path(&self) -> String {
         alert_json_path(self.id).to_string()
+    }
+}
+
+impl MetastoreObject for MTTRHistory {
+    fn get_object_id(&self) -> String {
+        "mttr".to_string()
+    }
+
+    fn get_object_path(&self) -> String {
+        mttr_json_path().to_string()
     }
 }

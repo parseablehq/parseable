@@ -27,7 +27,10 @@ use tonic::async_trait;
 use ulid::Ulid;
 
 use crate::{
-    alerts::{alert_structs::AlertStateEntry, target::Target},
+    alerts::{
+        alert_structs::{AlertStateEntry, MTTRHistory},
+        target::Target,
+    },
     catalog::manifest::Manifest,
     handlers::http::modal::NodeType,
     metastore::MetastoreError,
@@ -76,6 +79,10 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
     ) -> Result<Option<AlertStateEntry>, MetastoreError>;
     async fn put_alert_state(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
     async fn delete_alert_state(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+
+    /// mttr history
+    async fn get_mttr_history(&self) -> Result<Option<MTTRHistory>, MetastoreError>;
+    async fn put_mttr_history(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
 
     /// llmconfig
     async fn get_llmconfigs(&self) -> Result<Vec<Bytes>, MetastoreError>;

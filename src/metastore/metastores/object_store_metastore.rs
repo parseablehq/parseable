@@ -32,7 +32,10 @@ use tracing::warn;
 use ulid::Ulid;
 
 use crate::{
-    alerts::{alert_structs::AlertStateEntry, target::Target},
+    alerts::{
+        alert_structs::{AlertStateEntry, MTTRHistory},
+        target::Target,
+    },
     catalog::{manifest::Manifest, partition_path},
     handlers::http::{
         modal::{Metadata, NodeMetadata, NodeType},
@@ -303,6 +306,28 @@ impl Metastore for ObjectStoreMetastore {
             .storage
             .delete_object(&RelativePathBuf::from(path))
             .await?)
+    }
+
+    /// Get MTTR history from storage
+    async fn get_mttr_history(&self) -> Result<Option<MTTRHistory>, MetastoreError> {
+        let path = RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY, "mttr.json"]);
+        match self.storage.get_object(&path).await {
+            Ok(bytes) => {
+                if let Ok(history) = serde_json::from_slice::<MTTRHistory>(&bytes) {
+                    Ok(Some(history))
+                } else {
+                    Ok(None)
+                }
+            }
+            Err(ObjectStorageError::NoSuchKey(_)) => Ok(None),
+            Err(e) => Err(MetastoreError::ObjectStorageError(e)),
+        }
+    }
+
+    /// Put MTTR history to storage
+    async fn put_mttr_history(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
+        let path = RelativePathBuf::from(obj.get_object_path());
+        Ok(self.storage.put_object(&path, to_bytes(obj)).await?)
     }
 
     /// This function fetches all the llmconfigs from the underlying object store
