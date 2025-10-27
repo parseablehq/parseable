@@ -598,7 +598,7 @@ pub type PrismMetadata = NodeMetadata;
 /// Initialize hot tier metadata files for streams that have hot tier configuration
 /// in their stream metadata but don't have local hot tier metadata files yet.
 /// This function is called once during query server startup.
-async fn initialize_hot_tier_metadata_on_startup(
+pub async fn initialize_hot_tier_metadata_on_startup(
     hot_tier_manager: &HotTierManager,
 ) -> anyhow::Result<()> {
     // Collect hot tier configurations from streams before doing async operations
