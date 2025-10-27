@@ -110,10 +110,7 @@ impl Metastore for ObjectStoreMetastore {
     /// Delete an overview
     async fn delete_overview(&self, stream: &str) -> Result<(), MetastoreError> {
         let path = RelativePathBuf::from_iter([stream, "overview"]);
-        Ok(self
-            .storage
-            .delete_object(&path)
-            .await?)
+        Ok(self.storage.delete_object(&path).await?)
     }
 
     /// This function fetches all the keystones from the underlying object store

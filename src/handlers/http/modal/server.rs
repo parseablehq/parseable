@@ -25,6 +25,7 @@ use crate::handlers::http::alerts;
 use crate::handlers::http::base_path;
 use crate::handlers::http::demo_data::get_demo_data;
 use crate::handlers::http::health_check;
+use crate::handlers::http::modal::initialize_hot_tier_metadata_on_startup;
 use crate::handlers::http::prism_base_path;
 use crate::handlers::http::query;
 use crate::handlers::http::resource_check;
@@ -143,6 +144,11 @@ impl ParseableServer for Server {
         });
 
         if let Some(hot_tier_manager) = HotTierManager::global() {
+            // Initialize hot tier metadata files for streams that have hot tier configuration
+            // but don't have local hot tier metadata files yet
+            if let Err(e) = initialize_hot_tier_metadata_on_startup(hot_tier_manager).await {
+                tracing::warn!("Failed to initialize hot tier metadata on startup: {}", e);
+            }
             hot_tier_manager.download_from_s3()?;
         };
 

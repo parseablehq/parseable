@@ -22,6 +22,7 @@ use std::thread;
 use crate::handlers::airplane;
 use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
+use crate::handlers::http::modal::initialize_hot_tier_metadata_on_startup;
 use crate::handlers::http::{MAX_EVENT_PAYLOAD_SIZE, logstream};
 use crate::handlers::http::{base_path, prism_base_path, resource_check};
 use crate::handlers::http::{rbac, role};
@@ -141,6 +142,11 @@ impl ParseableServer for QueryServer {
         });
         if let Some(hot_tier_manager) = HotTierManager::global() {
             hot_tier_manager.put_internal_stream_hot_tier().await?;
+            // Initialize hot tier metadata files for streams that have hot tier configuration
+            // but don't have local hot tier metadata files yet
+            if let Err(e) = initialize_hot_tier_metadata_on_startup(hot_tier_manager).await {
+                tracing::warn!("Failed to initialize hot tier metadata on startup: {}", e);
+            }
             hot_tier_manager.download_from_s3()?;
         };
 
