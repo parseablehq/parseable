@@ -53,6 +53,7 @@ use crate::{
         DEFAULT_TIMESTAMP_KEY,
         format::{LogSource, LogSourceEntry},
     },
+    hottier::StreamHotTier,
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
@@ -921,8 +922,18 @@ impl Stream {
         self.metadata.write().expect(LOCK_EXPECT).custom_partition = custom_partition.cloned();
     }
 
-    pub fn set_hot_tier(&self, enable: bool) {
-        self.metadata.write().expect(LOCK_EXPECT).hot_tier_enabled = enable;
+    pub fn set_hot_tier(&self, hot_tier: Option<StreamHotTier>) {
+        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        metadata.hot_tier.clone_from(&hot_tier);
+        metadata.hot_tier_enabled = hot_tier.is_some();
+    }
+
+    pub fn get_hot_tier(&self) -> Option<StreamHotTier> {
+        self.metadata.read().expect(LOCK_EXPECT).hot_tier.clone()
+    }
+
+    pub fn is_hot_tier_enabled(&self) -> bool {
+        self.metadata.read().expect(LOCK_EXPECT).hot_tier_enabled
     }
 
     pub fn get_stream_type(&self) -> StreamType {

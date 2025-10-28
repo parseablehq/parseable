@@ -25,6 +25,7 @@ use crate::{
     catalog::snapshot::Snapshot,
     event::format::LogSourceEntry,
     handlers::TelemetryType,
+    hottier::StreamHotTier,
     metadata::SchemaVersion,
     metastore::{MetastoreErrorDetail, metastore_traits::MetastoreObject},
     option::StandaloneWithDistributed,
@@ -122,6 +123,8 @@ pub struct ObjectStoreFormat {
     pub static_schema_flag: bool,
     #[serde(default)]
     pub hot_tier_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hot_tier: Option<StreamHotTier>,
     #[serde(default)]
     pub stream_type: StreamType,
     #[serde(default)]
@@ -242,6 +245,7 @@ impl Default for ObjectStoreFormat {
             custom_partition: None,
             static_schema_flag: false,
             hot_tier_enabled: false,
+            hot_tier: None,
             log_source: vec![LogSourceEntry::default()],
             telemetry_type: TelemetryType::Logs,
         }

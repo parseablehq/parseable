@@ -397,7 +397,7 @@ pub async fn put_stream_hot_tier(
 
     validator::hot_tier(&hottier.size.to_string())?;
 
-    stream.set_hot_tier(true);
+    stream.set_hot_tier(Some(hottier.clone()));
     let Some(hot_tier_manager) = HotTierManager::global() else {
         return Err(StreamError::HotTierNotEnabled(stream_name));
     };
@@ -418,6 +418,7 @@ pub async fn put_stream_hot_tier(
             .await?,
     )?;
     stream_metadata.hot_tier_enabled = true;
+    stream_metadata.hot_tier = Some(hottier.clone());
 
     PARSEABLE
         .metastore
@@ -480,6 +481,7 @@ pub async fn delete_stream_hot_tier(
             .await?,
     )?;
     stream_metadata.hot_tier_enabled = false;
+    stream_metadata.hot_tier = None;
 
     PARSEABLE
         .metastore

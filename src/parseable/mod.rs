@@ -359,11 +359,13 @@ impl Parseable {
             .and_then(|limit| limit.parse().ok());
         let custom_partition = stream_metadata.custom_partition;
         let static_schema_flag = stream_metadata.static_schema_flag;
+        let hot_tier_enabled = stream_metadata.hot_tier_enabled;
+        let hot_tier = stream_metadata.hot_tier.clone();
         let stream_type = stream_metadata.stream_type;
         let schema_version = stream_metadata.schema_version;
         let log_source = stream_metadata.log_source;
         let telemetry_type = stream_metadata.telemetry_type;
-        let metadata = LogStreamMetadata::new(
+        let mut metadata = LogStreamMetadata::new(
             created_at,
             time_partition,
             time_partition_limit,
@@ -375,17 +377,27 @@ impl Parseable {
             log_source,
             telemetry_type,
         );
+
+        // Set hot tier fields from the stored metadata
+        metadata.hot_tier_enabled = hot_tier_enabled;
+        metadata.hot_tier.clone_from(&hot_tier);
+
         let ingestor_id = INGESTOR_META
             .get()
             .map(|ingestor_metadata| ingestor_metadata.get_node_id());
 
         // Gets write privileges only for creating the stream when it doesn't already exist.
-        self.streams.get_or_create(
+        let stream = self.streams.get_or_create(
             self.options.clone(),
             stream_name.to_owned(),
             metadata,
             ingestor_id,
         );
+
+        // Set hot tier configuration in memory based on stored metadata
+        if let Some(hot_tier_config) = hot_tier {
+            stream.set_hot_tier(Some(hot_tier_config));
+        }
 
         //commit schema in memory
         commit_schema(stream_name, schema).map_err(|e| StreamError::Anyhow(e.into()))?;

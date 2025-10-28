@@ -51,7 +51,7 @@ const HOT_TIER_SYNC_DURATION: Interval = clokwerk::Interval::Minutes(1);
 pub const INTERNAL_STREAM_HOT_TIER_SIZE_BYTES: u64 = 10485760; //10 MiB
 pub const CURRENT_HOT_TIER_VERSION: &str = "v2";
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct StreamHotTier {
     pub version: Option<String>,
     #[serde(with = "crate::utils::human_size")]
