@@ -924,7 +924,7 @@ impl Stream {
 
     pub fn set_hot_tier(&self, hot_tier: Option<StreamHotTier>) {
         let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
-        metadata.hot_tier = hot_tier.clone();
+        metadata.hot_tier.clone_from(&hot_tier);
         metadata.hot_tier_enabled = hot_tier.is_some();
     }
 

@@ -380,7 +380,7 @@ impl Parseable {
 
         // Set hot tier fields from the stored metadata
         metadata.hot_tier_enabled = hot_tier_enabled;
-        metadata.hot_tier = hot_tier.clone();
+        metadata.hot_tier.clone_from(&hot_tier);
 
         let ingestor_id = INGESTOR_META
             .get()
@@ -397,10 +397,6 @@ impl Parseable {
         // Set hot tier configuration in memory based on stored metadata
         if let Some(hot_tier_config) = hot_tier {
             stream.set_hot_tier(Some(hot_tier_config));
-        } else if hot_tier_enabled {
-            // Backward compatibility: if hot_tier_enabled is true but no hot_tier config exists,
-            // mark it as enabled in the stream metadata
-            stream.set_hot_tier(None);
         }
 
         //commit schema in memory
