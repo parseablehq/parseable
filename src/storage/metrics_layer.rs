@@ -26,8 +26,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt, stream::BoxStream};
 use object_store::{
-    GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore, PutMultipartOpts,
-    PutOptions, PutPayload, PutResult, Result as ObjectStoreResult, path::Path,
+    GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as ObjectStoreResult,
+    path::Path,
 };
 
 use crate::metrics::STORAGE_REQUEST_RESPONSE_TIME;
@@ -145,7 +146,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
     async fn put_multipart_opts(
         &self,
         location: &Path,
-        opts: PutMultipartOpts,
+        opts: PutMultipartOptions,
     ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
         let time = time::Instant::now();
         let result = self.inner.put_multipart_opts(location, opts).await;
@@ -212,7 +213,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         result
     }
 
-    async fn get_range(&self, location: &Path, range: Range<usize>) -> ObjectStoreResult<Bytes> {
+    async fn get_range(&self, location: &Path, range: Range<u64>) -> ObjectStoreResult<Bytes> {
         let time = time::Instant::now();
         let result = self.inner.get_range(location, range).await;
         let elapsed = time.elapsed().as_secs_f64();
@@ -231,7 +232,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
     async fn get_ranges(
         &self,
         location: &Path,
-        ranges: &[Range<usize>],
+        ranges: &[Range<u64>],
     ) -> ObjectStoreResult<Vec<Bytes>> {
         let time = time::Instant::now();
         let result = self.inner.get_ranges(location, ranges).await;
@@ -287,7 +288,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         self.inner.delete_stream(locations)
     }
 
-    fn list(&self, prefix: Option<&Path>) -> BoxStream<'_, ObjectStoreResult<ObjectMeta>> {
+    fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
         let time = time::Instant::now();
         let inner = self.inner.list(prefix);
         let res = StreamMetricWrapper {
@@ -302,7 +303,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         &self,
         prefix: Option<&Path>,
         offset: &Path,
-    ) -> BoxStream<'_, ObjectStoreResult<ObjectMeta>> {
+    ) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
         let time = time::Instant::now();
         let inner = self.inner.list_with_offset(prefix, offset);
         let res = StreamMetricWrapper {
