@@ -192,7 +192,7 @@ fn flatten_events(events: &[Event], span_start_time_unix_nano: u64) -> Vec<Map<S
             );
             event_json.insert("event_name".to_string(), Value::String(event.name.clone()));
 
-            // Calculate event duration in milliseconds from span start
+            // Calculate event duration in nanoseconds from span start
             let duration_nanos = event
                 .time_unix_nano
                 .saturating_sub(span_start_time_unix_nano);
