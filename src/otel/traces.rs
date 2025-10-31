@@ -16,6 +16,7 @@
  *
  */
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+use opentelemetry_proto::tonic::common::v1::KeyValue;
 use opentelemetry_proto::tonic::trace::v1::ScopeSpans;
 use opentelemetry_proto::tonic::trace::v1::Span;
 use opentelemetry_proto::tonic::trace::v1::Status;
@@ -23,6 +24,8 @@ use opentelemetry_proto::tonic::trace::v1::TracesData;
 use opentelemetry_proto::tonic::trace::v1::span::Event;
 use opentelemetry_proto::tonic::trace::v1::span::Link;
 use serde_json::{Map, Value};
+
+use crate::otel::otel_utils::flatten_attributes;
 
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
@@ -197,7 +200,7 @@ fn flatten_events(events: &[Event], span_start_time_unix_nano: u64) -> Vec<Map<S
                 ),
             );
 
-            insert_attributes(&mut event_json, &event.attributes);
+            insert_events_attributes(&mut event_json, &event.attributes);
             event_json.insert(
                 "event_dropped_attributes_count".to_string(),
                 Value::Number(event.dropped_attributes_count.into()),
@@ -224,7 +227,7 @@ fn flatten_links(links: &[Link]) -> Vec<Map<String, Value>> {
                 Value::String(hex::encode(&link.trace_id)),
             );
 
-            insert_attributes(&mut link_json, &link.attributes);
+            insert_links_attributes(&mut link_json, &link.attributes);
             link_json.insert(
                 "link_dropped_attributes_count".to_string(),
                 Value::Number(link.dropped_attributes_count.into()),
@@ -395,6 +398,20 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
         }
     }
     span_records_json
+}
+
+pub fn insert_events_attributes(map: &mut Map<String, Value>, attributes: &[KeyValue]) {
+    let attributes_json = flatten_attributes(attributes);
+    for (key, value) in attributes_json {
+        map.insert(format!("event_{}", key), value);
+    }
+}
+
+pub fn insert_links_attributes(map: &mut Map<String, Value>, attributes: &[KeyValue]) {
+    let attributes_json = flatten_attributes(attributes);
+    for (key, value) in attributes_json {
+        map.insert(format!("link_{}", key), value);
+    }
 }
 
 #[cfg(test)]
