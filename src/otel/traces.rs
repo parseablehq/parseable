@@ -46,10 +46,10 @@ pub const OTEL_TRACES_KNOWN_FIELD_LIST: [&str; 32] = [
     "span_kind_description",
     "span_start_time_unix_nano",
     "span_end_time_unix_nano",
-    "span_duration_ms",
+    "span_duration_ns",
     "event_name",
     "event_time_unix_nano",
-    "event_duration_ms",
+    "event_duration_ns",
     "event_dropped_attributes_count",
     "link_span_id",
     "link_trace_id",
@@ -191,11 +191,10 @@ fn flatten_events(events: &[Event], span_start_time_unix_nano: u64) -> Vec<Map<S
             let duration_nanos = event
                 .time_unix_nano
                 .saturating_sub(span_start_time_unix_nano);
-            let duration_ms = duration_nanos as f64 / 1_000_000.0; // Convert nanoseconds to milliseconds
             event_json.insert(
-                "event_duration_ms".to_string(),
+                "event_duration_ns".to_string(),
                 Value::Number(
-                    serde_json::Number::from_f64(duration_ms)
+                    serde_json::Number::from_f64(duration_nanos as f64)
                         .unwrap_or_else(|| serde_json::Number::from(0)),
                 ),
             );
@@ -352,17 +351,13 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
         )),
     );
 
-    // Calculate span duration in milliseconds
+    // Calculate span duration in nanoseconds
     let duration_nanos = span_record
         .end_time_unix_nano
         .saturating_sub(span_record.start_time_unix_nano);
-    let duration_ms = duration_nanos as f64 / 1_000_000.0; // Convert nanoseconds to milliseconds
     span_record_json.insert(
-        "span_duration_ms".to_string(),
-        Value::Number(
-            serde_json::Number::from_f64(duration_ms)
-                .unwrap_or_else(|| serde_json::Number::from(0)),
-        ),
+        "span_duration_ns".to_string(),
+        Value::Number(serde_json::Number::from(duration_nanos)),
     );
 
     insert_attributes(&mut span_record_json, &span_record.attributes);
@@ -981,14 +976,14 @@ mod tests {
             "event_name",
             "event_time_unix_nano",
             "event_dropped_attributes_count",
-            "event_duration_ms",
+            "event_duration_ns",
             "link_span_id",
             "link_trace_id",
             "link_dropped_attributes_count",
             "span_dropped_events_count",
             "span_dropped_links_count",
             "span_dropped_attributes_count",
-            "span_duration_ms",
+            "span_duration_ns",
             "span_trace_state",
             "span_flags",
             "span_flags_description",
