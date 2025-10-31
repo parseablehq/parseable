@@ -193,10 +193,7 @@ fn flatten_events(events: &[Event], span_start_time_unix_nano: u64) -> Vec<Map<S
                 .saturating_sub(span_start_time_unix_nano);
             event_json.insert(
                 "event_duration_ns".to_string(),
-                Value::Number(
-                    serde_json::Number::from_f64(duration_nanos as f64)
-                        .unwrap_or_else(|| serde_json::Number::from(0)),
-                ),
+                Value::Number(serde_json::Number::from(duration_nanos)),
             );
 
             insert_events_attributes(&mut event_json, &event.attributes);
@@ -586,7 +583,7 @@ mod tests {
             "Dropped attributes count should be preserved"
         );
         assert!(
-            first_event.contains_key("service.name"),
+            first_event.contains_key("event_service.name"),
             "Should contain flattened attributes"
         );
 
@@ -637,7 +634,7 @@ mod tests {
             "Dropped attributes count should be preserved"
         );
         assert!(
-            link.contains_key("service.name"),
+            link.contains_key("link_service.name"),
             "Should contain flattened attributes"
         );
     }
