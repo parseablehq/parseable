@@ -185,6 +185,11 @@ fn flatten_events(events: &[Event], span_start_time_unix_nano: u64) -> Vec<Map<S
                     convert_epoch_nano_to_timestamp(event.time_unix_nano as i64).to_string(),
                 ),
             );
+            // add epoch value of event time in json
+            event_json.insert(
+                "event_time_unix_nano_epoch".to_string(),
+                Value::Number(serde_json::Number::from(event.time_unix_nano)),
+            );
             event_json.insert("event_name".to_string(), Value::String(event.name.clone()));
 
             // Calculate event duration in milliseconds from span start
@@ -341,11 +346,21 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
             span_record.start_time_unix_nano as i64,
         )),
     );
+    // add epoch value of start time in json
+    span_record_json.insert(
+        "span_start_time_unix_nano_epoch".to_string(),
+        Value::Number(serde_json::Number::from(span_record.start_time_unix_nano)),
+    );
     span_record_json.insert(
         "span_end_time_unix_nano".to_string(),
         Value::String(convert_epoch_nano_to_timestamp(
             span_record.end_time_unix_nano as i64,
         )),
+    );
+    // add epoch value of end time in json
+    span_record_json.insert(
+        "span_end_time_unix_nano_epoch".to_string(),
+        Value::Number(serde_json::Number::from(span_record.end_time_unix_nano)),
     );
 
     // Calculate span duration in nanoseconds
