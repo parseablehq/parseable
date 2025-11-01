@@ -191,5 +191,5 @@ pub fn insert_attributes(map: &mut Map<String, Value>, attributes: &[KeyValue]) 
 
 pub fn convert_epoch_nano_to_timestamp(epoch_ns: i64) -> String {
     let dt = DateTime::from_timestamp_nanos(epoch_ns).naive_utc();
-    dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
+    dt.format("%Y-%m-%dT%H:%M:%S%.9fZ").to_string()
 }

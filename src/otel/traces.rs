@@ -16,6 +16,7 @@
  *
  */
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+use opentelemetry_proto::tonic::common::v1::KeyValue;
 use opentelemetry_proto::tonic::trace::v1::ScopeSpans;
 use opentelemetry_proto::tonic::trace::v1::Span;
 use opentelemetry_proto::tonic::trace::v1::Status;
@@ -23,6 +24,8 @@ use opentelemetry_proto::tonic::trace::v1::TracesData;
 use opentelemetry_proto::tonic::trace::v1::span::Event;
 use opentelemetry_proto::tonic::trace::v1::span::Link;
 use serde_json::{Map, Value};
+
+use crate::otel::otel_utils::flatten_attributes;
 
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
@@ -43,10 +46,10 @@ pub const OTEL_TRACES_KNOWN_FIELD_LIST: [&str; 32] = [
     "span_kind_description",
     "span_start_time_unix_nano",
     "span_end_time_unix_nano",
-    "span_duration_ms",
+    "span_duration_ns",
     "event_name",
     "event_time_unix_nano",
-    "event_duration_ms",
+    "event_duration_ns",
     "event_dropped_attributes_count",
     "link_span_id",
     "link_trace_id",
@@ -182,22 +185,23 @@ fn flatten_events(events: &[Event], span_start_time_unix_nano: u64) -> Vec<Map<S
                     convert_epoch_nano_to_timestamp(event.time_unix_nano as i64).to_string(),
                 ),
             );
+            // add epoch value of event time in json
+            event_json.insert(
+                "event_time_unix_nano_epoch".to_string(),
+                Value::Number(serde_json::Number::from(event.time_unix_nano)),
+            );
             event_json.insert("event_name".to_string(), Value::String(event.name.clone()));
 
-            // Calculate event duration in milliseconds from span start
+            // Calculate event duration in nanoseconds from span start
             let duration_nanos = event
                 .time_unix_nano
                 .saturating_sub(span_start_time_unix_nano);
-            let duration_ms = duration_nanos as f64 / 1_000_000.0; // Convert nanoseconds to milliseconds
             event_json.insert(
-                "event_duration_ms".to_string(),
-                Value::Number(
-                    serde_json::Number::from_f64(duration_ms)
-                        .unwrap_or_else(|| serde_json::Number::from(0)),
-                ),
+                "event_duration_ns".to_string(),
+                Value::Number(serde_json::Number::from(duration_nanos)),
             );
 
-            insert_attributes(&mut event_json, &event.attributes);
+            insert_events_attributes(&mut event_json, &event.attributes);
             event_json.insert(
                 "event_dropped_attributes_count".to_string(),
                 Value::Number(event.dropped_attributes_count.into()),
@@ -224,7 +228,7 @@ fn flatten_links(links: &[Link]) -> Vec<Map<String, Value>> {
                 Value::String(hex::encode(&link.trace_id)),
             );
 
-            insert_attributes(&mut link_json, &link.attributes);
+            insert_links_attributes(&mut link_json, &link.attributes);
             link_json.insert(
                 "link_dropped_attributes_count".to_string(),
                 Value::Number(link.dropped_attributes_count.into()),
@@ -342,24 +346,30 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
             span_record.start_time_unix_nano as i64,
         )),
     );
+    // add epoch value of start time in json
+    span_record_json.insert(
+        "span_start_time_unix_nano_epoch".to_string(),
+        Value::Number(serde_json::Number::from(span_record.start_time_unix_nano)),
+    );
     span_record_json.insert(
         "span_end_time_unix_nano".to_string(),
         Value::String(convert_epoch_nano_to_timestamp(
             span_record.end_time_unix_nano as i64,
         )),
     );
+    // add epoch value of end time in json
+    span_record_json.insert(
+        "span_end_time_unix_nano_epoch".to_string(),
+        Value::Number(serde_json::Number::from(span_record.end_time_unix_nano)),
+    );
 
-    // Calculate span duration in milliseconds
+    // Calculate span duration in nanoseconds
     let duration_nanos = span_record
         .end_time_unix_nano
         .saturating_sub(span_record.start_time_unix_nano);
-    let duration_ms = duration_nanos as f64 / 1_000_000.0; // Convert nanoseconds to milliseconds
     span_record_json.insert(
-        "span_duration_ms".to_string(),
-        Value::Number(
-            serde_json::Number::from_f64(duration_ms)
-                .unwrap_or_else(|| serde_json::Number::from(0)),
-        ),
+        "span_duration_ns".to_string(),
+        Value::Number(serde_json::Number::from(duration_nanos)),
     );
 
     insert_attributes(&mut span_record_json, &span_record.attributes);
@@ -395,6 +405,20 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
         }
     }
     span_records_json
+}
+
+pub fn insert_events_attributes(map: &mut Map<String, Value>, attributes: &[KeyValue]) {
+    let attributes_json = flatten_attributes(attributes);
+    for (key, value) in attributes_json {
+        map.insert(format!("event_{}", key), value);
+    }
+}
+
+pub fn insert_links_attributes(map: &mut Map<String, Value>, attributes: &[KeyValue]) {
+    let attributes_json = flatten_attributes(attributes);
+    for (key, value) in attributes_json {
+        map.insert(format!("link_{}", key), value);
+    }
 }
 
 #[cfg(test)]
@@ -574,7 +598,7 @@ mod tests {
             "Dropped attributes count should be preserved"
         );
         assert!(
-            first_event.contains_key("service.name"),
+            first_event.contains_key("event_service.name"),
             "Should contain flattened attributes"
         );
 
@@ -625,7 +649,7 @@ mod tests {
             "Dropped attributes count should be preserved"
         );
         assert!(
-            link.contains_key("service.name"),
+            link.contains_key("link_service.name"),
             "Should contain flattened attributes"
         );
     }
@@ -964,14 +988,14 @@ mod tests {
             "event_name",
             "event_time_unix_nano",
             "event_dropped_attributes_count",
-            "event_duration_ms",
+            "event_duration_ns",
             "link_span_id",
             "link_trace_id",
             "link_dropped_attributes_count",
             "span_dropped_events_count",
             "span_dropped_links_count",
             "span_dropped_attributes_count",
-            "span_duration_ms",
+            "span_duration_ns",
             "span_trace_state",
             "span_flags",
             "span_flags_description",
