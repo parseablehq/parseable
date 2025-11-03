@@ -24,9 +24,8 @@ use actix_web::Either;
 use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::catalog::resolve_table_references;
 use datafusion::common::tree_node::Transformed;
-use datafusion::execution::disk_manager::DiskManagerConfig;
+use datafusion::execution::disk_manager::DiskManager;
 use datafusion::execution::{SendableRecordBatchStream, SessionState, SessionStateBuilder};
 use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
@@ -34,6 +33,7 @@ use datafusion::logical_expr::{
 };
 use datafusion::prelude::*;
 use datafusion::sql::parser::DFParser;
+use datafusion::sql::resolve::resolve_table_references;
 use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
@@ -120,7 +120,7 @@ impl Query {
     fn create_session_state(storage: Arc<dyn ObjectStorageProvider>) -> SessionState {
         let runtime_config = storage
             .get_datafusion_runtime()
-            .with_disk_manager(DiskManagerConfig::NewOs);
+            .with_disk_manager_builder(DiskManager::builder());
         let (pool_size, fraction) = match PARSEABLE.options.query_memory_pool_size {
             Some(size) => (size, 1.),
             None => {
@@ -231,6 +231,7 @@ impl Query {
                     self.time_range.end.naive_utc(),
                 );
                 LogicalPlan::Explain(Explain {
+                    explain_format: plan.explain_format,
                     verbose: plan.verbose,
                     stringified_plans: vec![
                         transformed
