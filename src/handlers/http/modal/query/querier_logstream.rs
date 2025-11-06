@@ -29,7 +29,7 @@ use http::StatusCode;
 use tokio::sync::Mutex;
 use tracing::{error, warn};
 
-static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
+pub static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
 
 use crate::{
     handlers::{
