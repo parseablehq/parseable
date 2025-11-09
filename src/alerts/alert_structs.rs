@@ -24,6 +24,27 @@ use serde_json::Value;
 use tokio::sync::{RwLock, mpsc};
 use ulid::Ulid;
 
+const RESERVED_FIELDS: &[&str] = &[
+    "id",
+    "version",
+    "severity",
+    "title",
+    "query",
+    "datasets",
+    "alertType",
+    "anomalyConfig",
+    "forecastConfig",
+    "thresholdConfig",
+    "notificationConfig",
+    "evalConfig",
+    "targets",
+    "tags",
+    "state",
+    "notificationState",
+    "created",
+    "lastTriggeredAt",
+];
+
 use crate::{
     alerts::{
         AlertError, CURRENT_ALERTS_VERSION,
@@ -306,6 +327,26 @@ pub struct AlertRequest {
 
 impl AlertRequest {
     pub async fn into(self) -> Result<AlertConfig, AlertError> {
+        // Validate that other_fields doesn't contain reserved field names
+        if let Some(ref other_fields) = self.other_fields {
+            // Limit other_fields to maximum 10 fields
+            if other_fields.len() > 10 {
+                return Err(AlertError::ValidationFailure(format!(
+                    "other_fields can contain at most 10 fields, found {}",
+                    other_fields.len()
+                )));
+            }
+
+            for key in other_fields.keys() {
+                if RESERVED_FIELDS.contains(&key.as_str()) {
+                    return Err(AlertError::ValidationFailure(format!(
+                        "Field '{}' cannot be in other_fields as it's a reserved field name",
+                        key
+                    )));
+                }
+            }
+        }
+
         // Validate that all target IDs exist
         for id in &self.targets {
             TARGETS.get_target_by_id(id).await?;
