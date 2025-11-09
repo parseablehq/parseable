@@ -51,6 +51,10 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
     let mut limit = 100usize; // Default limit
     const MAX_LIMIT: usize = 1000; // Maximum allowed limit
 
+    // Reserved query parameter names that are not treated as other_fields filters
+    const RESERVED_PARAMS: [&str; 3] = ["tags", "offset", "limit"];
+    let mut other_fields_filters: HashMap<String, String> = HashMap::new();
+
     // Parse query parameters
     if !query_map.is_empty() {
         // Parse tags parameter
@@ -87,6 +91,13 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
                 ));
             }
         }
+
+        // Collect all other query parameters as potential other_fields filters
+        for (key, value) in query_map.iter() {
+            if !RESERVED_PARAMS.contains(&key.as_str()) {
+                other_fields_filters.insert(key.clone(), value.clone());
+            }
+        }
     }
     let guard = ALERTS.read().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
@@ -100,6 +111,23 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
         .iter()
         .map(|alert| alert.to_summary())
         .collect::<Vec<_>>();
+
+    // Filter by other_fields if any filters are specified
+    if !other_fields_filters.is_empty() {
+        alerts_summary.retain(|alert_summary| {
+            // Check if all specified other_fields filters match
+            other_fields_filters
+                .iter()
+                .all(|(filter_key, filter_value)| {
+                    alert_summary
+                        .get(filter_key)
+                        .and_then(|v| v.as_str())
+                        .map(|alert_value| alert_value == filter_value)
+                        .unwrap_or(false)
+                })
+        });
+    }
+
     // Sort by state priority (Triggered > NotTriggered) then by severity (Critical > High > Medium > Low)
     alerts_summary.sort_by(|a, b| {
         // Parse state and severity from JSON values back to enums

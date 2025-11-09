@@ -134,6 +134,7 @@ impl AlertConfig {
             created: Utc::now(),
             tags: None,
             last_triggered_at: None,
+            other_fields: None,
         };
 
         // Save the migrated alert back to storage
@@ -680,6 +681,12 @@ impl AlertConfig {
                 "lastTriggeredAt".to_string(),
                 serde_json::Value::String(ts.to_string()),
             );
+        }
+
+        if let Some(other_fields) = &self.other_fields {
+            for (key, value) in other_fields {
+                map.insert(key.clone(), value.clone());
+            }
         }
 
         map
