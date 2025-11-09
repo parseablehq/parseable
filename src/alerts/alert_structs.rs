@@ -49,7 +49,7 @@ use crate::{
 /// - Empty strings → Default to current time with a warning
 /// - Missing fields → Default to current time
 /// - Valid timestamps → Parse normally
-pub(crate) fn deserialize_datetime_with_empty_string_fallback<'de, D>(
+pub fn deserialize_datetime_with_empty_string_fallback<'de, D>(
     deserializer: D,
 ) -> Result<DateTime<Utc>, D::Error>
 where
@@ -81,7 +81,7 @@ where
 
 /// Default function for created timestamp - returns current time
 /// This handles the case where created field is missing in deserialization
-pub(crate) fn default_created_time() -> DateTime<Utc> {
+pub fn default_created_time() -> DateTime<Utc> {
     Utc::now()
 }
 
