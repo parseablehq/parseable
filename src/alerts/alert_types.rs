@@ -19,6 +19,7 @@
 use std::{str::FromStr, time::Duration};
 
 use chrono::{DateTime, Utc};
+use serde_json::Value;
 use tonic::async_trait;
 use tracing::{info, trace, warn};
 use ulid::Ulid;
@@ -28,7 +29,10 @@ use crate::{
         AlertConfig, AlertError, AlertState, AlertType, AlertVersion, EvalConfig, Severity,
         ThresholdConfig,
         alert_enums::NotificationState,
-        alert_structs::{AlertStateEntry, GroupResult},
+        alert_structs::{
+            AlertStateEntry, GroupResult, default_created_time,
+            deserialize_datetime_with_empty_string_fallback,
+        },
         alert_traits::{AlertTrait, MessageCreation},
         alerts_utils::{evaluate_condition, execute_alert_query, extract_time_range},
         get_number_of_agg_exprs,
@@ -61,10 +65,16 @@ pub struct ThresholdAlert {
     pub state: AlertState,
     pub notification_state: NotificationState,
     pub notification_config: NotificationConfig,
+    #[serde(
+        default = "default_created_time",
+        deserialize_with = "deserialize_datetime_with_empty_string_fallback"
+    )]
     pub created: DateTime<Utc>,
     pub tags: Option<Vec<String>>,
     pub datasets: Vec<String>,
     pub last_triggered_at: Option<DateTime<Utc>>,
+    #[serde(flatten)]
+    pub other_fields: Option<serde_json::Map<String, Value>>,
 }
 
 impl MetastoreObject for ThresholdAlert {
@@ -408,6 +418,7 @@ impl From<AlertConfig> for ThresholdAlert {
             tags: value.tags,
             datasets: value.datasets,
             last_triggered_at: value.last_triggered_at,
+            other_fields: value.other_fields,
         }
     }
 }
@@ -431,6 +442,7 @@ impl From<ThresholdAlert> for AlertConfig {
             tags: val.tags,
             datasets: val.datasets,
             last_triggered_at: val.last_triggered_at,
+            other_fields: val.other_fields,
         }
     }
 }

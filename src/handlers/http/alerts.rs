@@ -38,69 +38,121 @@ use actix_web::{
 use chrono::{DateTime, Utc};
 use ulid::Ulid;
 
-// GET /alerts
-/// User needs at least a read access to the stream(s) that is being referenced in an alert
-/// Read all alerts then return alerts which satisfy the condition
-pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
-    let session_key = extract_session_key_from_req(&req)?;
-    let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
-        .map_err(|_| AlertError::InvalidQueryParameter("malformed query parameters".to_string()))?;
+// Reserved query parameter names that are not treated as other_fields filters
+const RESERVED_PARAMS: [&str; 3] = ["tags", "offset", "limit"];
+const MAX_LIMIT: usize = 1000;
+const DEFAULT_LIMIT: usize = 100;
 
+/// Query parameters for listing alerts
+struct ListQueryParams {
+    tags_list: Vec<String>,
+    offset: usize,
+    limit: usize,
+    other_fields_filters: HashMap<String, String>,
+}
+
+/// Parse and validate query parameters for listing alerts
+fn parse_list_query_params(
+    query_map: &HashMap<String, String>,
+) -> Result<ListQueryParams, AlertError> {
     let mut tags_list = Vec::new();
     let mut offset = 0usize;
-    let mut limit = 100usize; // Default limit
-    const MAX_LIMIT: usize = 1000; // Maximum allowed limit
+    let mut limit = DEFAULT_LIMIT;
+    let mut other_fields_filters: HashMap<String, String> = HashMap::new();
 
-    // Parse query parameters
-    if !query_map.is_empty() {
-        // Parse tags parameter
-        if let Some(tags) = query_map.get("tags") {
-            tags_list = tags
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
-            if tags_list.is_empty() {
-                return Err(AlertError::InvalidQueryParameter(
-                    "empty tags not allowed with query param tags".to_string(),
-                ));
-            }
-        }
+    if query_map.is_empty() {
+        return Ok(ListQueryParams {
+            tags_list,
+            offset,
+            limit,
+            other_fields_filters,
+        });
+    }
 
-        // Parse offset parameter
-        if let Some(offset_str) = query_map.get("offset") {
-            offset = offset_str.parse().map_err(|_| {
-                AlertError::InvalidQueryParameter("offset is not a valid number".to_string())
-            })?;
-        }
-
-        // Parse limit parameter
-        if let Some(limit_str) = query_map.get("limit") {
-            limit = limit_str.parse().map_err(|_| {
-                AlertError::InvalidQueryParameter("limit is not a valid number".to_string())
-            })?;
-
-            // Validate limit bounds
-            if limit == 0 || limit > MAX_LIMIT {
-                return Err(AlertError::InvalidQueryParameter(
-                    "limit should be between 1 and 1000".to_string(),
-                ));
-            }
+    // Parse tags parameter
+    if let Some(tags) = query_map.get("tags") {
+        tags_list = tags
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if tags_list.is_empty() {
+            return Err(AlertError::InvalidQueryParameter(
+                "empty tags not allowed with query param tags".to_string(),
+            ));
         }
     }
-    let guard = ALERTS.read().await;
-    let alerts = if let Some(alerts) = guard.as_ref() {
-        alerts
-    } else {
-        return Err(AlertError::CustomError("No AlertManager set".into()));
-    };
 
-    let alerts = alerts.list_alerts_for_user(session_key, tags_list).await?;
-    let mut alerts_summary = alerts
-        .iter()
-        .map(|alert| alert.to_summary())
-        .collect::<Vec<_>>();
-    // Sort by state priority (Triggered > NotTriggered) then by severity (Critical > High > Medium > Low)
+    // Parse offset parameter
+    if let Some(offset_str) = query_map.get("offset") {
+        offset = offset_str.parse().map_err(|_| {
+            AlertError::InvalidQueryParameter("offset is not a valid number".to_string())
+        })?;
+    }
+
+    // Parse limit parameter
+    if let Some(limit_str) = query_map.get("limit") {
+        limit = limit_str.parse().map_err(|_| {
+            AlertError::InvalidQueryParameter("limit is not a valid number".to_string())
+        })?;
+
+        // Validate limit bounds
+        if limit == 0 || limit > MAX_LIMIT {
+            return Err(AlertError::InvalidQueryParameter(
+                "limit should be between 1 and 1000".to_string(),
+            ));
+        }
+    }
+
+    // Collect all other query parameters as potential other_fields filters
+    for (key, value) in query_map.iter() {
+        if !RESERVED_PARAMS.contains(&key.as_str()) {
+            other_fields_filters.insert(key.clone(), value.clone());
+        }
+    }
+
+    Ok(ListQueryParams {
+        tags_list,
+        offset,
+        limit,
+        other_fields_filters,
+    })
+}
+
+/// Filter alerts by other_fields
+fn filter_by_other_fields(
+    mut alerts_summary: Vec<serde_json::Map<String, serde_json::Value>>,
+    filters: &HashMap<String, String>,
+) -> Vec<serde_json::Map<String, serde_json::Value>> {
+    if filters.is_empty() {
+        return alerts_summary;
+    }
+
+    alerts_summary.retain(|alert_summary| {
+        // Check if all specified other_fields filters match
+        filters.iter().all(|(filter_key, filter_value)| {
+            alert_summary
+                .get(filter_key)
+                .map(|v| {
+                    // Convert JSON value to string for comparison
+                    let value_as_string = if v.is_string() {
+                        // For strings, use the raw string value without quotes
+                        v.as_str().unwrap_or("").to_string()
+                    } else {
+                        // For numbers, booleans, arrays, objects, use JSON representation
+                        v.to_string()
+                    };
+                    value_as_string == *filter_value
+                })
+                .unwrap_or(false)
+        })
+    });
+
+    alerts_summary
+}
+
+/// Sort alerts by state, severity, and title
+fn sort_alerts(alerts_summary: &mut [serde_json::Map<String, serde_json::Value>]) {
     alerts_summary.sort_by(|a, b| {
         // Parse state and severity from JSON values back to enums
         let state_a = a
@@ -128,21 +180,65 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
             .unwrap_or(Severity::Low);
 
         let title_a = a.get("title").and_then(|v| v.as_str()).unwrap_or("");
-
         let title_b = b.get("title").and_then(|v| v.as_str()).unwrap_or("");
 
-        // First sort by state, then by severity
+        // First sort by state, then by severity, then by title
         state_a
             .cmp(&state_b)
             .then_with(|| severity_a.cmp(&severity_b))
             .then_with(|| title_a.cmp(title_b))
     });
+}
 
-    let paginated_alerts = alerts_summary
+/// Paginate alerts
+fn paginate_alerts(
+    alerts_summary: Vec<serde_json::Map<String, serde_json::Value>>,
+    offset: usize,
+    limit: usize,
+) -> Vec<serde_json::Map<String, serde_json::Value>> {
+    alerts_summary
         .into_iter()
         .skip(offset)
         .take(limit)
+        .collect()
+}
+
+// GET /alerts
+/// User needs at least a read access to the stream(s) that is being referenced in an alert
+/// Read all alerts then return alerts which satisfy the condition
+pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
+    let session_key = extract_session_key_from_req(&req)?;
+    let query_map = web::Query::<HashMap<String, String>>::from_query(req.query_string())
+        .map_err(|_| AlertError::InvalidQueryParameter("malformed query parameters".to_string()))?;
+
+    // Parse and validate query parameters
+    let params = parse_list_query_params(&query_map)?;
+
+    // Get alerts from the manager
+    let guard = ALERTS.read().await;
+    let alerts = if let Some(alerts) = guard.as_ref() {
+        alerts
+    } else {
+        return Err(AlertError::CustomError("No AlertManager set".into()));
+    };
+
+    // Fetch alerts for the user
+    let alerts = alerts
+        .list_alerts_for_user(session_key, params.tags_list)
+        .await?;
+    let mut alerts_summary = alerts
+        .iter()
+        .map(|alert| alert.to_summary())
         .collect::<Vec<_>>();
+
+    // Filter by other_fields
+    alerts_summary = filter_by_other_fields(alerts_summary, &params.other_fields_filters);
+
+    // Sort alerts
+    sort_alerts(&mut alerts_summary);
+
+    // Paginate results
+    let paginated_alerts = paginate_alerts(alerts_summary, params.offset, params.limit);
 
     Ok(web::Json(paginated_alerts))
 }

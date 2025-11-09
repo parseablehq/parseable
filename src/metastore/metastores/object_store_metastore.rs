@@ -180,7 +180,9 @@ impl Metastore for ObjectStoreMetastore {
             .storage
             .get_objects(
                 Some(&alerts_path),
-                Box::new(|file_name| file_name.ends_with(".json")),
+                Box::new(|file_name| {
+                    !file_name.starts_with("alert_state_") && file_name.ends_with(".json")
+                }),
             )
             .await?;
 

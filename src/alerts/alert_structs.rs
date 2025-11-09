@@ -19,9 +19,31 @@
 use std::{collections::HashMap, time::Duration};
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+use serde_json::Value;
 use tokio::sync::{RwLock, mpsc};
 use ulid::Ulid;
+
+const RESERVED_FIELDS: &[&str] = &[
+    "id",
+    "version",
+    "severity",
+    "title",
+    "query",
+    "datasets",
+    "alertType",
+    "anomalyConfig",
+    "forecastConfig",
+    "thresholdConfig",
+    "notificationConfig",
+    "evalConfig",
+    "targets",
+    "tags",
+    "state",
+    "notificationState",
+    "created",
+    "lastTriggeredAt",
+];
 
 use crate::{
     alerts::{
@@ -37,6 +59,52 @@ use crate::{
     query::resolve_stream_names,
     storage::object_storage::{alert_json_path, alert_state_json_path},
 };
+
+/// Custom deserializer for DateTime<Utc> that handles legacy empty strings
+///
+/// This is a compatibility layer for migrating old alerts that stored empty strings
+/// instead of valid timestamps. In production, this should log warnings to help
+/// identify data quality issues.
+///
+/// # Migration Path
+/// - Empty strings → Default to current time with a warning
+/// - Missing fields → Default to current time
+/// - Valid timestamps → Parse normally
+pub fn deserialize_datetime_with_empty_string_fallback<'de, D>(
+    deserializer: D,
+) -> Result<DateTime<Utc>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum DateTimeOrString {
+        DateTime(DateTime<Utc>),
+        String(String),
+    }
+
+    match DateTimeOrString::deserialize(deserializer)? {
+        DateTimeOrString::DateTime(dt) => Ok(dt),
+        DateTimeOrString::String(s) => {
+            if s.is_empty() {
+                // Log warning about data quality issue
+                tracing::warn!(
+                    "Alert has empty 'created' field - this indicates a data quality issue. \
+                     Defaulting to current timestamp. Please investigate and fix the data source."
+                );
+                Ok(Utc::now())
+            } else {
+                s.parse::<DateTime<Utc>>().map_err(serde::de::Error::custom)
+            }
+        }
+    }
+}
+
+/// Default function for created timestamp - returns current time
+/// This handles the case where created field is missing in deserialization
+pub fn default_created_time() -> DateTime<Utc> {
+    Utc::now()
+}
 
 /// Helper struct for basic alert fields during migration
 pub struct BasicAlertFields {
@@ -253,10 +321,32 @@ pub struct AlertRequest {
     pub eval_config: EvalConfig,
     pub targets: Vec<Ulid>,
     pub tags: Option<Vec<String>>,
+    #[serde(flatten)]
+    pub other_fields: Option<serde_json::Map<String, Value>>,
 }
 
 impl AlertRequest {
     pub async fn into(self) -> Result<AlertConfig, AlertError> {
+        // Validate that other_fields doesn't contain reserved field names
+        if let Some(ref other_fields) = self.other_fields {
+            // Limit other_fields to maximum 10 fields
+            if other_fields.len() > 10 {
+                return Err(AlertError::ValidationFailure(format!(
+                    "other_fields can contain at most 10 fields, found {}",
+                    other_fields.len()
+                )));
+            }
+
+            for key in other_fields.keys() {
+                if RESERVED_FIELDS.contains(&key.as_str()) {
+                    return Err(AlertError::ValidationFailure(format!(
+                        "Field '{}' cannot be in other_fields as it's a reserved field name",
+                        key
+                    )));
+                }
+            }
+        }
+
         // Validate that all target IDs exist
         for id in &self.targets {
             TARGETS.get_target_by_id(id).await?;
@@ -309,6 +399,7 @@ impl AlertRequest {
             created: Utc::now(),
             tags: self.tags,
             last_triggered_at: None,
+            other_fields: self.other_fields,
         };
         Ok(config)
     }
@@ -333,9 +424,15 @@ pub struct AlertConfig {
     pub state: AlertState,
     pub notification_state: NotificationState,
     pub notification_config: NotificationConfig,
+    #[serde(
+        default = "default_created_time",
+        deserialize_with = "deserialize_datetime_with_empty_string_fallback"
+    )]
     pub created: DateTime<Utc>,
     pub tags: Option<Vec<String>>,
     pub last_triggered_at: Option<DateTime<Utc>>,
+    #[serde(flatten)]
+    pub other_fields: Option<serde_json::Map<String, Value>>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -359,9 +456,15 @@ pub struct AlertConfigResponse {
     pub state: AlertState,
     pub notification_state: NotificationState,
     pub notification_config: NotificationConfig,
+    #[serde(
+        default = "default_created_time",
+        deserialize_with = "deserialize_datetime_with_empty_string_fallback"
+    )]
     pub created: DateTime<Utc>,
     pub tags: Option<Vec<String>>,
     pub last_triggered_at: Option<DateTime<Utc>>,
+    #[serde(flatten)]
+    pub other_fields: Option<serde_json::Map<String, Value>>,
 }
 
 impl AlertConfig {
@@ -401,6 +504,7 @@ impl AlertConfig {
             created: self.created,
             tags: self.tags,
             last_triggered_at: self.last_triggered_at,
+            other_fields: self.other_fields,
         }
     }
 }
