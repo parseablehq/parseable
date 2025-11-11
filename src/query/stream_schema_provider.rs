@@ -339,13 +339,13 @@ impl StandardTableProvider {
                 mut file_path,
                 num_rows,
                 columns,
-                file_size,
+                ingestion_size,
                 ..
             } = file;
 
             // Track billing metrics for files scanned in query
             file_count += 1;
-            total_file_size += file_size;
+            total_file_size += ingestion_size;
 
             // object_store::path::Path doesn't automatically deal with Windows path separators
             // to do that, we are using from_absolute_path() which takes into consideration the underlying filesystem
