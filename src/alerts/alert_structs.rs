@@ -41,7 +41,6 @@ const RESERVED_FIELDS: &[&str] = &[
     "tags",
     "state",
     "notificationState",
-    "created",
     "lastTriggeredAt",
 ];
 
