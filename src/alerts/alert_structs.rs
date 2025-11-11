@@ -39,6 +39,35 @@ use crate::{
     storage::object_storage::{alert_json_path, alert_state_json_path},
 };
 
+const RESERVED_FIELDS: &[&str] = &[
+    "version",
+    "id",
+    "severity",
+    "title",
+    "query",
+    "datasets",
+    "alertType",
+    "alert_type",
+    "anomalyConfig",
+    "anomaly_config",
+    "forecastConfig",
+    "forecast_config",
+    "thresholdConfig",
+    "threshold_config",
+    "evalConfig",
+    "eval_config",
+    "targets",
+    "state",
+    "notificationState",
+    "notification_state",
+    "notificationConfig",
+    "notification_config",
+    "created",
+    "tags",
+    "lastTriggeredAt",
+    "last_triggered_at",
+];
+
 /// Helper struct for basic alert fields during migration
 pub struct BasicAlertFields {
     pub id: Ulid,
@@ -261,7 +290,7 @@ pub struct AlertRequest {
 impl AlertRequest {
     pub async fn into(self) -> Result<AlertConfig, AlertError> {
         // Validate that other_fields doesn't contain reserved field names
-        if let Some(ref other_fields) = self.other_fields {
+        let other_fields = if let Some(mut other_fields) = self.other_fields {
             // Limit other_fields to maximum 10 fields
             if other_fields.len() > 10 {
                 return Err(AlertError::ValidationFailure(format!(
@@ -269,7 +298,21 @@ impl AlertRequest {
                     other_fields.len()
                 )));
             }
-        }
+
+            for reserved in RESERVED_FIELDS {
+                if other_fields.remove(*reserved).is_some() {
+                    tracing::warn!("Removed reserved field '{}' from other_fields", reserved);
+                }
+            }
+
+            if other_fields.is_empty() {
+                None
+            } else {
+                Some(other_fields)
+            }
+        } else {
+            None
+        };
 
         // Validate that all target IDs exist
         for id in &self.targets {
@@ -282,6 +325,8 @@ impl AlertRequest {
                 "Query should include only one dataset. Found: {datasets:?}"
             )));
         }
+
+        let created_timestamp = Utc::now();
 
         let config = AlertConfig {
             version: AlertVersion::from(CURRENT_ALERTS_VERSION),
@@ -320,11 +365,12 @@ impl AlertRequest {
             state: AlertState::default(),
             notification_state: NotificationState::Notify,
             notification_config: self.notification_config,
-            created: Utc::now(),
+            created: created_timestamp,
             tags: self.tags,
             last_triggered_at: None,
-            other_fields: self.other_fields,
+            other_fields,
         };
+
         Ok(config)
     }
 }
@@ -384,6 +430,25 @@ pub struct AlertConfigResponse {
 }
 
 impl AlertConfig {
+    /// Filters out reserved field names from other_fields
+    /// This prevents conflicts when flattening other_fields during serialization
+    pub fn sanitize_other_fields(&mut self) {
+        if let Some(ref mut other_fields) = self.other_fields {
+            for reserved in RESERVED_FIELDS {
+                if other_fields.remove(*reserved).is_some() {
+                    tracing::warn!(
+                        "Removed reserved field '{}' from other_fields during sanitization",
+                        reserved
+                    );
+                }
+            }
+
+            if other_fields.is_empty() {
+                self.other_fields = None;
+            }
+        }
+    }
+
     pub fn to_response(self) -> AlertConfigResponse {
         AlertConfigResponse {
             version: self.version,
