@@ -30,6 +30,7 @@ pub mod event;
 pub mod handlers;
 pub mod hottier;
 mod livetail;
+pub mod memory;
 mod metadata;
 pub mod metastore;
 pub mod metrics;
