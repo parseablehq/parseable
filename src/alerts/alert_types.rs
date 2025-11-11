@@ -29,10 +29,7 @@ use crate::{
         AlertConfig, AlertError, AlertState, AlertType, AlertVersion, EvalConfig, Severity,
         ThresholdConfig,
         alert_enums::NotificationState,
-        alert_structs::{
-            AlertStateEntry, GroupResult, default_created_time,
-            deserialize_datetime_with_empty_string_fallback,
-        },
+        alert_structs::{AlertStateEntry, GroupResult},
         alert_traits::{AlertTrait, MessageCreation},
         alerts_utils::{evaluate_condition, execute_alert_query, extract_time_range},
         get_number_of_agg_exprs,
@@ -65,10 +62,6 @@ pub struct ThresholdAlert {
     pub state: AlertState,
     pub notification_state: NotificationState,
     pub notification_config: NotificationConfig,
-    #[serde(
-        default = "default_created_time",
-        deserialize_with = "deserialize_datetime_with_empty_string_fallback"
-    )]
     pub created: DateTime<Utc>,
     pub tags: Option<Vec<String>>,
     pub datasets: Vec<String>,
