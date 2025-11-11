@@ -161,7 +161,7 @@ temp-dir = "0.1.14"
 
 [package.metadata.parseable_ui]
 assets-url = "https://parseable-prism-build.s3.us-east-2.amazonaws.com/v2.5.0/build.zip"
-assets-sha1 = "c530d2e82d58e7ad577adf35f8fde77b26aea359"
+assets-sha1 = "105d6ba4fbbc38d7305451b1fb6f48da06a94103"
 
 [features]
 debug = []
