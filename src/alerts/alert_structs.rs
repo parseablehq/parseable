@@ -24,26 +24,6 @@ use serde_json::Value;
 use tokio::sync::{RwLock, mpsc};
 use ulid::Ulid;
 
-const RESERVED_FIELDS: &[&str] = &[
-    "id",
-    "version",
-    "severity",
-    "title",
-    "query",
-    "datasets",
-    "alertType",
-    "anomalyConfig",
-    "forecastConfig",
-    "thresholdConfig",
-    "notificationConfig",
-    "evalConfig",
-    "targets",
-    "tags",
-    "state",
-    "notificationState",
-    "lastTriggeredAt",
-];
-
 use crate::{
     alerts::{
         AlertError, CURRENT_ALERTS_VERSION,
@@ -334,15 +314,6 @@ impl AlertRequest {
                     "other_fields can contain at most 10 fields, found {}",
                     other_fields.len()
                 )));
-            }
-
-            for key in other_fields.keys() {
-                if RESERVED_FIELDS.contains(&key.as_str()) {
-                    return Err(AlertError::ValidationFailure(format!(
-                        "Field '{}' cannot be in other_fields as it's a reserved field name",
-                        key
-                    )));
-                }
             }
         }
 
