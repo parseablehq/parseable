@@ -1,6 +1,6 @@
 [package]
 name = "parseable"
-version = "2.5.0"
+version = "2.5.1"
 authors = ["Parseable Team <hi@parseable.com>"]
 edition = "2024"
 rust-version = "1.88.0"
@@ -160,8 +160,8 @@ arrow = "54.0.0"
 temp-dir = "0.1.14"
 
 [package.metadata.parseable_ui]
-assets-url = "https://parseable-prism-build.s3.us-east-2.amazonaws.com/v2.5.0/build.zip"
-assets-sha1 = "105d6ba4fbbc38d7305451b1fb6f48da06a94103"
+assets-url = "https://parseable-prism-build.s3.us-east-2.amazonaws.com/v2.5.1/build.zip"
+assets-sha1 = "3f20398223131ec587bd4fb27f3bd71ce5ca21db"
 
 [features]
 debug = []
