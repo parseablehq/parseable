@@ -1152,13 +1152,20 @@ pub fn target_json_path(target_id: &Ulid) -> RelativePathBuf {
 }
 
 /// Constructs the path for storing alert state JSON files
-/// Format: ".parseable/alerts/alert_state_{alert_id}.json"
+/// Format: ".alerts/alert_state_{alert_id}.json"
 #[inline(always)]
 pub fn alert_state_json_path(alert_id: Ulid) -> RelativePathBuf {
     RelativePathBuf::from_iter([
         ALERTS_ROOT_DIRECTORY,
         &format!("alert_state_{alert_id}.json"),
     ])
+}
+
+/// Constructs the path for storing MTTR history JSON file
+/// Format: ".alerts/mttr.json"
+#[inline(always)]
+pub fn mttr_json_path() -> RelativePathBuf {
+    RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY, "mttr.json"])
 }
 
 #[inline(always)]
