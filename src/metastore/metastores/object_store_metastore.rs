@@ -52,7 +52,7 @@ use crate::{
         SETTINGS_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
         TARGETS_ROOT_DIRECTORY,
         object_storage::{
-            alert_json_path, alert_state_json_path, filter_path, manifest_path,
+            alert_json_path, alert_state_json_path, filter_path, manifest_path, mttr_json_path,
             parseable_json_path, schema_path, stream_json_path, to_bytes,
         },
     },
@@ -310,7 +310,7 @@ impl Metastore for ObjectStoreMetastore {
 
     /// Get MTTR history from storage
     async fn get_mttr_history(&self) -> Result<Option<MTTRHistory>, MetastoreError> {
-        let path = RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY, "mttr.json"]);
+        let path = mttr_json_path();
         match self.storage.get_object(&path).await {
             Ok(bytes) => {
                 if let Ok(history) = serde_json::from_slice::<MTTRHistory>(&bytes) {
