@@ -334,6 +334,30 @@ pub static TOTAL_OUTPUT_LLM_TOKENS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
+pub static TOTAL_CACHED_LLM_TOKENS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_cached_llm_tokens_by_date",
+            "Total cached LLM tokens used by date",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["provider", "model", "date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_REASONING_LLM_TOKENS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_reasoning_llm_tokens_by_date",
+            "Total reasoning LLM tokens used by date",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["provider", "model", "date"],
+    )
+    .expect("metric can be created")
+});
+
 pub static STORAGE_REQUEST_RESPONSE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
     HistogramVec::new(
         HistogramOpts::new("storage_request_response_time", "Storage Request Latency")
@@ -432,6 +456,12 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(TOTAL_OUTPUT_LLM_TOKENS_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_CACHED_LLM_TOKENS_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_REASONING_LLM_TOKENS_BY_DATE.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(STORAGE_REQUEST_RESPONSE_TIME.clone()))
@@ -562,6 +592,23 @@ pub fn increment_input_llm_tokens_by_date(provider: &str, model: &str, tokens: u
 
 pub fn increment_output_llm_tokens_by_date(provider: &str, model: &str, tokens: u64, date: &str) {
     TOTAL_OUTPUT_LLM_TOKENS_BY_DATE
+        .with_label_values(&[provider, model, date])
+        .inc_by(tokens);
+}
+
+pub fn increment_cached_llm_tokens_by_date(provider: &str, model: &str, tokens: u64, date: &str) {
+    TOTAL_CACHED_LLM_TOKENS_BY_DATE
+        .with_label_values(&[provider, model, date])
+        .inc_by(tokens);
+}
+
+pub fn increment_reasoning_llm_tokens_by_date(
+    provider: &str,
+    model: &str,
+    tokens: u64,
+    date: &str,
+) {
+    TOTAL_REASONING_LLM_TOKENS_BY_DATE
         .with_label_values(&[provider, model, date])
         .inc_by(tokens);
 }
