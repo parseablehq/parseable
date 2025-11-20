@@ -130,6 +130,9 @@ impl ParseableServer for QueryServer {
             analytics::init_analytics_scheduler()?;
         }
 
+        // Initialize memory release scheduler
+        crate::memory::init_memory_release_scheduler()?;
+
         if init_cluster_metrics_schedular().is_ok() {
             info!("Cluster metrics scheduler started successfully");
         }
