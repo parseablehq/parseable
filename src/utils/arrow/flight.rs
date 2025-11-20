@@ -28,6 +28,7 @@ use arrow_flight::encode::FlightDataEncoderBuilder;
 use arrow_flight::{FlightData, Ticket};
 use arrow_ipc::writer::IpcWriteOptions;
 use arrow_select::concat::concat_batches;
+use datafusion::common::Spans;
 use datafusion::logical_expr::BinaryExpr;
 use datafusion::prelude::Expr;
 use datafusion::scalar::ScalarValue;
@@ -119,6 +120,7 @@ pub fn send_to_ingester(start: i64, end: i64) -> bool {
     let expr_left = Expr::Column(datafusion::common::Column {
         relation: None,
         name: "p_timestamp".to_owned(),
+        spans: Spans::new(),
     });
 
     let ex1 = BinaryExpr::new(
@@ -138,7 +140,7 @@ pub fn send_to_ingester(start: i64, end: i64) -> bool {
 }
 
 fn lit_timestamp_milli(time: i64) -> Expr {
-    Expr::Literal(ScalarValue::TimestampMillisecond(Some(time), None))
+    Expr::Literal(ScalarValue::TimestampMillisecond(Some(time), None), None)
 }
 
 pub fn into_flight_data(records: Vec<RecordBatch>) -> Result<Response<DoGetStream>, Box<Status>> {

@@ -223,7 +223,7 @@ async fn validate_uploaded_parquet_file(
         .await
     {
         Ok(metadata) => {
-            if metadata.size as u64 != expected_size {
+            if metadata.size != expected_size {
                 warn!(
                     "Uploaded file size mismatch for stream {}: expected {}, got {}",
                     stream_name, expected_size, metadata.size
