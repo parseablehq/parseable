@@ -18,7 +18,6 @@
 
 use crate::{handlers::http::query::QueryError, utils::arrow::record_batches_to_json};
 use datafusion::arrow::record_batch::RecordBatch;
-use itertools::Itertools;
 use serde_json::{Value, json};
 use tracing::info;
 
@@ -32,26 +31,36 @@ pub struct QueryResponse {
 impl QueryResponse {
     pub fn to_json(&self) -> Result<Value, QueryError> {
         info!("{}", "Returning query results");
-        let mut json_records = record_batches_to_json(&self.records)?;
 
-        if self.fill_null {
-            for map in &mut json_records {
-                for field in &self.fields {
-                    if !map.contains_key(field) {
-                        map.insert(field.clone(), Value::Null);
+        // Process in batches to avoid massive allocations
+        const BATCH_SIZE: usize = 100; // Process 100 record batches at a time
+        let mut all_values = Vec::new();
+
+        for chunk in self.records.chunks(BATCH_SIZE) {
+            let mut json_records = record_batches_to_json(chunk)?;
+
+            if self.fill_null {
+                for map in &mut json_records {
+                    for field in &self.fields {
+                        if !map.contains_key(field) {
+                            map.insert(field.clone(), Value::Null);
+                        }
                     }
                 }
             }
+
+            // Convert this batch to values and add to collection
+            let batch_values: Vec<Value> = json_records.into_iter().map(Value::Object).collect();
+            all_values.extend(batch_values);
         }
-        let values = json_records.into_iter().map(Value::Object).collect_vec();
 
         let response = if self.with_fields {
             json!({
                 "fields": self.fields,
-                "records": values,
+                "records": all_values,
             })
         } else {
-            Value::Array(values)
+            Value::Array(all_values)
         };
 
         Ok(response)

@@ -31,6 +31,11 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry, fmt};
 
+// Use jemalloc as the global allocator
+#[cfg(not(target_env = "msvc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
     init_logger();

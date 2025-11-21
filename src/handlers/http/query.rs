@@ -35,7 +35,6 @@ use futures::stream::once;
 use futures::{Stream, StreamExt, future};
 use futures_util::Future;
 use http::StatusCode;
-use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -241,9 +240,15 @@ async fn handle_non_streaming_query(
         with_fields: query_request.fields,
     }
     .to_json()?;
-    Ok(HttpResponse::Ok()
+
+    let http_response = HttpResponse::Ok()
         .insert_header((TIME_ELAPSED_HEADER, total_time.as_str()))
-        .json(response))
+        .json(response);
+
+    // // Force memory release after HTTP response is fully created
+    // force_memory_release();
+
+    Ok(http_response)
 }
 
 /// Handles streaming queries, returning results as newline-delimited JSON (NDJSON).
@@ -324,18 +329,24 @@ fn create_batch_processor(
 ) -> impl FnMut(Result<RecordBatch, QueryError>) -> Result<Bytes, actix_web::Error> {
     move |batch_result| match batch_result {
         Ok(batch) => {
-            let response = QueryResponse {
+            // Create response and immediately process to reduce memory retention
+            let query_response = QueryResponse {
                 records: vec![batch],
                 fields: Vec::new(),
                 fill_null: send_null,
                 with_fields: false,
-            }
-            .to_json()
-            .map_err(|e| {
+            };
+
+            let response = query_response.to_json().map_err(|e| {
                 error!("Failed to parse record batch into JSON: {}", e);
                 actix_web::error::ErrorInternalServerError(e)
             })?;
-            Ok(Bytes::from(format!("{response}\n")))
+
+            // Convert to bytes and explicitly drop the response object
+            let bytes_result = Bytes::from(format!("{response}\n"));
+            drop(response); // Explicit cleanup
+
+            Ok(bytes_result)
         }
         Err(e) => Err(actix_web::error::ErrorInternalServerError(e)),
     }
@@ -380,12 +391,19 @@ pub async fn get_counts(
         let (records, _) = get_records_and_fields(&query_request, &creds).await?;
 
         if let Some(records) = records {
-            let json_records = record_batches_to_json(&records)?;
-            let records = json_records.into_iter().map(Value::Object).collect_vec();
+            // Use optimized JSON conversion with explicit memory management
+            let json_records = {
+                let converted = record_batches_to_json(&records)?;
+                drop(records); // Explicitly drop the original records early
+                converted
+            };
+
+            let processed_records: Vec<Value> =
+                json_records.into_iter().map(Value::Object).collect();
 
             let res = json!({
                 "fields": vec!["start_time", "endTime", "count"],
-                "records": records,
+                "records": processed_records,
             });
 
             return Ok(web::Json(res));
