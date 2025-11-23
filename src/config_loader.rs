@@ -4,11 +4,11 @@ use std::{
     ffi::{OsStr, OsString},
     fs,
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
 use anyhow::{Context, Result, anyhow};
 use clap::{Error, Parser, error::ErrorKind};
-#[cfg(test)]
 use once_cell::sync::Lazy;
 use serde::Deserialize;
 use toml::Value;
@@ -32,6 +32,8 @@ pub fn parse_cli_with_config() -> Cli {
     Cli::parse_from(adjusted_args)
 }
 
+static ENV_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
 #[derive(Debug, Deserialize, Default)]
 struct FileConfig {
     storage: Option<String>,
@@ -43,14 +45,16 @@ struct FileConfig {
 }
 
 fn set_env_var<K: AsRef<OsStr>, V: AsRef<OsStr>>(key: K, value: V) {
+    let _guard = ENV_LOCK.lock().unwrap();
     // SAFETY: std::env marks mutations as unsafe because concurrent writes can
-    // lead to data races. We invoke these helpers before worker threads start
-    // (or under a test mutex), matching std's documented safety guarantee.
+    // lead to data races. Serializing through ENV_LOCK ensures only one thread
+    // mutates the environment at a time, matching std's documented guarantee.
     unsafe { std_env::set_var(key, value) }
 }
 
 #[cfg(test)]
 fn remove_env_var<K: AsRef<OsStr>>(key: K) {
+    let _guard = ENV_LOCK.lock().unwrap();
     unsafe { std_env::remove_var(key) }
 }
 
