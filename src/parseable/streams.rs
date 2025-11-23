@@ -136,9 +136,9 @@ impl Stream {
 
     // Concatenates record batches and puts them in memory store for each event.
     // This method now defers memtable and disk operations to blocking thread pools.
-    // Disk write is awaited to ensure durability (data is persisted), while memtable push is fire-and-forget for performance.
+    // Disk write is awaited to ensure durability (data is persisted), while memtable push is fire-and-forget.
     // If disk write fails, request fails - ensuring data consistency.
-    // If memtable push fails, data is still on disk (safe), and memtable can be rebuilt.
+    // If memtable push fails, data is still on disk
     pub async fn push(
         self: &Arc<Self>,
         schema_key: &str,
@@ -147,7 +147,6 @@ impl Stream {
         custom_partition_values: &HashMap<String, String>,
         stream_type: StreamType,
     ) -> Result<(), StagingError> {
-        // Clone data needed for background operations
         let record_clone = record.clone();
         let schema_key_clone = schema_key.to_string();
         let options_mode = self.options.mode;
@@ -161,12 +160,12 @@ impl Stream {
             
             let stream_for_disk = Arc::clone(self);
             let filename_clone = filename.clone();
-            let filename_for_error = filename.clone(); // Clone for error message
+            let filename_for_error = filename.clone();
             let record_for_disk = record_clone.clone();
             let parsed_timestamp_for_disk = parsed_timestamp;
             let stream_name_clone = self.stream_name.clone();
             
-            // Await disk write - this is critical for data durability
+            // Await disk write
             tokio::task::spawn_blocking(move || {
                 let mut guard = match stream_for_disk.writer.lock() {
                     Ok(guard) => guard,
@@ -185,7 +184,6 @@ impl Stream {
                         writer.write(&record_for_disk)
                     }
                     None => {
-                        // Create directory - blocking I/O operation
                         std::fs::create_dir_all(&stream_for_disk.data_path)?;
 
                         let range = TimeRange::granularity_range(
@@ -215,16 +213,14 @@ impl Stream {
             })?;
         }
 
-        // Defer memtable push to blocking thread pool - fire-and-forget for performance
-        // Memtable is for query performance optimization, not durability
+        // Defer memtable push to blocking thread pool - fire-and-forget 
         // If memtable push fails, data is still safely on disk and memtable can be rebuilt
         {
             let stream_for_memtable = Arc::clone(self);
             let schema_key_for_memtable = schema_key_clone;
             let record_for_memtable = record.clone();
             
-            // Spawn without awaiting - fire and forget for performance
-            // The concat operation at 16384 events is CPU-bound but won't block the request path
+            // TODO: The concat operation at 16384 events is CPU-bound but won't block the request path
             tokio::task::spawn_blocking(move || {
                 let mut guard = match stream_for_memtable.writer.lock() {
                     Ok(guard) => guard,
