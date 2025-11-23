@@ -1389,7 +1389,8 @@ mod tests {
             ],
         )
         .unwrap();
-        // Use tokio runtime to call async push from sync test context
+        
+        // For sync tests - create a new runtime
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(staging.push(
             "abc",
@@ -1398,6 +1399,33 @@ mod tests {
             &HashMap::new(),
             StreamType::UserDefined,
         )).unwrap();
+        staging.flush(true);
+    }
+
+    // Async version for async tests (like #[tokio::test])
+    async fn write_log_async(staging: &StreamRef, schema: &Schema, mins: i64) {
+        let time: NaiveDateTime = Utc::now()
+            .checked_sub_signed(TimeDelta::minutes(mins))
+            .unwrap()
+            .naive_utc();
+        let batch = RecordBatch::try_new(
+            Arc::new(schema.clone()),
+            vec![
+                Arc::new(TimestampMillisecondArray::from(vec![1, 2, 3])),
+                Arc::new(Int32Array::from(vec![1, 2, 3])),
+                Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            ],
+        )
+        .unwrap();
+        
+        // Direct await - we're already in an async context
+        staging.push(
+            "abc",
+            &batch,
+            time,
+            &HashMap::new(),
+            StreamType::UserDefined,
+        ).await.unwrap();
         staging.flush(true);
     }
 
@@ -1529,11 +1557,11 @@ mod tests {
 
         // 2 logs in the previous minutes
         for i in 0..2 {
-            write_log(&staging, &schema, i);
+            write_log_async(&staging, &schema, i).await;
         }
         sleep(Duration::from_secs(60)).await;
 
-        write_log(&staging, &schema, 0);
+        write_log_async(&staging, &schema, 0).await;
 
         // verify the arrow files exist in staging
         assert_eq!(staging.arrow_files().len(), 3);
