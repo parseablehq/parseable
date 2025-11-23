@@ -150,7 +150,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             StreamType::Internal,
             &p_custom_fields,
         )?
-        .process()?;
+        .process().await?;
 
     Ok(())
 }
@@ -416,7 +416,7 @@ pub async fn push_logs_unchecked(
         custom_partition_values: HashMap::new(), // should be an empty map for unchecked push
         stream_type: StreamType::UserDefined,
     };
-    unchecked_event.process_unchecked()?;
+    unchecked_event.process_unchecked().await?;
 
     Ok(unchecked_event)
 }
