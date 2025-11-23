@@ -62,6 +62,7 @@ erased-serde = "=0.3.16"
 serde = { version = "1.0", features = ["rc", "derive"] }
 serde_json = "1.0"
 serde_repr = "0.1.17"
+toml = "0.9.8"
 
 # Async and Runtime
 async-trait = "0.1"

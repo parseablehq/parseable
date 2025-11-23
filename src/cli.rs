@@ -66,6 +66,16 @@ Join the community at https://logg.ing/community.
     subcommand_required = true,
 )]
 pub struct Cli {
+    #[arg(
+        long = "config-file",
+        short = 'c',
+        env = "P_CONFIG_FILE",
+        value_name = "path",
+        global = true,
+        value_parser = validation::file_path,
+        help = "Path to a TOML file containing Parseable environment defaults"
+    )]
+    pub config_file: Option<PathBuf>,
     #[command(subcommand)]
     pub storage: StorageOptions,
 }

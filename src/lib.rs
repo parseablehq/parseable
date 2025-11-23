@@ -22,6 +22,7 @@ pub mod analytics;
 pub mod banner;
 pub mod catalog;
 mod cli;
+mod config_loader;
 #[cfg(feature = "kafka")]
 pub mod connectors;
 pub mod correlation;
