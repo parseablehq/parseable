@@ -412,9 +412,9 @@ mod tests {
         let future_expiry = Utc::now() + Days::new(7);
         sessions.track_new(user.clone(), key2.clone(), future_expiry, vec![]);
 
-        // Expired session should be removed from user_sessions but
-        // note: the cleanup only removes from user_sessions, not active_sessions
-        // The original expired session key is still in user_sessions list until cleaned
+        // After cleanup, the expired session should be removed from user_sessions.
+        // Note: remove_expired_session only cleans up user_sessions, not active_sessions.
+        // The active_sessions cleanup happens separately when the session is accessed.
         let user_sess = sessions.user_sessions.get(&user).unwrap();
         // Only the new valid session should remain in user_sessions
         assert_eq!(user_sess.len(), 1);
