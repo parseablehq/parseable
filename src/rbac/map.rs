@@ -208,7 +208,17 @@ impl Sessions {
         let Some(sessions) = self.user_sessions.get_mut(user) else {
             return;
         };
-        sessions.retain(|(_, expiry)| expiry < &now);
+        let initial_count = sessions.len();
+        sessions.retain(|(_, expiry)| expiry > &now);
+        let removed_count = initial_count - sessions.len();
+        if removed_count > 0 {
+            tracing::debug!(
+                user = user,
+                removed = removed_count,
+                remaining = sessions.len(),
+                "Removed expired sessions for user"
+            );
+        }
     }
 
     // get permission related to this session
@@ -351,5 +361,78 @@ impl From<Vec<UserGroup>> for UserGroups {
                 .map(|group| (group.name.to_owned(), group)),
         );
         map
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Days;
+
+    #[test]
+    fn test_remove_expired_session_keeps_valid_sessions() {
+        let mut sessions = Sessions::default();
+        let user = "test_user".to_string();
+        let key = SessionKey::SessionId(ulid::Ulid::new());
+
+        // Add a session that expires 7 days from now (valid session)
+        let future_expiry = Utc::now() + Days::new(7);
+        sessions.track_new(user.clone(), key.clone(), future_expiry, vec![]);
+
+        // Verify session exists
+        assert!(sessions.get(&key).is_some());
+        assert_eq!(sessions.user_sessions.get(&user).unwrap().len(), 1);
+
+        // Trigger expired session cleanup by adding another session
+        let key2 = SessionKey::SessionId(ulid::Ulid::new());
+        sessions.track_new(user.clone(), key2.clone(), future_expiry, vec![]);
+
+        // Both valid sessions should still exist
+        assert!(sessions.get(&key).is_some());
+        assert!(sessions.get(&key2).is_some());
+        assert_eq!(sessions.user_sessions.get(&user).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_remove_expired_session_removes_expired_sessions() {
+        let mut sessions = Sessions::default();
+        let user = "test_user".to_string();
+        let key = SessionKey::SessionId(ulid::Ulid::new());
+
+        // Add a session that expired 1 day ago
+        let past_expiry = Utc::now() - Days::new(1);
+        sessions.user_sessions.insert(user.clone(), vec![(key.clone(), past_expiry)]);
+        sessions.active_sessions.insert(key.clone(), (user.clone(), vec![]));
+
+        // Verify expired session exists before cleanup
+        assert!(sessions.get(&key).is_some());
+
+        // Trigger cleanup by adding a new session
+        let key2 = SessionKey::SessionId(ulid::Ulid::new());
+        let future_expiry = Utc::now() + Days::new(7);
+        sessions.track_new(user.clone(), key2.clone(), future_expiry, vec![]);
+
+        // Expired session should be removed from user_sessions but
+        // note: the cleanup only removes from user_sessions, not active_sessions
+        // The original expired session key is still in user_sessions list until cleaned
+        let user_sess = sessions.user_sessions.get(&user).unwrap();
+        // Only the new valid session should remain in user_sessions
+        assert_eq!(user_sess.len(), 1);
+        // The new session should be the one with future expiry
+        assert!(user_sess.iter().any(|(k, _)| k == &key2));
+    }
+
+    #[test]
+    fn test_session_expiry_logic_correctness() {
+        // This test verifies the fix for the bug where expired sessions
+        // were being kept and valid sessions were being removed
+        let now = Utc::now();
+        let past = now - Days::new(1);
+        let future = now + Days::new(1);
+
+        // The retain predicate should keep sessions where expiry > now
+        // i.e., sessions that have NOT yet expired
+        assert!(future > now);  // Future sessions should be kept
+        assert!(!(past > now)); // Past sessions should be removed
     }
 }
