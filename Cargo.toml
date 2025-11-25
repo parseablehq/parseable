@@ -9,22 +9,21 @@ build = "build.rs"
 
 [dependencies]
 # Arrow and DataFusion ecosystem
-arrow = "57.0.0"
-arrow-array = "57.0.0"
-arrow-flight = { version = "57.0.0", features = ["tls-aws-lc","tls-native-roots"] }
-arrow-ipc = { version = "57.0.0", features = ["zstd"] }
-arrow-json = "57.0.0"
-arrow-schema = { version = "57.0.0", features = ["serde"] }
-arrow-select = "57.0.0"
-# datafusion = "50.3.0"
-datafusion = {git="https://github.com/apache/datafusion"}
+arrow = "57.1.0"
+arrow-array = "57.1.0"
+arrow-flight = { version = "57.1.0", features = ["tls-aws-lc","tls-native-roots"] }
+arrow-ipc = { version = "57.1.0", features = ["zstd"] }
+arrow-json = "57.1.0"
+arrow-schema = { version = "57.1.0", features = ["serde"] }
+arrow-select = "57.1.0"
+datafusion = "51.0.0"
 object_store = { version = "0.12.4", features = [
     "cloud",
     "aws",
     "azure",
     "gcp",
 ] }
-parquet = "57.0.0"
+parquet = "57.1.0"
 
 # Web server and HTTP-related
 actix-cors = "0.7.0"
