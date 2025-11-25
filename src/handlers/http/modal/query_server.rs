@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::thread;
 
 use crate::handlers::airplane;
-use crate::handlers::http::cluster::{self};
+use crate::handlers::http::cluster;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
 use crate::handlers::http::modal::initialize_hot_tier_metadata_on_startup;
 use crate::handlers::http::{MAX_EVENT_PAYLOAD_SIZE, logstream};
