@@ -20,7 +20,7 @@ use std::sync::Arc;
 use std::thread;
 
 use crate::handlers::airplane;
-use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
+use crate::handlers::http::cluster::{self};
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
 use crate::handlers::http::modal::initialize_hot_tier_metadata_on_startup;
 use crate::handlers::http::{MAX_EVENT_PAYLOAD_SIZE, logstream};
@@ -37,7 +37,6 @@ use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::{OnceCell, oneshot};
-use tracing::info;
 
 use crate::Server;
 use crate::parseable::PARSEABLE;
@@ -130,10 +129,6 @@ impl ParseableServer for QueryServer {
             analytics::init_analytics_scheduler()?;
         }
 
-        if init_cluster_metrics_schedular().is_ok() {
-            info!("Cluster metrics scheduler started successfully");
-        }
-
         // local sync on init
         let startup_sync_handle = tokio::spawn(async {
             if let Err(e) = sync_start().await {
@@ -141,7 +136,6 @@ impl ParseableServer for QueryServer {
             }
         });
         if let Some(hot_tier_manager) = HotTierManager::global() {
-            hot_tier_manager.put_internal_stream_hot_tier().await?;
             // Initialize hot tier metadata files for streams that have hot tier configuration
             // but don't have local hot tier metadata files yet
             if let Err(e) = initialize_hot_tier_metadata_on_startup(hot_tier_manager).await {
