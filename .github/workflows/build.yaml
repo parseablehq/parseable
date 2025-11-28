@@ -113,21 +113,6 @@ jobs:
             libsasl2-dev \
             python3
       
-      # Linux dependencies for aarch64 cross-compilation
-      - name: Install Linux dependencies (aarch64 cross)
-        if: runner.os == 'Linux' && matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            gcc-11 \
-            g++-11 \
-            build-essential \
-            pkg-config \
-            cmake \
-            clang \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu
-      
       # macOS-specific dependencies
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
@@ -146,9 +131,39 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       
-      - name: Install cross
+      - name: Install cross for aarch64
         if: matrix.use_cross
         run: cargo install cross --git https://github.com/cross-rs/cross
+      
+      - name: Create Cross.toml for aarch64 Kafka build
+        if: matrix.use_cross && matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          cat > Cross.toml << 'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          pre-build = [
+              "dpkg --add-architecture arm64",
+              "sed -i 's/deb http/deb [arch=amd64] http/g' /etc/apt/sources.list",
+              "echo 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ focal main restricted universe multiverse' >> /etc/apt/sources.list",
+              "echo 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ focal-updates main restricted universe multiverse' >> /etc/apt/sources.list",
+              "apt-get update || true",
+              "apt-get install -y pkg-config:arm64 || true",
+              "apt-get install -y zlib1g-dev:arm64 || true",
+              "apt-get install -y libssl-dev:arm64 || true", 
+              "apt-get install -y libsasl2-dev:arm64 || true",
+              "apt-get install -y libzstd-dev:arm64 || true",
+              "apt-get install -y liblz4-dev:arm64 || true",
+          ]
+          
+          [build.env]
+          passthrough = [
+              "LIBRDKAFKA_SSL_VENDORED",
+              "PKG_CONFIG_ALLOW_CROSS",
+          ]
+          volumes = [
+              "/usr/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu",
+          ]
+          EOF
+          cat Cross.toml
       
       - name: Cache dependencies
         uses: actions/cache@v4
@@ -205,6 +220,9 @@ jobs:
       
       - name: Build with Kafka (cross)
         if: matrix.use_cross
+        env:
+          LIBRDKAFKA_SSL_VENDORED: "1"
+          PKG_CONFIG_ALLOW_CROSS: "1"
         run: cross build --target ${{ matrix.target }} --features kafka --release
       
       - name: Build with Kafka (native)
@@ -212,5 +230,5 @@ jobs:
         env:
           CC: ${{ runner.os == 'Linux' && 'gcc-11' || '' }}
           CXX: ${{ runner.os == 'Linux' && 'g++-11' || '' }}
-          LIBRDKAFKA_SSL_VENDORED: 1
+          LIBRDKAFKA_SSL_VENDORED: "1"
         run: cargo build --target ${{ matrix.target }} --features kafka --release
