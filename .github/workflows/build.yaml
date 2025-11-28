@@ -34,16 +34,16 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-        - name: Install GCC 11 on Linux
-          if: runner.os == 'Linux'
-          run: |
-            sudo apt-get update
-            sudo apt-get install -y gcc-11 g++-11
-        - name: Set CC and CXX to gcc-11
-          if: runner.os == 'Linux'
-          run: |
-            echo "CC=gcc-11" >> $GITHUB_ENV
-            echo "CXX=g++-11" >> $GITHUB_ENV
+      - name: Install GCC 11 on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-11 g++-11
+      - name: Set CC and CXX to gcc-11
+        if: runner.os == 'Linux'
+        run: |
+          echo "CC=gcc-11" >> $GITHUB_ENV
+          echo "CXX=g++-11" >> $GITHUB_ENV
       - name: Cache dependencies
         uses: actions/cache@v4
         with:
