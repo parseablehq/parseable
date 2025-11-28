@@ -15,35 +15,42 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux builds
+          # Linux builds - x86_64 native, aarch64 cross-compile
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            use_cross: false
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
-          # macOS builds  
+            use_cross: true
+          # macOS builds - both native on macos-latest (M1)
           - os: macos-latest
             target: x86_64-apple-darwin
+            use_cross: false
           - os: macos-latest
             target: aarch64-apple-darwin
+            use_cross: false
           # Windows build
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            use_cross: false
     steps:
       - uses: actions/checkout@v4
+      
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      
       - name: Install GCC 11 on Linux
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-11 g++-11
-      - name: Set CC and CXX to gcc-11
-        if: runner.os == 'Linux'
-        run: |
-          echo "CC=gcc-11" >> $GITHUB_ENV
-          echo "CXX=g++-11" >> $GITHUB_ENV
+      
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+      
       - name: Cache dependencies
         uses: actions/cache@v4
         with:
@@ -52,12 +59,18 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ matrix.target }}-default-${{ hashFiles('**/Cargo.lock') }}
-      - name: Build
-        uses: actions-rs/cargo@v1
-        with:
-          use-cross: ${{ runner.os == 'Linux' }}
-          command: build
-          args: --target ${{ matrix.target }} --release
+      
+      - name: Build with cross
+        if: matrix.use_cross
+        run: cross build --target ${{ matrix.target }} --release
+      
+      - name: Build native
+        if: ${{ !matrix.use_cross }}
+        env:
+          CC: ${{ runner.os == 'Linux' && 'gcc-11' || '' }}
+          CXX: ${{ runner.os == 'Linux' && 'g++-11' || '' }}
+        run: cargo build --target ${{ matrix.target }} --release
+
   # Kafka build for supported platforms
   build-kafka:
     name: Build Kafka ${{matrix.target}}
@@ -66,19 +79,29 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux builds
+          # Linux x86_64 - native build
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
+            use_cross: false
+          # Linux aarch64 - cross-compile
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            use_cross: true
+          # macOS aarch64 - native on M1
           - os: macos-latest
             target: aarch64-apple-darwin
+            use_cross: false
     steps:
       - uses: actions/checkout@v4
-      # Linux-specific dependencies
-      - name: Install Linux dependencies
-        if: runner.os == 'Linux'
+      
+      # Linux-specific dependencies for native x86_64 build
+      - name: Install Linux dependencies (x86_64)
+        if: runner.os == 'Linux' && matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            gcc-11 \
+            g++-11 \
             build-essential \
             pkg-config \
             cmake \
@@ -88,29 +111,23 @@ jobs:
             liblz4-dev \
             libssl-dev \
             libsasl2-dev \
-            python3 \
-            gcc-aarch64-linux-gnu \
-            g++-aarch64-linux-gnu
-          # Install cross-compilation specific packages
-          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-gnu" ]; then
-            sudo apt-get install -y \
-              gcc-aarch64-linux-gnu \
-              g++-aarch64-linux-gnu \
-              libc6-dev-arm64-cross \
-              libsasl2-dev:arm64 \
-              libssl-dev:arm64 \
-              pkg-config-aarch64-linux-gnu
-          fi
-      - name: Install GCC 11 on Linux
-        if: runner.os == 'Linux'
+            python3
+      
+      # Linux dependencies for aarch64 cross-compilation
+      - name: Install Linux dependencies (aarch64 cross)
+        if: runner.os == 'Linux' && matrix.target == 'aarch64-unknown-linux-gnu'
         run: |
           sudo apt-get update
-          sudo apt-get install -y gcc-11 g++-11
-      - name: Set CC and CXX to gcc-11
-        if: runner.os == 'Linux'
-        run: |
-          echo "CC=gcc-11" >> $GITHUB_ENV
-          echo "CXX=g++-11" >> $GITHUB_ENV
+          sudo apt-get install -y \
+            gcc-11 \
+            g++-11 \
+            build-essential \
+            pkg-config \
+            cmake \
+            clang \
+            gcc-aarch64-linux-gnu \
+            g++-aarch64-linux-gnu
+      
       # macOS-specific dependencies
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
@@ -123,10 +140,16 @@ jobs:
             openssl@3.0 \
             cyrus-sasl \
             python3
+      
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+      
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+      
       - name: Cache dependencies
         uses: actions/cache@v4
         with:
@@ -135,8 +158,9 @@ jobs:
             ~/.cargo/git
             target
           key: ${{ runner.os }}-cargo-${{ matrix.target }}-kafka-${{ hashFiles('**/Cargo.lock') }}
+      
       - name: Find and fix librdkafka CMakeLists.txt for Linux
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !matrix.use_cross
         run: |
           cargo fetch
           # Find the rdkafka-sys package directory
@@ -156,6 +180,7 @@ jobs:
             echo "Could not find librdkafka CMakeLists.txt file!"
             exit 1
           fi
+      
       - name: Find and fix librdkafka CMakeLists.txt for macOS
         if: runner.os == 'macOS'
         run: |
@@ -177,18 +202,15 @@ jobs:
             echo "Could not find librdkafka CMakeLists.txt file!"
             exit 1
           fi
-      - name: Build with Kafka
-        uses: actions-rs/cargo@v1
-        with:
-          use-cross: ${{ runner.os == 'Linux' }}
-          command: build
-          args: --target ${{ matrix.target }} --features kafka --release
+      
+      - name: Build with Kafka (cross)
+        if: matrix.use_cross
+        run: cross build --target ${{ matrix.target }} --features kafka --release
+      
+      - name: Build with Kafka (native)
+        if: ${{ !matrix.use_cross }}
         env:
+          CC: ${{ runner.os == 'Linux' && 'gcc-11' || '' }}
+          CXX: ${{ runner.os == 'Linux' && 'g++-11' || '' }}
           LIBRDKAFKA_SSL_VENDORED: 1
-          PKG_CONFIG_ALLOW_CROSS: "1"
-          PKG_CONFIG_PATH: /usr/lib/aarch64-linux-gnu/pkgconfig
-          SASL2_DIR: /usr/lib/aarch64-linux-gnu
-          OPENSSL_DIR: /usr/lib/aarch64-linux-gnu
-          OPENSSL_ROOT_DIR: /usr/lib/aarch64-linux-gnu
-          OPENSSL_STATIC: "1"
-          SASL2_STATIC: "0"
+        run: cargo build --target ${{ matrix.target }} --features kafka --release
