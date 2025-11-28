@@ -101,16 +101,16 @@ jobs:
               libssl-dev:arm64 \
               pkg-config-aarch64-linux-gnu
           fi
-        - name: Install GCC 11 on Linux
-          if: runner.os == 'Linux'
-          run: |
-            sudo apt-get update
-            sudo apt-get install -y gcc-11 g++-11
-        - name: Set CC and CXX to gcc-11
-          if: runner.os == 'Linux'
-          run: |
-            echo "CC=gcc-11" >> $GITHUB_ENV
-            echo "CXX=g++-11" >> $GITHUB_ENV
+      - name: Install GCC 11 on Linux
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-11 g++-11
+      - name: Set CC and CXX to gcc-11
+        if: runner.os == 'Linux'
+        run: |
+          echo "CC=gcc-11" >> $GITHUB_ENV
+          echo "CXX=g++-11" >> $GITHUB_ENV
       # macOS-specific dependencies
       - name: Install macOS dependencies
         if: runner.os == 'macOS'
