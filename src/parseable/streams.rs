@@ -35,10 +35,9 @@ use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
     file::{
-        FOOTER_SIZE, properties::WriterProperties, reader::FileReader,
+        FOOTER_SIZE, metadata::SortingColumn, properties::WriterProperties, reader::FileReader,
         serialized_reader::SerializedFileReader,
     },
-    format::SortingColumn,
     schema::types::ColumnPath,
 };
 use relative_path::RelativePathBuf;

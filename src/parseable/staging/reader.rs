@@ -342,7 +342,8 @@ mod tests {
         types::Int64Type,
     };
     use arrow_ipc::writer::{
-        DictionaryTracker, IpcDataGenerator, IpcWriteOptions, StreamWriter, write_message,
+        CompressionContext, DictionaryTracker, IpcDataGenerator, IpcWriteOptions, StreamWriter,
+        write_message,
     };
     use arrow_schema::{DataType, Field, Schema};
     use chrono::Utc;
@@ -433,6 +434,7 @@ mod tests {
         let options = IpcWriteOptions::default();
         let mut dictionary_tracker = DictionaryTracker::new(error_on_replacement);
         let data_gen = IpcDataGenerator {};
+        let mut compression_context = CompressionContext::default();
 
         let mut buf = Vec::new();
         let rb1 = rb(1);
@@ -446,7 +448,12 @@ mod tests {
 
         for i in (1..=3).cycle().skip(1).take(10000) {
             let (_, encoded_message) = data_gen
-                .encoded_batch(&rb(i), &mut dictionary_tracker, &options)
+                .encode(
+                    &rb(i),
+                    &mut dictionary_tracker,
+                    &options,
+                    &mut compression_context,
+                )
                 .unwrap();
             write_message(&mut buf, encoded_message, &options).unwrap();
         }
