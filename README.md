@@ -85,6 +85,26 @@ curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
 
 Access the UI at [http://localhost:8000 ↗︎](http://localhost:8000). You can login to the dashboard default credentials `admin`, `admin`.
 
+### Configure with TOML
+
+We can keep Parseable configuration in a TOML file instead of managing dozens of environment variables. When a file named `parseable.toml` is present in the working directory, Parseable automatically loads it; you can also point to a different file via `parseable --config-file /path/to/config.toml` (or by setting `P_CONFIG_FILE`).
+
+Example:
+
+```toml
+# parseable.toml
+storage = "s3-store"
+
+[env]
+P_S3_URL = "https://s3.amazonaws.com"
+P_S3_REGION = "us-east-1"
+P_S3_BUCKET = "my-observability-bucket"
+P_USERNAME = "admin"
+P_PASSWORD = "super-secret"
+```
+
+Values from the TOML file are written to the corresponding `P_*` environment variables unless they are already set in the shell. Command-line flags still take precedence over everything else, so you can override individual fields without editing the file.
+
 ## Getting started :bulb:
 
 For quickstart, refer the [quickstart section ↗︎](#quickstart-zap).

@@ -29,7 +29,7 @@ use actix_web::http::header::HeaderMap;
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Utc;
-use clap::{Parser, error::ErrorKind};
+use clap::error::ErrorKind;
 use http::{HeaderName, HeaderValue, StatusCode, header::CONTENT_TYPE};
 use once_cell::sync::Lazy;
 pub use staging::StagingError;
@@ -41,7 +41,8 @@ use tracing::error;
 #[cfg(feature = "kafka")]
 use crate::connectors::kafka::config::KafkaConfig;
 use crate::{
-    cli::{Cli, Options, StorageOptions},
+    cli::{Options, StorageOptions},
+    config_loader,
     event::{
         commit_schema,
         format::{LogSource, LogSourceEntry},
@@ -88,75 +89,79 @@ pub const JOIN_COMMUNITY: &str =
 pub const STREAM_EXISTS: &str = "Stream exists";
 
 /// Shared state of the Parseable server.
-pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| match Cli::parse().storage {
-    StorageOptions::Local(args) => {
-        if args.options.staging_dir() == &args.storage.root {
-            clap::Error::raw(
-                ErrorKind::ValueValidation,
-                "Cannot use same path for storage and staging",
+pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| {
+    let cli = config_loader::parse_cli_with_config();
+
+    match cli.storage {
+        StorageOptions::Local(args) => {
+            if args.options.staging_dir() == &args.storage.root {
+                clap::Error::raw(
+                    ErrorKind::ValueValidation,
+                    "Cannot use same path for storage and staging",
+                )
+                .exit();
+            }
+
+            if args.options.hot_tier_storage_path.is_some() {
+                clap::Error::raw(
+                    ErrorKind::ValueValidation,
+                    "Cannot use hot tier with local-store subcommand.",
+                )
+                .exit();
+            }
+
+            // for now create a metastore without using a CLI arg
+            let metastore = ObjectStoreMetastore {
+                storage: args.storage.construct_client(),
+            };
+
+            Parseable::new(
+                args.options,
+                #[cfg(feature = "kafka")]
+                args.kafka,
+                Arc::new(args.storage),
+                Arc::new(metastore),
             )
-            .exit();
         }
-
-        if args.options.hot_tier_storage_path.is_some() {
-            clap::Error::raw(
-                ErrorKind::ValueValidation,
-                "Cannot use hot tier with local-store subcommand.",
+        StorageOptions::S3(args) => {
+            // for now create a metastore without using a CLI arg
+            let metastore = ObjectStoreMetastore {
+                storage: args.storage.construct_client(),
+            };
+            Parseable::new(
+                args.options,
+                #[cfg(feature = "kafka")]
+                args.kafka,
+                Arc::new(args.storage),
+                Arc::new(metastore),
             )
-            .exit();
         }
-
-        // for now create a metastore without using a CLI arg
-        let metastore = ObjectStoreMetastore {
-            storage: args.storage.construct_client(),
-        };
-
-        Parseable::new(
-            args.options,
-            #[cfg(feature = "kafka")]
-            args.kafka,
-            Arc::new(args.storage),
-            Arc::new(metastore),
-        )
-    }
-    StorageOptions::S3(args) => {
-        // for now create a metastore without using a CLI arg
-        let metastore = ObjectStoreMetastore {
-            storage: args.storage.construct_client(),
-        };
-        Parseable::new(
-            args.options,
-            #[cfg(feature = "kafka")]
-            args.kafka,
-            Arc::new(args.storage),
-            Arc::new(metastore),
-        )
-    }
-    StorageOptions::Blob(args) => {
-        // for now create a metastore without using a CLI arg
-        let metastore = ObjectStoreMetastore {
-            storage: args.storage.construct_client(),
-        };
-        Parseable::new(
-            args.options,
-            #[cfg(feature = "kafka")]
-            args.kafka,
-            Arc::new(args.storage),
-            Arc::new(metastore),
-        )
-    }
-    StorageOptions::Gcs(args) => {
-        // for now create a metastore without using a CLI arg
-        let metastore = ObjectStoreMetastore {
-            storage: args.storage.construct_client(),
-        };
-        Parseable::new(
-            args.options,
-            #[cfg(feature = "kafka")]
-            args.kafka,
-            Arc::new(args.storage),
-            Arc::new(metastore),
-        )
+        StorageOptions::Blob(args) => {
+            // for now create a metastore without using a CLI arg
+            let metastore = ObjectStoreMetastore {
+                storage: args.storage.construct_client(),
+            };
+            Parseable::new(
+                args.options,
+                #[cfg(feature = "kafka")]
+                args.kafka,
+                Arc::new(args.storage),
+                Arc::new(metastore),
+            )
+        }
+        StorageOptions::Gcs(args) => {
+            // for now create a metastore without using a CLI arg
+            let metastore = ObjectStoreMetastore {
+                storage: args.storage.construct_client(),
+            };
+            Parseable::new(
+                args.options,
+                #[cfg(feature = "kafka")]
+                args.kafka,
+                Arc::new(args.storage),
+                Arc::new(metastore),
+            )
+        }
     }
 });
 
