@@ -94,6 +94,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: Set up QEMU for cross-arch builds
+        if: matrix.use_cross
+        uses: docker/setup-qemu-action@v3
+      
       # Linux-specific dependencies for native x86_64 build
       - name: Install Linux dependencies (x86_64)
         if: runner.os == 'Linux' && matrix.target == 'x86_64-unknown-linux-gnu'
