@@ -37,7 +37,7 @@ jobs:
       - uses: actions/checkout@v4
       
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
         with:
           targets: ${{ matrix.target }}
       
@@ -135,7 +135,7 @@ jobs:
             python3
       
       - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@nightly
         with:
           targets: ${{ matrix.target }}
       
@@ -201,7 +201,14 @@ jobs:
         env:
           LIBRDKAFKA_SSL_VENDORED: "1"
           PKG_CONFIG_ALLOW_CROSS: "1"
-        run: cross build --target ${{ matrix.target }} --features kafka --release
+          ZLIB_INCLUDE_DIR: "/usr/include/aarch64-linux-gnu"
+          ZLIB_LIBRARY: "/usr/lib/aarch64-linux-gnu/libz.so"
+          OPENSSL_DIR: "/usr"
+          OPENSSL_LIB_DIR: "/usr/lib/aarch64-linux-gnu"
+          OPENSSL_INCLUDE_DIR: "/usr/include/aarch64-linux-gnu"
+          CROSS_NO_WARNINGS: "0"
+          RUST_BACKTRACE: "1"
+        run: cross build --target ${{ matrix.target }} --features kafka --release --verbose
       
       - name: Build with Kafka (native)
         if: ${{ !matrix.use_cross }}
