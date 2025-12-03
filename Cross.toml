@@ -1,5 +1,21 @@
 [target.aarch64-unknown-linux-gnu]
 image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu@sha256:1e2a0291f92a4372cbc22d8994e735473045383f1ce7fa44a16c234ba00187f4"
+pre-build = [
+    "dpkg --add-architecture arm64",
+    "apt-get update || true",
+    "apt-get install -y pkg-config:arm64 || true",
+    "apt-get install -y zlib1g-dev:arm64 || true",
+    "apt-get install -y libssl-dev:arm64 || true",
+    "apt-get install -y libsasl2-dev:arm64 || true",
+    "apt-get install -y libzstd-dev:arm64 || true",
+    "apt-get install -y liblz4-dev:arm64 || true",
+]
+
+[target.aarch64-unknown-linux-gnu.env]
+passthrough = [
+    "LIBRDKAFKA_SSL_VENDORED",
+    "PKG_CONFIG_ALLOW_CROSS",
+]
 
 [target.x86_64-unknown-linux-gnu]
 image = "ghcr.io/cross-rs/x86_64-unknown-linux-gnu@sha256:bf05360bb9d6d4947eed60532ac7a0d7e8fae8f214e9abb801d5941c8fe4918d"

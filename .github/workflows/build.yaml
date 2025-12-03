@@ -94,6 +94,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       
+      - name: Set up Docker Buildx
+        if: matrix.use_cross
+        uses: docker/setup-buildx-action@v3
+      
       - name: Set up QEMU for cross-arch builds
         if: matrix.use_cross
         uses: docker/setup-qemu-action@v3
@@ -138,36 +142,6 @@ jobs:
       - name: Install cross for aarch64
         if: matrix.use_cross
         run: cargo install cross --git https://github.com/cross-rs/cross
-      
-      - name: Create Cross.toml for aarch64 Kafka build
-        if: matrix.use_cross && matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          cat > Cross.toml << 'EOF'
-          [target.aarch64-unknown-linux-gnu]
-          pre-build = [
-              "dpkg --add-architecture arm64",
-              "sed -i 's/deb http/deb [arch=amd64] http/g' /etc/apt/sources.list",
-              "echo 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ focal main restricted universe multiverse' >> /etc/apt/sources.list",
-              "echo 'deb [arch=arm64] http://ports.ubuntu.com/ubuntu-ports/ focal-updates main restricted universe multiverse' >> /etc/apt/sources.list",
-              "apt-get update || true",
-              "apt-get install -y pkg-config:arm64 || true",
-              "apt-get install -y zlib1g-dev:arm64 || true",
-              "apt-get install -y libssl-dev:arm64 || true", 
-              "apt-get install -y libsasl2-dev:arm64 || true",
-              "apt-get install -y libzstd-dev:arm64 || true",
-              "apt-get install -y liblz4-dev:arm64 || true",
-          ]
-          
-          [build.env]
-          passthrough = [
-              "LIBRDKAFKA_SSL_VENDORED",
-              "PKG_CONFIG_ALLOW_CROSS",
-          ]
-          volumes = [
-              "/usr/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu",
-          ]
-          EOF
-          cat Cross.toml
       
       - name: Cache dependencies
         uses: actions/cache@v4
