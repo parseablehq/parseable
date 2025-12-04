@@ -10,13 +10,15 @@ pre-build = [
 passthrough = [
     "LIBRDKAFKA_SSL_VENDORED",
     "PKG_CONFIG_ALLOW_CROSS",
-    "ZLIB_INCLUDE_DIR",
-    "ZLIB_LIBRARY",
-    "OPENSSL_DIR",
-    "OPENSSL_LIB_DIR",
-    "OPENSSL_INCLUDE_DIR",
     "CROSS_NO_WARNINGS",
     "RUST_BACKTRACE",
+    "ZLIB_INCLUDE_DIR",
+    "ZLIB_LIBRARY",
+    "OPENSSL_ROOT_DIR",
+    "OPENSSL_INCLUDE_DIR",
+    "OPENSSL_CRYPTO_LIBRARY",
+    "OPENSSL_SSL_LIBRARY",
+    "PKG_CONFIG_PATH",
 ]
 volumes = [
     "/usr/lib/aarch64-linux-gnu:/usr/lib/aarch64-linux-gnu:ro",

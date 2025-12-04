@@ -62,6 +62,8 @@ jobs:
       
       - name: Build with cross
         if: matrix.use_cross
+        env:
+          CROSS_NO_WARNINGS: "0"
         run: cross build --target ${{ matrix.target }} --release
       
       - name: Build native
@@ -201,13 +203,15 @@ jobs:
         env:
           LIBRDKAFKA_SSL_VENDORED: "1"
           PKG_CONFIG_ALLOW_CROSS: "1"
-          ZLIB_INCLUDE_DIR: "/usr/include/aarch64-linux-gnu"
-          ZLIB_LIBRARY: "/usr/lib/aarch64-linux-gnu/libz.so"
-          OPENSSL_DIR: "/usr"
-          OPENSSL_LIB_DIR: "/usr/lib/aarch64-linux-gnu"
-          OPENSSL_INCLUDE_DIR: "/usr/include/aarch64-linux-gnu"
           CROSS_NO_WARNINGS: "0"
           RUST_BACKTRACE: "1"
+          ZLIB_INCLUDE_DIR: "/usr/include/aarch64-linux-gnu"
+          ZLIB_LIBRARY: "/usr/lib/aarch64-linux-gnu/libz.so"
+          OPENSSL_ROOT_DIR: "/usr"
+          OPENSSL_INCLUDE_DIR: "/usr/include/aarch64-linux-gnu"
+          OPENSSL_CRYPTO_LIBRARY: "/usr/lib/aarch64-linux-gnu/libcrypto.so"
+          OPENSSL_SSL_LIBRARY: "/usr/lib/aarch64-linux-gnu/libssl.so"
+          PKG_CONFIG_PATH: "/usr/lib/aarch64-linux-gnu/pkgconfig"
         run: cross build --target ${{ matrix.target }} --features kafka --release --verbose
       
       - name: Build with Kafka (native)
