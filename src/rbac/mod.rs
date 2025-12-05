@@ -23,7 +23,7 @@ pub mod utils;
 
 use std::collections::{HashMap, HashSet};
 
-use chrono::{DateTime, Days, Utc};
+use chrono::{DateTime, Duration, TimeDelta, Utc};
 use itertools::Itertools;
 use role::model::DefaultPrivilege;
 use serde::Serialize;
@@ -36,6 +36,8 @@ use crate::rbac::user::User;
 use self::map::SessionKey;
 use self::role::{Permission, RoleBuilder};
 use self::user::UserType;
+
+pub const EXPIRY_DURATION: Duration = Duration::hours(1);
 
 #[derive(PartialEq)]
 pub enum Response {
@@ -147,11 +149,11 @@ impl Users {
         mut_sessions().remove_session(session)
     }
 
-    pub fn new_session(&self, user: &User, session: SessionKey) {
+    pub fn new_session(&self, user: &User, session: SessionKey, expires_in: TimeDelta) {
         mut_sessions().track_new(
             user.userid().to_owned(),
             session,
-            Utc::now() + Days::new(7),
+            Utc::now() + expires_in,
             roles_to_permission(user.roles()),
         )
     }
@@ -228,7 +230,7 @@ pub struct UsersPrism {
     pub user_groups: HashSet<String>,
 }
 
-fn roles_to_permission(roles: Vec<String>) -> Vec<Permission> {
+pub fn roles_to_permission(roles: Vec<String>) -> Vec<Permission> {
     let mut perms = HashSet::new();
     for role in &roles {
         let role_map = &map::roles();

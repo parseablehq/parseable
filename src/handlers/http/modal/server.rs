@@ -61,7 +61,6 @@ use crate::{
 };
 
 // use super::generate;
-use super::OpenIdClient;
 use super::ParseableServer;
 use super::generate;
 use super::load_on_init;
@@ -70,7 +69,7 @@ pub struct Server;
 
 #[async_trait]
 impl ParseableServer for Server {
-    fn configure_routes(config: &mut web::ServiceConfig, oidc_client: Option<OpenIdClient>) {
+    fn configure_routes(config: &mut web::ServiceConfig) {
         // there might be a bug in the configure routes method
         config
             .service(
@@ -91,7 +90,7 @@ impl ParseableServer for Server {
                     .service(Self::get_dashboards_webscope())
                     .service(Self::get_filters_webscope())
                     .service(Self::get_llm_webscope())
-                    .service(Self::get_oauth_webscope(oidc_client))
+                    .service(Self::get_oauth_webscope())
                     .service(Self::get_user_role_webscope())
                     .service(Self::get_roles_webscope())
                     .service(Self::get_counts_webscope().wrap(from_fn(
@@ -570,17 +569,11 @@ impl Server {
     }
 
     // get the oauth webscope
-    pub fn get_oauth_webscope(oidc_client: Option<OpenIdClient>) -> Scope {
-        let oauth = web::scope("/o")
+    pub fn get_oauth_webscope() -> Scope {
+        web::scope("/o")
             .service(resource("/login").route(web::get().to(oidc::login)))
             .service(resource("/logout").route(web::get().to(oidc::logout)))
-            .service(resource("/code").route(web::get().to(oidc::reply_login)));
-
-        if let Some(client) = oidc_client {
-            oauth.app_data(web::Data::from(client))
-        } else {
-            oauth
-        }
+            .service(resource("/code").route(web::get().to(oidc::reply_login)))
     }
 
     // get list of roles

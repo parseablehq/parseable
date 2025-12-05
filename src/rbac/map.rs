@@ -29,6 +29,7 @@ use super::{
 };
 use chrono::{DateTime, Utc};
 use once_cell::sync::{Lazy, OnceCell};
+use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub type Roles = HashMap<String, Vec<DefaultPrivilege>>;
@@ -167,6 +168,26 @@ pub struct Sessions {
 }
 
 impl Sessions {
+    // only checks if the session is expired or not
+    pub fn is_session_expired(&self, key: &SessionKey) -> bool {
+        // fetch userid from session key
+        let userid = if let Some((user, _)) = self.active_sessions.get(key) {
+            user
+        } else {
+            return false;
+        };
+
+        // check against user sessions if this session is still valid
+        let Some(session) = self.user_sessions.get(userid) else {
+            return false;
+        };
+
+        session
+            .par_iter()
+            .find_first(|(sessionid, expiry)| sessionid.eq(key) && expiry < &Utc::now())
+            .is_some()
+    }
+
     // track new session key
     pub fn track_new(
         &mut self,
