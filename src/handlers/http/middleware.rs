@@ -183,7 +183,6 @@ where
 
             // if session is expired, refresh token
             if sessions().is_session_expired(&key) {
-                // request using oidc client
                 let oidc_client = match http_req.app_data::<Data<Option<DiscoveredClient>>>() {
                     Some(client) => {
                         let c = client.clone().into_inner();
@@ -194,57 +193,69 @@ where
 
                 if let Some(client) = oidc_client
                     && let Ok(userid) = userid
-                    && users().get(&userid).is_some()
                 {
-                    // get the bearer token
-                    let user = users().get(&userid).unwrap().clone();
-                    match &user.ty {
-                        user::UserType::OAuth(oauth) => {
-                            if oauth.bearer.as_ref().is_some() {
-                                let Ok(refreshed_token) = client
-                                    .refresh_token(oauth, Some(PARSEABLE.options.scope.as_str()))
-                                    .await
-                                else {
-                                    return Err(ErrorUnauthorized(
-                                        "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
-                                    ));
-                                };
-                                let expires_in =
-                                    if let Some(expires_in) = refreshed_token.expires_in.as_ref() {
-                                        // need an i64 somehow
-                                        if *expires_in > u32::MAX.into() {
-                                            EXPIRY_DURATION
-                                        } else {
-                                            let v = i64::from(*expires_in as u32);
-                                            Duration::seconds(v)
-                                        }
-                                    } else {
-                                        EXPIRY_DURATION
-                                    };
-
-                                // set the new oauth bearer value
-                                if let Some(user) = mut_users().get_mut(&userid)
-                                    && let user::UserType::OAuth(oauth) = &mut user.ty
-                                {
-                                    oauth.bearer = Some(refreshed_token)
+                    let bearer_to_refresh = {
+                        if let Some(user) = users().get(&userid) {
+                            match &user.ty {
+                                user::UserType::OAuth(oauth) if oauth.bearer.is_some() => {
+                                    Some(oauth.clone())
                                 }
-
-                                mut_sessions().track_new(
-                                    userid.clone(),
-                                    key.clone(),
-                                    Utc::now() + expires_in,
-                                    roles_to_permission(user.roles()),
-                                );
+                                _ => None,
                             }
+                        } else {
+                            None
                         }
-                        _ => {
-                            mut_sessions().track_new(
-                                userid.clone(),
-                                key.clone(),
-                                Utc::now() + EXPIRY_DURATION,
-                                roles_to_permission(user.roles()),
-                            );
-                        }
+                    };
+
+                    if let Some(oauth_data) = bearer_to_refresh {
+                        let Ok(refreshed_token) = client
+                            .refresh_token(&oauth_data, Some(PARSEABLE.options.scope.as_str()))
+                            .await
+                        else {
+                            return Err(ErrorUnauthorized(
+                                "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
+                            ));
+                        };
+
+                        let expires_in =
+                            if let Some(expires_in) = refreshed_token.expires_in.as_ref() {
+                                if *expires_in > u32::MAX.into() {
+                                    EXPIRY_DURATION
+                                } else {
+                                    let v = i64::from(*expires_in as u32);
+                                    Duration::seconds(v)
+                                }
+                            } else {
+                                EXPIRY_DURATION
+                            };
+
+                        let user_roles = {
+                            let mut users_guard = mut_users();
+                            if let Some(user) = users_guard.get_mut(&userid) {
+                                if let user::UserType::OAuth(oauth) = &mut user.ty {
+                                    oauth.bearer = Some(refreshed_token);
+                                }
+                                user.roles().to_vec()
+                            } else {
+                                return Err(ErrorUnauthorized(
+                                    "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
+                                ));
+                            }
+                        };
+
+                        mut_sessions().track_new(
+                            userid.clone(),
+                            key.clone(),
+                            Utc::now() + expires_in,
+                            roles_to_permission(user_roles),
+                        );
+                    } else if let Some(user) = users().get(&userid) {
+                        mut_sessions().track_new(
+                            userid.clone(),
+                            key.clone(),
+                            Utc::now() + EXPIRY_DURATION,
+                            roles_to_permission(user.roles()),
+                        );
                     }
                 }
             }

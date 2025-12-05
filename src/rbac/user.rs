@@ -186,6 +186,12 @@ pub struct OAuth {
 }
 
 impl AsRef<Bearer> for Box<OAuth> {
+    /// Returns a reference to the bearer token.
+    ///
+    /// # Panics
+    /// Panics if bearer is None. This should never happen in practice as
+    /// bearer is always set to Some when OIDC is configured and this trait
+    /// is only called by refresh_token after verifying bearer.is_some().
     fn as_ref(&self) -> &Bearer {
         self.bearer.as_ref().unwrap()
     }
