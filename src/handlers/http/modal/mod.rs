@@ -18,7 +18,11 @@
 
 use std::{fmt, path::Path, sync::Arc};
 
-use actix_web::{App, HttpServer, middleware::from_fn, web::ServiceConfig};
+use actix_web::{
+    App, HttpServer,
+    middleware::from_fn,
+    web::{self, ServiceConfig},
+};
 use actix_web_prometheus::PrometheusMetrics;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -67,7 +71,7 @@ include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 #[async_trait]
 pub trait ParseableServer {
     /// configure the router
-    fn configure_routes(config: &mut ServiceConfig, oidc_client: Option<OpenIdClient>)
+    fn configure_routes(config: &mut ServiceConfig)
     where
         Self: Sized;
 
@@ -96,7 +100,7 @@ pub trait ParseableServer {
                 let client = config
                     .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
                     .await?;
-                Some(Arc::new(client))
+                Some(client)
             }
 
             None => None,
@@ -116,8 +120,9 @@ pub trait ParseableServer {
         // fn that creates the app
         let create_app_fn = move || {
             App::new()
+                .app_data(web::Data::new(oidc_client.clone()))
                 .wrap(prometheus.clone())
-                .configure(|config| Self::configure_routes(config, oidc_client.clone()))
+                .configure(|config| Self::configure_routes(config))
                 .wrap(from_fn(health_check::check_shutdown_middleware))
                 .wrap(actix_web::middleware::Logger::default())
                 .wrap(actix_web::middleware::Compress::default())

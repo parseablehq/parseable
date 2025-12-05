@@ -42,14 +42,14 @@ use crate::Server;
 use crate::parseable::PARSEABLE;
 
 use super::query::{querier_ingest, querier_logstream, querier_rbac, querier_role};
-use super::{NodeType, OpenIdClient, ParseableServer, QuerierMetadata, load_on_init};
+use super::{NodeType, ParseableServer, QuerierMetadata, load_on_init};
 
 pub struct QueryServer;
 pub static QUERIER_META: OnceCell<Arc<QuerierMetadata>> = OnceCell::const_new();
 #[async_trait]
 impl ParseableServer for QueryServer {
     // configure the api routes
-    fn configure_routes(config: &mut ServiceConfig, oidc_client: Option<OpenIdClient>) {
+    fn configure_routes(config: &mut ServiceConfig) {
         config
             .service(
                 web::scope(&base_path())
@@ -66,7 +66,7 @@ impl ParseableServer for QueryServer {
                     .service(Server::get_dashboards_webscope())
                     .service(Server::get_filters_webscope())
                     .service(Server::get_llm_webscope())
-                    .service(Server::get_oauth_webscope(oidc_client))
+                    .service(Server::get_oauth_webscope())
                     .service(Self::get_user_role_webscope())
                     .service(Server::get_roles_webscope())
                     .service(Server::get_counts_webscope().wrap(from_fn(

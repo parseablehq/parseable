@@ -24,16 +24,25 @@ use actix_web::{
     dev::{Service, ServiceRequest, ServiceResponse, Transform, forward_ready},
     error::{ErrorBadRequest, ErrorForbidden, ErrorUnauthorized},
     http::header::{self, HeaderName},
+    web::Data,
 };
+use chrono::{Duration, Utc};
 use futures_util::future::LocalBoxFuture;
 
 use crate::{
     handlers::{
         AUTHORIZATION_KEY, KINESIS_COMMON_ATTRIBUTES_KEY, LOG_SOURCE_KEY, LOG_SOURCE_KINESIS,
-        STREAM_NAME_HEADER_KEY,
+        STREAM_NAME_HEADER_KEY, http::rbac::RBACError,
     },
+    oidc::DiscoveredClient,
     option::Mode,
     parseable::PARSEABLE,
+    rbac::{
+        EXPIRY_DURATION,
+        map::{SessionKey, mut_sessions, mut_users, sessions, users},
+        roles_to_permission, user,
+    },
+    utils::get_user_from_request,
 };
 use crate::{
     rbac::Users,
@@ -160,8 +169,86 @@ where
 
         let auth_result: Result<_, Error> = (self.auth_method)(&mut req, self.action);
 
+        let http_req = req.request().clone();
+        let key: Result<SessionKey, Error> = extract_session_key(&mut req);
+        let userid: Result<String, RBACError> = get_user_from_request(&http_req);
+
         let fut = self.service.call(req);
         Box::pin(async move {
+            let Ok(key) = key else {
+                return Err(ErrorUnauthorized(
+                    "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
+                ));
+            };
+
+            // if session is expired, refresh token
+            if sessions().is_session_expired(&key) {
+                // request using oidc client
+                let oidc_client = match http_req.app_data::<Data<Option<DiscoveredClient>>>() {
+                    Some(client) => {
+                        let c = client.clone().into_inner();
+                        c.as_ref().clone()
+                    }
+                    None => None,
+                };
+
+                if let Some(client) = oidc_client
+                    && let Ok(userid) = userid
+                    && users().get(&userid).is_some()
+                {
+                    // get the bearer token
+                    let user = users().get(&userid).unwrap().clone();
+                    match &user.ty {
+                        user::UserType::OAuth(oauth) => {
+                            if oauth.bearer.as_ref().is_some() {
+                                let Ok(refreshed_token) = client
+                                    .refresh_token(oauth, Some(PARSEABLE.options.scope.as_str()))
+                                    .await
+                                else {
+                                    return Err(ErrorUnauthorized(
+                                        "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
+                                    ));
+                                };
+                                let expires_in =
+                                    if let Some(expires_in) = refreshed_token.expires_in.as_ref() {
+                                        // need an i64 somehow
+                                        if *expires_in > u32::MAX.into() {
+                                            EXPIRY_DURATION
+                                        } else {
+                                            let v = i64::from(*expires_in as u32);
+                                            Duration::seconds(v)
+                                        }
+                                    } else {
+                                        EXPIRY_DURATION
+                                    };
+
+                                // set the new oauth bearer value
+                                if let Some(user) = mut_users().get_mut(&userid)
+                                    && let user::UserType::OAuth(oauth) = &mut user.ty
+                                {
+                                    oauth.bearer = Some(refreshed_token)
+                                }
+
+                                mut_sessions().track_new(
+                                    userid.clone(),
+                                    key.clone(),
+                                    Utc::now() + expires_in,
+                                    roles_to_permission(user.roles()),
+                                );
+                            }
+                        }
+                        _ => {
+                            mut_sessions().track_new(
+                                userid.clone(),
+                                key.clone(),
+                                Utc::now() + EXPIRY_DURATION,
+                                roles_to_permission(user.roles()),
+                            );
+                        }
+                    }
+                }
+            }
+
             match auth_result? {
                 rbac::Response::UnAuthorized => {
                     return Err(ErrorForbidden(
