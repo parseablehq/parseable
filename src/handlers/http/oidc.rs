@@ -429,9 +429,8 @@ pub async fn put_user(
     put_metadata(&metadata).await?;
 
     // modify before storing
-    match &mut user.ty {
-        UserType::Native(_) => {}
-        UserType::OAuth(oauth) => oauth.bearer = Some(bearer),
+    if let user::UserType::OAuth(oauth) = &mut user.ty {
+        oauth.bearer = Some(bearer);
     }
     Users.put_user(user.clone());
     Ok(user)
@@ -492,10 +491,8 @@ pub async fn update_user_if_changed(
     put_metadata(&metadata).await?;
     Users.delete_user(&old_username);
     // update oauth bearer
-    // modify before storing
-    match &mut user.ty {
-        UserType::Native(_) => {}
-        UserType::OAuth(oauth) => oauth.bearer = Some(bearer),
+    if let user::UserType::OAuth(oauth) = &mut user.ty {
+        oauth.bearer = Some(bearer);
     }
     Users.put_user(user.clone());
     Ok(user)
