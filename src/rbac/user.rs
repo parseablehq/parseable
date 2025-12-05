@@ -23,6 +23,7 @@ use argon2::{
     password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
 };
 
+use openid::Bearer;
 use rand::distributions::{Alphanumeric, DistString};
 
 use crate::{
@@ -38,7 +39,7 @@ use crate::{
 #[serde(untagged)]
 pub enum UserType {
     Native(Basic),
-    OAuth(OAuth),
+    OAuth(Box<OAuth>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -66,12 +67,18 @@ impl User {
         )
     }
 
-    pub fn new_oauth(userid: String, roles: HashSet<String>, user_info: UserInfo) -> Self {
+    pub fn new_oauth(
+        userid: String,
+        roles: HashSet<String>,
+        user_info: UserInfo,
+        bearer: Option<Bearer>,
+    ) -> Self {
         Self {
-            ty: UserType::OAuth(OAuth {
+            ty: UserType::OAuth(Box::new(OAuth {
                 userid: user_info.sub.clone().unwrap_or(userid),
                 user_info,
-            }),
+                bearer,
+            })),
             roles,
             user_groups: HashSet::new(),
         }
@@ -80,7 +87,7 @@ impl User {
     pub fn userid(&self) -> &str {
         match self.ty {
             UserType::Native(Basic { ref username, .. }) => username,
-            UserType::OAuth(OAuth { ref userid, .. }) => userid,
+            UserType::OAuth(ref oauth) => &oauth.userid,
         }
     }
 
@@ -175,6 +182,13 @@ pub fn get_admin_user() -> User {
 pub struct OAuth {
     pub userid: String,
     pub user_info: UserInfo,
+    pub bearer: Option<Bearer>,
+}
+
+impl AsRef<Bearer> for Box<OAuth> {
+    fn as_ref(&self) -> &Bearer {
+        self.bearer.as_ref().unwrap()
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -255,8 +269,10 @@ impl GroupUser {
                 username: username.clone(),
                 method: "native".to_string(),
             },
-            UserType::OAuth(OAuth { userid, user_info }) => {
+            UserType::OAuth(oauth) => {
                 // For OAuth users, derive the display username from user_info
+                let user_info = &oauth.user_info;
+                let userid = &oauth.userid;
                 let display_username = user_info
                     .name
                     .clone()

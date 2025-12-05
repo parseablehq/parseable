@@ -59,7 +59,7 @@ pub fn extract_datetime(path: &str) -> Option<NaiveDateTime> {
 }
 
 pub fn get_user_from_request(req: &HttpRequest) -> Result<String, RBACError> {
-    let session_key = extract_session_key_from_req(req).unwrap();
+    let session_key = extract_session_key_from_req(req).map_err(|_| RBACError::UserDoesNotExist)?;
     let user_id = Users.get_userid_from_session(&session_key);
     if user_id.is_none() {
         return Err(RBACError::UserDoesNotExist);

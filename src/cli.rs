@@ -455,9 +455,9 @@ pub struct Options {
         long = "oidc-scope",
         name = "oidc-scope",
         env = "P_OIDC_SCOPE",
-        default_value = "openid profile email",
+        default_value = "openid profile email offline_access",
         required = false,
-        help = "OIDC scope to request (default: openid profile email)"
+        help = "OIDC scope to request (default: openid profile email offline_access)"
     )]
     pub scope: String,
 
