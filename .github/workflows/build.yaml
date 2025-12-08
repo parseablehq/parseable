@@ -206,6 +206,7 @@ jobs:
             exit 1
           fi
 
+      - name: Build with Kafka (cross) - FIXED
         if: matrix.use_cross
         env:
           LIBRDKAFKA_SSL_VENDORED: "1"
@@ -228,3 +229,11 @@ jobs:
           env | grep -E 'ZLIB_|OPENSSL_|PKG_CONFIG|LIBRDKAFKA'
           echo "=== NOW RUNNING CROSS BUILD (pre-build will show zlib paths) ==="
           cross build --target ${{ matrix.target }} --features kafka --release --verbose
+
+      - name: Build with Kafka (native)
+        if: ${{ !matrix.use_cross }}
+        env:
+          CC: ${{ runner.os == 'Linux' && 'gcc-11' || '' }}
+          CXX: ${{ runner.os == 'Linux' && 'g++-11' || '' }}
+          LIBRDKAFKA_SSL_VENDORED: "1"
+        run: cargo build --target ${{ matrix.target }} --features kafka --release
