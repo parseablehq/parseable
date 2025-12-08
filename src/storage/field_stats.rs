@@ -162,7 +162,7 @@ pub async fn calculate_field_stats(
             StreamType::Internal,
             &p_custom_fields,
         )?
-        .process()?;
+        .process().await?;
     }
     Ok(stats_calculated)
 }
