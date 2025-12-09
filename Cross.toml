@@ -21,22 +21,23 @@ pre-build = [
     "ln -sf /usr/lib/aarch64-linux-gnu/libcrypto.a /usr/aarch64-linux-gnu/lib/",
     "cp -r /usr/include/openssl /usr/aarch64-linux-gnu/include/",
     
+    # Symlink SASL2
     "ln -sf /usr/lib/aarch64-linux-gnu/libsasl2.so.2 /usr/aarch64-linux-gnu/lib/libsasl2.so",
     "ln -sf /usr/lib/aarch64-linux-gnu/libsasl2.so.2 /usr/aarch64-linux-gnu/lib/libsasl2.so.2",
-    "ln -sf /usr/lib/aarch64-linux-gnu/libsasl2.a /usr/aarch64-linux-gnu/lib/ || true",
     "cp -r /usr/include/sasl /usr/aarch64-linux-gnu/include/",
-    
-    # Debug
-    "echo '=== VERIFY CROSS SYSROOT ==='",
-    "ls -la /usr/aarch64-linux-gnu/lib/",
-    "ls -la /usr/aarch64-linux-gnu/include/",
 ]
 
 [target.aarch64-unknown-linux-gnu.env]
 PKG_CONFIG_PATH = "/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
-PKG_CONFIG_SYSROOT_DIR = "/usr/aarch64-linux-gnu"
+PKG_CONFIG_SYSROOT_DIR = "/"
 PKG_CONFIG_ALLOW_CROSS = "1"
 LIBRDKAFKA_SSL_VENDORED = "1"
 
-# Tell sasl2-sys to use system library, not build from source
-SASL2_STATIC = "0"
+# Force sasl2-sys to use system library via pkg-config
+SASL2_SYS_USE_PKG_CONFIG = "1"
+
+# Set cross-compiler for any C builds
+CC_aarch64_unknown_linux_gnu = "aarch64-linux-gnu-gcc"
+CXX_aarch64_unknown_linux_gnu = "aarch64-linux-gnu-g++"
+AR_aarch64_unknown_linux_gnu = "aarch64-linux-gnu-ar"
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER = "aarch64-linux-gnu-gcc"
