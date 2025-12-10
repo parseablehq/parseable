@@ -19,7 +19,10 @@
 use std::collections::HashMap;
 
 use itertools::Itertools;
-use parquet::{file::reader::FileReader, format::SortingColumn};
+use parquet::file::{
+    metadata::{RowGroupMetaData, SortingColumn},
+    reader::FileReader,
+};
 
 use crate::metastore::metastore_traits::MetastoreObject;
 
@@ -170,9 +173,7 @@ fn sort_order(
     sort_orders
 }
 
-fn column_statistics(
-    row_groups: &[parquet::file::metadata::RowGroupMetaData],
-) -> HashMap<String, Column> {
+fn column_statistics(row_groups: &[RowGroupMetaData]) -> HashMap<String, Column> {
     let mut columns: HashMap<String, Column> = HashMap::new();
     for row_group in row_groups {
         for col in row_group.columns() {

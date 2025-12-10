@@ -143,7 +143,7 @@ impl ObjectStorage for LocalFS {
                         .modified()
                         .map_err(ObjectStorageError::IoError)?
                         .into(),
-                    size: metadata.len() as usize,
+                    size: metadata.len(),
                     e_tag: None,
                     version: None,
                 };

@@ -1,5 +1,43 @@
 [target.aarch64-unknown-linux-gnu]
 image = "ghcr.io/cross-rs/aarch64-unknown-linux-gnu@sha256:1e2a0291f92a4372cbc22d8994e735473045383f1ce7fa44a16c234ba00187f4"
+pre-build = [
+    "dpkg --add-architecture arm64",
+    "apt-get update",
+    "apt-get install -y pkg-config:arm64 libc6-dev:arm64",
+    "apt-get install -y zlib1g-dev:arm64 libssl-dev:arm64 libsasl2-dev:arm64",
+    
+    # Create cross sysroot directories
+    "mkdir -p /usr/aarch64-linux-gnu/lib /usr/aarch64-linux-gnu/include",
+    
+    # Symlink zlib
+    "ln -sf /usr/lib/aarch64-linux-gnu/libz.so /usr/aarch64-linux-gnu/lib/",
+    "ln -sf /usr/lib/aarch64-linux-gnu/libz.a /usr/aarch64-linux-gnu/lib/",
+    "cp /usr/include/zlib.h /usr/include/zconf.h /usr/aarch64-linux-gnu/include/",
+    
+    # Symlink SSL
+    "ln -sf /usr/lib/aarch64-linux-gnu/libssl.so.1.1 /usr/aarch64-linux-gnu/lib/libssl.so",
+    "ln -sf /usr/lib/aarch64-linux-gnu/libcrypto.so.1.1 /usr/aarch64-linux-gnu/lib/libcrypto.so",
+    "ln -sf /usr/lib/aarch64-linux-gnu/libssl.a /usr/aarch64-linux-gnu/lib/",
+    "ln -sf /usr/lib/aarch64-linux-gnu/libcrypto.a /usr/aarch64-linux-gnu/lib/",
+    "cp -r /usr/include/openssl /usr/aarch64-linux-gnu/include/",
+    
+    # Symlink SASL2
+    "ln -sf /usr/lib/aarch64-linux-gnu/libsasl2.so.2 /usr/aarch64-linux-gnu/lib/libsasl2.so",
+    "ln -sf /usr/lib/aarch64-linux-gnu/libsasl2.so.2 /usr/aarch64-linux-gnu/lib/libsasl2.so.2",
+    "cp -r /usr/include/sasl /usr/aarch64-linux-gnu/include/",
+]
 
-[target.x86_64-unknown-linux-gnu]
-image = "ghcr.io/cross-rs/x86_64-unknown-linux-gnu@sha256:bf05360bb9d6d4947eed60532ac7a0d7e8fae8f214e9abb801d5941c8fe4918d"
+[target.aarch64-unknown-linux-gnu.env]
+PKG_CONFIG_PATH = "/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
+PKG_CONFIG_SYSROOT_DIR = "/"
+PKG_CONFIG_ALLOW_CROSS = "1"
+LIBRDKAFKA_SSL_VENDORED = "1"
+
+# Force sasl2-sys to use system library via pkg-config
+SASL2_SYS_USE_PKG_CONFIG = "1"
+
+# Set cross-compiler for any C builds
+CC_aarch64_unknown_linux_gnu = "aarch64-linux-gnu-gcc"
+CXX_aarch64_unknown_linux_gnu = "aarch64-linux-gnu-g++"
+AR_aarch64_unknown_linux_gnu = "aarch64-linux-gnu-ar"
+CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER = "aarch64-linux-gnu-gcc"

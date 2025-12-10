@@ -32,10 +32,10 @@ use datafusion::{
         MemTable, TableProvider,
         file_format::{FileFormat, parquet::ParquetFormat},
         listing::PartitionedFile,
-        physical_plan::FileScanConfig,
+        physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource},
     },
     error::{DataFusionError, Result as DataFusionResult},
-    execution::{context::SessionState, object_store::ObjectStoreUrl},
+    execution::object_store::ObjectStoreUrl,
     logical_expr::{
         BinaryExpr, Operator, TableProviderFilterPushDown, TableType, utils::conjunction,
     },
@@ -142,26 +142,51 @@ impl StandardTableProvider {
                 nulls_first: true,
             },
         };
+
         let file_format = ParquetFormat::default().with_enable_pruning(true);
+
+        // create file groups from vec file partitions
+        let file_groups = partitions
+            .into_iter()
+            .map(FileGroup::new)
+            .collect_vec();
+
+        // parquet file source, default table parquet options
+        let file_source = if let Some(phyiscal_expr) = filters {
+            ParquetSource::default().with_predicate(phyiscal_expr)
+        } else {
+            ParquetSource::default()
+        };
+
+        let mut conf_builder =
+            FileScanConfigBuilder::new(object_store_url, self.schema.clone(), file_source.into())
+                .with_statistics(statistics)
+                .with_batch_size(Some(20000))
+                .with_constraints(Constraints::default())
+                .with_file_groups(file_groups)
+                .with_output_ordering(vec![LexOrdering::new([sort_expr]).unwrap()]);
+
+        // Set projection if provided
+        if let Some(proj_indices) = projection {
+            conf_builder = conf_builder.with_projection_indices(Some(proj_indices.clone()));
+        }
+
+        // Set limit if provided
+        if let Some(lim) = limit {
+            conf_builder = conf_builder.with_limit(Some(lim));
+        }
+
+        let conf = conf_builder.build();
 
         // create the execution plan
         let plan = file_format
             .create_physical_plan(
-                state.as_any().downcast_ref::<SessionState>().unwrap(), // Remove this when ParquetFormat catches up
-                FileScanConfig {
-                    object_store_url,
-                    file_schema: self.schema.clone(),
-                    file_groups: partitions,
-                    statistics,
-                    projection: projection.cloned(),
-                    limit,
-                    output_ordering: vec![LexOrdering::from_iter([sort_expr])],
-                    table_partition_cols: Vec::new(),
-                    constraints: Constraints::empty(),
-                },
-                filters.as_ref(),
+                state,
+                // .as_any().downcast_ref::<SessionState>().unwrap(), // Remove this when ParquetFormat catches up
+                conf,
             )
             .await?;
+
         execution_plans.push(plan);
 
         Ok(())
@@ -314,7 +339,7 @@ impl StandardTableProvider {
         } else if execution_plans.len() == 1 {
             execution_plans.pop().unwrap()
         } else {
-            Arc::new(UnionExec::new(execution_plans))
+            UnionExec::try_new(execution_plans)?
         };
         Ok(exec)
     }
@@ -697,10 +722,10 @@ impl PartialTimeFilter {
         Expr::BinaryExpr(BinaryExpr::new(
             Box::new(left),
             op,
-            Box::new(Expr::Literal(ScalarValue::TimestampMillisecond(
-                Some(right),
+            Box::new(Expr::Literal(
+                ScalarValue::TimestampMillisecond(Some(right), None),
                 None,
-            ))),
+            )),
         ))
     }
 }
@@ -842,7 +867,7 @@ fn extract_timestamp_bound(
     binexpr: &BinaryExpr,
     time_partition: &Option<String>,
 ) -> Option<(Operator, NaiveDateTime)> {
-    let Expr::Literal(value) = binexpr.right.as_ref() else {
+    let Expr::Literal(value, None) = binexpr.right.as_ref() else {
         return None;
     };
 
@@ -914,7 +939,7 @@ pub trait ManifestExt: ManifestFile {
             let Expr::BinaryExpr(expr) = expr else {
                 return None;
             };
-            let Expr::Literal(value) = &*expr.right else {
+            let Expr::Literal(value, None) = &*expr.right else {
                 return None;
             };
             /* `BinaryExp` doesn't implement `Copy` */
@@ -1101,10 +1126,10 @@ mod tests {
         let binexpr = BinaryExpr {
             left: Box::new(Expr::Column("timestamp_column".into())),
             op: Operator::Eq,
-            right: Box::new(Expr::Literal(ScalarValue::TimestampMillisecond(
-                Some(1672531200000),
+            right: Box::new(Expr::Literal(
+                ScalarValue::TimestampMillisecond(Some(1672531200000), None),
                 None,
-            ))),
+            )),
         };
 
         let time_partition = Some("timestamp_column".to_string());
@@ -1123,10 +1148,10 @@ mod tests {
         let binexpr = BinaryExpr {
             left: Box::new(Expr::Column("timestamp_column".into())),
             op: Operator::Gt,
-            right: Box::new(Expr::Literal(ScalarValue::TimestampNanosecond(
-                Some(1672531200000000000),
+            right: Box::new(Expr::Literal(
+                ScalarValue::TimestampNanosecond(Some(1672531200000000000), None),
                 None,
-            ))),
+            )),
         };
 
         let time_partition = Some("timestamp_column".to_string());
@@ -1146,7 +1171,10 @@ mod tests {
         let binexpr = BinaryExpr {
             left: Box::new(Expr::Column("timestamp_column".into())),
             op: Operator::Lt,
-            right: Box::new(Expr::Literal(ScalarValue::Utf8(Some(timestamp.to_owned())))),
+            right: Box::new(Expr::Literal(
+                ScalarValue::Utf8(Some(timestamp.to_owned())),
+                None,
+            )),
         };
 
         let time_partition = Some("timestamp_column".to_string());
@@ -1166,7 +1194,10 @@ mod tests {
         let binexpr = BinaryExpr {
             left: Box::new(Expr::Column("other_column".into())),
             op: Operator::Eq,
-            right: Box::new(Expr::Literal(ScalarValue::Utf8(Some(timestamp.to_owned())))),
+            right: Box::new(Expr::Literal(
+                ScalarValue::Utf8(Some(timestamp.to_owned())),
+                None,
+            )),
         };
 
         let time_partition = Some("timestamp_column".to_string());
@@ -1180,7 +1211,7 @@ mod tests {
         let binexpr = BinaryExpr {
             left: Box::new(Expr::Column("timestamp_column".into())),
             op: Operator::Eq,
-            right: Box::new(Expr::Literal(ScalarValue::Int32(Some(42)))),
+            right: Box::new(Expr::Literal(ScalarValue::Int32(Some(42)), None)),
         };
 
         let time_partition = Some("timestamp_column".to_string());
@@ -1208,10 +1239,10 @@ mod tests {
         let binexpr = BinaryExpr {
             left: Box::new(Expr::Column("timestamp_column".into())),
             op: Operator::Eq,
-            right: Box::new(Expr::Literal(ScalarValue::TimestampMillisecond(
-                Some(1672531200000),
+            right: Box::new(Expr::Literal(
+                ScalarValue::TimestampMillisecond(Some(1672531200000), None),
                 None,
-            ))),
+            )),
         };
 
         let time_partition = None;
@@ -1226,10 +1257,10 @@ mod tests {
         let binexpr = BinaryExpr {
             left: Box::new(Expr::Column("timestamp_column".into())),
             op: Operator::Eq,
-            right: Box::new(Expr::Literal(ScalarValue::TimestampNanosecond(
-                Some(1672531200000000000),
+            right: Box::new(Expr::Literal(
+                ScalarValue::TimestampNanosecond(Some(1672531200000000000), None),
                 None,
-            ))),
+            )),
         };
         let result = extract_timestamp_bound(&binexpr, &time_partition);
 
