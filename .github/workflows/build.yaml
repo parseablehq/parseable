@@ -136,3 +136,57 @@ jobs:
           CXX: g++-11
           LIBRDKAFKA_SSL_VENDORED: "1"
         run: cargo build --target x86_64-unknown-linux-gnu --features kafka --release
+
+  # Kafka build for aarch64 macOS
+  build-kafka-mac:
+    name: Build Kafka aarch64-apple-darwin
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install macOS dependencies
+        run: |
+          brew install \
+            llvm \
+            pkg-config \
+            zstd \
+            lz4 \
+            openssl@3.0 \
+            cyrus-sasl \
+            python3
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          targets: aarch64-apple-darwin
+
+      - name: Cache dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-aarch64-apple-darwin-kafka-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Find and fix librdkafka CMakeLists.txt
+        run: |
+          cargo fetch
+          RDKAFKA_SYS_DIR=$(find ~/.cargo/registry/src -name "rdkafka-sys-*" -type d | head -n 1)
+          echo "Found rdkafka-sys at: $RDKAFKA_SYS_DIR"
+          CMAKE_FILE="$RDKAFKA_SYS_DIR/librdkafka/CMakeLists.txt"
+          if [ -f "$CMAKE_FILE" ]; then
+            echo "Found CMakeLists.txt at: $CMAKE_FILE"
+            cp "$CMAKE_FILE" "$CMAKE_FILE.bak"
+            sed -i '' 's/cmake_minimum_required(VERSION 3.2)/cmake_minimum_required(VERSION 3.5)/' "$CMAKE_FILE"
+            echo "Modified CMakeLists.txt - before and after comparison:"
+            diff "$CMAKE_FILE.bak" "$CMAKE_FILE" || true
+          else
+            echo "Could not find librdkafka CMakeLists.txt file!"
+            exit 1
+          fi
+
+      - name: Build with Kafka
+        env:
+          LIBRDKAFKA_SSL_VENDORED: "1"
+        run: cargo build --target aarch64-apple-darwin --features kafka --release
