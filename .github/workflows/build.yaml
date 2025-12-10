@@ -25,10 +25,7 @@ jobs:
             target: aarch64-unknown-linux-gnu
             use_cross: true
 
-          # macOS builds - both native on macos-latest (M1)
-          - os: macos-latest
-            target: x86_64-apple-darwin
-            use_cross: false
+          # macOS build - aarch64 only (M1/M2)
           - os: macos-latest
             target: aarch64-apple-darwin
             use_cross: false
@@ -78,43 +75,14 @@ jobs:
           CXX: ${{ runner.os == 'Linux' && 'g++-11' || '' }}
         run: cargo build --target ${{ matrix.target }} --release
 
-  # Kafka build for supported platforms
+  # Kafka build for x86_64 Linux only
   build-kafka:
-    name: Build Kafka ${{matrix.target}}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Linux x86_64 - native build
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            use_cross: false
-
-          # Linux aarch64 - cross-compile
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            use_cross: true
-
-          # macOS aarch64 - native on M1
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            use_cross: false
-
+    name: Build Kafka x86_64-unknown-linux-gnu
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Docker Buildx
-        if: matrix.use_cross
-        uses: docker/setup-buildx-action@v3
-
-      - name: Set up QEMU for cross-arch builds
-        if: matrix.use_cross
-        uses: docker/setup-qemu-action@v3
-
-      # Linux-specific dependencies for native x86_64 build
-      - name: Install Linux dependencies (x86_64)
-        if: runner.os == 'Linux' && matrix.target == 'x86_64-unknown-linux-gnu'
+      - name: Install Linux dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -131,27 +99,10 @@ jobs:
             libsasl2-dev \
             python3
 
-      # macOS-specific dependencies
-      - name: Install macOS dependencies
-        if: runner.os == 'macOS'
-        run: |
-          brew install \
-            llvm \
-            pkg-config \
-            zstd \
-            lz4 \
-            openssl@3.0 \
-            cyrus-sasl \
-            python3
-
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@nightly
         with:
-          targets: ${{ matrix.target }}
-
-      - name: Install cross for aarch64
-        if: matrix.use_cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+          targets: x86_64-unknown-linux-gnu
 
       - name: Cache dependencies
         uses: actions/cache@v4
@@ -160,22 +111,17 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ matrix.target }}-kafka-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-x86_64-unknown-linux-gnu-kafka-${{ hashFiles('**/Cargo.lock') }}
 
-      - name: Find and fix librdkafka CMakeLists.txt for Linux
-        if: runner.os == 'Linux' && !matrix.use_cross
+      - name: Find and fix librdkafka CMakeLists.txt
         run: |
           cargo fetch
-          # Find the rdkafka-sys package directory
           RDKAFKA_SYS_DIR=$(find ~/.cargo/registry/src -name "rdkafka-sys-*" -type d | head -n 1)
           echo "Found rdkafka-sys at: $RDKAFKA_SYS_DIR"
-          # Find the librdkafka CMakeLists.txt file
           CMAKE_FILE="$RDKAFKA_SYS_DIR/librdkafka/CMakeLists.txt"
           if [ -f "$CMAKE_FILE" ]; then
             echo "Found CMakeLists.txt at: $CMAKE_FILE"
-            # Make a backup of the original file
             cp "$CMAKE_FILE" "$CMAKE_FILE.bak"
-            # Replace the minimum required version
             sed -i 's/cmake_minimum_required(VERSION 3.2)/cmake_minimum_required(VERSION 3.5)/' "$CMAKE_FILE"
             echo "Modified CMakeLists.txt - before and after comparison:"
             diff "$CMAKE_FILE.bak" "$CMAKE_FILE" || true
@@ -184,56 +130,9 @@ jobs:
             exit 1
           fi
 
-      - name: Find and fix librdkafka CMakeLists.txt for macOS
-        if: runner.os == 'macOS'
-        run: |
-          cargo fetch
-          # Find the rdkafka-sys package directory
-          RDKAFKA_SYS_DIR=$(find ~/.cargo/registry/src -name "rdkafka-sys-*" -type d | head -n 1)
-          echo "Found rdkafka-sys at: $RDKAFKA_SYS_DIR"
-          # Find the librdkafka CMakeLists.txt file
-          CMAKE_FILE="$RDKAFKA_SYS_DIR/librdkafka/CMakeLists.txt"
-          if [ -f "$CMAKE_FILE" ]; then
-            echo "Found CMakeLists.txt at: $CMAKE_FILE"
-            # Make a backup of the original file
-            cp "$CMAKE_FILE" "$CMAKE_FILE.bak"
-            # Replace the minimum required version - macOS requires '' after -i
-            sed -i '' 's/cmake_minimum_required(VERSION 3.2)/cmake_minimum_required(VERSION 3.5)/' "$CMAKE_FILE"
-            echo "Modified CMakeLists.txt - before and after comparison:"
-            diff "$CMAKE_FILE.bak" "$CMAKE_FILE" || true
-          else
-            echo "Could not find librdkafka CMakeLists.txt file!"
-            exit 1
-          fi
-
-      - name: Build with Kafka (cross) - FIXED
-        if: matrix.use_cross
+      - name: Build with Kafka
         env:
+          CC: gcc-11
+          CXX: g++-11
           LIBRDKAFKA_SSL_VENDORED: "1"
-          PKG_CONFIG_ALLOW_CROSS: "1"
-          CROSS_NO_WARNINGS: "0"
-          RUST_BACKTRACE: "1"
-
-          # Standard Debian multiarch paths for aarch64
-          ZLIB_INCLUDE_DIR: "/usr/include"
-          ZLIB_LIBRARY: "/usr/lib/aarch64-linux-gnu/libz.so"
-
-          OPENSSL_ROOT_DIR: "/usr"
-          OPENSSL_INCLUDE_DIR: "/usr/include"
-          OPENSSL_CRYPTO_LIBRARY: "/usr/lib/aarch64-linux-gnu/libcrypto.so"
-          OPENSSL_SSL_LIBRARY: "/usr/lib/aarch64-linux-gnu/libssl.so"
-
-          PKG_CONFIG_PATH: "/usr/lib/aarch64-linux-gnu/pkgconfig:/usr/share/pkgconfig"
-        run: |
-          echo "=== HOST ENV DEBUG ==="
-          env | grep -E 'ZLIB_|OPENSSL_|PKG_CONFIG|LIBRDKAFKA'
-          echo "=== NOW RUNNING CROSS BUILD (pre-build will show zlib paths) ==="
-          cross build --target ${{ matrix.target }} --features kafka --release --verbose
-
-      - name: Build with Kafka (native)
-        if: ${{ !matrix.use_cross }}
-        env:
-          CC: ${{ runner.os == 'Linux' && 'gcc-11' || '' }}
-          CXX: ${{ runner.os == 'Linux' && 'g++-11' || '' }}
-          LIBRDKAFKA_SSL_VENDORED: "1"
-        run: cargo build --target ${{ matrix.target }} --features kafka --release
+        run: cargo build --target x86_64-unknown-linux-gnu --features kafka --release
