@@ -33,8 +33,32 @@ entries:
     version: 0.0.1
   parseable:
   - apiVersion: v2
+    appVersion: v2.5.3
+    created: "2025-12-10T11:47:42.029118+05:30"
+    dependencies:
+    - condition: vector.enabled
+      name: vector
+      repository: https://helm.vector.dev
+      version: 0.20.1
+    - condition: fluent-bit.enabled
+      name: fluent-bit
+      repository: https://fluent.github.io/helm-charts
+      version: 0.48.0
+    description: Helm chart for Parseable - Fast Observability on S3
+    digest: 48e18be39ca515c19b103661d645ed2b6a7cf0144aae87fad0ad65cb46304970
+    icon: https://raw.githubusercontent.com/parseablehq/.github/main/images/new-logo.svg
+    maintainers:
+    - email: hi@parseable.com
+      name: Parseable Team
+      url: https://parseable.com
+    name: parseable
+    type: application
+    urls:
+    - https://charts.parseable.com/helm-releases/parseable-2.5.3.tgz
+    version: 2.5.3
+  - apiVersion: v2
     appVersion: v2.4.0
-    created: "2025-07-23T12:10:00.543768+05:30"
+    created: "2025-12-10T11:47:42.026918+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -58,7 +82,7 @@ entries:
     version: 2.4.0
   - apiVersion: v2
     appVersion: v2.3.3
-    created: "2025-07-23T12:10:00.541688+05:30"
+    created: "2025-12-10T11:47:42.02456+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -82,7 +106,7 @@ entries:
     version: 2.3.3
   - apiVersion: v2
     appVersion: v2.3.2
-    created: "2025-07-23T12:10:00.539583+05:30"
+    created: "2025-12-10T11:47:42.022295+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -106,7 +130,7 @@ entries:
     version: 2.3.2
   - apiVersion: v2
     appVersion: v2.3.1
-    created: "2025-07-23T12:10:00.53718+05:30"
+    created: "2025-12-10T11:47:42.019622+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -130,7 +154,7 @@ entries:
     version: 2.3.1
   - apiVersion: v2
     appVersion: v2.3.0
-    created: "2025-07-23T12:10:00.534639+05:30"
+    created: "2025-12-10T11:47:42.017158+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -154,7 +178,7 @@ entries:
     version: 2.3.0
   - apiVersion: v2
     appVersion: v2.1.0
-    created: "2025-07-23T12:10:00.531994+05:30"
+    created: "2025-12-10T11:47:42.014759+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -178,7 +202,7 @@ entries:
     version: 2.1.0
   - apiVersion: v2
     appVersion: v1.7.5
-    created: "2025-07-23T12:10:00.529752+05:30"
+    created: "2025-12-10T11:47:42.012468+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -202,7 +226,7 @@ entries:
     version: 2.0.0
   - apiVersion: v2
     appVersion: v1.7.5
-    created: "2025-07-23T12:10:00.527374+05:30"
+    created: "2025-12-10T11:47:42.010092+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -226,7 +250,7 @@ entries:
     version: 1.7.5
   - apiVersion: v2
     appVersion: v1.7.3
-    created: "2025-07-23T12:10:00.525204+05:30"
+    created: "2025-12-10T11:47:42.007861+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -250,7 +274,7 @@ entries:
     version: 1.7.3
   - apiVersion: v2
     appVersion: v1.7.2
-    created: "2025-07-23T12:10:00.522968+05:30"
+    created: "2025-12-10T11:47:42.005581+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -274,7 +298,7 @@ entries:
     version: 1.7.2
   - apiVersion: v2
     appVersion: v1.7.1
-    created: "2025-07-23T12:10:00.521062+05:30"
+    created: "2025-12-10T11:47:42.003623+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -298,7 +322,7 @@ entries:
     version: 1.7.1
   - apiVersion: v2
     appVersion: v1.7.0
-    created: "2025-07-23T12:10:00.518732+05:30"
+    created: "2025-12-10T11:47:42.001655+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -321,7 +345,7 @@ entries:
     version: 1.7.0
   - apiVersion: v2
     appVersion: v1.6.3
-    created: "2025-07-23T12:10:00.516906+05:30"
+    created: "2025-12-10T11:47:41.999396+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -344,7 +368,7 @@ entries:
     version: 1.6.8
   - apiVersion: v2
     appVersion: v1.6.3
-    created: "2025-07-23T12:10:00.514811+05:30"
+    created: "2025-12-10T11:47:41.997235+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -367,7 +391,7 @@ entries:
     version: 1.6.7
   - apiVersion: v2
     appVersion: v1.6.3
-    created: "2025-07-23T12:10:00.512709+05:30"
+    created: "2025-12-10T11:47:41.99512+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -390,7 +414,7 @@ entries:
     version: 1.6.6
   - apiVersion: v2
     appVersion: v1.6.3
-    created: "2025-07-23T12:10:00.510895+05:30"
+    created: "2025-12-10T11:47:41.993248+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -413,7 +437,7 @@ entries:
     version: 1.6.5
   - apiVersion: v2
     appVersion: v1.6.3
-    created: "2025-07-23T12:10:00.508779+05:30"
+    created: "2025-12-10T11:47:41.991345+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -436,7 +460,7 @@ entries:
     version: 1.6.4
   - apiVersion: v2
     appVersion: v1.6.3
-    created: "2025-07-23T12:10:00.506849+05:30"
+    created: "2025-12-10T11:47:41.989159+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -459,7 +483,7 @@ entries:
     version: 1.6.3
   - apiVersion: v2
     appVersion: v1.6.2
-    created: "2025-07-23T12:10:00.504919+05:30"
+    created: "2025-12-10T11:47:41.987476+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -482,7 +506,7 @@ entries:
     version: 1.6.2
   - apiVersion: v2
     appVersion: v1.6.1
-    created: "2025-07-23T12:10:00.503251+05:30"
+    created: "2025-12-10T11:47:41.985556+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -505,7 +529,7 @@ entries:
     version: 1.6.1
   - apiVersion: v2
     appVersion: v1.6.0
-    created: "2025-07-23T12:10:00.501517+05:30"
+    created: "2025-12-10T11:47:41.98396+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -528,7 +552,7 @@ entries:
     version: 1.6.0
   - apiVersion: v2
     appVersion: v1.5.5
-    created: "2025-07-23T12:10:00.49957+05:30"
+    created: "2025-12-10T11:47:41.982298+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -551,7 +575,7 @@ entries:
     version: 1.5.5
   - apiVersion: v2
     appVersion: v1.5.4
-    created: "2025-07-23T12:10:00.497828+05:30"
+    created: "2025-12-10T11:47:41.980363+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -574,7 +598,7 @@ entries:
     version: 1.5.4
   - apiVersion: v2
     appVersion: v1.5.3
-    created: "2025-07-23T12:10:00.495861+05:30"
+    created: "2025-12-10T11:47:41.978729+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -597,7 +621,7 @@ entries:
     version: 1.5.3
   - apiVersion: v2
     appVersion: v1.5.2
-    created: "2025-07-23T12:10:00.494089+05:30"
+    created: "2025-12-10T11:47:41.976877+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -620,7 +644,7 @@ entries:
     version: 1.5.2
   - apiVersion: v2
     appVersion: v1.5.1
-    created: "2025-07-23T12:10:00.492321+05:30"
+    created: "2025-12-10T11:47:41.975244+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -643,7 +667,7 @@ entries:
     version: 1.5.1
   - apiVersion: v2
     appVersion: v1.5.0
-    created: "2025-07-23T12:10:00.49038+05:30"
+    created: "2025-12-10T11:47:41.973588+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -666,7 +690,7 @@ entries:
     version: 1.5.0
   - apiVersion: v2
     appVersion: v1.4.0
-    created: "2025-07-23T12:10:00.488507+05:30"
+    created: "2025-12-10T11:47:41.971336+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -689,7 +713,7 @@ entries:
     version: 1.4.1
   - apiVersion: v2
     appVersion: v1.4.0
-    created: "2025-07-23T12:10:00.486604+05:30"
+    created: "2025-12-10T11:47:41.969637+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -712,7 +736,7 @@ entries:
     version: 1.4.0
   - apiVersion: v2
     appVersion: v1.3.0
-    created: "2025-07-23T12:10:00.484971+05:30"
+    created: "2025-12-10T11:47:41.967921+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -735,7 +759,7 @@ entries:
     version: 1.3.1
   - apiVersion: v2
     appVersion: v1.3.0
-    created: "2025-07-23T12:10:00.483318+05:30"
+    created: "2025-12-10T11:47:41.966195+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -758,7 +782,7 @@ entries:
     version: 1.3.0
   - apiVersion: v2
     appVersion: v1.2.0
-    created: "2025-07-23T12:10:00.481385+05:30"
+    created: "2025-12-10T11:47:41.964555+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -781,7 +805,7 @@ entries:
     version: 1.2.0
   - apiVersion: v2
     appVersion: v1.1.0
-    created: "2025-07-23T12:10:00.479745+05:30"
+    created: "2025-12-10T11:47:41.962678+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -804,7 +828,7 @@ entries:
     version: 1.1.0
   - apiVersion: v2
     appVersion: v1.0.0
-    created: "2025-07-23T12:10:00.477636+05:30"
+    created: "2025-12-10T11:47:41.960848+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -827,7 +851,7 @@ entries:
     version: 1.0.0
   - apiVersion: v2
     appVersion: v0.9.0
-    created: "2025-07-23T12:10:00.4758+05:30"
+    created: "2025-12-10T11:47:41.959039+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -850,7 +874,7 @@ entries:
     version: 0.9.0
   - apiVersion: v2
     appVersion: v0.8.1
-    created: "2025-07-23T12:10:00.474219+05:30"
+    created: "2025-12-10T11:47:41.957249+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -873,7 +897,7 @@ entries:
     version: 0.8.1
   - apiVersion: v2
     appVersion: v0.8.0
-    created: "2025-07-23T12:10:00.472402+05:30"
+    created: "2025-12-10T11:47:41.955719+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -896,7 +920,7 @@ entries:
     version: 0.8.0
   - apiVersion: v2
     appVersion: v0.7.3
-    created: "2025-07-23T12:10:00.470678+05:30"
+    created: "2025-12-10T11:47:41.953685+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -919,7 +943,7 @@ entries:
     version: 0.7.3
   - apiVersion: v2
     appVersion: v0.7.2
-    created: "2025-07-23T12:10:00.469096+05:30"
+    created: "2025-12-10T11:47:41.952063+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -942,7 +966,7 @@ entries:
     version: 0.7.2
   - apiVersion: v2
     appVersion: v0.7.1
-    created: "2025-07-23T12:10:00.467238+05:30"
+    created: "2025-12-10T11:47:41.950534+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -965,7 +989,7 @@ entries:
     version: 0.7.1
   - apiVersion: v2
     appVersion: v0.7.0
-    created: "2025-07-23T12:10:00.465647+05:30"
+    created: "2025-12-10T11:47:41.948654+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -988,7 +1012,7 @@ entries:
     version: 0.7.0
   - apiVersion: v2
     appVersion: v0.6.2
-    created: "2025-07-23T12:10:00.464032+05:30"
+    created: "2025-12-10T11:47:41.947041+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -1011,7 +1035,7 @@ entries:
     version: 0.6.2
   - apiVersion: v2
     appVersion: v0.6.1
-    created: "2025-07-23T12:10:00.462085+05:30"
+    created: "2025-12-10T11:47:41.945225+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -1034,7 +1058,7 @@ entries:
     version: 0.6.1
   - apiVersion: v2
     appVersion: v0.6.0
-    created: "2025-07-23T12:10:00.460447+05:30"
+    created: "2025-12-10T11:47:41.943692+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -1057,7 +1081,7 @@ entries:
     version: 0.6.0
   - apiVersion: v2
     appVersion: v0.5.1
-    created: "2025-07-23T12:10:00.458681+05:30"
+    created: "2025-12-10T11:47:41.941882+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -1080,7 +1104,7 @@ entries:
     version: 0.5.1
   - apiVersion: v2
     appVersion: v0.5.0
-    created: "2025-07-23T12:10:00.456921+05:30"
+    created: "2025-12-10T11:47:41.940304+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -1103,7 +1127,7 @@ entries:
     version: 0.5.0
   - apiVersion: v2
     appVersion: v0.4.4
-    created: "2025-07-23T12:10:00.45532+05:30"
+    created: "2025-12-10T11:47:41.938727+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -1126,7 +1150,7 @@ entries:
     version: 0.4.5
   - apiVersion: v2
     appVersion: v0.4.3
-    created: "2025-07-23T12:10:00.452992+05:30"
+    created: "2025-12-10T11:47:41.936405+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -1149,7 +1173,7 @@ entries:
     version: 0.4.4
   - apiVersion: v2
     appVersion: v0.4.2
-    created: "2025-07-23T12:10:00.451176+05:30"
+    created: "2025-12-10T11:47:41.934452+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -1172,7 +1196,7 @@ entries:
     version: 0.4.3
   - apiVersion: v2
     appVersion: v0.4.1
-    created: "2025-07-23T12:10:00.449225+05:30"
+    created: "2025-12-10T11:47:41.932584+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -1195,7 +1219,7 @@ entries:
     version: 0.4.2
   - apiVersion: v2
     appVersion: v0.4.0
-    created: "2025-07-23T12:10:00.447317+05:30"
+    created: "2025-12-10T11:47:41.930716+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -1218,7 +1242,7 @@ entries:
     version: 0.4.1
   - apiVersion: v2
     appVersion: v0.4.0
-    created: "2025-07-23T12:10:00.445503+05:30"
+    created: "2025-12-10T11:47:41.928755+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -1241,7 +1265,7 @@ entries:
     version: 0.4.0
   - apiVersion: v2
     appVersion: v0.3.1
-    created: "2025-07-23T12:10:00.443465+05:30"
+    created: "2025-12-10T11:47:41.927089+05:30"
     dependencies:
     - condition: vector.enabled
       name: vector
@@ -1264,7 +1288,7 @@ entries:
     version: 0.3.1
   - apiVersion: v2
     appVersion: v0.3.0
-    created: "2025-07-23T12:10:00.441484+05:30"
+    created: "2025-12-10T11:47:41.92508+05:30"
     description: Helm chart for Parseable Server
     digest: ff30739229b727dc637f62fd4481c886a6080ce4556bae10cafe7642ddcfd937
     name: parseable
@@ -1274,7 +1298,7 @@ entries:
     version: 0.3.0
   - apiVersion: v2
     appVersion: v0.2.2
-    created: "2025-07-23T12:10:00.441275+05:30"
+    created: "2025-12-10T11:47:41.924505+05:30"
     description: Helm chart for Parseable Server
     digest: 477d0dc2f0c07d4f4c32e105d4bdd70c71113add5c2a75ac5f1cb42aa0276db7
     name: parseable
@@ -1284,7 +1308,7 @@ entries:
     version: 0.2.2
   - apiVersion: v2
     appVersion: v0.2.1
-    created: "2025-07-23T12:10:00.440746+05:30"
+    created: "2025-12-10T11:47:41.924341+05:30"
     description: Helm chart for Parseable Server
     digest: 84826fcd1b4c579f301569f43b0309c07e8082bad76f5cdd25f86e86ca2e8192
     name: parseable
@@ -1294,7 +1318,7 @@ entries:
     version: 0.2.1
   - apiVersion: v2
     appVersion: v0.2.0
-    created: "2025-07-23T12:10:00.440593+05:30"
+    created: "2025-12-10T11:47:41.924192+05:30"
     description: Helm chart for Parseable Server
     digest: 7a759f7f9809f3935cba685e904c021a0b645f217f4e45b9be185900c467edff
     name: parseable
@@ -1304,7 +1328,7 @@ entries:
     version: 0.2.0
   - apiVersion: v2
     appVersion: v0.1.1
-    created: "2025-07-23T12:10:00.440439+05:30"
+    created: "2025-12-10T11:47:41.924044+05:30"
     description: Helm chart for Parseable Server
     digest: 37993cf392f662ec7b1fbfc9a2ba00ec906d98723e38f3c91ff1daca97c3d0b3
     name: parseable
@@ -1314,7 +1338,7 @@ entries:
     version: 0.1.1
   - apiVersion: v2
     appVersion: v0.1.0
-    created: "2025-07-23T12:10:00.440284+05:30"
+    created: "2025-12-10T11:47:41.923882+05:30"
     description: Helm chart for Parseable Server
     digest: 1d580d072af8d6b1ebcbfee31c2e16c907d08db754780f913b5f0032b403789b
     name: parseable
@@ -1324,7 +1348,7 @@ entries:
     version: 0.1.0
   - apiVersion: v2
     appVersion: v0.0.8
-    created: "2025-07-23T12:10:00.440123+05:30"
+    created: "2025-12-10T11:47:41.923718+05:30"
     description: Helm chart for Parseable Server
     digest: c805254ffa634f96ecec448bcfff9973339aa9487dd8199b21b17b79a4de9345
     name: parseable
@@ -1334,7 +1358,7 @@ entries:
     version: 0.0.8
   - apiVersion: v2
     appVersion: v0.0.7
-    created: "2025-07-23T12:10:00.439842+05:30"
+    created: "2025-12-10T11:47:41.923446+05:30"
     description: Helm chart for Parseable Server
     digest: c591f617ed1fe820bb2c72a4c976a78126f1d1095d552daa07c4700f46c4708a
     name: parseable
@@ -1344,7 +1368,7 @@ entries:
     version: 0.0.7
   - apiVersion: v2
     appVersion: v0.0.6
-    created: "2025-07-23T12:10:00.439685+05:30"
+    created: "2025-12-10T11:47:41.923281+05:30"
     description: Helm chart for Parseable Server
     digest: f9ae56a6fcd6a59e7bee0436200ddbedeb74ade6073deb435b8fcbaf08dda795
     name: parseable
@@ -1354,7 +1378,7 @@ entries:
     version: 0.0.6
   - apiVersion: v2
     appVersion: v0.0.5
-    created: "2025-07-23T12:10:00.439521+05:30"
+    created: "2025-12-10T11:47:41.923098+05:30"
     description: Helm chart for Parseable Server
     digest: 4d6b08a064fba36e16feeb820b77e1e8e60fb6de48dbf7ec8410d03d10c26ad0
     name: parseable
@@ -1364,7 +1388,7 @@ entries:
     version: 0.0.5
   - apiVersion: v2
     appVersion: v0.0.2
-    created: "2025-07-23T12:10:00.439357+05:30"
+    created: "2025-12-10T11:47:41.922897+05:30"
     description: Helm chart for Parseable Server
     digest: 38a0a3e4c498afbbcc76ebfcb9cb598fa2ca843a53cc93b3cb4f135b85c10844
     name: parseable
@@ -1374,7 +1398,7 @@ entries:
     version: 0.0.2
   - apiVersion: v2
     appVersion: v0.0.1
-    created: "2025-07-23T12:10:00.439198+05:30"
+    created: "2025-12-10T11:47:41.922727+05:30"
     description: Helm chart for Parseable Server
     digest: 1f1142db092b9620ee38bb2294ccbb1c17f807b33bf56da43816af7fe89f301e
     name: parseable
@@ -1403,4 +1427,4 @@ entries:
     urls:
     - https://charts.parseable.io/helm-releases/parseable-operator-0.0.1.tgz
     version: 0.0.1
-generated: "2025-07-23T12:10:00.438938+05:30"
+generated: "2025-12-10T11:47:41.922444+05:30"
