@@ -51,7 +51,7 @@ use crate::{
 
 use super::IngestorMetadata;
 use super::{
-    OpenIdClient, ParseableServer,
+    ParseableServer,
     ingest::{ingestor_logstream, ingestor_rbac, ingestor_role},
 };
 
@@ -62,7 +62,7 @@ pub struct IngestServer;
 #[async_trait]
 impl ParseableServer for IngestServer {
     // configure the api routes
-    fn configure_routes(config: &mut web::ServiceConfig, _oidc_client: Option<OpenIdClient>) {
+    fn configure_routes(config: &mut web::ServiceConfig) {
         config
             .service(
                 // Base path "{url}/api/v1"
