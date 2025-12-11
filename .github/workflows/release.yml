@@ -28,9 +28,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target:
-          - aarch64-unknown-linux-gnu # linux(arm)
-          - x86_64-unknown-linux-gnu # linux(64 bit)
+        include:
+          - target: x86_64-unknown-linux-gnu
+            use-cross: false
+          - target: aarch64-unknown-linux-gnu
+            use-cross: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rs/toolchain@v1
@@ -42,7 +44,7 @@ jobs:
 
       - uses: actions-rs/cargo@v1
         with:
-          use-cross: true
+          use-cross: ${{ matrix.use-cross }}
           command: build
           args: --profile release-lto --target ${{matrix.target}}
 
