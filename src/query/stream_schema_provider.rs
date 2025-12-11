@@ -146,10 +146,7 @@ impl StandardTableProvider {
         let file_format = ParquetFormat::default().with_enable_pruning(true);
 
         // create file groups from vec file partitions
-        let file_groups = partitions
-            .into_iter()
-            .map(FileGroup::new)
-            .collect_vec();
+        let file_groups = partitions.into_iter().map(FileGroup::new).collect_vec();
 
         // parquet file source, default table parquet options
         let file_source = if let Some(phyiscal_expr) = filters {
