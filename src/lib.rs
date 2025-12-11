@@ -57,6 +57,7 @@ pub use handlers::http::modal::{
     ParseableServer, ingest_server::IngestServer, query_server::QueryServer, server::Server,
 };
 use once_cell::sync::Lazy;
+pub use opentelemetry_proto;
 use parseable::PARSEABLE;
 use reqwest::{Client, ClientBuilder};
 

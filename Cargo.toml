@@ -77,14 +77,23 @@ tokio = { version = "^1.43", default-features = false, features = [
 tokio-stream = { version = "0.1", features = ["fs"] }
 tokio-util = { version = "0.7" }
 
-# Logging and Metrics
-opentelemetry-proto = { version = "0.30.0", features = [
+# # Logging and Metrics
+# opentelemetry-proto = { version = "0.30.0", features = [
+#     "gen-tonic",
+#     "with-serde",
+#     "logs",
+#     "metrics",
+#     "trace",
+# ] }
+
+# add custom branch with fix until it gets merged
+opentelemetry-proto = {git = "https://github.com/parmesant/opentelemetry-rust/", branch = "fix-metrics-u64-serialization", features = [
     "gen-tonic",
     "with-serde",
     "logs",
     "metrics",
     "trace",
-] }
+]}
 prometheus = { version = "0.13", features = ["process"] }
 prometheus-parse = "0.2.5"
 tracing = "0.1"
