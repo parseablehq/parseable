@@ -3625,7 +3625,7 @@ dependencies = [
 [[package]]
 name = "opentelemetry"
 version = "0.31.0"
-source = "git+https://github.com/parmesant/opentelemetry-rust/?branch=fix-metrics-u64-serialization#45fb828769e6ade96d56ca1f5fa14cf0986a5341"
+source = "git+https://github.com/parmesant/opentelemetry-rust/?rev=45fb828769e6ade96d56ca1f5fa14cf0986a5341#45fb828769e6ade96d56ca1f5fa14cf0986a5341"
 dependencies = [
  "futures-core",
  "futures-sink",
@@ -3638,7 +3638,7 @@ dependencies = [
 [[package]]
 name = "opentelemetry-proto"
 version = "0.31.0"
-source = "git+https://github.com/parmesant/opentelemetry-rust/?branch=fix-metrics-u64-serialization#45fb828769e6ade96d56ca1f5fa14cf0986a5341"
+source = "git+https://github.com/parmesant/opentelemetry-rust/?rev=45fb828769e6ade96d56ca1f5fa14cf0986a5341#45fb828769e6ade96d56ca1f5fa14cf0986a5341"
 dependencies = [
  "base64 0.22.1",
  "const-hex",
@@ -3654,7 +3654,7 @@ dependencies = [
 [[package]]
 name = "opentelemetry_sdk"
 version = "0.31.0"
-source = "git+https://github.com/parmesant/opentelemetry-rust/?branch=fix-metrics-u64-serialization#45fb828769e6ade96d56ca1f5fa14cf0986a5341"
+source = "git+https://github.com/parmesant/opentelemetry-rust/?rev=45fb828769e6ade96d56ca1f5fa14cf0986a5341#45fb828769e6ade96d56ca1f5fa14cf0986a5341"
 dependencies = [
  "futures-channel",
  "futures-executor",

@@ -11,7 +11,10 @@ build = "build.rs"
 # Arrow and DataFusion ecosystem
 arrow = "57.1.0"
 arrow-array = "57.1.0"
-arrow-flight = { version = "57.1.0", features = ["tls-aws-lc","tls-native-roots"] }
+arrow-flight = { version = "57.1.0", features = [
+    "tls-aws-lc",
+    "tls-native-roots",
+] }
 arrow-ipc = { version = "57.1.0", features = ["zstd"] }
 arrow-json = "57.1.0"
 arrow-schema = { version = "57.1.0", features = ["serde"] }
@@ -33,7 +36,13 @@ actix-web-prometheus = { version = "0.1" }
 actix-web-static-files = "4.0"
 http = "0.2.7"
 http-auth-basic = "0.3.3"
-tonic = { version = "0.14.1", features = ["tls-aws-lc", "tls-native-roots", "transport", "gzip", "zstd"] }
+tonic = { version = "0.14.1", features = [
+    "tls-aws-lc",
+    "tls-native-roots",
+    "transport",
+    "gzip",
+    "zstd",
+] }
 tonic-prost = "0.14.1"
 tonic-web = "0.14.1"
 tower-http = { version = "0.6.1", features = ["cors"] }
@@ -87,13 +96,13 @@ tokio-util = { version = "0.7" }
 # ] }
 
 # add custom branch with fix until it gets merged
-opentelemetry-proto = {git = "https://github.com/parmesant/opentelemetry-rust/", branch = "fix-metrics-u64-serialization", features = [
+opentelemetry-proto = { git = "https://github.com/parmesant/opentelemetry-rust/", rev = "45fb828769e6ade96d56ca1f5fa14cf0986a5341", features = [
     "gen-tonic",
     "with-serde",
     "logs",
     "metrics",
     "trace",
-]}
+] }
 prometheus = { version = "0.13", features = ["process"] }
 prometheus-parse = "0.2.5"
 tracing = "0.1"
@@ -142,7 +151,7 @@ reqwest = { version = "0.11.27", default-features = false, features = [
     "json",
     "gzip",
     "brotli",
-    "stream"
+    "stream",
 ] } # cannot update cause rustls is not latest `see rustls`
 semver = "1.0"
 static-files = "0.2"
