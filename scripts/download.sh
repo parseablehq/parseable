@@ -5,7 +5,6 @@ SUPPORTED_ARCH=("x86_64" "arm64")
 SUPPORTED_OS=("linux" "darwin")
 DOWNLOAD_BASE_URL="https://github.com/parseablehq/parseable/releases/download"
 ARM_APPLE_PREFIX="Parseable_OSS_aarch64-apple-darwin"
-INTEL_APPLE_PREFIX="Parseable_OSS_x86_64-apple-darwin"
 ARM_LINUX_PREFIX="Parseable_OSS_aarch64-unknown-linux-gnu"
 INTEL_LINUX_PREFIX="Parseable_OSS_x86_64-unknown-linux-gnu"
 PARSEABLE_PREFIX=${ARM_APPLE_PREFIX}
@@ -50,7 +49,6 @@ printf "Latest Parseable version: $release_tag\n"
 # Determine the appropriate binary prefix based on OS and CPU architecture
 declare -A PREFIX_MAP=(
   ["darwin_arm64"]=$ARM_APPLE_PREFIX
-  ["darwin_x86_64"]=$INTEL_APPLE_PREFIX
   ["linux_arm64"]=$ARM_LINUX_PREFIX
   ["linux_x86_64"]=$INTEL_LINUX_PREFIX
 )
