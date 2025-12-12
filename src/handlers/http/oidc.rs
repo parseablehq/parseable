@@ -29,7 +29,6 @@ use http::StatusCode;
 use openid::{Bearer, Options, Token, Userinfo};
 use regex::Regex;
 use serde::Deserialize;
-use tracing::error;
 use ulid::Ulid;
 use url::Url;
 
