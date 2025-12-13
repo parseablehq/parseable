@@ -26,6 +26,12 @@ use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, 
 
 pub const METRICS_NAMESPACE: &str = env!("CARGO_PKG_NAME");
 
+pub static METRICS_REGISTRY: Lazy<Registry> = Lazy::new(|| {
+    let registry = Registry::new();
+    custom_metrics(&registry);
+    registry
+});
+
 pub static EVENTS_INGESTED: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
         Opts::new("events_ingested", "Events ingested for a stream").namespace(METRICS_NAMESPACE),
@@ -469,11 +475,11 @@ fn custom_metrics(registry: &Registry) {
 }
 
 pub fn build_metrics_handler() -> PrometheusMetrics {
-    let registry = prometheus::Registry::new();
-    custom_metrics(&registry);
+    // Force initialization of the global registry
+    let _ = &*METRICS_REGISTRY;
 
     let prometheus = PrometheusMetricsBuilder::new(METRICS_NAMESPACE)
-        .registry(registry)
+        .registry(METRICS_REGISTRY.clone())
         .endpoint(metrics_path().as_str())
         .build()
         .expect("Prometheus initialization");
@@ -614,9 +620,19 @@ pub fn increment_reasoning_llm_tokens_by_date(
 }
 
 use actix_web::HttpResponse;
+use prometheus::Encoder;
 
 pub async fn get() -> Result<impl Responder, MetricsError> {
-    Ok(HttpResponse::Ok().body(format!("{:?}", build_metrics_handler())))
+    let mut buffer = Vec::new();
+    let encoder = prometheus::TextEncoder::new();
+    let metric_families = METRICS_REGISTRY.gather();
+    encoder.encode(&metric_families, &mut buffer).map_err(|e| {
+        MetricsError::Custom(e.to_string(), http::StatusCode::INTERNAL_SERVER_ERROR)
+    })?;
+
+    Ok(HttpResponse::Ok()
+        .content_type("text/plain; version=0.0.4")
+        .body(buffer))
 }
 
 pub mod error {
@@ -633,7 +649,7 @@ pub mod error {
     impl actix_web::ResponseError for MetricsError {
         fn status_code(&self) -> http::StatusCode {
             match self {
-                Self::Custom(_, _) => StatusCode::INTERNAL_SERVER_ERROR,
+                Self::Custom(_, status) => *status,
             }
         }
 
