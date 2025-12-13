@@ -197,6 +197,14 @@ pub struct Options {
     )]
     pub mask_pii: bool,
 
+    #[arg(
+        long,
+        env = "P_METRICS_ENDPOINT_AUTH",
+        default_value = "true",
+        help = "Enable/Disable authentication for /v1/metrics endpoint"
+    )]
+    pub metrics_endpoint_auth: bool,
+
     // TLS/Security
     #[arg(
         long,
