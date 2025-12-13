@@ -266,10 +266,12 @@ impl AlertTrait for ThresholdAlert {
             .put_alert_state(&state_entry as &dyn MetastoreObject)
             .await?;
 
-        if trigger_notif.is_some() && self.notification_state.eq(&NotificationState::Notify) {
+        if let Some(trigger_notif) = trigger_notif
+            && self.notification_state.eq(&NotificationState::Notify)
+        {
             trace!("trigger notif on-\n{}", self.state);
             self.to_alert_config()
-                .trigger_notifications(trigger_notif.unwrap())
+                .trigger_notifications(trigger_notif)
                 .await?;
         }
         Ok(())
