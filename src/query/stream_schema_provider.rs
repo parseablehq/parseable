@@ -56,10 +56,7 @@ use crate::{
     },
     event::DEFAULT_TIMESTAMP_KEY,
     hottier::HotTierManager,
-    metrics::{
-        QUERY_CACHE_HIT, increment_bytes_scanned_in_query_by_date,
-        increment_files_scanned_in_query_by_date,
-    },
+    metrics::{QUERY_CACHE_HIT, increment_files_scanned_in_query_by_date},
     option::Mode,
     parseable::{PARSEABLE, STREAM_EXISTS},
     storage::{ObjectStorage, ObjectStoreFormat},
@@ -349,7 +346,6 @@ impl StandardTableProvider {
         let mut partitioned_files = Vec::from_iter((0..target_partition).map(|_| Vec::new()));
         let mut column_statistics = HashMap::<String, Option<TypedStatistics>>::new();
         let mut count = 0;
-        let mut total_compressed_size = 0u64;
         let mut file_count = 0u64;
         for (index, file) in manifest_files
             .into_iter()
@@ -366,9 +362,6 @@ impl StandardTableProvider {
 
             // Track billing metrics for files scanned in query
             file_count += 1;
-            // Calculate actual compressed bytes that will be read from storage
-            let compressed_bytes: u64 = columns.iter().map(|col| col.compressed_size).sum();
-            total_compressed_size += compressed_bytes;
 
             // object_store::path::Path doesn't automatically deal with Windows path separators
             // to do that, we are using from_absolute_path() which takes into consideration the underlying filesystem
@@ -429,8 +422,6 @@ impl StandardTableProvider {
         // Track billing metrics for query scan
         let current_date = chrono::Utc::now().date_naive().to_string();
         increment_files_scanned_in_query_by_date(file_count, &current_date);
-        // Use compressed size as it represents actual bytes read from storage (S3/object store charges)
-        increment_bytes_scanned_in_query_by_date(total_compressed_size, &current_date);
 
         (partitioned_files, statistics)
     }

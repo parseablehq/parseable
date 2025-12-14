@@ -21,26 +21,33 @@ mod listing_table_builder;
 pub mod stream_schema_provider;
 
 use actix_web::Either;
+use arrow_schema::SchemaRef;
 use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::common::tree_node::Transformed;
 use datafusion::execution::disk_manager::DiskManager;
-use datafusion::execution::{SendableRecordBatchStream, SessionState, SessionStateBuilder};
+use datafusion::execution::{
+    RecordBatchStream, SendableRecordBatchStream, SessionState, SessionStateBuilder,
+};
 use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
     Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
 };
+use datafusion::physical_plan::ExecutionPlan;
 use datafusion::prelude::*;
 use datafusion::sql::parser::DFParser;
 use datafusion::sql::resolve::resolve_table_references;
 use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
+use futures::Stream;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::ops::Bound;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 use sysinfo::System;
 use tokio::runtime::Runtime;
 
@@ -55,6 +62,7 @@ use crate::catalog::manifest::Manifest;
 use crate::catalog::snapshot::Snapshot;
 use crate::event::DEFAULT_TIMESTAMP_KEY;
 use crate::handlers::http::query::QueryError;
+use crate::metrics::increment_bytes_scanned_in_query_by_date;
 use crate::option::Mode;
 use crate::parseable::PARSEABLE;
 use crate::storage::{ObjectStorageProvider, ObjectStoreFormat};
@@ -77,7 +85,7 @@ pub async fn execute(
     is_streaming: bool,
 ) -> Result<
     (
-        Either<Vec<RecordBatch>, SendableRecordBatchStream>,
+        Either<Vec<RecordBatch>, Pin<Box<MetricMonitorStream>>>,
         Vec<String>,
     ),
     ExecuteError,
@@ -178,7 +186,7 @@ impl Query {
         is_streaming: bool,
     ) -> Result<
         (
-            Either<Vec<RecordBatch>, SendableRecordBatchStream>,
+            Either<Vec<RecordBatch>, Pin<Box<MetricMonitorStream>>>,
             Vec<String>,
         ),
         ExecuteError,
@@ -199,10 +207,32 @@ impl Query {
             return Ok((Either::Left(vec![]), fields));
         }
 
+        let plan = QUERY_SESSION
+            .state()
+            .create_physical_plan(df.logical_plan())
+            .await?;
+
         let results = if !is_streaming {
-            Either::Left(df.collect().await?)
+            let task_ctx = QUERY_SESSION.task_ctx();
+
+            let stream = plan.execute(0, task_ctx)?;
+            let batches = datafusion::physical_plan::common::collect(stream).await?;
+
+            let actual_io_bytes = get_total_bytes_scanned(&plan);
+
+            // Track billing metrics for query scan
+            let current_date = chrono::Utc::now().date_naive().to_string();
+            increment_bytes_scanned_in_query_by_date(actual_io_bytes, &current_date);
+
+            Either::Left(batches)
         } else {
-            Either::Right(df.execute_stream().await?)
+            let task_ctx = QUERY_SESSION.task_ctx();
+
+            let stream = plan.execute(0, task_ctx)?;
+
+            let monitored_stream = MetricMonitorStream::new(stream, plan.clone());
+
+            Either::Right(Box::pin(monitored_stream))
         };
 
         Ok((results, fields))
@@ -291,6 +321,24 @@ impl Query {
             _ => None,
         }
     }
+}
+
+/// Recursively sums up "bytes_scanned" from all nodes in the plan
+fn get_total_bytes_scanned(plan: &Arc<dyn ExecutionPlan>) -> u64 {
+    let mut total_bytes = 0;
+
+    if let Some(metrics) = plan.metrics() {
+        // "bytes_scanned" is the standard key used by ParquetExec
+        if let Some(scanned) = metrics.sum_by_name("bytes_scanned") {
+            total_bytes += scanned.as_usize() as u64;
+        }
+    }
+
+    for child in plan.children() {
+        total_bytes += get_total_bytes_scanned(child);
+    }
+
+    total_bytes
 }
 
 /// Record of counts for a given time bin.
@@ -738,6 +786,57 @@ pub mod error {
         Datafusion(#[from] DataFusionError),
         #[error("{0}")]
         StreamNotFound(#[from] StreamNotFound),
+    }
+}
+
+/// A wrapper that monitors the ExecutionPlan and logs metrics when the stream finishes.
+pub struct MetricMonitorStream {
+    // The actual stream doing the work
+    inner: SendableRecordBatchStream,
+    // We hold the plan so we can read metrics after execution
+    plan: Arc<dyn ExecutionPlan>,
+}
+
+impl MetricMonitorStream {
+    pub fn new(inner: SendableRecordBatchStream, plan: Arc<dyn ExecutionPlan>) -> Self {
+        Self { inner, plan }
+    }
+}
+
+impl Stream for MetricMonitorStream {
+    type Item = datafusion::error::Result<RecordBatch>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let poll = self.inner.as_mut().poll_next(cx);
+
+        // Check if the stream just finished
+        match &poll {
+            Poll::Ready(None) => {
+                // Stream is done. Now we can safely read the metrics.
+                let bytes = get_total_bytes_scanned(&self.plan);
+                let current_date = chrono::Utc::now().date_naive().to_string();
+                increment_bytes_scanned_in_query_by_date(bytes, &current_date);
+            }
+            Poll::Ready(Some(Err(e))) => {
+                let bytes = get_total_bytes_scanned(&self.plan);
+                let current_date = chrono::Utc::now().date_naive().to_string();
+                increment_bytes_scanned_in_query_by_date(bytes, &current_date);
+                tracing::error!("Stream Failed with error: {}", e);
+            }
+            _ => {}
+        }
+
+        poll
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, None)
+    }
+}
+
+impl RecordBatchStream for MetricMonitorStream {
+    fn schema(&self) -> SchemaRef {
+        self.inner.schema()
     }
 }
 
