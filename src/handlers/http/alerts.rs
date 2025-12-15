@@ -44,15 +44,19 @@ const MAX_LIMIT: usize = 1000;
 const DEFAULT_LIMIT: usize = 100;
 
 /// Query parameters for listing alerts
-struct ListQueryParams {
-    tags_list: Vec<String>,
-    offset: usize,
-    limit: usize,
-    other_fields_filters: HashMap<String, String>,
+pub struct ListQueryParams {
+    /// Comma-separated tag filters; empty if no tag filtering
+    pub tags_list: Vec<String>,
+    /// Number of results to skip (default: 0)
+    pub offset: usize,
+    /// Maximum results to return (1-1000, default: 100)
+    pub limit: usize,
+    /// Additional field filters not covered by reserved params
+    pub other_fields_filters: HashMap<String, String>,
 }
 
 /// Parse and validate query parameters for listing alerts
-fn parse_list_query_params(
+pub fn parse_list_query_params(
     query_map: &HashMap<String, String>,
 ) -> Result<ListQueryParams, AlertError> {
     let mut tags_list = Vec::new();
