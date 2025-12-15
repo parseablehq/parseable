@@ -1,0 +1,177 @@
+use std::{collections::HashMap, sync::Arc, time::Duration};
+
+use actix_web::{HttpRequest, rt::time::interval};
+use actix_web_lab::{
+    sse::{self, Sse},
+    util::InfallibleStream,
+};
+use futures_util::future;
+
+use serde::{Deserialize, Serialize};
+use tokio::sync::{RwLock, mpsc};
+use tokio_stream::wrappers::ReceiverStream;
+use tracing::warn;
+use ulid::Ulid;
+
+use crate::{
+    alerts::AlertState, rbac::map::SessionKey, utils::actix::extract_session_key_from_req,
+};
+
+pub struct Broadcaster {
+    inner: RwLock<BroadcasterInner>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct BroadcasterInner {
+    // hashmap to map sse session to prism ui session
+    clients: HashMap<Ulid, Vec<mpsc::Sender<sse::Event>>>,
+}
+
+impl Broadcaster {
+    /// Constructs new broadcaster and spawns ping loop.
+    pub fn create() -> Arc<Self> {
+        let this = Arc::new(Broadcaster {
+            inner: RwLock::new(BroadcasterInner::default()),
+        });
+
+        Broadcaster::spawn_ping(Arc::clone(&this));
+
+        this
+    }
+
+    /// Pings clients every 10 seconds to see if they are alive and remove them from the broadcast
+    /// list if not.
+    fn spawn_ping(this: Arc<Self>) {
+        actix_web::rt::spawn(async move {
+            let mut interval = interval(Duration::from_secs(10));
+
+            loop {
+                interval.tick().await;
+                this.remove_stale_clients().await;
+            }
+        });
+    }
+
+    /// Removes all non-responsive clients from broadcast list.
+    async fn remove_stale_clients(&self) {
+        let sse_inner = self.inner.read().await.clients.clone();
+
+        let mut ok_sessions = HashMap::new();
+
+        for (session, clients) in sse_inner.iter() {
+            let mut ok_clients = Vec::new();
+            for client in clients {
+                if client
+                    .send(sse::Event::Comment("ping".into()))
+                    .await
+                    .is_ok()
+                {
+                    ok_clients.push(client.clone())
+                }
+            }
+            ok_sessions.insert(*session, ok_clients);
+        }
+
+        self.inner.write().await.clients = ok_sessions;
+    }
+
+    /// Registers client with broadcaster, returning an SSE response body.
+    pub async fn new_client(
+        &self,
+        session: &Ulid,
+    ) -> Sse<InfallibleStream<ReceiverStream<sse::Event>>> {
+        let (tx, rx) = mpsc::channel(10);
+
+        tx.send(sse::Data::new("connected").into()).await.unwrap();
+
+        if let Some(clients) = self.inner.write().await.clients.get_mut(session) {
+            clients.push(tx);
+        } else {
+            self.inner.write().await.clients.insert(*session, vec![tx]);
+        }
+
+        Sse::from_infallible_receiver(rx)
+    }
+
+    /// Broadcasts `msg`
+    ///
+    /// If sessions is None, then broadcast to all
+    pub async fn broadcast(&self, msg: &str, sessions: Option<&[Ulid]>) {
+        let clients = self.inner.read().await.clients.clone();
+        warn!(clients=?clients);
+
+        let send_futures = if let Some(sessions) = sessions {
+            let mut futures = vec![];
+            for (session, clients) in clients.iter() {
+                if sessions.contains(session) {
+                    clients
+                        .iter()
+                        .for_each(|client| futures.push(client.send(sse::Data::new(msg).into())));
+                }
+            }
+            futures
+        } else {
+            // broadcast
+            let mut futures = vec![];
+            for (_, clients) in clients.iter() {
+                clients
+                    .iter()
+                    .for_each(|client| futures.push(client.send(sse::Data::new(msg).into())));
+            }
+            futures
+        };
+
+        // try to send to all clients, ignoring failures
+        // disconnected clients will get swept up by `remove_stale_clients`
+        let _ = future::join_all(send_futures).await;
+    }
+}
+
+pub async fn register_sse_client(
+    broadcaster: actix_web::web::Data<Arc<Broadcaster>>,
+    req: HttpRequest,
+) -> Sse<InfallibleStream<ReceiverStream<sse::Event>>> {
+    let session = extract_session_key_from_req(&req).unwrap();
+    let sessionid = match session {
+        SessionKey::SessionId(ulid) => ulid,
+        _ => unreachable!("SSE requires a valid session. Unable to register client."),
+    };
+    broadcaster.new_client(&sessionid).await
+}
+
+/// Struct to define the messages being sent using SSE
+#[derive(Serialize, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SSEEvent {
+    pub criticality: Criticality,
+    pub message: Message,
+}
+
+#[derive(Serialize, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Message {
+    AlertEvent(SSEAlertInfo),
+    ControlPlaneEvent(ControlPlaneEvent),
+}
+
+#[derive(Serialize, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Criticality {
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Serialize, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SSEAlertInfo {
+    id: Ulid,
+    state: AlertState,
+    message: String,
+}
+
+#[derive(Serialize, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ControlPlaneEvent {
+    message: String,
+}
