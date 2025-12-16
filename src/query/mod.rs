@@ -34,12 +34,16 @@ use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
     Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
 };
-use datafusion::physical_plan::ExecutionPlan;
+use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
+use datafusion::physical_plan::{
+    ExecutionPlan, ExecutionPlanProperties, collect_partitioned, execute_stream_partitioned,
+};
 use datafusion::prelude::*;
 use datafusion::sql::parser::DFParser;
 use datafusion::sql::resolve::resolve_table_references;
 use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
 use futures::Stream;
+use futures::stream::select_all;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -47,6 +51,7 @@ use serde_json::{Value, json};
 use std::ops::Bound;
 use std::pin::Pin;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::task::{Context, Poll};
 use sysinfo::System;
 use tokio::runtime::Runtime;
@@ -85,7 +90,27 @@ pub async fn execute(
     is_streaming: bool,
 ) -> Result<
     (
-        Either<Vec<RecordBatch>, Pin<Box<MetricMonitorStream>>>,
+        Either<
+            Vec<RecordBatch>,
+            Pin<
+                Box<
+                    RecordBatchStreamAdapter<
+                        select_all::SelectAll<
+                            Pin<
+                                Box<
+                                    dyn RecordBatchStream<
+                                            Item = Result<
+                                                RecordBatch,
+                                                datafusion::error::DataFusionError,
+                                            >,
+                                        > + Send,
+                                >,
+                            >,
+                        >,
+                    >,
+                >,
+            >,
+        >,
         Vec<String>,
     ),
     ExecuteError,
@@ -186,7 +211,27 @@ impl Query {
         is_streaming: bool,
     ) -> Result<
         (
-            Either<Vec<RecordBatch>, Pin<Box<MetricMonitorStream>>>,
+            Either<
+                Vec<RecordBatch>,
+                Pin<
+                    Box<
+                        RecordBatchStreamAdapter<
+                            select_all::SelectAll<
+                                Pin<
+                                    Box<
+                                        dyn RecordBatchStream<
+                                                Item = Result<
+                                                    RecordBatch,
+                                                    datafusion::error::DataFusionError,
+                                                >,
+                                            > + Send,
+                                    >,
+                                >,
+                            >,
+                        >,
+                    >,
+                >,
+            >,
             Vec<String>,
         ),
         ExecuteError,
@@ -215,8 +260,11 @@ impl Query {
         let results = if !is_streaming {
             let task_ctx = QUERY_SESSION.task_ctx();
 
-            let stream = plan.execute(0, task_ctx)?;
-            let batches = datafusion::physical_plan::common::collect(stream).await?;
+            let batches = collect_partitioned(plan.clone(), task_ctx.clone())
+                .await?
+                .into_iter()
+                .flatten()
+                .collect();
 
             let actual_io_bytes = get_total_bytes_scanned(&plan);
 
@@ -228,11 +276,25 @@ impl Query {
         } else {
             let task_ctx = QUERY_SESSION.task_ctx();
 
-            let stream = plan.execute(0, task_ctx)?;
+            let output_partitions = plan.output_partitioning().partition_count();
 
-            let monitored_stream = MetricMonitorStream::new(stream, plan.clone());
+            let monitor_state = Arc::new(MonitorState {
+                plan: plan.clone(),
+                active_streams: AtomicUsize::new(output_partitions),
+            });
 
-            Either::Right(Box::pin(monitored_stream))
+            let streams = execute_stream_partitioned(plan.clone(), task_ctx.clone())?
+                .into_iter()
+                .map(|s| {
+                    let wrapped = PartitionedMetricMonitor::new(s, monitor_state.clone());
+                    Box::pin(wrapped) as SendableRecordBatchStream
+                })
+                .collect_vec();
+
+            let merged_stream = futures::stream::select_all(streams);
+
+            let final_stream = RecordBatchStreamAdapter::new(plan.schema(), merged_stream);
+            Either::Right(Box::pin(final_stream))
         };
 
         Ok((results, fields))
@@ -789,39 +851,52 @@ pub mod error {
     }
 }
 
-/// A wrapper that monitors the ExecutionPlan and logs metrics when the stream finishes.
-pub struct MetricMonitorStream {
-    // The actual stream doing the work
-    inner: SendableRecordBatchStream,
-    // We hold the plan so we can read metrics after execution
+/// Shared state across all partitions
+struct MonitorState {
     plan: Arc<dyn ExecutionPlan>,
+    active_streams: AtomicUsize,
 }
 
-impl MetricMonitorStream {
-    pub fn new(inner: SendableRecordBatchStream, plan: Arc<dyn ExecutionPlan>) -> Self {
-        Self { inner, plan }
+/// A wrapper that monitors the ExecutionPlan and logs metrics when the stream finishes.
+pub struct PartitionedMetricMonitor {
+    // The actual stream doing the work
+    inner: SendableRecordBatchStream,
+    /// State of the streams
+    state: Arc<MonitorState>,
+    // Ensure we only emit metrics once even if polled after completion/error
+    is_finished: bool,
+}
+
+impl PartitionedMetricMonitor {
+    fn new(inner: SendableRecordBatchStream, state: Arc<MonitorState>) -> Self {
+        Self {
+            inner,
+            state,
+            is_finished: false,
+        }
     }
 }
 
-impl Stream for MetricMonitorStream {
+impl Stream for PartitionedMetricMonitor {
     type Item = datafusion::error::Result<RecordBatch>;
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.is_finished {
+            return Poll::Ready(None);
+        }
+
         let poll = self.inner.as_mut().poll_next(cx);
 
         // Check if the stream just finished
         match &poll {
             Poll::Ready(None) => {
-                // Stream is done. Now we can safely read the metrics.
-                let bytes = get_total_bytes_scanned(&self.plan);
-                let current_date = chrono::Utc::now().date_naive().to_string();
-                increment_bytes_scanned_in_query_by_date(bytes, &current_date);
+                self.is_finished = true;
+                self.check_if_last_stream();
             }
             Poll::Ready(Some(Err(e))) => {
-                let bytes = get_total_bytes_scanned(&self.plan);
-                let current_date = chrono::Utc::now().date_naive().to_string();
-                increment_bytes_scanned_in_query_by_date(bytes, &current_date);
                 tracing::error!("Stream Failed with error: {}", e);
+                self.is_finished = true;
+                self.check_if_last_stream();
             }
             _ => {}
         }
@@ -834,9 +909,21 @@ impl Stream for MetricMonitorStream {
     }
 }
 
-impl RecordBatchStream for MetricMonitorStream {
+impl RecordBatchStream for PartitionedMetricMonitor {
     fn schema(&self) -> SchemaRef {
         self.inner.schema()
+    }
+}
+
+impl PartitionedMetricMonitor {
+    fn check_if_last_stream(&self) {
+        let prev_count = self.state.active_streams.fetch_sub(1, Ordering::SeqCst);
+
+        if prev_count == 1 {
+            let bytes = get_total_bytes_scanned(&self.state.plan);
+            let current_date = chrono::Utc::now().date_naive().to_string();
+            increment_bytes_scanned_in_query_by_date(bytes, &current_date);
+        }
     }
 }
 
