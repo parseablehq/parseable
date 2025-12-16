@@ -348,7 +348,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-push-docker-image:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -372,6 +372,9 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: parseable/parseable
+      
+      - name: Clean up builder cache
+        run: docker builder prune -f
 
       - name: Build and push
         uses: docker/build-push-action@v6

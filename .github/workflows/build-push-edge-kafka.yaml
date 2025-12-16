@@ -12,7 +12,7 @@ on:
 
 jobs:
   docker:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -36,6 +36,9 @@ jobs:
         uses: docker/metadata-action@98669ae865ea3cffbcbaa878cf57c20bbf1c6c38
         with:
           images: parseable/parseable
+      
+      - name: Clean up builder cache
+        run: docker builder prune -f
 
       - name: Build and push x86_64
         uses: docker/build-push-action@ad44023a93711e3deb337508980b4b5e9bcdc5dc
