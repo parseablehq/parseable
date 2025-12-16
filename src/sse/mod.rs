@@ -7,16 +7,18 @@ use actix_web_lab::{
 };
 use futures_util::future;
 
+use itertools::Itertools;
+use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
-use tracing::warn;
 use ulid::Ulid;
 
 use crate::{
     alerts::AlertState, rbac::map::SessionKey, utils::actix::extract_session_key_from_req,
 };
 
+pub static SSE_HANDLER: Lazy<Arc<Broadcaster>> = Lazy::new(Broadcaster::create);
 pub struct Broadcaster {
     inner: RwLock<BroadcasterInner>,
 }
@@ -93,12 +95,21 @@ impl Broadcaster {
         Sse::from_infallible_receiver(rx)
     }
 
+    pub async fn fetch_sessions(&self) -> Vec<Ulid> {
+        self.inner
+            .read()
+            .await
+            .clients
+            .keys()
+            .cloned()
+            .collect_vec()
+    }
+
     /// Broadcasts `msg`
     ///
     /// If sessions is None, then broadcast to all
     pub async fn broadcast(&self, msg: &str, sessions: Option<&[Ulid]>) {
         let clients = self.inner.read().await.clients.clone();
-        warn!(clients=?clients);
 
         let send_futures = if let Some(sessions) = sessions {
             let mut futures = vec![];
@@ -165,9 +176,9 @@ pub enum Criticality {
 #[derive(Serialize, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SSEAlertInfo {
-    id: Ulid,
-    state: AlertState,
-    message: String,
+    pub id: Ulid,
+    pub state: AlertState,
+    pub message: String,
 }
 
 #[derive(Serialize, Debug, Deserialize)]
