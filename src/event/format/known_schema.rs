@@ -524,10 +524,10 @@ mod tests {
 
         let test_logs = vec![
             // Current parseable format with ThreadId
-            "01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 2025-09-06T10:43:01.628980875Z  WARN main ThreadId(01) parseable::handlers::http::cluster:919: node http://0.0.0.0:8010/ is not live",
-            "01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 2025-09-06T10:44:12.62276265Z ERROR actix-rt|system:0|arbiter:17 ThreadId(163) parseable_enterprise::http::handlers::query:43: JsonParse(\"Datafusion Error: Schema error: No field named a. Valid fields are serverlogs.log\")",
-            "01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 2025-09-06T05:16:46.092071318Z ERROR actix-rt|system:0|arbiter:21 ThreadId(167) parseable_enterprise::http::handlers::query:43: JsonParse(\"Datafusion Error: Schema error: No field named ansible.host.ip\")",
-            "01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 2025-09-06T11:22:07.500864363Z  WARN                         main ThreadId(01) parseable_enterprise:70: Received shutdown signal, notifying server to shut down...",
+            "01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 2025-09-06T10:43:01.628980875Z  WARN main ThreadId(01) parseable::handlers::http::cluster:919: node http://0.0.0.0:8010/ is not live",
+            "01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 2025-09-06T10:44:12.62276265Z ERROR actix-rt|system:0|arbiter:17 ThreadId(163) parseable_enterprise::http::handlers::query:43: JsonParse(\"Datafusion Error: Schema error: No field named a. Valid fields are serverlogs.log\")",
+            "01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 2025-09-06T05:16:46.092071318Z ERROR actix-rt|system:0|arbiter:21 ThreadId(167) parseable_enterprise::http::handlers::query:43: JsonParse(\"Datafusion Error: Schema error: No field named ansible.host.ip\")",
+            "01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 01K4SHM6VQASBJ7G8V0STZN6N1 2025-09-06T11:22:07.500864363Z  WARN                         main ThreadId(01) parseable_enterprise:70: Received shutdown signal, notifying server to shut down...",
         ];
 
         for (i, log_text) in test_logs.iter().enumerate() {
@@ -543,7 +543,27 @@ mod tests {
                 log_text
             );
 
-            // Verify basic fields that should be present in all formats
+            // Verify fields that are always present
+            assert!(
+                obj.contains_key("customer_id"),
+                "Missing customer_id field for log {}",
+                i + 1
+            );
+            assert!(
+                obj.contains_key("deployment_id"),
+                "Missing deployment_id field for log {}",
+                i + 1
+            );
+            assert!(
+                obj.contains_key("workspace_id"),
+                "Missing workspace_id field for log {}",
+                i + 1
+            );
+            assert!(
+                obj.contains_key("org_id"),
+                "Missing org_id field for log {}",
+                i + 1
+            );
             assert!(
                 obj.contains_key("timestamp"),
                 "Missing timestamp field for log {}",

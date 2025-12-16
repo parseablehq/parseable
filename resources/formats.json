@@ -1469,7 +1469,7 @@
     "name": "parseable_server_logs",
     "regex": [
       {
-        "pattern": "^(?P<customer_id>\\S+)\\s+(?P<deployment_id>\\S+)\\s+(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z?)\\s+(?P<level>\\w+)\\s+(?P<logger_context>\\S+)\\s+(?P<thread_id>ThreadId\\(\\d+\\))\\s+(?P<module>.*?):(?P<line_number>\\d+):\\s+(?P<body>.*)",
+        "pattern": "^(?P<customer_id>\\S+)\\s+(?P<deployment_id>\\S+)\\s+(?P<workspace_id>\\S+)\\s+(?P<org_id>\\S+)\\s+(?P<timestamp>\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d+Z?)\\s+(?P<level>\\w+)\\s+(?P<logger_context>\\S+)\\s+(?P<thread_id>ThreadId\\(\\d+\\))\\s+(?P<module>.*?):(?P<line_number>\\d+):\\s+(?P<body>.*)",
         "fields": [
           "customer_id", 
           "deployment_id",
