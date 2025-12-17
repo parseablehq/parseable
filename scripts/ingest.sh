@@ -226,11 +226,15 @@ install_fluent_bit() {
             ;;
         ubuntu|debian)
             print_info "Installing Fluent Bit on Ubuntu/Debian..."
-            curl https://raw.githubusercontent.com/fluent/fluent-bit/master/install.sh | sh
-            ;;
+            curl -fsSL https://raw.githubusercontent.com/fluent/fluent-bit/master/install.sh -o /tmp/install-fluentbit.sh
+            chmod +x /tmp/install-fluentbit.sh
+            /tmp/install-fluentbit.sh
+        
         centos|rhel|fedora)
             print_info "Installing Fluent Bit on CentOS/RHEL/Fedora..."
-            curl https://raw.githubusercontent.com/fluent/fluent-bit/master/install.sh | sh
+            curl -fsSL https://raw.githubusercontent.com/fluent/fluent-bit/master/install.sh -o /tmp/install-fluentbit.sh
+            chmod +x /tmp/install-fluentbit.sh
+            /tmp/install-fluentbit.sh
             ;;
         *)
             print_error "Unsupported OS: $OS"
@@ -313,7 +317,8 @@ setup_fluent_bit() {
     Header                    X-P-Stream node-metrics
     Header                    X-P-Log-Source otel-metrics
 EOF
-    cat "$CONFIG_FILE" | sed "s/Http_Passwd.*/Http_Passwd               [REDACTED]/"
+    chmod 600 "$CONFIG_FILE"
+    sed "s/Http_Passwd.*/Http_Passwd               [REDACTED]/" "$CONFIG_FILE"
     
     # Start Fluent Bit
     echo ""

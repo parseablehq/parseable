@@ -128,8 +128,9 @@ function Install-FluentBit {
     
     try {
         $version = "3.2.2"
-        $downloadUrl = "https://packages.fluentbit.io/windows/fluent-bit-$version-win64.zip"
-        $zipFile = "$env:TEMP\fluent-bit-$version-win64.zip"
+        $archSuffix = if ($arch -eq "ARM64") { "winarm64" } else { "win64" }
+        $downloadUrl = "https://packages.fluentbit.io/windows/fluent-bit-$version-$archSuffix.zip"
+        $zipFile = "$env:TEMP\fluent-bit-$version-$archSuffix.zip"
         Invoke-WebRequest -Uri $downloadUrl -OutFile $zipFile
         Expand-Archive -Path $zipFile -DestinationPath $INSTALL_DIR -Force
         
@@ -271,13 +272,13 @@ function Setup-FluentBit {
 [OUTPUT]
     Name                      opentelemetry
     Match                     node_metrics
-    Host                      ec9cfee0-2fd4-45eb-8209-d7cd992c4bcc-ingestor.workspace-staging.parseable.com
+    Host                      $IngestorHost
     Port                      443
     Metrics_uri               /v1/metrics
     Log_response_payload      False
     TLS                       On
-    Http_User                 nikhil.sinha@parseable.com
-    Http_Passwd               NH7oCUju
+    Http_User                 $username
+    Http_Passwd               $password
     Header                    X-P-Stream node-metrics
     Header                    X-P-Log-Source otel-metrics
     Compress                  gzip
