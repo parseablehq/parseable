@@ -779,11 +779,8 @@ impl StateTransition {
     ) -> Self {
         let now = Utc::now();
         // calculate duration if previous alert time is provided
-        let previous_state_duration = if let Some(alert_time) = previous_alert_time {
-            Some((now - alert_time).num_seconds())
-        } else {
-            None
-        };
+        let previous_state_duration =
+            previous_alert_time.map(|alert_time| (now - alert_time).num_seconds());
         Self {
             state,
             last_updated_at: now,
