@@ -85,13 +85,15 @@ impl Broadcaster {
     ) -> Sse<InfallibleStream<ReceiverStream<sse::Event>>> {
         let (tx, rx) = mpsc::channel(10);
 
-        tx.send(sse::Data::new("connected").into()).await.unwrap();
+        let _ = tx.send(sse::Data::new("connected").into()).await;
 
-        if let Some(clients) = self.inner.write().await.clients.get_mut(session) {
-            clients.push(tx);
-        } else {
-            self.inner.write().await.clients.insert(*session, vec![tx]);
-        }
+        self.inner
+            .write()
+            .await
+            .clients
+            .entry(*session)
+            .or_default()
+            .push(tx);
 
         Sse::from_infallible_receiver(rx)
     }

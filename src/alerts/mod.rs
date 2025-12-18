@@ -605,7 +605,7 @@ impl AlertConfig {
 
     pub async fn trigger_notifications(&self, message: String) -> Result<(), AlertError> {
         let mut context = self.get_context();
-        context.message = message.clone();
+        context.message.clone_from(&message);
 
         for target_id in &self.targets {
             let target = TARGETS.get_target_by_id(target_id).await?;
@@ -617,7 +617,7 @@ impl AlertConfig {
         let active_sessions = sessions().get_active_sessions();
         let mut broadcast_to = vec![];
         for session in active_sessions {
-            if let Ok(_) = user_auth_for_query(&session, &self.query).await
+            if user_auth_for_query(&session, &self.query).await.is_ok()
                 && let SessionKey::SessionId(id) = &session
             {
                 broadcast_to.push(*id);
