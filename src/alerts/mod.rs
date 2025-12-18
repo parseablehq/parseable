@@ -58,12 +58,10 @@ use crate::alerts::alert_types::ThresholdAlert;
 use crate::alerts::target::{NotificationConfig, TARGETS};
 use crate::handlers::http::fetch_schema;
 use crate::metastore::MetastoreError;
-// use crate::handlers::http::query::create_streams_for_distributed;
-// use crate::option::Mode;
 use crate::parseable::{PARSEABLE, StreamNotFound};
 use crate::query::{QUERY_SESSION, resolve_stream_names};
 use crate::rbac::map::{SessionKey, sessions};
-use crate::sse::{SSE_HANDLER, SSEAlertInfo};
+use crate::sse::{SSE_HANDLER, SSEAlertInfo, SSEEvent};
 use crate::storage;
 use crate::storage::ObjectStorageError;
 use crate::sync::alert_runtime;
@@ -607,7 +605,7 @@ impl AlertConfig {
 
     pub async fn trigger_notifications(&self, message: String) -> Result<(), AlertError> {
         let mut context = self.get_context();
-        context.message.clone_from(&message);
+        context.message = message.clone();
 
         for target_id in &self.targets {
             let target = TARGETS.get_target_by_id(target_id).await?;
@@ -619,18 +617,24 @@ impl AlertConfig {
         let active_sessions = sessions().get_active_sessions();
         let mut broadcast_to = vec![];
         for session in active_sessions {
-            if user_auth_for_query(&session, &self.query).await.is_ok()
+            if let Ok(_) = user_auth_for_query(&session, &self.query).await
                 && let SessionKey::SessionId(id) = &session
             {
                 broadcast_to.push(*id);
             }
         }
 
-        if let Ok(msg) = &serde_json::to_string(&SSEAlertInfo {
-            id: self.id,
-            state: self.state,
-            message,
-        }) {
+        if self.state.eq(&AlertState::Triggered)
+            && let Ok(msg) = &serde_json::to_string(&SSEEvent {
+                criticality: crate::sse::Criticality::Error,
+                message: crate::sse::Message::AlertEvent(SSEAlertInfo {
+                    id: self.id,
+                    state: self.state,
+                    name: self.title.clone(),
+                }),
+            })
+            && !broadcast_to.is_empty()
+        {
             SSE_HANDLER.broadcast(msg, Some(&broadcast_to)).await;
         }
 

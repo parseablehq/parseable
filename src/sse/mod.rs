@@ -19,6 +19,7 @@ use crate::{
 };
 
 pub static SSE_HANDLER: Lazy<Arc<Broadcaster>> = Lazy::new(Broadcaster::create);
+
 pub struct Broadcaster {
     inner: RwLock<BroadcasterInner>,
 }
@@ -110,6 +111,9 @@ impl Broadcaster {
     /// If sessions is None, then broadcast to all
     pub async fn broadcast(&self, msg: &str, sessions: Option<&[Ulid]>) {
         let clients = self.inner.read().await.clients.clone();
+        if clients.is_empty() {
+            return;
+        }
 
         let send_futures = if let Some(sessions) = sessions {
             let mut futures = vec![];
@@ -139,15 +143,18 @@ impl Broadcaster {
 }
 
 pub async fn register_sse_client(
-    broadcaster: actix_web::web::Data<Arc<Broadcaster>>,
     req: HttpRequest,
-) -> Sse<InfallibleStream<ReceiverStream<sse::Event>>> {
+) -> Result<Sse<InfallibleStream<ReceiverStream<sse::Event>>>, actix_web::Error> {
     let session = extract_session_key_from_req(&req).unwrap();
     let sessionid = match session {
         SessionKey::SessionId(ulid) => ulid,
-        _ => unreachable!("SSE requires a valid session. Unable to register client."),
+        _ => {
+            return Err(actix_web::error::ErrorBadRequest(
+                "SSE requires session-based authentication, not BasicAuth",
+            ));
+        }
     };
-    broadcaster.new_client(&sessionid).await
+    Ok(SSE_HANDLER.new_client(&sessionid).await)
 }
 
 /// Struct to define the messages being sent using SSE
@@ -163,6 +170,7 @@ pub struct SSEEvent {
 pub enum Message {
     AlertEvent(SSEAlertInfo),
     ControlPlaneEvent(ControlPlaneEvent),
+    Consent(Consent),
 }
 
 #[derive(Serialize, Debug, Deserialize)]
@@ -178,11 +186,17 @@ pub enum Criticality {
 pub struct SSEAlertInfo {
     pub id: Ulid,
     pub state: AlertState,
-    pub message: String,
+    pub name: String,
 }
 
 #[derive(Serialize, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ControlPlaneEvent {
     message: String,
+}
+
+#[derive(Serialize, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Consent {
+    given: bool,
 }
