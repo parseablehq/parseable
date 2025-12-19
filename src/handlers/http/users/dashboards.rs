@@ -20,9 +20,10 @@ use std::collections::HashMap;
 
 use crate::{
     handlers::http::rbac::RBACError,
+    metastore::MetastoreError,
     storage::ObjectStorageError,
     users::dashboards::{DASHBOARDS, Dashboard, Tile, validate_dashboard_id},
-    utils::{get_hash, get_user_from_request},
+    utils::{get_hash, get_user_from_request, is_admin},
 };
 use actix_web::{
     HttpRequest, HttpResponse, Responder,
@@ -103,8 +104,10 @@ pub async fn update_dashboard(
 ) -> Result<impl Responder, DashboardError> {
     let user_id = get_hash(&get_user_from_request(&req)?);
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
+    let is_admin = is_admin(&req).map_err(|e| DashboardError::Custom(e.to_string()))?;
+
     let mut existing_dashboard = DASHBOARDS
-        .get_dashboard_by_user(dashboard_id, &user_id)
+        .get_dashboard_by_user(dashboard_id, &user_id, is_admin)
         .await
         .ok_or(DashboardError::Metadata(
             "Dashboard does not exist or user is not authorized",
@@ -188,9 +191,13 @@ pub async fn delete_dashboard(
     dashboard_id: Path<String>,
 ) -> Result<HttpResponse, DashboardError> {
     let user_id = get_hash(&get_user_from_request(&req)?);
+    let is_admin = is_admin(&req).map_err(|e| DashboardError::Custom(e.to_string()))?;
+
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
 
-    DASHBOARDS.delete_dashboard(&user_id, dashboard_id).await?;
+    DASHBOARDS
+        .delete_dashboard(&user_id, dashboard_id, is_admin)
+        .await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -206,9 +213,10 @@ pub async fn add_tile(
 
     let user_id = get_hash(&get_user_from_request(&req)?);
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
+    let is_admin = is_admin(&req).map_err(|e| DashboardError::Custom(e.to_string()))?;
 
     let mut dashboard = DASHBOARDS
-        .get_dashboard_by_user(dashboard_id, &user_id)
+        .get_dashboard_by_user(dashboard_id, &user_id, is_admin)
         .await
         .ok_or(DashboardError::Unauthorized)?;
 
@@ -248,6 +256,8 @@ pub enum DashboardError {
     Unauthorized,
     #[error("Invalid query parameter")]
     InvalidQueryParameter,
+    #[error(transparent)]
+    MetastoreError(#[from] MetastoreError),
 }
 
 impl actix_web::ResponseError for DashboardError {
@@ -260,12 +270,18 @@ impl actix_web::ResponseError for DashboardError {
             Self::Custom(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Unauthorized => StatusCode::UNAUTHORIZED,
             Self::InvalidQueryParameter => StatusCode::BAD_REQUEST,
+            Self::MetastoreError(e) => e.status_code(),
         }
     }
 
     fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
-        actix_web::HttpResponse::build(self.status_code())
-            .insert_header(ContentType::plaintext())
-            .body(self.to_string())
+        match self {
+            DashboardError::MetastoreError(e) => {
+                actix_web::HttpResponse::build(self.status_code()).json(e.to_detail())
+            }
+            _ => actix_web::HttpResponse::build(self.status_code())
+                .insert_header(ContentType::plaintext())
+                .body(self.to_string()),
+        }
     }
 }

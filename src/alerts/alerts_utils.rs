@@ -16,18 +16,22 @@
  *
  */
 
-use std::fmt::Display;
+use std::{collections::HashMap, fmt::Display};
 
 use actix_web::Either;
-use arrow_array::{Float64Array, Int64Array, RecordBatch};
+use arrow_array::{Array, Float64Array, Int64Array, RecordBatch};
 use datafusion::{
-    logical_expr::Literal,
+    logical_expr::{Literal, LogicalPlan},
     prelude::{Expr, lit},
 };
 use tracing::trace;
 
 use crate::{
-    alerts::{Conditions, LogicalOperator, WhereConfigOperator},
+    alerts::{
+        AlertTrait, LogicalOperator, WhereConfigOperator,
+        alert_structs::{AlertQueryResult, Conditions, GroupResult},
+        extract_aggregate_aliases,
+    },
     handlers::http::{
         cluster::send_query_request,
         query::{Query, create_streams_for_distributed},
@@ -38,7 +42,7 @@ use crate::{
     utils::time::TimeRange,
 };
 
-use super::{ALERTS, AlertConfig, AlertError, AlertOperator, AlertState};
+use super::{ALERTS, AlertError, AlertOperator, AlertState};
 
 /// accept the alert
 ///
@@ -51,22 +55,16 @@ use super::{ALERTS, AlertConfig, AlertError, AlertOperator, AlertState};
 /// collect the results in the end
 ///
 /// check whether notification needs to be triggered or not
-pub async fn evaluate_alert(alert: &AlertConfig) -> Result<(), AlertError> {
+pub async fn evaluate_alert(alert: &dyn AlertTrait) -> Result<(), AlertError> {
     trace!("RUNNING EVAL TASK FOR- {alert:?}");
 
-    let time_range = extract_time_range(&alert.eval_config)?;
-    let final_value = execute_alert_query(alert, &time_range).await?;
-    let result = evaluate_condition(
-        &alert.threshold_config.operator,
-        final_value,
-        alert.threshold_config.value,
-    );
+    let message = alert.eval_alert().await?;
 
-    update_alert_state(alert, result, final_value).await
+    update_alert_state(alert, message).await
 }
 
 /// Extract time range from alert evaluation configuration
-fn extract_time_range(eval_config: &super::EvalConfig) -> Result<TimeRange, AlertError> {
+pub fn extract_time_range(eval_config: &super::EvalConfig) -> Result<TimeRange, AlertError> {
     let (start_time, end_time) = match eval_config {
         super::EvalConfig::RollingWindow(rolling_window) => (&rolling_window.eval_start, "now"),
     };
@@ -75,14 +73,14 @@ fn extract_time_range(eval_config: &super::EvalConfig) -> Result<TimeRange, Aler
         .map_err(|err| AlertError::CustomError(err.to_string()))
 }
 
-/// Execute the alert query based on the current mode and return the final value
-async fn execute_alert_query(
-    alert: &AlertConfig,
+/// Execute the alert query based on the current mode and return structured group results
+pub async fn execute_alert_query(
+    query: &str,
     time_range: &TimeRange,
-) -> Result<f64, AlertError> {
+) -> Result<AlertQueryResult, AlertError> {
     match PARSEABLE.options.mode {
-        Mode::All | Mode::Query => execute_local_query(alert, time_range).await,
-        Mode::Prism => execute_remote_query(alert, time_range).await,
+        Mode::All | Mode::Query => execute_local_query(query, time_range).await,
+        Mode::Prism => execute_remote_query(query, time_range).await,
         _ => Err(AlertError::CustomError(format!(
             "Unsupported mode '{:?}' for alert evaluation",
             PARSEABLE.options.mode
@@ -92,11 +90,10 @@ async fn execute_alert_query(
 
 /// Execute alert query locally (Query/All mode)
 async fn execute_local_query(
-    alert: &AlertConfig,
+    query: &str,
     time_range: &TimeRange,
-) -> Result<f64, AlertError> {
+) -> Result<AlertQueryResult, AlertError> {
     let session_state = QUERY_SESSION.state();
-    let query = &alert.query;
 
     let tables = resolve_stream_names(query)?;
     create_streams_for_distributed(tables.clone())
@@ -105,12 +102,12 @@ async fn execute_local_query(
 
     let raw_logical_plan = session_state.create_logical_plan(query).await?;
     let query = crate::query::Query {
-        raw_logical_plan,
+        raw_logical_plan: raw_logical_plan.clone(),
         time_range: time_range.clone(),
         filter_tag: None,
     };
 
-    let (records, _) = execute(query, &tables[0], false)
+    let (records, _) = execute(query, false)
         .await
         .map_err(|err| AlertError::CustomError(format!("Failed to execute query: {err}")))?;
 
@@ -123,16 +120,19 @@ async fn execute_local_query(
         }
     };
 
-    Ok(get_final_value(records))
+    Ok(extract_group_results(records, raw_logical_plan))
 }
 
 /// Execute alert query remotely (Prism mode)
 async fn execute_remote_query(
-    alert: &AlertConfig,
+    query: &str,
     time_range: &TimeRange,
-) -> Result<f64, AlertError> {
+) -> Result<AlertQueryResult, AlertError> {
+    let session_state = QUERY_SESSION.state();
+    let raw_logical_plan = session_state.create_logical_plan(query).await?;
+
     let query_request = Query {
-        query: alert.query.clone(),
+        query: query.to_string(),
         start_time: time_range.start.to_rfc3339(),
         end_time: time_range.end.to_rfc3339(),
         streaming: false,
@@ -145,25 +145,114 @@ async fn execute_remote_query(
         .await
         .map_err(|err| AlertError::CustomError(format!("Failed to send query request: {err}")))?;
 
-    convert_result_to_f64(result_value)
+    convert_result_to_group_results(result_value, raw_logical_plan)
 }
 
-/// Convert JSON result value to f64
-fn convert_result_to_f64(result_value: serde_json::Value) -> Result<f64, AlertError> {
-    if let Some(value) = result_value.as_f64() {
-        Ok(value)
-    } else if let Some(value) = result_value.as_i64() {
-        Ok(value as f64)
-    } else if let Some(value) = result_value.as_u64() {
-        Ok(value as f64)
-    } else {
-        Err(AlertError::CustomError(
-            "Query result is not a number".to_string(),
-        ))
+/// Convert JSON result value to AlertQueryResult
+/// Handles both simple queries and GROUP BY queries with multiple rows
+fn convert_result_to_group_results(
+    result_value: serde_json::Value,
+    plan: LogicalPlan,
+) -> Result<AlertQueryResult, AlertError> {
+    let array_val = result_value
+        .as_array()
+        .ok_or_else(|| AlertError::CustomError("Expected array in query result".to_string()))?;
+
+    let aggregate_aliases = extract_aggregate_aliases(&plan);
+
+    if array_val.is_empty() || aggregate_aliases.is_empty() {
+        return Ok(AlertQueryResult {
+            groups: vec![],
+            is_simple_query: true,
+        });
     }
+
+    // take the first entry and extract the column name / alias
+    let (agg_condition, alias) = &aggregate_aliases[0];
+
+    let aggregate_key = if let Some(alias) = alias {
+        alias
+    } else {
+        agg_condition
+    };
+
+    // Find the aggregate column from the first row
+    let first_row = array_val[0]
+        .as_object()
+        .ok_or_else(|| AlertError::CustomError("Expected object in query result".to_string()))?;
+
+    let is_simple_query = first_row.len() == 1;
+    let mut groups = Vec::new();
+
+    // Process each row as a separate group
+    for row in array_val {
+        if let Some(object) = row.as_object() {
+            let mut group_values = HashMap::new();
+            let mut aggregate_value = 0.0;
+
+            for (key, value) in object {
+                if key == aggregate_key {
+                    aggregate_value = value.as_f64().ok_or_else(|| {
+                        AlertError::CustomError(format!(
+                            "Non-numeric value found in aggregate column '{}'",
+                            aggregate_key
+                        ))
+                    })?;
+                } else {
+                    // This is a GROUP BY column
+                    group_values
+                        .insert(key.clone(), value.to_string().trim_matches('"').to_string());
+                }
+            }
+
+            groups.push(GroupResult {
+                group_values,
+                aggregate_value,
+            });
+        }
+    }
+
+    Ok(AlertQueryResult {
+        groups,
+        is_simple_query,
+    })
 }
 
-fn evaluate_condition(operator: &AlertOperator, actual: f64, expected: f64) -> bool {
+/// Extract numeric value from an Arrow array at the given row index
+fn extract_numeric_value(column: &dyn Array, row_index: usize) -> f64 {
+    if let Some(float_array) = column.as_any().downcast_ref::<Float64Array>() {
+        if !float_array.is_null(row_index) {
+            return float_array.value(row_index);
+        }
+    } else if let Some(int_array) = column.as_any().downcast_ref::<Int64Array>()
+        && !int_array.is_null(row_index)
+    {
+        return int_array.value(row_index) as f64;
+    }
+    0.0
+}
+
+/// Extract string value from an Arrow array at the given row index
+fn extract_string_value(column: &dyn Array, row_index: usize) -> String {
+    use arrow_array::StringArray;
+
+    if let Some(string_array) = column.as_any().downcast_ref::<StringArray>() {
+        if !string_array.is_null(row_index) {
+            return string_array.value(row_index).to_string();
+        }
+    } else if let Some(int_array) = column.as_any().downcast_ref::<Int64Array>() {
+        if !int_array.is_null(row_index) {
+            return int_array.value(row_index).to_string();
+        }
+    } else if let Some(float_array) = column.as_any().downcast_ref::<Float64Array>()
+        && !float_array.is_null(row_index)
+    {
+        return float_array.value(row_index).to_string();
+    }
+    "null".to_string()
+}
+
+pub fn evaluate_condition(operator: &AlertOperator, actual: f64, expected: f64) -> bool {
     match operator {
         AlertOperator::GreaterThan => actual > expected,
         AlertOperator::LessThan => actual < expected,
@@ -175,62 +264,97 @@ fn evaluate_condition(operator: &AlertOperator, actual: f64, expected: f64) -> b
 }
 
 async fn update_alert_state(
-    alert: &AlertConfig,
-    final_res: bool,
-    actual_value: f64,
+    alert: &dyn AlertTrait,
+    message: Option<String>,
 ) -> Result<(), AlertError> {
-    if final_res {
-        let message = format!(
-            "Alert Triggered: {}\n\nThreshold: ({} {})\nCurrent Value: {}\nEvaluation Window: {} | Frequency: {}\n\nQuery:\n{}",
-            alert.id,
-            alert.threshold_config.operator,
-            alert.threshold_config.value,
-            actual_value,
-            alert.get_eval_window(),
-            alert.get_eval_frequency(),
-            alert.query
-        );
-        ALERTS
-            .update_state(alert.id, AlertState::Triggered, Some(message))
+    // Get the alert manager reference while holding the lock briefly
+    let alerts = {
+        let guard = ALERTS.read().await;
+        if let Some(alerts) = guard.as_ref() {
+            alerts.clone()
+        } else {
+            return Err(AlertError::CustomError("No AlertManager set".into()));
+        }
+    };
+
+    // Now perform the state update
+    if let Some(msg) = message {
+        alerts
+            .update_state(*alert.get_id(), AlertState::Triggered, Some(msg))
             .await
-    } else if ALERTS.get_state(alert.id).await?.eq(&AlertState::Triggered) {
-        ALERTS
-            .update_state(alert.id, AlertState::Resolved, Some("".into()))
+    } else if alerts
+        .get_state(*alert.get_id())
+        .await?
+        .eq(&AlertState::Triggered)
+    {
+        alerts
+            .update_state(*alert.get_id(), AlertState::NotTriggered, Some("".into()))
             .await
     } else {
-        ALERTS
-            .update_state(alert.id, AlertState::Resolved, None)
+        alerts
+            .update_state(*alert.get_id(), AlertState::NotTriggered, None)
             .await
     }
 }
 
-fn get_final_value(records: Vec<RecordBatch>) -> f64 {
+/// Extract group results from record batches, supporting both simple and GROUP BY queries
+fn extract_group_results(records: Vec<RecordBatch>, plan: LogicalPlan) -> AlertQueryResult {
     trace!("records-\n{records:?}");
 
-    if let Some(f) = records
-        .first()
-        .and_then(|batch| {
-            trace!("batch.column(0)-\n{:?}", batch.column(0));
-            batch.column(0).as_any().downcast_ref::<Float64Array>()
-        })
-        .map(|array| {
-            trace!("array-\n{array:?}");
-            array.value(0)
-        })
-    {
-        f
+    let aggregate_aliases = extract_aggregate_aliases(&plan);
+
+    // since there is going to be only one aggregate, we'll check if it is empty
+    if aggregate_aliases.is_empty() || records.is_empty() {
+        return AlertQueryResult {
+            groups: vec![],
+            is_simple_query: true,
+        };
+    }
+
+    // take the first entry and extract the column name / alias
+    let (agg_condition, alias) = &aggregate_aliases[0];
+
+    let alias = if let Some(alias) = alias {
+        alias
     } else {
-        records
-            .first()
-            .and_then(|batch| {
-                trace!("batch.column(0)-\n{:?}", batch.column(0));
-                batch.column(0).as_any().downcast_ref::<Int64Array>()
-            })
-            .map(|array| {
-                trace!("array-\n{array:?}");
-                array.value(0)
-            })
-            .unwrap_or_default() as f64
+        agg_condition
+    };
+
+    let first_batch = &records[0];
+    let schema = first_batch.schema();
+
+    // Determine if this is a simple query (no GROUP BY) or a grouped query
+    let is_simple_query = schema.fields().len() == 1;
+
+    let mut groups = Vec::new();
+
+    for batch in &records {
+        for row_index in 0..batch.num_rows() {
+            let mut group_values = HashMap::new();
+            let mut aggregate_value = 0.0;
+
+            // Extract values for each column
+            for (col_index, field) in schema.fields().iter().enumerate() {
+                let column = batch.column(col_index);
+                if field.name().eq(alias) {
+                    aggregate_value = extract_numeric_value(column, row_index)
+                } else {
+                    // This is a GROUP BY column
+                    let value = extract_string_value(column, row_index);
+                    group_values.insert(field.name().clone(), value);
+                }
+            }
+
+            groups.push(GroupResult {
+                group_values,
+                aggregate_value,
+            });
+        }
+    }
+
+    AlertQueryResult {
+        groups,
+        is_simple_query,
     }
 }
 

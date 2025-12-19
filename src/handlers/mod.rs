@@ -16,26 +16,68 @@
  *
  */
 
+use std::fmt::Display;
+
+use serde::{Deserialize, Serialize};
+
 pub mod airplane;
 pub mod http;
 pub mod livetail;
 
 pub const STREAM_NAME_HEADER_KEY: &str = "x-p-stream";
-const LOG_SOURCE_KEY: &str = "x-p-log-source";
-const EXTRACT_LOG_KEY: &str = "x-p-extract-log";
-const TIME_PARTITION_KEY: &str = "x-p-time-partition";
-const TIME_PARTITION_LIMIT_KEY: &str = "x-p-time-partition-limit";
-const CUSTOM_PARTITION_KEY: &str = "x-p-custom-partition";
-const STATIC_SCHEMA_FLAG: &str = "x-p-static-schema-flag";
-const AUTHORIZATION_KEY: &str = "authorization";
-const UPDATE_STREAM_KEY: &str = "x-p-update-stream";
+pub const LOG_SOURCE_KEY: &str = "x-p-log-source";
+pub const EXTRACT_LOG_KEY: &str = "x-p-extract-log";
+pub const TIME_PARTITION_KEY: &str = "x-p-time-partition";
+pub const TIME_PARTITION_LIMIT_KEY: &str = "x-p-time-partition-limit";
+pub const CUSTOM_PARTITION_KEY: &str = "x-p-custom-partition";
+pub const STATIC_SCHEMA_FLAG: &str = "x-p-static-schema-flag";
+pub const AUTHORIZATION_KEY: &str = "authorization";
+pub const UPDATE_STREAM_KEY: &str = "x-p-update-stream";
 pub const STREAM_TYPE_KEY: &str = "x-p-stream-type";
+pub const TELEMETRY_TYPE_KEY: &str = "x-p-telemetry-type";
 const COOKIE_AGE_DAYS: usize = 7;
 const SESSION_COOKIE_NAME: &str = "session";
 const USER_COOKIE_NAME: &str = "username";
-
+const USER_ID_COOKIE_NAME: &str = "user_id";
 // constants for log Source values for known sources and formats
 const LOG_SOURCE_KINESIS: &str = "kinesis";
 
 // AWS Kinesis constants
-const KINESIS_COMMON_ATTRIBUTES_KEY: &str = "x-amz-firehose-common-attributes";
+pub const KINESIS_COMMON_ATTRIBUTES_KEY: &str = "x-amz-firehose-common-attributes";
+
+// constants for content type values
+pub const CONTENT_TYPE_JSON: &str = "application/json";
+pub const CONTENT_TYPE_PROTOBUF: &str = "application/x-protobuf";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum TelemetryType {
+    #[default]
+    Logs,
+    Metrics,
+    Traces,
+    Events,
+}
+
+impl From<&str> for TelemetryType {
+    fn from(s: &str) -> Self {
+        match s.to_lowercase().as_str() {
+            "logs" => TelemetryType::Logs,
+            "metrics" => TelemetryType::Metrics,
+            "traces" => TelemetryType::Traces,
+            "events" => TelemetryType::Events,
+            _ => TelemetryType::Logs,
+        }
+    }
+}
+
+impl Display for TelemetryType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            TelemetryType::Logs => "logs",
+            TelemetryType::Metrics => "metrics",
+            TelemetryType::Traces => "traces",
+            TelemetryType::Events => "events",
+        })
+    }
+}

@@ -18,20 +18,20 @@
 
 use crate::{
     handlers::http::rbac::RBACError,
+    metastore::MetastoreError,
     parseable::PARSEABLE,
-    storage::{ObjectStorageError, object_storage::filter_path},
+    storage::ObjectStorageError,
     users::filters::{CURRENT_FILTER_VERSION, FILTERS, Filter},
-    utils::{actix::extract_session_key_from_req, get_hash, get_user_from_request},
+    utils::{actix::extract_session_key_from_req, get_hash, get_user_from_request, is_admin},
 };
 use actix_web::{
     HttpRequest, HttpResponse, Responder,
     http::header::ContentType,
     web::{self, Json, Path},
 };
-use bytes::Bytes;
-use chrono::Utc;
 use http::StatusCode;
 use serde_json::Error as SerdeError;
+use ulid::Ulid;
 
 pub async fn list(req: HttpRequest) -> Result<impl Responder, FiltersError> {
     let key =
@@ -46,12 +46,17 @@ pub async fn get(
 ) -> Result<impl Responder, FiltersError> {
     let user_id = get_user_from_request(&req)?;
     let filter_id = filter_id.into_inner();
-
-    if let Some(filter) = FILTERS.get_filter(&filter_id, &get_hash(&user_id)).await {
+    let is_admin = is_admin(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
+    if let Some(filter) = FILTERS
+        .get_filter(&filter_id, &get_hash(&user_id), is_admin)
+        .await
+    {
         return Ok((web::Json(filter), StatusCode::OK));
     }
 
-    Err(FiltersError::Metadata("Filter does not exist"))
+    Err(FiltersError::Metadata(
+        "Filter does not exist or user is not authorized",
+    ))
 }
 
 pub async fn post(
@@ -60,17 +65,13 @@ pub async fn post(
 ) -> Result<impl Responder, FiltersError> {
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
-    let filter_id = get_hash(Utc::now().timestamp_micros().to_string().as_str());
+    let filter_id = Ulid::new().to_string();
     filter.filter_id = Some(filter_id.clone());
     filter.user_id = Some(user_id.clone());
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
+
+    PARSEABLE.metastore.put_filter(&filter).await?;
     FILTERS.update(&filter).await;
-
-    let path = filter_path(&user_id, &filter.stream_name, &format!("{filter_id}.json"));
-
-    let store = PARSEABLE.storage.get_object_store();
-    let filter_bytes = serde_json::to_vec(&filter)?;
-    store.put_object(&path, Bytes::from(filter_bytes)).await?;
 
     Ok((web::Json(filter), StatusCode::OK))
 }
@@ -83,19 +84,23 @@ pub async fn update(
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
     let filter_id = filter_id.into_inner();
-    if FILTERS.get_filter(&filter_id, &user_id).await.is_none() {
-        return Err(FiltersError::Metadata("Filter does not exist"));
+    let is_admin = is_admin(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
+
+    if FILTERS
+        .get_filter(&filter_id, &user_id, is_admin)
+        .await
+        .is_none()
+    {
+        return Err(FiltersError::Metadata(
+            "Filter does not exist or user is not authorized",
+        ));
     }
     filter.filter_id = Some(filter_id.clone());
     filter.user_id = Some(user_id.clone());
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
+
+    PARSEABLE.metastore.put_filter(&filter).await?;
     FILTERS.update(&filter).await;
-
-    let path = filter_path(&user_id, &filter.stream_name, &format!("{filter_id}.json"));
-
-    let store = PARSEABLE.storage.get_object_store();
-    let filter_bytes = serde_json::to_vec(&filter)?;
-    store.put_object(&path, Bytes::from(filter_bytes)).await?;
 
     Ok((web::Json(filter), StatusCode::OK))
 }
@@ -107,15 +112,15 @@ pub async fn delete(
     let mut user_id = get_user_from_request(&req)?;
     user_id = get_hash(&user_id);
     let filter_id = filter_id.into_inner();
+    let is_admin = is_admin(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
     let filter = FILTERS
-        .get_filter(&filter_id, &user_id)
+        .get_filter(&filter_id, &user_id, is_admin)
         .await
-        .ok_or(FiltersError::Metadata("Filter does not exist"))?;
+        .ok_or(FiltersError::Metadata(
+            "Filter does not exist or user is not authorized",
+        ))?;
 
-    let path = filter_path(&user_id, &filter.stream_name, &format!("{filter_id}.json"));
-    let store = PARSEABLE.storage.get_object_store();
-    store.delete_object(&path).await?;
-
+    PARSEABLE.metastore.delete_filter(&filter).await?;
     FILTERS.delete_filter(&filter_id).await;
 
     Ok(HttpResponse::Ok().finish())
@@ -133,6 +138,8 @@ pub enum FiltersError {
     UserDoesNotExist(#[from] RBACError),
     #[error("Error: {0}")]
     Custom(String),
+    #[error(transparent)]
+    MetastoreError(#[from] MetastoreError),
 }
 
 impl actix_web::ResponseError for FiltersError {
@@ -143,12 +150,20 @@ impl actix_web::ResponseError for FiltersError {
             Self::Metadata(_) => StatusCode::BAD_REQUEST,
             Self::UserDoesNotExist(_) => StatusCode::NOT_FOUND,
             Self::Custom(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::MetastoreError(e) => e.status_code(),
         }
     }
 
     fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
-        actix_web::HttpResponse::build(self.status_code())
-            .insert_header(ContentType::plaintext())
-            .body(self.to_string())
+        match self {
+            FiltersError::MetastoreError(metastore_error) => {
+                actix_web::HttpResponse::build(self.status_code())
+                    .insert_header(ContentType::json())
+                    .json(metastore_error.to_detail())
+            }
+            _ => actix_web::HttpResponse::build(self.status_code())
+                .insert_header(ContentType::plaintext())
+                .body(self.to_string()),
+        }
     }
 }

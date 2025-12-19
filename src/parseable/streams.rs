@@ -34,13 +34,16 @@ use itertools::Itertools;
 use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
-    file::{FOOTER_SIZE, properties::WriterProperties},
-    format::SortingColumn,
+    file::{
+        FOOTER_SIZE, metadata::SortingColumn, properties::WriterProperties, reader::FileReader,
+        serialized_reader::SerializedFileReader,
+    },
     schema::types::ColumnPath,
 };
 use relative_path::RelativePathBuf;
 use tokio::task::JoinSet;
 use tracing::{error, info, trace, warn};
+use ulid::Ulid;
 
 use crate::{
     LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
@@ -49,7 +52,7 @@ use crate::{
         DEFAULT_TIMESTAMP_KEY,
         format::{LogSource, LogSourceEntry},
     },
-    handlers::http::modal::{ingest_server::INGESTOR_META, query_server::QUERIER_META},
+    hottier::StreamHotTier,
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
@@ -185,7 +188,13 @@ impl Stream {
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
     ) -> String {
-        let mut hostname = hostname::get().unwrap().into_string().unwrap();
+        let mut hostname = hostname::get()
+            .unwrap_or_else(|_| std::ffi::OsString::from(&Ulid::new().to_string()))
+            .into_string()
+            .unwrap_or_else(|_| Ulid::new().to_string())
+            .matches(|c: char| c.is_alphanumeric() || c == '-' || c == '_')
+            .collect::<String>();
+
         if let Some(id) = &self.ingestor_id {
             hostname.push_str(id);
         }
@@ -267,7 +276,7 @@ impl Stream {
         init_signal: bool,
         shutdown_signal: bool,
     ) -> HashMap<PathBuf, Vec<PathBuf>> {
-        let random_string = self.get_node_id_string();
+        let random_string = ulid::Ulid::new().to_string();
         let inprocess_dir = Self::inprocess_folder(&self.data_path, group_minute);
 
         let arrow_files = self.fetch_arrow_files_for_conversion(exclude, shutdown_signal);
@@ -313,21 +322,6 @@ impl Stream {
             }
         }
         grouped
-    }
-
-    /// Returns the node id string for file naming.
-    fn get_node_id_string(&self) -> String {
-        match self.options.mode {
-            Mode::Query => QUERIER_META
-                .get()
-                .map(|querier_metadata| querier_metadata.get_node_id())
-                .expect("Querier metadata should be set"),
-            Mode::Ingest => INGESTOR_META
-                .get()
-                .map(|ingestor_metadata| ingestor_metadata.get_node_id())
-                .expect("Ingestor metadata should be set"),
-            _ => "000000000000000".to_string(),
-        }
     }
 
     /// Returns a mapping for inprocess arrow files (init_signal=true).
@@ -418,7 +412,7 @@ impl Stream {
             .map(|file| file.path())
             .filter(|file| {
                 file.extension().is_some_and(|ext| ext.eq("parquet"))
-                    && std::fs::metadata(file).is_ok_and(|meta| meta.len() > FOOTER_SIZE as u64)
+                    && Self::is_valid_parquet_file(file, &self.stream_name)
             })
             .collect()
     }
@@ -442,16 +436,16 @@ impl Stream {
         let mut schemas: Vec<Schema> = Vec::new();
 
         for file in dir.flatten() {
-            if let Some(ext) = file.path().extension() {
-                if ext.eq("schema") {
-                    let file = File::open(file.path()).expect("Schema File should exist");
+            if let Some(ext) = file.path().extension()
+                && ext.eq("schema")
+            {
+                let file = File::open(file.path()).expect("Schema File should exist");
 
-                    let schema = match serde_json::from_reader(file) {
-                        Ok(schema) => schema,
-                        Err(_) => continue,
-                    };
-                    schemas.push(schema);
-                }
+                let schema = match serde_json::from_reader(file) {
+                    Ok(schema) => schema,
+                    Err(_) => continue,
+                };
+                schemas.push(schema);
             }
         }
 
@@ -658,7 +652,7 @@ impl Stream {
                 continue;
             }
 
-            if let Err(e) = self.finalize_parquet_file(&part_path, &parquet_path) {
+            if let Err(e) = std::fs::rename(&part_path, &parquet_path) {
                 error!("Couldn't rename part file: {part_path:?} -> {parquet_path:?}, error = {e}");
             } else {
                 self.cleanup_arrow_files_and_dir(&arrow_files);
@@ -669,7 +663,7 @@ impl Stream {
             return Ok(None);
         }
 
-        Ok(Some(Schema::try_merge(schemas).unwrap()))
+        Ok(Some(Schema::try_merge(schemas)?))
     }
 
     fn write_parquet_part_file(
@@ -691,12 +685,10 @@ impl Stream {
         }
         writer.close()?;
 
-        if part_file.metadata().expect("File was just created").len()
-            < parquet::file::FOOTER_SIZE as u64
-        {
+        if !Self::is_valid_parquet_file(part_path, &self.stream_name) {
             error!(
-                "Invalid parquet file {part_path:?} detected for stream {}, removing it",
-                &self.stream_name
+                "Invalid parquet file {part_path:?} detected for stream {stream_name}, removing it",
+                stream_name = &self.stream_name
             );
             remove_file(part_path).expect("File should be removable if it is invalid");
             return Ok(false);
@@ -705,8 +697,47 @@ impl Stream {
         Ok(true)
     }
 
-    fn finalize_parquet_file(&self, part_path: &Path, parquet_path: &Path) -> std::io::Result<()> {
-        std::fs::rename(part_path, parquet_path)
+    /// function to validate parquet files
+    fn is_valid_parquet_file(path: &Path, stream_name: &str) -> bool {
+        // First check file size as a quick validation
+        match path.metadata() {
+            Ok(meta) if meta.len() < FOOTER_SIZE as u64 => {
+                error!(
+                    "Invalid parquet file {path:?} detected for stream {stream_name}, size: {} bytes",
+                    meta.len()
+                );
+                return false;
+            }
+            Err(e) => {
+                error!(
+                    "Cannot read metadata for parquet file {path:?} for stream {stream_name}: {e}"
+                );
+                return false;
+            }
+            _ => {} // File size is adequate, continue validation
+        }
+
+        // Try to open and read the parquet file metadata to verify it's valid
+        match std::fs::File::open(path) {
+            Ok(file) => match SerializedFileReader::new(file) {
+                Ok(reader) => {
+                    if reader.metadata().file_metadata().num_rows() == 0 {
+                        error!("Invalid parquet file {path:?} for stream {stream_name}");
+                        false
+                    } else {
+                        true
+                    }
+                }
+                Err(e) => {
+                    error!("Failed to read parquet file {path:?} for stream {stream_name}: {e}");
+                    false
+                }
+            },
+            Err(e) => {
+                error!("Failed to open parquet file {path:?} for stream {stream_name}: {e}");
+                false
+            }
+        }
     }
 
     fn cleanup_arrow_files_and_dir(&self, arrow_files: &[PathBuf]) {
@@ -735,25 +766,25 @@ impl Stream {
             }
 
             // After deleting the last file, try to remove the inprocess directory if empty
-            if i == arrow_files.len() - 1 {
-                if let Some(parent_dir) = file.parent() {
-                    match fs::read_dir(parent_dir) {
-                        Ok(mut entries) => {
-                            if entries.next().is_none() {
-                                if let Err(err) = fs::remove_dir(parent_dir) {
-                                    warn!(
-                                        "Failed to remove inprocess directory {}: {err}",
-                                        parent_dir.display()
-                                    );
-                                }
-                            }
-                        }
-                        Err(err) => {
+            if i == arrow_files.len() - 1
+                && let Some(parent_dir) = file.parent()
+            {
+                match fs::read_dir(parent_dir) {
+                    Ok(mut entries) => {
+                        if entries.next().is_none()
+                            && let Err(err) = fs::remove_dir(parent_dir)
+                        {
                             warn!(
-                                "Failed to read inprocess directory {}: {err}",
+                                "Failed to remove inprocess directory {}: {err}",
                                 parent_dir.display()
                             );
                         }
+                    }
+                    Err(err) => {
+                        warn!(
+                            "Failed to read inprocess directory {}: {err}",
+                            parent_dir.display()
+                        );
                     }
                 }
             }
@@ -890,8 +921,18 @@ impl Stream {
         self.metadata.write().expect(LOCK_EXPECT).custom_partition = custom_partition.cloned();
     }
 
-    pub fn set_hot_tier(&self, enable: bool) {
-        self.metadata.write().expect(LOCK_EXPECT).hot_tier_enabled = enable;
+    pub fn set_hot_tier(&self, hot_tier: Option<StreamHotTier>) {
+        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        metadata.hot_tier.clone_from(&hot_tier);
+        metadata.hot_tier_enabled = hot_tier.is_some();
+    }
+
+    pub fn get_hot_tier(&self) -> Option<StreamHotTier> {
+        self.metadata.read().expect(LOCK_EXPECT).hot_tier.clone()
+    }
+
+    pub fn is_hot_tier_enabled(&self) -> bool {
+        self.metadata.read().expect(LOCK_EXPECT).hot_tier_enabled
     }
 
     pub fn get_stream_type(&self) -> StreamType {
@@ -960,7 +1001,10 @@ impl Stream {
         shutdown_signal: bool,
     ) -> Result<(), StagingError> {
         let start_flush = Instant::now();
-        self.flush(shutdown_signal);
+        // Force flush for init or shutdown signals to convert all .part files to .arrows
+        // For regular cycles, use false to only flush non-current writers
+        let forced = init_signal || shutdown_signal;
+        self.flush(forced);
         trace!(
             "Flushing stream ({}) took: {}s",
             self.stream_name,
@@ -1374,8 +1418,9 @@ mod tests {
         for _ in 0..3 {
             write_log(&staging, &schema, 0);
         }
+        println!("arrow files: {:?}", staging.arrow_files());
         // verify the arrow files exist in staging
-        assert_eq!(staging.arrow_files().len(), 1);
+        assert_eq!(staging.arrow_files().len(), 3);
         drop(staging);
 
         // Start with a fresh staging

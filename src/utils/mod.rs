@@ -18,6 +18,7 @@
 
 pub mod actix;
 pub mod arrow;
+pub mod error;
 pub mod header_parsing;
 pub mod human_size;
 pub mod json;
@@ -36,8 +37,6 @@ use actix_web::HttpRequest;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use regex::Regex;
 use sha2::{Digest, Sha256};
-
-pub const DATASET_STATS_STREAM_NAME: &str = "pstats";
 
 pub fn get_node_id() -> String {
     let now = Utc::now().to_rfc3339();
@@ -60,8 +59,8 @@ pub fn extract_datetime(path: &str) -> Option<NaiveDateTime> {
 }
 
 pub fn get_user_from_request(req: &HttpRequest) -> Result<String, RBACError> {
-    let session_key = extract_session_key_from_req(req).unwrap();
-    let user_id = Users.get_username_from_session(&session_key);
+    let session_key = extract_session_key_from_req(req).map_err(|_| RBACError::UserDoesNotExist)?;
+    let user_id = Users.get_userid_from_session(&session_key);
     if user_id.is_none() {
         return Err(RBACError::UserDoesNotExist);
     }
@@ -146,4 +145,23 @@ pub async fn user_auth_for_datasets(
     }
 
     Ok(())
+}
+
+pub fn is_admin(req: &HttpRequest) -> Result<bool, anyhow::Error> {
+    let session_key =
+        extract_session_key_from_req(req).map_err(|e| anyhow::Error::msg(e.to_string()))?;
+
+    let permissions = Users.get_permissions(&session_key);
+
+    // Check if user has admin permissions (Action::All on All resources)
+    for permission in permissions.iter() {
+        match permission {
+            Permission::Resource(Action::All, ParseableResourceType::All) => {
+                return Ok(true);
+            }
+            _ => continue,
+        }
+    }
+
+    Ok(false)
 }

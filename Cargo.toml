@@ -1,6 +1,6 @@
 [package]
 name = "parseable"
-version = "2.4.0"
+version = "2.5.4"
 authors = ["Parseable Team <hi@parseable.com>"]
 edition = "2024"
 rust-version = "1.88.0"
@@ -9,21 +9,24 @@ build = "build.rs"
 
 [dependencies]
 # Arrow and DataFusion ecosystem
-arrow = "54.0.0"
-arrow-array = "54.0.0"
-arrow-flight = { version = "54.0.0", features = ["tls"] }
-arrow-ipc = { version = "54.0.0", features = ["zstd"] }
-arrow-json = "54.0.0"
-arrow-schema = { version = "54.0.0", features = ["serde"] }
-arrow-select = "54.0.0"
-datafusion = "45.0.0"
-object_store = { version = "0.11.2", features = [
+arrow = "57.1.0"
+arrow-array = "57.1.0"
+arrow-flight = { version = "57.1.0", features = [
+    "tls-aws-lc",
+    "tls-native-roots",
+] }
+arrow-ipc = { version = "57.1.0", features = ["zstd"] }
+arrow-json = "57.1.0"
+arrow-schema = { version = "57.1.0", features = ["serde"] }
+arrow-select = "57.1.0"
+datafusion = "51.0.0"
+object_store = { version = "0.12.4", features = [
     "cloud",
     "aws",
     "azure",
     "gcp",
 ] }
-parquet = "54.0.0"
+parquet = "57.1.0"
 
 # Web server and HTTP-related
 actix-cors = "0.7.0"
@@ -33,8 +36,15 @@ actix-web-prometheus = { version = "0.1" }
 actix-web-static-files = "4.0"
 http = "0.2.7"
 http-auth-basic = "0.3.3"
-tonic = { version = "0.12.3", features = ["tls", "transport", "gzip", "zstd"] }
-tonic-web = "0.12.3"
+tonic = { version = "0.14.1", features = [
+    "tls-aws-lc",
+    "tls-native-roots",
+    "transport",
+    "gzip",
+    "zstd",
+] }
+tonic-prost = "0.14.1"
+tonic-web = "0.14.1"
 tower-http = { version = "0.6.1", features = ["cors"] }
 url = "2.4.0"
 
@@ -58,6 +68,7 @@ sha2 = "0.10.8"
 
 # Serialization and Data Formats
 byteorder = "1.4.3"
+erased-serde = "=0.3.16"
 serde = { version = "1.0", features = ["rc", "derive"] }
 serde_json = "1.0"
 serde_repr = "0.1.17"
@@ -75,8 +86,23 @@ tokio = { version = "^1.43", default-features = false, features = [
 tokio-stream = { version = "0.1", features = ["fs"] }
 tokio-util = { version = "0.7" }
 
-# Logging and Metrics
-opentelemetry-proto = { git = "https://github.com/parseablehq/opentelemetry-rust", branch = "fix-metrics-u64-serialization" }
+# # Logging and Metrics
+# opentelemetry-proto = { version = "0.30.0", features = [
+#     "gen-tonic",
+#     "with-serde",
+#     "logs",
+#     "metrics",
+#     "trace",
+# ] }
+
+# add custom branch with fix until it gets merged
+opentelemetry-proto = { git = "https://github.com/parmesant/opentelemetry-rust/", rev = "45fb828769e6ade96d56ca1f5fa14cf0986a5341", features = [
+    "gen-tonic",
+    "with-serde",
+    "logs",
+    "metrics",
+    "trace",
+] }
 prometheus = { version = "0.13", features = ["process"] }
 prometheus-parse = "0.2.5"
 tracing = "0.1"
@@ -117,13 +143,15 @@ clokwerk = "0.4"
 derive_more = { version = "1", features = ["full"] }
 itertools = "0.14"
 once_cell = "1.20"
+rayon = "1.8"
 rand = "0.8.5"
-regex = "1.7.3"
+regex = "1.12.2"
 reqwest = { version = "0.11.27", default-features = false, features = [
     "rustls-tls",
     "json",
     "gzip",
     "brotli",
+    "stream",
 ] } # cannot update cause rustls is not latest `see rustls`
 semver = "1.0"
 static-files = "0.2"
@@ -133,6 +161,8 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 futures-core = "0.3.31"
 tempfile = "3.20.0"
 lazy_static = "1.4.0"
+prost = "0.13.1"
+dashmap = "6.1.0"
 
 [build-dependencies]
 cargo_toml = "0.21"
@@ -146,12 +176,12 @@ anyhow = "1.0"
 
 [dev-dependencies]
 rstest = "0.23.0"
-arrow = "54.0.0"
+arrow = "57.1.0"
 temp-dir = "0.1.14"
 
 [package.metadata.parseable_ui]
-assets-url = "https://parseable-prism-build.s3.us-east-2.amazonaws.com/v2.4.0/build.zip"
-assets-sha1 = "04632472a2174328cfea7a91a175f6f3795d7152"
+assets-url = "https://parseable-prism-build.s3.us-east-2.amazonaws.com/v2.5.4/build.zip"
+assets-sha1 = "d327de589ba17e17464affe517ffb2e0d3af8f8e"
 
 [features]
 debug = []

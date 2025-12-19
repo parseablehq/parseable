@@ -19,7 +19,6 @@
 pub mod about;
 pub mod alerts;
 pub mod analytics;
-pub mod audit;
 pub mod banner;
 pub mod catalog;
 mod cli;
@@ -32,6 +31,7 @@ pub mod handlers;
 pub mod hottier;
 mod livetail;
 mod metadata;
+pub mod metastore;
 pub mod metrics;
 pub mod migration;
 pub mod oidc;
@@ -48,14 +48,17 @@ pub mod storage;
 pub mod sync;
 pub mod users;
 pub mod utils;
-mod validator;
+pub mod validator;
 
 use std::time::Duration;
 
+// Public re-exports of crates being used in enterprise
+pub use datafusion;
 pub use handlers::http::modal::{
     ParseableServer, ingest_server::IngestServer, query_server::QueryServer, server::Server,
 };
 use once_cell::sync::Lazy;
+pub use opentelemetry_proto;
 use parseable::PARSEABLE;
 use reqwest::{Client, ClientBuilder};
 

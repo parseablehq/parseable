@@ -16,7 +16,10 @@
  *
  */
 
+use std::collections::HashSet;
+
 use error::HotTierValidationError;
+use once_cell::sync::Lazy;
 
 use self::error::{StreamNameValidationError, UsernameValidationError};
 use crate::hottier::MIN_STREAM_HOT_TIER_SIZE_BYTES;
@@ -67,21 +70,65 @@ pub fn stream_name(
     Ok(())
 }
 
-// validate if username is valid
-// username should be between 3 and 64 characters long
-// username should contain only alphanumeric characters or underscores
-// username should be lowercase
-pub fn user_name(username: &str) -> Result<(), UsernameValidationError> {
-    // Check if the username meets the required criteria
-    if username.len() < 3 || username.len() > 64 {
+static RESERVED_NAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    [
+        "admin",
+        "user",
+        "role",
+        "null",
+        "undefined",
+        "none",
+        "empty",
+        "password",
+        "username",
+    ]
+    .into_iter()
+    .collect()
+});
+
+pub fn user_role_name(name: &str) -> Result<(), UsernameValidationError> {
+    // Normalize username to lowercase for validation
+    let name = name.to_lowercase();
+
+    // Check length constraints
+    if name.len() < 3 || name.len() > 64 {
         return Err(UsernameValidationError::InvalidLength);
     }
-    // Username should contain only alphanumeric characters or underscores
-    if !username
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+
+    // Check if name is reserved
+    if RESERVED_NAMES.contains(name.as_str()) {
+        return Err(UsernameValidationError::ReservedName);
+    }
+
+    let chars: Vec<char> = name.chars().collect();
+
+    // Check last character (must be alphanumeric)
+    if let Some(last_char) = chars.last()
+        && !last_char.is_ascii_alphanumeric()
     {
-        return Err(UsernameValidationError::SpecialChar);
+        return Err(UsernameValidationError::InvalidEndChar);
+    }
+
+    // Check all characters and consecutive special chars
+    let mut prev_was_special = false;
+    for &ch in &chars {
+        match ch {
+            // Allow alphanumeric
+            c if c.is_ascii_alphanumeric() => {
+                prev_was_special = false;
+            }
+            // Allow specific special characters
+            '_' | '-' | '.' | '@' => {
+                if prev_was_special {
+                    return Err(UsernameValidationError::ConsecutiveSpecialChars);
+                }
+                prev_was_special = true;
+            }
+            // Reject any other character
+            _ => {
+                return Err(UsernameValidationError::InvalidCharacter);
+            }
+        }
     }
 
     Ok(())
@@ -138,9 +185,21 @@ pub mod error {
         #[error("Username should be between 3 and 64 chars long")]
         InvalidLength,
         #[error(
-            "Username contains invalid characters. Please use lowercase, alphanumeric or underscore"
+            "Username contains invalid characters. Only alphanumeric characters and special characters (underscore, hyphen and dot) are allowed"
         )]
         SpecialChar,
+        #[error("Username should start with an alphanumeric character")]
+        InvalidStartChar,
+        #[error("Username should end with an alphanumeric character")]
+        InvalidEndChar,
+        #[error(
+            "Username contains invalid characters. Only alphanumeric characters and special characters (underscore, hyphen and dot) are allowed"
+        )]
+        InvalidCharacter,
+        #[error("Username contains consecutive special characters")]
+        ConsecutiveSpecialChars,
+        #[error("Username is reserved")]
+        ReservedName,
     }
 
     #[derive(Debug, thiserror::Error)]

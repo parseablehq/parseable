@@ -38,7 +38,7 @@ pub async fn retention_cleanup(
     Json(date_list): Json<Vec<String>>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
-    let storage = PARSEABLE.storage.get_object_store();
+    let storage = PARSEABLE.storage().get_object_store();
     // if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
@@ -51,10 +51,18 @@ pub async fn retention_cleanup(
         return Err(StreamNotFound(stream_name.clone()).into());
     }
 
-    let res = remove_manifest_from_snapshot(storage.clone(), &stream_name, date_list).await;
-    let first_event_at: Option<String> = res.unwrap_or_default();
+    if let Err(err) = remove_manifest_from_snapshot(storage.clone(), &stream_name, date_list).await
+    {
+        return Err(StreamError::Custom {
+            msg: format!(
+                "failed to update snapshot during retention cleanup for stream {}: {}",
+                stream_name, err
+            ),
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+        });
+    }
 
-    Ok((first_event_at, StatusCode::OK))
+    Ok(actix_web::HttpResponse::NoContent().finish())
 }
 
 pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {

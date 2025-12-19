@@ -20,8 +20,9 @@ use std::sync::Arc;
 use std::thread;
 
 use crate::handlers::airplane;
-use crate::handlers::http::cluster::{self, init_cluster_metrics_schedular};
+use crate::handlers::http::cluster;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
+use crate::handlers::http::modal::initialize_hot_tier_metadata_on_startup;
 use crate::handlers::http::{MAX_EVENT_PAYLOAD_SIZE, logstream};
 use crate::handlers::http::{base_path, prism_base_path, resource_check};
 use crate::handlers::http::{rbac, role};
@@ -36,20 +37,19 @@ use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use bytes::Bytes;
 use tokio::sync::{OnceCell, oneshot};
-use tracing::info;
 
 use crate::Server;
 use crate::parseable::PARSEABLE;
 
 use super::query::{querier_ingest, querier_logstream, querier_rbac, querier_role};
-use super::{NodeType, OpenIdClient, ParseableServer, QuerierMetadata, load_on_init};
+use super::{NodeType, ParseableServer, QuerierMetadata, load_on_init};
 
 pub struct QueryServer;
 pub static QUERIER_META: OnceCell<Arc<QuerierMetadata>> = OnceCell::const_new();
 #[async_trait]
 impl ParseableServer for QueryServer {
     // configure the api routes
-    fn configure_routes(config: &mut ServiceConfig, oidc_client: Option<OpenIdClient>) {
+    fn configure_routes(config: &mut ServiceConfig) {
         config
             .service(
                 web::scope(&base_path())
@@ -66,7 +66,7 @@ impl ParseableServer for QueryServer {
                     .service(Server::get_dashboards_webscope())
                     .service(Server::get_filters_webscope())
                     .service(Server::get_llm_webscope())
-                    .service(Server::get_oauth_webscope(oidc_client))
+                    .service(Server::get_oauth_webscope())
                     .service(Self::get_user_role_webscope())
                     .service(Server::get_roles_webscope())
                     .service(Server::get_counts_webscope().wrap(from_fn(
@@ -106,7 +106,6 @@ impl ParseableServer for QueryServer {
         prometheus: &PrometheusMetrics,
         shutdown_rx: oneshot::Receiver<()>,
     ) -> anyhow::Result<()> {
-        PARSEABLE.storage.register_store_metrics(prometheus);
         // write the ingestor metadata to storage
         QUERIER_META
             .get_or_init(|| async {
@@ -130,10 +129,6 @@ impl ParseableServer for QueryServer {
             analytics::init_analytics_scheduler()?;
         }
 
-        if init_cluster_metrics_schedular().is_ok() {
-            info!("Cluster metrics scheduler started successfully");
-        }
-
         // local sync on init
         let startup_sync_handle = tokio::spawn(async {
             if let Err(e) = sync_start().await {
@@ -141,7 +136,11 @@ impl ParseableServer for QueryServer {
             }
         });
         if let Some(hot_tier_manager) = HotTierManager::global() {
-            hot_tier_manager.put_internal_stream_hot_tier().await?;
+            // Initialize hot tier metadata files for streams that have hot tier configuration
+            // but don't have local hot tier metadata files yet
+            if let Err(e) = initialize_hot_tier_metadata_on_startup(hot_tier_manager).await {
+                tracing::warn!("Failed to initialize hot tier metadata on startup: {}", e);
+            }
             hot_tier_manager.download_from_s3()?;
         };
 
@@ -194,13 +193,13 @@ impl QueryServer {
             )
             .service(
                 web::resource("/{username}")
-                    // PUT /user/{username} => Create a new user
+                    // POST /user/{username} => Create a new user
                     .route(
                         web::post()
                             .to(querier_rbac::post_user)
                             .authorize(Action::PutUser),
                     )
-                    // DELETE /user/{username} => Delete a user
+                    // DELETE /user/{userid} => Delete a user
                     .route(
                         web::delete()
                             .to(querier_rbac::delete_user)
@@ -209,15 +208,15 @@ impl QueryServer {
                     .wrap(DisAllowRootUser),
             )
             .service(
-                web::resource("/{username}/role").route(
+                web::resource("/{userid}/role").route(
                     web::get()
                         .to(rbac::get_role)
                         .authorize_for_user(Action::GetUserRoles),
                 ),
             )
             .service(
-                web::resource("/{username}/role/add")
-                    // PATCH /user/{username}/role/add => Add roles to a user
+                web::resource("/{userid}/role/add")
+                    // PATCH /user/{userid}/role/add => Add roles to a user
                     .route(
                         web::patch()
                             .to(rbac::add_roles_to_user)
@@ -226,8 +225,8 @@ impl QueryServer {
                     ),
             )
             .service(
-                web::resource("/{username}/role/remove")
-                    // PATCH /user/{username}/role/remove => Remove roles from a user
+                web::resource("/{userid}/role/remove")
+                    // PATCH /user/{userid}/role/remove => Remove roles from a user
                     .route(
                         web::patch()
                             .to(rbac::remove_roles_from_user)

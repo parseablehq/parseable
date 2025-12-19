@@ -32,6 +32,7 @@ use crate::{
         role::model::DefaultPrivilege,
     },
     storage::{self, ObjectStorageError, StorageMetadata},
+    validator::{self, error::UsernameValidationError},
 };
 
 // Handler for PUT /api/v1/role/{name}
@@ -41,6 +42,8 @@ pub async fn put(
     Json(privileges): Json<Vec<DefaultPrivilege>>,
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
+    // validate the role name
+    validator::user_role_name(&name).map_err(RoleError::ValidationError)?;
     let mut metadata = get_metadata().await?;
     metadata.roles.insert(name.clone(), privileges.clone());
 
@@ -50,21 +53,21 @@ pub async fn put(
     // refresh the sessions of all users using this role
     // for this, iterate over all user_groups and users and create a hashset of users
     let mut session_refresh_users: HashSet<String> = HashSet::new();
-    for user_group in read_user_groups().values().cloned() {
+    for user_group in read_user_groups().values() {
         if user_group.roles.contains(&name) {
-            session_refresh_users.extend(user_group.users);
+            session_refresh_users.extend(user_group.users.iter().map(|u| u.userid().to_string()));
         }
     }
 
     // iterate over all users to see if they have this role
-    for user in users().values().cloned() {
+    for user in users().values() {
         if user.roles.contains(&name) {
-            session_refresh_users.insert(user.username().to_string());
+            session_refresh_users.insert(user.userid().to_string());
         }
     }
 
-    for username in session_refresh_users {
-        mut_sessions().remove_user(&username);
+    for userid in session_refresh_users {
+        mut_sessions().remove_user(&userid);
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -142,12 +145,12 @@ pub async fn get_default() -> Result<impl Responder, RoleError> {
 
 async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
     let metadata = PARSEABLE
-        .storage
-        .get_object_store()
-        .get_metadata()
-        .await?
-        .expect("metadata is initialized");
-    Ok(metadata)
+        .metastore
+        .get_parseable_metadata()
+        .await
+        .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
+        .ok_or_else(|| ObjectStorageError::Custom("parseable metadata not initialized".into()))?;
+    Ok(serde_json::from_slice::<StorageMetadata>(&metadata)?)
 }
 
 async fn put_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageError> {
@@ -168,6 +171,8 @@ pub enum RoleError {
     SerdeError(#[from] serde_json::Error),
     #[error("Network Error: {0}")]
     Network(#[from] reqwest::Error),
+    #[error("Validation Error: {0}")]
+    ValidationError(#[from] UsernameValidationError),
 }
 
 impl actix_web::ResponseError for RoleError {
@@ -178,6 +183,7 @@ impl actix_web::ResponseError for RoleError {
             Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::SerdeError(_) => StatusCode::BAD_REQUEST,
             Self::Network(_) => StatusCode::BAD_GATEWAY,
+            Self::ValidationError(_) => StatusCode::BAD_REQUEST,
         }
     }
 

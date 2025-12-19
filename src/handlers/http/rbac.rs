@@ -21,16 +21,16 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     rbac::{
         self, Users,
-        map::{read_user_groups, roles},
+        map::{read_user_groups, roles, users},
         role::model::DefaultPrivilege,
-        user,
+        user::{self, UserType},
         utils::to_prism_user,
     },
     storage::ObjectStorageError,
     validator::{self, error::UsernameValidationError},
 };
 use actix_web::{
-    Responder,
+    HttpResponse, Responder,
     http::header::ContentType,
     web::{self, Path},
 };
@@ -42,8 +42,8 @@ use tokio::sync::Mutex;
 
 use super::modal::utils::rbac_utils::{get_metadata, put_metadata};
 
-// async aware lock for updating storage metadata and user map atomicically
-static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
+// async aware lock for updating storage metadata and user map atomically
+pub(crate) static UPDATE_LOCK: Mutex<()> = Mutex::const_new(());
 
 #[derive(serde::Serialize)]
 struct User {
@@ -59,20 +59,20 @@ impl From<&user::User> for User {
         };
 
         User {
-            id: user.username().to_owned(),
+            id: user.userid().to_owned(),
             method,
         }
     }
 }
 
 // Handler for GET /api/v1/user
-// returns list of all registerd users
+// returns list of all registered users
 pub async fn list_users() -> impl Responder {
     web::Json(Users.collect_user::<User>())
 }
 
 /// Handler for GET /api/v1/users
-/// returns list of all registerd users along with their roles and other info
+/// returns list of all registered users along with their roles and other info
 pub async fn list_users_prism() -> impl Responder {
     // get all users
     let prism_users = rbac::map::users().values().map(to_prism_user).collect_vec();
@@ -101,37 +101,32 @@ pub async fn post_user(
     body: Option<web::Json<serde_json::Value>>,
 ) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
-
+    validator::user_role_name(&username)?;
     let mut metadata = get_metadata().await?;
 
-    validator::user_name(&username)?;
     let user_roles: HashSet<String> = if let Some(body) = body {
         serde_json::from_value(body.into_inner())?
     } else {
-        return Err(RBACError::RoleValidationError);
+        HashSet::new()
     };
 
-    if user_roles.is_empty() {
-        return Err(RBACError::RoleValidationError);
-    } else {
-        let mut non_existent_roles = Vec::new();
-        for role in &user_roles {
-            if !roles().contains_key(role) {
-                non_existent_roles.push(role.clone());
-            }
-        }
-        if !non_existent_roles.is_empty() {
-            return Err(RBACError::RolesDoNotExist(non_existent_roles));
+    let mut non_existent_roles = Vec::new();
+    for role in &user_roles {
+        if !roles().contains_key(role) {
+            non_existent_roles.push(role.clone());
         }
     }
-    let _ = UPDATE_LOCK.lock().await;
+    if !non_existent_roles.is_empty() {
+        return Err(RBACError::RolesDoNotExist(non_existent_roles));
+    }
+    let _guard = UPDATE_LOCK.lock().await;
     if Users.contains(&username)
-        || metadata
-            .users
-            .iter()
-            .any(|user| user.username() == username)
+        || metadata.users.iter().any(|user| match &user.ty {
+            UserType::Native(basic) => basic.username == username,
+            UserType::OAuth(_) => false, // OAuth users should be created differently
+        })
     {
-        return Err(RBACError::UserExists);
+        return Err(RBACError::UserExists(username));
     }
 
     let (user, password) = user::User::new_basic(username.clone());
@@ -141,12 +136,13 @@ pub async fn post_user(
     put_metadata(&metadata).await?;
     let created_role = user_roles.clone();
     Users.put_user(user.clone());
-
-    add_roles_to_user(
-        web::Path::<String>::from(username.clone()),
-        web::Json(created_role),
-    )
-    .await?;
+    if !created_role.is_empty() {
+        add_roles_to_user(
+            web::Path::<String>::from(username.clone()),
+            web::Json(created_role),
+        )
+        .await?;
+    }
 
     Ok(password)
 }
@@ -159,7 +155,7 @@ pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Respo
     let mut new_hash = String::default();
     let mut metadata = get_metadata().await?;
 
-    let _ = UPDATE_LOCK.lock().await;
+    let _guard = UPDATE_LOCK.lock().await;
     let user::PassCode { password, hash } = user::Basic::gen_new_password();
     new_password.clone_from(&password);
     new_hash.clone_from(&hash);
@@ -182,14 +178,15 @@ pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Respo
     Ok(new_password)
 }
 
-// Handler for GET /api/v1/user/{username}/role
+// Handler for GET /api/v1/user/{userid}/role
 // returns role for a user if that user exists
-pub async fn get_role(username: web::Path<String>) -> Result<impl Responder, RBACError> {
-    if !Users.contains(&username) {
+pub async fn get_role(userid: web::Path<String>) -> Result<impl Responder, RBACError> {
+    let userid = userid.into_inner();
+    if !Users.contains(&userid) {
         return Err(RBACError::UserDoesNotExist);
     };
     let direct_roles: HashMap<String, Vec<DefaultPrivilege>> = Users
-        .get_role(&username)
+        .get_role(&userid)
         .iter()
         .filter_map(|role_name| {
             roles()
@@ -200,7 +197,7 @@ pub async fn get_role(username: web::Path<String>) -> Result<impl Responder, RBA
 
     let mut group_roles: HashMap<String, HashMap<String, Vec<DefaultPrivilege>>> = HashMap::new();
     // user might be part of some user groups, fetch the roles from there as well
-    for user_group in Users.get_user_groups(&username) {
+    for user_group in Users.get_user_groups(&userid) {
         if let Some(group) = read_user_groups().get(&user_group) {
             let ug_roles: HashMap<String, Vec<DefaultPrivilege>> = group
                 .roles
@@ -221,41 +218,54 @@ pub async fn get_role(username: web::Path<String>) -> Result<impl Responder, RBA
     Ok(web::Json(res))
 }
 
-// Handler for DELETE /api/v1/user/delete/{username}
-pub async fn delete_user(username: web::Path<String>) -> Result<impl Responder, RBACError> {
-    let username = username.into_inner();
-
+// Handler for DELETE /api/v1/user/delete/{userid}
+pub async fn delete_user(userid: web::Path<String>) -> Result<impl Responder, RBACError> {
+    let userid = userid.into_inner();
+    let _guard = UPDATE_LOCK.lock().await;
     // if user is a part of any groups then don't allow deletion
-    if !Users.get_user_groups(&username).is_empty() {
+    if !Users.get_user_groups(&userid).is_empty() {
         return Err(RBACError::InvalidDeletionRequest(format!(
-            "User: {username} should not be a part of any groups"
+            "User: {userid} should not be a part of any groups"
         )));
     }
     // fail this request if the user does not exists
-    if !Users.contains(&username) {
+    if !Users.contains(&userid) {
         return Err(RBACError::UserDoesNotExist);
     };
-    let _ = UPDATE_LOCK.lock().await;
+
+    // find username by userid, for native users, username is userid, for oauth users, we need to look up
+    let username = if let Some(user) = users().get(&userid) {
+        user.username_by_userid()
+    } else {
+        return Err(RBACError::UserDoesNotExist);
+    };
 
     // delete from parseable.json first
     let mut metadata = get_metadata().await?;
-    metadata.users.retain(|user| user.username() != username);
+    metadata.users.retain(|user| user.userid() != userid);
     put_metadata(&metadata).await?;
 
     // update in mem table
-    Users.delete_user(&username);
-    Ok(format!("deleted user: {username}"))
+    Users.delete_user(&userid);
+    Ok(HttpResponse::Ok().json(format!("deleted user: {username}")))
 }
 
-// Handler PATCH /user/{username}/role/add => Add roles to a user
+// Handler PATCH /user/{userid}/role/add => Add roles to a user
 pub async fn add_roles_to_user(
-    username: web::Path<String>,
+    userid: web::Path<String>,
     roles_to_add: web::Json<HashSet<String>>,
-) -> Result<String, RBACError> {
-    let username = username.into_inner();
+) -> Result<impl Responder, RBACError> {
+    let userid = userid.into_inner();
     let roles_to_add = roles_to_add.into_inner();
 
-    if !Users.contains(&username) {
+    if !Users.contains(&userid) {
+        return Err(RBACError::UserDoesNotExist);
+    };
+
+    // find username by userid, for native users, username is userid, for oauth users, we need to look up
+    let username = if let Some(user) = users().get(&userid) {
+        user.username_by_userid()
+    } else {
         return Err(RBACError::UserDoesNotExist);
     };
 
@@ -277,7 +287,7 @@ pub async fn add_roles_to_user(
     if let Some(user) = metadata
         .users
         .iter_mut()
-        .find(|user| user.username() == username)
+        .find(|user| user.userid() == userid)
     {
         user.roles.extend(roles_to_add.clone());
     } else {
@@ -287,20 +297,27 @@ pub async fn add_roles_to_user(
 
     put_metadata(&metadata).await?;
     // update in mem table
-    Users.add_roles(&username.clone(), roles_to_add);
+    Users.add_roles(&userid.clone(), roles_to_add);
 
-    Ok(format!("Roles updated successfully for {username}"))
+    Ok(HttpResponse::Ok().json(format!("Roles updated successfully for {username}")))
 }
 
-// Handler PATCH /user/{username}/role/remove => Remove roles from a user
+// Handler PATCH /user/{userid}/role/remove => Remove roles from a user
 pub async fn remove_roles_from_user(
-    username: web::Path<String>,
+    userid: web::Path<String>,
     roles_to_remove: web::Json<HashSet<String>>,
-) -> Result<String, RBACError> {
-    let username = username.into_inner();
+) -> Result<impl Responder, RBACError> {
+    let userid = userid.into_inner();
     let roles_to_remove = roles_to_remove.into_inner();
 
-    if !Users.contains(&username) {
+    if !Users.contains(&userid) {
+        return Err(RBACError::UserDoesNotExist);
+    };
+
+    // find username by userid, for native users, username is userid, for oauth users, we need to look up
+    let username = if let Some(user) = users().get(&userid) {
+        user.username_by_userid()
+    } else {
         return Err(RBACError::UserDoesNotExist);
     };
 
@@ -318,7 +335,7 @@ pub async fn remove_roles_from_user(
     }
 
     // check for role not present with user
-    let user_roles: HashSet<String> = HashSet::from_iter(Users.get_role(&username));
+    let user_roles: HashSet<String> = HashSet::from_iter(Users.get_role(&userid));
     let roles_not_with_user: HashSet<String> =
         HashSet::from_iter(roles_to_remove.difference(&user_roles).cloned());
     if !roles_not_with_user.is_empty() {
@@ -332,7 +349,7 @@ pub async fn remove_roles_from_user(
     if let Some(user) = metadata
         .users
         .iter_mut()
-        .find(|user| user.username() == username)
+        .find(|user| user.userid() == userid)
     {
         let diff: HashSet<String> =
             HashSet::from_iter(user.roles.difference(&roles_to_remove).cloned());
@@ -344,13 +361,13 @@ pub async fn remove_roles_from_user(
 
     put_metadata(&metadata).await?;
     // update in mem table
-    Users.remove_roles(&username.clone(), roles_to_remove);
+    Users.remove_roles(&userid.clone(), roles_to_remove);
 
-    Ok(format!("Roles updated successfully for {username}"))
+    Ok(HttpResponse::Ok().json(format!("Roles updated successfully for {username}")))
 }
 
 #[derive(Debug, Serialize)]
-#[serde(rename = "camelCase")]
+#[serde(rename_all = "camelCase")]
 pub struct InvalidUserGroupError {
     pub valid_name: bool,
     pub non_existent_roles: Vec<String>,
@@ -362,8 +379,8 @@ pub struct InvalidUserGroupError {
 
 #[derive(Debug, thiserror::Error)]
 pub enum RBACError {
-    #[error("User exists already")]
-    UserExists,
+    #[error("User {0} already exists")]
+    UserExists(String),
     #[error("User does not exist")]
     UserDoesNotExist,
     #[error("{0}")]
@@ -390,7 +407,7 @@ pub enum RBACError {
     InvalidUserGroupRequest(Box<InvalidUserGroupError>),
     #[error("{0}")]
     InvalidSyncOperation(String),
-    #[error("User group `{0}` is still being used")]
+    #[error("UserGroup `{0}` is still in use")]
     UserGroupNotEmpty(String),
     #[error("Resource `{0}` is still in use")]
     ResourceInUse(String),
@@ -401,7 +418,7 @@ pub enum RBACError {
 impl actix_web::ResponseError for RBACError {
     fn status_code(&self) -> http::StatusCode {
         match self {
-            Self::UserExists => StatusCode::BAD_REQUEST,
+            Self::UserExists(_) => StatusCode::BAD_REQUEST,
             Self::UserDoesNotExist => StatusCode::NOT_FOUND,
             Self::SerdeError(_) => StatusCode::BAD_REQUEST,
             Self::ValidationError(_) => StatusCode::BAD_REQUEST,

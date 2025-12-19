@@ -30,7 +30,7 @@ use crate::{
     handlers::http::{
         cluster::{
             fetch_stats_from_ingestors,
-            utils::{IngestionStats, QueriedStats, StorageStats, merge_quried_stats},
+            utils::{IngestionStats, QueriedStats, StorageStats, merge_queried_stats},
         },
         logstream::error::StreamError,
         query::{QueryError, update_schema_when_distributed},
@@ -136,7 +136,7 @@ async fn get_stats(stream_name: &str) -> Result<QueriedStats, PrismLogstreamErro
 
     let stats = if let Some(mut ingestor_stats) = ingestor_stats {
         ingestor_stats.push(stats);
-        merge_quried_stats(ingestor_stats)
+        merge_queried_stats(ingestor_stats)?
     } else {
         stats
     };
@@ -144,7 +144,7 @@ async fn get_stats(stream_name: &str) -> Result<QueriedStats, PrismLogstreamErro
     Ok(stats)
 }
 
-async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, StreamError> {
+pub async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, StreamError> {
     // For query mode, if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
@@ -152,20 +152,21 @@ async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, StreamE
         return Err(StreamNotFound(stream_name.to_owned()).into());
     }
 
-    let storage = PARSEABLE.storage.get_object_store();
-    // if first_event_at is not found in memory map, check if it exists in the storage
-    // if it exists in the storage, update the first_event_at in memory map
-    let stream_first_event_at = if let Some(first_event_at) =
-        PARSEABLE.get_stream(stream_name)?.get_first_event()
+    let storage = PARSEABLE.storage().get_object_store();
+
+    // Get first and latest event timestamps from storage
+    let (stream_first_event_at, stream_latest_event_at) = match storage
+        .get_first_and_latest_event_from_storage(stream_name)
+        .await
     {
-        Some(first_event_at)
-    } else if let Ok(Some(first_event_at)) = storage.get_first_event_from_storage(stream_name).await
-    {
-        PARSEABLE
-            .update_first_event_at(stream_name, &first_event_at)
-            .await
-    } else {
-        None
+        Ok(result) => result,
+        Err(err) => {
+            warn!(
+                "failed to fetch first/latest event timestamps from storage for stream {}: {}",
+                stream_name, err
+            );
+            (None, None)
+        }
     };
 
     let hash_map = PARSEABLE.streams.read().unwrap();
@@ -180,6 +181,7 @@ async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, StreamE
         stream_type: stream_meta.stream_type,
         created_at: stream_meta.created_at.clone(),
         first_event_at: stream_first_event_at,
+        latest_event_at: stream_latest_event_at,
         time_partition: stream_meta.time_partition.clone(),
         time_partition_limit: stream_meta
             .time_partition_limit
@@ -187,6 +189,7 @@ async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, StreamE
         custom_partition: stream_meta.custom_partition.clone(),
         static_schema_flag: stream_meta.static_schema_flag,
         log_source: stream_meta.log_source.clone(),
+        telemetry_type: stream_meta.telemetry_type,
     };
 
     Ok(stream_info)
@@ -215,7 +218,7 @@ pub struct PrismDatasetResponse {
 
 /// Request parameters for retrieving Prism dataset information.
 /// Defines which streams to query
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PrismDatasetRequest {
     /// List of stream names to query
@@ -348,7 +351,7 @@ impl PrismDatasetRequest {
             stream: stream.to_owned(),
             start_time: "1h".to_owned(),
             end_time: "now".to_owned(),
-            num_bins: 10,
+            num_bins: Some(10),
             conditions: None,
         };
 
@@ -378,6 +381,10 @@ pub enum PrismLogstreamError {
     Execute(#[from] ExecuteError),
     #[error("Auth: {0}")]
     Auth(#[from] actix_web::Error),
+    #[error("SerdeError: {0}")]
+    SerdeError(#[from] serde_json::Error),
+    #[error("ReqwestError: {0}")]
+    ReqwestError(#[from] reqwest::Error),
 }
 
 impl actix_web::ResponseError for PrismLogstreamError {
@@ -390,6 +397,8 @@ impl actix_web::ResponseError for PrismLogstreamError {
             PrismLogstreamError::Query(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PrismLogstreamError::TimeParse(_) => StatusCode::NOT_FOUND,
             PrismLogstreamError::Execute(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PrismLogstreamError::SerdeError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            PrismLogstreamError::ReqwestError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PrismLogstreamError::Auth(_) => StatusCode::UNAUTHORIZED,
         }
     }

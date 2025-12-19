@@ -18,7 +18,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use actix_web::web::{Json, Path};
+use actix_web::web::{self, Json, Path};
 use actix_web::{HttpRequest, HttpResponse, http::header::ContentType};
 use arrow_array::RecordBatch;
 use bytes::Bytes;
@@ -29,8 +29,13 @@ use crate::event::error::EventError;
 use crate::event::format::known_schema::{self, KNOWN_SCHEMA_LIST};
 use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
 use crate::event::{self, FORMAT_KEY, USER_AGENT_KEY};
-use crate::handlers::{EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY};
+use crate::handlers::http::modal::utils::ingest_utils::validate_stream_for_ingestion;
+use crate::handlers::{
+    CONTENT_TYPE_JSON, CONTENT_TYPE_PROTOBUF, EXTRACT_LOG_KEY, LOG_SOURCE_KEY,
+    STREAM_NAME_HEADER_KEY, TELEMETRY_TYPE_KEY, TelemetryType,
+};
 use crate::metadata::SchemaVersion;
+use crate::metastore::MetastoreError;
 use crate::option::Mode;
 use crate::otel::logs::OTEL_LOG_KNOWN_FIELD_LIST;
 use crate::otel::metrics::OTEL_METRICS_KNOWN_FIELD_LIST;
@@ -68,6 +73,12 @@ pub async fn ingest(
         .and_then(|h| h.to_str().ok())
         .map_or(LogSource::default(), LogSource::from);
 
+    let telemetry_type = req
+        .headers()
+        .get(TELEMETRY_TYPE_KEY)
+        .and_then(|h| h.to_str().ok())
+        .map_or(TelemetryType::default(), TelemetryType::from);
+
     let extract_log = req
         .headers()
         .get(EXTRACT_LOG_KEY)
@@ -102,27 +113,19 @@ pub async fn ingest(
             StreamType::UserDefined,
             None,
             vec![log_source_entry.clone()],
+            telemetry_type,
         )
         .await?;
 
     //if stream exists, fetch the stream log source
     //return error if the stream log source is otel traces or otel metrics
-    if let Ok(stream) = PARSEABLE.get_stream(&stream_name) {
-        stream
-            .get_log_source()
-            .iter()
-            .find(|&stream_log_source_entry| {
-                stream_log_source_entry.log_source_format != LogSource::OtelTraces
-                    && stream_log_source_entry.log_source_format != LogSource::OtelMetrics
-            })
-            .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
-    }
+    validate_stream_for_ingestion(&stream_name)?;
 
     PARSEABLE
         .add_update_log_source(&stream_name, log_source_entry)
         .await?;
 
-    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
+    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields, None).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -133,9 +136,9 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
     let schema = PARSEABLE.get_stream(&stream_name)?.get_schema_raw();
     let mut p_custom_fields = HashMap::new();
     p_custom_fields.insert(USER_AGENT_KEY.to_string(), "parseable".to_string());
-    p_custom_fields.insert(FORMAT_KEY.to_string(), LogSource::Pmeta.to_string());
+    p_custom_fields.insert(FORMAT_KEY.to_string(), LogSource::Json.to_string());
     // For internal streams, use old schema
-    format::json::Event::new(json.into_inner())
+    format::json::Event::new(json.into_inner(), Utc::now())
         .into_event(
             stream_name,
             size as u64,
@@ -152,13 +155,13 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
     Ok(())
 }
 
-// Handler for POST /v1/logs to ingest OTEL logs
-// ingests events by extracting stream name from header
-// creates if stream does not exist
-pub async fn handle_otel_logs_ingestion(
-    req: HttpRequest,
-    Json(json): Json<StrictValue>,
-) -> Result<HttpResponse, PostError> {
+// Common validation and setup for OTEL ingestion
+pub async fn setup_otel_stream(
+    req: &HttpRequest,
+    expected_log_source: LogSource,
+    known_fields: &[&str],
+    telemetry_type: TelemetryType,
+) -> Result<(String, LogSource, LogSourceEntry, Option<String>), PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
@@ -166,55 +169,127 @@ pub async fn handle_otel_logs_ingestion(
     let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingLogSource));
     };
+
     let log_source = LogSource::from(log_source.to_str().unwrap());
-    if log_source != LogSource::OtelLogs {
-        return Err(PostError::IncorrectLogSource(LogSource::OtelLogs));
+    if log_source != expected_log_source {
+        return Err(PostError::IncorrectLogSource(expected_log_source));
     }
 
     let stream_name = stream_name.to_str().unwrap().to_owned();
 
     let log_source_entry = LogSourceEntry::new(
         log_source.clone(),
-        OTEL_LOG_KNOWN_FIELD_LIST
-            .iter()
-            .map(|&s| s.to_string())
-            .collect(),
+        known_fields.iter().map(|&s| s.to_string()).collect(),
     );
+
     PARSEABLE
         .create_stream_if_not_exists(
             &stream_name,
             StreamType::UserDefined,
             None,
             vec![log_source_entry.clone()],
+            telemetry_type,
         )
         .await?;
-
-    //if stream exists, fetch the stream log source
-    //return error if the stream log source is otel traces or otel metrics
+    let mut time_partition = None;
+    // Validate stream compatibility
     if let Ok(stream) = PARSEABLE.get_stream(&stream_name) {
-        stream
-            .get_log_source()
-            .iter()
-            .find(|&stream_log_source_entry| {
-                stream_log_source_entry.log_source_format != LogSource::OtelTraces
-                    && stream_log_source_entry.log_source_format != LogSource::OtelMetrics
-            })
-            .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
+        match log_source {
+            LogSource::OtelLogs => {
+                // For logs, reject if stream is metrics or traces
+                stream
+                    .get_log_source()
+                    .iter()
+                    .find(|&stream_log_source_entry| {
+                        stream_log_source_entry.log_source_format != LogSource::OtelTraces
+                            && stream_log_source_entry.log_source_format != LogSource::OtelMetrics
+                    })
+                    .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
+            }
+            LogSource::OtelMetrics | LogSource::OtelTraces => {
+                // For metrics/traces, only allow same type
+                stream
+                    .get_log_source()
+                    .iter()
+                    .find(|&stream_log_source_entry| {
+                        stream_log_source_entry.log_source_format == log_source
+                    })
+                    .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
+            }
+            _ => {}
+        }
+
+        time_partition = stream.get_time_partition();
     }
 
     PARSEABLE
-        .add_update_log_source(&stream_name, log_source_entry)
+        .add_update_log_source(&stream_name, log_source_entry.clone())
         .await?;
 
-    let p_custom_fields = get_custom_fields_from_header(&req);
+    Ok((stream_name, log_source, log_source_entry, time_partition))
+}
 
-    flatten_and_push_logs(
-        json.into_inner(),
-        &stream_name,
-        &log_source,
-        &p_custom_fields,
+// Common content processing for OTEL ingestion
+async fn process_otel_content(
+    req: &HttpRequest,
+    body: web::Bytes,
+    stream_name: &str,
+    log_source: &LogSource,
+) -> Result<(), PostError> {
+    let p_custom_fields = get_custom_fields_from_header(req);
+
+    match req
+        .headers()
+        .get("Content-Type")
+        .and_then(|h| h.to_str().ok())
+    {
+        Some(content_type) => {
+            if content_type == CONTENT_TYPE_JSON {
+                flatten_and_push_logs(
+                    serde_json::from_slice(&body)?,
+                    stream_name,
+                    log_source,
+                    &p_custom_fields,
+                    None,
+                )
+                .await?;
+            } else if content_type == CONTENT_TYPE_PROTOBUF {
+                return Err(PostError::Invalid(anyhow::anyhow!(
+                    "Protobuf ingestion is not supported in Parseable OSS"
+                )));
+            } else {
+                return Err(PostError::Invalid(anyhow::anyhow!(
+                    "Unsupported Content-Type: {}. Expected application/json or application/x-protobuf",
+                    content_type
+                )));
+            }
+        }
+        None => {
+            return Err(PostError::Invalid(anyhow::anyhow!(
+                "Missing Content-Type header. Expected application/json or application/x-protobuf"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
+// Handler for POST /v1/logs to ingest OTEL logs
+// ingests events by extracting stream name from header
+// creates if stream does not exist
+pub async fn handle_otel_logs_ingestion(
+    req: HttpRequest,
+    body: web::Bytes,
+) -> Result<HttpResponse, PostError> {
+    let (stream_name, log_source, ..) = setup_otel_stream(
+        &req,
+        LogSource::OtelLogs,
+        &OTEL_LOG_KNOWN_FIELD_LIST,
+        TelemetryType::Logs,
     )
     .await?;
+
+    process_otel_content(&req, body, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -224,62 +299,17 @@ pub async fn handle_otel_logs_ingestion(
 // creates if stream does not exist
 pub async fn handle_otel_metrics_ingestion(
     req: HttpRequest,
-    Json(json): Json<StrictValue>,
+    body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
-    let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
-        return Err(PostError::Header(ParseHeaderError::MissingStreamName));
-    };
-    let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
-        return Err(PostError::Header(ParseHeaderError::MissingLogSource));
-    };
-    let log_source = LogSource::from(log_source.to_str().unwrap());
-    if log_source != LogSource::OtelMetrics {
-        return Err(PostError::IncorrectLogSource(LogSource::OtelMetrics));
-    }
-
-    let stream_name = stream_name.to_str().unwrap().to_owned();
-
-    let log_source_entry = LogSourceEntry::new(
-        log_source.clone(),
-        OTEL_METRICS_KNOWN_FIELD_LIST
-            .iter()
-            .map(|&s| s.to_string())
-            .collect(),
-    );
-    PARSEABLE
-        .create_stream_if_not_exists(
-            &stream_name,
-            StreamType::UserDefined,
-            None,
-            vec![log_source_entry.clone()],
-        )
-        .await?;
-
-    //if stream exists, fetch the stream log source
-    //return error if the stream log source is not otel metrics
-    if let Ok(stream) = PARSEABLE.get_stream(&stream_name) {
-        stream
-            .get_log_source()
-            .iter()
-            .find(|&stream_log_source_entry| {
-                stream_log_source_entry.log_source_format == log_source.clone()
-            })
-            .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
-    }
-
-    PARSEABLE
-        .add_update_log_source(&stream_name, log_source_entry)
-        .await?;
-
-    let p_custom_fields = get_custom_fields_from_header(&req);
-
-    flatten_and_push_logs(
-        json.into_inner(),
-        &stream_name,
-        &log_source,
-        &p_custom_fields,
+    let (stream_name, log_source, ..) = setup_otel_stream(
+        &req,
+        LogSource::OtelMetrics,
+        &OTEL_METRICS_KNOWN_FIELD_LIST,
+        TelemetryType::Metrics,
     )
     .await?;
+
+    process_otel_content(&req, body, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -289,63 +319,17 @@ pub async fn handle_otel_metrics_ingestion(
 // creates if stream does not exist
 pub async fn handle_otel_traces_ingestion(
     req: HttpRequest,
-    Json(json): Json<StrictValue>,
+    body: web::Bytes,
 ) -> Result<HttpResponse, PostError> {
-    let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
-        return Err(PostError::Header(ParseHeaderError::MissingStreamName));
-    };
-
-    let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
-        return Err(PostError::Header(ParseHeaderError::MissingLogSource));
-    };
-    let log_source = LogSource::from(log_source.to_str().unwrap());
-    if log_source != LogSource::OtelTraces {
-        return Err(PostError::IncorrectLogSource(LogSource::OtelTraces));
-    }
-    let stream_name = stream_name.to_str().unwrap().to_owned();
-
-    let log_source_entry = LogSourceEntry::new(
-        log_source.clone(),
-        OTEL_TRACES_KNOWN_FIELD_LIST
-            .iter()
-            .map(|&s| s.to_string())
-            .collect(),
-    );
-
-    PARSEABLE
-        .create_stream_if_not_exists(
-            &stream_name,
-            StreamType::UserDefined,
-            None,
-            vec![log_source_entry.clone()],
-        )
-        .await?;
-
-    //if stream exists, fetch the stream log source
-    //return error if the stream log source is not otel traces
-    if let Ok(stream) = PARSEABLE.get_stream(&stream_name) {
-        stream
-            .get_log_source()
-            .iter()
-            .find(|&stream_log_source_entry| {
-                stream_log_source_entry.log_source_format == log_source.clone()
-            })
-            .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
-    }
-
-    PARSEABLE
-        .add_update_log_source(&stream_name, log_source_entry)
-        .await?;
-
-    let p_custom_fields = get_custom_fields_from_header(&req);
-
-    flatten_and_push_logs(
-        json.into_inner(),
-        &stream_name,
-        &log_source,
-        &p_custom_fields,
+    let (stream_name, log_source, ..) = setup_otel_stream(
+        &req,
+        LogSource::OtelTraces,
+        &OTEL_TRACES_KNOWN_FIELD_LIST,
+        TelemetryType::Traces,
     )
     .await?;
+
+    process_otel_content(&req, body, &stream_name, &log_source).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -410,18 +394,9 @@ pub async fn post_event(
 
     //if stream exists, fetch the stream log source
     //return error if the stream log source is otel traces or otel metrics
-    if let Ok(stream) = PARSEABLE.get_stream(&stream_name) {
-        stream
-            .get_log_source()
-            .iter()
-            .find(|&stream_log_source_entry| {
-                stream_log_source_entry.log_source_format != LogSource::OtelTraces
-                    && stream_log_source_entry.log_source_format != LogSource::OtelMetrics
-            })
-            .ok_or(PostError::IncorrectLogFormat(stream_name.clone()))?;
-    }
+    validate_stream_for_ingestion(&stream_name)?;
 
-    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields).await?;
+    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields, None).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -501,44 +476,56 @@ pub enum PostError {
     InvalidQueryParameter,
     #[error("Missing query parameter")]
     MissingQueryParameter,
+    #[error(transparent)]
+    MetastoreError(#[from] MetastoreError),
 }
 
 impl actix_web::ResponseError for PostError {
     fn status_code(&self) -> http::StatusCode {
+        use PostError::*;
         match self {
-            PostError::SerdeError(_) => StatusCode::BAD_REQUEST,
-            PostError::Header(_) => StatusCode::BAD_REQUEST,
-            PostError::Event(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::Invalid(_) => StatusCode::BAD_REQUEST,
-            PostError::CreateStream(CreateStreamError::StreamNameValidation(_)) => {
-                StatusCode::BAD_REQUEST
-            }
-            PostError::CreateStream(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::StreamNotFound(_) => StatusCode::NOT_FOUND,
-            PostError::CustomError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::NetworkError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::DashboardError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::FiltersError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::StreamError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::JsonFlattenError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            PostError::OtelNotSupported => StatusCode::BAD_REQUEST,
-            PostError::InternalStream(_) => StatusCode::BAD_REQUEST,
-            PostError::IncorrectLogSource(_) => StatusCode::BAD_REQUEST,
-            PostError::IngestionNotAllowed => StatusCode::BAD_REQUEST,
-            PostError::MissingTimePartition(_) => StatusCode::BAD_REQUEST,
-            PostError::KnownFormat(_) => StatusCode::BAD_REQUEST,
-            PostError::IncorrectLogFormat(_) => StatusCode::BAD_REQUEST,
-            PostError::FieldsCountLimitExceeded(_, _, _) => StatusCode::BAD_REQUEST,
-            PostError::InvalidQueryParameter => StatusCode::BAD_REQUEST,
-            PostError::MissingQueryParameter => StatusCode::BAD_REQUEST,
+            SerdeError(_)
+            | Header(_)
+            | Invalid(_)
+            | InternalStream(_)
+            | IncorrectLogSource(_)
+            | IngestionNotAllowed
+            | MissingTimePartition(_)
+            | KnownFormat(_)
+            | IncorrectLogFormat(_)
+            | FieldsCountLimitExceeded(_, _, _)
+            | InvalidQueryParameter
+            | MissingQueryParameter
+            | CreateStream(CreateStreamError::StreamNameValidation(_))
+            | OtelNotSupported => StatusCode::BAD_REQUEST,
+
+            Event(_)
+            | CreateStream(_)
+            | CustomError(_)
+            | NetworkError(_)
+            | ObjectStorageError(_)
+            | DashboardError(_)
+            | FiltersError(_)
+            | StreamError(_)
+            | JsonFlattenError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+
+            StreamNotFound(_) => StatusCode::NOT_FOUND,
+
+            MetastoreError(e) => e.status_code(),
         }
     }
 
     fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
-        actix_web::HttpResponse::build(self.status_code())
-            .insert_header(ContentType::plaintext())
-            .body(self.to_string())
+        match self {
+            PostError::MetastoreError(metastore_error) => {
+                actix_web::HttpResponse::build(metastore_error.status_code())
+                    .insert_header(ContentType::json())
+                    .json(metastore_error.to_detail())
+            }
+            _ => actix_web::HttpResponse::build(self.status_code())
+                .insert_header(ContentType::plaintext())
+                .body(self.to_string()),
+        }
     }
 }
 
@@ -548,6 +535,7 @@ mod tests {
     use arrow::datatypes::Int64Type;
     use arrow_array::{ArrayRef, Float64Array, Int64Array, ListArray, StringArray};
     use arrow_schema::{DataType, Field};
+    use chrono::Utc;
     use serde_json::json;
     use std::{collections::HashMap, sync::Arc};
 
@@ -588,7 +576,7 @@ mod tests {
             "b": "hello",
         });
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(
                 &HashMap::default(),
                 false,
@@ -622,7 +610,7 @@ mod tests {
             "c": null
         });
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(
                 &HashMap::default(),
                 false,
@@ -660,7 +648,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
             .unwrap();
 
@@ -693,7 +681,7 @@ mod tests {
         );
 
         assert!(
-            json::Event::new(json)
+            json::Event::new(json, Utc::now())
                 .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
                 .is_err()
         );
@@ -712,7 +700,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
             .unwrap();
 
@@ -738,7 +726,7 @@ mod tests {
             },
         ]);
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(
                 &HashMap::default(),
                 false,
@@ -792,7 +780,7 @@ mod tests {
             },
         ]);
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(
                 &HashMap::default(),
                 false,
@@ -847,7 +835,7 @@ mod tests {
             .into_iter(),
         );
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
             .unwrap();
 
@@ -897,7 +885,7 @@ mod tests {
         );
 
         assert!(
-            json::Event::new(json)
+            json::Event::new(json, Utc::now())
                 .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
                 .is_err()
         );
@@ -927,7 +915,7 @@ mod tests {
             },
         ]);
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(
                 &HashMap::default(),
                 false,
@@ -1005,7 +993,7 @@ mod tests {
             },
         ]);
 
-        let (rb, _) = json::Event::new(json)
+        let (rb, _) = json::Event::new(json, Utc::now())
             .into_recordbatch(
                 &HashMap::default(),
                 false,

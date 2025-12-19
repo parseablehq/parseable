@@ -28,7 +28,7 @@ use crate::rbac::Users;
 use crate::rbac::role::Action;
 use crate::stats::{Stats, event_labels_date, storage_size_labels_date};
 use crate::storage::retention::Retention;
-use crate::storage::{StreamInfo, StreamType};
+use crate::storage::{ObjectStoreFormat, StreamInfo, StreamType};
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::json::flatten::{
     self, convert_to_array, generic_flattening, has_more_than_max_allowed_levels,
@@ -68,10 +68,10 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
         )
     }
 
-    if let Some(hot_tier_manager) = HotTierManager::global() {
-        if hot_tier_manager.check_stream_hot_tier_exists(&stream_name) {
-            hot_tier_manager.delete_hot_tier(&stream_name).await?;
-        }
+    if let Some(hot_tier_manager) = HotTierManager::global()
+        && hot_tier_manager.check_stream_hot_tier_exists(&stream_name)
+    {
+        hot_tier_manager.delete_hot_tier(&stream_name).await?;
     }
 
     // Delete from memory
@@ -88,11 +88,9 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, StreamError> {
 
     // list all streams from storage
     let res = PARSEABLE
-        .storage
-        .get_object_store()
+        .metastore
         .list_streams()
-        .await
-        .unwrap()
+        .await?
         .into_iter()
         .filter(|logstream| {
             Users.authorize(key.clone(), Action::ListStream, Some(logstream), None)
@@ -188,7 +186,6 @@ pub async fn put_stream(
     body: Bytes,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
-
     PARSEABLE
         .create_update_stream(req.headers(), &body, &stream_name)
         .await?;
@@ -334,29 +331,22 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
         return Err(StreamNotFound(stream_name.clone()).into());
     }
 
-    let storage = PARSEABLE.storage.get_object_store();
-    // if first_event_at is not found in memory map, check if it exists in the storage
-    // if it exists in the storage, update the first_event_at in memory map
-    let stream_first_event_at =
-        if let Some(first_event_at) = PARSEABLE.get_stream(&stream_name)?.get_first_event() {
-            Some(first_event_at)
-        } else if let Ok(Some(first_event_at)) =
-            storage.get_first_event_from_storage(&stream_name).await
-        {
-            PARSEABLE
-                .update_first_event_at(&stream_name, &first_event_at)
-                .await
-        } else {
-            None
-        };
+    let storage = PARSEABLE.storage().get_object_store();
 
-    let stream_log_source = storage
-        .get_log_source_from_storage(&stream_name)
+    // Get first and latest event timestamps from storage
+    let (stream_first_event_at, stream_latest_event_at) = match storage
+        .get_first_and_latest_event_from_storage(&stream_name)
         .await
-        .unwrap_or_default();
-    PARSEABLE
-        .update_log_source(&stream_name, stream_log_source)
-        .await?;
+    {
+        Ok(result) => result,
+        Err(err) => {
+            warn!(
+                "failed to fetch first/latest event timestamps from storage for stream {}: {}",
+                stream_name, err
+            );
+            (None, None)
+        }
+    };
 
     let hash_map = PARSEABLE.streams.read().unwrap();
     let stream_meta = hash_map
@@ -370,6 +360,7 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
         stream_type: stream_meta.stream_type,
         created_at: stream_meta.created_at.clone(),
         first_event_at: stream_first_event_at,
+        latest_event_at: stream_latest_event_at,
         time_partition: stream_meta.time_partition.clone(),
         time_partition_limit: stream_meta
             .time_partition_limit
@@ -377,6 +368,7 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
         custom_partition: stream_meta.custom_partition.clone(),
         static_schema_flag: stream_meta.static_schema_flag,
         log_source: stream_meta.log_source.clone(),
+        telemetry_type: stream_meta.telemetry_type,
     };
 
     Ok((web::Json(stream_info), StatusCode::OK))
@@ -405,7 +397,7 @@ pub async fn put_stream_hot_tier(
 
     validator::hot_tier(&hottier.size.to_string())?;
 
-    stream.set_hot_tier(true);
+    stream.set_hot_tier(Some(hottier.clone()));
     let Some(hot_tier_manager) = HotTierManager::global() else {
         return Err(StreamError::HotTierNotEnabled(stream_name));
     };
@@ -418,11 +410,19 @@ pub async fn put_stream_hot_tier(
     hot_tier_manager
         .put_hot_tier(&stream_name, &mut hottier)
         .await?;
-    let storage = PARSEABLE.storage.get_object_store();
-    let mut stream_metadata = storage.get_object_store_format(&stream_name).await?;
+
+    let mut stream_metadata: ObjectStoreFormat = serde_json::from_slice(
+        &PARSEABLE
+            .metastore
+            .get_stream_json(&stream_name, false)
+            .await?,
+    )?;
     stream_metadata.hot_tier_enabled = true;
-    storage
-        .put_stream_manifest(&stream_name, &stream_metadata)
+    stream_metadata.hot_tier = Some(hottier.clone());
+
+    PARSEABLE
+        .metastore
+        .put_stream_json(&stream_metadata, &stream_name)
         .await?;
 
     Ok((
@@ -474,6 +474,20 @@ pub async fn delete_stream_hot_tier(
 
     hot_tier_manager.delete_hot_tier(&stream_name).await?;
 
+    let mut stream_metadata: ObjectStoreFormat = serde_json::from_slice(
+        &PARSEABLE
+            .metastore
+            .get_stream_json(&stream_name, false)
+            .await?,
+    )?;
+    stream_metadata.hot_tier_enabled = false;
+    stream_metadata.hot_tier = None;
+
+    PARSEABLE
+        .metastore
+        .put_stream_json(&stream_metadata, &stream_name)
+        .await?;
+
     Ok((
         format!("hot tier deleted for stream {stream_name}"),
         StatusCode::OK,
@@ -497,6 +511,7 @@ pub mod error {
 
     use crate::{
         hottier::HotTierError,
+        metastore::MetastoreError,
         parseable::StreamNotFound,
         storage::ObjectStorageError,
         validator::error::{
@@ -569,6 +584,8 @@ pub mod error {
         HotTierError(#[from] HotTierError),
         #[error("Invalid query parameter: {0}")]
         InvalidQueryParameter(String),
+        #[error(transparent)]
+        MetastoreError(#[from] MetastoreError),
     }
 
     impl actix_web::ResponseError for StreamError {
@@ -605,13 +622,21 @@ pub mod error {
                 StreamError::HotTierValidation(_) => StatusCode::BAD_REQUEST,
                 StreamError::HotTierError(_) => StatusCode::INTERNAL_SERVER_ERROR,
                 StreamError::InvalidQueryParameter(_) => StatusCode::BAD_REQUEST,
+                StreamError::MetastoreError(e) => e.status_code(),
             }
         }
 
         fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
-            actix_web::HttpResponse::build(self.status_code())
-                .insert_header(ContentType::plaintext())
-                .body(self.to_string())
+            match self {
+                StreamError::MetastoreError(metastore_error) => {
+                    actix_web::HttpResponse::build(metastore_error.status_code())
+                        .insert_header(ContentType::json())
+                        .json(metastore_error.to_detail())
+                }
+                _ => actix_web::HttpResponse::build(self.status_code())
+                    .insert_header(ContentType::plaintext())
+                    .body(self.to_string()),
+            }
         }
     }
 }

@@ -16,7 +16,18 @@
  *
  */
 
+use crate::{
+    connectors::common::processor::Processor,
+    event::{
+        Event as ParseableEvent, USER_AGENT_KEY,
+        format::{EventFormat, LogSourceEntry, json},
+    },
+    handlers::TelemetryType,
+    parseable::PARSEABLE,
+    storage::StreamType,
+};
 use async_trait::async_trait;
+use chrono::Utc;
 use futures_util::StreamExt;
 use rdkafka::consumer::{CommitMode, Consumer};
 use serde_json::Value;
@@ -24,16 +35,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error};
-
-use crate::{
-    connectors::common::processor::Processor,
-    event::{
-        Event as ParseableEvent, USER_AGENT_KEY,
-        format::{EventFormat, LogSourceEntry, json},
-    },
-    parseable::PARSEABLE,
-    storage::StreamType,
-};
 
 use super::{ConsumerRecord, StreamConsumer, TopicPartition, config::BufferConfig};
 
@@ -50,13 +51,13 @@ impl ParseableSinkProcessor {
             .map(|r| r.topic.as_str())
             .unwrap_or_default();
         let log_source_entry = LogSourceEntry::default();
-
         PARSEABLE
             .create_stream_if_not_exists(
                 stream_name,
                 StreamType::UserDefined,
                 None,
                 vec![log_source_entry],
+                TelemetryType::default(),
             )
             .await?;
 
@@ -80,7 +81,7 @@ impl ParseableSinkProcessor {
         let mut p_custom_fields = HashMap::new();
         p_custom_fields.insert(USER_AGENT_KEY.to_string(), "kafka".to_string());
 
-        let p_event = json::Event::new(Value::Array(json_vec)).into_event(
+        let p_event = json::Event::new(Value::Array(json_vec), Utc::now()).into_event(
             stream_name.to_string(),
             total_payload_size,
             &schema,

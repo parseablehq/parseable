@@ -18,7 +18,9 @@
 
 use crate::event::error::EventError;
 use crate::handlers::http::fetch_schema;
+use crate::metastore::MetastoreError;
 use crate::option::Mode;
+use crate::rbac::map::SessionKey;
 use crate::utils::arrow::record_batches_to_json;
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
@@ -43,8 +45,8 @@ use std::time::Instant;
 use tokio::task::JoinSet;
 use tracing::{error, warn};
 
-use crate::event::commit_schema;
-use crate::metrics::QUERY_EXECUTE_TIME;
+use crate::event::{DEFAULT_TIMESTAMP_KEY, commit_schema};
+use crate::metrics::{QUERY_EXECUTE_TIME, increment_query_calls_by_date};
 use crate::parseable::{PARSEABLE, StreamNotFound};
 use crate::query::error::ExecuteError;
 use crate::query::{CountsRequest, Query as LogicalQuery, execute};
@@ -79,7 +81,7 @@ pub struct Query {
 /// TODO: Improve this function and make this a part of the query API
 pub async fn get_records_and_fields(
     query_request: &Query,
-    req: &HttpRequest,
+    creds: &SessionKey,
 ) -> Result<(Option<Vec<RecordBatch>>, Option<Vec<String>>), QueryError> {
     let session_state = QUERY_SESSION.state();
     let time_range =
@@ -89,15 +91,12 @@ pub async fn get_records_and_fields(
     create_streams_for_distributed(tables.clone()).await?;
 
     let query: LogicalQuery = into_query(query_request, &session_state, time_range).await?;
-    let creds = extract_session_key_from_req(req)?;
-    let permissions = Users.get_permissions(&creds);
 
-    let table_name = tables
-        .first()
-        .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
+    let permissions = Users.get_permissions(creds);
+
     user_auth_for_datasets(&permissions, &tables).await?;
 
-    let (records, fields) = execute(query, table_name, false).await?;
+    let (records, fields) = execute(query, false).await?;
 
     let records = match records {
         Either::Left(vec_rb) => vec_rb,
@@ -121,28 +120,32 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);
 
-    let table_name = tables
-        .first()
-        .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
     user_auth_for_datasets(&permissions, &tables).await?;
     let time = Instant::now();
+
+    // Track billing metrics for query calls
+    let current_date = chrono::Utc::now().date_naive().to_string();
+    increment_query_calls_by_date(&current_date);
 
     // if the query is `select count(*) from <dataset>`
     // we use the `get_bin_density` method to get the count of records in the dataset
     // instead of executing the query using datafusion
     if let Some(column_name) = query.is_logical_plan_count_without_filters() {
-        return handle_count_query(&query_request, table_name, column_name, time).await;
+        let table = tables
+            .first()
+            .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
+        return handle_count_query(&query_request, table, column_name, time).await;
     }
 
     // if the query request has streaming = false (default)
     // we use datafusion's `execute` method to get the records
     if !query_request.streaming {
-        return handle_non_streaming_query(query, table_name, &query_request, time).await;
+        return handle_non_streaming_query(query, tables, &query_request, time).await;
     }
 
     // if the query request has streaming = true
     // we use datafusion's `execute_stream` method to get the records
-    handle_streaming_query(query, table_name, &query_request, time).await
+    handle_streaming_query(query, tables, &query_request, time).await
 }
 
 /// Handles count queries (e.g., `SELECT COUNT(*) FROM <dataset-name>`)
@@ -169,7 +172,7 @@ async fn handle_count_query(
         stream: table_name.to_string(),
         start_time: query_request.start_time.clone(),
         end_time: query_request.end_time.clone(),
-        num_bins: 1,
+        num_bins: Some(1),
         conditions: None,
     };
     let count_records = counts_req.get_bin_density().await?;
@@ -211,11 +214,12 @@ async fn handle_count_query(
 /// - `HttpResponse` with the full query result as a JSON object.
 async fn handle_non_streaming_query(
     query: LogicalQuery,
-    table_name: &str,
+    table_name: Vec<String>,
     query_request: &Query,
     time: Instant,
 ) -> Result<HttpResponse, QueryError> {
-    let (records, fields) = execute(query, table_name, query_request.streaming).await?;
+    let first_table_name = table_name[0].clone();
+    let (records, fields) = execute(query, query_request.streaming).await?;
     let records = match records {
         Either::Left(rbs) => rbs,
         Either::Right(_) => {
@@ -228,7 +232,7 @@ async fn handle_non_streaming_query(
     let time = time.elapsed().as_secs_f64();
 
     QUERY_EXECUTE_TIME
-        .with_label_values(&[table_name])
+        .with_label_values(&[&first_table_name])
         .observe(time);
     let response = QueryResponse {
         records,
@@ -259,11 +263,12 @@ async fn handle_non_streaming_query(
 /// - `HttpResponse` streaming the query results as NDJSON, optionally prefixed with the fields array.
 async fn handle_streaming_query(
     query: LogicalQuery,
-    table_name: &str,
+    table_name: Vec<String>,
     query_request: &Query,
     time: Instant,
 ) -> Result<HttpResponse, QueryError> {
-    let (records_stream, fields) = execute(query, table_name, query_request.streaming).await?;
+    let first_table_name = table_name[0].clone();
+    let (records_stream, fields) = execute(query, query_request.streaming).await?;
     let records_stream = match records_stream {
         Either::Left(_) => {
             return Err(QueryError::MalformedQuery(
@@ -275,7 +280,7 @@ async fn handle_streaming_query(
     let total_time = format!("{:?}", time.elapsed());
     let time = time.elapsed().as_secs_f64();
     QUERY_EXECUTE_TIME
-        .with_label_values(&[table_name])
+        .with_label_values(&[&first_table_name])
         .observe(time);
 
     let send_null = query_request.send_null;
@@ -346,12 +351,19 @@ pub async fn get_counts(
     let body = counts_request.into_inner();
 
     // does user have access to table?
-    user_auth_for_datasets(&permissions, &[body.stream.clone()]).await?;
-
+    user_auth_for_datasets(&permissions, std::slice::from_ref(&body.stream)).await?;
+    // Track billing metrics for query calls
+    let current_date = chrono::Utc::now().date_naive().to_string();
+    increment_query_calls_by_date(&current_date);
     // if the user has given a sql query (counts call with filters applied), then use this flow
     // this could include filters or group by
     if body.conditions.is_some() {
-        let sql = body.get_df_sql().await?;
+        let time_partition = PARSEABLE
+            .get_stream(&body.stream)?
+            .get_time_partition()
+            .unwrap_or_else(|| DEFAULT_TIMESTAMP_KEY.into());
+
+        let sql = body.get_df_sql(time_partition).await?;
 
         let query_request = Query {
             query: sql,
@@ -363,7 +375,9 @@ pub async fn get_counts(
             filter_tags: None,
         };
 
-        let (records, _) = get_records_and_fields(&query_request, &req).await?;
+        let creds = extract_session_key_from_req(&req)?;
+
+        let (records, _) = get_records_and_fields(&query_request, &creds).await?;
 
         if let Some(records) = records {
             let json_records = record_batches_to_json(&records)?;
@@ -571,12 +585,15 @@ Description: {0}"#
     NoAvailableQuerier,
     #[error("{0}")]
     ParserError(#[from] ParserError),
+    #[error(transparent)]
+    MetastoreError(#[from] MetastoreError),
 }
 
 impl actix_web::ResponseError for QueryError {
     fn status_code(&self) -> http::StatusCode {
         match self {
             QueryError::Execute(_) | QueryError::JsonParse(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            QueryError::MetastoreError(e) => e.status_code(),
             _ => StatusCode::BAD_REQUEST,
         }
     }

@@ -16,18 +16,18 @@
  *
  */
 
-use actix_web_prometheus::PrometheusMetrics;
 use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
+use object_store::ListResult;
 use object_store::ObjectMeta;
 use object_store::buffered::BufReader;
 use once_cell::sync::OnceCell;
+use rayon::prelude::*;
 use relative_path::RelativePath;
 use relative_path::RelativePathBuf;
-use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
@@ -37,41 +37,218 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
-use tokio::task;
 use tokio::task::JoinSet;
 use tracing::info;
 use tracing::{error, warn};
 use ulid::Ulid;
 
-use crate::alerts::AlertConfig;
-use crate::alerts::target::Target;
-use crate::catalog::{self, manifest::Manifest, snapshot::Snapshot};
-use crate::correlation::{CorrelationConfig, CorrelationError};
+use crate::catalog::{self, snapshot::Snapshot};
 use crate::event::format::LogSource;
 use crate::event::format::LogSourceEntry;
 use crate::handlers::http::fetch_schema;
 use crate::handlers::http::modal::ingest_server::INGESTOR_EXPECT;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
-use crate::handlers::http::users::CORRELATION_DIR;
-use crate::handlers::http::users::{DASHBOARDS_DIR, FILTER_DIR, USERS_ROOT_DIR};
-use crate::metrics::storage::StorageMetrics;
+use crate::handlers::http::users::{FILTER_DIR, USERS_ROOT_DIR};
+use crate::metrics::increment_parquets_stored_by_date;
+use crate::metrics::increment_parquets_stored_size_by_date;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE};
 use crate::option::Mode;
-use crate::parseable::LogStream;
-use crate::parseable::PARSEABLE;
+use crate::parseable::{LogStream, PARSEABLE, Stream};
 use crate::stats::FullStats;
 use crate::storage::SETTINGS_ROOT_DIRECTORY;
 use crate::storage::TARGETS_ROOT_DIRECTORY;
+use crate::storage::field_stats::DATASET_STATS_STREAM_NAME;
 use crate::storage::field_stats::calculate_field_stats;
-use crate::utils::DATASET_STATS_STREAM_NAME;
 
 use super::{
     ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, ObjectStorageError, ObjectStoreFormat,
     PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
-    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY, StorageMetadata, retention::Retention,
+    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY, retention::Retention,
 };
 
-pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync {
+/// Context for upload operations containing stream information
+pub(crate) struct UploadContext {
+    stream: Arc<Stream>,
+    custom_partition: Option<String>,
+    schema: Arc<Schema>,
+}
+
+impl UploadContext {
+    fn new(stream: Arc<Stream>) -> Self {
+        let custom_partition = stream.get_custom_partition();
+        let schema = stream.get_schema();
+
+        Self {
+            stream,
+            custom_partition,
+            schema,
+        }
+    }
+}
+
+/// Result of a single file upload operation
+pub(crate) struct UploadResult {
+    file_path: std::path::PathBuf,
+    manifest_file: Option<catalog::manifest::File>,
+}
+
+/// Handles the upload of a single parquet file
+async fn upload_single_parquet_file(
+    store: Arc<dyn ObjectStorage>,
+    path: std::path::PathBuf,
+    stream_relative_path: String,
+    stream_name: String,
+    schema: Arc<Schema>,
+) -> Result<UploadResult, ObjectStorageError> {
+    let filename = path
+        .file_name()
+        .expect("only parquet files are returned by iterator")
+        .to_str()
+        .expect("filename is valid string");
+
+    // Get the local file size for validation
+    let local_file_size = path
+        .metadata()
+        .map_err(|e| ObjectStorageError::Custom(format!("Failed to get local file metadata: {e}")))?
+        .len();
+
+    // Upload the file
+    store
+        .upload_multipart(&RelativePathBuf::from(&stream_relative_path), &path)
+        .await
+        .map_err(|e| {
+            error!("Failed to upload file {filename:?} to {stream_relative_path}: {e}");
+            ObjectStorageError::Custom(format!("Failed to upload {filename}: {e}"))
+        })?;
+
+    // Validate the uploaded file size matches local file
+    let upload_is_valid = validate_uploaded_parquet_file(
+        &store,
+        &stream_relative_path,
+        local_file_size,
+        &stream_name,
+    )
+    .await?;
+
+    if !upload_is_valid {
+        // Upload validation failed, clean up the uploaded file and return error
+        let _ = store
+            .delete_object(&RelativePathBuf::from(&stream_relative_path))
+            .await;
+        error!("Upload size validation failed for file {filename:?}, deleted from object storage");
+        return Ok(UploadResult {
+            file_path: path,
+            manifest_file: None, // Preserve staging file for retry; no manifest created
+        });
+    }
+
+    // Update storage metrics
+    update_storage_metrics(&path, &stream_name, filename)?;
+
+    // Create manifest entry
+    let absolute_path = store
+        .absolute_url(RelativePath::from_path(&stream_relative_path).expect("valid relative path"))
+        .to_string();
+
+    let manifest = catalog::create_from_parquet_file(absolute_path, &path)?;
+
+    // Calculate field stats if enabled
+    calculate_stats_if_enabled(&stream_name, &path, &schema).await;
+
+    Ok(UploadResult {
+        file_path: path,
+        manifest_file: Some(manifest),
+    })
+}
+
+/// Updates storage-related metrics for an uploaded file
+fn update_storage_metrics(
+    path: &std::path::Path,
+    stream_name: &str,
+    filename: &str,
+) -> Result<(), ObjectStorageError> {
+    let mut file_date_part = filename.split('.').collect::<Vec<&str>>()[0];
+    file_date_part = file_date_part.split('=').collect::<Vec<&str>>()[1];
+    let compressed_size = path
+        .metadata()
+        .map(|m| m.len())
+        .map_err(|e| ObjectStorageError::Custom(format!("metadata failed for {filename}: {e}")))?;
+    STORAGE_SIZE
+        .with_label_values(&["data", stream_name, "parquet"])
+        .add(compressed_size as i64);
+    EVENTS_STORAGE_SIZE_DATE
+        .with_label_values(&["data", stream_name, "parquet", file_date_part])
+        .inc_by(compressed_size);
+    LIFETIME_EVENTS_STORAGE_SIZE
+        .with_label_values(&["data", stream_name, "parquet"])
+        .add(compressed_size as i64);
+
+    // billing metrics for parquet storage
+    increment_parquets_stored_by_date(file_date_part);
+    increment_parquets_stored_size_by_date(compressed_size, file_date_part);
+
+    Ok(())
+}
+
+/// Calculates field statistics if enabled and conditions are met
+async fn calculate_stats_if_enabled(
+    stream_name: &str,
+    path: &std::path::Path,
+    schema: &Arc<Schema>,
+) {
+    if stream_name != DATASET_STATS_STREAM_NAME && PARSEABLE.options.collect_dataset_stats {
+        let max_field_statistics = PARSEABLE.options.max_field_statistics;
+        if let Err(err) =
+            calculate_field_stats(stream_name, path, schema, max_field_statistics).await
+        {
+            tracing::trace!(
+                "Error calculating field stats for stream {}: {}",
+                stream_name,
+                err
+            );
+        }
+    }
+}
+
+/// Validates that a parquet file uploaded to object storage matches the staging file size
+async fn validate_uploaded_parquet_file(
+    store: &Arc<dyn ObjectStorage>,
+    stream_relative_path: &str,
+    expected_size: u64,
+    stream_name: &str,
+) -> Result<bool, ObjectStorageError> {
+    // Verify the file exists and has the expected size
+    match store
+        .head(&RelativePathBuf::from(stream_relative_path))
+        .await
+    {
+        Ok(metadata) => {
+            if metadata.size != expected_size {
+                warn!(
+                    "Uploaded file size mismatch for stream {}: expected {}, got {}",
+                    stream_name, expected_size, metadata.size
+                );
+                Ok(false)
+            } else {
+                tracing::trace!(
+                    "Uploaded parquet file size validated successfully for stream {}, size: {}",
+                    stream_name,
+                    expected_size
+                );
+                Ok(true)
+            }
+        }
+        Err(e) => {
+            error!(
+                "Failed to get metadata for uploaded file in stream {}: {e}",
+                stream_name
+            );
+            Ok(false)
+        }
+    }
+}
+
+pub trait ObjectStorageProvider: std::fmt::Debug + Send + Sync {
     fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder;
     fn construct_client(&self) -> Arc<dyn ObjectStorage>;
     fn get_object_store(&self) -> Arc<dyn ObjectStorage> {
@@ -80,7 +257,6 @@ pub trait ObjectStorageProvider: StorageMetrics + std::fmt::Debug + Send + Sync 
         STORE.get_or_init(|| self.construct_client()).clone()
     }
     fn get_endpoint(&self) -> String;
-    fn register_store_metrics(&self, handler: &PrometheusMetrics);
     fn name(&self) -> &'static str;
 }
 
@@ -119,95 +295,33 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         relative_path: &RelativePath,
     ) -> Result<Vec<String>, ObjectStorageError>;
 
-    async fn get_all_saved_filters(
-        &self,
-    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
-        let mut filters: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
-
-        let users_dir = RelativePathBuf::from(USERS_ROOT_DIR);
-        for user in self.list_dirs_relative(&users_dir).await? {
-            let stream_dir = users_dir.join(&user).join("filters");
-            for stream in self.list_dirs_relative(&stream_dir).await? {
-                let filters_path = stream_dir.join(&stream);
-                let filter_bytes = self
-                    .get_objects(
-                        Some(&filters_path),
-                        Box::new(|file_name| file_name.ends_with(".json")),
-                    )
-                    .await?;
-                filters
-                    .entry(filters_path)
-                    .or_default()
-                    .extend(filter_bytes);
-            }
-        }
-
-        Ok(filters)
-    }
-
-    async fn get_all_dashboards(
-        &self,
-    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
-        let mut dashboards: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
-
-        let users_dir = RelativePathBuf::from(USERS_ROOT_DIR);
-        for user in self.list_dirs_relative(&users_dir).await? {
-            let dashboards_path = users_dir.join(&user).join("dashboards");
-            let dashboard_bytes = self
-                .get_objects(
-                    Some(&dashboards_path),
-                    Box::new(|file_name| file_name.ends_with(".json")),
-                )
-                .await?;
-
-            dashboards
-                .entry(dashboards_path)
-                .or_default()
-                .extend(dashboard_bytes);
-        }
-
-        Ok(dashboards)
-    }
-
-    ///fetch all correlations stored in object store
-    /// return the correlation file path and all correlation json bytes for each file path
-    async fn get_all_correlations(
-        &self,
-    ) -> Result<HashMap<RelativePathBuf, Vec<Bytes>>, ObjectStorageError> {
-        let mut correlations: HashMap<RelativePathBuf, Vec<Bytes>> = HashMap::new();
-
-        let users_dir = RelativePathBuf::from(USERS_ROOT_DIR);
-        for user in self.list_dirs_relative(&users_dir).await? {
-            let correlations_path = users_dir.join(&user).join("correlations");
-            let correlation_bytes = self
-                .get_objects(
-                    Some(&correlations_path),
-                    Box::new(|file_name| file_name.ends_with(".json")),
-                )
-                .await?;
-
-            correlations
-                .entry(correlations_path)
-                .or_default()
-                .extend(correlation_bytes);
-        }
-
-        Ok(correlations)
-    }
-
     async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError>;
-    async fn list_manifest_files(
+    /// Lists the immediate “hour=” partition directories under the given date.
+    /// Only immediate child entries named `hour=HH` should be returned (no trailing slash).
+    /// `HH` must be zero-padded two-digit numerals (`"hour=00"` through `"hour=23"`).
+    async fn list_hours(
         &self,
         stream_name: &str,
-    ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError>;
+        date: &str,
+    ) -> Result<Vec<String>, ObjectStorageError>;
+
+    /// Lists the immediate “minute=” partition directories under the given date/hour.
+    /// Only immediate child entries named `minute=MM` should be returned (no trailing slash).
+    /// `MM` must be zero-padded two-digit numerals (`"minute=00"` through `"minute=59"`).
+    async fn list_minutes(
+        &self,
+        stream_name: &str,
+        date: &str,
+        hour: &str,
+    ) -> Result<Vec<String>, ObjectStorageError>;
+    // async fn list_manifest_files(
+    //     &self,
+    //     stream_name: &str,
+    // ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError>;
     async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError>;
     async fn delete_object(&self, path: &RelativePath) -> Result<(), ObjectStorageError>;
     async fn get_ingestor_meta_file_paths(
         &self,
-    ) -> Result<Vec<RelativePathBuf>, ObjectStorageError>;
-    async fn get_stream_file_paths(
-        &self,
-        stream_name: &str,
     ) -> Result<Vec<RelativePathBuf>, ObjectStorageError>;
     async fn try_delete_node_meta(&self, node_filename: String) -> Result<(), ObjectStorageError>;
     /// Returns the amount of time taken by the `ObjectStore` to perform a get
@@ -225,16 +339,10 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     fn absolute_url(&self, prefix: &RelativePath) -> object_store::path::Path;
     fn store_url(&self) -> url::Url;
 
-    async fn put_schema(
+    async fn list_with_delimiter(
         &self,
-        stream_name: &str,
-        schema: &Schema,
-    ) -> Result<(), ObjectStorageError> {
-        self.put_object(&schema_path(stream_name), to_bytes(schema))
-            .await?;
-
-        Ok(())
-    }
+        prefix: Option<object_store::path::Path>,
+    ) -> Result<ListResult, ObjectStorageError>;
 
     async fn create_stream(
         &self,
@@ -242,12 +350,18 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         meta: ObjectStoreFormat,
         schema: Arc<Schema>,
     ) -> Result<String, ObjectStorageError> {
-        let format_json = to_bytes(&meta);
-        self.put_object(&schema_path(stream_name), to_bytes(&schema))
-            .await?;
+        let s: Schema = schema.as_ref().clone();
+        PARSEABLE
+            .metastore
+            .put_schema(s.clone(), stream_name)
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
-        self.put_object(&stream_json_path(stream_name), format_json)
-            .await?;
+        PARSEABLE
+            .metastore
+            .put_stream_json(&meta, stream_name)
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
         Ok(meta.created_at)
     }
@@ -257,11 +371,19 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         stream_name: &str,
         time_partition_limit: NonZeroU32,
     ) -> Result<(), ObjectStorageError> {
-        let mut format = self.get_object_store_format(stream_name).await?;
+        let mut format: ObjectStoreFormat = serde_json::from_slice(
+            &PARSEABLE
+                .metastore
+                .get_stream_json(stream_name, false)
+                .await
+                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
+        )?;
         format.time_partition_limit = Some(time_partition_limit.to_string());
-        let format_json = to_bytes(&format);
-        self.put_object(&stream_json_path(stream_name), format_json)
-            .await?;
+        PARSEABLE
+            .metastore
+            .put_stream_json(&format, stream_name)
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
         Ok(())
     }
@@ -271,11 +393,19 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         stream_name: &str,
         custom_partition: Option<&String>,
     ) -> Result<(), ObjectStorageError> {
-        let mut format = self.get_object_store_format(stream_name).await?;
+        let mut format: ObjectStoreFormat = serde_json::from_slice(
+            &PARSEABLE
+                .metastore
+                .get_stream_json(stream_name, false)
+                .await
+                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
+        )?;
         format.custom_partition = custom_partition.cloned();
-        let format_json = to_bytes(&format);
-        self.put_object(&stream_json_path(stream_name), format_json)
-            .await?;
+        PARSEABLE
+            .metastore
+            .put_stream_json(&format, stream_name)
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
         Ok(())
     }
@@ -285,11 +415,19 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         stream_name: &str,
         log_source: &[LogSourceEntry],
     ) -> Result<(), ObjectStorageError> {
-        let mut format = self.get_object_store_format(stream_name).await?;
+        let mut format: ObjectStoreFormat = serde_json::from_slice(
+            &PARSEABLE
+                .metastore
+                .get_stream_json(stream_name, false)
+                .await
+                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
+        )?;
         format.log_source = log_source.to_owned();
-        let format_json = to_bytes(&format);
-        self.put_object(&stream_json_path(stream_name), format_json)
-            .await?;
+        PARSEABLE
+            .metastore
+            .put_stream_json(&format, stream_name)
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
         Ok(())
     }
@@ -321,22 +459,21 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         stream_name: &str,
         first_event: &str,
     ) -> Result<(), ObjectStorageError> {
-        let mut format = self.get_object_store_format(stream_name).await?;
+        let mut format: ObjectStoreFormat = serde_json::from_slice(
+            &PARSEABLE
+                .metastore
+                .get_stream_json(stream_name, false)
+                .await
+                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
+        )?;
         format.first_event_at = Some(first_event.to_string());
-        let format_json = to_bytes(&format);
-        self.put_object(&stream_json_path(stream_name), format_json)
-            .await?;
+        PARSEABLE
+            .metastore
+            .put_stream_json(&format, stream_name)
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
         Ok(())
-    }
-
-    async fn put_alert(
-        &self,
-        alert_id: Ulid,
-        alert: &AlertConfig,
-    ) -> Result<(), ObjectStorageError> {
-        self.put_object(&alert_json_path(alert_id), to_bytes(alert))
-            .await
     }
 
     async fn put_stats(
@@ -344,14 +481,21 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         stream_name: &str,
         stats: &FullStats,
     ) -> Result<(), ObjectStorageError> {
-        let path = stream_json_path(stream_name);
-        let stream_metadata = self.get_object(&path).await?;
-        let stats = serde_json::to_value(stats).expect("stats are perfectly serializable");
-        let mut stream_metadata: serde_json::Value =
-            serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
+        let mut stream_metadata: ObjectStoreFormat = serde_json::from_slice(
+            &PARSEABLE
+                .metastore
+                .get_stream_json(stream_name, false)
+                .await
+                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
+        )?;
 
-        stream_metadata["stats"] = stats;
-        self.put_object(&path, to_bytes(&stream_metadata)).await
+        stream_metadata.stats = *stats;
+
+        Ok(PARSEABLE
+            .metastore
+            .put_stream_json(&stream_metadata, stream_name)
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?)
     }
 
     async fn put_retention(
@@ -359,110 +503,39 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         stream_name: &str,
         retention: &Retention,
     ) -> Result<(), ObjectStorageError> {
-        let path = stream_json_path(stream_name);
-        let stream_metadata = self.get_object(&path).await?;
-        let mut stream_metadata: ObjectStoreFormat =
-            serde_json::from_slice(&stream_metadata).expect("parseable config is valid json");
+        let mut stream_metadata: ObjectStoreFormat = serde_json::from_slice(
+            &PARSEABLE
+                .metastore
+                .get_stream_json(stream_name, false)
+                .await
+                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
+        )?;
         stream_metadata.retention = Some(retention.clone());
 
-        self.put_object(&path, to_bytes(&stream_metadata)).await
-    }
-
-    async fn put_metadata(
-        &self,
-        parseable_metadata: &StorageMetadata,
-    ) -> Result<(), ObjectStorageError> {
-        self.put_object(&parseable_json_path(), to_bytes(parseable_metadata))
+        Ok(PARSEABLE
+            .metastore
+            .put_stream_json(&stream_metadata, stream_name)
             .await
-    }
-
-    async fn upsert_schema_to_storage(
-        &self,
-        stream_name: &str,
-    ) -> Result<Schema, ObjectStorageError> {
-        // try get my schema
-        // if fails get the base schema
-        // put the schema to storage??
-        let schema_path = schema_path(stream_name);
-        let byte_data = match self.get_object(&schema_path).await {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                // base schema path
-                let schema_path = RelativePathBuf::from_iter([
-                    stream_name,
-                    STREAM_ROOT_DIRECTORY,
-                    SCHEMA_FILE_NAME,
-                ]);
-                let data = self.get_object(&schema_path).await?;
-                // schema was not found in store, so it needs to be placed
-                self.put_schema(stream_name, &serde_json::from_slice(&data)?)
-                    .await?;
-
-                data
-            }
-        };
-        Ok(serde_json::from_slice(&byte_data)?)
-    }
-
-    async fn get_schema(&self, stream_name: &str) -> Result<Schema, ObjectStorageError> {
-        let schema_map = self.get_object(&schema_path(stream_name)).await?;
-        Ok(serde_json::from_slice(&schema_map)?)
-    }
-
-    async fn get_alerts(&self) -> Result<Vec<AlertConfig>, ObjectStorageError> {
-        let alerts_path = RelativePathBuf::from(ALERTS_ROOT_DIRECTORY);
-        let alerts = self
-            .get_objects(
-                Some(&alerts_path),
-                Box::new(|file_name| file_name.ends_with(".json")),
-            )
-            .await?
-            .iter()
-            .filter_map(|bytes| {
-                serde_json::from_slice(bytes)
-                    .inspect_err(|err| warn!("Expected compatible json, error = {err}"))
-                    .ok()
-            })
-            .collect();
-
-        Ok(alerts)
-    }
-
-    async fn get_targets(&self) -> Result<Vec<Target>, ObjectStorageError> {
-        let targets_path =
-            RelativePathBuf::from_iter([SETTINGS_ROOT_DIRECTORY, TARGETS_ROOT_DIRECTORY]);
-        let targets = self
-            .get_objects(
-                Some(&targets_path),
-                Box::new(|file_name| file_name.ends_with(".json")),
-            )
-            .await?
-            .iter()
-            .filter_map(|bytes| {
-                serde_json::from_slice(bytes)
-                    .inspect_err(|err| warn!("Expected compatible json, error = {err}"))
-                    .ok()
-            })
-            .collect();
-
-        Ok(targets)
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?)
     }
 
     async fn upsert_stream_metadata(
         &self,
         stream_name: &str,
     ) -> Result<ObjectStoreFormat, ObjectStorageError> {
-        let stream_metadata = match self.get_object(&stream_json_path(stream_name)).await {
+        let stream_metadata = match PARSEABLE
+            .metastore
+            .get_stream_json(stream_name, false)
+            .await
+        {
             Ok(data) => data,
             Err(_) => {
                 // get the base stream metadata
-                let bytes = self
-                    .get_object(&RelativePathBuf::from_iter([
-                        stream_name,
-                        STREAM_ROOT_DIRECTORY,
-                        STREAM_METADATA_FILE_NAME,
-                    ]))
-                    .await?;
+                let bytes = PARSEABLE
+                    .metastore
+                    .get_stream_json(stream_name, true)
+                    .await
+                    .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
                 let mut config = serde_json::from_slice::<ObjectStoreFormat>(&bytes)
                     .expect("parseable config is valid json");
@@ -472,74 +545,17 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                     config.snapshot.manifest_list = vec![];
                 }
 
-                self.put_stream_manifest(stream_name, &config).await?;
+                PARSEABLE
+                    .metastore
+                    .put_stream_json(&config, stream_name)
+                    .await
+                    .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
+
                 bytes
             }
         };
 
         Ok(serde_json::from_slice(&stream_metadata).expect("parseable config is valid json"))
-    }
-
-    async fn put_stream_manifest(
-        &self,
-        stream_name: &str,
-        manifest: &ObjectStoreFormat,
-    ) -> Result<(), ObjectStorageError> {
-        let path = stream_json_path(stream_name);
-        self.put_object(&path, to_bytes(manifest)).await
-    }
-
-    async fn get_metadata(&self) -> Result<Option<StorageMetadata>, ObjectStorageError> {
-        let parseable_metadata: Option<StorageMetadata> =
-            match self.get_object(&parseable_json_path()).await {
-                Ok(bytes) => {
-                    Some(serde_json::from_slice(&bytes).expect("parseable config is valid json"))
-                }
-                Err(err) => {
-                    if matches!(err, ObjectStorageError::NoSuchKey(_)) {
-                        None
-                    } else {
-                        return Err(err);
-                    }
-                }
-            };
-
-        Ok(parseable_metadata)
-    }
-
-    // get the manifest info
-    async fn get_manifest(
-        &self,
-        path: &RelativePath,
-    ) -> Result<Option<Manifest>, ObjectStorageError> {
-        let path = manifest_path(path.as_str());
-        match self.get_object(&path).await {
-            Ok(bytes) => {
-                let manifest = serde_json::from_slice(&bytes)?;
-                Ok(Some(manifest))
-            }
-            Err(ObjectStorageError::NoSuchKey(_)) => Ok(None),
-            Err(err) => Err(err),
-        }
-    }
-
-    async fn put_manifest(
-        &self,
-        path: &RelativePath,
-        manifest: Manifest,
-    ) -> Result<(), ObjectStorageError> {
-        let path = manifest_path(path.as_str());
-        self.put_object(&path, to_bytes(&manifest)).await
-    }
-
-    // gets the snapshot of the stream
-    async fn get_object_store_format(
-        &self,
-        stream: &str,
-    ) -> Result<ObjectStoreFormat, ObjectStorageError> {
-        let path = stream_json_path(stream);
-        let bytes = self.get_object(&path).await?;
-        Ok(serde_json::from_slice::<ObjectStoreFormat>(&bytes).expect("snapshot is valid json"))
     }
 
     async fn put_snapshot(
@@ -549,8 +565,11 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     ) -> Result<(), ObjectStorageError> {
         let mut stream_meta = self.upsert_stream_metadata(stream).await?;
         stream_meta.snapshot = snapshot;
-        self.put_object(&stream_json_path(stream), to_bytes(&stream_meta))
+        Ok(PARSEABLE
+            .metastore
+            .put_stream_json(&stream_meta, stream)
             .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?)
     }
 
     ///create stream from querier stream.json from storage
@@ -558,13 +577,9 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         &self,
         stream_name: &str,
     ) -> Result<Bytes, ObjectStorageError> {
-        let stream_path = RelativePathBuf::from_iter([
-            stream_name,
-            STREAM_ROOT_DIRECTORY,
-            STREAM_METADATA_FILE_NAME,
-        ]);
-
-        if let Ok(querier_stream_json_bytes) = self.get_object(&stream_path).await {
+        if let Ok(querier_stream_json_bytes) =
+            PARSEABLE.metastore.get_stream_json(stream_name, true).await
+        {
             let querier_stream_metadata =
                 serde_json::from_slice::<ObjectStoreFormat>(&querier_stream_json_bytes)?;
             let stream_metadata = ObjectStoreFormat {
@@ -573,11 +588,11 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 ..querier_stream_metadata
             };
             let stream_metadata_bytes: Bytes = serde_json::to_vec(&stream_metadata)?.into();
-            self.put_object(
-                &stream_json_path(stream_name),
-                stream_metadata_bytes.clone(),
-            )
-            .await?;
+            PARSEABLE
+                .metastore
+                .put_stream_json(&stream_metadata, stream_name)
+                .await
+                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
             return Ok(stream_metadata_bytes);
         }
 
@@ -589,106 +604,87 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         &self,
         stream_name: &str,
     ) -> Result<Bytes, ObjectStorageError> {
-        let stream_path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
+        // create only when stream name not found in memory
+        if PARSEABLE.get_stream(stream_name).is_ok() {
+            let stream_metadata_bytes = PARSEABLE
+                .metastore
+                .get_stream_json(stream_name, false)
+                .await
+                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
+            return Ok(stream_metadata_bytes);
+        }
         let mut all_log_sources: Vec<LogSourceEntry> = Vec::new();
 
-        if let Some(stream_metadata_obs) = self
-            .get_objects(
-                Some(&stream_path),
-                Box::new(|file_name| {
-                    file_name.starts_with(".ingestor") && file_name.ends_with("stream.json")
-                }),
-            )
+        if let Some(stream_metadata_obs) = PARSEABLE
+            .metastore
+            .get_all_stream_jsons(stream_name, Some(Mode::Ingest))
             .await
             .into_iter()
             .next()
+            && !stream_metadata_obs.is_empty()
         {
-            if !stream_metadata_obs.is_empty() {
-                for stream_metadata_bytes in stream_metadata_obs.iter() {
-                    let stream_ob_metadata =
-                        serde_json::from_slice::<ObjectStoreFormat>(stream_metadata_bytes)?;
-                    all_log_sources.extend(stream_ob_metadata.log_source.clone());
-                }
-
-                // Merge log sources
-                let mut merged_log_sources: Vec<LogSourceEntry> = Vec::new();
-                let mut log_source_map: HashMap<LogSource, HashSet<String>> = HashMap::new();
-
-                for log_source_entry in all_log_sources {
-                    let log_source_format = log_source_entry.log_source_format;
-                    let fields = log_source_entry.fields;
-
-                    log_source_map
-                        .entry(log_source_format)
-                        .or_default()
-                        .extend(fields);
-                }
-
-                for (log_source_format, fields) in log_source_map {
-                    merged_log_sources.push(LogSourceEntry {
-                        log_source_format,
-                        fields: fields.into_iter().collect(),
-                    });
-                }
-
+            for stream_metadata_bytes in stream_metadata_obs.iter() {
                 let stream_ob_metadata =
-                    serde_json::from_slice::<ObjectStoreFormat>(&stream_metadata_obs[0])?;
-                let stream_metadata = ObjectStoreFormat {
-                    stats: FullStats::default(),
-                    snapshot: Snapshot::default(),
-                    log_source: merged_log_sources,
-                    ..stream_ob_metadata
-                };
-
-                let stream_metadata_bytes: Bytes = serde_json::to_vec(&stream_metadata)?.into();
-                self.put_object(
-                    &stream_json_path(stream_name),
-                    stream_metadata_bytes.clone(),
-                )
-                .await?;
-
-                return Ok(stream_metadata_bytes);
+                    serde_json::from_slice::<ObjectStoreFormat>(stream_metadata_bytes)?;
+                all_log_sources.extend(stream_ob_metadata.log_source.clone());
             }
+
+            // Merge log sources
+            let mut merged_log_sources: Vec<LogSourceEntry> = Vec::new();
+            let mut log_source_map: HashMap<LogSource, HashSet<String>> = HashMap::new();
+
+            for log_source_entry in all_log_sources {
+                let log_source_format = log_source_entry.log_source_format;
+                let fields = log_source_entry.fields;
+
+                log_source_map
+                    .entry(log_source_format)
+                    .or_default()
+                    .extend(fields);
+            }
+
+            for (log_source_format, fields) in log_source_map {
+                merged_log_sources.push(LogSourceEntry {
+                    log_source_format,
+                    fields: fields.into_iter().collect(),
+                });
+            }
+
+            let stream_ob_metadata =
+                serde_json::from_slice::<ObjectStoreFormat>(&stream_metadata_obs[0])?;
+            let stream_metadata = ObjectStoreFormat {
+                stats: FullStats::default(),
+                snapshot: Snapshot::default(),
+                log_source: merged_log_sources,
+                ..stream_ob_metadata
+            };
+
+            let stream_metadata_bytes: Bytes = serde_json::to_vec(&stream_metadata)?.into();
+            PARSEABLE
+                .metastore
+                .put_stream_json(&stream_metadata, stream_name)
+                .await
+                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
+
+            return Ok(stream_metadata_bytes);
         }
         Ok(Bytes::new())
     }
 
     ///create schema from storage
-    async fn create_schema_from_storage(
+    async fn create_schema_from_metastore(
         &self,
         stream_name: &str,
     ) -> Result<Bytes, ObjectStorageError> {
         let schema = fetch_schema(stream_name).await?;
+        let schema_bytes = Bytes::from(serde_json::to_vec(&schema)?);
         // convert to bytes
-        let schema = serde_json::to_vec(&schema)?;
-        let schema_bytes = Bytes::from(schema);
-        self.put_object(&schema_path(stream_name), schema_bytes.clone())
-            .await?;
+        PARSEABLE
+            .metastore
+            .put_schema(schema, stream_name)
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
         Ok(schema_bytes)
-    }
-
-    async fn get_stream_meta_from_storage(
-        &self,
-        stream_name: &str,
-    ) -> Result<Vec<ObjectStoreFormat>, ObjectStorageError> {
-        let mut stream_metas = vec![];
-        let stream_meta_bytes = self
-            .get_objects(
-                Some(&RelativePathBuf::from_iter([
-                    stream_name,
-                    STREAM_ROOT_DIRECTORY,
-                ])),
-                Box::new(|file_name| file_name.ends_with("stream.json")),
-            )
-            .await;
-        if let Ok(stream_meta_bytes) = stream_meta_bytes {
-            for stream_meta in stream_meta_bytes {
-                let stream_meta_ob = serde_json::from_slice::<ObjectStoreFormat>(&stream_meta)?;
-                stream_metas.push(stream_meta_ob);
-            }
-        }
-
-        Ok(stream_metas)
     }
 
     async fn get_log_source_from_storage(
@@ -696,11 +692,16 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         stream_name: &str,
     ) -> Result<Vec<LogSourceEntry>, ObjectStorageError> {
         let mut all_log_sources: Vec<LogSourceEntry> = Vec::new();
-        let stream_metas = self.get_stream_meta_from_storage(stream_name).await;
+        let stream_metas = PARSEABLE
+            .metastore
+            .get_all_stream_jsons(stream_name, None)
+            .await;
         if let Ok(stream_metas) = stream_metas {
             for stream_meta in stream_metas.iter() {
-                // fetch unique log sources and their fields
-                all_log_sources.extend(stream_meta.log_source.clone());
+                if let Ok(stream_meta) = serde_json::from_slice::<ObjectStoreFormat>(stream_meta) {
+                    // fetch unique log sources and their fields
+                    all_log_sources.extend(stream_meta.log_source.clone());
+                }
             }
         }
 
@@ -726,181 +727,315 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         Ok(merged_log_sources)
     }
 
-    /// Retrieves the earliest first-event-at from the storage for the specified stream.
+    /// Retrieves both the first and latest event timestamps from storage for the specified stream.
+    /// Uses directory structure traversal instead of downloading manifest files for better performance.
     ///
-    /// This function fetches the object-store format from all the stream.json files for the given stream from the storage,
-    /// extracts the `first_event_at` timestamps, and returns the earliest `first_event_at`.
+    /// This optimized implementation avoids downloading potentially large manifest files by leveraging
+    /// the hierarchical directory structure (date=YYYY-MM-DD/hour=HH/minute=MM/) to derive timestamps.
+    /// It performs efficient list operations to find the min/max date, hour, and minute combinations,
+    /// then constructs the actual timestamps from this directory information.
     ///
     /// # Arguments
     ///
-    /// * `stream_name` - The name of the stream for which `first_event_at` is to be retrieved.
+    /// * `stream_name` - The name of the stream
     ///
     /// # Returns
     ///
-    /// * `Result<Option<String>, ObjectStorageError>` - Returns `Ok(Some(String))` with the earliest
-    ///   first event timestamp if found, `Ok(None)` if no timestamps are found, or an `ObjectStorageError`
-    ///   if an error occurs.
-    ///
-    /// # Examples
-    /// ```ignore
-    /// ```rust
-    /// let result = get_first_event_from_storage("my_stream").await;
-    /// match result {
-    ///     Ok(Some(first_event)) => println!("first-event-at: {}", first_event),
-    ///     Ok(None) => println!("first-event-at not found"),
-    ///     Err(err) => println!("Error: {:?}", err),
-    /// }
-    /// ```
-    async fn get_first_event_from_storage(
+    /// * `Result<(Option<String>, Option<String>), ObjectStorageError>` - Returns tuple of
+    ///   (first_event_at, latest_event_at). Each can be None if no timestamps are found.
+    async fn get_first_and_latest_event_from_storage(
         &self,
         stream_name: &str,
-    ) -> Result<Option<String>, ObjectStorageError> {
-        let mut all_first_events = vec![];
-        let stream_metas = self.get_stream_meta_from_storage(stream_name).await;
-        if let Ok(stream_metas) = stream_metas {
-            for stream_meta in stream_metas.iter() {
-                if let Some(first_event) = &stream_meta.first_event_at {
-                    let first_event = DateTime::parse_from_rfc3339(first_event).unwrap();
-                    let first_event = first_event.with_timezone(&Utc);
-                    all_first_events.push(first_event);
-                }
-            }
+    ) -> Result<(Option<String>, Option<String>), ObjectStorageError> {
+        // Get all available dates for the stream
+        let dates = self.list_dates(stream_name).await?;
+        if dates.is_empty() {
+            return Ok((None, None));
         }
 
-        if all_first_events.is_empty() {
+        // Parse and sort dates to find min and max
+        let mut parsed_dates: Vec<_> = dates
+            .iter()
+            .filter_map(|date_str| {
+                // Extract date from "date=YYYY-MM-DD" format
+                if let Some(date_part) = date_str.strip_prefix("date=") {
+                    chrono::NaiveDate::parse_from_str(date_part, "%Y-%m-%d")
+                        .ok()
+                        .map(|date| (date, date_str))
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if parsed_dates.is_empty() {
+            return Ok((None, None));
+        }
+
+        parsed_dates.sort_by_key(|(date, _)| *date);
+        let min_date = &parsed_dates[0].1;
+        let max_date = &parsed_dates[parsed_dates.len() - 1].1;
+
+        // Extract timestamps for min and max dates
+        let first_timestamp = self
+            .extract_timestamp_for_date(stream_name, min_date, true)
+            .await?;
+        let latest_timestamp = self
+            .extract_timestamp_for_date(stream_name, max_date, false)
+            .await?;
+
+        let first_event_at = first_timestamp.map(|ts| ts.to_rfc3339());
+        let latest_event_at = latest_timestamp.map(|ts| ts.to_rfc3339());
+
+        Ok((first_event_at, latest_event_at))
+    }
+
+    /// Extract timestamp for a specific date by traversing the hour/minute structure
+    async fn extract_timestamp_for_date(
+        &self,
+        stream_name: &str,
+        date: &str,
+        find_min: bool,
+    ) -> Result<Option<DateTime<Utc>>, ObjectStorageError> {
+        // Get all hours for this date
+        let hours = self.list_hours(stream_name, date).await?;
+        if hours.is_empty() {
             return Ok(None);
         }
-        let first_event_at = all_first_events.iter().min().unwrap().to_rfc3339();
-        Ok(Some(first_event_at))
+
+        // Find min/max hour and corresponding string without collecting all values
+        let (target_hour_value, target_hour_str) = hours
+            .iter()
+            .filter_map(|hour_str| {
+                hour_str.strip_prefix("hour=").and_then(|hour_part| {
+                    hour_part.parse::<u32>().ok().map(|hour| (hour, hour_str))
+                })
+            })
+            .reduce(|acc, curr| {
+                if find_min {
+                    if curr.0 < acc.0 { curr } else { acc }
+                } else if curr.0 > acc.0 {
+                    curr
+                } else {
+                    acc
+                }
+            })
+            .ok_or_else(|| ObjectStorageError::Custom("No valid hours found".to_string()))?;
+
+        // Get all minutes for the target hour
+        let minutes = self
+            .list_minutes(stream_name, date, target_hour_str)
+            .await?;
+        if minutes.is_empty() {
+            return Ok(None);
+        }
+
+        // Find min/max minute directly without collecting all values
+        let target_minute = minutes
+            .iter()
+            .filter_map(|minute_str| {
+                minute_str
+                    .strip_prefix("minute=")
+                    .and_then(|minute_part| minute_part.parse::<u32>().ok())
+            })
+            .reduce(|acc, curr| {
+                if find_min {
+                    if curr < acc { curr } else { acc }
+                } else if curr > acc {
+                    curr
+                } else {
+                    acc
+                }
+            })
+            .ok_or_else(|| ObjectStorageError::Custom("No valid minutes found".to_string()))?;
+
+        // Extract date components and construct timestamp
+        if let Some(date_part) = date.strip_prefix("date=")
+            && let Ok(parsed_date) = chrono::NaiveDate::parse_from_str(date_part, "%Y-%m-%d")
+        {
+            // Create timestamp from date, hour, and minute with seconds hardcoded to 00
+            let naive_datetime = parsed_date
+                .and_hms_opt(target_hour_value, target_minute, 0)
+                .unwrap_or_else(|| parsed_date.and_hms_opt(0, 0, 0).unwrap());
+
+            return Ok(Some(DateTime::from_naive_utc_and_offset(
+                naive_datetime,
+                Utc,
+            )));
+        }
+
+        Ok(None)
     }
 
     // pick a better name
     fn get_bucket_name(&self) -> String;
 
-    async fn put_correlation(
-        &self,
-        correlation: &CorrelationConfig,
-    ) -> Result<(), ObjectStorageError> {
-        let path =
-            RelativePathBuf::from_iter([CORRELATION_DIR, &format!("{}.json", correlation.id)]);
-        self.put_object(&path, to_bytes(correlation)).await?;
-        Ok(())
-    }
-
-    async fn get_correlations(&self) -> Result<Vec<Bytes>, CorrelationError> {
-        let correlation_path = RelativePathBuf::from(CORRELATION_DIR);
-        let correlation_bytes = self
-            .get_objects(
-                Some(&correlation_path),
-                Box::new(|file_name| file_name.ends_with(".json")),
-            )
-            .await?;
-
-        Ok(correlation_bytes)
-    }
-
     async fn upload_files_from_staging(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
         if !PARSEABLE.options.staging_dir().exists() {
             return Ok(());
         }
+
         info!("Starting object_store_sync for stream- {stream_name}");
-        let mut stats_calculated = false;
+
         let stream = PARSEABLE.get_or_create_stream(stream_name);
-        let custom_partition = stream.get_custom_partition();
-        let schema = stream.get_schema();
-        for path in stream.parquet_files() {
-            let filename = path
-                .file_name()
-                .expect("only parquet files are returned by iterator")
-                .to_str()
-                .expect("filename is valid string");
+        let upload_context = UploadContext::new(stream);
 
-            let mut file_suffix = str::replacen(filename, ".", "/", 3);
+        // Process parquet files concurrently and collect results
+        let manifest_files = process_parquet_files(&upload_context, stream_name).await?;
 
-            let custom_partition_clone = custom_partition.clone();
-            if custom_partition_clone.is_some() {
-                let custom_partition_fields = custom_partition_clone.unwrap();
-                let custom_partition_list =
-                    custom_partition_fields.split(',').collect::<Vec<&str>>();
-                file_suffix = str::replacen(filename, ".", "/", 3 + custom_partition_list.len());
-            }
+        // Update snapshot with collected manifest files
+        update_snapshot_with_manifests(stream_name, manifest_files).await?;
 
-            let stream_relative_path = format!("{stream_name}/{file_suffix}");
-
-            // Try uploading the file, handle potential errors without breaking the loop
-            if let Err(e) = self
-                .upload_multipart(&RelativePathBuf::from(&stream_relative_path), &path)
-                .await
-            {
-                error!("Failed to upload file {filename:?}: {e}");
-                continue; // Skip to the next file
-            }
-            let mut file_date_part = filename.split('.').collect::<Vec<&str>>()[0];
-            file_date_part = file_date_part.split('=').collect::<Vec<&str>>()[1];
-            let compressed_size = path.metadata().map_or(0, |meta| meta.len());
-            STORAGE_SIZE
-                .with_label_values(&["data", stream_name, "parquet"])
-                .add(compressed_size as i64);
-            EVENTS_STORAGE_SIZE_DATE
-                .with_label_values(&["data", stream_name, "parquet", file_date_part])
-                .add(compressed_size as i64);
-            LIFETIME_EVENTS_STORAGE_SIZE
-                .with_label_values(&["data", stream_name, "parquet"])
-                .add(compressed_size as i64);
-
-            let absolute_path = self
-                .absolute_url(
-                    RelativePath::from_path(&stream_relative_path).expect("valid relative path"),
-                )
-                .to_string();
-            let store = PARSEABLE.storage().get_object_store();
-            let manifest = catalog::create_from_parquet_file(absolute_path.clone(), &path)?;
-            catalog::update_snapshot(store, stream_name, manifest).await?;
-
-            // If stats collection is enabled, calculate field stats
-            if stream_name != DATASET_STATS_STREAM_NAME && PARSEABLE.options.collect_dataset_stats {
-                let max_field_statistics = PARSEABLE.options.max_field_statistics;
-                match calculate_field_stats(stream_name, &path, &schema, max_field_statistics).await
-                {
-                    Ok(stats) if stats => stats_calculated = true,
-                    Err(err) => warn!(
-                        "Error calculating field stats for stream {}: {}",
-                        stream_name, err
-                    ),
-                    _ => {}
-                }
-            }
-            if let Err(e) = remove_file(path) {
-                warn!("Failed to remove staged file: {e}");
-            }
-        }
-
-        for path in stream.schema_files() {
-            let file = File::open(&path)?;
-            let schema: Schema = serde_json::from_reader(file)?;
-            commit_schema_to_storage(stream_name, schema).await?;
-            if let Err(e) = remove_file(path) {
-                warn!("Failed to remove staged file: {e}");
-            }
-        }
-
-        if stats_calculated {
-            // perform local sync for the `pstats` dataset
-            task::spawn(async move {
-                if let Ok(stats_stream) = PARSEABLE.get_stream(DATASET_STATS_STREAM_NAME) {
-                    if let Err(err) = stats_stream.flush_and_convert(false, false) {
-                        error!("Failed in local sync for dataset stats stream: {err}");
-                    }
-                }
-            });
-        }
+        // Process schema files
+        process_schema_files(&upload_context, stream_name).await?;
 
         Ok(())
     }
 }
 
+/// Processes parquet files concurrently and returns stats status and manifest files
+async fn process_parquet_files(
+    upload_context: &UploadContext,
+    stream_name: &str,
+) -> Result<Vec<catalog::manifest::File>, ObjectStorageError> {
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(100));
+    let mut join_set = JoinSet::new();
+    let object_store = PARSEABLE.storage().get_object_store();
+
+    // Spawn upload tasks for each parquet file
+    for path in upload_context.stream.parquet_files() {
+        spawn_parquet_upload_task(
+            &mut join_set,
+            semaphore.clone(),
+            object_store.clone(),
+            upload_context,
+            stream_name,
+            path,
+        )
+        .await;
+    }
+
+    // Collect results from all upload tasks
+    collect_upload_results(join_set).await
+}
+
+/// Spawns an individual parquet file upload task
+async fn spawn_parquet_upload_task(
+    join_set: &mut JoinSet<Result<UploadResult, ObjectStorageError>>,
+    semaphore: Arc<tokio::sync::Semaphore>,
+    store: Arc<dyn ObjectStorage>,
+    upload_context: &UploadContext,
+    stream_name: &str,
+    path: std::path::PathBuf,
+) {
+    let filename = path
+        .file_name()
+        .expect("only parquet files are returned by iterator")
+        .to_str()
+        .expect("filename is valid string");
+
+    let stream_relative_path =
+        stream_relative_path(stream_name, filename, &upload_context.custom_partition);
+
+    let stream_name = stream_name.to_string();
+    let schema = upload_context.schema.clone();
+
+    join_set.spawn(async move {
+        let _permit = semaphore.acquire().await.expect("semaphore is not closed");
+
+        upload_single_parquet_file(store, path, stream_relative_path, stream_name, schema).await
+    });
+}
+
+/// Collects results from all upload tasks
+async fn collect_upload_results(
+    mut join_set: JoinSet<Result<UploadResult, ObjectStorageError>>,
+) -> Result<Vec<catalog::manifest::File>, ObjectStorageError> {
+    let mut uploaded_files = Vec::new();
+
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(Ok(upload_result)) => {
+                if let Some(manifest_file) = upload_result.manifest_file {
+                    uploaded_files.push((upload_result.file_path, manifest_file));
+                } else {
+                    // File failed in upload size validation, preserve staging file for retry
+                    error!(
+                        "Parquet file upload size validation failed for {:?}, preserving in staging for retry",
+                        upload_result.file_path
+                    );
+                }
+            }
+            Ok(Err(e)) => {
+                error!("Error uploading parquet file: {e}");
+                return Err(e);
+            }
+            Err(e) => {
+                error!("Task panicked: {e}");
+                return Err(ObjectStorageError::UnhandledError(Box::new(e)));
+            }
+        }
+    }
+
+    let manifest_files: Vec<_> = uploaded_files
+        .into_par_iter()
+        .map(|(path, manifest_file)| {
+            if let Err(e) = remove_file(&path) {
+                warn!("Failed to remove staged file: {e}");
+            }
+            manifest_file
+        })
+        .collect();
+
+    Ok(manifest_files)
+}
+
+/// Updates snapshot with collected manifest files
+async fn update_snapshot_with_manifests(
+    stream_name: &str,
+    manifest_files: Vec<catalog::manifest::File>,
+) -> Result<(), ObjectStorageError> {
+    if !manifest_files.is_empty() {
+        catalog::update_snapshot(stream_name, manifest_files).await?;
+    }
+    Ok(())
+}
+
+/// Processes schema files
+async fn process_schema_files(
+    upload_context: &UploadContext,
+    stream_name: &str,
+) -> Result<(), ObjectStorageError> {
+    for path in upload_context.stream.schema_files() {
+        let file = File::open(&path)?;
+        let schema: Schema = serde_json::from_reader(file)?;
+        commit_schema_to_storage(stream_name, schema).await?;
+
+        if let Err(e) = remove_file(path) {
+            warn!("Failed to remove staged file: {e}");
+        }
+    }
+    Ok(())
+}
+
+/// Builds the stream relative path for a file
+fn stream_relative_path(
+    stream_name: &str,
+    filename: &str,
+    custom_partition: &Option<String>,
+) -> String {
+    let mut file_suffix = str::replacen(filename, ".", "/", 3);
+
+    if let Some(custom_partition_fields) = custom_partition {
+        let custom_partition_list = custom_partition_fields.split(',').collect::<Vec<&str>>();
+        file_suffix = str::replacen(filename, ".", "/", 3 + custom_partition_list.len());
+    }
+
+    format!("{stream_name}/{file_suffix}")
+}
+
 pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
-    let object_store = PARSEABLE.storage.get_object_store();
+    let object_store = PARSEABLE.storage().get_object_store();
     for stream_name in PARSEABLE.streams.list() {
         let object_store = object_store.clone();
         joinset.spawn(async move {
@@ -924,10 +1059,23 @@ pub async fn commit_schema_to_storage(
     stream_name: &str,
     schema: Schema,
 ) -> Result<(), ObjectStorageError> {
-    let storage = PARSEABLE.storage().get_object_store();
-    let stream_schema = storage.get_schema(stream_name).await?;
-    let new_schema = Schema::try_merge(vec![schema, stream_schema]).unwrap();
-    storage.put_schema(stream_name, &new_schema).await
+    let stream_schema = PARSEABLE
+        .metastore
+        .get_schema(stream_name)
+        .await
+        .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
+
+    let new_schema = Schema::try_merge(vec![
+        schema,
+        serde_json::from_slice::<Schema>(&stream_schema)?,
+    ])
+    .map_err(|e| ObjectStorageError::Custom(e.to_string()))?;
+
+    PARSEABLE
+        .metastore
+        .put_schema(new_schema, stream_name)
+        .await
+        .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))
 }
 
 #[inline(always)]
@@ -969,12 +1117,6 @@ pub fn stream_json_path(stream_name: &str) -> RelativePathBuf {
     }
 }
 
-/// if dashboard_id is an empty str it should not append it to the rel path
-#[inline(always)]
-pub fn dashboard_path(user_id: &str, dashboard_file_name: &str) -> RelativePathBuf {
-    RelativePathBuf::from_iter([USERS_ROOT_DIR, user_id, DASHBOARDS_DIR, dashboard_file_name])
-}
-
 /// if filter_id is an empty str it should not append it to the rel path
 #[inline(always)]
 pub fn filter_path(user_id: &str, stream_name: &str, filter_file_name: &str) -> RelativePathBuf {
@@ -1009,17 +1151,42 @@ pub fn target_json_path(target_id: &Ulid) -> RelativePathBuf {
     ])
 }
 
+/// Constructs the path for storing alert state JSON files
+/// Format: ".alerts/alert_state_{alert_id}.json"
+#[inline(always)]
+pub fn alert_state_json_path(alert_id: Ulid) -> RelativePathBuf {
+    RelativePathBuf::from_iter([
+        ALERTS_ROOT_DIRECTORY,
+        &format!("alert_state_{alert_id}.json"),
+    ])
+}
+
+/// Constructs the path for storing MTTR history JSON file
+/// Format: ".alerts/mttr.json"
+#[inline(always)]
+pub fn mttr_json_path() -> RelativePathBuf {
+    RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY, "mttr.json"])
+}
+
 #[inline(always)]
 pub fn manifest_path(prefix: &str) -> RelativePathBuf {
-    match &PARSEABLE.options.mode {
-        Mode::Ingest => {
-            let id = INGESTOR_META
-                .get()
-                .unwrap_or_else(|| panic!("{}", INGESTOR_EXPECT))
-                .get_node_id();
-            let manifest_file_name = format!("ingestor.{id}.{MANIFEST_FILE}");
-            RelativePathBuf::from_iter([prefix, &manifest_file_name])
-        }
-        _ => RelativePathBuf::from_iter([prefix, MANIFEST_FILE]),
+    let hostname = hostname::get()
+        .unwrap_or_else(|_| std::ffi::OsString::from(&Ulid::new().to_string()))
+        .into_string()
+        .unwrap_or_else(|_| Ulid::new().to_string())
+        .matches(|c: char| c.is_alphanumeric() || c == '-' || c == '_')
+        .collect::<String>();
+
+    if PARSEABLE.options.mode == Mode::Ingest {
+        let id = INGESTOR_META
+            .get()
+            .unwrap_or_else(|| panic!("{}", INGESTOR_EXPECT))
+            .get_node_id();
+
+        let manifest_file_name = format!("ingestor.{hostname}.{id}.{MANIFEST_FILE}");
+        RelativePathBuf::from_iter([prefix, &manifest_file_name])
+    } else {
+        let manifest_file_name = format!("{hostname}.{MANIFEST_FILE}");
+        RelativePathBuf::from_iter([prefix, &manifest_file_name])
     }
 }

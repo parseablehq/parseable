@@ -24,10 +24,8 @@ use actix_web::Either;
 use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
-use datafusion::catalog::resolve_table_references;
-use datafusion::common::tree_node::{Transformed, TreeNode};
-use datafusion::error::DataFusionError;
-use datafusion::execution::disk_manager::DiskManagerConfig;
+use datafusion::common::tree_node::Transformed;
+use datafusion::execution::disk_manager::DiskManager;
 use datafusion::execution::{SendableRecordBatchStream, SessionState, SessionStateBuilder};
 use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
@@ -35,32 +33,31 @@ use datafusion::logical_expr::{
 };
 use datafusion::prelude::*;
 use datafusion::sql::parser::DFParser;
+use datafusion::sql::resolve::resolve_table_references;
 use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
-use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::ops::Bound;
 use std::sync::Arc;
-use stream_schema_provider::collect_manifest_files;
 use sysinfo::System;
 use tokio::runtime::Runtime;
 
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
 pub use self::stream_schema_provider::PartialTimeFilter;
-use crate::alerts::Conditions;
+use crate::alerts::alert_structs::Conditions;
 use crate::alerts::alerts_utils::get_filter_string;
 use crate::catalog::Snapshot as CatalogSnapshot;
 use crate::catalog::column::{Int64Type, TypedStatistics};
 use crate::catalog::manifest::Manifest;
 use crate::catalog::snapshot::Snapshot;
-use crate::event;
+use crate::event::DEFAULT_TIMESTAMP_KEY;
 use crate::handlers::http::query::QueryError;
 use crate::option::Mode;
 use crate::parseable::PARSEABLE;
-use crate::storage::{ObjectStorageProvider, ObjectStoreFormat, STREAM_ROOT_DIRECTORY};
+use crate::storage::{ObjectStorageProvider, ObjectStoreFormat};
 use crate::utils::time::TimeRange;
 
 pub static QUERY_SESSION: Lazy<SessionContext> =
@@ -77,7 +74,6 @@ pub static QUERY_RUNTIME: Lazy<Runtime> =
 /// at a time and has access to the entire thread pool, enabling better concurrent processing, and thus quicker results.
 pub async fn execute(
     query: Query,
-    stream_name: &str,
     is_streaming: bool,
 ) -> Result<
     (
@@ -86,9 +82,8 @@ pub async fn execute(
     ),
     ExecuteError,
 > {
-    let time_partition = PARSEABLE.get_stream(stream_name)?.get_time_partition();
     QUERY_RUNTIME
-        .spawn(async move { query.execute(time_partition.as_ref(), is_streaming).await })
+        .spawn(async move { query.execute(is_streaming).await })
         .await
         .expect("The Join should have been successful")
 }
@@ -125,7 +120,7 @@ impl Query {
     fn create_session_state(storage: Arc<dyn ObjectStorageProvider>) -> SessionState {
         let runtime_config = storage
             .get_datafusion_runtime()
-            .with_disk_manager(DiskManagerConfig::NewOs);
+            .with_disk_manager_builder(DiskManager::builder());
         let (pool_size, fraction) = match PARSEABLE.options.query_memory_pool_size {
             Some(size) => (size, 1.),
             None => {
@@ -180,7 +175,6 @@ impl Query {
     /// if streaming is false, it returns a vector of record batches
     pub async fn execute(
         &self,
-        time_partition: Option<&String>,
         is_streaming: bool,
     ) -> Result<
         (
@@ -190,7 +184,7 @@ impl Query {
         ExecuteError,
     > {
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan(time_partition))
+            .execute_logical_plan(self.final_logical_plan())
             .await?;
 
         let fields = df
@@ -214,19 +208,16 @@ impl Query {
         Ok((results, fields))
     }
 
-    pub async fn get_dataframe(
-        &self,
-        time_partition: Option<&String>,
-    ) -> Result<DataFrame, ExecuteError> {
+    pub async fn get_dataframe(&self) -> Result<DataFrame, ExecuteError> {
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan(time_partition))
+            .execute_logical_plan(self.final_logical_plan())
             .await?;
 
         Ok(df)
     }
 
     /// return logical plan with all time filters applied through
-    fn final_logical_plan(&self, time_partition: Option<&String>) -> LogicalPlan {
+    fn final_logical_plan(&self) -> LogicalPlan {
         // see https://github.com/apache/arrow-datafusion/pull/8400
         // this can be eliminated in later version of datafusion but with slight caveat
         // transform cannot modify stringified plans by itself
@@ -238,9 +229,9 @@ impl Query {
                     plan.plan.as_ref().clone(),
                     self.time_range.start.naive_utc(),
                     self.time_range.end.naive_utc(),
-                    time_partition,
                 );
                 LogicalPlan::Explain(Explain {
+                    explain_format: plan.explain_format,
                     verbose: plan.verbose,
                     stringified_plans: vec![
                         transformed
@@ -257,7 +248,6 @@ impl Query {
                     x,
                     self.time_range.start.naive_utc(),
                     self.time_range.end.naive_utc(),
-                    time_partition,
                 )
                 .data
             }
@@ -290,10 +280,10 @@ impl Query {
                 name: alias_name,
                 ..
             }) => {
-                if let Expr::Column(Column { name, .. }) = &**inner_expr {
-                    if name.to_lowercase() == "count(*)" {
-                        return Some(alias_name);
-                    }
+                if let Expr::Column(Column { name, .. }) = &**inner_expr
+                    && name.to_lowercase() == "count(*)"
+                {
+                    return Some(alias_name);
                 }
                 None
             }
@@ -306,8 +296,10 @@ impl Query {
 /// Record of counts for a given time bin.
 #[derive(Debug, Serialize, Clone, Deserialize)]
 pub struct CountsRecord {
+    #[serde(alias = "_bin_start_time_")]
     /// Start time of the bin
     pub start_time: String,
+    #[serde(alias = "_bin_end_time_")]
     /// End time of the bin
     pub end_time: String,
     /// Number of logs in the bin
@@ -338,8 +330,8 @@ pub struct CountsRequest {
     pub start_time: String,
     /// Excluded end time for counts query
     pub end_time: String,
-    /// Number of bins to divide the time range into
-    pub num_bins: u64,
+    /// optional number of bins to divide the time range into
+    pub num_bins: Option<u64>,
     /// Conditions
     pub conditions: Option<CountConditions>,
 }
@@ -353,7 +345,7 @@ impl CountsRequest {
             .get_stream(&self.stream)
             .map_err(|err| anyhow::Error::msg(err.to_string()))?
             .get_time_partition()
-            .unwrap_or_else(|| event::DEFAULT_TIMESTAMP_KEY.to_owned());
+            .unwrap_or_else(|| DEFAULT_TIMESTAMP_KEY.to_owned());
 
         // get time range
         let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
@@ -408,9 +400,28 @@ impl CountsRequest {
             .signed_duration_since(time_range.start)
             .num_minutes() as u64;
 
+        let num_bins = if let Some(num_bins) = self.num_bins {
+            num_bins
+        } else {
+            // create number of bins based on total minutes
+            if total_minutes <= 60 * 5 {
+                // till 5 hours, 1 bin = 1 min
+                total_minutes
+            } else if total_minutes <= 60 * 24 {
+                // till 1 day, 1 bin = 5 min
+                total_minutes.div_ceil(5)
+            } else if total_minutes <= 60 * 24 * 10 {
+                // till 10 days, 1 bin = 1 hour
+                total_minutes.div_ceil(60)
+            } else {
+                // > 10 days, 1 bin = 1 day
+                total_minutes.div_ceil(1440)
+            }
+        };
+
         // divide minutes by num bins to get minutes per bin
-        let quotient = total_minutes / self.num_bins;
-        let remainder = total_minutes % self.num_bins;
+        let quotient = total_minutes / num_bins;
+        let remainder = total_minutes % num_bins;
         let have_remainder = remainder > 0;
 
         // now create multiple bounds [startTime, endTime)
@@ -420,9 +431,9 @@ impl CountsRequest {
         let mut start = time_range.start;
 
         let loop_end = if have_remainder {
-            self.num_bins
+            num_bins
         } else {
-            self.num_bins - 1
+            num_bins - 1
         };
 
         // Create bins for all but the last date
@@ -449,7 +460,7 @@ impl CountsRequest {
     }
 
     /// This function will get executed only if self.conditions is some
-    pub async fn get_df_sql(&self) -> Result<String, QueryError> {
+    pub async fn get_df_sql(&self, time_column: String) -> Result<String, QueryError> {
         // unwrap because we have asserted that it is some
         let count_conditions = self.conditions.as_ref().unwrap();
 
@@ -457,36 +468,40 @@ impl CountsRequest {
 
         let dur = time_range.end.signed_duration_since(time_range.start);
 
-        let date_bin = if dur.num_minutes() <= 60 * 10 {
-            // date_bin 1 minute
+        let table_name = &self.stream;
+        let start_time_col_name = "_bin_start_time_";
+        let end_time_col_name = "_bin_end_time_";
+        let date_bin = if dur.num_minutes() <= 60 * 5 {
+            // less than 5 hour = 1 min bin
             format!(
-                "CAST(DATE_BIN('1 minute', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 minute', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 minute' as end_time",
-                self.stream
+                "CAST(DATE_BIN('1m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('1m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1m' as {end_time_col_name}"
             )
-        } else if dur.num_minutes() > 60 * 10 && dur.num_minutes() < 60 * 240 {
-            // date_bin 1 hour
+        } else if dur.num_minutes() <= 60 * 24 {
+            // 1 day = 5 min bin
             format!(
-                "CAST(DATE_BIN('1 hour', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 hour', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 hour' as end_time",
-                self.stream
+                "CAST(DATE_BIN('5m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('5m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '5m' as {end_time_col_name}"
+            )
+        } else if dur.num_minutes() < 60 * 24 * 10 {
+            // 10 days = 1 hour bin
+            format!(
+                "CAST(DATE_BIN('1h', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('1h', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1h' as {end_time_col_name}"
             )
         } else {
-            // date_bin 1 day
+            // 1 day
             format!(
-                "CAST(DATE_BIN('1 day', \"{}\".p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as start_time, DATE_BIN('1 day', p_timestamp, TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1 day' as end_time",
-                self.stream
+                "CAST(DATE_BIN('1d', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('1d', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1d' as {end_time_col_name}"
             )
         };
 
         let query = if let Some(conditions) = &count_conditions.conditions {
             let f = get_filter_string(conditions).map_err(QueryError::CustomError)?;
             format!(
-                "SELECT {date_bin}, COUNT(*) as count FROM \"{}\" WHERE {} GROUP BY end_time,start_time ORDER BY end_time",
-                self.stream, f
+                "SELECT {date_bin}, COUNT(*) as count FROM \"{table_name}\" WHERE {} GROUP BY {end_time_col_name},{start_time_col_name} ORDER BY {end_time_col_name}",
+                f
             )
         } else {
             format!(
-                "SELECT {date_bin}, COUNT(*) as count FROM \"{}\" GROUP BY end_time,start_time ORDER BY end_time",
-                self.stream
+                "SELECT {date_bin}, COUNT(*) as count FROM \"{table_name}\" GROUP BY {end_time_col_name},{start_time_col_name} ORDER BY {end_time_col_name}",
             )
         };
         Ok(query)
@@ -494,7 +509,7 @@ impl CountsRequest {
 }
 
 /// Response for the counts API
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, Deserialize)]
 pub struct CountsResponse {
     /// Fields in the log stream
     pub fields: Vec<String>,
@@ -520,32 +535,22 @@ pub async fn get_manifest_list(
     stream_name: &str,
     time_range: &TimeRange,
 ) -> Result<Vec<Manifest>, QueryError> {
-    let glob_storage = PARSEABLE.storage.get_object_store();
-
-    let object_store = QUERY_SESSION
-        .state()
-        .runtime_env()
-        .object_store_registry
-        .get_store(&glob_storage.store_url())
-        .unwrap();
-
     // get object store
-    let object_store_format = glob_storage
-        .get_object_store_format(stream_name)
-        .await
-        .map_err(|err| DataFusionError::Plan(err.to_string()))?;
+    let object_store_format: ObjectStoreFormat = serde_json::from_slice(
+        &PARSEABLE
+            .metastore
+            .get_stream_json(stream_name, false)
+            .await?,
+    )?;
 
     // all the manifests will go here
     let mut merged_snapshot: Snapshot = Snapshot::default();
 
     // get a list of manifests
     if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
-        let path = RelativePathBuf::from_iter([stream_name, STREAM_ROOT_DIRECTORY]);
-        let obs = glob_storage
-            .get_objects(
-                Some(&path),
-                Box::new(|file_name| file_name.ends_with("stream.json")),
-            )
+        let obs = PARSEABLE
+            .metastore
+            .get_all_stream_jsons(stream_name, None)
             .await;
         if let Ok(obs) = obs {
             for ob in obs {
@@ -567,17 +572,27 @@ pub async fn get_manifest_list(
         PartialTimeFilter::High(Bound::Included(time_range.end.naive_utc())),
     ];
 
-    let all_manifest_files = collect_manifest_files(
-        object_store,
-        merged_snapshot
-            .manifests(&time_filter)
-            .into_iter()
-            .sorted_by_key(|file| file.time_lower_bound)
-            .map(|item| item.manifest_path)
-            .collect(),
-    )
-    .await
-    .map_err(|err| anyhow::Error::msg(err.to_string()))?;
+    let mut all_manifest_files = Vec::new();
+    for manifest_item in merged_snapshot.manifests(&time_filter) {
+        let manifest_opt = PARSEABLE
+            .metastore
+            .get_manifest(
+                stream_name,
+                manifest_item.time_lower_bound,
+                manifest_item.time_upper_bound,
+                Some(manifest_item.manifest_path.clone()),
+            )
+            .await?;
+        let manifest = manifest_opt.ok_or_else(|| {
+            QueryError::CustomError(format!(
+                "Manifest not found for {stream_name} [{} - {}], path- {}",
+                manifest_item.time_lower_bound,
+                manifest_item.time_upper_bound,
+                manifest_item.manifest_path
+            ))
+        })?;
+        all_manifest_files.push(manifest);
+    }
 
     Ok(all_manifest_files)
 }
@@ -586,66 +601,69 @@ fn transform(
     plan: LogicalPlan,
     start_time: NaiveDateTime,
     end_time: NaiveDateTime,
-    time_partition: Option<&String>,
 ) -> Transformed<LogicalPlan> {
-    plan.transform(&|plan| match plan {
-        LogicalPlan::TableScan(table) => {
-            let mut new_filters = vec![];
-            if !table_contains_any_time_filters(&table, time_partition) {
-                let mut _start_time_filter: Expr;
-                let mut _end_time_filter: Expr;
-                match time_partition {
-                    Some(time_partition) => {
-                        _start_time_filter =
-                            PartialTimeFilter::Low(std::ops::Bound::Included(start_time))
-                                .binary_expr(Expr::Column(Column::new(
-                                    Some(table.table_name.to_owned()),
-                                    time_partition.clone(),
-                                )));
-                        _end_time_filter =
-                            PartialTimeFilter::High(std::ops::Bound::Excluded(end_time))
-                                .binary_expr(Expr::Column(Column::new(
-                                    Some(table.table_name.to_owned()),
-                                    time_partition,
-                                )));
-                    }
-                    None => {
-                        _start_time_filter =
-                            PartialTimeFilter::Low(std::ops::Bound::Included(start_time))
-                                .binary_expr(Expr::Column(Column::new(
-                                    Some(table.table_name.to_owned()),
-                                    event::DEFAULT_TIMESTAMP_KEY,
-                                )));
-                        _end_time_filter =
-                            PartialTimeFilter::High(std::ops::Bound::Excluded(end_time))
-                                .binary_expr(Expr::Column(Column::new(
-                                    Some(table.table_name.to_owned()),
-                                    event::DEFAULT_TIMESTAMP_KEY,
-                                )));
-                    }
+    plan.transform_up_with_subqueries(&|plan| {
+        match plan {
+            LogicalPlan::TableScan(table) => {
+                // Get the specific time partition for this stream
+                let time_partition = PARSEABLE
+                    .get_stream(&table.table_name.to_string())
+                    .ok()
+                    .and_then(|stream| stream.get_time_partition());
+
+                let mut new_filters = vec![];
+                if !table_contains_any_time_filters(&table, time_partition.as_ref()) {
+                    let default_timestamp = DEFAULT_TIMESTAMP_KEY.to_string();
+                    let time_column = time_partition.as_ref().unwrap_or(&default_timestamp);
+
+                    // Create time filters with table-qualified column names
+                    let start_time_filter = PartialTimeFilter::Low(std::ops::Bound::Included(
+                        start_time,
+                    ))
+                    .binary_expr(Expr::Column(Column::new(
+                        Some(table.table_name.to_owned()),
+                        time_column.clone(),
+                    )));
+
+                    let end_time_filter = PartialTimeFilter::High(std::ops::Bound::Excluded(
+                        end_time,
+                    ))
+                    .binary_expr(Expr::Column(Column::new(
+                        Some(table.table_name.to_owned()),
+                        time_column.clone(),
+                    )));
+
+                    new_filters.push(start_time_filter);
+                    new_filters.push(end_time_filter);
                 }
 
-                new_filters.push(_start_time_filter);
-                new_filters.push(_end_time_filter);
+                let new_filter = new_filters.into_iter().reduce(and);
+                if let Some(new_filter) = new_filter {
+                    let filter =
+                        Filter::try_new(new_filter, Arc::new(LogicalPlan::TableScan(table)))
+                            .unwrap();
+                    Ok(Transformed::yes(LogicalPlan::Filter(filter)))
+                } else {
+                    Ok(Transformed::no(LogicalPlan::TableScan(table)))
+                }
             }
-            let new_filter = new_filters.into_iter().reduce(and);
-            if let Some(new_filter) = new_filter {
-                let filter =
-                    Filter::try_new(new_filter, Arc::new(LogicalPlan::TableScan(table))).unwrap();
-                Ok(Transformed::yes(LogicalPlan::Filter(filter)))
-            } else {
-                Ok(Transformed::no(LogicalPlan::TableScan(table)))
+            _ => {
+                // For all other plan types, continue the transformation recursively
+                // This ensures that subqueries and other nested plans are also transformed
+                Ok(Transformed::no(plan))
             }
         }
-        x => Ok(Transformed::no(x)),
     })
-    .expect("transform only transforms the tablescan")
+    .expect("transform processes all plan nodes")
 }
 
 fn table_contains_any_time_filters(
     table: &datafusion::logical_expr::TableScan,
     time_partition: Option<&String>,
 ) -> bool {
+    let default_timestamp = DEFAULT_TIMESTAMP_KEY.to_string();
+    let time_column = time_partition.unwrap_or(&default_timestamp);
+
     table
         .filters
         .iter()
@@ -658,8 +676,7 @@ fn table_contains_any_time_filters(
         })
         .any(|expr| {
             matches!(&*expr.left, Expr::Column(Column { name, .. })
-            if (time_partition.is_some_and(|field| field == name) ||
-            (time_partition.is_none() && name == event::DEFAULT_TIMESTAMP_KEY)))
+            if name == &default_timestamp || name == time_column)
         })
 }
 

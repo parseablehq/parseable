@@ -25,6 +25,7 @@ use crate::handlers::http::alerts;
 use crate::handlers::http::base_path;
 use crate::handlers::http::demo_data::get_demo_data;
 use crate::handlers::http::health_check;
+use crate::handlers::http::modal::initialize_hot_tier_metadata_on_startup;
 use crate::handlers::http::prism_base_path;
 use crate::handlers::http::query;
 use crate::handlers::http::resource_check;
@@ -60,7 +61,6 @@ use crate::{
 };
 
 // use super::generate;
-use super::OpenIdClient;
 use super::ParseableServer;
 use super::generate;
 use super::load_on_init;
@@ -69,7 +69,7 @@ pub struct Server;
 
 #[async_trait]
 impl ParseableServer for Server {
-    fn configure_routes(config: &mut web::ServiceConfig, oidc_client: Option<OpenIdClient>) {
+    fn configure_routes(config: &mut web::ServiceConfig) {
         // there might be a bug in the configure routes method
         config
             .service(
@@ -90,7 +90,7 @@ impl ParseableServer for Server {
                     .service(Self::get_dashboards_webscope())
                     .service(Self::get_filters_webscope())
                     .service(Self::get_llm_webscope())
-                    .service(Self::get_oauth_webscope(oidc_client))
+                    .service(Self::get_oauth_webscope())
                     .service(Self::get_user_role_webscope())
                     .service(Self::get_roles_webscope())
                     .service(Self::get_counts_webscope().wrap(from_fn(
@@ -128,8 +128,6 @@ impl ParseableServer for Server {
         prometheus: &PrometheusMetrics,
         shutdown_rx: oneshot::Receiver<()>,
     ) -> anyhow::Result<()> {
-        PARSEABLE.storage.register_store_metrics(prometheus);
-
         migration::run_migration(&PARSEABLE).await?;
 
         // load on init
@@ -145,6 +143,11 @@ impl ParseableServer for Server {
         });
 
         if let Some(hot_tier_manager) = HotTierManager::global() {
+            // Initialize hot tier metadata files for streams that have hot tier configuration
+            // but don't have local hot tier metadata files yet
+            if let Err(e) = initialize_hot_tier_metadata_on_startup(hot_tier_manager).await {
+                tracing::warn!("Failed to initialize hot tier metadata on startup: {}", e);
+            }
             hot_tier_manager.download_from_s3()?;
         };
 
@@ -256,11 +259,18 @@ impl Server {
                     .route(web::post().to(alerts::post).authorize(Action::PutAlert)),
             )
             .service(
+                web::resource("/list_tags").route(
+                    web::get()
+                        .to(alerts::list_tags)
+                        .authorize(Action::ListDashboard),
+                ),
+            )
+            .service(
                 web::resource("/{alert_id}")
                     .route(web::get().to(alerts::get).authorize(Action::GetAlert))
                     .route(
                         web::put()
-                            .to(alerts::update_state)
+                            .to(alerts::modify_alert)
                             .authorize(Action::PutAlert),
                     )
                     .route(
@@ -270,10 +280,31 @@ impl Server {
                     ),
             )
             .service(
-                web::resource("/list_tags").route(
-                    web::get()
-                        .to(alerts::list_tags)
-                        .authorize(Action::ListDashboard),
+                web::resource("/{alert_id}/disable").route(
+                    web::patch()
+                        .to(alerts::disable_alert)
+                        .authorize(Action::PutAlert),
+                ),
+            )
+            .service(
+                web::resource("/{alert_id}/enable").route(
+                    web::patch()
+                        .to(alerts::enable_alert)
+                        .authorize(Action::PutAlert),
+                ),
+            )
+            .service(
+                web::resource("/{alert_id}/update_notification_state").route(
+                    web::patch()
+                        .to(alerts::update_notification_state)
+                        .authorize(Action::PutAlert),
+                ),
+            )
+            .service(
+                web::resource("/{alert_id}/evaluate_alert").route(
+                    web::put()
+                        .to(alerts::evaluate_alert)
+                        .authorize(Action::PutAlert),
                 ),
             )
     }
@@ -538,17 +569,11 @@ impl Server {
     }
 
     // get the oauth webscope
-    pub fn get_oauth_webscope(oidc_client: Option<OpenIdClient>) -> Scope {
-        let oauth = web::scope("/o")
+    pub fn get_oauth_webscope() -> Scope {
+        web::scope("/o")
             .service(resource("/login").route(web::get().to(oidc::login)))
             .service(resource("/logout").route(web::get().to(oidc::logout)))
-            .service(resource("/code").route(web::get().to(oidc::reply_login)));
-
-        if let Some(client) = oidc_client {
-            oauth.app_data(web::Data::from(client))
-        } else {
-            oauth
-        }
+            .service(resource("/code").route(web::get().to(oidc::reply_login)))
     }
 
     // get list of roles
@@ -613,7 +638,7 @@ impl Server {
             )
             .service(
                 web::resource("/{username}")
-                    // PUT /user/{username} => Create a new user
+                    // POST /user/{username} => Create a new user
                     .route(
                         web::post()
                             .to(http::rbac::post_user)

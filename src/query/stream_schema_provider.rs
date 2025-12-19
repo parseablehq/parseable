@@ -20,7 +20,6 @@ use std::{any::Any, collections::HashMap, ops::Bound, sync::Arc};
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef, SortOptions};
-use bytes::Bytes;
 use chrono::{DateTime, NaiveDateTime, TimeDelta, Timelike, Utc};
 use datafusion::{
     catalog::{SchemaProvider, Session},
@@ -33,10 +32,10 @@ use datafusion::{
         MemTable, TableProvider,
         file_format::{FileFormat, parquet::ParquetFormat},
         listing::PartitionedFile,
-        physical_plan::FileScanConfig,
+        physical_plan::{FileGroup, FileScanConfigBuilder, ParquetSource},
     },
     error::{DataFusionError, Result as DataFusionResult},
-    execution::{context::SessionState, object_store::ObjectStoreUrl},
+    execution::object_store::ObjectStoreUrl,
     logical_expr::{
         BinaryExpr, Operator, TableProviderFilterPushDown, TableType, utils::conjunction,
     },
@@ -45,25 +44,25 @@ use datafusion::{
     prelude::Expr,
     scalar::ScalarValue,
 };
-use futures_util::{StreamExt, TryFutureExt, TryStreamExt, stream::FuturesOrdered};
+use futures_util::TryFutureExt;
 use itertools::Itertools;
-use object_store::{ObjectStore, path::Path};
-use relative_path::RelativePathBuf;
-use url::Url;
 
 use crate::{
     catalog::{
         ManifestFile, Snapshot as CatalogSnapshot,
         column::{Column, TypedStatistics},
-        manifest::{File, Manifest},
+        manifest::File,
         snapshot::{ManifestItem, Snapshot},
     },
     event::DEFAULT_TIMESTAMP_KEY,
     hottier::HotTierManager,
-    metrics::QUERY_CACHE_HIT,
+    metrics::{
+        QUERY_CACHE_HIT, increment_bytes_scanned_in_query_by_date,
+        increment_files_scanned_in_query_by_date,
+    },
     option::Mode,
     parseable::{PARSEABLE, STREAM_EXISTS},
-    storage::{ObjectStorage, ObjectStoreFormat, STREAM_ROOT_DIRECTORY},
+    storage::{ObjectStorage, ObjectStoreFormat},
 };
 
 use super::listing_table_builder::ListingTableBuilder;
@@ -92,7 +91,6 @@ impl SchemaProvider for GlobalSchemaProvider {
                     .expect(STREAM_EXISTS)
                     .get_schema(),
                 stream: name.to_owned(),
-                url: self.storage.store_url(),
             })))
         } else {
             Ok(None)
@@ -109,8 +107,6 @@ struct StandardTableProvider {
     schema: SchemaRef,
     // prefix under which to find snapshot
     stream: String,
-    // url to find right instance of object store
-    url: Url,
 }
 
 impl StandardTableProvider {
@@ -146,26 +142,48 @@ impl StandardTableProvider {
                 nulls_first: true,
             },
         };
+
         let file_format = ParquetFormat::default().with_enable_pruning(true);
+
+        // create file groups from vec file partitions
+        let file_groups = partitions.into_iter().map(FileGroup::new).collect_vec();
+
+        // parquet file source, default table parquet options
+        let file_source = if let Some(phyiscal_expr) = filters {
+            ParquetSource::default().with_predicate(phyiscal_expr)
+        } else {
+            ParquetSource::default()
+        };
+
+        let mut conf_builder =
+            FileScanConfigBuilder::new(object_store_url, self.schema.clone(), file_source.into())
+                .with_statistics(statistics)
+                .with_batch_size(Some(20000))
+                .with_constraints(Constraints::default())
+                .with_file_groups(file_groups)
+                .with_output_ordering(vec![LexOrdering::new([sort_expr]).unwrap()]);
+
+        // Set projection if provided
+        if let Some(proj_indices) = projection {
+            conf_builder = conf_builder.with_projection_indices(Some(proj_indices.clone()));
+        }
+
+        // Set limit if provided
+        if let Some(lim) = limit {
+            conf_builder = conf_builder.with_limit(Some(lim));
+        }
+
+        let conf = conf_builder.build();
 
         // create the execution plan
         let plan = file_format
             .create_physical_plan(
-                state.as_any().downcast_ref::<SessionState>().unwrap(), // Remove this when ParquetFormat catches up
-                FileScanConfig {
-                    object_store_url,
-                    file_schema: self.schema.clone(),
-                    file_groups: partitions,
-                    statistics,
-                    projection: projection.cloned(),
-                    limit,
-                    output_ordering: vec![LexOrdering::from_iter([sort_expr])],
-                    table_partition_cols: Vec::new(),
-                    constraints: Constraints::empty(),
-                },
-                filters.as_ref(),
+                state,
+                // .as_any().downcast_ref::<SessionState>().unwrap(), // Remove this when ParquetFormat catches up
+                conf,
             )
             .await?;
+
         execution_plans.push(plan);
 
         Ok(())
@@ -277,7 +295,6 @@ impl StandardTableProvider {
         &self,
         execution_plans: &mut Vec<Arc<dyn ExecutionPlan>>,
         glob_storage: Arc<dyn ObjectStorage>,
-        object_store: Arc<dyn ObjectStore>,
         time_filters: &[PartialTimeFilter],
         state: &dyn Session,
         projection: Option<&Vec<usize>>,
@@ -286,7 +303,7 @@ impl StandardTableProvider {
         time_partition: Option<String>,
     ) -> Result<(), DataFusionError> {
         ListingTableBuilder::new(self.stream.to_owned())
-            .populate_via_listing(glob_storage.clone(), object_store, time_filters)
+            .populate_via_listing(glob_storage.clone(), time_filters)
             .and_then(|builder| async {
                 let table = builder.build(
                     self.schema.clone(),
@@ -319,7 +336,7 @@ impl StandardTableProvider {
         } else if execution_plans.len() == 1 {
             execution_plans.pop().unwrap()
         } else {
-            Arc::new(UnionExec::new(execution_plans))
+            UnionExec::try_new(execution_plans)?
         };
         Ok(exec)
     }
@@ -328,10 +345,12 @@ impl StandardTableProvider {
         &self,
         manifest_files: Vec<File>,
     ) -> (Vec<Vec<PartitionedFile>>, datafusion::common::Statistics) {
-        let target_partition = num_cpus::get();
+        let target_partition: usize = num_cpus::get();
         let mut partitioned_files = Vec::from_iter((0..target_partition).map(|_| Vec::new()));
         let mut column_statistics = HashMap::<String, Option<TypedStatistics>>::new();
         let mut count = 0;
+        let mut total_compressed_size = 0u64;
+        let mut file_count = 0u64;
         for (index, file) in manifest_files
             .into_iter()
             .enumerate()
@@ -344,6 +363,12 @@ impl StandardTableProvider {
                 columns,
                 ..
             } = file;
+
+            // Track billing metrics for files scanned in query
+            file_count += 1;
+            // Calculate actual compressed bytes that will be read from storage
+            let compressed_bytes: u64 = columns.iter().map(|col| col.compressed_size).sum();
+            total_compressed_size += compressed_bytes;
 
             // object_store::path::Path doesn't automatically deal with Windows path separators
             // to do that, we are using from_absolute_path() which takes into consideration the underlying filesystem
@@ -401,6 +426,12 @@ impl StandardTableProvider {
             column_statistics: statistics,
         };
 
+        // Track billing metrics for query scan
+        let current_date = chrono::Utc::now().date_naive().to_string();
+        increment_files_scanned_in_query_by_date(file_count, &current_date);
+        // Use compressed size as it represents actual bytes read from storage (S3/object store charges)
+        increment_bytes_scanned_in_query_by_date(total_compressed_size, &current_date);
+
         (partitioned_files, statistics)
     }
 }
@@ -408,20 +439,34 @@ impl StandardTableProvider {
 async fn collect_from_snapshot(
     snapshot: &Snapshot,
     time_filters: &[PartialTimeFilter],
-    object_store: Arc<dyn ObjectStore>,
     filters: &[Expr],
     limit: Option<usize>,
+    stream_name: &str,
 ) -> Result<Vec<File>, DataFusionError> {
-    let items = snapshot.manifests(time_filters);
-    let manifest_files = collect_manifest_files(
-        object_store,
-        items
-            .into_iter()
-            .sorted_by_key(|file| file.time_lower_bound)
-            .map(|item| item.manifest_path)
-            .collect(),
-    )
-    .await?;
+    let mut manifest_files = Vec::new();
+
+    for manifest_item in snapshot.manifests(time_filters) {
+        let manifest_opt = PARSEABLE
+            .metastore
+            .get_manifest(
+                stream_name,
+                manifest_item.time_lower_bound,
+                manifest_item.time_upper_bound,
+                Some(manifest_item.manifest_path),
+            )
+            .await
+            .map_err(|e| DataFusionError::Plan(e.to_string()))?;
+        if let Some(manifest) = manifest_opt {
+            manifest_files.push(manifest);
+        } else {
+            tracing::warn!(
+                "Manifest missing for stream={} [{:?} - {:?}]",
+                stream_name,
+                manifest_item.time_lower_bound,
+                manifest_item.time_upper_bound
+            );
+        }
+    }
 
     let mut manifest_files: Vec<_> = manifest_files
         .into_iter()
@@ -474,23 +519,19 @@ impl TableProvider for StandardTableProvider {
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
         let mut execution_plans = vec![];
-        let object_store = state
-            .runtime_env()
-            .object_store_registry
-            .get_store(&self.url)
-            .unwrap();
         let glob_storage = PARSEABLE.storage.get_object_store();
 
-        let object_store_format = glob_storage
-            .get_object_store_format(&self.stream)
-            .await
-            .map_err(|err| DataFusionError::Plan(err.to_string()))?;
+        let object_store_format: ObjectStoreFormat = serde_json::from_slice(
+            &PARSEABLE
+                .metastore
+                .get_stream_json(&self.stream, false)
+                .await
+                .map_err(|e| DataFusionError::Plan(e.to_string()))?,
+        )
+        .map_err(|e| DataFusionError::Plan(e.to_string()))?;
+
         let time_partition = object_store_format.time_partition;
         let mut time_filters = extract_primary_filter(filters, &time_partition);
-        if time_filters.is_empty() {
-            return Err(DataFusionError::Plan("potentially unbounded query on time range. Table scanning requires atleast one time bound".to_string()));
-        }
-
         if is_within_staging_window(&time_filters) {
             self.get_staging_execution_plan(
                 &mut execution_plans,
@@ -504,12 +545,9 @@ impl TableProvider for StandardTableProvider {
         };
         let mut merged_snapshot = Snapshot::default();
         if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
-            let path = RelativePathBuf::from_iter([&self.stream, STREAM_ROOT_DIRECTORY]);
-            let obs = glob_storage
-                .get_objects(
-                    Some(&path),
-                    Box::new(|file_name| file_name.ends_with("stream.json")),
-                )
+            let obs = PARSEABLE
+                .metastore
+                .get_all_stream_jsons(&self.stream, None)
                 .await;
             if let Ok(obs) = obs {
                 for ob in obs {
@@ -537,7 +575,6 @@ impl TableProvider for StandardTableProvider {
                 self.legacy_listing_table(
                     &mut execution_plans,
                     glob_storage.clone(),
-                    object_store.clone(),
                     &listing_time_filter,
                     state,
                     projection,
@@ -552,9 +589,9 @@ impl TableProvider for StandardTableProvider {
         let mut manifest_files = collect_from_snapshot(
             &merged_snapshot,
             &time_filters,
-            object_store,
             filters,
             limit,
+            &self.stream,
         )
         .await?;
 
@@ -563,20 +600,20 @@ impl TableProvider for StandardTableProvider {
         }
 
         // Hot tier data fetch
-        if let Some(hot_tier_manager) = HotTierManager::global() {
-            if hot_tier_manager.check_stream_hot_tier_exists(&self.stream) {
-                self.get_hottier_exectuion_plan(
-                    &mut execution_plans,
-                    hot_tier_manager,
-                    &mut manifest_files,
-                    projection,
-                    filters,
-                    limit,
-                    state,
-                    time_partition.clone(),
-                )
-                .await?;
-            }
+        if let Some(hot_tier_manager) = HotTierManager::global()
+            && hot_tier_manager.check_stream_hot_tier_exists(&self.stream)
+        {
+            self.get_hottier_exectuion_plan(
+                &mut execution_plans,
+                hot_tier_manager,
+                &mut manifest_files,
+                projection,
+                filters,
+                limit,
+                state,
+                time_partition.clone(),
+            )
+            .await?;
         }
         if manifest_files.is_empty() {
             QUERY_CACHE_HIT.with_label_values(&[&self.stream]).inc();
@@ -682,10 +719,10 @@ impl PartialTimeFilter {
         Expr::BinaryExpr(BinaryExpr::new(
             Box::new(left),
             op,
-            Box::new(Expr::Literal(ScalarValue::TimestampMillisecond(
-                Some(right),
+            Box::new(Expr::Literal(
+                ScalarValue::TimestampMillisecond(Some(right), None),
                 None,
-            ))),
+            )),
         ))
     }
 }
@@ -827,7 +864,7 @@ fn extract_timestamp_bound(
     binexpr: &BinaryExpr,
     time_partition: &Option<String>,
 ) -> Option<(Operator, NaiveDateTime)> {
-    let Expr::Literal(value) = binexpr.right.as_ref() else {
+    let Expr::Literal(value, None) = binexpr.right.as_ref() else {
         return None;
     };
 
@@ -846,32 +883,13 @@ fn extract_timestamp_bound(
             DateTime::from_timestamp_nanos(*value).naive_utc(),
         )),
         ScalarValue::Utf8(Some(str_value)) if is_time_partition => {
-            Some((binexpr.op, str_value.parse::<NaiveDateTime>().unwrap()))
+            match str_value.parse::<NaiveDateTime>() {
+                Ok(dt) => Some((binexpr.op, dt)),
+                Err(_) => None,
+            }
         }
         _ => None,
     }
-}
-
-pub async fn collect_manifest_files(
-    storage: Arc<dyn ObjectStore>,
-    manifest_urls: Vec<String>,
-) -> Result<Vec<Manifest>, object_store::Error> {
-    let tasks = manifest_urls.into_iter().map(|path| {
-        let path = Path::parse(path).unwrap();
-        let storage = Arc::clone(&storage);
-        async move { storage.get(&path).await }
-    });
-
-    let resp = FuturesOrdered::from_iter(tasks)
-        .and_then(|res| res.bytes())
-        .collect::<Vec<object_store::Result<Bytes>>>()
-        .await;
-
-    Ok(resp
-        .into_iter()
-        .flat_map(|res| res.ok())
-        .map(|bytes| serde_json::from_slice(&bytes).unwrap())
-        .collect())
 }
 
 // Extract start time and end time from filter predicate
@@ -918,7 +936,7 @@ pub trait ManifestExt: ManifestFile {
             let Expr::BinaryExpr(expr) = expr else {
                 return None;
             };
-            let Expr::Literal(value) = &*expr.right else {
+            let Expr::Literal(value, None) = &*expr.right else {
                 return None;
             };
             /* `BinaryExp` doesn't implement `Copy` */
@@ -1105,10 +1123,10 @@ mod tests {
         let binexpr = BinaryExpr {
             left: Box::new(Expr::Column("timestamp_column".into())),
             op: Operator::Eq,
-            right: Box::new(Expr::Literal(ScalarValue::TimestampMillisecond(
-                Some(1672531200000),
+            right: Box::new(Expr::Literal(
+                ScalarValue::TimestampMillisecond(Some(1672531200000), None),
                 None,
-            ))),
+            )),
         };
 
         let time_partition = Some("timestamp_column".to_string());
@@ -1127,10 +1145,10 @@ mod tests {
         let binexpr = BinaryExpr {
             left: Box::new(Expr::Column("timestamp_column".into())),
             op: Operator::Gt,
-            right: Box::new(Expr::Literal(ScalarValue::TimestampNanosecond(
-                Some(1672531200000000000),
+            right: Box::new(Expr::Literal(
+                ScalarValue::TimestampNanosecond(Some(1672531200000000000), None),
                 None,
-            ))),
+            )),
         };
 
         let time_partition = Some("timestamp_column".to_string());
@@ -1150,7 +1168,10 @@ mod tests {
         let binexpr = BinaryExpr {
             left: Box::new(Expr::Column("timestamp_column".into())),
             op: Operator::Lt,
-            right: Box::new(Expr::Literal(ScalarValue::Utf8(Some(timestamp.to_owned())))),
+            right: Box::new(Expr::Literal(
+                ScalarValue::Utf8(Some(timestamp.to_owned())),
+                None,
+            )),
         };
 
         let time_partition = Some("timestamp_column".to_string());
@@ -1170,7 +1191,10 @@ mod tests {
         let binexpr = BinaryExpr {
             left: Box::new(Expr::Column("other_column".into())),
             op: Operator::Eq,
-            right: Box::new(Expr::Literal(ScalarValue::Utf8(Some(timestamp.to_owned())))),
+            right: Box::new(Expr::Literal(
+                ScalarValue::Utf8(Some(timestamp.to_owned())),
+                None,
+            )),
         };
 
         let time_partition = Some("timestamp_column".to_string());
@@ -1184,7 +1208,7 @@ mod tests {
         let binexpr = BinaryExpr {
             left: Box::new(Expr::Column("timestamp_column".into())),
             op: Operator::Eq,
-            right: Box::new(Expr::Literal(ScalarValue::Int32(Some(42)))),
+            right: Box::new(Expr::Literal(ScalarValue::Int32(Some(42)), None)),
         };
 
         let time_partition = Some("timestamp_column".to_string());
@@ -1212,10 +1236,10 @@ mod tests {
         let binexpr = BinaryExpr {
             left: Box::new(Expr::Column("timestamp_column".into())),
             op: Operator::Eq,
-            right: Box::new(Expr::Literal(ScalarValue::TimestampMillisecond(
-                Some(1672531200000),
+            right: Box::new(Expr::Literal(
+                ScalarValue::TimestampMillisecond(Some(1672531200000), None),
                 None,
-            ))),
+            )),
         };
 
         let time_partition = None;
@@ -1230,10 +1254,10 @@ mod tests {
         let binexpr = BinaryExpr {
             left: Box::new(Expr::Column("timestamp_column".into())),
             op: Operator::Eq,
-            right: Box::new(Expr::Literal(ScalarValue::TimestampNanosecond(
-                Some(1672531200000000000),
+            right: Box::new(Expr::Literal(
+                ScalarValue::TimestampNanosecond(Some(1672531200000000000), None),
                 None,
-            ))),
+            )),
         };
         let result = extract_timestamp_bound(&binexpr, &time_partition);
 

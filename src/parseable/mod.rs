@@ -47,20 +47,25 @@ use crate::{
         format::{LogSource, LogSourceEntry},
     },
     handlers::{
-        STREAM_TYPE_KEY,
+        STREAM_TYPE_KEY, TelemetryType,
         http::{
-            cluster::{INTERNAL_STREAM_NAME, sync_streams_with_ingestors},
+            cluster::{
+                BILLING_METRICS_STREAM_NAME, PMETA_STREAM_NAME, sync_streams_with_ingestors,
+            },
             ingest::PostError,
             logstream::error::{CreateStreamError, StreamError},
             modal::{ingest_server::INGESTOR_META, utils::logstream_utils::PutStreamHeaders},
         },
     },
     metadata::{LogStreamMetadata, SchemaVersion},
+    metastore::{
+        metastore_traits::Metastore, metastores::object_store_metastore::ObjectStoreMetastore,
+    },
     option::Mode,
     static_schema::{StaticSchema, convert_static_schema_to_arrow_schema},
     storage::{
         ObjectStorageError, ObjectStorageProvider, ObjectStoreFormat, Owner, Permisssion,
-        StreamType, object_storage::parseable_json_path,
+        StreamType,
     },
     validator,
 };
@@ -101,31 +106,58 @@ pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| match Cli::parse().storage 
             .exit();
         }
 
+        // for now create a metastore without using a CLI arg
+        let metastore = ObjectStoreMetastore {
+            storage: args.storage.construct_client(),
+        };
+
         Parseable::new(
             args.options,
             #[cfg(feature = "kafka")]
             args.kafka,
             Arc::new(args.storage),
+            Arc::new(metastore),
         )
     }
-    StorageOptions::S3(args) => Parseable::new(
-        args.options,
-        #[cfg(feature = "kafka")]
-        args.kafka,
-        Arc::new(args.storage),
-    ),
-    StorageOptions::Blob(args) => Parseable::new(
-        args.options,
-        #[cfg(feature = "kafka")]
-        args.kafka,
-        Arc::new(args.storage),
-    ),
-    StorageOptions::Gcs(args) => Parseable::new(
-        args.options,
-        #[cfg(feature = "kafka")]
-        args.kafka,
-        Arc::new(args.storage),
-    ),
+    StorageOptions::S3(args) => {
+        // for now create a metastore without using a CLI arg
+        let metastore = ObjectStoreMetastore {
+            storage: args.storage.construct_client(),
+        };
+        Parseable::new(
+            args.options,
+            #[cfg(feature = "kafka")]
+            args.kafka,
+            Arc::new(args.storage),
+            Arc::new(metastore),
+        )
+    }
+    StorageOptions::Blob(args) => {
+        // for now create a metastore without using a CLI arg
+        let metastore = ObjectStoreMetastore {
+            storage: args.storage.construct_client(),
+        };
+        Parseable::new(
+            args.options,
+            #[cfg(feature = "kafka")]
+            args.kafka,
+            Arc::new(args.storage),
+            Arc::new(metastore),
+        )
+    }
+    StorageOptions::Gcs(args) => {
+        // for now create a metastore without using a CLI arg
+        let metastore = ObjectStoreMetastore {
+            storage: args.storage.construct_client(),
+        };
+        Parseable::new(
+            args.options,
+            #[cfg(feature = "kafka")]
+            args.kafka,
+            Arc::new(args.storage),
+            Arc::new(metastore),
+        )
+    }
 });
 
 /// All state related to parseable, in one place.
@@ -137,6 +169,8 @@ pub struct Parseable {
     /// Metadata and staging realting to each logstreams
     /// A globally shared mapping of `Streams` that parseable is aware of.
     pub streams: Streams,
+    /// metastore
+    pub metastore: Arc<dyn Metastore>,
     /// Used to configure the kafka connector
     #[cfg(feature = "kafka")]
     pub kafka_config: KafkaConfig,
@@ -147,10 +181,12 @@ impl Parseable {
         options: Options,
         #[cfg(feature = "kafka")] kafka_config: KafkaConfig,
         storage: Arc<dyn ObjectStorageProvider>,
+        metastore: Arc<dyn Metastore>,
     ) -> Self {
         Parseable {
             options: Arc::new(options),
             storage,
+            metastore,
             streams: Streams::default(),
             #[cfg(feature = "kafka")]
             kafka_config,
@@ -203,10 +239,14 @@ impl Parseable {
     // if the proper data directory is provided, or s3 bucket is provided etc
     pub async fn validate_storage(&self) -> Result<Option<Bytes>, ObjectStorageError> {
         let obj_store = self.storage.get_object_store();
-        let rel_path = parseable_json_path();
         let mut has_parseable_json = false;
-        let parseable_json_result = obj_store.get_object(&rel_path).await;
-        if parseable_json_result.is_ok() {
+        let parseable_json_result = self
+            .metastore
+            .get_parseable_metadata()
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
+
+        if parseable_json_result.is_some() {
             has_parseable_json = true;
         }
 
@@ -217,12 +257,12 @@ impl Parseable {
             Err(_) => false,
         };
 
-        let has_streams = obj_store.list_streams().await.is_ok();
+        let has_streams = PARSEABLE.metastore.list_streams().await.is_ok();
         if !has_dirs && !has_parseable_json {
             return Ok(None);
         }
         if has_streams {
-            return Ok(Some(parseable_json_result.unwrap()));
+            return Ok(parseable_json_result);
         }
 
         if self.storage.name() == "drive" {
@@ -285,13 +325,13 @@ impl Parseable {
     ) -> Result<bool, StreamError> {
         // Proceed to create log stream if it doesn't exist
         let storage = self.storage.get_object_store();
-        let streams = storage.list_streams().await?;
+        let streams = PARSEABLE.metastore.list_streams().await?;
         if !streams.contains(stream_name) {
             return Ok(false);
         }
         let (stream_metadata_bytes, schema_bytes) = try_join!(
             storage.create_stream_from_ingestor(stream_name),
-            storage.create_schema_from_storage(stream_name)
+            storage.create_schema_from_metastore(stream_name)
         )?;
 
         let stream_metadata = if stream_metadata_bytes.is_empty() {
@@ -319,10 +359,13 @@ impl Parseable {
             .and_then(|limit| limit.parse().ok());
         let custom_partition = stream_metadata.custom_partition;
         let static_schema_flag = stream_metadata.static_schema_flag;
+        let hot_tier_enabled = stream_metadata.hot_tier_enabled;
+        let hot_tier = stream_metadata.hot_tier.clone();
         let stream_type = stream_metadata.stream_type;
         let schema_version = stream_metadata.schema_version;
         let log_source = stream_metadata.log_source;
-        let metadata = LogStreamMetadata::new(
+        let telemetry_type = stream_metadata.telemetry_type;
+        let mut metadata = LogStreamMetadata::new(
             created_at,
             time_partition,
             time_partition_limit,
@@ -332,18 +375,29 @@ impl Parseable {
             stream_type,
             schema_version,
             log_source,
+            telemetry_type,
         );
+
+        // Set hot tier fields from the stored metadata
+        metadata.hot_tier_enabled = hot_tier_enabled;
+        metadata.hot_tier.clone_from(&hot_tier);
+
         let ingestor_id = INGESTOR_META
             .get()
             .map(|ingestor_metadata| ingestor_metadata.get_node_id());
 
         // Gets write privileges only for creating the stream when it doesn't already exist.
-        self.streams.get_or_create(
+        let stream = self.streams.get_or_create(
             self.options.clone(),
             stream_name.to_owned(),
             metadata,
             ingestor_id,
         );
+
+        // Set hot tier configuration in memory based on stored metadata
+        if let Some(hot_tier_config) = hot_tier {
+            stream.set_hot_tier(Some(hot_tier_config));
+        }
 
         //commit schema in memory
         commit_schema(stream_name, schema).map_err(|e| StreamError::Anyhow(e.into()))?;
@@ -353,17 +407,38 @@ impl Parseable {
 
     pub async fn create_internal_stream_if_not_exists(&self) -> Result<(), StreamError> {
         let log_source_entry = LogSourceEntry::new(LogSource::Pmeta, HashSet::new());
-        match self
+        let internal_stream_result = self
             .create_stream_if_not_exists(
-                INTERNAL_STREAM_NAME,
+                PMETA_STREAM_NAME,
                 StreamType::Internal,
                 None,
                 vec![log_source_entry],
+                TelemetryType::Logs,
             )
-            .await
-        {
-            Err(_) | Ok(true) => return Ok(()),
-            _ => {}
+            .await;
+
+        let log_source_entry = LogSourceEntry::new(LogSource::Json, HashSet::new());
+        let billing_stream_result = self
+            .create_stream_if_not_exists(
+                BILLING_METRICS_STREAM_NAME,
+                StreamType::Internal,
+                None,
+                vec![log_source_entry],
+                TelemetryType::Logs,
+            )
+            .await;
+
+        // Check if either stream creation failed
+        if let Err(e) = &internal_stream_result {
+            tracing::error!("Failed to create pmeta stream: {:?}", e);
+        }
+        if let Err(e) = &billing_stream_result {
+            tracing::error!("Failed to create billing stream: {:?}", e);
+        }
+
+        // Check if both streams already existed
+        if matches!(internal_stream_result, Ok(true)) && matches!(billing_stream_result, Ok(true)) {
+            return Ok(());
         }
 
         let mut header_map = HeaderMap::new();
@@ -372,7 +447,23 @@ impl Parseable {
             HeaderValue::from_str(&StreamType::Internal.to_string()).unwrap(),
         );
         header_map.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
-        sync_streams_with_ingestors(header_map, Bytes::new(), INTERNAL_STREAM_NAME).await?;
+
+        // Sync only the streams that were created successfully
+        if matches!(internal_stream_result, Ok(false))
+            && let Err(e) =
+                sync_streams_with_ingestors(header_map.clone(), Bytes::new(), PMETA_STREAM_NAME)
+                    .await
+        {
+            tracing::error!("Failed to sync pmeta stream with ingestors: {:?}", e);
+        }
+
+        if matches!(billing_stream_result, Ok(false))
+            && let Err(e) =
+                sync_streams_with_ingestors(header_map, Bytes::new(), BILLING_METRICS_STREAM_NAME)
+                    .await
+        {
+            tracing::error!("Failed to sync billing stream with ingestors: {:?}", e);
+        }
 
         Ok(())
     }
@@ -384,6 +475,7 @@ impl Parseable {
         stream_type: StreamType,
         custom_partition: Option<&String>,
         log_source: Vec<LogSourceEntry>,
+        telemetry_type: TelemetryType,
     ) -> Result<bool, PostError> {
         if self.streams.contains(stream_name) {
             return Ok(true);
@@ -414,6 +506,7 @@ impl Parseable {
             Arc::new(Schema::empty()),
             stream_type,
             log_source,
+            telemetry_type,
         )
         .await?;
 
@@ -485,6 +578,7 @@ impl Parseable {
             update_stream_flag,
             stream_type,
             log_source,
+            telemetry_type,
         } = headers.into();
 
         let stream_in_memory_dont_update =
@@ -519,15 +613,21 @@ impl Parseable {
                 .await;
         }
 
-        if !time_partition.is_empty() || !time_partition_limit.is_empty() {
-            return Err(StreamError::Custom {
-                msg: "Creating stream with time partition is not supported anymore".to_string(),
-                status: StatusCode::BAD_REQUEST,
-            });
-        }
+        let time_partition_in_days = if !time_partition_limit.is_empty() {
+            Some(validate_time_partition_limit(&time_partition_limit)?)
+        } else {
+            None
+        };
 
         if let Some(custom_partition) = &custom_partition {
             validate_custom_partition(custom_partition)?;
+        }
+
+        if !time_partition.is_empty() && custom_partition.is_some() {
+            return Err(StreamError::Custom {
+                msg: "Cannot set both time partition and custom partition".to_string(),
+                status: StatusCode::BAD_REQUEST,
+            });
         }
 
         let schema = validate_static_schema(
@@ -541,12 +641,13 @@ impl Parseable {
         self.create_stream(
             stream_name.to_string(),
             &time_partition,
-            None,
+            time_partition_in_days,
             custom_partition.as_ref(),
             static_schema_flag,
             schema,
             stream_type,
             vec![log_source_entry],
+            telemetry_type,
         )
         .await?;
 
@@ -603,6 +704,7 @@ impl Parseable {
         schema: Arc<Schema>,
         stream_type: StreamType,
         log_source: Vec<LogSourceEntry>,
+        telemetry_type: TelemetryType,
     ) -> Result<(), CreateStreamError> {
         // fail to proceed if invalid stream name
         if stream_type != StreamType::Internal {
@@ -625,6 +727,7 @@ impl Parseable {
                 group: PARSEABLE.options.username.clone(),
             },
             log_source: log_source.clone(),
+            telemetry_type,
             ..Default::default()
         };
 
@@ -653,6 +756,7 @@ impl Parseable {
                     stream_type,
                     SchemaVersion::V1, // New stream
                     log_source,
+                    telemetry_type,
                 );
                 let ingestor_id = INGESTOR_META
                     .get()

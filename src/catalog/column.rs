@@ -156,8 +156,8 @@ impl TryFrom<&Statistics> for TypedStatistics {
                 max: *stats.max_opt().expect("Int64 stats max not set"),
             }),
             Statistics::Int96(stats) => TypedStatistics::Int(Int64Type {
-                min: stats.min_opt().expect("Int96 stats min not set").to_i64(),
-                max: stats.max_opt().expect("Int96 stats max not set").to_i64(),
+                min: int96_to_i64_nanos(stats.min_opt().expect("Int96 stats min not set")),
+                max: int96_to_i64_nanos(stats.max_opt().expect("Int96 stats max not set")),
             }),
             Statistics::Float(stats) => TypedStatistics::Float(Float64Type {
                 min: *stats.min_opt().expect("Float32 stats min not set") as f64,
@@ -195,4 +195,22 @@ impl TryFrom<&Statistics> for TypedStatistics {
 
         Ok(res)
     }
+}
+
+// Int96 is a deprecated timestamp format used by legacy Impala files
+// Convert to i64 nanoseconds since Unix epoch for statistics
+fn int96_to_i64_nanos(int96: &parquet::data_type::Int96) -> i64 {
+    const JULIAN_DAY_OF_EPOCH: i64 = 2_440_588; // Julian day for 1970-01-01
+    const SECONDS_PER_DAY: i64 = 86_400;
+    const NANOS_PER_SECOND: i64 = 1_000_000_000;
+
+    // Extract nanoseconds from first 8 bytes (little-endian)
+    let nanos_of_day = int96.data()[0] as i64 | ((int96.data()[1] as i64) << 32);
+
+    // Extract Julian day from last 4 bytes
+    let julian_day = int96.data()[2] as i64;
+
+    // Convert to nanoseconds since Unix epoch
+    let days_since_epoch = julian_day - JULIAN_DAY_OF_EPOCH;
+    days_since_epoch * SECONDS_PER_DAY * NANOS_PER_SECOND + nanos_of_day
 }

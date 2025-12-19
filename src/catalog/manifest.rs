@@ -19,7 +19,12 @@
 use std::collections::HashMap;
 
 use itertools::Itertools;
-use parquet::{file::reader::FileReader, format::SortingColumn};
+use parquet::file::{
+    metadata::{RowGroupMetaData, SortingColumn},
+    reader::FileReader,
+};
+
+use crate::metastore::metastore_traits::MetastoreObject;
 
 use super::column::Column;
 
@@ -88,6 +93,16 @@ impl Manifest {
     }
 }
 
+impl MetastoreObject for Manifest {
+    fn get_object_path(&self) -> String {
+        unimplemented!()
+    }
+
+    fn get_object_id(&self) -> String {
+        unimplemented!()
+    }
+}
+
 pub fn create_from_parquet_file(
     object_store_path: String,
     fs_file_path: &std::path::Path,
@@ -112,13 +127,12 @@ pub fn create_from_parquet_file(
     let columns = column_statistics(row_groups);
     manifest_file.columns = columns.into_values().collect();
     let mut sort_orders = sort_order(row_groups);
-    if let Some(last_sort_order) = sort_orders.pop() {
-        if sort_orders
+    if let Some(last_sort_order) = sort_orders.pop()
+        && sort_orders
             .into_iter()
             .all(|sort_order| sort_order == last_sort_order)
-        {
-            manifest_file.sort_order_id = last_sort_order;
-        }
+    {
+        manifest_file.sort_order_id = last_sort_order;
     }
 
     Ok(manifest_file)
@@ -159,9 +173,7 @@ fn sort_order(
     sort_orders
 }
 
-fn column_statistics(
-    row_groups: &[parquet::file::metadata::RowGroupMetaData],
-) -> HashMap<String, Column> {
+fn column_statistics(row_groups: &[RowGroupMetaData]) -> HashMap<String, Column> {
     let mut columns: HashMap<String, Column> = HashMap::new();
     for row_group in row_groups {
         for col in row_group.columns() {

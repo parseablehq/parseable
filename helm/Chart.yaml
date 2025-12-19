@@ -2,8 +2,8 @@ apiVersion: v2
 name: parseable
 description: Helm chart for Parseable - Fast Observability on S3
 type: application
-version: 2.4.0
-appVersion: "v2.4.0"
+version: 2.5.4
+appVersion: "v2.5.4"
 icon: "https://raw.githubusercontent.com/parseablehq/.github/main/images/new-logo.svg"
 
 maintainers:

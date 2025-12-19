@@ -18,7 +18,11 @@
 
 use std::{fmt, path::Path, sync::Arc};
 
-use actix_web::{App, HttpServer, middleware::from_fn, web::ServiceConfig};
+use actix_web::{
+    App, HttpServer,
+    middleware::from_fn,
+    web::{self, ServiceConfig},
+};
 use actix_web_prometheus::PrometheusMetrics;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -34,9 +38,11 @@ use tokio::sync::oneshot;
 use tracing::{error, info, warn};
 
 use crate::{
-    alerts::{ALERTS, target::TARGETS},
+    alerts::{ALERTS, get_alert_manager, target::TARGETS},
     cli::Options,
     correlation::CORRELATIONS,
+    hottier::{HotTierManager, StreamHotTier},
+    metastore::metastore_traits::MetastoreObject,
     oidc::Claims,
     option::Mode,
     parseable::PARSEABLE,
@@ -45,7 +51,7 @@ use crate::{
     utils::get_node_id,
 };
 
-use super::{API_BASE_PATH, API_VERSION, audit, cross_origin_config, health_check, resource_check};
+use super::{API_BASE_PATH, API_VERSION, cross_origin_config, health_check, resource_check};
 
 pub mod ingest;
 pub mod ingest_server;
@@ -65,7 +71,7 @@ include!(concat!(env!("OUT_DIR"), "/generated.rs"));
 #[async_trait]
 pub trait ParseableServer {
     /// configure the router
-    fn configure_routes(config: &mut ServiceConfig, oidc_client: Option<OpenIdClient>)
+    fn configure_routes(config: &mut ServiceConfig)
     where
         Self: Sized;
 
@@ -94,7 +100,7 @@ pub trait ParseableServer {
                 let client = config
                     .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
                     .await?;
-                Some(Arc::new(client))
+                Some(client)
             }
 
             None => None,
@@ -114,10 +120,10 @@ pub trait ParseableServer {
         // fn that creates the app
         let create_app_fn = move || {
             App::new()
+                .app_data(web::Data::new(oidc_client.clone()))
                 .wrap(prometheus.clone())
-                .configure(|config| Self::configure_routes(config, oidc_client.clone()))
+                .configure(|config| Self::configure_routes(config))
                 .wrap(from_fn(health_check::check_shutdown_middleware))
-                .wrap(from_fn(audit::audit_log_middleware))
                 .wrap(actix_web::middleware::Logger::default())
                 .wrap(actix_web::middleware::Compress::default())
                 .wrap(cross_origin_config())
@@ -183,7 +189,16 @@ pub async fn load_on_init() -> anyhow::Result<()> {
             },
             async { FILTERS.load().await.context("Failed to load filters") },
             async { DASHBOARDS.load().await.context("Failed to load dashboards") },
-            async { ALERTS.load().await.context("Failed to load alerts") },
+            async {
+                get_alert_manager().await;
+                let guard = ALERTS.write().await;
+                let alerts = if let Some(alerts) = guard.as_ref() {
+                    alerts
+                } else {
+                    return Err(anyhow::Error::msg("No AlertManager set"));
+                };
+                alerts.load().await
+            },
             async { TARGETS.load().await.context("Failed to load targets") },
         )
         .await;
@@ -264,6 +279,16 @@ pub struct NodeMetadata {
     pub node_type: NodeType,
 }
 
+impl MetastoreObject for NodeMetadata {
+    fn get_object_path(&self) -> String {
+        self.file_path().to_string()
+    }
+
+    fn get_object_id(&self) -> String {
+        self.node_id.clone()
+    }
+}
+
 impl NodeMetadata {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -301,7 +326,7 @@ impl NodeMetadata {
         }
 
         // Attempt to load metadata from storage
-        let storage_metas = Self::load_from_storage(node_type_str.to_string()).await;
+        let storage_metas = Self::load_from_storage(node_type.clone()).await;
         let url = PARSEABLE.options.get_url(node_type.to_mode());
         let port = url.port().unwrap_or(80).to_string();
         let url = url.to_string();
@@ -328,10 +353,7 @@ impl NodeMetadata {
         meta.put_on_disk(staging_path)
             .expect("Couldn't write updated metadata to disk");
 
-        let path = meta.file_path();
-        let resource = serde_json::to_vec(&meta)?.into();
-        let store = PARSEABLE.storage.get_object_store();
-        store.put_object(&path, resource).await?;
+        PARSEABLE.metastore.put_node_metadata(&meta).await?;
 
         Ok(Arc::new(meta))
     }
@@ -341,26 +363,13 @@ impl NodeMetadata {
         meta.put_on_disk(staging_path)
             .expect("Couldn't write new metadata to disk");
 
-        let path = meta.file_path();
-        let resource = serde_json::to_vec(&meta)?.into();
-        let store = PARSEABLE.storage.get_object_store();
-        store.put_object(&path, resource).await?;
+        PARSEABLE.metastore.put_node_metadata(&meta).await?;
 
         Ok(Arc::new(meta))
     }
 
-    async fn load_from_storage(node_type: String) -> Vec<NodeMetadata> {
-        let path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
-        let glob_storage = PARSEABLE.storage.get_object_store();
-        let obs = glob_storage
-            .get_objects(
-                Some(&path),
-                Box::new({
-                    let node_type = node_type.clone();
-                    move |file_name| file_name.contains(&node_type)
-                }),
-            )
-            .await;
+    async fn load_from_storage(node_type: NodeType) -> Vec<NodeMetadata> {
+        let obs = PARSEABLE.metastore.get_node_metadata(node_type).await;
 
         let mut metadata = vec![];
         if let Ok(obs) = obs {
@@ -590,6 +599,55 @@ pub type IngestorMetadata = NodeMetadata;
 pub type IndexerMetadata = NodeMetadata;
 pub type QuerierMetadata = NodeMetadata;
 pub type PrismMetadata = NodeMetadata;
+
+/// Initialize hot tier metadata files for streams that have hot tier configuration
+/// in their stream metadata but don't have local hot tier metadata files yet.
+/// This function is called once during query server startup.
+pub async fn initialize_hot_tier_metadata_on_startup(
+    hot_tier_manager: &HotTierManager,
+) -> anyhow::Result<()> {
+    // Collect hot tier configurations from streams before doing async operations
+    let hot_tier_configs: Vec<(String, StreamHotTier)> = {
+        let streams_guard = PARSEABLE.streams.read().unwrap();
+        streams_guard
+            .iter()
+            .filter_map(|(stream_name, stream)| {
+                // Skip if hot tier metadata file already exists for this stream
+                if hot_tier_manager.check_stream_hot_tier_exists(stream_name) {
+                    return None;
+                }
+
+                // Get the hot tier configuration from the in-memory stream metadata
+                stream
+                    .get_hot_tier()
+                    .map(|config| (stream_name.clone(), config))
+            })
+            .collect()
+    };
+
+    for (stream_name, hot_tier_config) in hot_tier_configs {
+        // Create the hot tier metadata file with the configuration from stream metadata
+        let mut hot_tier_metadata = hot_tier_config;
+        hot_tier_metadata.used_size = 0;
+        hot_tier_metadata.available_size = hot_tier_metadata.size;
+        hot_tier_metadata.oldest_date_time_entry = None;
+        if hot_tier_metadata.version.is_none() {
+            hot_tier_metadata.version = Some(crate::hottier::CURRENT_HOT_TIER_VERSION.to_string());
+        }
+
+        if let Err(e) = hot_tier_manager
+            .put_hot_tier(&stream_name, &mut hot_tier_metadata)
+            .await
+        {
+            warn!(
+                "Failed to initialize hot tier metadata for stream {}: {}",
+                stream_name, e
+            );
+        }
+    }
+
+    Ok(())
+}
 
 #[cfg(test)]
 mod test {

@@ -16,15 +16,19 @@
  *
  */
 
+use crate::event::USER_AGENT_KEY;
+use crate::event::format::EventFormat;
 use crate::event::format::LogSource;
 use crate::event::format::LogSourceEntry;
+use crate::event::format::json;
+use crate::handlers::TelemetryType;
 use crate::handlers::http::ingest::PostError;
-use crate::handlers::http::modal::utils::ingest_utils::flatten_and_push_logs;
+use crate::metadata::SchemaVersion;
 use crate::parseable::PARSEABLE;
 use crate::query::QUERY_SESSION_STATE;
 use crate::storage::ObjectStorageError;
 use crate::storage::StreamType;
-use crate::utils::DATASET_STATS_STREAM_NAME;
+use crate::utils::json::apply_generic_flattening_for_partition;
 use arrow_array::Array;
 use arrow_array::BinaryArray;
 use arrow_array::BinaryViewArray;
@@ -38,17 +42,24 @@ use arrow_array::TimestampMillisecondArray;
 use arrow_schema::DataType;
 use arrow_schema::Schema;
 use arrow_schema::TimeUnit;
+use chrono::DateTime;
+use chrono::NaiveDateTime;
+use chrono::Utc;
 use datafusion::prelude::ParquetReadOptions;
 use datafusion::prelude::SessionContext;
 use futures::StreamExt;
+use regex::Regex;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::path::Path;
+use tracing::trace;
 use tracing::warn;
 use ulid::Ulid;
 
+pub const DATASET_STATS_STREAM_NAME: &str = "pstats";
+const DATASET_STATS_CUSTOM_PARTITION: &str = "dataset_name";
 const MAX_CONCURRENT_FIELD_STATS: usize = 10;
 
 #[derive(Serialize, Debug)]
@@ -80,6 +91,13 @@ pub async fn calculate_field_stats(
     schema: &Schema,
     max_field_statistics: usize,
 ) -> Result<bool, PostError> {
+    //create datetime from timestamp present in parquet path
+    let parquet_ts = extract_datetime_from_parquet_path_regex(parquet_path).map_err(|e| {
+        PostError::Invalid(anyhow::anyhow!(
+            "Failed to extract datetime from parquet path: {}",
+            e
+        ))
+    })?;
     let field_stats = {
         let ctx = SessionContext::new_with_state(QUERY_SESSION_STATE.clone());
         let table_name = Ulid::new().to_string();
@@ -111,17 +129,41 @@ pub async fn calculate_field_stats(
         .create_stream_if_not_exists(
             DATASET_STATS_STREAM_NAME,
             StreamType::Internal,
-            Some(&"dataset_name".into()),
+            Some(&DATASET_STATS_CUSTOM_PARTITION.to_string()),
             vec![log_source_entry],
+            TelemetryType::Logs,
         )
         .await?;
-    flatten_and_push_logs(
+    let vec_json = apply_generic_flattening_for_partition(
         stats_value,
-        DATASET_STATS_STREAM_NAME,
-        &LogSource::Json,
-        &HashMap::new(),
-    )
-    .await?;
+        None,
+        None,
+        Some(&DATASET_STATS_CUSTOM_PARTITION.to_string()),
+    )?;
+    let mut p_custom_fields = HashMap::new();
+    p_custom_fields.insert(USER_AGENT_KEY.to_string(), "parseable".to_string());
+    for json in vec_json {
+        let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
+        let schema = PARSEABLE
+            .get_stream(DATASET_STATS_STREAM_NAME)?
+            .get_schema_raw();
+        json::Event {
+            json,
+            p_timestamp: parquet_ts,
+        }
+        .into_event(
+            DATASET_STATS_STREAM_NAME.to_string(),
+            origin_size,
+            &schema,
+            false,
+            Some(&DATASET_STATS_CUSTOM_PARTITION.to_string()),
+            None,
+            SchemaVersion::V1,
+            StreamType::Internal,
+            &p_custom_fields,
+        )?
+        .process()?;
+    }
     Ok(stats_calculated)
 }
 
@@ -173,7 +215,7 @@ async fn calculate_single_field_stats(
             let mut stream = match df.execute_stream().await {
                 Ok(stream) => stream,
                 Err(e) => {
-                    warn!("Failed to execute distinct stats query: {e}");
+                    trace!("Failed to execute distinct stats query: {e}");
                     return None; // Return empty if query fails
                 }
             };
@@ -181,7 +223,7 @@ async fn calculate_single_field_stats(
                 let rb = match batch_result {
                     Ok(batch) => batch,
                     Err(e) => {
-                        warn!("Failed to fetch batch in distinct stats query: {e}");
+                        trace!("Failed to fetch batch in distinct stats query: {e}");
                         continue; // Skip this batch if there's an error
                     }
                 };
@@ -209,7 +251,7 @@ async fn calculate_single_field_stats(
             }
         }
         Err(e) => {
-            warn!("Failed to execute distinct stats query for field: {field_name}, error: {e}");
+            trace!("Failed to execute distinct stats query for field: {field_name}, error: {e}");
             return None;
         }
     }
@@ -381,6 +423,35 @@ fn format_arrow_value(array: &dyn Array, idx: usize) -> String {
             );
             "UNSUPPORTED".to_string()
         }
+    }
+}
+
+fn extract_datetime_from_parquet_path_regex(
+    parquet_path: &Path,
+) -> Result<DateTime<Utc>, Box<dyn std::error::Error>> {
+    let filename = parquet_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Invalid filename")?;
+
+    // Regex to match date=YYYY-MM-DD.hour=HH.minute=MM pattern
+    let re = Regex::new(r"date=(\d{4}-\d{2}-\d{2})\.hour=(\d{1,2})\.minute=(\d{1,2})")?;
+
+    if let Some(captures) = re.captures(filename) {
+        let date = &captures[1];
+        let hour = &captures[2];
+        let minute = &captures[3];
+
+        // Create datetime string
+        let datetime_str = format!("{} {}:{}:00", date, hour, minute);
+
+        // Parse the datetime
+        let naive_dt = NaiveDateTime::parse_from_str(&datetime_str, "%Y-%m-%d %H:%M:%S")?;
+        let datetime = DateTime::<Utc>::from_naive_utc_and_offset(naive_dt, Utc);
+
+        Ok(datetime)
+    } else {
+        Err("Could not parse datetime from filename".into())
     }
 }
 

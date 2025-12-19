@@ -85,10 +85,10 @@ pub fn v2_v3(mut storage_metadata: JsonValue) -> JsonValue {
         if !privileges.is_empty() {
             for privilege in privileges.iter_mut() {
                 let privilege_value = privilege.get_mut("privilege");
-                if let Some(value) = privilege_value {
-                    if value.as_str().unwrap() == "ingester" {
-                        *value = JsonValue::String("ingestor".to_string());
-                    }
+                if let Some(value) = privilege_value
+                    && matches!(value.as_str(), Some("ingester"))
+                {
+                    *value = JsonValue::String("ingestor".to_string());
                 }
             }
             let role_name =
@@ -124,10 +124,10 @@ pub fn v3_v4(mut storage_metadata: JsonValue) -> JsonValue {
         };
         for privilege in privileges.iter_mut() {
             let privilege_value = privilege.get_mut("privilege");
-            if let Some(value) = privilege_value {
-                if value.as_str().unwrap() == "ingester" {
-                    *value = JsonValue::String("ingestor".to_string());
-                }
+            if let Some(value) = privilege_value
+                && matches!(value.as_str(), Some("ingester"))
+            {
+                *value = JsonValue::String("ingestor".to_string());
             }
         }
     }
@@ -185,10 +185,10 @@ pub fn v5_v6(mut storage_metadata: JsonValue) -> JsonValue {
         for (_, role_permissions) in roles.iter_mut() {
             if let JsonValue::Array(permissions) = role_permissions {
                 for permission in permissions.iter_mut() {
-                    if let JsonValue::Object(perm_obj) = permission {
-                        if let Some(JsonValue::Object(resource)) = perm_obj.get_mut("resource") {
-                            resource.remove("tag");
-                        }
+                    if let JsonValue::Object(perm_obj) = permission
+                        && let Some(JsonValue::Object(resource)) = perm_obj.get_mut("resource")
+                    {
+                        resource.remove("tag");
                     }
                 }
             }

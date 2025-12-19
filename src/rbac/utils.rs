@@ -29,14 +29,19 @@ use super::{
 };
 
 pub fn to_prism_user(user: &User) -> UsersPrism {
-    let (id, method, email, picture) = match &user.ty {
-        UserType::Native(_) => (user.username(), "native", None, None),
-        UserType::OAuth(oauth) => (
-            user.username(),
-            "oauth",
-            oauth.user_info.email.clone(),
-            oauth.user_info.picture.clone(),
-        ),
+    let (id, username, method, email, picture) = match &user.ty {
+        UserType::Native(_) => (user.userid(), user.userid(), "native", None, None),
+        UserType::OAuth(oauth) => {
+            let userid = user.userid();
+            let display_name = oauth.user_info.name.as_deref().unwrap_or(userid);
+            (
+                userid,
+                display_name,
+                "oauth",
+                oauth.user_info.email.clone(),
+                oauth.user_info.picture.clone(),
+            )
+        }
     };
     let direct_roles: HashMap<String, Vec<DefaultPrivilege>> = Users
         .get_role(id)
@@ -51,7 +56,7 @@ pub fn to_prism_user(user: &User) -> UsersPrism {
     let mut group_roles: HashMap<String, HashMap<String, Vec<DefaultPrivilege>>> = HashMap::new();
     let mut user_groups = HashSet::new();
     // user might be part of some user groups, fetch the roles from there as well
-    for user_group in Users.get_user_groups(user.username()) {
+    for user_group in Users.get_user_groups(user.userid()) {
         if let Some(group) = read_user_groups().get(&user_group) {
             let ug_roles: HashMap<String, Vec<DefaultPrivilege>> = group
                 .roles
@@ -69,6 +74,7 @@ pub fn to_prism_user(user: &User) -> UsersPrism {
 
     UsersPrism {
         id: id.into(),
+        username: username.into(),
         method: method.into(),
         email: mask_pii_string(email),
         picture: mask_pii_url(picture),

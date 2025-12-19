@@ -23,7 +23,7 @@ pub mod utils;
 
 use std::collections::{HashMap, HashSet};
 
-use chrono::{DateTime, Days, Utc};
+use chrono::{DateTime, Duration, TimeDelta, Utc};
 use itertools::Itertools;
 use role::model::DefaultPrivilege;
 use serde::Serialize;
@@ -36,6 +36,8 @@ use crate::rbac::user::User;
 use self::map::SessionKey;
 use self::role::{Permission, RoleBuilder};
 use self::user::UserType;
+
+pub const EXPIRY_DURATION: Duration = Duration::hours(1);
 
 #[derive(PartialEq)]
 pub enum Response {
@@ -50,80 +52,80 @@ pub struct Users;
 
 impl Users {
     pub fn put_user(&self, user: User) {
-        mut_sessions().remove_user(user.username());
+        mut_sessions().remove_user(user.userid());
         mut_users().insert(user);
     }
 
-    pub fn get_user_groups(&self, username: &str) -> HashSet<String> {
+    pub fn get_user_groups(&self, userid: &str) -> HashSet<String> {
         users()
-            .get(username)
+            .get(userid)
             .map(|user| user.user_groups.clone())
             .unwrap_or_default()
     }
 
-    pub fn get_user(&self, username: &str) -> Option<User> {
-        users().get(username).cloned()
+    pub fn get_user(&self, userid: &str) -> Option<User> {
+        users().get(userid).cloned()
     }
 
-    pub fn is_oauth(&self, username: &str) -> Option<bool> {
-        users().get(username).map(|user| user.is_oauth())
+    pub fn is_oauth(&self, userid: &str) -> Option<bool> {
+        users().get(userid).map(|user| user.is_oauth())
     }
 
     pub fn collect_user<T: for<'a> From<&'a User> + 'static>(&self) -> Vec<T> {
         users().values().map(|user| user.into()).collect_vec()
     }
 
-    pub fn get_role(&self, username: &str) -> Vec<String> {
+    pub fn get_role(&self, userid: &str) -> Vec<String> {
         users()
-            .get(username)
+            .get(userid)
             .map(|user| user.roles.iter().cloned().collect())
             .unwrap_or_default()
     }
 
-    pub fn delete_user(&self, username: &str) {
-        mut_users().remove(username);
-        mut_sessions().remove_user(username);
+    pub fn delete_user(&self, userid: &str) {
+        mut_users().remove(userid);
+        mut_sessions().remove_user(userid);
     }
 
     // caller ensures that this operation is valid for the user
-    pub fn change_password_hash(&self, username: &str, hash: &String) {
+    pub fn change_password_hash(&self, userid: &str, hash: &String) {
         if let Some(User {
             ty: UserType::Native(user),
             ..
-        }) = mut_users().get_mut(username)
+        }) = mut_users().get_mut(userid)
         {
             user.password_hash.clone_from(hash);
-            mut_sessions().remove_user(username);
+            mut_sessions().remove_user(userid);
         };
     }
 
-    pub fn add_roles(&self, username: &str, roles: HashSet<String>) {
-        if let Some(user) = mut_users().get_mut(username) {
+    pub fn add_roles(&self, userid: &str, roles: HashSet<String>) {
+        if let Some(user) = mut_users().get_mut(userid) {
             user.roles.extend(roles);
-            mut_sessions().remove_user(username)
+            mut_sessions().remove_user(userid)
         };
     }
 
-    pub fn remove_roles(&self, username: &str, roles: HashSet<String>) {
-        if let Some(user) = mut_users().get_mut(username) {
+    pub fn remove_roles(&self, userid: &str, roles: HashSet<String>) {
+        if let Some(user) = mut_users().get_mut(userid) {
             let diff = HashSet::from_iter(user.roles.difference(&roles).cloned());
             user.roles = diff;
-            mut_sessions().remove_user(username)
+            mut_sessions().remove_user(userid)
         };
     }
 
-    pub fn contains(&self, username: &str) -> bool {
-        users().contains_key(username)
+    pub fn contains(&self, userid: &str) -> bool {
+        users().contains_key(userid)
     }
 
     pub fn get_permissions(&self, session: &SessionKey) -> Vec<Permission> {
         let mut permissions = sessions().get(session).cloned().unwrap_or_default();
 
-        let Some(username) = self.get_username_from_session(session) else {
+        let Some(userid) = self.get_userid_from_session(session) else {
             return permissions.into_iter().collect_vec();
         };
 
-        let user_groups = self.get_user_groups(&username);
+        let user_groups = self.get_user_groups(&userid);
         for group in user_groups {
             if let Some(group) = read_user_groups().get(&group) {
                 let group_roles = &group.roles;
@@ -147,11 +149,11 @@ impl Users {
         mut_sessions().remove_session(session)
     }
 
-    pub fn new_session(&self, user: &User, session: SessionKey) {
+    pub fn new_session(&self, user: &User, session: SessionKey, expires_in: TimeDelta) {
         mut_sessions().track_new(
-            user.username().to_owned(),
+            user.userid().to_owned(),
             session,
-            Utc::now() + Days::new(7),
+            Utc::now() + expires_in,
             roles_to_permission(user.roles()),
         )
     }
@@ -199,8 +201,8 @@ impl Users {
         Response::UnAuthorized
     }
 
-    pub fn get_username_from_session(&self, session: &SessionKey) -> Option<String> {
-        sessions().get_username(session).cloned()
+    pub fn get_userid_from_session(&self, session: &SessionKey) -> Option<String> {
+        sessions().get_userid(session).cloned()
     }
 }
 
@@ -210,8 +212,10 @@ impl Users {
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename = "camelCase")]
 pub struct UsersPrism {
-    // username
+    // sub
     pub id: String,
+    // username
+    pub username: String,
     // oaith or native
     pub method: String,
     // email only if method is oauth
@@ -226,7 +230,7 @@ pub struct UsersPrism {
     pub user_groups: HashSet<String>,
 }
 
-fn roles_to_permission(roles: Vec<String>) -> Vec<Permission> {
+pub fn roles_to_permission(roles: Vec<String>) -> Vec<Permission> {
     let mut perms = HashSet::new();
     for role in &roles {
         let role_map = &map::roles();

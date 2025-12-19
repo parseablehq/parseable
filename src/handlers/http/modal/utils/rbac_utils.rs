@@ -23,12 +23,12 @@ use crate::{
 
 pub async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
     let metadata = PARSEABLE
-        .storage
-        .get_object_store()
-        .get_metadata()
-        .await?
-        .expect("metadata is initialized");
-    Ok(metadata)
+        .metastore
+        .get_parseable_metadata()
+        .await
+        .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
+        .ok_or_else(|| ObjectStorageError::Custom("parseable metadata not initialized".into()))?;
+    Ok(serde_json::from_slice::<StorageMetadata>(&metadata)?)
 }
 
 pub async fn put_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageError> {

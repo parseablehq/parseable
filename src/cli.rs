@@ -35,7 +35,7 @@ use crate::{
 pub const DEFAULT_USERNAME: &str = "admin";
 pub const DEFAULT_PASSWORD: &str = "admin";
 
-pub const DATASET_FIELD_COUNT_LIMIT: usize = 250;
+pub const DATASET_FIELD_COUNT_LIMIT: usize = 1000;
 #[derive(Parser)]
 #[command(
     name = "parseable",
@@ -196,6 +196,14 @@ pub struct Options {
         help = "mask PII data when sending to Prism"
     )]
     pub mask_pii: bool,
+
+    #[arg(
+        long,
+        env = "P_METRICS_ENDPOINT_AUTH",
+        default_value = "true",
+        help = "Enable/Disable authentication for /v1/metrics endpoint"
+    )]
+    pub metrics_endpoint_auth: bool,
 
     // TLS/Security
     #[arg(
@@ -394,21 +402,6 @@ pub struct Options {
     #[command(flatten)]
     pub oidc: Option<OidcConfig>,
 
-    // Audit logging
-    #[arg(
-        long,
-        env = "P_AUDIT_LOGGER",
-        value_parser = validation::url,
-        help = "Audit logger endpoint"
-    )]
-    pub audit_logger: Option<Url>,
-
-    #[arg(long, env = "P_AUDIT_USERNAME", help = "Audit logger username")]
-    pub audit_username: Option<String>,
-
-    #[arg(long, env = "P_AUDIT_PASSWORD", help = "Audit logger password")]
-    pub audit_password: Option<String>,
-
     #[arg(long, env = "P_MS_CLARITY_TAG", help = "Tag for MS Clarity")]
     pub ms_clarity_tag: Option<String>,
 
@@ -470,11 +463,22 @@ pub struct Options {
         long = "oidc-scope",
         name = "oidc-scope",
         env = "P_OIDC_SCOPE",
-        default_value = "openid profile email",
+        default_value = "openid profile email offline_access",
         required = false,
-        help = "OIDC scope to request (default: openid profile email)"
+        help = "OIDC scope to request (default: openid profile email offline_access)"
     )]
     pub scope: String,
+
+    // event's maximum chunk age in hours
+    #[arg(
+        long,
+        env = "P_EVENT_MAX_CHUNK_AGE",
+        // Accept 0 to disallow older-than-reference events; cap to one week by default.
+        value_parser = clap::value_parser!(u64).range(0..=168),
+        default_value = "1",
+        help = "Max allowed age gap (in hours) between events within the same node, relative to the reference event"
+    )]
+    pub event_max_chunk_age: u64,
 }
 
 #[derive(Parser, Debug)]

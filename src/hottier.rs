@@ -20,14 +20,13 @@ use std::{
     collections::BTreeMap,
     io,
     path::{Path, PathBuf},
-    sync::Arc,
 };
 
 use crate::{
     catalog::manifest::{File, Manifest},
-    handlers::http::cluster::INTERNAL_STREAM_NAME,
+    handlers::http::cluster::PMETA_STREAM_NAME,
     parseable::PARSEABLE,
-    storage::{ObjectStorage, ObjectStorageError},
+    storage::{ObjectStorageError, field_stats::DATASET_STATS_STREAM_NAME},
     utils::{extract_datetime, human_size::bytes_to_human_size},
     validator::error::HotTierValidationError,
 };
@@ -52,7 +51,7 @@ const HOT_TIER_SYNC_DURATION: Interval = clokwerk::Interval::Minutes(1);
 pub const INTERNAL_STREAM_HOT_TIER_SIZE_BYTES: u64 = 10485760; //10 MiB
 pub const CURRENT_HOT_TIER_VERSION: &str = "v2";
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 pub struct StreamHotTier {
     pub version: Option<String>,
     #[serde(with = "crate::utils::human_size")]
@@ -252,6 +251,11 @@ impl HotTierManager {
 
     ///sync the hot tier files from S3 to the hot tier directory for all streams
     async fn sync_hot_tier(&self) -> Result<(), HotTierError> {
+        // Before syncing, check if pstats stream was created and needs hot tier
+        if let Err(e) = self.create_pstats_hot_tier().await {
+            tracing::trace!("Skipping pstats hot tier creation because of error: {e}");
+        }
+
         let mut sync_hot_tier_tasks = FuturesUnordered::new();
         for stream in PARSEABLE.streams.list() {
             if self.check_stream_hot_tier_exists(&stream) {
@@ -268,35 +272,37 @@ impl HotTierManager {
         Ok(())
     }
 
-    ///process the hot tier files for the stream
+    /// process the hot tier files for the stream
     /// delete the files from the hot tier directory if the available date range is outside the hot tier range
     async fn process_stream(&self, stream: String) -> Result<(), HotTierError> {
         let stream_hot_tier = self.get_hot_tier(&stream).await?;
         let mut parquet_file_size = stream_hot_tier.used_size;
 
-        let object_store = PARSEABLE.storage.get_object_store();
-        let mut s3_manifest_file_list = object_store.list_manifest_files(&stream).await?;
-        self.process_manifest(
-            &stream,
-            &mut s3_manifest_file_list,
-            &mut parquet_file_size,
-            object_store.clone(),
-        )
-        .await?;
+        let mut s3_manifest_file_list = PARSEABLE
+            .metastore
+            .get_all_manifest_files(&stream)
+            .await
+            .map_err(|e| {
+            HotTierError::ObjectStorageError(ObjectStorageError::MetastoreError(Box::new(
+                e.to_detail(),
+            )))
+        })?;
+
+        self.process_manifest(&stream, &mut s3_manifest_file_list, &mut parquet_file_size)
+            .await?;
 
         Ok(())
     }
 
-    ///process the hot tier files for the date for the stream
-    /// collect all manifests from S3 for the date, sort the parquet file list
+    /// process the hot tier files for the date for the stream
+    /// collect all manifests from metastore for the date, sort the parquet file list
     /// in order to download the latest files first
     /// download the parquet files if not present in hot tier directory
     async fn process_manifest(
         &self,
         stream: &str,
-        manifest_files_to_download: &mut BTreeMap<String, Vec<String>>,
+        manifest_files_to_download: &mut BTreeMap<String, Vec<Manifest>>,
         parquet_file_size: &mut u64,
-        object_store: Arc<dyn ObjectStorage>,
     ) -> Result<(), HotTierError> {
         if manifest_files_to_download.is_empty() {
             return Ok(());
@@ -304,13 +310,10 @@ impl HotTierManager {
         for (str_date, manifest_files) in manifest_files_to_download.iter().rev() {
             let mut storage_combined_manifest = Manifest::default();
 
-            for manifest_file in manifest_files {
-                let manifest_path: RelativePathBuf = RelativePathBuf::from(manifest_file.clone());
-                let storage_manifest_bytes = object_store.get_object(&manifest_path).await?;
-                let storage_manifest: Manifest = serde_json::from_slice(&storage_manifest_bytes)?;
+            for storage_manifest in manifest_files {
                 storage_combined_manifest
                     .files
-                    .extend(storage_manifest.files);
+                    .extend(storage_manifest.files.clone());
             }
 
             storage_combined_manifest
@@ -347,7 +350,7 @@ impl HotTierManager {
         Ok(())
     }
 
-    ///process the parquet file for the stream
+    /// process the parquet file for the stream
     /// check if the disk is available to download the parquet file
     /// if not available, delete the oldest entry from the hot tier directory
     /// download the parquet file from S3 to the hot tier directory
@@ -588,11 +591,10 @@ impl HotTierManager {
                         if let (Some(download_date_time), Some(delete_date_time)) = (
                             extract_datetime(download_file_path.to_str().unwrap()),
                             extract_datetime(path_to_delete.to_str().unwrap()),
-                        ) {
-                            if download_date_time <= delete_date_time {
-                                delete_successful = false;
-                                break 'loop_files;
-                            }
+                        ) && download_date_time <= delete_date_time
+                        {
+                            delete_successful = false;
+                            break 'loop_files;
                         }
 
                         fs::write(manifest_file.path(), serde_json::to_vec(&manifest)?).await?;
@@ -695,7 +697,7 @@ impl HotTierManager {
     }
 
     pub async fn put_internal_stream_hot_tier(&self) -> Result<(), HotTierError> {
-        if !self.check_stream_hot_tier_exists(INTERNAL_STREAM_NAME) {
+        if !self.check_stream_hot_tier_exists(PMETA_STREAM_NAME) {
             let mut stream_hot_tier = StreamHotTier {
                 version: Some(CURRENT_HOT_TIER_VERSION.to_string()),
                 size: INTERNAL_STREAM_HOT_TIER_SIZE_BYTES,
@@ -703,9 +705,33 @@ impl HotTierManager {
                 available_size: INTERNAL_STREAM_HOT_TIER_SIZE_BYTES,
                 oldest_date_time_entry: None,
             };
-            self.put_hot_tier(INTERNAL_STREAM_NAME, &mut stream_hot_tier)
+            self.put_hot_tier(PMETA_STREAM_NAME, &mut stream_hot_tier)
                 .await?;
         }
+        Ok(())
+    }
+
+    /// Creates hot tier for pstats internal stream if the stream exists in storage
+    async fn create_pstats_hot_tier(&self) -> Result<(), HotTierError> {
+        // Check if pstats hot tier already exists
+        if !self.check_stream_hot_tier_exists(DATASET_STATS_STREAM_NAME) {
+            // Check if pstats stream exists in storage by attempting to load it
+            if PARSEABLE
+                .check_or_load_stream(DATASET_STATS_STREAM_NAME)
+                .await
+            {
+                let mut stream_hot_tier = StreamHotTier {
+                    version: Some(CURRENT_HOT_TIER_VERSION.to_string()),
+                    size: MIN_STREAM_HOT_TIER_SIZE_BYTES,
+                    used_size: 0,
+                    available_size: MIN_STREAM_HOT_TIER_SIZE_BYTES,
+                    oldest_date_time_entry: None,
+                };
+                self.put_hot_tier(DATASET_STATS_STREAM_NAME, &mut stream_hot_tier)
+                    .await?;
+            }
+        }
+
         Ok(())
     }
 

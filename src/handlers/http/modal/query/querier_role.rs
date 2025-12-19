@@ -33,6 +33,7 @@ use crate::{
         map::{mut_roles, mut_sessions, read_user_groups, users},
         role::model::DefaultPrivilege,
     },
+    validator,
 };
 
 // Handler for PUT /api/v1/role/{name}
@@ -42,6 +43,8 @@ pub async fn put(
     Json(privileges): Json<Vec<DefaultPrivilege>>,
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
+    // validate the role name
+    validator::user_role_name(&name).map_err(RoleError::ValidationError)?;
     let mut metadata = get_metadata().await?;
     metadata.roles.insert(name.clone(), privileges.clone());
 
@@ -51,21 +54,21 @@ pub async fn put(
     // refresh the sessions of all users using this role
     // for this, iterate over all user_groups and users and create a hashset of users
     let mut session_refresh_users: HashSet<String> = HashSet::new();
-    for user_group in read_user_groups().values().cloned() {
+    for user_group in read_user_groups().values() {
         if user_group.roles.contains(&name) {
-            session_refresh_users.extend(user_group.users);
+            session_refresh_users.extend(user_group.users.iter().map(|u| u.userid().to_string()));
         }
     }
 
     // iterate over all users to see if they have this role
-    for user in users().values().cloned() {
+    for user in users().values() {
         if user.roles.contains(&name) {
-            session_refresh_users.insert(user.username().to_string());
+            session_refresh_users.insert(user.userid().to_string());
         }
     }
 
-    for username in session_refresh_users {
-        mut_sessions().remove_user(&username);
+    for userid in session_refresh_users {
+        mut_sessions().remove_user(&userid);
     }
 
     sync_role_update_with_ingestors(name.clone(), privileges.clone()).await?;

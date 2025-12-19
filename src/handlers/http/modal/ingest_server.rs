@@ -26,7 +26,6 @@ use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use base64::Engine;
 use bytes::Bytes;
-use relative_path::RelativePathBuf;
 use serde_json::Value;
 use tokio::sync::OnceCell;
 use tokio::sync::oneshot;
@@ -46,13 +45,13 @@ use crate::{
     migration,
     parseable::PARSEABLE,
     rbac::role::Action,
-    storage::{ObjectStorageError, PARSEABLE_ROOT_DIRECTORY, object_storage::parseable_json_path},
+    storage::ObjectStorageError,
     sync,
 };
 
 use super::IngestorMetadata;
 use super::{
-    OpenIdClient, ParseableServer,
+    ParseableServer,
     ingest::{ingestor_logstream, ingestor_rbac, ingestor_role},
 };
 
@@ -63,7 +62,7 @@ pub struct IngestServer;
 #[async_trait]
 impl ParseableServer for IngestServer {
     // configure the api routes
-    fn configure_routes(config: &mut web::ServiceConfig, _oidc_client: Option<OpenIdClient>) {
+    fn configure_routes(config: &mut web::ServiceConfig) {
         config
             .service(
                 // Base path "{url}/api/v1"
@@ -116,8 +115,6 @@ impl ParseableServer for IngestServer {
                     .expect("Ingestor Metadata should be set in ingestor mode")
             })
             .await;
-
-        PARSEABLE.storage.register_store_metrics(prometheus);
 
         migration::run_migration(&PARSEABLE).await?;
 
@@ -184,13 +181,13 @@ impl IngestServer {
         web::scope("/user")
             .service(
                 web::resource("/{username}/sync")
-                    // PUT /user/{username}/sync => Sync creation of a new user
+                    // POST /user/{username}/sync => Sync creation of a new user
                     .route(
                         web::post()
                             .to(ingestor_rbac::post_user)
                             .authorize(Action::PutUser),
                     )
-                    // DELETE /user/{username} => Sync deletion of a user
+                    // DELETE /user/{userid} => Sync deletion of a user
                     .route(
                         web::delete()
                             .to(ingestor_rbac::delete_user)
@@ -199,8 +196,8 @@ impl IngestServer {
                     .wrap(DisAllowRootUser),
             )
             .service(
-                web::resource("/{username}/role/sync/add")
-                    // PATCH /user/{username}/role/sync/add => Add roles to a user
+                web::resource("/{userid}/role/sync/add")
+                    // PATCH /user/{userid}/role/sync/add => Add roles to a user
                     .route(
                         web::patch()
                             .to(ingestor_rbac::add_roles_to_user)
@@ -209,8 +206,8 @@ impl IngestServer {
                     ),
             )
             .service(
-                web::resource("/{username}/role/sync/remove")
-                    // PATCH /user/{username}/role/sync/remove => Remove roles from a user
+                web::resource("/{userid}/role/sync/remove")
+                    // PATCH /user/{userid}/role/sync/remove => Remove roles from a user
                     .route(
                         web::patch()
                             .to(ingestor_rbac::remove_roles_from_user)
@@ -289,36 +286,24 @@ impl IngestServer {
 }
 
 // check for querier state. Is it there, or was it there in the past
-// this should happen before the set the ingestor metadata
+// this should happen before we set the ingestor metadata
 pub async fn check_querier_state() -> anyhow::Result<Option<Bytes>, ObjectStorageError> {
     // how do we check for querier state?
     // based on the work flow of the system, the querier will always need to start first
     // i.e the querier will create the `.parseable.json` file
     let parseable_json = PARSEABLE
-        .storage
-        .get_object_store()
-        .get_object(&parseable_json_path())
+        .metastore
+        .get_parseable_metadata()
         .await
-        .map_err(|_| {
-            ObjectStorageError::Custom(
-                "Query Server has not been started yet. Please start the querier server first."
-                    .to_string(),
-            )
-        })?;
+        .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
-    Ok(Some(parseable_json))
+    Ok(parseable_json)
 }
 
 async fn validate_credentials() -> anyhow::Result<()> {
     // check if your creds match with others
-    let store = PARSEABLE.storage.get_object_store();
-    let base_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
-    let ingestor_metadata = store
-        .get_objects(
-            Some(&base_path),
-            Box::new(|file_name| file_name.starts_with("ingestor")),
-        )
-        .await?;
+    let ingestor_metadata = PARSEABLE.metastore.get_ingestor_metadata().await?;
+
     if !ingestor_metadata.is_empty() {
         let ingestor_metadata_value: Value =
             serde_json::from_slice(&ingestor_metadata[0]).expect("ingestor.json is valid json");

@@ -22,23 +22,33 @@ use actix_web::http::header::ContentType;
 use chrono::Utc;
 use http::StatusCode;
 use itertools::Itertools;
-use relative_path::RelativePathBuf;
 use serde::Serialize;
 use tracing::error;
 
 use crate::{
-    alerts::{ALERTS, AlertError, AlertsSummary, get_alerts_summary},
+    alerts::{ALERTS, AlertError, alert_structs::AlertsSummary, get_alerts_summary},
     correlation::{CORRELATIONS, CorrelationError},
-    event::format::LogSource,
-    handlers::http::{cluster::fetch_daily_stats, logstream::error::StreamError},
+    handlers::{
+        TelemetryType,
+        http::{cluster::fetch_daily_stats, logstream::error::StreamError},
+    },
+    metastore::MetastoreError,
     parseable::PARSEABLE,
     rbac::{Users, map::SessionKey, role::Action},
     stats::Stats,
-    storage::{ObjectStorageError, ObjectStoreFormat, STREAM_ROOT_DIRECTORY, StreamType},
+    storage::{ObjectStorageError, ObjectStoreFormat, StreamType},
     users::{dashboards::DASHBOARDS, filters::FILTERS},
 };
 
-type StreamMetadataResponse = Result<(String, Vec<ObjectStoreFormat>, DataSetType), PrismHomeError>;
+type StreamMetadataResponse = Result<
+    (
+        String,
+        Vec<ObjectStoreFormat>,
+        TelemetryType,
+        Option<String>,
+    ),
+    PrismHomeError,
+>;
 
 #[derive(Debug, Serialize, Default)]
 pub struct DatedStats {
@@ -49,19 +59,16 @@ pub struct DatedStats {
 }
 
 #[derive(Debug, Serialize)]
-enum DataSetType {
-    Logs,
-    Metrics,
-    Traces,
-}
-
-#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DataSet {
     title: String,
-    dataset_type: DataSetType,
+    dataset_type: TelemetryType,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    time_partition: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HomeResponse {
     pub alerts_summary: AlertsSummary,
     pub stats_details: Vec<DatedStats>,
@@ -96,7 +103,7 @@ pub async fn generate_home_response(
 ) -> Result<HomeResponse, PrismHomeError> {
     // Execute these operations concurrently
     let (stream_titles_result, alerts_summary_result) =
-        tokio::join!(get_stream_titles(key), get_alerts_summary());
+        tokio::join!(get_stream_titles(key), get_alerts_summary(key));
 
     let stream_titles = stream_titles_result?;
     let alerts_summary = alerts_summary_result?;
@@ -124,7 +131,7 @@ pub async fn generate_home_response(
 
     for result in stream_metadata_results {
         match result {
-            Ok((stream, metadata, dataset_type)) => {
+            Ok((stream, metadata, dataset_type, time_partition)) => {
                 // Skip internal streams if the flag is false
                 if !include_internal
                     && metadata
@@ -137,6 +144,7 @@ pub async fn generate_home_response(
                 datasets.push(DataSet {
                     title: stream,
                     dataset_type,
+                    time_partition,
                 });
             }
             Err(e) => {
@@ -208,15 +216,18 @@ fn get_top_5_streams_by_ingestion(
 
 async fn get_stream_metadata(
     stream: String,
-) -> Result<(String, Vec<ObjectStoreFormat>, DataSetType), PrismHomeError> {
-    let path = RelativePathBuf::from_iter([&stream, STREAM_ROOT_DIRECTORY]);
+) -> Result<
+    (
+        String,
+        Vec<ObjectStoreFormat>,
+        TelemetryType,
+        Option<String>,
+    ),
+    PrismHomeError,
+> {
     let obs = PARSEABLE
-        .storage
-        .get_object_store()
-        .get_objects(
-            Some(&path),
-            Box::new(|file_name| file_name.ends_with("stream.json")),
-        )
+        .metastore
+        .get_all_stream_jsons(&stream, None)
         .await?;
 
     let mut stream_jsons = Vec::new();
@@ -237,20 +248,10 @@ async fn get_stream_metadata(
         )));
     }
 
-    // let log_source = &stream_jsons[0].clone().log_source;
-    let log_source_format = stream_jsons
-        .iter()
-        .find(|sj| !sj.log_source.is_empty())
-        .map(|sj| sj.log_source[0].log_source_format.clone())
-        .unwrap_or_default();
+    let dataset_type = stream_jsons[0].telemetry_type;
+    let time_partition = stream_jsons[0].time_partition.clone();
 
-    let dataset_type = match log_source_format {
-        LogSource::OtelMetrics => DataSetType::Metrics,
-        LogSource::OtelTraces => DataSetType::Traces,
-        _ => DataSetType::Logs,
-    };
-
-    Ok((stream, stream_jsons, dataset_type))
+    Ok((stream, stream_jsons, dataset_type, time_partition))
 }
 
 async fn stats_for_date(
@@ -335,8 +336,7 @@ pub async fn generate_home_search_response(
 // Helper functions to split the work
 async fn get_stream_titles(key: &SessionKey) -> Result<Vec<String>, PrismHomeError> {
     let stream_titles: Vec<String> = PARSEABLE
-        .storage
-        .get_object_store()
+        .metastore
         .list_streams()
         .await
         .map_err(|e| PrismHomeError::Anyhow(anyhow::Error::new(e)))?
@@ -355,7 +355,15 @@ async fn get_alert_titles(
     key: &SessionKey,
     query_value: &str,
 ) -> Result<Vec<Resource>, PrismHomeError> {
-    let alerts = ALERTS
+    let guard = ALERTS.read().await;
+    let alerts = if let Some(alerts) = guard.as_ref() {
+        alerts
+    } else {
+        return Err(PrismHomeError::AlertError(AlertError::CustomError(
+            "No AlertManager set".into(),
+        )));
+    };
+    let alerts = alerts
         .list_alerts_for_user(key.clone(), vec![])
         .await?
         .iter()
@@ -468,6 +476,8 @@ pub enum PrismHomeError {
     ObjectStorageError(#[from] ObjectStorageError),
     #[error("Invalid query parameter: {0}")]
     InvalidQueryParameter(String),
+    #[error(transparent)]
+    MetastoreError(#[from] MetastoreError),
 }
 
 impl actix_web::ResponseError for PrismHomeError {
@@ -479,12 +489,18 @@ impl actix_web::ResponseError for PrismHomeError {
             PrismHomeError::StreamError(e) => e.status_code(),
             PrismHomeError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PrismHomeError::InvalidQueryParameter(_) => StatusCode::BAD_REQUEST,
+            PrismHomeError::MetastoreError(e) => e.status_code(),
         }
     }
 
     fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
-        actix_web::HttpResponse::build(self.status_code())
-            .insert_header(ContentType::plaintext())
-            .body(self.to_string())
+        match self {
+            PrismHomeError::MetastoreError(e) => actix_web::HttpResponse::build(e.status_code())
+                .insert_header(ContentType::json())
+                .json(e.to_detail()),
+            _ => actix_web::HttpResponse::build(self.status_code())
+                .insert_header(ContentType::plaintext())
+                .body(self.to_string()),
+        }
     }
 }

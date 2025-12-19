@@ -194,8 +194,15 @@ mod action {
         let dates = dates_to_delete.clone();
         if !dates.is_empty() {
             let delete_tasks = FuturesUnordered::new();
-            let res_remove_manifest =
-                remove_manifest_from_snapshot(store.clone(), &stream_name, dates.clone()).await;
+            if let Err(err) =
+                remove_manifest_from_snapshot(store.clone(), &stream_name, dates.clone()).await
+            {
+                error!(
+                    "Failed to update snapshot for retention cleanup (stream={}): {}. Aborting delete.",
+                    stream_name, err
+                );
+                return;
+            }
 
             for date in dates_to_delete {
                 let path = RelativePathBuf::from_iter([&stream_name, &date]);
@@ -214,15 +221,6 @@ mod action {
                 if let Err(err) = res {
                     error!("Failed to run delete task {err:?}");
                     return;
-                }
-            }
-            if let Ok(Some(first_event_at)) = res_remove_manifest {
-                match PARSEABLE.get_stream(&stream_name) {
-                    Ok(stream) => stream.set_first_event_at(&first_event_at),
-                    Err(err) => error!(
-                        "Failed to update first_event_at in streaminfo for stream {:?} {err:?}",
-                        stream_name
-                    ),
                 }
             }
         }

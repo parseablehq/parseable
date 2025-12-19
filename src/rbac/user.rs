@@ -23,6 +23,7 @@ use argon2::{
     password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
 };
 
+use openid::Bearer;
 use rand::distributions::{Alphanumeric, DistString};
 
 use crate::{
@@ -38,7 +39,7 @@ use crate::{
 #[serde(untagged)]
 pub enum UserType {
     Native(Basic),
-    OAuth(OAuth),
+    OAuth(Box<OAuth>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -66,24 +67,42 @@ impl User {
         )
     }
 
-    pub fn new_oauth(username: String, roles: HashSet<String>, user_info: UserInfo) -> Self {
+    pub fn new_oauth(
+        userid: String,
+        roles: HashSet<String>,
+        user_info: UserInfo,
+        bearer: Option<Bearer>,
+    ) -> Self {
         Self {
-            ty: UserType::OAuth(OAuth {
-                userid: user_info.name.clone().unwrap_or(username),
+            ty: UserType::OAuth(Box::new(OAuth {
+                userid: user_info.sub.clone().unwrap_or(userid),
                 user_info,
-            }),
+                bearer,
+            })),
             roles,
             user_groups: HashSet::new(),
         }
     }
 
-    pub fn username(&self) -> &str {
+    pub fn userid(&self) -> &str {
         match self.ty {
             UserType::Native(Basic { ref username, .. }) => username,
-            UserType::OAuth(OAuth {
-                userid: ref username,
-                ..
-            }) => username,
+            UserType::OAuth(ref oauth) => &oauth.userid,
+        }
+    }
+
+    pub fn username_by_userid(&self) -> String {
+        match &self.ty {
+            UserType::Native(basic) => basic.username.clone(),
+            UserType::OAuth(oauth) => {
+                let user_info = oauth.user_info.clone();
+                user_info.name.clone().unwrap_or_else(|| {
+                    user_info
+                        .email
+                        .clone()
+                        .unwrap_or_else(|| oauth.userid.clone())
+                })
+            }
         }
     }
 
@@ -163,10 +182,26 @@ pub fn get_admin_user() -> User {
 pub struct OAuth {
     pub userid: String,
     pub user_info: UserInfo,
+    pub bearer: Option<Bearer>,
+}
+
+impl AsRef<Bearer> for Box<OAuth> {
+    /// Returns a reference to the bearer token.
+    ///
+    /// # Panics
+    /// Panics if bearer is None. This should never happen in practice as
+    /// bearer is always set to Some when OIDC is configured and this trait
+    /// is only called by refresh_token after verifying bearer.is_some().
+    fn as_ref(&self) -> &Bearer {
+        self.bearer.as_ref().unwrap()
+    }
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UserInfo {
+    #[serde(default)]
+    /// Subject - Identifier for the End-User at the Issuer.
+    pub sub: Option<String>,
     #[serde(default)]
     /// User's full name for display purposes.
     pub name: Option<String>,
@@ -185,12 +220,77 @@ pub struct UserInfo {
 impl From<openid::Userinfo> for UserInfo {
     fn from(user: openid::Userinfo) -> Self {
         UserInfo {
+            sub: user.sub,
             name: user.name,
             preferred_username: user.preferred_username,
             picture: user.picture,
             email: user.email,
             gender: user.gender,
             updated_at: user.updated_at,
+        }
+    }
+}
+
+/// Represents a user in a UserGroup - simplified structure for both user types
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct GroupUser {
+    pub userid: String,
+    pub username: String,
+    pub method: String,
+}
+
+impl PartialEq for GroupUser {
+    fn eq(&self, other: &Self) -> bool {
+        self.userid == other.userid
+    }
+}
+impl Eq for GroupUser {}
+impl std::hash::Hash for GroupUser {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.userid.hash(state)
+    }
+}
+
+impl GroupUser {
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    pub fn userid(&self) -> &str {
+        &self.userid
+    }
+
+    pub fn is_oauth(&self) -> bool {
+        self.method == "oauth"
+    }
+
+    pub fn user_type(&self) -> &str {
+        if self.is_oauth() { "oauth" } else { "native" }
+    }
+
+    pub fn from_user(user: &User) -> Self {
+        match &user.ty {
+            UserType::Native(Basic { username, .. }) => GroupUser {
+                userid: username.clone(), // Same value for basic users
+                username: username.clone(),
+                method: "native".to_string(),
+            },
+            UserType::OAuth(oauth) => {
+                // For OAuth users, derive the display username from user_info
+                let user_info = &oauth.user_info;
+                let userid = &oauth.userid;
+                let display_username = user_info
+                    .name
+                    .clone()
+                    .or_else(|| user_info.email.clone())
+                    .unwrap_or_else(|| userid.clone()); // fallback to userid if nothing else available
+
+                GroupUser {
+                    userid: userid.clone(),
+                    username: display_username,
+                    method: "oauth".to_string(),
+                }
+            }
         }
     }
 }
@@ -204,7 +304,7 @@ pub struct UserGroup {
     // #[serde(default = "crate::utils::uid::gen")]
     // pub id: Ulid,
     pub roles: HashSet<String>,
-    pub users: HashSet<String>,
+    pub users: HashSet<GroupUser>,
 }
 
 fn is_valid_group_name(name: &str) -> bool {
@@ -231,9 +331,9 @@ impl UserGroup {
         let mut non_existent_users = Vec::new();
         if !self.users.is_empty() {
             // validate that the users exist
-            for user in &self.users {
-                if !users().contains_key(user) {
-                    non_existent_users.push(user.clone());
+            for group_user in &self.users {
+                if !users().contains_key(group_user.userid()) {
+                    non_existent_users.push(group_user.userid().to_string());
                 }
             }
         }
@@ -258,29 +358,38 @@ impl UserGroup {
             Ok(())
         }
     }
-    pub fn new(name: String, roles: HashSet<String>, users: HashSet<String>) -> Self {
+    pub fn new(name: String, roles: HashSet<String>, users: HashSet<GroupUser>) -> Self {
         UserGroup { name, roles, users }
     }
 
     pub fn add_roles(&mut self, roles: HashSet<String>) -> Result<(), RBACError> {
+        if roles.is_empty() {
+            return Ok(());
+        }
         self.roles.extend(roles);
         // also refresh all user sessions
-        for username in &self.users {
-            mut_sessions().remove_user(username);
+        for group_user in &self.users {
+            mut_sessions().remove_user(group_user.userid());
         }
         Ok(())
     }
 
-    pub fn add_users(&mut self, users: HashSet<String>) -> Result<(), RBACError> {
+    pub fn add_users(&mut self, users: HashSet<GroupUser>) -> Result<(), RBACError> {
+        if users.is_empty() {
+            return Ok(());
+        }
         self.users.extend(users.clone());
         // also refresh all user sessions
-        for username in &users {
-            mut_sessions().remove_user(username);
+        for group_user in &users {
+            mut_sessions().remove_user(group_user.userid());
         }
         Ok(())
     }
 
     pub fn remove_roles(&mut self, roles: HashSet<String>) -> Result<(), RBACError> {
+        if roles.is_empty() {
+            return Ok(());
+        }
         let old_roles = &self.roles;
         let new_roles = HashSet::from_iter(self.roles.difference(&roles).cloned());
 
@@ -290,26 +399,56 @@ impl UserGroup {
         self.roles.clone_from(&new_roles);
 
         // also refresh all user sessions
-        for username in &self.users {
-            mut_sessions().remove_user(username);
+        for group_user in &self.users {
+            mut_sessions().remove_user(group_user.userid());
         }
         Ok(())
     }
 
-    pub fn remove_users(&mut self, users: HashSet<String>) -> Result<(), RBACError> {
-        let old_users = &self.users;
+    pub fn remove_users(&mut self, users: HashSet<GroupUser>) -> Result<(), RBACError> {
+        if users.is_empty() {
+            return Ok(());
+        }
         let new_users = HashSet::from_iter(self.users.difference(&users).cloned());
-
-        if old_users.eq(&new_users) {
+        let removed_users: HashSet<GroupUser> = self.users.intersection(&users).cloned().collect();
+        if removed_users.is_empty() {
             return Ok(());
         }
         // also refresh all user sessions
-        for username in &users {
-            mut_sessions().remove_user(username);
+        for group_user in &removed_users {
+            mut_sessions().remove_user(group_user.userid());
         }
         self.users.clone_from(&new_users);
 
         Ok(())
+    }
+
+    /// Get all user IDs in this group
+    pub fn get_userids(&self) -> Vec<String> {
+        self.users.iter().map(|u| u.userid().to_string()).collect()
+    }
+
+    /// Add users by converting from User references
+    pub fn add_users_from_user_refs(&mut self, user_refs: &[&User]) -> Result<(), RBACError> {
+        let group_users: HashSet<GroupUser> =
+            user_refs.iter().map(|u| GroupUser::from_user(u)).collect();
+        self.add_users(group_users)
+    }
+
+    /// Remove users by user ID
+    pub fn remove_users_by_user_ids(&mut self, user_ids: HashSet<String>) -> Result<(), RBACError> {
+        if user_ids.is_empty() {
+            return Ok(());
+        }
+
+        let users_to_remove: HashSet<GroupUser> = self
+            .users
+            .iter()
+            .filter(|u| user_ids.contains(u.userid()))
+            .cloned()
+            .collect();
+
+        self.remove_users(users_to_remove)
     }
 
     pub async fn update_in_metadata(&self) -> Result<(), RBACError> {

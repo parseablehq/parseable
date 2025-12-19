@@ -169,10 +169,10 @@ pub fn insert_if_some<T: ToString>(map: &mut Map<String, Value>, key: &str, opti
 }
 
 pub fn insert_number_if_some(map: &mut Map<String, Value>, key: &str, option: &Option<f64>) {
-    if let Some(value) = option {
-        if let Some(number) = serde_json::Number::from_f64(*value) {
-            map.insert(key.to_string(), Value::Number(number));
-        }
+    if let Some(value) = option
+        && let Some(number) = serde_json::Number::from_f64(*value)
+    {
+        map.insert(key.to_string(), Value::Number(number));
     }
 }
 
@@ -191,5 +191,5 @@ pub fn insert_attributes(map: &mut Map<String, Value>, attributes: &[KeyValue]) 
 
 pub fn convert_epoch_nano_to_timestamp(epoch_ns: i64) -> String {
     let dt = DateTime::from_timestamp_nanos(epoch_ns).naive_utc();
-    dt.format("%Y-%m-%dT%H:%M:%S%.6fZ").to_string()
+    dt.format("%Y-%m-%dT%H:%M:%S%.9fZ").to_string()
 }

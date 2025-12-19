@@ -25,6 +25,8 @@ use std::sync::Arc;
 
 use crate::catalog::snapshot::ManifestItem;
 use crate::event::format::LogSourceEntry;
+use crate::handlers::TelemetryType;
+use crate::hottier::StreamHotTier;
 use crate::metrics::{
     EVENTS_INGESTED, EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
     EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
@@ -45,13 +47,13 @@ pub fn update_stats(
         .add(num_rows as i64);
     EVENTS_INGESTED_DATE
         .with_label_values(&[stream_name, origin, &parsed_date])
-        .add(num_rows as i64);
+        .inc_by(num_rows as u64);
     EVENTS_INGESTED_SIZE
         .with_label_values(&[stream_name, origin])
         .add(size as i64);
     EVENTS_INGESTED_SIZE_DATE
         .with_label_values(&[stream_name, origin, &parsed_date])
-        .add(size as i64);
+        .inc_by(size);
     LIFETIME_EVENTS_INGESTED
         .with_label_values(&[stream_name, origin])
         .add(num_rows as i64);
@@ -86,8 +88,10 @@ pub struct LogStreamMetadata {
     pub custom_partition: Option<String>,
     pub static_schema_flag: bool,
     pub hot_tier_enabled: bool,
+    pub hot_tier: Option<StreamHotTier>,
     pub stream_type: StreamType,
     pub log_source: Vec<LogSourceEntry>,
+    pub telemetry_type: TelemetryType,
 }
 
 impl LogStreamMetadata {
@@ -102,6 +106,7 @@ impl LogStreamMetadata {
         stream_type: StreamType,
         schema_version: SchemaVersion,
         log_source: Vec<LogSourceEntry>,
+        telemetry_type: TelemetryType,
     ) -> Self {
         LogStreamMetadata {
             created_at: if created_at.is_empty() {
@@ -125,6 +130,7 @@ impl LogStreamMetadata {
             stream_type,
             schema_version,
             log_source,
+            telemetry_type,
             ..Default::default()
         }
     }
@@ -139,25 +145,23 @@ pub async fn update_data_type_time_partition(
     schema: &mut Schema,
     time_partition: Option<&String>,
 ) -> anyhow::Result<()> {
-    if let Some(time_partition) = time_partition {
-        if let Ok(time_partition_field) = schema.field_with_name(time_partition) {
-            if time_partition_field.data_type() != &DataType::Timestamp(TimeUnit::Millisecond, None)
-            {
-                let mut fields = schema
-                    .fields()
-                    .iter()
-                    .filter(|field| field.name() != time_partition)
-                    .cloned()
-                    .collect::<Vec<Arc<Field>>>();
-                let time_partition_field = Arc::new(Field::new(
-                    time_partition,
-                    DataType::Timestamp(TimeUnit::Millisecond, None),
-                    true,
-                ));
-                fields.push(time_partition_field);
-                *schema = Schema::new(fields);
-            }
-        }
+    if let Some(time_partition) = time_partition
+        && let Ok(time_partition_field) = schema.field_with_name(time_partition)
+        && time_partition_field.data_type() != &DataType::Timestamp(TimeUnit::Millisecond, None)
+    {
+        let mut fields = schema
+            .fields()
+            .iter()
+            .filter(|field| field.name() != time_partition)
+            .cloned()
+            .collect::<Vec<Arc<Field>>>();
+        let time_partition_field = Arc::new(Field::new(
+            time_partition,
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            true,
+        ));
+        fields.push(time_partition_field);
+        *schema = Schema::new(fields);
     }
 
     Ok(())
@@ -171,12 +175,12 @@ pub fn load_daily_metrics(manifests: &Vec<ManifestItem>, stream_name: &str) {
         let storage_size = manifest.storage_size;
         EVENTS_INGESTED_DATE
             .with_label_values(&[stream_name, "json", &manifest_date])
-            .set(events_ingested as i64);
+            .inc_by(events_ingested);
         EVENTS_INGESTED_SIZE_DATE
             .with_label_values(&[stream_name, "json", &manifest_date])
-            .set(ingestion_size as i64);
+            .inc_by(ingestion_size);
         EVENTS_STORAGE_SIZE_DATE
             .with_label_values(&["data", stream_name, "parquet", &manifest_date])
-            .set(storage_size as i64);
+            .inc_by(storage_size);
     }
 }
