@@ -194,11 +194,11 @@ pub struct SSEAlertInfo {
 #[derive(Serialize, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ControlPlaneEvent {
-    message: String,
+    pub message: String,
 }
 
 #[derive(Serialize, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Consent {
-    given: bool,
+    pub given: bool,
 }
