@@ -28,6 +28,7 @@ use super::{
     user,
 };
 use chrono::{DateTime, Utc};
+use itertools::Itertools;
 use once_cell::sync::{Lazy, OnceCell};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
@@ -168,6 +169,10 @@ pub struct Sessions {
 }
 
 impl Sessions {
+    pub fn get_active_sessions(&self) -> Vec<SessionKey> {
+        self.active_sessions.keys().cloned().collect_vec()
+    }
+
     // only checks if the session is expired or not
     pub fn is_session_expired(&self, key: &SessionKey) -> bool {
         // fetch userid from session key

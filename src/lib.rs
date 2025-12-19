@@ -42,6 +42,7 @@ pub mod prism;
 pub mod query;
 pub mod rbac;
 mod response;
+pub mod sse;
 mod static_schema;
 mod stats;
 pub mod storage;

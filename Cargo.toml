@@ -30,6 +30,7 @@ parquet = "57.1.0"
 
 # Web server and HTTP-related
 actix-cors = "0.7.0"
+actix-web-lab = "0.24.3"
 actix-web = { version = "4.9.0", features = ["rustls-0_22"] }
 actix-web-httpauth = "0.8"
 actix-web-prometheus = { version = "0.1" }
@@ -83,7 +84,7 @@ tokio = { version = "^1.43", default-features = false, features = [
     "fs",
     "rt-multi-thread",
 ] }
-tokio-stream = { version = "0.1", features = ["fs"] }
+tokio-stream = { version = "0.1.17", features = ["fs"] }
 tokio-util = { version = "0.7" }
 
 # # Logging and Metrics
