@@ -229,6 +229,7 @@ install_fluent_bit() {
             curl -fsSL https://raw.githubusercontent.com/fluent/fluent-bit/master/install.sh -o /tmp/install-fluentbit.sh
             chmod +x /tmp/install-fluentbit.sh
             /tmp/install-fluentbit.sh
+            ;;
         
         centos|rhel|fedora)
             print_info "Installing Fluent Bit on CentOS/RHEL/Fedora..."
