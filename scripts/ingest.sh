@@ -152,9 +152,9 @@ start_fluent_bit() {
     sleep 2
     if ps -p "$FLUENT_PID" > /dev/null 2>&1; then
         print_info "✓ Fluent Bit started successfully (PID: $FLUENT_PID)"
-        print_info "To view logs: $0 logs"
-        print_info "To check status: $0 status"
-        print_info "To stop: $0 stop"
+        print_info "View logs:     tail -f $LOG_FILE"
+        print_info "Check status:  ps -p \$(cat $PID_FILE)"
+        print_info "Stop:          kill \$(cat $PID_FILE)"
     else
         print_error "✗ Fluent Bit failed to start. Check logs: cat $LOG_FILE"
         rm -f "$PID_FILE"
