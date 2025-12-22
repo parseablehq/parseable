@@ -22,7 +22,7 @@ use actix_web::{
     HttpRequest, HttpResponse,
     cookie::{Cookie, SameSite, time},
     http::header::{self, ContentType},
-    web::{self, Data},
+    web,
 };
 use chrono::{Duration, TimeDelta};
 use http::StatusCode;
@@ -149,13 +149,11 @@ pub async fn login(
 }
 
 pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> HttpResponse {
-    let oidc_client = match req.app_data::<Data<Option<DiscoveredClient>>>() {
-        Some(client) => {
-            let c = client.clone().into_inner();
-            c.as_ref().clone()
-        }
+    let oidc_client = match OIDC_CLIENT.get() {
+        Some(c) => Some(c.as_ref().unwrap().read().await.client().clone()),
         None => None,
     };
+
     let Some(session) = extract_session_key_from_req(&req).ok() else {
         return redirect_to_client(query.redirect.as_str(), None);
     };
@@ -418,12 +416,8 @@ pub async fn request_token(
             .unwrap()
             .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
             .await?;
-        let mut token: Token<Claims> = new_client.request_token(&login_query.code).await?.into();
-        let id_token = if let Some(token) = token.id_token.as_mut() {
-            token
-        } else {
-            return Err(anyhow::anyhow!("No id_token provided"));
-        };
+
+        // Reuse the already-obtained token, just decode with new client's JWKS
         new_client.decode_token(id_token)?;
         new_client.validate_token(id_token, None, None)?;
         let claims = id_token.payload().expect("payload is decoded").clone();
@@ -437,7 +431,7 @@ pub async fn request_token(
         oidc_client.write().await.set(new_client);
         return Ok((claims, userinfo, bearer));
     }
-    old_client.decode_token(id_token)?;
+
     old_client.validate_token(id_token, None, None)?;
     let claims = id_token.payload().expect("payload is decoded").clone();
 

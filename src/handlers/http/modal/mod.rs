@@ -117,8 +117,9 @@ pub trait ParseableServer {
             let client = config
                 .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
                 .await?;
-            OIDC_CLIENT
-                .get_or_init(|| Some(Arc::new(RwLock::new(GlobalClient::new(client.clone())))));
+            OIDC_CLIENT.get_or_init(|| Some(Arc::new(RwLock::new(GlobalClient::new(client)))));
+        } else {
+            OIDC_CLIENT.get_or_init(|| None);
         }
 
         // get the ssl stuff
