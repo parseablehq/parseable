@@ -16,7 +16,7 @@
  *
  */
 
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::Arc};
 
 use actix_web::{
     HttpRequest, HttpResponse,
@@ -29,11 +29,18 @@ use http::StatusCode;
 use openid::{Bearer, Options, Token, Userinfo};
 use regex::Regex;
 use serde::Deserialize;
+use tokio::sync::RwLock;
 use ulid::Ulid;
 use url::Url;
 
 use crate::{
-    handlers::{COOKIE_AGE_DAYS, SESSION_COOKIE_NAME, USER_COOKIE_NAME, USER_ID_COOKIE_NAME},
+    handlers::{
+        COOKIE_AGE_DAYS, SESSION_COOKIE_NAME, USER_COOKIE_NAME, USER_ID_COOKIE_NAME,
+        http::{
+            API_BASE_PATH, API_VERSION,
+            modal::{GlobalClient, OIDC_CLIENT},
+        },
+    },
     oidc::{Claims, DiscoveredClient},
     parseable::PARSEABLE,
     rbac::{
@@ -73,20 +80,18 @@ pub async fn login(
         ));
     }
 
-    let oidc_client = match req.app_data::<Data<Option<DiscoveredClient>>>() {
-        Some(client) => {
-            let c = client.clone().into_inner();
-            c.as_ref().clone()
-        }
+    let oidc_client = match OIDC_CLIENT.get() {
+        Some(c) => c.as_ref().cloned(),
         None => None,
     };
+
     let session_key = extract_session_key_from_req(&req).ok();
     let (session_key, oidc_client) = match (session_key, oidc_client) {
         (None, None) => return Ok(redirect_no_oauth_setup(query.redirect.clone())),
         (None, Some(client)) => {
             return Ok(redirect_to_oidc(
                 query,
-                &client,
+                client.read().await.client(),
                 PARSEABLE.options.scope.to_string().as_str(),
             ));
         }
@@ -131,7 +136,7 @@ pub async fn login(
                 if let Some(oidc_client) = oidc_client {
                     redirect_to_oidc(
                         query,
-                        &oidc_client,
+                        oidc_client.read().await.client(),
                         PARSEABLE.options.scope.to_string().as_str(),
                     )
                 } else {
@@ -170,16 +175,21 @@ pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> 
 
 /// Handler for code callback
 /// User should be redirected to page they were trying to access with cookie
-pub async fn reply_login(
-    req: HttpRequest,
-    login_query: web::Query<Login>,
-) -> Result<HttpResponse, OIDCError> {
-    let oidc_client = req.app_data::<Data<Option<DiscoveredClient>>>().unwrap();
-    let oidc_client = oidc_client.clone().into_inner().as_ref().clone().unwrap();
-    let Ok((mut claims, user_info, bearer)): Result<(Claims, Userinfo, Bearer), anyhow::Error> =
-        request_token(oidc_client, &login_query).await
-    else {
-        return Ok(HttpResponse::Unauthorized().finish());
+pub async fn reply_login(login_query: web::Query<Login>) -> Result<HttpResponse, OIDCError> {
+    let oidc_client = if let Some(oidc_client) = OIDC_CLIENT.get()
+        && let Some(oidc_client) = oidc_client
+    {
+        oidc_client
+    } else {
+        return Err(OIDCError::Unauthorized);
+    };
+
+    let (mut claims, user_info, bearer) = match request_token(oidc_client, &login_query).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::error!("reply_login call failed- {e}");
+            return Ok(HttpResponse::Unauthorized().finish());
+        }
     };
     let username = user_info
         .name
@@ -351,6 +361,7 @@ pub fn redirect_to_client(
         response.cookie(cookie);
     }
     response.insert_header((header::CACHE_CONTROL, "no-store"));
+
     response.finish()
 }
 
@@ -387,19 +398,50 @@ pub fn cookie_userid(user_id: &str) -> Cookie<'static> {
 }
 
 pub async fn request_token(
-    oidc_client: DiscoveredClient,
+    oidc_client: &Arc<RwLock<GlobalClient>>,
     login_query: &Login,
 ) -> anyhow::Result<(Claims, Userinfo, Bearer)> {
-    let mut token: Token<Claims> = oidc_client.request_token(&login_query.code).await?.into();
-    let Some(id_token) = token.id_token.as_mut() else {
+    let old_client = oidc_client.read().await.client().clone();
+    let mut token: Token<Claims> = old_client.request_token(&login_query.code).await?.into();
+
+    let id_token = if let Some(token) = token.id_token.as_mut() {
+        token
+    } else {
         return Err(anyhow::anyhow!("No id_token provided"));
     };
 
-    oidc_client.decode_token(id_token)?;
-    oidc_client.validate_token(id_token, None, None)?;
+    if let Err(e) = old_client.decode_token(id_token) {
+        tracing::error!("error while decoding the id_token- {e}");
+        let new_client = PARSEABLE
+            .options
+            .openid()
+            .unwrap()
+            .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
+            .await?;
+        let mut token: Token<Claims> = new_client.request_token(&login_query.code).await?.into();
+        let id_token = if let Some(token) = token.id_token.as_mut() {
+            token
+        } else {
+            return Err(anyhow::anyhow!("No id_token provided"));
+        };
+        new_client.decode_token(id_token)?;
+        new_client.validate_token(id_token, None, None)?;
+        let claims = id_token.payload().expect("payload is decoded").clone();
+
+        let userinfo = new_client.request_userinfo(&token).await?;
+        let bearer = token.bearer;
+
+        // replace old client with new one
+        drop(old_client);
+
+        oidc_client.write().await.set(new_client);
+        return Ok((claims, userinfo, bearer));
+    }
+    old_client.decode_token(id_token)?;
+    old_client.validate_token(id_token, None, None)?;
     let claims = id_token.payload().expect("payload is decoded").clone();
 
-    let userinfo = oidc_client.request_userinfo(&token).await?;
+    let userinfo = old_client.request_userinfo(&token).await?;
     let bearer = token.bearer;
     Ok((claims, userinfo, bearer))
 }

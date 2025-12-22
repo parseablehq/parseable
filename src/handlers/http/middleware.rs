@@ -24,7 +24,6 @@ use actix_web::{
     dev::{Service, ServiceRequest, ServiceResponse, Transform, forward_ready},
     error::{ErrorBadRequest, ErrorForbidden, ErrorUnauthorized},
     http::header::{self, HeaderName},
-    web::Data,
 };
 use chrono::{Duration, Utc};
 use futures_util::future::LocalBoxFuture;
@@ -32,9 +31,9 @@ use futures_util::future::LocalBoxFuture;
 use crate::{
     handlers::{
         AUTHORIZATION_KEY, KINESIS_COMMON_ATTRIBUTES_KEY, LOG_SOURCE_KEY, LOG_SOURCE_KINESIS,
-        STREAM_NAME_HEADER_KEY, http::rbac::RBACError,
+        STREAM_NAME_HEADER_KEY,
+        http::{modal::OIDC_CLIENT, rbac::RBACError},
     },
-    oidc::DiscoveredClient,
     option::Mode,
     parseable::PARSEABLE,
     rbac::{
@@ -145,7 +144,7 @@ where
         when request is made from Kinesis Firehose.
         For requests made from other clients, no change.
 
-         ## Section start */
+        ## Section start */
         if let Some(kinesis_common_attributes) =
             req.request().headers().get(KINESIS_COMMON_ATTRIBUTES_KEY)
         {
@@ -183,12 +182,13 @@ where
 
             // if session is expired, refresh token
             if sessions().is_session_expired(&key) {
-                let oidc_client = match http_req.app_data::<Data<Option<DiscoveredClient>>>() {
-                    Some(client) => {
-                        let c = client.clone().into_inner();
-                        c.as_ref().clone()
-                    }
-                    None => None,
+                let oidc_client = if let Some(client) = OIDC_CLIENT.get()
+                    && let Some(client) = client
+                {
+                    let guard = client.read().await;
+                    Some(guard.client().clone())
+                } else {
+                    None
                 };
 
                 if let Some(client) = oidc_client
@@ -208,13 +208,19 @@ where
                     };
 
                     if let Some(oauth_data) = bearer_to_refresh {
-                        let Ok(refreshed_token) = client
+                        let refreshed_token = match client
                             .refresh_token(&oauth_data, Some(PARSEABLE.options.scope.as_str()))
                             .await
-                        else {
-                            return Err(ErrorUnauthorized(
-                                "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
-                            ));
+                        {
+                            Ok(bearer) => bearer,
+                            Err(e) => {
+                                tracing::error!("client refresh_token call failed- {e}");
+                                // remove user session
+                                Users.remove_session(&key);
+                                return Err(ErrorUnauthorized(
+                                    "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
+                                ));
+                            }
                         };
 
                         let expires_in =
