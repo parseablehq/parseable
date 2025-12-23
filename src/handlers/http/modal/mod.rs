@@ -18,23 +18,20 @@
 
 use std::{fmt, path::Path, sync::Arc};
 
-use actix_web::{
-    App, HttpServer,
-    middleware::from_fn,
-    web::{self, ServiceConfig},
-};
+use actix_web::{App, HttpServer, middleware::from_fn, web::ServiceConfig};
 use actix_web_prometheus::PrometheusMetrics;
 use anyhow::Context;
 use async_trait::async_trait;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use bytes::Bytes;
 use futures::future;
+use once_cell::sync::OnceCell;
 use openid::Discovered;
 use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use ssl_acceptor::get_ssl_acceptor;
-use tokio::sync::oneshot;
+use tokio::sync::{RwLock, oneshot};
 use tracing::{error, info, warn};
 
 use crate::{
@@ -43,7 +40,7 @@ use crate::{
     correlation::CORRELATIONS,
     hottier::{HotTierManager, StreamHotTier},
     metastore::metastore_traits::MetastoreObject,
-    oidc::Claims,
+    oidc::{Claims, DiscoveredClient},
     option::Mode,
     parseable::PARSEABLE,
     storage::{ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY},
@@ -62,6 +59,27 @@ pub mod ssl_acceptor;
 pub mod utils;
 
 pub type OpenIdClient = Arc<openid::Client<Discovered, Claims>>;
+
+pub static OIDC_CLIENT: OnceCell<Option<Arc<RwLock<GlobalClient>>>> = OnceCell::new();
+
+#[derive(Debug)]
+pub struct GlobalClient {
+    client: DiscoveredClient,
+}
+
+impl GlobalClient {
+    pub fn set(&mut self, client: DiscoveredClient) {
+        self.client = client;
+    }
+
+    pub fn client(&self) -> &DiscoveredClient {
+        &self.client
+    }
+
+    pub fn new(client: DiscoveredClient) -> Self {
+        Self { client }
+    }
+}
 
 // to be decided on what the Default version should be
 pub const DEFAULT_VERSION: &str = "v4";
@@ -95,16 +113,14 @@ pub trait ParseableServer {
     where
         Self: Sized,
     {
-        let oidc_client = match oidc_client {
-            Some(config) => {
-                let client = config
-                    .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
-                    .await?;
-                Some(client)
-            }
-
-            None => None,
-        };
+        if let Some(config) = oidc_client {
+            let client = config
+                .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
+                .await?;
+            OIDC_CLIENT.get_or_init(|| Some(Arc::new(RwLock::new(GlobalClient::new(client)))));
+        } else {
+            OIDC_CLIENT.get_or_init(|| None);
+        }
 
         // get the ssl stuff
         let ssl = get_ssl_acceptor(
@@ -120,7 +136,6 @@ pub trait ParseableServer {
         // fn that creates the app
         let create_app_fn = move || {
             App::new()
-                .app_data(web::Data::new(oidc_client.clone()))
                 .wrap(prometheus.clone())
                 .configure(|config| Self::configure_routes(config))
                 .wrap(from_fn(health_check::check_shutdown_middleware))
