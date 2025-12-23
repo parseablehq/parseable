@@ -57,7 +57,7 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
 
     let objectstore = PARSEABLE.storage.get_object_store();
 
-    let all_filters = PARSEABLE.metastore.get_filters().await.unwrap_or_default();
+    let all_filters = PARSEABLE.metastore.get_filters().await?;
     // collect filters associated with the logstream being deleted
     let filters_for_stream: Vec<Filter> = all_filters
         .into_iter()
