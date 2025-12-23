@@ -35,7 +35,7 @@ spec:
             {{- toYaml .Values.parseable.securityContext | nindent 12 }}
           env:
             {{- if .Values.parseable.local }}
-            {{- range $secret := .Values.parseable.localModeSecret }}
+            {{- range $secret := .Values.parseable.localModeSecret.secrets }}
             {{- range $key := $secret.keys }}
             {{- $envPrefix := $secret.prefix | default "" | upper }}
             {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
