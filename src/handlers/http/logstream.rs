@@ -79,6 +79,12 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     stats::delete_stats(&stream_name, "json")
         .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
 
+
+    // clear filters associated to the deleted logstream
+    if let Err(e) = PARSEABLE.metastore.delete_zombie_filters(&stream_name).await {
+        warn!("failed to delete zombie filters associated to stream {}: {:?}", stream_name, e);
+    }
+
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }
 
