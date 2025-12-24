@@ -235,6 +235,15 @@ impl Parseable {
                 .unwrap_or_default()
     }
 
+    // check if a stream exists
+    pub fn check_stream_exists(&self, stream_name: &str) -> bool {
+        if self.streams.contains(stream_name) {
+            return true;
+        } else {
+            return false;
+        }
+    }
+
     // validate the storage, if the proper path for staging directory is provided
     // if the proper data directory is provided, or s3 bucket is provided etc
     pub async fn validate_storage(&self) -> Result<Option<Bytes>, ObjectStorageError> {

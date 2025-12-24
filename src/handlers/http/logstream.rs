@@ -29,7 +29,6 @@ use crate::rbac::role::Action;
 use crate::stats::{Stats, event_labels_date, storage_size_labels_date};
 use crate::storage::retention::Retention;
 use crate::storage::{ObjectStoreFormat, StreamInfo, StreamType};
-use crate::users::filters::{FILTERS, Filter};
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::json::flatten::{
     self, convert_to_array, generic_flattening, has_more_than_max_allowed_levels,
@@ -57,21 +56,6 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
 
     let objectstore = PARSEABLE.storage.get_object_store();
 
-    let all_filters = PARSEABLE.metastore.get_filters().await?;
-    // collect filters associated with the logstream being deleted
-    let filters_for_stream: Vec<Filter> = all_filters
-        .into_iter()
-        .filter(|filter| filter.stream_name == stream_name)
-        .collect();
-
-    for filter in filters_for_stream.iter() {
-        PARSEABLE.metastore.delete_filter(filter).await?;
-        
-        if let Some(filter_id) = filter.filter_id.as_ref() {
-            FILTERS.delete_filter(filter_id).await;
-        }
-    }
-
     // Delete from storage
     objectstore.delete_stream(&stream_name).await?;
     // Delete from staging
@@ -94,6 +78,12 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     PARSEABLE.streams.delete(&stream_name);
     stats::delete_stats(&stream_name, "json")
         .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
+
+
+    // clear filters associated to the deleted logstream
+    if let Err(e) = PARSEABLE.metastore.delete_zombie_filters(&stream_name).await {
+        warn!("failed to delete zombie filters associated to stream {}: {:?}", stream_name, e);
+    }
 
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }
