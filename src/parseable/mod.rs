@@ -237,11 +237,7 @@ impl Parseable {
 
     // check if a stream exists
     pub fn check_stream_exists(&self, stream_name: &str) -> bool {
-        if self.streams.contains(stream_name) {
-            return true;
-        } else {
-            return false;
-        }
+        self.streams.contains(stream_name) 
     }
 
     // validate the storage, if the proper path for staging directory is provided

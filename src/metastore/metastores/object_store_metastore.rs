@@ -554,7 +554,7 @@ impl Metastore for ObjectStoreMetastore {
             return Ok(false);
         }
 
-        let all_filters = match PARSEABLE.metastore.get_filters().await {
+        let all_filters = match self.get_filters().await {
             Ok(all_f) => all_f,
             Err(e) => {
                 return Err(e);
@@ -568,7 +568,7 @@ impl Metastore for ObjectStoreMetastore {
             .collect();
 
         for filter in filters_for_stream.iter() {
-            PARSEABLE.metastore.delete_filter(filter).await?;
+            self.delete_filter(filter).await?;
             
             if let Some(filter_id) = filter.filter_id.as_ref() {
                 FILTERS.delete_filter(filter_id).await;
