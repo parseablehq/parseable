@@ -170,7 +170,7 @@ pub async fn push_logs(
                 StreamType::UserDefined,
                 p_custom_fields,
             )?
-            .process()?;
+            .process().await?;
     }
     Ok(())
 }
