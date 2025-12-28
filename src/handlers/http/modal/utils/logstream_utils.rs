@@ -17,16 +17,28 @@
  */
 
 use actix_web::http::header::HeaderMap;
+use datafusion::common::HashSet;
+use ulid::Ulid;
 
 use crate::{
-    event::format::LogSource,
-    handlers::{
+    event::format::LogSource, handlers::{
         CUSTOM_PARTITION_KEY, LOG_SOURCE_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY,
         TELEMETRY_TYPE_KEY, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY, TelemetryType,
         UPDATE_STREAM_KEY,
-    },
-    storage::StreamType,
+    }, 
+    metastore::MetastoreError, 
+    parseable::{
+        PARSEABLE, StreamNotFound
+    }, 
+    storage::StreamType, 
+    users::{
+        dashboards::{Dashboard}, 
+        filters::Filter
+    }
 };
+
+/// Field in a dashboard's tile that should contain the logstream name
+const TILE_FIELD_REFERRING_TO_STREAM: &str = "chartQuery";
 
 #[derive(Debug, Default)]
 pub struct PutStreamHeaders {
@@ -72,5 +84,140 @@ impl From<&HeaderMap> for PutStreamHeaders {
                 .and_then(|v| v.to_str().ok())
                 .map_or(TelemetryType::Logs, TelemetryType::from),
         }
+    }
+}
+
+/// Resources that rely on a specific logstream and will be affected if it gets deleted
+#[derive(Debug, Default, serde::Serialize)]
+pub struct LogstreamAffectedResources {
+    pub filters: Vec<Filter>,
+    pub dashboards: Vec<LogstreamAffectedDashboard>
+}
+
+#[derive(Debug, Default, serde::Serialize)]
+pub struct LogstreamAffectedDashboard {
+    pub dashboard: Dashboard,
+    pub affected_tile_ids: Vec<Ulid>
+}
+
+#[derive(thiserror::Error, Debug)]
+pub enum LogstreamAffectedResourcesError {
+    #[error("Stream not found: {0}")]
+    NoSuchStream(#[from] StreamNotFound),
+    
+    #[error("Metastore error: {0}")]
+    FromMetastoreError(#[from] MetastoreError),
+}
+
+impl LogstreamAffectedResources {
+    pub async fn load(stream_name: &str) -> Self {
+        Self {
+            filters: LogstreamAffectedResources::fetch_affected_filters(stream_name)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!("failed to fetch filters: {}", e);
+                    Vec::new()
+                }),
+
+            dashboards: LogstreamAffectedResources::fetch_affected_dashboards(stream_name)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!("failed to fetch dashboards: {}", e);
+                    Vec::new()
+                }),
+        }
+    }
+
+    pub async fn fetch_affected_filters(
+        stream_name: &str
+    ) -> Result<Vec<Filter>, LogstreamAffectedResourcesError> {
+        if !PARSEABLE.streams.contains(stream_name) {
+            return Err(LogstreamAffectedResourcesError::NoSuchStream(
+                StreamNotFound(stream_name.to_string())
+            ));
+        }
+
+        Ok(PARSEABLE.metastore.get_filters().await?
+            .into_iter()
+            .filter(|filter| filter.stream_name == stream_name)
+            .collect())
+    }
+
+    pub async fn fetch_affected_dashboards(
+        stream_name: &str
+    ) -> Result<Vec<LogstreamAffectedDashboard>, LogstreamAffectedResourcesError> {
+        if !PARSEABLE.streams.contains(stream_name) {
+            return Err(LogstreamAffectedResourcesError::NoSuchStream(
+                StreamNotFound(stream_name.to_string())
+            ));
+        }
+
+        let all_dashboards = PARSEABLE.metastore.get_dashboards().await?;
+        let mut parsed_dashboards = Vec::<Dashboard>::new();
+
+        for dashboard in all_dashboards {
+            if dashboard.is_empty() {
+                continue;
+            }
+
+            let dashboard_value = match serde_json::from_slice::<serde_json::Value>(&dashboard) {
+                Ok(value) => value,
+                Err(err) => {
+                    tracing::warn!("Failed to parse dashboard JSON: {}", err);
+                    continue;
+                }
+            };
+
+            if let Ok(dashboard) = serde_json::from_value::<Dashboard>(dashboard_value.clone()) {
+                parsed_dashboards.retain(|d: &Dashboard| {
+                    d.dashboard_id != dashboard.dashboard_id
+                });
+
+                parsed_dashboards.push(dashboard);
+            } else {
+                tracing::warn!("Failed to deserialize dashboard: {:?}", dashboard_value);
+            }
+        }
+
+        let mut affected_dashboards: Vec<LogstreamAffectedDashboard> = vec![];
+        
+        for dashboard in parsed_dashboards {
+            let Some(tiles) = dashboard.tiles.as_ref() else { 
+                continue; 
+            };
+
+            println!("here");
+
+            let mut affected_tile_ids = HashSet::<Ulid>::new();
+
+            for tile in tiles {
+                let Some(tile_fields) = tile.other_fields.as_ref() else { 
+                    continue; 
+                };
+                
+                let Some(tile_value) = tile_fields.get(TILE_FIELD_REFERRING_TO_STREAM) else {
+                    continue;
+                };
+
+                
+
+                if let Some(chart_query) = tile_value.as_str() {
+                    println!("{}", chart_query);
+                    if chart_query.contains(stream_name) && !affected_tile_ids.contains(&tile.tile_id) {
+                        affected_tile_ids.insert(tile.tile_id);
+                    }
+                }
+            }
+
+            if !affected_tile_ids.is_empty() {
+                affected_dashboards.push(LogstreamAffectedDashboard { 
+                    dashboard, 
+                    affected_tile_ids: affected_tile_ids.into_iter().collect()
+                });
+            }
+        }
+
+        println!("h2: {}", affected_dashboards.len());
+        Ok(affected_dashboards)
     }
 }

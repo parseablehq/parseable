@@ -20,6 +20,7 @@ use self::error::StreamError;
 use super::cluster::utils::{IngestionStats, QueriedStats, StorageStats};
 use super::query::update_schema_when_distributed;
 use crate::event::format::override_data_type;
+use crate::handlers::http::modal::utils::logstream_utils::LogstreamAffectedResources;
 use crate::hottier::{CURRENT_HOT_TIER_VERSION, HotTierManager, StreamHotTier};
 use crate::metadata::SchemaVersion;
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
@@ -494,17 +495,21 @@ pub async fn delete_stream_hot_tier(
     ))
 }
 
-pub async fn get_affected(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
+pub async fn get_logstream_affected_resources(
+    stream_name: Path<String>
+) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
 
     // For query mode, if the stream not found in memory map,
-    //check if it exists in the storage
-    //create stream and schema from storage
+    // check if it exists in the storage
+    // create stream and schema from storage
     if !PARSEABLE.check_or_load_stream(&stream_name).await {
         return Err(StreamNotFound(stream_name.clone()).into());
     }
 
-    Ok((web::Json({}), StatusCode::OK))
+    let affected_resources = LogstreamAffectedResources::load(&stream_name).await;
+
+    Ok((web::Json(affected_resources), StatusCode::OK))
 }
 
 #[allow(unused)]
