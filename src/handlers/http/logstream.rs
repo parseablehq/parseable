@@ -20,6 +20,7 @@ use self::error::StreamError;
 use super::cluster::utils::{IngestionStats, QueriedStats, StorageStats};
 use super::query::update_schema_when_distributed;
 use crate::event::format::override_data_type;
+use crate::handlers::http::modal::utils::logstream_utils::delete_zombie_filters;
 use crate::hottier::{CURRENT_HOT_TIER_VERSION, HotTierManager, StreamHotTier};
 use crate::metadata::SchemaVersion;
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
@@ -81,9 +82,11 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
 
 
     // clear filters associated to the deleted logstream
-    if let Err(e) = PARSEABLE.metastore.delete_zombie_filters(&stream_name).await {
-        warn!("failed to delete zombie filters associated to stream {}: {:?}", stream_name, e);
-    }
+    delete_zombie_filters(&stream_name)
+        .await
+        .map_err(|err| {
+            StreamError::Anyhow(anyhow::Error::msg(err.to_string()))
+        })?;
 
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }

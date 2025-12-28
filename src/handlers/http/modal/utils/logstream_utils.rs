@@ -19,13 +19,16 @@
 use actix_web::http::header::HeaderMap;
 
 use crate::{
-    event::format::LogSource,
+    event::format::LogSource, 
     handlers::{
         CUSTOM_PARTITION_KEY, LOG_SOURCE_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY,
         TELEMETRY_TYPE_KEY, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY, TelemetryType,
         UPDATE_STREAM_KEY,
-    },
-    storage::StreamType,
+    }, 
+    metastore::MetastoreError, 
+    parseable::PARSEABLE, 
+    storage::StreamType, 
+    users::filters::{FILTERS, Filter}
 };
 
 #[derive(Debug, Default)]
@@ -73,4 +76,53 @@ impl From<&HeaderMap> for PutStreamHeaders {
                 .map_or(TelemetryType::Logs, TelemetryType::from),
         }
     }
+}
+
+
+#[derive(thiserror::Error, Debug)]
+pub enum ZombieFiltersDeletionError {
+    #[error("{0}")]
+    StreamStillExists(#[from] StreamFoundForZombieFilters),
+
+    #[error("Metastore error: {0}")]
+    GetFromMetastore(#[from] MetastoreError)
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Stream still exists for zombie filters: {0}")]
+pub struct StreamFoundForZombieFilters(String);
+
+
+pub async fn delete_zombie_filters(stream_name: &str) -> Result<(), ZombieFiltersDeletionError> {
+    // stream should not exist in order to have zombie filters
+    if PARSEABLE.streams.contains(stream_name) {
+        return Err(ZombieFiltersDeletionError::StreamStillExists(
+            StreamFoundForZombieFilters(stream_name.to_string())
+        ));
+    }
+
+    let all_filters = PARSEABLE.metastore.get_filters().await?;
+
+    // collect filters associated with the logstream being deleted
+    let filters_for_stream: Vec<Filter> = all_filters
+        .into_iter()
+        .filter(|filter| filter.stream_name == stream_name)
+        .collect();
+
+    for filter in filters_for_stream.iter() {
+        if let Err(err) = PARSEABLE.metastore.delete_filter(filter).await {
+            tracing::warn!(
+                "failed to delete the zombie filter: {} \nfrom storage. For logstream: {}\nError: {:#?}", 
+                filter.filter_name,
+                stream_name,
+                err 
+            );
+        }
+
+        if let Some(filter_id) = filter.filter_id.as_ref() {
+            FILTERS.delete_filter(filter_id).await;
+        }
+    }
+
+    return Ok(());
 }

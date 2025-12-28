@@ -56,7 +56,7 @@ use crate::{
             parseable_json_path, schema_path, stream_json_path, to_bytes,
         },
     },
-    users::filters::{FILTERS, Filter, migrate_v1_v2},
+    users::filters::{Filter, migrate_v1_v2},
 };
 
 /// Using PARSEABLE's storage as a metastore (default)
@@ -544,38 +544,6 @@ impl Metastore for ObjectStoreMetastore {
             .storage
             .delete_object(&RelativePathBuf::from(path))
             .await?)
-    }
-
-    // clear filters associated to a deleted stream
-    async fn delete_zombie_filters(&self, stream_name: &str) -> Result<bool, MetastoreError> {
-        // stream should not exist in order to have zombie filters
-        if PARSEABLE.check_stream_exists(stream_name) {
-            warn!("no zombie filters cleared for [undeleted] stream {}", stream_name);
-            return Ok(false);
-        }
-
-        let all_filters = match self.get_filters().await {
-            Ok(all_f) => all_f,
-            Err(e) => {
-                return Err(e);
-            }
-        };
-
-        // collect filters associated with the logstream being deleted
-        let filters_for_stream: Vec<Filter> = all_filters
-            .into_iter()
-            .filter(|filter| filter.stream_name == stream_name)
-            .collect();
-
-        for filter in filters_for_stream.iter() {
-            self.delete_filter(filter).await?;
-            
-            if let Some(filter_id) = filter.filter_id.as_ref() {
-                FILTERS.delete_filter(filter_id).await;
-            }
-        }
-
-        return Ok(true);
     }
 
     /// Get all correlations

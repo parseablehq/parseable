@@ -108,7 +108,6 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
     async fn get_filters(&self) -> Result<Vec<Filter>, MetastoreError>;
     async fn put_filter(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
     async fn delete_filter(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
-    async fn delete_zombie_filters(&self, stream_name: &str) -> Result<bool, MetastoreError>;
 
     /// correlations
     async fn get_correlations(&self) -> Result<Vec<Bytes>, MetastoreError>;
