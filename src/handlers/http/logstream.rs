@@ -494,6 +494,19 @@ pub async fn delete_stream_hot_tier(
     ))
 }
 
+pub async fn get_affected(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
+    let stream_name = stream_name.into_inner();
+
+    // For query mode, if the stream not found in memory map,
+    //check if it exists in the storage
+    //create stream and schema from storage
+    if !PARSEABLE.check_or_load_stream(&stream_name).await {
+        return Err(StreamNotFound(stream_name.clone()).into());
+    }
+
+    Ok((web::Json({}), StatusCode::OK))
+}
+
 #[allow(unused)]
 fn classify_json_error(kind: serde_json::error::Category) -> StatusCode {
     match kind {
