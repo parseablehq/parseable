@@ -16,8 +16,8 @@
  *
  */
 
+use std::collections::HashSet;
 use actix_web::http::header::HeaderMap;
-use datafusion::common::HashSet;
 use ulid::Ulid;
 
 use crate::{
