@@ -117,12 +117,12 @@ pub async fn delete_zombie_filters(stream_name: &str) -> Result<(), ZombieFilter
                 stream_name,
                 err 
             );
-        }
-
-        if let Some(filter_id) = filter.filter_id.as_ref() {
-            FILTERS.delete_filter(filter_id).await;
+        } else { // ok: have the filter removed from memory only when the storage deletion succeeds
+            if let Some(filter_id) = filter.filter_id.as_ref() {
+                FILTERS.delete_filter(filter_id).await;
+            }
         }
     }
 
-    return Ok(());
+    Ok(())
 }
