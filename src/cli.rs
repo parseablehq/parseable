@@ -433,6 +433,15 @@ pub struct Options {
     )]
     pub max_field_statistics: usize,
 
+    #[arg(
+        long,
+        env = "P_MAX_EVENT_PAYLOAD_SIZE",
+        default_value = "10485760",
+        value_parser = validation::validate_payload_size,
+        help = "Maximum allowed event payload size in bytes for ingest endpoints"
+    )]
+    pub max_event_payload_size: usize,
+
     // collect dataset stats
     #[arg(
         long,

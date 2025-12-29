@@ -25,6 +25,7 @@ use crate::handlers::http::alerts;
 use crate::handlers::http::base_path;
 use crate::handlers::http::demo_data::get_demo_data;
 use crate::handlers::http::health_check;
+use crate::handlers::http::max_event_payload_size;
 use crate::handlers::http::modal::initialize_hot_tier_metadata_on_startup;
 use crate::handlers::http::prism_base_path;
 use crate::handlers::http::query;
@@ -52,7 +53,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     handlers::http::{
-        self, MAX_EVENT_PAYLOAD_SIZE, ingest, llm, logstream,
+        self, ingest, llm, logstream,
         middleware::{DisAllowRootUser, RouteExt},
         oidc, role,
     },
@@ -462,7 +463,7 @@ impl Server {
                                     .to(logstream::delete)
                                     .authorize_for_resource(Action::DeleteStream),
                             )
-                            .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                            .app_data(web::JsonConfig::default().limit(max_event_payload_size())),
                     )
                     .service(
                         // GET "/logstream/{logstream}/info" ==> Get info for given log stream
@@ -533,7 +534,7 @@ impl Server {
                     .to(ingest::ingest)
                     .authorize_for_resource(Action::Ingest),
             )
-            .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE))
+            .app_data(web::JsonConfig::default().limit(max_event_payload_size()))
     }
 
     // /v1/logs endpoint to be used for OTEL log ingestion only
@@ -546,7 +547,7 @@ impl Server {
                             .to(ingest::handle_otel_logs_ingestion)
                             .authorize_for_resource(Action::Ingest),
                     )
-                    .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    .app_data(web::PayloadConfig::default().limit(max_event_payload_size())),
             )
             .service(
                 web::resource("/metrics")
@@ -555,7 +556,7 @@ impl Server {
                             .to(ingest::handle_otel_metrics_ingestion)
                             .authorize_for_resource(Action::Ingest),
                     )
-                    .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    .app_data(web::PayloadConfig::default().limit(max_event_payload_size())),
             )
             .service(
                 web::resource("/traces")
@@ -564,7 +565,7 @@ impl Server {
                             .to(ingest::handle_otel_traces_ingestion)
                             .authorize_for_resource(Action::Ingest),
                     )
-                    .app_data(web::JsonConfig::default().limit(MAX_EVENT_PAYLOAD_SIZE)),
+                    .app_data(web::PayloadConfig::default().limit(max_event_payload_size())),
             )
     }
 
