@@ -24,6 +24,7 @@ use opentelemetry_proto::tonic::metrics::v1::{
 };
 use serde_json::{Map, Value};
 
+use crate::metrics::increment_metrics_collected_by_date;
 use crate::otel::otel_utils::flatten_attributes;
 
 use super::otel_utils::{
@@ -500,6 +501,9 @@ pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<Map<String, Value>
     if data_points_json.is_empty() {
         data_points_json.push(metric_json);
     }
+
+    let current_date = chrono::Utc::now().date_naive().to_string();
+    increment_metrics_collected_by_date(&current_date);
     data_points_json
 }
 
