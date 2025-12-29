@@ -18,10 +18,11 @@
 
 use std::collections::HashSet;
 use actix_web::http::header::HeaderMap;
+use bytes::Bytes;
 use ulid::Ulid;
 
 use crate::{
-    event::format::LogSource, handlers::{
+    alerts::AlertConfig, event::format::LogSource, handlers::{
         CUSTOM_PARTITION_KEY, LOG_SOURCE_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY,
         TELEMETRY_TYPE_KEY, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY, TelemetryType,
         UPDATE_STREAM_KEY,
@@ -31,10 +32,7 @@ use crate::{
         PARSEABLE, StreamNotFound
     }, 
     storage::StreamType, 
-    users::{
-        dashboards::{Dashboard}, 
-        filters::Filter
-    }
+    users::dashboards::Dashboard
 };
 
 /// Field in a dashboard's tile that should contain the logstream name
@@ -90,13 +88,13 @@ impl From<&HeaderMap> for PutStreamHeaders {
 /// Resources that rely on a specific logstream and will be affected if it gets deleted
 #[derive(Debug, Default, serde::Serialize)]
 pub struct LogstreamAffectedResources {
-    pub filters: Vec<Filter>,
+    pub filters: Vec<String>,
     pub dashboards: Vec<LogstreamAffectedDashboard>
 }
 
 #[derive(Debug, Default, serde::Serialize)]
 pub struct LogstreamAffectedDashboard {
-    pub dashboard: Dashboard,
+    pub dashboard_id: Ulid,
     pub affected_tile_ids: Vec<Ulid>
 }
 
@@ -130,7 +128,7 @@ impl LogstreamAffectedResources {
 
     pub async fn fetch_affected_filters(
         stream_name: &str
-    ) -> Result<Vec<Filter>, LogstreamAffectedResourcesError> {
+    ) -> Result<Vec<String>, LogstreamAffectedResourcesError> {
         if !PARSEABLE.streams.contains(stream_name) {
             return Err(LogstreamAffectedResourcesError::NoSuchStream(
                 StreamNotFound(stream_name.to_string())
@@ -139,8 +137,12 @@ impl LogstreamAffectedResources {
 
         Ok(PARSEABLE.metastore.get_filters().await?
             .into_iter()
-            .filter(|filter| filter.stream_name == stream_name)
-            .collect())
+            .filter_map(|filter| {
+                if filter.stream_name == stream_name && 
+                    let Some(f_id) = filter.filter_id { 
+                        Some(f_id) 
+                    } else { None }
+            }).collect())
     }
 
     pub async fn fetch_affected_dashboards(
@@ -155,38 +157,26 @@ impl LogstreamAffectedResources {
         let all_dashboards = PARSEABLE.metastore.get_dashboards().await?;
         let mut parsed_dashboards = Vec::<Dashboard>::new();
 
-        for dashboard in all_dashboards {
-            if dashboard.is_empty() {
-                continue;
-            }
-
-            let dashboard_value = match serde_json::from_slice::<serde_json::Value>(&dashboard) {
-                Ok(value) => value,
-                Err(err) => {
-                    tracing::warn!("Failed to parse dashboard JSON: {}", err);
+        for dashboard_bytes in all_dashboards {
+            let dashboard = match self::bytes_to_json::<Dashboard>(dashboard_bytes) {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::warn!("{}", e.to_string());
                     continue;
                 }
             };
 
-            if let Ok(dashboard) = serde_json::from_value::<Dashboard>(dashboard_value.clone()) {
-                parsed_dashboards.retain(|d: &Dashboard| {
-                    d.dashboard_id != dashboard.dashboard_id
-                });
-
+            if !parsed_dashboards.iter().any(|d| d.dashboard_id == dashboard.dashboard_id) {
                 parsed_dashboards.push(dashboard);
-            } else {
-                tracing::warn!("Failed to deserialize dashboard: {:?}", dashboard_value);
             }
         }
 
         let mut affected_dashboards: Vec<LogstreamAffectedDashboard> = vec![];
         
-        for dashboard in parsed_dashboards {
+        for (dash_i, dashboard) in parsed_dashboards.iter().enumerate() {
             let Some(tiles) = dashboard.tiles.as_ref() else { 
                 continue; 
             };
-
-            println!("here");
 
             let mut affected_tile_ids = HashSet::<Ulid>::new();
 
@@ -199,10 +189,7 @@ impl LogstreamAffectedResources {
                     continue;
                 };
 
-                
-
                 if let Some(chart_query) = tile_value.as_str() {
-                    println!("{}", chart_query);
                     if chart_query.contains(stream_name) && !affected_tile_ids.contains(&tile.tile_id) {
                         affected_tile_ids.insert(tile.tile_id);
                     }
@@ -211,13 +198,73 @@ impl LogstreamAffectedResources {
 
             if !affected_tile_ids.is_empty() {
                 affected_dashboards.push(LogstreamAffectedDashboard { 
-                    dashboard, 
+                    dashboard_id: dashboard.dashboard_id.unwrap_or_else(|| {
+                        tracing::warn!("dashboard {}: [id] is missing -- for logstream {}", dash_i, stream_name);
+                        Ulid::new() // default to a new ULID if missing -- what else?
+                    }), 
                     affected_tile_ids: affected_tile_ids.into_iter().collect()
                 });
             }
         }
 
-        println!("h2: {}", affected_dashboards.len());
         Ok(affected_dashboards)
     }
+
+    pub async fn fetch_affected_alerts(
+        stream_name: &str
+    ) -> Result<Vec<Ulid>, LogstreamAffectedResourcesError> {
+        if !PARSEABLE.streams.contains(stream_name) {
+            return Err(LogstreamAffectedResourcesError::NoSuchStream(
+                StreamNotFound(stream_name.to_string())
+            ));
+        }
+
+        let all_alerts = PARSEABLE.metastore.get_alerts().await?;
+        
+        let mut stream_alerts = HashSet::<Ulid>::new();
+        for alert_bytes in all_alerts {
+            let alert = match self::bytes_to_json::<AlertConfig>(alert_bytes) {
+                Ok(alert_val) => alert_val,
+                Err(e) => {
+                    tracing::warn!("{}", e.to_string());
+                    continue;
+                }
+            };
+
+            if !alert.datasets.contains(&stream_name.to_string()) { continue };
+            stream_alerts.insert(alert.id);
+        }
+        
+        Ok(stream_alerts.into_iter().collect())
+    }
+}
+
+
+// utility funcs:
+
+#[derive(Debug, thiserror::Error)]
+pub enum Bytes2JSONError {
+    #[error("zero sized Bytes")]
+    ZeroSizedBytes,
+
+    #[error("failed to parse bytes to JSON: {0}")]
+    FailedToParse(String)
+}
+
+fn bytes_to_json<T: serde::de::DeserializeOwned>(json_bytes: Bytes) -> Result<T, Bytes2JSONError> {
+    if json_bytes.is_empty() {
+        return Err(Bytes2JSONError::ZeroSizedBytes);
+    }
+
+    let json_bytes_value = match serde_json::from_slice::<serde_json::Value>(&json_bytes) {
+        Ok(value) => value,
+        Err(err) => {
+            return Err(Bytes2JSONError::FailedToParse(format!("{:#?}", err)))
+        }
+    };
+
+    return match serde_json::from_value::<T>(json_bytes_value.clone()) {
+        Ok(parsed_object) => Ok(parsed_object),
+        Err(e) => Err(Bytes2JSONError::FailedToParse(format!("deserialization failed: {:#?}", e)))
+    };
 }
