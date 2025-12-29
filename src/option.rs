@@ -209,4 +209,27 @@ pub mod validation {
             Err("Invalid value for P_DATASET_FIELD_COUNT_LIMIT. It should be given as integer value".to_string())
         }
     }
+
+    pub fn validate_payload_size(s: &str) -> Result<usize, String> {
+        const MIN_SIZE: usize = 100; // 100 bytes
+        const MAX_SIZE: usize = 100 * 1024 * 1024; // 100 MB
+
+        if let Ok(size) = s.parse::<usize>() {
+            if size < MIN_SIZE {
+                Err(format!(
+                    "Invalid value for P_MAX_EVENT_PAYLOAD_SIZE. It must be at least {} bytes",
+                    MIN_SIZE
+                ))
+            } else if size > MAX_SIZE {
+                Err(format!(
+                    "Invalid value for P_MAX_EVENT_PAYLOAD_SIZE. It must be at most {} bytes",
+                    MAX_SIZE
+                ))
+            } else {
+                Ok(size)
+            }
+        } else {
+            Err("Invalid value for P_MAX_EVENT_PAYLOAD_SIZE. It should be given as integer number of bytes".to_string())
+        }
+    }
 }

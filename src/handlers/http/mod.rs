@@ -49,7 +49,6 @@ pub mod resource_check;
 pub mod role;
 pub mod targets;
 pub mod users;
-pub const MAX_EVENT_PAYLOAD_SIZE: usize = 10485760;
 pub const API_BASE_PATH: &str = "api";
 pub const API_VERSION: &str = "v1";
 pub const PRISM_BASE_PATH: &str = "prism";
@@ -136,4 +135,8 @@ pub const CACHING_NOTICE: &str = "Caching as a feature has been deprecated";
 
 pub async fn caching_removed() -> impl Responder {
     (CACHING_NOTICE, StatusCode::GONE)
+}
+
+pub fn max_event_payload_size() -> usize {
+    PARSEABLE.options.max_event_payload_size
 }
