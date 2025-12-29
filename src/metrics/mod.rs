@@ -373,6 +373,18 @@ pub static STORAGE_REQUEST_RESPONSE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
+pub static TOTAL_METRICS_COLLECTED_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_metrics_collected_by_date",
+            "Total metrics collected by date",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["date"],
+    )
+    .expect("metric can be created")
+});
+
 fn custom_metrics(registry: &Registry) {
     registry
         .register(Box::new(EVENTS_INGESTED.clone()))
@@ -471,6 +483,9 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(STORAGE_REQUEST_RESPONSE_TIME.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_METRICS_COLLECTED_BY_DATE.clone()))
         .expect("metric can be registered");
 }
 
@@ -617,6 +632,12 @@ pub fn increment_reasoning_llm_tokens_by_date(
     TOTAL_REASONING_LLM_TOKENS_BY_DATE
         .with_label_values(&[provider, model, date])
         .inc_by(tokens);
+}
+
+pub fn increment_metrics_collected_by_date(date: &str) {
+    TOTAL_METRICS_COLLECTED_BY_DATE
+        .with_label_values(&[date])
+        .inc();
 }
 
 use actix_web::HttpResponse;

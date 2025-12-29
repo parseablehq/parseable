@@ -99,6 +99,7 @@ struct BillingMetricsCollector {
     pub total_bytes_scanned_in_object_store_calls_by_date: HashMap<String, HashMap<String, u64>>,
     pub total_input_llm_tokens_by_date: HashMap<String, HashMap<String, HashMap<String, u64>>>, // provider -> model -> date -> count
     pub total_output_llm_tokens_by_date: HashMap<String, HashMap<String, HashMap<String, u64>>>,
+    pub total_metrics_collected_by_date: HashMap<String, u64>,
     pub event_time: chrono::NaiveDateTime,
 }
 
@@ -191,6 +192,14 @@ impl BillingMetricsCollector {
                 events,
                 "total_bytes_scanned_in_query",
                 &self.total_bytes_scanned_in_query_by_date,
+            );
+        }
+
+        if !self.total_metrics_collected_by_date.is_empty() {
+            add_simple_metric(
+                events,
+                "total_metrics_collected",
+                &self.total_metrics_collected_by_date,
             );
         }
     }
@@ -1263,6 +1272,7 @@ fn is_simple_metric(metric: &str) -> bool {
             | "parseable_total_query_calls_by_date"
             | "parseable_total_files_scanned_in_query_by_date"
             | "parseable_total_bytes_scanned_in_query_by_date"
+            | "parseable_total_metrics_collected_by_date"
     )
 }
 
@@ -1327,6 +1337,11 @@ fn process_simple_metric(
             "parseable_total_bytes_scanned_in_query_by_date" => {
                 collector
                     .total_bytes_scanned_in_query_by_date
+                    .insert(date.to_string(), value);
+            }
+            "parseable_total_metrics_collected_by_date" => {
+                collector
+                    .total_metrics_collected_by_date
                     .insert(date.to_string(), value);
             }
             _ => {}
