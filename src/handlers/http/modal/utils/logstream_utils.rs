@@ -19,13 +19,15 @@
 use actix_web::http::header::HeaderMap;
 
 use crate::{
-    event::format::LogSource,
-    handlers::{
+    event::format::LogSource, handlers::{
         CUSTOM_PARTITION_KEY, LOG_SOURCE_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY,
         TELEMETRY_TYPE_KEY, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY, TelemetryType,
         UPDATE_STREAM_KEY,
-    },
-    storage::StreamType,
+    }, 
+    metastore::MetastoreError, 
+    parseable::PARSEABLE, 
+    storage::StreamType, 
+    users::filters::{FILTERS, Filter}
 };
 
 #[derive(Debug, Default)]
@@ -73,4 +75,57 @@ impl From<&HeaderMap> for PutStreamHeaders {
                 .map_or(TelemetryType::Logs, TelemetryType::from),
         }
     }
+}
+
+/// Cleans up filters associated to a deleted logstream (dataset)
+
+pub async fn delete_zombie_filters(stream_name: &str) -> Result<ZombieResourceCleanupOk, MetastoreError> {
+    // stream should not exist in order to have zombie filters
+    if PARSEABLE.streams.contains(stream_name) {
+        return Err(MetastoreError::ZombieResourceStreamStillExists {
+            stream_name: stream_name.to_string(),
+            resource_type: "filter".to_string(),
+        });
+    }
+
+    let all_filters = PARSEABLE.metastore.get_filters().await?;
+
+    // collect filters associated with the logstream being deleted
+    let filters_for_stream: Vec<Filter> = all_filters
+        .into_iter()
+        .filter(|filter| filter.stream_name == stream_name)
+        .collect();
+
+    let mut deleted_filter_count = 0;
+    let mut undeleted_filter_count = 0;
+
+    for filter in filters_for_stream.iter() {
+        if let Err(err) = PARSEABLE.metastore.delete_filter(filter).await {
+            tracing::error!(
+                "failed to delete the zombie filter: {} \nfrom storage. For logstream: {}\nError: {:#?}", 
+                filter.filter_name,
+                stream_name,
+                err 
+            );
+
+            undeleted_filter_count += 1;
+        } else { // ok: have the filter removed from memory only when the storage deletion succeeds
+            if let Some(filter_id) = filter.filter_id.as_ref() {
+                FILTERS.delete_filter(filter_id).await;
+            }
+
+            deleted_filter_count += 1;
+        }
+    }
+
+    Ok(ZombieResourceCleanupOk {
+        ok_deletions: deleted_filter_count, 
+        failed_deletions: undeleted_filter_count
+    })
+}
+
+#[derive(Debug)]
+pub struct ZombieResourceCleanupOk {
+    pub ok_deletions: i32,
+    pub failed_deletions: i32,
 }
