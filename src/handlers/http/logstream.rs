@@ -495,7 +495,7 @@ pub async fn delete_stream_hot_tier(
     ))
 }
 
-pub async fn get_logstream_affected_resources(
+pub async fn get_affected_resources(
     stream_name: Path<String>
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
@@ -507,9 +507,12 @@ pub async fn get_logstream_affected_resources(
         return Err(StreamNotFound(stream_name.clone()).into());
     }
 
-    let affected_resources = LogstreamAffectedResources::load(&stream_name).await;
-
-    Ok((web::Json(affected_resources), StatusCode::OK))
+    match LogstreamAffectedResources::load(&stream_name).await {
+        Ok(affecred_resources) 
+            => Ok((web::Json(affecred_resources), StatusCode::OK)),
+        Err(err) 
+            => Err(err.into())
+    }
 }
 
 #[allow(unused)]
@@ -528,13 +531,13 @@ pub mod error {
     use http::StatusCode;
 
     use crate::{
-        hottier::HotTierError,
-        metastore::MetastoreError,
-        parseable::StreamNotFound,
-        storage::ObjectStorageError,
+        hottier::HotTierError, 
+        metastore::MetastoreError, 
+        parseable::StreamNotFound, 
+        storage::ObjectStorageError, 
         validator::error::{
             AlertValidationError, HotTierValidationError, StreamNameValidationError,
-        },
+        }
     };
 
     #[allow(unused)]

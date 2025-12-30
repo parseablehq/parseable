@@ -492,7 +492,7 @@ impl Server {
                         // GET "/logstream/{logstream}/affected-resources" ==> Get affected resources for given log stream
                         web::resource("/affected-resources").route(
                             web::get()
-                                .to(logstream::get_logstream_affected_resources)
+                                .to(logstream::get_affected_resources)
                                 .authorize_for_resource(Action::GetLogstreamAffectedResources),
                         ),
                     )

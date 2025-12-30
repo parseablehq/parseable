@@ -16,22 +16,25 @@
  *
  */
 
-use std::collections::HashSet;
 use actix_web::http::header::HeaderMap;
 use bytes::Bytes;
 use ulid::Ulid;
 
 use crate::{
-    alerts::AlertConfig, event::format::LogSource, handlers::{
+    alerts::AlertConfig, 
+    event::format::LogSource, 
+    handlers::{
         CUSTOM_PARTITION_KEY, LOG_SOURCE_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY,
         TELEMETRY_TYPE_KEY, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY, TelemetryType,
-        UPDATE_STREAM_KEY,
+        UPDATE_STREAM_KEY, http::logstream::error::StreamError,
     }, 
     metastore::MetastoreError, 
-    parseable::{
-        PARSEABLE, StreamNotFound
+    parseable::{PARSEABLE, StreamNotFound}, 
+    rbac::role::{
+        ParseableResourceType, 
+        model::DefaultPrivilege
     }, 
-    storage::StreamType, 
+    storage::{ObjectStorageError, StorageMetadata, StreamType}, 
     users::dashboards::Dashboard
 };
 
@@ -89,7 +92,9 @@ impl From<&HeaderMap> for PutStreamHeaders {
 #[derive(Debug, Default, serde::Serialize)]
 pub struct LogstreamAffectedResources {
     pub filters: Vec<String>,
-    pub dashboards: Vec<LogstreamAffectedDashboard>
+    pub dashboards: Vec<LogstreamAffectedDashboard>,
+    pub alerts: Vec<Ulid>,
+    pub roles: Vec<String>,
 }
 
 #[derive(Debug, Default, serde::Serialize)]
@@ -100,39 +105,44 @@ pub struct LogstreamAffectedDashboard {
 
 #[derive(thiserror::Error, Debug)]
 pub enum LogstreamAffectedResourcesError {
-    #[error("Stream not found: {0}")]
-    NoSuchStream(#[from] StreamNotFound),
+    #[error("(to fetch affected resources) logstream not found: {0}")]
+    StreamNotFound(#[from] StreamNotFound),
     
-    #[error("Metastore error: {0}")]
-    FromMetastoreError(#[from] MetastoreError),
+    #[error("(get affected resources) metastore error: {0}")]
+    MetastoreError(#[from] MetastoreError),
+
+    #[error("(get affected resources) objectstore error: {0}")]
+    ObjectStorageError(#[from] ObjectStorageError),
+
+    #[error("(get affected resources) could not parse JSON: {0}")]
+    Bytes2JSONError(#[from] Bytes2JSONError)
 }
 
 impl LogstreamAffectedResources {
-    pub async fn load(stream_name: &str) -> Self {
-        Self {
-            filters: LogstreamAffectedResources::fetch_affected_filters(stream_name)
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::warn!("failed to fetch filters: {}", e);
-                    Vec::new()
-                }),
-
-            dashboards: LogstreamAffectedResources::fetch_affected_dashboards(stream_name)
-                .await
-                .unwrap_or_else(|e| {
-                    tracing::warn!("failed to fetch dashboards: {}", e);
-                    Vec::new()
-                }),
-        }
+    /// Load all resources that will be affected if the given logstream is deleted.
+    ///
+    /// ### Arguments
+    /// - `stream_name` - The name of the logstream to check for dependencies
+    ///
+    /// ### Returns
+    /// A tuple where:
+    /// - First element: `true` if no resources are affected (empty loaded struct), `false` otherwise
+    /// - Second element: The populated `LogstreamAffectedResources` struct
+ 
+    pub async fn load(stream_name: &str) -> Result<Self, LogstreamAffectedResourcesError> {
+        Ok(Self {
+            filters: Self::fetch_affected_filters(stream_name).await?,
+            dashboards: Self::fetch_affected_dashboards(stream_name).await?,
+            alerts: Self::fetch_affected_alerts(stream_name).await?,
+            roles: Self::fetch_affected_roles(stream_name).await?,
+        })
     }
 
     pub async fn fetch_affected_filters(
         stream_name: &str
     ) -> Result<Vec<String>, LogstreamAffectedResourcesError> {
         if !PARSEABLE.streams.contains(stream_name) {
-            return Err(LogstreamAffectedResourcesError::NoSuchStream(
-                StreamNotFound(stream_name.to_string())
-            ));
+            return Err(StreamNotFound(stream_name.to_string()).into());
         }
 
         Ok(PARSEABLE.metastore.get_filters().await?
@@ -149,9 +159,7 @@ impl LogstreamAffectedResources {
         stream_name: &str
     ) -> Result<Vec<LogstreamAffectedDashboard>, LogstreamAffectedResourcesError> {
         if !PARSEABLE.streams.contains(stream_name) {
-            return Err(LogstreamAffectedResourcesError::NoSuchStream(
-                StreamNotFound(stream_name.to_string())
-            ));
+            return Err(StreamNotFound(stream_name.to_string()).into());
         }
 
         let all_dashboards = PARSEABLE.metastore.get_dashboards().await?;
@@ -178,8 +186,7 @@ impl LogstreamAffectedResources {
                 continue; 
             };
 
-            let mut affected_tile_ids = HashSet::<Ulid>::new();
-
+            let mut affected_tile_ids = Vec::<Ulid>::new();
             for tile in tiles {
                 let Some(tile_fields) = tile.other_fields.as_ref() else { 
                     continue; 
@@ -191,7 +198,7 @@ impl LogstreamAffectedResources {
 
                 if let Some(chart_query) = tile_value.as_str() {
                     if chart_query.contains(stream_name) && !affected_tile_ids.contains(&tile.tile_id) {
-                        affected_tile_ids.insert(tile.tile_id);
+                        affected_tile_ids.push(tile.tile_id);
                     }
                 }
             }
@@ -202,7 +209,7 @@ impl LogstreamAffectedResources {
                         tracing::warn!("dashboard {}: [id] is missing -- for logstream {}", dash_i, stream_name);
                         Ulid::new() // default to a new ULID if missing -- what else?
                     }), 
-                    affected_tile_ids: affected_tile_ids.into_iter().collect()
+                    affected_tile_ids
                 });
             }
         }
@@ -214,14 +221,12 @@ impl LogstreamAffectedResources {
         stream_name: &str
     ) -> Result<Vec<Ulid>, LogstreamAffectedResourcesError> {
         if !PARSEABLE.streams.contains(stream_name) {
-            return Err(LogstreamAffectedResourcesError::NoSuchStream(
-                StreamNotFound(stream_name.to_string())
-            ));
+            return Err(StreamNotFound(stream_name.to_string()).into());
         }
 
         let all_alerts = PARSEABLE.metastore.get_alerts().await?;
         
-        let mut stream_alerts = HashSet::<Ulid>::new();
+        let mut stream_alerts = Vec::<Ulid>::new();
         for alert_bytes in all_alerts {
             let alert = match self::bytes_to_json::<AlertConfig>(alert_bytes) {
                 Ok(alert_val) => alert_val,
@@ -231,16 +236,98 @@ impl LogstreamAffectedResources {
                 }
             };
 
-            if !alert.datasets.contains(&stream_name.to_string()) { continue };
-            stream_alerts.insert(alert.id);
+            if !alert.datasets.iter().any(|s| s == stream_name) { 
+                continue 
+            };
+            
+            if !stream_alerts.contains(&alert.id) {
+                stream_alerts.push(alert.id);
+            }
         }
         
-        Ok(stream_alerts.into_iter().collect())
+        Ok(stream_alerts)
+    }
+
+
+    pub async fn fetch_affected_roles(
+        stream_name: &str
+    ) -> Result<Vec<String>, LogstreamAffectedResourcesError> {
+        if !PARSEABLE.streams.contains(stream_name) {
+            return Err(StreamNotFound(stream_name.to_string()).into());
+        }
+
+        let metadata_bytes = PARSEABLE
+            .metastore
+            .get_parseable_metadata()
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
+            .ok_or_else(|| ObjectStorageError::Custom("parseable metadata not initialized".into()))?;
+
+        let metadata = self::bytes_to_json::<StorageMetadata>(metadata_bytes)?;
+
+        let mut stream_associated_roles = Vec::<String>::new();
+        for (role_name, privileges) in &metadata.roles {
+            for privilege in privileges {
+
+                let associated_stream = match privilege {
+                    DefaultPrivilege::Ingestor { resource } => {
+                        match resource {
+                            ParseableResourceType::Stream(stream) => stream,
+                            _ => continue
+                        }
+                    },
+
+                    DefaultPrivilege::Reader { resource } => {
+                        match resource {
+                            ParseableResourceType::Stream(stream) => stream,
+                            _ => continue
+                        }
+                    },
+
+                    DefaultPrivilege::Writer { resource } => {
+                        match resource {
+                            ParseableResourceType::Stream(stream) => stream,
+                            _ => continue
+                        }
+                    },
+
+                    _ => continue
+                };
+
+                if associated_stream == stream_name && !stream_associated_roles.contains(role_name) {
+                    stream_associated_roles.push(role_name.to_string());
+                    
+                    // if any role privilege matches the input stream, 
+                    // add the role to the set and break
+                    break; 
+                }
+
+            }
+        }
+
+        Ok(stream_associated_roles)
     }
 }
 
 
-// utility funcs:
+impl From<LogstreamAffectedResourcesError> for StreamError {
+    fn from(err: LogstreamAffectedResourcesError) -> Self {
+        match err {
+            LogstreamAffectedResourcesError::StreamNotFound(e) => {
+                StreamError::StreamNotFound(e)
+            }
+            LogstreamAffectedResourcesError::MetastoreError(e) => {
+                StreamError::MetastoreError(e)
+            }
+            other => {
+                StreamError::Anyhow(anyhow::anyhow!(other.to_string()))
+            }
+        }
+    }
+}
+
+
+// utility:
 
 #[derive(Debug, thiserror::Error)]
 pub enum Bytes2JSONError {
