@@ -82,9 +82,9 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
 
 
     // clear filters associated to the deleted logstream
-    delete_zombie_filters(&stream_name)
-        .await
-        .map_err(|e| StreamError::Anyhow(anyhow::anyhow!(e)))?;
+    let cleanup_stats = delete_zombie_filters(&stream_name).await?;
+
+    tracing::debug!("zombie filters deleted - {:#?}", cleanup_stats);
 
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
 }
