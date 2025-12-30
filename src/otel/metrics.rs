@@ -502,8 +502,6 @@ pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<Map<String, Value>
         data_points_json.push(metric_json);
     }
 
-    let current_date = chrono::Utc::now().date_naive().to_string();
-    increment_metrics_collected_by_date(&current_date);
     data_points_json
 }
 
@@ -543,6 +541,9 @@ fn process_resource_metrics<T, S, M>(
             for metric in metrics {
                 vec_scope_metrics_json.extend(flatten_metrics_record(get_metric(metric)));
             }
+
+            let date = chrono::Utc::now().date_naive().to_string();
+            increment_metrics_collected_by_date(metrics.len() as u64, &date);
 
             if let Some(scope) = get_scope(scope_metric) {
                 scope_metrics_json

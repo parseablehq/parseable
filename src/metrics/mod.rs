@@ -17,7 +17,10 @@
  */
 
 pub mod prom_utils;
-use crate::{handlers::http::metrics_path, stats::FullStats};
+use crate::{
+    handlers::{TelemetryType, http::metrics_path},
+    stats::FullStats,
+};
 use actix_web::Responder;
 use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use error::MetricsError;
@@ -380,7 +383,67 @@ pub static TOTAL_METRICS_COLLECTED_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
             "Total metrics collected by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["date"],
+        &["team", "date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_METRICS_COLLECTED_SIZE_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_metrics_collected_size_by_date",
+            "Total metrics collected size in bytes by date",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["team", "date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_LOGS_COLLECTED_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_logs_collected_by_date",
+            "Total logs collected by date",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["team", "date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_LOGS_COLLECTED_SIZE_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_logs_collected_size_by_date",
+            "Total logs collected size in bytes by date",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["team", "date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_TRACES_COLLECTED_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_traces_collected_by_date",
+            "Total traces collected by date",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["team", "date"],
+    )
+    .expect("metric can be created")
+});
+
+pub static TOTAL_TRACES_COLLECTED_SIZE_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_traces_collected_size_by_date",
+            "Total traces collected size in bytes by date",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["team", "date"],
     )
     .expect("metric can be created")
 });
@@ -487,6 +550,21 @@ fn custom_metrics(registry: &Registry) {
     registry
         .register(Box::new(TOTAL_METRICS_COLLECTED_BY_DATE.clone()))
         .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_METRICS_COLLECTED_SIZE_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_LOGS_COLLECTED_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_LOGS_COLLECTED_SIZE_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_TRACES_COLLECTED_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(TOTAL_TRACES_COLLECTED_SIZE_BY_DATE.clone()))
+        .expect("metric can be registered");
 }
 
 pub fn build_metrics_handler() -> PrometheusMetrics {
@@ -553,10 +631,31 @@ pub fn increment_events_ingested_by_date(count: u64, date: &str) {
         .inc_by(count);
 }
 
-pub fn increment_events_ingested_size_by_date(size: u64, date: &str) {
+pub fn increment_events_ingested_size_by_date(
+    size: u64,
+    date: &str,
+    telemetry_type: TelemetryType,
+) {
     TOTAL_EVENTS_INGESTED_SIZE_BY_DATE
         .with_label_values(&[date])
         .inc_by(size);
+    match telemetry_type {
+        TelemetryType::Logs | TelemetryType::Events => {
+            TOTAL_LOGS_COLLECTED_SIZE_BY_DATE
+                .with_label_values(&["all", date])
+                .inc_by(size);
+        }
+        TelemetryType::Metrics => {
+            TOTAL_METRICS_COLLECTED_SIZE_BY_DATE
+                .with_label_values(&["all", date])
+                .inc_by(size);
+        }
+        TelemetryType::Traces => {
+            TOTAL_TRACES_COLLECTED_SIZE_BY_DATE
+                .with_label_values(&["all", date])
+                .inc_by(size);
+        }
+    }
 }
 
 pub fn increment_parquets_stored_by_date(date: &str) {
@@ -634,10 +733,22 @@ pub fn increment_reasoning_llm_tokens_by_date(
         .inc_by(tokens);
 }
 
-pub fn increment_metrics_collected_by_date(date: &str) {
+pub fn increment_metrics_collected_by_date(count: u64, date: &str) {
     TOTAL_METRICS_COLLECTED_BY_DATE
-        .with_label_values(&[date])
-        .inc();
+        .with_label_values(&["all", date])
+        .inc_by(count);
+}
+
+pub fn increment_logs_collected_by_date(count: u64, date: &str) {
+    TOTAL_LOGS_COLLECTED_BY_DATE
+        .with_label_values(&["all", date])
+        .inc_by(count);
+}
+
+pub fn increment_traces_collected_by_date(count: u64, date: &str) {
+    TOTAL_TRACES_COLLECTED_BY_DATE
+        .with_label_values(&["all", date])
+        .inc_by(count);
 }
 
 use actix_web::HttpResponse;

@@ -31,6 +31,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
+    handlers::TelemetryType,
     metadata::SchemaVersion,
     storage::StreamType,
     utils::arrow::{add_parseable_fields, get_field},
@@ -220,6 +221,7 @@ pub trait EventFormat: Sized {
         schema_version: SchemaVersion,
         stream_type: StreamType,
         p_custom_fields: &HashMap<String, String>,
+        telemetry_type: TelemetryType,
     ) -> Result<Event, AnyError>;
 }
 

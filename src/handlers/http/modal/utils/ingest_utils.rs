@@ -32,7 +32,7 @@ use crate::{
         format::{EventFormat, LogSource, json},
     },
     handlers::{
-        EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY,
+        EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY, TelemetryType,
         http::{
             ingest::PostError,
             kinesis::{Message, flatten_kinesis_logs},
@@ -54,6 +54,7 @@ pub async fn flatten_and_push_logs(
     log_source: &LogSource,
     p_custom_fields: &HashMap<String, String>,
     time_partition: Option<String>,
+    telemetry_type: TelemetryType,
 ) -> Result<(), PostError> {
     // Verify the dataset fields count
     verify_dataset_fields_count(stream_name)?;
@@ -70,6 +71,7 @@ pub async fn flatten_and_push_logs(
                 log_source,
                 p_custom_fields,
                 time_partition,
+                telemetry_type,
             )
             .await?;
         }
@@ -83,6 +85,7 @@ pub async fn flatten_and_push_logs(
                     log_source,
                     p_custom_fields,
                     time_partition.clone(),
+                    telemetry_type,
                 )
                 .await?;
             }
@@ -97,6 +100,7 @@ pub async fn flatten_and_push_logs(
                     log_source,
                     p_custom_fields,
                     time_partition.clone(),
+                    telemetry_type,
                 )
                 .await?;
             }
@@ -111,6 +115,7 @@ pub async fn flatten_and_push_logs(
                     log_source,
                     p_custom_fields,
                     time_partition.clone(),
+                    telemetry_type,
                 )
                 .await?;
             }
@@ -122,6 +127,7 @@ pub async fn flatten_and_push_logs(
                 log_source,
                 p_custom_fields,
                 time_partition,
+                telemetry_type,
             )
             .await?
         }
@@ -136,6 +142,7 @@ pub async fn push_logs(
     log_source: &LogSource,
     p_custom_fields: &HashMap<String, String>,
     time_partition: Option<String>,
+    telemetry_type: TelemetryType,
 ) -> Result<(), PostError> {
     let stream = PARSEABLE.get_stream(stream_name)?;
     let time_partition_limit = PARSEABLE
@@ -169,6 +176,7 @@ pub async fn push_logs(
                 schema_version,
                 StreamType::UserDefined,
                 p_custom_fields,
+                telemetry_type,
             )?
             .process()?;
     }

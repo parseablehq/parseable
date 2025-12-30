@@ -161,6 +161,7 @@ pub async fn calculate_field_stats(
             SchemaVersion::V1,
             StreamType::Internal,
             &p_custom_fields,
+            TelemetryType::Logs,
         )?
         .process()?;
     }

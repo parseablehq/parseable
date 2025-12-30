@@ -27,6 +27,7 @@ use std::sync::Arc;
 use self::error::EventError;
 use crate::{
     LOCK_EXPECT,
+    handlers::TelemetryType,
     metadata::update_stats,
     metrics::{increment_events_ingested_by_date, increment_events_ingested_size_by_date},
     parseable::{PARSEABLE, StagingError},
@@ -52,6 +53,7 @@ pub struct Event {
     pub time_partition: Option<String>,
     pub custom_partition_values: HashMap<String, String>,
     pub stream_type: StreamType,
+    pub telemetry_type: TelemetryType,
 }
 
 // Events holds the schema related to a each event for a single log stream
@@ -92,7 +94,7 @@ impl Event {
         // Track billing metrics for event ingestion
         let date_string = self.parsed_timestamp.date().to_string();
         increment_events_ingested_by_date(self.rb.num_rows() as u64, &date_string);
-        increment_events_ingested_size_by_date(self.origin_size, &date_string);
+        increment_events_ingested_size_by_date(self.origin_size, &date_string, self.telemetry_type);
 
         crate::livetail::LIVETAIL.process(&self.stream_name, &self.rb);
 

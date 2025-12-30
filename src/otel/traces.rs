@@ -25,6 +25,7 @@ use opentelemetry_proto::tonic::trace::v1::span::Event;
 use opentelemetry_proto::tonic::trace::v1::span::Link;
 use serde_json::{Map, Value};
 
+use crate::metrics::increment_traces_collected_by_date;
 use crate::otel::otel_utils::flatten_attributes;
 
 use super::otel_utils::convert_epoch_nano_to_timestamp;
@@ -73,6 +74,9 @@ fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<Map<String, Value>> {
         let span_record_json = flatten_span_record(span);
         vec_scope_span_json.extend(span_record_json);
     }
+
+    let date = chrono::Utc::now().date_naive().to_string();
+    increment_traces_collected_by_date(scope_span.spans.len() as u64, &date);
 
     if let Some(scope) = &scope_span.scope {
         scope_span_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
@@ -404,6 +408,7 @@ fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
             }
         }
     }
+
     span_records_json
 }
 
