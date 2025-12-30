@@ -490,6 +490,14 @@ impl Server {
                         ),
                     )
                     .service(
+                        // GET "/logstream/{logstream}/affected-resources" ==> Get affected resources for given log stream
+                        web::resource("/affected-resources").route(
+                            web::get()
+                                .to(logstream::get_affected_resources)
+                                .authorize_for_resource(Action::GetLogstreamAffectedResources),
+                        ),
+                    )
+                    .service(
                         web::resource("/retention")
                             // PUT "/logstream/{logstream}/retention" ==> Set retention for given logstream
                             .route(

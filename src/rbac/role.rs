@@ -32,6 +32,7 @@ pub enum Action {
     DetectSchema,
     GetSchema,
     GetStats,
+    GetLogstreamAffectedResources,
     DeleteStream,
     GetRetention,
     PutRetention,
@@ -164,6 +165,7 @@ impl RoleBuilder {
                 | Action::GetSchema
                 | Action::DetectSchema
                 | Action::GetStats
+                | Action::GetLogstreamAffectedResources
                 | Action::GetRetention
                 | Action::PutRetention
                 | Action::All => Permission::Resource(action, self.resource_type.clone().unwrap()),
@@ -237,6 +239,7 @@ pub mod model {
                 Action::DetectSchema,
                 Action::GetSchema,
                 Action::GetStats,
+                Action::GetLogstreamAffectedResources,
                 Action::GetRetention,
                 Action::PutRetention,
                 Action::PutHotTierEnabled,
@@ -273,6 +276,7 @@ pub mod model {
                 Action::ListStream,
                 Action::GetSchema,
                 Action::GetStats,
+                Action::GetLogstreamAffectedResources,
                 Action::PutRetention,
                 Action::PutAlert,
                 Action::GetAlert,
@@ -313,6 +317,7 @@ pub mod model {
                 Action::ListStream,
                 Action::GetSchema,
                 Action::GetStats,
+                Action::GetLogstreamAffectedResources,
                 Action::GetLLM,
                 Action::QueryLLM,
                 Action::ListLLM,
