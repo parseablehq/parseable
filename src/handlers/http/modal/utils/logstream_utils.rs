@@ -39,7 +39,7 @@ use crate::{
 };
 
 /// Field in a dashboard's tile that should contain the logstream name
-const TILE_FIELD_REFERRING_TO_STREAM: &str = "chartQuery";
+const TILE_FIELD_REFERRING_TO_STREAM: &str = "dbName";
 
 #[derive(Debug, Default)]
 pub struct PutStreamHeaders {
@@ -186,21 +186,28 @@ impl LogstreamAffectedResources {
                     continue;
                 };
 
-                if let Some(chart_query) = tile_value.as_str() {
-                    if chart_query.contains(stream_name) && !affected_tile_ids.contains(&tile.tile_id) {
+                if let Some(db_names) = tile_value.as_array() {
+                    let dbs_have_stream = db_names
+                        .iter()
+                        .any(|db| {
+                            if let Some(db_str) = db.as_str() {
+                                return db_str == stream_name
+                            } else { false }
+                        });
+
+                    if dbs_have_stream && !affected_tile_ids.contains(&tile.tile_id) {
                         affected_tile_ids.push(tile.tile_id);
                     }
                 }
             }
 
-            if !affected_tile_ids.is_empty() {
+            if !affected_tile_ids.is_empty() && dashboard.dashboard_id.is_some()  {
                 affected_dashboards.push(LogstreamAffectedDashboard { 
-                    dashboard_id: dashboard.dashboard_id.unwrap_or_else(|| {
-                        tracing::warn!("dashboard {}: [id] is missing -- for logstream {}", dash_i, stream_name);
-                        Ulid::new() // default to a new ULID if missing -- what else?
-                    }), 
+                    dashboard_id: dashboard.dashboard_id.unwrap(),
                     affected_tile_ids
                 });
+            } else if !affected_tile_ids.is_empty() { 
+                tracing::warn!("dashboard {}: [id] is missing, skipping -- for logstream {}", dash_i, stream_name); 
             }
         }
 
