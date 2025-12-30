@@ -508,8 +508,8 @@ pub async fn get_affected_resources(
     }
 
     match LogstreamAffectedResources::load(&stream_name).await {
-        Ok(affecred_resources) 
-            => Ok((web::Json(affecred_resources), StatusCode::OK)),
+        Ok(affected_resources) 
+            => Ok((web::Json(affected_resources), StatusCode::OK)),
         Err(err) 
             => Err(err.into())
     }

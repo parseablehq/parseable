@@ -119,16 +119,6 @@ pub enum LogstreamAffectedResourcesError {
 }
 
 impl LogstreamAffectedResources {
-    /// Load all resources that will be affected if the given logstream is deleted.
-    ///
-    /// ### Arguments
-    /// - `stream_name` - The name of the logstream to check for dependencies
-    ///
-    /// ### Returns
-    /// A tuple where:
-    /// - First element: `true` if no resources are affected (empty loaded struct), `false` otherwise
-    /// - Second element: The populated `LogstreamAffectedResources` struct
- 
     pub async fn load(stream_name: &str) -> Result<Self, LogstreamAffectedResourcesError> {
         Ok(Self {
             filters: Self::fetch_affected_filters(stream_name).await?,
