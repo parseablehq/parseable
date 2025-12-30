@@ -80,10 +80,7 @@ pub async fn login(
         ));
     }
 
-    let oidc_client = match OIDC_CLIENT.get() {
-        Some(c) => c.as_ref().cloned(),
-        None => None,
-    };
+    let oidc_client = OIDC_CLIENT.get();
 
     let session_key = extract_session_key_from_req(&req).ok();
     let (session_key, oidc_client) = match (session_key, oidc_client) {
@@ -149,17 +146,23 @@ pub async fn login(
 }
 
 pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> HttpResponse {
-    let oidc_client = match OIDC_CLIENT.get() {
-        Some(c) => Some(c.as_ref().unwrap().read().await.client().clone()),
-        None => None,
-    };
+    let oidc_client = OIDC_CLIENT.get();
 
     let Some(session) = extract_session_key_from_req(&req).ok() else {
         return redirect_to_client(query.redirect.as_str(), None);
     };
     let user = Users.remove_session(&session);
-    let logout_endpoint =
-        oidc_client.and_then(|client| client.config().end_session_endpoint.clone());
+    let logout_endpoint = if let Some(client) = oidc_client {
+        client
+            .read()
+            .await
+            .client()
+            .config()
+            .end_session_endpoint
+            .clone()
+    } else {
+        None
+    };
 
     match (user, logout_endpoint) {
         (Some(username), Some(logout_endpoint))
@@ -174,9 +177,7 @@ pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> 
 /// Handler for code callback
 /// User should be redirected to page they were trying to access with cookie
 pub async fn reply_login(login_query: web::Query<Login>) -> Result<HttpResponse, OIDCError> {
-    let oidc_client = if let Some(oidc_client) = OIDC_CLIENT.get()
-        && let Some(oidc_client) = oidc_client
-    {
+    let oidc_client = if let Some(oidc_client) = OIDC_CLIENT.get() {
         oidc_client
     } else {
         return Err(OIDCError::Unauthorized);

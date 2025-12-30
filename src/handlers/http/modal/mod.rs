@@ -60,7 +60,7 @@ pub mod utils;
 
 pub type OpenIdClient = Arc<openid::Client<Discovered, Claims>>;
 
-pub static OIDC_CLIENT: OnceCell<Option<Arc<RwLock<GlobalClient>>>> = OnceCell::new();
+pub static OIDC_CLIENT: OnceCell<Arc<RwLock<GlobalClient>>> = OnceCell::new();
 
 #[derive(Debug)]
 pub struct GlobalClient {
@@ -117,9 +117,7 @@ pub trait ParseableServer {
             let client = config
                 .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
                 .await?;
-            OIDC_CLIENT.get_or_init(|| Some(Arc::new(RwLock::new(GlobalClient::new(client)))));
-        } else {
-            OIDC_CLIENT.get_or_init(|| None);
+            OIDC_CLIENT.get_or_init(|| Arc::new(RwLock::new(GlobalClient::new(client))));
         }
 
         // get the ssl stuff

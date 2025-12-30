@@ -634,8 +634,9 @@ impl AlertConfig {
                 }),
             })
             && !broadcast_to.is_empty()
+            && let Some(handler) = SSE_HANDLER.get()
         {
-            SSE_HANDLER.broadcast(msg, Some(&broadcast_to)).await;
+            handler.broadcast(msg, Some(&broadcast_to)).await;
         }
 
         Ok(())

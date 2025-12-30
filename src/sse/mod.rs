@@ -26,7 +26,7 @@ use actix_web_lab::{
 use futures_util::future;
 
 use itertools::Itertools;
-use once_cell::sync::Lazy;
+use once_cell::sync::OnceCell;
 use serde::{Deserialize, Serialize};
 use tokio::sync::{RwLock, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
@@ -36,7 +36,7 @@ use crate::{
     alerts::AlertState, rbac::map::SessionKey, utils::actix::extract_session_key_from_req,
 };
 
-pub static SSE_HANDLER: Lazy<Arc<Broadcaster>> = Lazy::new(Broadcaster::create);
+pub static SSE_HANDLER: OnceCell<Arc<Broadcaster>> = OnceCell::new();
 
 pub struct Broadcaster {
     inner: RwLock<BroadcasterInner>,
@@ -174,7 +174,10 @@ pub async fn register_sse_client(
             ));
         }
     };
-    Ok(SSE_HANDLER.new_client(&sessionid).await)
+    Ok(SSE_HANDLER
+        .get_or_init(Broadcaster::create)
+        .new_client(&sessionid)
+        .await)
 }
 
 /// Struct to define the messages being sent using SSE
