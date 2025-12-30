@@ -104,7 +104,7 @@ opentelemetry-proto = { git = "https://github.com/parmesant/opentelemetry-rust/"
     "metrics",
     "trace",
 ] }
-prometheus = { version = "0.14", default-features = false, features = ["process"] }
+prometheus = { version = "0.13.4", default-features = false, features = ["process"] }
 prometheus-parse = "0.2.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
