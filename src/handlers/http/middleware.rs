@@ -182,14 +182,7 @@ where
 
             // if session is expired, refresh token
             if sessions().is_session_expired(&key) {
-                let oidc_client = if let Some(client) = OIDC_CLIENT.get()
-                    && let Some(client) = client
-                {
-                    let guard = client.read().await;
-                    Some(guard.client().clone())
-                } else {
-                    None
-                };
+                let oidc_client = OIDC_CLIENT.get();
 
                 if let Some(client) = oidc_client
                     && let Ok(userid) = userid
@@ -209,6 +202,9 @@ where
 
                     if let Some(oauth_data) = bearer_to_refresh {
                         let refreshed_token = match client
+                            .read()
+                            .await
+                            .client()
                             .refresh_token(&oauth_data, Some(PARSEABLE.options.scope.as_str()))
                             .await
                         {
