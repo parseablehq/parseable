@@ -1015,5 +1015,15 @@ pub fn validate_custom_partition(custom_partition: &str) -> Result<(), CreateStr
             status: StatusCode::BAD_REQUEST,
         });
     }
+
+    for partition in custom_partition_list.iter() {
+        if partition.contains('.') {
+            return Err(CreateStreamError::Custom {
+                msg: format!("custom partition field {partition} must not contain '.'"),
+                status: StatusCode::BAD_REQUEST,
+            });
+        }
+    }
+
     Ok(())
 }
