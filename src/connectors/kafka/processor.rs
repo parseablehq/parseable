@@ -91,6 +91,7 @@ impl ParseableSinkProcessor {
             schema_version,
             StreamType::UserDefined,
             &p_custom_fields,
+            TelemetryType::Logs,
         )?;
 
         Ok(p_event)
