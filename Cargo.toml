@@ -33,7 +33,7 @@ actix-cors = "0.7.0"
 actix-web-lab = "0.24.3"
 actix-web = { version = "4.9.0", features = ["rustls-0_22"] }
 actix-web-httpauth = "0.8"
-actix-web-prometheus = { version = "0.1" }
+actix-web-prometheus = { version = "0.1", default-features = false }
 actix-web-static-files = "4.0"
 http = "0.2.7"
 http-auth-basic = "0.3.3"
@@ -104,7 +104,7 @@ opentelemetry-proto = { git = "https://github.com/parmesant/opentelemetry-rust/"
     "metrics",
     "trace",
 ] }
-prometheus = { version = "0.13", features = ["process"] }
+prometheus = { version = "0.13.4", default-features = false, features = ["process"] }
 prometheus-parse = "0.2.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
