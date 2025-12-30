@@ -125,7 +125,15 @@ pub async fn ingest(
         .add_update_log_source(&stream_name, log_source_entry)
         .await?;
 
-    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields, None).await?;
+    flatten_and_push_logs(
+        json,
+        &stream_name,
+        &log_source,
+        &p_custom_fields,
+        None,
+        telemetry_type,
+    )
+    .await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -149,6 +157,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             SchemaVersion::V0,
             StreamType::Internal,
             &p_custom_fields,
+            TelemetryType::Logs,
         )?
         .process()?;
 
@@ -235,6 +244,7 @@ async fn process_otel_content(
     body: web::Bytes,
     stream_name: &str,
     log_source: &LogSource,
+    telemetry_type: TelemetryType,
 ) -> Result<(), PostError> {
     let p_custom_fields = get_custom_fields_from_header(req);
 
@@ -251,6 +261,7 @@ async fn process_otel_content(
                     log_source,
                     &p_custom_fields,
                     None,
+                    telemetry_type,
                 )
                 .await?;
             } else if content_type == CONTENT_TYPE_PROTOBUF {
@@ -289,7 +300,7 @@ pub async fn handle_otel_logs_ingestion(
     )
     .await?;
 
-    process_otel_content(&req, body, &stream_name, &log_source).await?;
+    process_otel_content(&req, body, &stream_name, &log_source, TelemetryType::Logs).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -309,7 +320,14 @@ pub async fn handle_otel_metrics_ingestion(
     )
     .await?;
 
-    process_otel_content(&req, body, &stream_name, &log_source).await?;
+    process_otel_content(
+        &req,
+        body,
+        &stream_name,
+        &log_source,
+        TelemetryType::Metrics,
+    )
+    .await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -329,7 +347,7 @@ pub async fn handle_otel_traces_ingestion(
     )
     .await?;
 
-    process_otel_content(&req, body, &stream_name, &log_source).await?;
+    process_otel_content(&req, body, &stream_name, &log_source, TelemetryType::Traces).await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -396,7 +414,15 @@ pub async fn post_event(
     //return error if the stream log source is otel traces or otel metrics
     validate_stream_for_ingestion(&stream_name)?;
 
-    flatten_and_push_logs(json, &stream_name, &log_source, &p_custom_fields, None).await?;
+    flatten_and_push_logs(
+        json,
+        &stream_name,
+        &log_source,
+        &p_custom_fields,
+        None,
+        TelemetryType::Logs,
+    )
+    .await?;
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -415,6 +441,7 @@ pub async fn push_logs_unchecked(
         is_first_event: true,                    // NOTE: Maybe should be false
         custom_partition_values: HashMap::new(), // should be an empty map for unchecked push
         stream_type: StreamType::UserDefined,
+        telemetry_type: TelemetryType::Logs,
     };
     unchecked_event.process_unchecked()?;
 

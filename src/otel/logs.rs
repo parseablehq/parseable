@@ -18,6 +18,7 @@
 use super::otel_utils::collect_json_from_values;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
+use crate::metrics::increment_logs_collected_by_date;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::logs::v1::LogRecord;
 use opentelemetry_proto::tonic::logs::v1::LogsData;
@@ -145,6 +146,9 @@ fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<Map<String, Value>> {
         combined_json.extend(log_record_json);
         vec_scope_log_json.push(combined_json);
     }
+
+    let date = chrono::Utc::now().date_naive().to_string();
+    increment_logs_collected_by_date(scope_log.log_records.len() as u64, &date);
 
     vec_scope_log_json
 }

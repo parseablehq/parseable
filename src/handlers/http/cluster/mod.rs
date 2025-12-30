@@ -100,6 +100,11 @@ struct BillingMetricsCollector {
     pub total_input_llm_tokens_by_date: HashMap<String, HashMap<String, HashMap<String, u64>>>, // provider -> model -> date -> count
     pub total_output_llm_tokens_by_date: HashMap<String, HashMap<String, HashMap<String, u64>>>,
     pub total_metrics_collected_by_date: HashMap<String, u64>,
+    pub total_metrics_collected_size_by_date: HashMap<String, u64>,
+    pub total_logs_collected_by_date: HashMap<String, u64>,
+    pub total_logs_collected_size_by_date: HashMap<String, u64>,
+    pub total_traces_collected_by_date: HashMap<String, u64>,
+    pub total_traces_collected_size_by_date: HashMap<String, u64>,
     pub event_time: chrono::NaiveDateTime,
 }
 
@@ -200,6 +205,41 @@ impl BillingMetricsCollector {
                 events,
                 "total_metrics_collected",
                 &self.total_metrics_collected_by_date,
+            );
+        }
+        if !self.total_metrics_collected_size_by_date.is_empty() {
+            add_simple_metric(
+                events,
+                "total_metrics_collected_size",
+                &self.total_metrics_collected_size_by_date,
+            );
+        }
+        if !self.total_logs_collected_by_date.is_empty() {
+            add_simple_metric(
+                events,
+                "total_logs_collected",
+                &self.total_logs_collected_by_date,
+            );
+        }
+        if !self.total_logs_collected_size_by_date.is_empty() {
+            add_simple_metric(
+                events,
+                "total_logs_collected_size",
+                &self.total_logs_collected_size_by_date,
+            );
+        }
+        if !self.total_traces_collected_by_date.is_empty() {
+            add_simple_metric(
+                events,
+                "total_traces_collected",
+                &self.total_traces_collected_by_date,
+            );
+        }
+        if !self.total_traces_collected_size_by_date.is_empty() {
+            add_simple_metric(
+                events,
+                "total_traces_collected_size",
+                &self.total_traces_collected_size_by_date,
             );
         }
     }
@@ -1273,6 +1313,11 @@ fn is_simple_metric(metric: &str) -> bool {
             | "parseable_total_files_scanned_in_query_by_date"
             | "parseable_total_bytes_scanned_in_query_by_date"
             | "parseable_total_metrics_collected_by_date"
+            | "parseable_total_metrics_collected_size_by_date"
+            | "parseable_total_logs_collected_by_date"
+            | "parseable_total_logs_collected_size_by_date"
+            | "parseable_total_traces_collected_by_date"
+            | "parseable_total_traces_collected_size_by_date"
     )
 }
 
@@ -1342,6 +1387,31 @@ fn process_simple_metric(
             "parseable_total_metrics_collected_by_date" => {
                 collector
                     .total_metrics_collected_by_date
+                    .insert(date.to_string(), value);
+            }
+            "parseable_total_metrics_collected_size_by_date" => {
+                collector
+                    .total_metrics_collected_size_by_date
+                    .insert(date.to_string(), value);
+            }
+            "parseable_total_logs_collected_by_date" => {
+                collector
+                    .total_logs_collected_by_date
+                    .insert(date.to_string(), value);
+            }
+            "parseable_total_logs_collected_size_by_date" => {
+                collector
+                    .total_logs_collected_size_by_date
+                    .insert(date.to_string(), value);
+            }
+            "parseable_total_traces_collected_by_date" => {
+                collector
+                    .total_traces_collected_by_date
+                    .insert(date.to_string(), value);
+            }
+            "parseable_total_traces_collected_size_by_date" => {
+                collector
+                    .total_traces_collected_size_by_date
                     .insert(date.to_string(), value);
             }
             _ => {}
