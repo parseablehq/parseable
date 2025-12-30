@@ -163,7 +163,7 @@ pub async fn calculate_field_stats(
             &p_custom_fields,
             TelemetryType::Logs,
         )?
-        .process()?;
+        .process().await?;
     }
     Ok(stats_calculated)
 }

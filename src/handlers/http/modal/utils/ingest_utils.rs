@@ -178,7 +178,7 @@ pub async fn push_logs(
                 p_custom_fields,
                 telemetry_type,
             )?
-            .process()?;
+            .process().await?;
     }
     Ok(())
 }

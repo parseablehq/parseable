@@ -159,7 +159,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             &p_custom_fields,
             TelemetryType::Logs,
         )?
-        .process()?;
+        .process().await?;
 
     Ok(())
 }
@@ -443,7 +443,7 @@ pub async fn push_logs_unchecked(
         stream_type: StreamType::UserDefined,
         telemetry_type: TelemetryType::Logs,
     };
-    unchecked_event.process_unchecked()?;
+    unchecked_event.process_unchecked().await?;
 
     Ok(unchecked_event)
 }
