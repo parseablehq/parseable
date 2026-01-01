@@ -17,6 +17,7 @@
  */
 
 use actix_web::http::header::HeaderMap;
+use regex::Regex;
 
 use crate::{
     event::format::LogSource, handlers::{
@@ -27,7 +28,7 @@ use crate::{
     metastore::MetastoreError, 
     parseable::PARSEABLE, 
     storage::StreamType, 
-    users::filters::{FILTERS, Filter}
+    users::filters::{FILTERS, Filter, FilterType}
 };
 
 #[derive(Debug, Default)]
@@ -88,13 +89,28 @@ pub async fn delete_zombie_filters(stream_name: &str) -> Result<ZombieResourceCl
         });
     }
 
-    let all_filters = PARSEABLE.metastore.get_filters().await?;
+    let all_filters: Vec<Filter> = PARSEABLE.metastore.get_filters().await?;
 
+    
     // collect filters associated with the logstream being deleted
-    let filters_for_stream: Vec<Filter> = all_filters
-        .into_iter()
-        .filter(|filter| filter.stream_name == stream_name)
-        .collect();
+    let mut filters_for_stream = Vec::<Filter>::new();
+
+    for filter in all_filters.into_iter() {
+        match filter.query.filter_type {
+            FilterType::Filter => {
+                if filter.stream_name == stream_name {
+                    filters_for_stream.push(filter);
+                }
+            },
+            FilterType::SQL => {
+                if let Some(sql) = filter.query.filter_query.as_ref()
+                    && self::sql_contains_db(&sql, stream_name) {
+                        filters_for_stream.push(filter);
+                    }
+            },
+            _ => continue
+        }
+    }
 
     let mut deleted_filter_count = 0;
     let mut undeleted_filter_count = 0;
@@ -128,4 +144,16 @@ pub async fn delete_zombie_filters(stream_name: &str) -> Result<ZombieResourceCl
 pub struct ZombieResourceCleanupOk {
     pub ok_deletions: i32,
     pub failed_deletions: i32,
+}
+
+// utility: 
+
+fn sql_contains_db(sql: &str, db: &str) -> bool {
+    let escaped = regex::escape(db);
+    let pattern = format!(
+        r#"(?i)(^|[\s.(])(?:`{}`|"{}"|\[{}\]|{})([\s).,]|$)"#,
+        escaped, escaped, escaped, escaped
+    );
+
+    Regex::new(&pattern).unwrap().is_match(sql)
 }
