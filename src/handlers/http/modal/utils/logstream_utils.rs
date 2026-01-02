@@ -17,7 +17,7 @@
  */
 
 use actix_web::http::header::HeaderMap;
-use regex::Regex;
+use http::StatusCode;
 
 use crate::{
     event::format::LogSource, handlers::{
@@ -95,6 +95,13 @@ pub async fn delete_zombie_filters(stream_name: &str) -> Result<ZombieResourceCl
     // collect filters associated with the logstream being deleted
     let mut filters_for_stream = Vec::<Filter>::new();
 
+    let sql_filter_regex = match self::sql_db_regex(stream_name) {
+        Ok(regex) => regex,
+        Err(e) => {
+            return Err(e);
+        }
+    };
+
     for filter in all_filters.into_iter() {
         match filter.query.filter_type {
             FilterType::Filter | FilterType::Search => {
@@ -104,7 +111,7 @@ pub async fn delete_zombie_filters(stream_name: &str) -> Result<ZombieResourceCl
             },
             FilterType::SQL => {
                 if let Some(sql) = filter.query.filter_query.as_ref()
-                    && self::sql_contains_db(&sql, stream_name) {
+                    && sql_filter_regex.is_match(sql) {
                         filters_for_stream.push(filter);
                     }
             },
@@ -147,12 +154,19 @@ pub struct ZombieResourceCleanupOk {
 
 // utility: 
 
-fn sql_contains_db(sql: &str, db: &str) -> bool {
+fn sql_db_regex(db: &str) -> Result<regex::Regex, MetastoreError> {
     let escaped = regex::escape(db);
     let pattern = format!(
         r#"(?i)(^|[\s.(])(?:`{}`|"{}"|\[{}\]|{})([\s).,]|$)"#,
         escaped, escaped, escaped, escaped
     );
 
-    Regex::new(&pattern).unwrap().is_match(sql)
+    match regex::Regex::new(&pattern) {
+        Ok(regex) => Ok(regex),
+        Err(e) => Err(MetastoreError::Error {
+            status_code: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("failed to create regex for SQL db ({}) matching: {}", db, e),
+            flow: "RegexBuildError".to_string()
+        })
+    }
 }
