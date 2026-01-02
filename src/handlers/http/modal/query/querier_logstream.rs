@@ -41,7 +41,10 @@ use crate::{
                 utils::{IngestionStats, QueriedStats, StorageStats, merge_queried_stats},
             },
             logstream::error::StreamError,
-            modal::{NodeMetadata, NodeType, utils::logstream_utils::delete_zombie_filters},
+            modal::{
+                NodeMetadata, NodeType,
+                utils::logstream_utils::{ZombieResourceCleanupOk, delete_zombie_filters},
+            },
         },
     },
     hottier::HotTierManager,
@@ -109,7 +112,17 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
         .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
 
     // clear filters associated to the deleted logstream
-    let cleanup_stats = delete_zombie_filters(&stream_name).await?;
+    // clear filters associated to the deleted logstream
+    let cleanup_stats = match delete_zombie_filters(&stream_name).await {
+        Ok(stats) => stats,
+        Err(e) => {
+            tracing::error!("{}", e.to_string());
+            ZombieResourceCleanupOk {
+                ok_deletions: 0,
+                failed_deletions: 0,
+            }
+        }
+    };
 
     tracing::debug!("zombie filters deleted - {:#?}", cleanup_stats);
 
