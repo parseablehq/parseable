@@ -56,7 +56,10 @@ pub enum MetastoreError {
     InvalidJsonValue { field: String, reason: String },
 
     #[error("Zombie resource ({resource_type}) logstream still exists: {stream_name}")]
-    ZombieResourceStreamStillExists { stream_name: String, resource_type: String },
+    ZombieResourceStreamStillExists {
+        stream_name: String,
+        resource_type: String,
+    },
 
     #[error("{self:?}")]
     Error {
@@ -146,12 +149,15 @@ impl MetastoreError {
                 .collect(),
                 status_code: 400,
             },
-            MetastoreError::ZombieResourceStreamStillExists { 
-                stream_name, 
-                resource_type 
+            MetastoreError::ZombieResourceStreamStillExists {
+                stream_name,
+                resource_type,
             } => MetastoreErrorDetail {
                 operation: "ZombieResourceStreamStillExists".to_string(),
-                message: format!("Zombie resource ({}) logstream still exists: {}", resource_type, stream_name),
+                message: format!(
+                    "Zombie resource ({}) logstream still exists: {}",
+                    resource_type, stream_name
+                ),
                 stream_name: Some(stream_name.clone()),
                 file_path: None,
                 timestamp: Some(chrono::Utc::now()),
@@ -171,7 +177,9 @@ impl MetastoreError {
             MetastoreError::InvalidJsonStructure { .. } => StatusCode::INTERNAL_SERVER_ERROR,
             MetastoreError::MissingJsonField { .. } => StatusCode::INTERNAL_SERVER_ERROR,
             MetastoreError::InvalidJsonValue { .. } => StatusCode::INTERNAL_SERVER_ERROR,
-            MetastoreError::ZombieResourceStreamStillExists { .. } => StatusCode::INTERNAL_SERVER_ERROR,
+            MetastoreError::ZombieResourceStreamStillExists { .. } => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
             MetastoreError::Error { status_code, .. } => *status_code,
         }
     }

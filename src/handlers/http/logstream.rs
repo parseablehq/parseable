@@ -20,7 +20,9 @@ use self::error::StreamError;
 use super::cluster::utils::{IngestionStats, QueriedStats, StorageStats};
 use super::query::update_schema_when_distributed;
 use crate::event::format::override_data_type;
-use crate::handlers::http::modal::utils::logstream_utils::delete_zombie_filters;
+use crate::handlers::http::modal::utils::logstream_utils::{
+    ZombieResourceCleanupOk, delete_zombie_filters,
+};
 use crate::hottier::{CURRENT_HOT_TIER_VERSION, HotTierManager, StreamHotTier};
 use crate::metadata::SchemaVersion;
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
@@ -80,9 +82,17 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     stats::delete_stats(&stream_name, "json")
         .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
 
-
     // clear filters associated to the deleted logstream
-    let cleanup_stats = delete_zombie_filters(&stream_name).await?;
+    let cleanup_stats = match delete_zombie_filters(&stream_name).await {
+        Ok(stats) => stats,
+        Err(e) => {
+            tracing::error!("{}", e.to_string());
+            ZombieResourceCleanupOk {
+                ok_deletions: 0,
+                failed_deletions: 0,
+            }
+        }
+    };
 
     tracing::debug!("zombie filters deleted - {:#?}", cleanup_stats);
 

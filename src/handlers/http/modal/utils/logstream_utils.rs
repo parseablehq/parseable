@@ -20,15 +20,16 @@ use actix_web::http::header::HeaderMap;
 use http::StatusCode;
 
 use crate::{
-    event::format::LogSource, handlers::{
+    event::format::LogSource,
+    handlers::{
         CUSTOM_PARTITION_KEY, LOG_SOURCE_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY,
         TELEMETRY_TYPE_KEY, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY, TelemetryType,
         UPDATE_STREAM_KEY,
-    }, 
-    metastore::MetastoreError, 
-    parseable::PARSEABLE, 
-    storage::StreamType, 
-    users::filters::{FILTERS, Filter, FilterType}
+    },
+    metastore::MetastoreError,
+    parseable::PARSEABLE,
+    storage::StreamType,
+    users::filters::{FILTERS, Filter, FilterType},
 };
 
 #[derive(Debug, Default)]
@@ -79,8 +80,9 @@ impl From<&HeaderMap> for PutStreamHeaders {
 }
 
 /// Cleans up filters associated to a deleted logstream (dataset)
-
-pub async fn delete_zombie_filters(stream_name: &str) -> Result<ZombieResourceCleanupOk, MetastoreError> {
+pub async fn delete_zombie_filters(
+    stream_name: &str,
+) -> Result<ZombieResourceCleanupOk, MetastoreError> {
     // stream should not exist in order to have zombie filters
     if PARSEABLE.streams.contains(stream_name) {
         return Err(MetastoreError::ZombieResourceStreamStillExists {
@@ -91,7 +93,6 @@ pub async fn delete_zombie_filters(stream_name: &str) -> Result<ZombieResourceCl
 
     let all_filters: Vec<Filter> = PARSEABLE.metastore.get_filters().await?;
 
-    
     // collect filters associated with the logstream being deleted
     let mut filters_for_stream = Vec::<Filter>::new();
 
@@ -108,13 +109,16 @@ pub async fn delete_zombie_filters(stream_name: &str) -> Result<ZombieResourceCl
                 if filter.stream_name == stream_name {
                     filters_for_stream.push(filter);
                 }
-            },
+            }
             FilterType::SQL => {
+                // todo: improve the design for SQL Filters to explicitly contain stream_names
+
                 if let Some(sql) = filter.query.filter_query.as_ref()
-                    && sql_filter_regex.is_match(sql) {
-                        filters_for_stream.push(filter);
-                    }
-            },
+                    && sql_filter_regex.is_match(sql)
+                {
+                    filters_for_stream.push(filter);
+                }
+            }
         }
     }
 
@@ -124,14 +128,15 @@ pub async fn delete_zombie_filters(stream_name: &str) -> Result<ZombieResourceCl
     for filter in filters_for_stream.iter() {
         if let Err(err) = PARSEABLE.metastore.delete_filter(filter).await {
             tracing::error!(
-                "failed to delete the zombie filter: {} \nfrom storage. For logstream: {}\nError: {:#?}", 
+                "failed to delete the zombie filter: {} \nfrom storage. For logstream: {}\nError: {:#?}",
                 filter.filter_name,
                 stream_name,
-                err 
+                err
             );
 
             undeleted_filter_count += 1;
-        } else { // ok: have the filter removed from memory only when the storage deletion succeeds
+        } else {
+            // ok: have the filter removed from memory only when the storage deletion succeeds
             if let Some(filter_id) = filter.filter_id.as_ref() {
                 FILTERS.delete_filter(filter_id).await;
             }
@@ -141,8 +146,8 @@ pub async fn delete_zombie_filters(stream_name: &str) -> Result<ZombieResourceCl
     }
 
     Ok(ZombieResourceCleanupOk {
-        ok_deletions: deleted_filter_count, 
-        failed_deletions: undeleted_filter_count
+        ok_deletions: deleted_filter_count,
+        failed_deletions: undeleted_filter_count,
     })
 }
 
@@ -152,7 +157,7 @@ pub struct ZombieResourceCleanupOk {
     pub failed_deletions: i32,
 }
 
-// utility: 
+// utility:
 
 fn sql_db_regex(db: &str) -> Result<regex::Regex, MetastoreError> {
     let escaped = regex::escape(db);
@@ -166,7 +171,7 @@ fn sql_db_regex(db: &str) -> Result<regex::Regex, MetastoreError> {
         Err(e) => Err(MetastoreError::Error {
             status_code: StatusCode::INTERNAL_SERVER_ERROR,
             message: format!("failed to create regex for SQL db ({}) matching: {}", db, e),
-            flow: "RegexBuildError".to_string()
-        })
+            flow: "RegexBuildError".to_string(),
+        }),
     }
 }
