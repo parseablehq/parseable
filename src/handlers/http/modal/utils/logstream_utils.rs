@@ -97,7 +97,7 @@ pub async fn delete_zombie_filters(stream_name: &str) -> Result<ZombieResourceCl
 
     for filter in all_filters.into_iter() {
         match filter.query.filter_type {
-            FilterType::Filter => {
+            FilterType::Filter | FilterType::Search => {
                 if filter.stream_name == stream_name {
                     filters_for_stream.push(filter);
                 }
@@ -108,7 +108,6 @@ pub async fn delete_zombie_filters(stream_name: &str) -> Result<ZombieResourceCl
                         filters_for_stream.push(filter);
                     }
             },
-            _ => continue
         }
     }
 
