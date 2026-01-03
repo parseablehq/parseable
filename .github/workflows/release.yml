@@ -20,7 +20,7 @@ on:
 jobs:
   build-linux:
     name: Build for ${{matrix.target}}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04 # or ubuntu-24.04, ubuntu-20.04
     permissions:
       id-token: write
       contents: write
@@ -172,7 +172,7 @@ jobs:
 
   build-kafka-linux:
     name: Build Kafka for x86_64-unknown-linux-gnu
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04 # or ubuntu-24.04 ubuntu-20.04
     permissions:
       id-token: write
       contents: write
@@ -322,7 +322,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   create-checksum:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04 # or ubuntu-24.04, ubuntu-20.04
     needs: [build-linux, build-windows, build-mac, build-kafka-linux, build-kafka-mac]
     steps:
       - name: Download artifacts created
