@@ -83,6 +83,19 @@ pub async fn about() -> Json<Value> {
 
     let ms_clarity_tag = &PARSEABLE.options.ms_clarity_tag;
 
+    let license_name = "Parseable OSS";
+    let license_version = "v1";
+    let plan = "OSS";
+    let deployment_info = "Managed";
+    let license_info = {
+        json!({
+            "name": license_name,
+            "version": license_version,
+            "plan": plan,
+            "deploymentInfo": deployment_info,
+        })
+    };
+
     Json(json!({
         "version": current_version,
         "uiVersion": ui_version,
@@ -93,7 +106,7 @@ pub async fn about() -> Json<Value> {
         "llmActive": is_llm_active,
         "llmProvider": llm_provider,
         "oidcActive": is_oidc_active,
-        "license": "AGPL-3.0-only",
+        "license": license_info,
         "mode": mode,
         "staging": staging,
         "hotTier": hot_tier_details,
