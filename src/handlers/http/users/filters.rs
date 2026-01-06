@@ -30,14 +30,60 @@ use actix_web::{
     web::{self, Json, Path},
 };
 use http::StatusCode;
+use once_cell::sync::Lazy;
+use regex::Regex;
 use serde_json::Error as SerdeError;
 use ulid::Ulid;
+
+#[derive(Debug, Default)]
+struct FilterQueryParams {
+    stream: Option<String>,
+    user_id: Option<String>,
+    type_param: Option<String>,
+}
+
+static FILTER_QUERY_PARAMS_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?:^|&)(stream|user_id|type)=([^&]*)").unwrap());
 
 pub async fn list(req: HttpRequest) -> Result<impl Responder, FiltersError> {
     let key =
         extract_session_key_from_req(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
-    let filters = FILTERS.list_filters(&key).await;
-    Ok((web::Json(filters), StatusCode::OK))
+    let mut filters = FILTERS.list_filters(&key).await;
+
+    let query_string = req.query_string();
+    if query_string.is_empty() {
+        Ok((web::Json(filters), StatusCode::OK))
+    } else {
+        let mut params = FilterQueryParams::default();
+
+        let re = FILTER_QUERY_PARAMS_RE.clone();
+
+        for cap in re.captures_iter(query_string) {
+            let key = cap.get(1).unwrap().as_str();
+            let value = cap.get(2).unwrap().as_str().to_string();
+
+            match key {
+                "stream" => params.stream = Some(value),
+                "user_id" => params.user_id = Some(value),
+                "type" => params.type_param = Some(value),
+                _ => {} // This shouldn't happen with our regex
+            }
+        }
+
+        if params.stream.is_some() {
+            filters.retain(|f| f.stream_name.eq(params.stream.as_ref().unwrap()));
+        }
+
+        if params.user_id.is_some() {
+            filters.retain(|f| f.user_id == Some(params.user_id.clone().unwrap()));
+        }
+
+        if params.type_param.is_some() {
+            filters.retain(|f| f.query.filter_type == params.type_param.clone().unwrap());
+        }
+
+        Ok((web::Json(filters), StatusCode::OK))
+    }
 }
 
 pub async fn get(
