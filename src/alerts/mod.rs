@@ -16,6 +16,7 @@
  *
  */
 
+use actix_web::http::StatusCode;
 use actix_web::http::header::ContentType;
 use arrow_schema::{ArrowError, DataType, Schema};
 use async_trait::async_trait;
@@ -24,7 +25,6 @@ use datafusion::logical_expr::{LogicalPlan, Projection};
 use datafusion::prelude::Expr;
 use datafusion::sql::sqlparser::parser::ParserError;
 use derive_more::FromStrError;
-use http::StatusCode;
 use serde_json::{Error as SerdeError, Value as JsonValue};
 use std::collections::HashMap;
 use std::fmt::Debug;

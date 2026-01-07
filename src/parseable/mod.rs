@@ -25,12 +25,12 @@ use std::{
     sync::Arc,
 };
 
-use actix_web::http::header::HeaderMap;
+use actix_web::http::StatusCode;
+use actix_web::http::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Utc;
 use clap::{Parser, error::ErrorKind};
-use http::{HeaderName, HeaderValue, StatusCode, header::CONTENT_TYPE};
 use once_cell::sync::Lazy;
 pub use staging::StagingError;
 use streams::StreamRef;

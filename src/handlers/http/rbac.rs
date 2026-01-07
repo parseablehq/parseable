@@ -29,12 +29,12 @@ use crate::{
     storage::ObjectStorageError,
     validator::{self, error::UsernameValidationError},
 };
+use actix_web::http::StatusCode;
 use actix_web::{
     HttpResponse, Responder,
     http::header::ContentType,
     web::{self, Path},
 };
-use http::StatusCode;
 use itertools::Itertools;
 use serde::Serialize;
 use serde_json::json;
@@ -416,7 +416,7 @@ pub enum RBACError {
 }
 
 impl actix_web::ResponseError for RBACError {
-    fn status_code(&self) -> http::StatusCode {
+    fn status_code(&self) -> StatusCode {
         match self {
             Self::UserExists(_) => StatusCode::BAD_REQUEST,
             Self::UserDoesNotExist => StatusCode::NOT_FOUND,

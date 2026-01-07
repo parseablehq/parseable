@@ -18,9 +18,9 @@
 
 use std::collections::HashMap;
 
+use actix_web::http::StatusCode;
 use actix_web::http::header::ContentType;
 use chrono::Utc;
-use http::StatusCode;
 use itertools::Itertools;
 use serde::Serialize;
 use tracing::error;
@@ -481,7 +481,7 @@ pub enum PrismHomeError {
 }
 
 impl actix_web::ResponseError for PrismHomeError {
-    fn status_code(&self) -> http::StatusCode {
+    fn status_code(&self) -> StatusCode {
         match self {
             PrismHomeError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PrismHomeError::AlertError(e) => e.status_code(),

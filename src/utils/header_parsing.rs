@@ -16,6 +16,7 @@
  *
  */
 
+use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, ResponseError};
 
 #[derive(Debug, thiserror::Error)]
@@ -37,8 +38,8 @@ pub enum ParseHeaderError {
 }
 
 impl ResponseError for ParseHeaderError {
-    fn status_code(&self) -> http::StatusCode {
-        http::StatusCode::BAD_REQUEST
+    fn status_code(&self) -> StatusCode {
+        StatusCode::BAD_REQUEST
     }
 
     fn error_response(&self) -> HttpResponse {

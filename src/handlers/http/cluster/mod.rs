@@ -26,11 +26,12 @@ use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, Semaphore};
 
 use actix_web::Responder;
-use actix_web::http::header::{self, HeaderMap};
+use actix_web::http::StatusCode;
+use actix_web::http::header::HeaderMap;
 use actix_web::web::Path;
 use bytes::Bytes;
 use chrono::Utc;
-use http::{StatusCode, header as http_header};
+use http::header;
 use itertools::Itertools;
 use serde::de::{DeserializeOwned, Error};
 use serde_json::error::Error as SerdeError;
@@ -367,10 +368,15 @@ pub async fn sync_streams_with_ingestors(
     body: Bytes,
     stream_name: &str,
 ) -> Result<(), StreamError> {
-    let mut reqwest_headers = http_header::HeaderMap::new();
+    let mut reqwest_headers = reqwest::header::HeaderMap::new();
 
     for (key, value) in headers.iter() {
-        reqwest_headers.insert(key.clone(), value.clone());
+        // Convert actix header name/value to reqwest header name/value
+        if let Ok(name) = reqwest::header::HeaderName::from_bytes(key.as_str().as_bytes())
+            && let Ok(val) = reqwest::header::HeaderValue::from_bytes(value.as_bytes())
+        {
+            reqwest_headers.insert(name, val);
+        }
     }
 
     let body_clone = body.clone();

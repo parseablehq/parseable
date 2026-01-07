@@ -18,10 +18,10 @@
 
 use std::sync::Arc;
 
+use actix_web::http::StatusCode;
 use actix_web::http::header::ContentType;
 use arrow_schema::Schema;
 use chrono::Utc;
-use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use tracing::warn;
 
@@ -388,7 +388,7 @@ pub enum PrismLogstreamError {
 }
 
 impl actix_web::ResponseError for PrismLogstreamError {
-    fn status_code(&self) -> http::StatusCode {
+    fn status_code(&self) -> StatusCode {
         match self {
             PrismLogstreamError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PrismLogstreamError::StreamError(e) => e.status_code(),

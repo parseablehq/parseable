@@ -150,7 +150,7 @@ pub trait ParseableServer {
         // Start the server with or without TLS
         let srv = if let Some(config) = ssl {
             http_server
-                .bind_rustls_0_22(&PARSEABLE.options.address, config)?
+                .bind_rustls_0_23(&PARSEABLE.options.address, config)?
                 .run()
         } else {
             http_server.bind(&PARSEABLE.options.address)?.run()

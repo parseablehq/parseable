@@ -18,6 +18,7 @@
 
 use std::{collections::HashSet, sync::Arc};
 
+use actix_web::http::StatusCode;
 use actix_web::{
     HttpRequest, HttpResponse,
     cookie::{Cookie, SameSite, time},
@@ -25,7 +26,6 @@ use actix_web::{
     web,
 };
 use chrono::{Duration, TimeDelta};
-use http::StatusCode;
 use openid::{Bearer, Options, Token, Userinfo};
 use regex::Regex;
 use serde::Deserialize;
@@ -563,7 +563,7 @@ pub enum OIDCError {
 }
 
 impl actix_web::ResponseError for OIDCError {
-    fn status_code(&self) -> http::StatusCode {
+    fn status_code(&self) -> StatusCode {
         match self {
             Self::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Serde(_) => StatusCode::INTERNAL_SERVER_ERROR,

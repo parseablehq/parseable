@@ -33,6 +33,13 @@ use tracing_subscriber::{EnvFilter, Registry, fmt};
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
+    // Install the rustls crypto provider before any TLS operations.
+    // This is required for rustls 0.23+ which needs an explicit crypto provider.
+    if let Err(e) = rustls::crypto::ring::default_provider().install_default() {
+        eprintln!("Warning: Failed to install rustls crypto provider: {:?}", e);
+        eprintln!("This may indicate a provider is already installed.");
+    }
+
     init_logger();
 
     // these are empty ptrs so mem footprint should be minimal

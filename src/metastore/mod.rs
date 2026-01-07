@@ -16,7 +16,7 @@
  *
  */
 
-use http::StatusCode;
+use actix_web::http::StatusCode;
 use serde::Serialize;
 
 use crate::storage::ObjectStorageError;

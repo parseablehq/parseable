@@ -18,12 +18,12 @@
 
 use std::collections::{HashMap, HashSet};
 
+use actix_web::http::StatusCode;
 use actix_web::web::{self, Json, Path};
 use actix_web::{HttpRequest, HttpResponse, http::header::ContentType};
 use arrow_array::RecordBatch;
 use bytes::Bytes;
 use chrono::Utc;
-use http::StatusCode;
 
 use crate::event::error::EventError;
 use crate::event::format::known_schema::{self, KNOWN_SCHEMA_LIST};
@@ -508,7 +508,7 @@ pub enum PostError {
 }
 
 impl actix_web::ResponseError for PostError {
-    fn status_code(&self) -> http::StatusCode {
+    fn status_code(&self) -> StatusCode {
         use PostError::*;
         match self {
             SerdeError(_)

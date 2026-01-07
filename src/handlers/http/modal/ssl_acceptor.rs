@@ -20,6 +20,7 @@ use std::{
     fs::{self, File},
     io::BufReader,
     path::PathBuf,
+    sync::Arc,
 };
 
 use rustls::ServerConfig;
@@ -31,7 +32,10 @@ pub fn get_ssl_acceptor(
 ) -> anyhow::Result<Option<ServerConfig>> {
     match (tls_cert, tls_key) {
         (Some(cert), Some(key)) => {
-            let server_config = ServerConfig::builder().with_no_client_auth();
+            let provider = Arc::new(rustls::crypto::ring::default_provider());
+            let server_config = ServerConfig::builder_with_provider(provider)
+                .with_safe_default_protocol_versions()?
+                .with_no_client_auth();
 
             let cert_file = &mut BufReader::new(File::open(cert)?);
             let key_file = &mut BufReader::new(File::open(key)?);

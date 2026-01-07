@@ -21,11 +21,11 @@ use std::{
     sync::Arc,
 };
 
+use actix_web::http::StatusCode;
 use arrow_schema::Schema;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use http::StatusCode;
 use relative_path::RelativePathBuf;
 use tonic::async_trait;
 use tracing::warn;
