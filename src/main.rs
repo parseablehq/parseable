@@ -35,9 +35,9 @@ use tracing_subscriber::{EnvFilter, Registry, fmt};
 async fn main() -> anyhow::Result<()> {
     // Install the rustls crypto provider before any TLS operations.
     // This is required for rustls 0.23+ which needs an explicit crypto provider.
+    // If the installation fails, log a warning but continue execution.
     if let Err(e) = rustls::crypto::ring::default_provider().install_default() {
-        eprintln!("Warning: Failed to install rustls crypto provider: {:?}", e);
-        eprintln!("This may indicate a provider is already installed.");
+        warn!("Failed to install rustls crypto provider: {:?}", e);
     }
 
     init_logger();
