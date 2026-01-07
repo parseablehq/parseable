@@ -16,7 +16,7 @@
  *
  */
 
-use http::StatusCode;
+use actix_web::http::StatusCode;
 use serde::Serialize;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

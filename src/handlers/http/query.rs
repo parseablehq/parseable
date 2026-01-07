@@ -22,6 +22,7 @@ use crate::metastore::MetastoreError;
 use crate::option::Mode;
 use crate::rbac::map::SessionKey;
 use crate::utils::arrow::record_batches_to_json;
+use actix_web::http::StatusCode;
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{Either, FromRequest, HttpRequest, HttpResponse, Responder};
@@ -34,7 +35,6 @@ use datafusion::sql::sqlparser::parser::ParserError;
 use futures::stream::once;
 use futures::{Stream, StreamExt, future};
 use futures_util::Future;
-use http::StatusCode;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -590,7 +590,7 @@ Description: {0}"#
 }
 
 impl actix_web::ResponseError for QueryError {
-    fn status_code(&self) -> http::StatusCode {
+    fn status_code(&self) -> StatusCode {
         match self {
             QueryError::Execute(_) | QueryError::JsonParse(_) => StatusCode::INTERNAL_SERVER_ERROR,
             QueryError::MetastoreError(e) => e.status_code(),

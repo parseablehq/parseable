@@ -19,13 +19,13 @@
 use core::str;
 use std::{collections::HashMap, fs};
 
+use actix_web::http::StatusCode;
 use actix_web::{
     HttpRequest, Responder,
     web::{self, Path},
 };
 use bytes::Bytes;
 use chrono::Utc;
-use http::StatusCode;
 use tokio::sync::Mutex;
 use tracing::{error, warn};
 

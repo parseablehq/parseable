@@ -18,6 +18,7 @@
 
 use std::sync::Arc;
 
+use actix_web::http::StatusCode;
 use actix_web::{
     HttpResponse,
     body::MessageBody,
@@ -26,7 +27,6 @@ use actix_web::{
     error::ErrorServiceUnavailable,
     middleware::Next,
 };
-use http::StatusCode;
 use once_cell::sync::Lazy;
 use tokio::{sync::Mutex, task::JoinSet};
 use tracing::{error, info};

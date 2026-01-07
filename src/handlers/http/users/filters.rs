@@ -24,12 +24,12 @@ use crate::{
     users::filters::{CURRENT_FILTER_VERSION, FILTERS, Filter},
     utils::{actix::extract_session_key_from_req, get_hash, get_user_from_request, is_admin},
 };
+use actix_web::http::StatusCode;
 use actix_web::{
     HttpRequest, HttpResponse, Responder,
     http::header::ContentType,
     web::{self, Json, Path},
 };
-use http::StatusCode;
 use serde_json::Error as SerdeError;
 use ulid::Ulid;
 
@@ -143,7 +143,7 @@ pub enum FiltersError {
 }
 
 impl actix_web::ResponseError for FiltersError {
-    fn status_code(&self) -> http::StatusCode {
+    fn status_code(&self) -> StatusCode {
         match self {
             Self::ObjectStorage(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Serde(_) => StatusCode::BAD_REQUEST,

@@ -16,8 +16,9 @@
  *
  */
 
+use actix_web::http::StatusCode;
 use actix_web::{HttpResponse, Result, http::header::ContentType, web};
-use http::{StatusCode, header};
+use http::header;
 use itertools::Itertools;
 use reqwest;
 use serde_json::{Value, json};
@@ -146,7 +147,7 @@ pub enum LLMError {
 }
 
 impl actix_web::ResponseError for LLMError {
-    fn status_code(&self) -> http::StatusCode {
+    fn status_code(&self) -> StatusCode {
         match self {
             Self::InvalidAPIKey => StatusCode::INTERNAL_SERVER_ERROR,
             Self::FailedRequest(_) => StatusCode::INTERNAL_SERVER_ERROR,

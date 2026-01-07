@@ -18,10 +18,10 @@
 
 use std::collections::{HashMap, HashSet};
 
+use actix_web::http::StatusCode;
 use actix_web::{Error, http::header::ContentType};
 use chrono::Utc;
 use datafusion::error::DataFusionError;
-use http::StatusCode;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use relative_path::RelativePathBuf;
@@ -335,7 +335,7 @@ pub enum CorrelationError {
 }
 
 impl actix_web::ResponseError for CorrelationError {
-    fn status_code(&self) -> http::StatusCode {
+    fn status_code(&self) -> StatusCode {
         match self {
             Self::ObjectStorage(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::Serde(_) => StatusCode::BAD_REQUEST,

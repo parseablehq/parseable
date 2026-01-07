@@ -18,12 +18,12 @@
 
 use std::collections::HashSet;
 
+use actix_web::http::StatusCode;
 use actix_web::{
     HttpResponse, Responder,
     http::header::ContentType,
     web::{self, Json},
 };
-use http::StatusCode;
 
 use crate::{
     parseable::PARSEABLE,
@@ -176,7 +176,7 @@ pub enum RoleError {
 }
 
 impl actix_web::ResponseError for RoleError {
-    fn status_code(&self) -> http::StatusCode {
+    fn status_code(&self) -> StatusCode {
         match self {
             Self::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::RoleInUse => StatusCode::BAD_REQUEST,

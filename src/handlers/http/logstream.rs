@@ -506,8 +506,8 @@ fn classify_json_error(kind: serde_json::error::Category) -> StatusCode {
 
 pub mod error {
 
+    use actix_web::http::StatusCode;
     use actix_web::http::header::ContentType;
-    use http::StatusCode;
 
     use crate::{
         hottier::HotTierError,
@@ -589,7 +589,7 @@ pub mod error {
     }
 
     impl actix_web::ResponseError for StreamError {
-        fn status_code(&self) -> http::StatusCode {
+        fn status_code(&self) -> StatusCode {
             match self {
                 StreamError::CreateStream(CreateStreamError::StreamNameValidation(_)) => {
                     StatusCode::BAD_REQUEST
@@ -615,9 +615,10 @@ pub mod error {
                 StreamError::InvalidRetentionConfig(_) => StatusCode::BAD_REQUEST,
                 StreamError::SerdeError(_) => StatusCode::BAD_REQUEST,
                 StreamError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
-                StreamError::Network(err) => {
-                    err.status().unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
-                }
+                StreamError::Network(err) => err
+                    .status()
+                    .and_then(|s| StatusCode::from_u16(s.as_u16()).ok())
+                    .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                 StreamError::HotTierNotEnabled(_) => StatusCode::FORBIDDEN,
                 StreamError::HotTierValidation(_) => StatusCode::BAD_REQUEST,
                 StreamError::HotTierError(_) => StatusCode::INTERNAL_SERVER_ERROR,

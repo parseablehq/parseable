@@ -759,7 +759,10 @@ pub async fn get() -> Result<impl Responder, MetricsError> {
     let encoder = prometheus::TextEncoder::new();
     let metric_families = METRICS_REGISTRY.gather();
     encoder.encode(&metric_families, &mut buffer).map_err(|e| {
-        MetricsError::Custom(e.to_string(), http::StatusCode::INTERNAL_SERVER_ERROR)
+        MetricsError::Custom(
+            e.to_string(),
+            actix_web::http::StatusCode::INTERNAL_SERVER_ERROR,
+        )
     })?;
 
     Ok(HttpResponse::Ok()
@@ -769,8 +772,8 @@ pub async fn get() -> Result<impl Responder, MetricsError> {
 
 pub mod error {
 
+    use actix_web::http::StatusCode;
     use actix_web::http::header::ContentType;
-    use http::StatusCode;
 
     #[derive(Debug, thiserror::Error)]
     pub enum MetricsError {
@@ -779,7 +782,7 @@ pub mod error {
     }
 
     impl actix_web::ResponseError for MetricsError {
-        fn status_code(&self) -> http::StatusCode {
+        fn status_code(&self) -> StatusCode {
             match self {
                 Self::Custom(_, status) => *status,
             }

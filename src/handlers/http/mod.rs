@@ -18,9 +18,9 @@
 
 use actix_cors::Cors;
 use actix_web::Responder;
+use actix_web::http::StatusCode;
 use arrow_schema::Schema;
 use cluster::get_node_info;
-use http::StatusCode;
 use modal::{NodeMetadata, NodeType};
 use serde_json::Value;
 

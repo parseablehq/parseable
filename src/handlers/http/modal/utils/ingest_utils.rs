@@ -17,8 +17,8 @@
  */
 
 use actix_web::HttpRequest;
+use actix_web::http::header::USER_AGENT;
 use chrono::Utc;
-use http::header::USER_AGENT;
 use opentelemetry_proto::tonic::{
     logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
 };

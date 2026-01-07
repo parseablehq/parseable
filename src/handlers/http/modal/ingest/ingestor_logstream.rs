@@ -18,12 +18,12 @@
 
 use std::fs;
 
+use actix_web::http::StatusCode;
 use actix_web::{
     HttpRequest, Responder,
     web::{Json, Path},
 };
 use bytes::Bytes;
-use http::StatusCode;
 use tracing::warn;
 
 use crate::{

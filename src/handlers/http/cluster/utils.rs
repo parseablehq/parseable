@@ -21,8 +21,8 @@ use crate::{
     handlers::http::{base_path_without_preceding_slash, modal::NodeType},
     prism::logstream::PrismLogstreamError,
 };
-use actix_web::http::header;
 use chrono::{DateTime, Utc};
+use http::header;
 use serde::{Deserialize, Serialize};
 use tracing::error;
 use url::Url;
