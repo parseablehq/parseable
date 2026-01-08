@@ -57,6 +57,17 @@ static TIME_FIELD_NAME_PARTS: [&str; 11] = [
 ];
 type EventSchema = Vec<Arc<Field>>;
 
+/// Normalizes a field name by replacing leading '@' with '_'.
+/// Fields starting with '@' are renamed to start with '_'.
+#[inline]
+pub fn normalize_field_name(name: &str) -> String {
+    if let Some(stripped) = name.strip_prefix('@') {
+        format!("_{}", stripped)
+    } else {
+        name.to_string()
+    }
+}
+
 /// Source of the logs, used to perform special processing for certain sources
 #[derive(Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Hash)]
 pub enum LogSource {
@@ -335,7 +346,8 @@ pub fn override_data_type(
         .fields()
         .iter()
         .map(|field| {
-            let field_name = field.name().as_str();
+            // Normalize field names - replace '@' prefix with '_'
+            let field_name = normalize_field_name(field.name());
             match (schema_version, map.get(field.name())) {
                 // in V1 for new fields in json named "time"/"date" or such and having inferred
                 // type string, that can be parsed as timestamp, use the timestamp type.

@@ -118,6 +118,9 @@ impl EventFormat for Event {
             ));
         }
 
+        // Rename JSON keys starting with '@' to '_' to match the schema
+        let value_arr = rename_json_keys(value_arr);
+
         Ok((value_arr, schema, is_first))
     }
 
@@ -257,6 +260,27 @@ fn collect_keys<'a>(values: impl Iterator<Item = &'a Value>) -> Result<Vec<&'a s
     Ok(keys)
 }
 
+/// Renames JSON keys to match the schema transformation using normalize_field_name
+fn rename_json_keys(values: Vec<Value>) -> Vec<Value> {
+    values
+        .into_iter()
+        .map(|value| {
+            if let Value::Object(map) = value {
+                let new_map: serde_json::Map<String, Value> = map
+                    .into_iter()
+                    .map(|(key, val)| {
+                        let new_key = super::normalize_field_name(&key);
+                        (new_key, val)
+                    })
+                    .collect();
+                Value::Object(new_map)
+            } else {
+                value
+            }
+        })
+        .collect()
+}
+
 fn fields_mismatch(
     schema: &[Arc<Field>],
     body: &Value,
@@ -267,7 +291,9 @@ fn fields_mismatch(
         if val.is_null() {
             continue;
         }
-        let Some(field) = get_field(schema, name) else {
+        // Normalize field name to match schema transformation
+        let lookup_name = super::normalize_field_name(name);
+        let Some(field) = get_field(schema, &lookup_name) else {
             return true;
         };
         if !valid_type(field, val, schema_version, static_schema_flag) {
