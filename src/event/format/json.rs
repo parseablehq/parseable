@@ -268,9 +268,9 @@ fn rename_json_keys(values: Vec<Value>) -> Vec<Value> {
             if let Value::Object(map) = value {
                 let new_map: serde_json::Map<String, Value> = map
                     .into_iter()
-                    .map(|(key, val)| {
-                        let new_key = super::normalize_field_name(&key);
-                        (new_key, val)
+                    .map(|(mut key, val)| {
+                        super::normalize_field_name(&mut key);
+                        (key, val)
                     })
                     .collect();
                 Value::Object(new_map)
@@ -292,7 +292,8 @@ fn fields_mismatch(
             continue;
         }
         // Normalize field name to match schema transformation
-        let lookup_name = super::normalize_field_name(name);
+        let mut lookup_name = name.to_string();
+        super::normalize_field_name(&mut lookup_name);
         let Some(field) = get_field(schema, &lookup_name) else {
             return true;
         };

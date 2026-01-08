@@ -60,11 +60,9 @@ type EventSchema = Vec<Arc<Field>>;
 /// Normalizes a field name by replacing leading '@' with '_'.
 /// Fields starting with '@' are renamed to start with '_'.
 #[inline]
-pub fn normalize_field_name(name: &str) -> String {
+pub fn normalize_field_name(name: &mut String) {
     if let Some(stripped) = name.strip_prefix('@') {
-        format!("_{}", stripped)
-    } else {
-        name.to_string()
+        *name = format!("_{}", stripped);
     }
 }
 
@@ -347,7 +345,8 @@ pub fn override_data_type(
         .iter()
         .map(|field| {
             // Normalize field names - replace '@' prefix with '_'
-            let field_name = normalize_field_name(field.name());
+            let mut field_name = field.name().to_string();
+            normalize_field_name(&mut field_name);
             match (schema_version, map.get(field.name())) {
                 // in V1 for new fields in json named "time"/"date" or such and having inferred
                 // type string, that can be parsed as timestamp, use the timestamp type.
