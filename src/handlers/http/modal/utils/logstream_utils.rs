@@ -16,6 +16,8 @@
  *
  */
 
+use std::collections::HashSet;
+
 use actix_web::http::header::HeaderMap;
 use bytes::Bytes;
 use ulid::Ulid;
@@ -97,7 +99,7 @@ pub struct LogstreamAffectedResources {
 #[derive(Debug, Default, serde::Serialize)]
 pub struct LogstreamAffectedDashboard {
     pub dashboard_id: Ulid,
-    pub affected_tile_ids: Vec<Ulid>,
+    pub affected_tile_ids: HashSet<Ulid>,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -190,7 +192,7 @@ impl LogstreamAffectedResources {
                 continue;
             };
 
-            let mut affected_tile_ids = Vec::<Ulid>::new();
+            let mut affected_tile_ids = HashSet::<Ulid>::new();
             for tile in tiles {
                 let Some(tile_fields) = tile.other_fields.as_ref() else {
                     continue;
@@ -209,8 +211,8 @@ impl LogstreamAffectedResources {
                         }
                     });
 
-                    if dbs_have_stream && !affected_tile_ids.contains(&tile.tile_id) {
-                        affected_tile_ids.push(tile.tile_id);
+                    if dbs_have_stream {
+                        affected_tile_ids.insert(tile.tile_id);
                     }
                 }
             }
