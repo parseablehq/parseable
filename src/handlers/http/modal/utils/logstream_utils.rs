@@ -21,21 +21,18 @@ use bytes::Bytes;
 use ulid::Ulid;
 
 use crate::{
-    alerts::AlertConfig, 
-    event::format::LogSource, 
+    alerts::AlertConfig,
+    event::format::LogSource,
     handlers::{
         CUSTOM_PARTITION_KEY, LOG_SOURCE_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY,
         TELEMETRY_TYPE_KEY, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY, TelemetryType,
         UPDATE_STREAM_KEY, http::logstream::error::StreamError,
-    }, 
-    metastore::MetastoreError, 
-    parseable::{PARSEABLE, StreamNotFound}, 
-    rbac::role::{
-        ParseableResourceType, 
-        model::DefaultPrivilege
-    }, 
-    storage::{ObjectStorageError, StorageMetadata, StreamType}, 
-    users::dashboards::Dashboard
+    },
+    metastore::MetastoreError,
+    parseable::{PARSEABLE, StreamNotFound},
+    rbac::role::{ParseableResourceType, model::DefaultPrivilege},
+    storage::{ObjectStorageError, StorageMetadata, StreamType},
+    users::dashboards::Dashboard,
 };
 
 /// Field in a dashboard's tile that should contain the logstream name
@@ -100,14 +97,14 @@ pub struct LogstreamAffectedResources {
 #[derive(Debug, Default, serde::Serialize)]
 pub struct LogstreamAffectedDashboard {
     pub dashboard_id: Ulid,
-    pub affected_tile_ids: Vec<Ulid>
+    pub affected_tile_ids: Vec<Ulid>,
 }
 
 #[derive(thiserror::Error, Debug)]
 pub enum LogstreamAffectedResourcesError {
     #[error("(to fetch affected resources) logstream not found: {0}")]
     StreamNotFound(#[from] StreamNotFound),
-    
+
     #[error("(get affected resources) metastore error: {0}")]
     MetastoreError(#[from] MetastoreError),
 
@@ -115,7 +112,7 @@ pub enum LogstreamAffectedResourcesError {
     ObjectStorageError(#[from] ObjectStorageError),
 
     #[error("(get affected resources) could not parse JSON: {0}")]
-    Bytes2JSONError(#[from] Bytes2JSONError)
+    Bytes2JSONError(#[from] Bytes2JSONError),
 }
 
 impl LogstreamAffectedResources {
@@ -129,33 +126,41 @@ impl LogstreamAffectedResources {
     }
 
     pub async fn fetch_affected_filters(
-        stream_name: &str
+        stream_name: &str,
     ) -> Result<Vec<String>, LogstreamAffectedResourcesError> {
         if !PARSEABLE.streams.contains(stream_name) {
             return Err(StreamNotFound(stream_name.to_string()).into());
         }
 
-        Ok(PARSEABLE.metastore.get_filters().await?
+        Ok(PARSEABLE
+            .metastore
+            .get_filters()
+            .await?
             .into_iter()
             .filter_map(|filter| {
-                if filter.stream_name == stream_name && 
-                    let Some(f_id) = filter.filter_id { 
-                        Some(f_id) 
-                    } else { None }
-            }).collect())
+                if filter.stream_name == stream_name
+                    && let Some(f_id) = filter.filter_id
+                {
+                    Some(f_id)
+                } else {
+                    None
+                }
+            })
+            .collect())
     }
 
     pub async fn fetch_affected_dashboards(
-        stream_name: &str
+        stream_name: &str,
     ) -> Result<Vec<LogstreamAffectedDashboard>, LogstreamAffectedResourcesError> {
         if !PARSEABLE.streams.contains(stream_name) {
             return Err(StreamNotFound(stream_name.to_string()).into());
         }
 
         let all_dashboards = PARSEABLE.metastore.get_dashboards().await?;
-        let mut parsed_dashboards = Vec::<Dashboard>::new();
+        let mut parsed_dashboard_ids = Vec::<Ulid>::new();
+        let mut affected_dashboards: Vec<LogstreamAffectedDashboard> = vec![];
 
-        for dashboard_bytes in all_dashboards {
+        for (dash_i, dashboard_bytes) in all_dashboards.iter().enumerate() {
             let dashboard = match self::bytes_to_json::<Dashboard>(dashboard_bytes) {
                 Ok(d) => d,
                 Err(e) => {
@@ -164,36 +169,45 @@ impl LogstreamAffectedResources {
                 }
             };
 
-            if !parsed_dashboards.iter().any(|d| d.dashboard_id == dashboard.dashboard_id) {
-                parsed_dashboards.push(dashboard);
-            }
-        }
+            let dashboard_id = match dashboard.dashboard_id {
+                Some(id) => id,
+                None => {
+                    tracing::warn!(
+                        "dashboard {}: missing [id] field, skipping -- for logstream {}",
+                        dash_i,
+                        stream_name
+                    );
+                    continue;
+                }
+            };
 
-        let mut affected_dashboards: Vec<LogstreamAffectedDashboard> = vec![];
-        
-        for (dash_i, dashboard) in parsed_dashboards.iter().enumerate() {
-            let Some(tiles) = dashboard.tiles.as_ref() else { 
-                continue; 
+            if parsed_dashboard_ids.contains(&dashboard_id) {
+                continue;
+            };
+            parsed_dashboard_ids.push(dashboard_id);
+
+            let Some(tiles) = dashboard.tiles.as_ref() else {
+                continue;
             };
 
             let mut affected_tile_ids = Vec::<Ulid>::new();
             for tile in tiles {
-                let Some(tile_fields) = tile.other_fields.as_ref() else { 
-                    continue; 
+                let Some(tile_fields) = tile.other_fields.as_ref() else {
+                    continue;
                 };
-                
+
                 let Some(tile_value) = tile_fields.get(TILE_FIELD_REFERRING_TO_STREAM) else {
                     continue;
                 };
 
                 if let Some(db_names) = tile_value.as_array() {
-                    let dbs_have_stream = db_names
-                        .iter()
-                        .any(|db| {
-                            if let Some(db_str) = db.as_str() {
-                                return db_str == stream_name
-                            } else { false }
-                        });
+                    let dbs_have_stream = db_names.iter().any(|db| {
+                        if let Some(db_str) = db.as_str() {
+                            db_str == stream_name
+                        } else {
+                            false
+                        }
+                    });
 
                     if dbs_have_stream && !affected_tile_ids.contains(&tile.tile_id) {
                         affected_tile_ids.push(tile.tile_id);
@@ -201,13 +215,11 @@ impl LogstreamAffectedResources {
                 }
             }
 
-            if !affected_tile_ids.is_empty() && dashboard.dashboard_id.is_some()  {
-                affected_dashboards.push(LogstreamAffectedDashboard { 
-                    dashboard_id: dashboard.dashboard_id.unwrap(),
-                    affected_tile_ids
+            if !affected_tile_ids.is_empty() {
+                affected_dashboards.push(LogstreamAffectedDashboard {
+                    dashboard_id,
+                    affected_tile_ids,
                 });
-            } else if !affected_tile_ids.is_empty() { 
-                tracing::warn!("dashboard {}: [id] is missing, skipping -- for logstream {}", dash_i, stream_name); 
             }
         }
 
@@ -215,39 +227,37 @@ impl LogstreamAffectedResources {
     }
 
     pub async fn fetch_affected_alerts(
-        stream_name: &str
+        stream_name: &str,
     ) -> Result<Vec<Ulid>, LogstreamAffectedResourcesError> {
         if !PARSEABLE.streams.contains(stream_name) {
             return Err(StreamNotFound(stream_name.to_string()).into());
         }
 
-        let all_alerts = PARSEABLE.metastore.get_alerts().await?;
-        
-        let mut stream_alerts = Vec::<Ulid>::new();
-        for alert_bytes in all_alerts {
-            let alert = match self::bytes_to_json::<AlertConfig>(alert_bytes) {
-                Ok(alert_val) => alert_val,
+        let stream_alerts = PARSEABLE
+            .metastore
+            .get_alerts()
+            .await?
+            .iter()
+            .filter_map(|a| match self::bytes_to_json::<AlertConfig>(a) {
+                Ok(alert_val) => {
+                    if !alert_val.datasets.iter().any(|s| s == stream_name) {
+                        None
+                    } else {
+                        Some(alert_val.id)
+                    }
+                }
                 Err(e) => {
                     tracing::warn!("{}", e.to_string());
-                    continue;
+                    None
                 }
-            };
+            })
+            .collect();
 
-            if !alert.datasets.iter().any(|s| s == stream_name) { 
-                continue 
-            };
-            
-            if !stream_alerts.contains(&alert.id) {
-                stream_alerts.push(alert.id);
-            }
-        }
-        
         Ok(stream_alerts)
     }
 
-
     pub async fn fetch_affected_roles(
-        stream_name: &str
+        stream_name: &str,
     ) -> Result<Vec<String>, LogstreamAffectedResourcesError> {
         if !PARSEABLE.streams.contains(stream_name) {
             return Err(StreamNotFound(stream_name.to_string()).into());
@@ -258,47 +268,37 @@ impl LogstreamAffectedResources {
             .get_parseable_metadata()
             .await
             .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
-            .ok_or_else(|| ObjectStorageError::Custom("parseable metadata not initialized".into()))?;
+            .ok_or_else(|| {
+                ObjectStorageError::Custom("parseable metadata not initialized".into())
+            })?;
 
-        let metadata = self::bytes_to_json::<StorageMetadata>(metadata_bytes)?;
+        let metadata = self::bytes_to_json::<StorageMetadata>(&metadata_bytes)?;
 
         let mut stream_associated_roles = Vec::<String>::new();
         for (role_name, privileges) in &metadata.roles {
             for privilege in privileges {
-
                 let associated_stream = match privilege {
-                    DefaultPrivilege::Ingestor { resource } => {
-                        match resource {
-                            ParseableResourceType::Stream(stream) => stream,
-                            _ => continue
-                        }
-                    },
+                    DefaultPrivilege::Ingestor {
+                        resource: ParseableResourceType::Stream(stream),
+                    }
+                    | DefaultPrivilege::Reader {
+                        resource: ParseableResourceType::Stream(stream),
+                    }
+                    | DefaultPrivilege::Writer {
+                        resource: ParseableResourceType::Stream(stream),
+                    } => stream,
 
-                    DefaultPrivilege::Reader { resource } => {
-                        match resource {
-                            ParseableResourceType::Stream(stream) => stream,
-                            _ => continue
-                        }
-                    },
-
-                    DefaultPrivilege::Writer { resource } => {
-                        match resource {
-                            ParseableResourceType::Stream(stream) => stream,
-                            _ => continue
-                        }
-                    },
-
-                    _ => continue
+                    _ => continue,
                 };
 
-                if associated_stream == stream_name && !stream_associated_roles.contains(role_name) {
+                if associated_stream == stream_name && !stream_associated_roles.contains(role_name)
+                {
                     stream_associated_roles.push(role_name.to_string());
-                    
-                    // if any role privilege matches the input stream, 
-                    // add the role to the set and break
-                    break; 
-                }
 
+                    // if any role privilege matches the input stream,
+                    // add the role to the set and break
+                    break;
+                }
             }
         }
 
@@ -306,23 +306,15 @@ impl LogstreamAffectedResources {
     }
 }
 
-
 impl From<LogstreamAffectedResourcesError> for StreamError {
     fn from(err: LogstreamAffectedResourcesError) -> Self {
         match err {
-            LogstreamAffectedResourcesError::StreamNotFound(e) => {
-                StreamError::StreamNotFound(e)
-            }
-            LogstreamAffectedResourcesError::MetastoreError(e) => {
-                StreamError::MetastoreError(e)
-            }
-            other => {
-                StreamError::Anyhow(anyhow::anyhow!(other.to_string()))
-            }
+            LogstreamAffectedResourcesError::StreamNotFound(e) => StreamError::StreamNotFound(e),
+            LogstreamAffectedResourcesError::MetastoreError(e) => StreamError::MetastoreError(e),
+            other => StreamError::Anyhow(anyhow::anyhow!(other.to_string())),
         }
     }
 }
-
 
 // utility:
 
@@ -332,23 +324,24 @@ pub enum Bytes2JSONError {
     ZeroSizedBytes,
 
     #[error("failed to parse bytes to JSON: {0}")]
-    FailedToParse(String)
+    FailedToParse(String),
 }
 
-fn bytes_to_json<T: serde::de::DeserializeOwned>(json_bytes: Bytes) -> Result<T, Bytes2JSONError> {
+fn bytes_to_json<T: serde::de::DeserializeOwned>(json_bytes: &Bytes) -> Result<T, Bytes2JSONError> {
     if json_bytes.is_empty() {
         return Err(Bytes2JSONError::ZeroSizedBytes);
     }
 
-    let json_bytes_value = match serde_json::from_slice::<serde_json::Value>(&json_bytes) {
+    let json_bytes_value = match serde_json::from_slice::<serde_json::Value>(json_bytes) {
         Ok(value) => value,
-        Err(err) => {
-            return Err(Bytes2JSONError::FailedToParse(format!("{:#?}", err)))
-        }
+        Err(err) => return Err(Bytes2JSONError::FailedToParse(format!("{:#?}", err))),
     };
 
-    return match serde_json::from_value::<T>(json_bytes_value.clone()) {
+    match serde_json::from_value::<T>(json_bytes_value) {
         Ok(parsed_object) => Ok(parsed_object),
-        Err(e) => Err(Bytes2JSONError::FailedToParse(format!("deserialization failed: {:#?}", e)))
-    };
+        Err(e) => Err(Bytes2JSONError::FailedToParse(format!(
+            "deserialization failed: {:#?}",
+            e
+        ))),
+    }
 }
