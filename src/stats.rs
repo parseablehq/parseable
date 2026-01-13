@@ -31,6 +31,7 @@ use crate::metrics::{
     EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
     LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE,
 };
+use crate::parseable::DEFAULT_TENANT;
 use crate::storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat};
 
 /// Helper struct type created by copying stats values from metadata
@@ -48,9 +49,13 @@ pub struct FullStats {
     pub deleted_stats: Stats,
 }
 
-pub fn get_current_stats(stream_name: &str, format: &'static str) -> Option<FullStats> {
-    let event_labels = event_labels(stream_name, format);
-    let storage_size_labels = storage_size_labels(stream_name);
+pub fn get_current_stats(
+    stream_name: &str,
+    format: &'static str,
+    tenant_id: &Option<String>,
+) -> Option<FullStats> {
+    let event_labels = event_labels(stream_name, format, tenant_id);
+    let storage_size_labels = storage_size_labels(stream_name, tenant_id);
 
     let events_ingested = EVENTS_INGESTED
         .get_metric_with_label_values(&event_labels)
@@ -109,10 +114,11 @@ pub fn get_current_stats(stream_name: &str, format: &'static str) -> Option<Full
 }
 
 pub async fn update_deleted_stats(
-    storage: Arc<dyn ObjectStorage>,
+    storage: &Arc<dyn ObjectStorage>,
     stream_name: &str,
     meta: ObjectStoreFormat,
     dates: Vec<String>,
+    tenant_id: &Option<String>,
 ) -> Result<(), ObjectStorageError> {
     let mut num_row: i64 = 0;
     let mut storage_size: i64 = 0;
@@ -160,9 +166,9 @@ pub async fn update_deleted_stats(
     STORAGE_SIZE
         .with_label_values(&["data", stream_name, "parquet"])
         .sub(storage_size);
-    let stats = get_current_stats(stream_name, "json");
+    let stats = get_current_stats(stream_name, "json", tenant_id);
     if let Some(stats) = stats
-        && let Err(e) = storage.put_stats(stream_name, &stats).await
+        && let Err(e) = storage.put_stats(stream_name, &stats, tenant_id).await
     {
         warn!("Error updating stats to objectstore due to error [{}]", e);
     }
@@ -170,9 +176,13 @@ pub async fn update_deleted_stats(
     Ok(())
 }
 
-pub fn delete_stats(stream_name: &str, format: &'static str) -> prometheus::Result<()> {
-    let event_labels = event_labels(stream_name, format);
-    let storage_size_labels = storage_size_labels(stream_name);
+pub fn delete_stats(
+    stream_name: &str,
+    format: &'static str,
+    tenant_id: &Option<String>,
+) -> prometheus::Result<()> {
+    let event_labels = event_labels(stream_name, format, tenant_id);
+    let storage_size_labels = storage_size_labels(stream_name, tenant_id);
 
     remove_label_values(&EVENTS_INGESTED, &event_labels);
     remove_label_values(&EVENTS_INGESTED_SIZE, &event_labels);
@@ -216,12 +226,24 @@ fn delete_with_label_prefix(metrics: &IntCounterVec, prefix: &[&str]) {
     }
 }
 
-pub fn event_labels<'a>(stream_name: &'a str, format: &'static str) -> [&'a str; 2] {
-    [stream_name, format]
+pub fn event_labels<'a>(
+    stream_name: &'a str,
+    format: &'static str,
+    tenant_id: &'a Option<String>,
+) -> [&'a str; 3] {
+    if let Some(tenant_id) = tenant_id.as_ref() {
+        [stream_name, format, tenant_id]
+    } else {
+        [stream_name, format, DEFAULT_TENANT]
+    }
 }
 
-pub fn storage_size_labels(stream_name: &str) -> [&str; 3] {
-    ["data", stream_name, "parquet"]
+pub fn storage_size_labels<'a>(stream_name: &'a str, tenant_id: &'a Option<String>) -> [&'a str; 4] {
+    if let Some(tenant_id) = tenant_id.as_ref() {
+        ["data", stream_name, "parquet", tenant_id]
+    } else {
+        ["data", stream_name, "parquet", DEFAULT_TENANT]
+    }
 }
 
 pub fn event_labels_date<'a>(

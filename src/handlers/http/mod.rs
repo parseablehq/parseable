@@ -86,8 +86,8 @@ pub fn base_path_without_preceding_slash() -> String {
 /// # Returns
 ///
 /// An `anyhow::Result` containing the `arrow_schema::Schema` for the specified stream.
-pub async fn fetch_schema(stream_name: &str) -> anyhow::Result<arrow_schema::Schema> {
-    let res: Vec<Schema> = PARSEABLE.metastore.get_all_schemas(stream_name).await?;
+pub async fn fetch_schema(stream_name: &str, tenant_id: &Option<String>) -> anyhow::Result<arrow_schema::Schema> {
+    let res: Vec<Schema> = PARSEABLE.metastore.get_all_schemas(stream_name, tenant_id).await?;
 
     let new_schema = Schema::try_merge(res)?;
     Ok(new_schema)

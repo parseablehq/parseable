@@ -58,14 +58,38 @@ pub fn extract_datetime(path: &str) -> Option<NaiveDateTime> {
     }
 }
 
-pub fn get_user_from_request(req: &HttpRequest) -> Result<String, RBACError> {
+pub fn get_user_and_tenant_from_request(req: &HttpRequest) -> Result<(String, String), RBACError> {
     let session_key = extract_session_key_from_req(req).map_err(|_| RBACError::UserDoesNotExist)?;
-    let user_id = Users.get_userid_from_session(&session_key);
-    if user_id.is_none() {
-        return Err(RBACError::UserDoesNotExist);
+    match &session_key {
+        SessionKey::BasicAuth { username, password } => {
+            if let Some(user) = Users.get_user_from_basic(&username, &password)
+                && let Some(tenant) = user.tenant
+            {
+                return Ok((username.clone(), tenant));
+            }
+        }
+        SessionKey::SessionId(_) => {}
     }
-    let user_id = user_id.unwrap();
-    Ok(user_id)
+    let Some((user_id, tenant_id)) = Users.get_userid_from_session(&session_key) else {
+        return Err(RBACError::UserDoesNotExist);
+    };
+    Ok((user_id, tenant_id))
+}
+
+pub fn get_tenant_id_from_request(req: &HttpRequest) -> Option<String> {
+    if let Some(tenant_value) = req.headers().get("tenant") {
+        Some(tenant_value.to_str().unwrap().to_owned())
+    } else {
+        None
+    }
+}
+
+pub fn get_tenant_id_from_key(key: &SessionKey) -> Option<String> {
+    if let Some((_, tenant_id)) = Users.get_userid_from_session(key) {
+        Some(tenant_id.clone())
+    } else {
+        None
+    }
 }
 
 pub fn get_hash(key: &str) -> String {
@@ -82,13 +106,15 @@ pub async fn user_auth_for_query(
     let tables = resolve_stream_names(query).map_err(|e| {
         actix_web::error::ErrorBadRequest(format!("Failed to extract table names: {e}"))
     })?;
+    let tenant_id = get_tenant_id_from_key(session_key);
     let permissions = Users.get_permissions(session_key);
-    user_auth_for_datasets(&permissions, &tables).await
+    user_auth_for_datasets(&permissions, &tables, &tenant_id).await
 }
 
 pub async fn user_auth_for_datasets(
     permissions: &[Permission],
     tables: &[String],
+    tenant_id: &Option<String>,
 ) -> Result<(), actix_web::error::Error> {
     for table_name in tables {
         let mut authorized = false;
@@ -101,23 +127,29 @@ pub async fn user_auth_for_datasets(
                     authorized = true;
                     break;
                 }
-                Permission::Resource(Action::Query, ParseableResourceType::Stream(stream)) => {
-                    if !PARSEABLE.check_or_load_stream(stream).await {
+                Permission::Resource(
+                    Action::Query,
+                    Some(ParseableResourceType::Stream(stream)),
+                ) => {
+                    if !PARSEABLE.check_or_load_stream(stream, tenant_id).await {
                         return Err(actix_web::error::ErrorUnauthorized(format!(
                             "Stream not found: {table_name}"
                         )));
                     }
-                    let is_internal = PARSEABLE.get_stream(table_name).is_ok_and(|stream| {
-                        stream
-                            .get_stream_type()
-                            .eq(&crate::storage::StreamType::Internal)
-                    });
+                    let is_internal =
+                        PARSEABLE
+                            .get_stream(table_name, tenant_id)
+                            .is_ok_and(|stream| {
+                                stream
+                                    .get_stream_type()
+                                    .eq(&crate::storage::StreamType::Internal)
+                            });
 
                     if stream == table_name || stream == "*" || is_internal {
                         authorized = true;
                     }
                 }
-                Permission::Resource(action, ParseableResourceType::All)
+                Permission::Resource(action, Some(ParseableResourceType::All))
                     if ![
                         Action::All,
                         Action::PutUser,
@@ -156,7 +188,7 @@ pub fn is_admin(req: &HttpRequest) -> Result<bool, anyhow::Error> {
     // Check if user has admin permissions (Action::All on All resources)
     for permission in permissions.iter() {
         match permission {
-            Permission::Resource(Action::All, ParseableResourceType::All) => {
+            Permission::Resource(Action::All, Some(ParseableResourceType::All)) => {
                 return Ok(true);
             }
             _ => continue,

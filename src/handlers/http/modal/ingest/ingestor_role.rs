@@ -19,50 +19,77 @@
 use std::collections::HashSet;
 
 use actix_web::{
-    HttpResponse, Responder,
+    HttpRequest, HttpResponse, Responder,
     web::{self, Json},
 };
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    handlers::http::{modal::utils::rbac_utils::get_metadata, role::RoleError},
+    handlers::http::{modal::{ingest::SyncRole, utils::rbac_utils::get_metadata}, role::RoleError},
+    parseable::DEFAULT_TENANT,
     rbac::{
         map::{mut_roles, mut_sessions, read_user_groups, users},
         role::model::DefaultPrivilege,
     },
     storage,
+    utils::get_tenant_id_from_request,
 };
 
 // Handler for PUT /api/v1/role/{name}
 // Creates a new role or update existing one
 pub async fn put(
+    req: HttpRequest,
     name: web::Path<String>,
-    Json(privileges): Json<Vec<DefaultPrivilege>>,
+    Json(sync_req): Json<SyncRole>,
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
-    let mut metadata = get_metadata().await?;
-    metadata.roles.insert(name.clone(), privileges.clone());
+    let req_tenant_id = get_tenant_id_from_request(&req);
+    let req_tenant = req_tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    if req_tenant.ne(DEFAULT_TENANT) && (req_tenant.eq(&sync_req.tenant_id)) {
+        return Err(RoleError::Anyhow(anyhow::Error::msg(
+            "non super-admin user trying to create role for another tenant",
+        )));
+    }
+    let req_tenant_id = &Some(sync_req.tenant_id);
+    let mut metadata = get_metadata(req_tenant_id).await?;
+    metadata
+        .roles
+        .insert(name.clone(), sync_req.privileges.clone());
 
-    let _ = storage::put_staging_metadata(&metadata);
-    mut_roles().insert(name.clone(), privileges);
+    let _ = storage::put_staging_metadata(&metadata, req_tenant_id);
+    let tenant_id = req_tenant_id
+        .as_ref()
+        .map_or(DEFAULT_TENANT, |v| v)
+        .to_owned();
+    mut_roles("ingestor_role_put")
+        .entry(tenant_id.clone())
+        .or_default()
+        .insert(name.clone(), sync_req.privileges);
+    // mut_roles().insert(name.clone(), privileges);
 
     // refresh the sessions of all users using this role
     // for this, iterate over all user_groups and users and create a hashset of users
     let mut session_refresh_users: HashSet<String> = HashSet::new();
-    for user_group in read_user_groups().values() {
-        if user_group.roles.contains(&name) {
-            session_refresh_users.extend(user_group.users.iter().map(|u| u.userid().to_string()));
+    if let Some(groups) = read_user_groups().get(&tenant_id) {
+        for user_group in groups.values() {
+            if user_group.roles.contains(&name) {
+                session_refresh_users
+                    .extend(user_group.users.iter().map(|u| u.userid().to_string()));
+            }
         }
     }
 
     // iterate over all users to see if they have this role
-    for user in users().values() {
-        if user.roles.contains(&name) {
-            session_refresh_users.insert(user.userid().to_string());
+    if let Some(users) = users().get(&tenant_id) {
+        for user in users.values() {
+            if user.roles.contains(&name) {
+                session_refresh_users.insert(user.userid().to_string());
+            }
         }
     }
 
     for userid in session_refresh_users {
-        mut_sessions().remove_user(&userid);
+        mut_sessions().remove_user(&userid, &tenant_id);
     }
 
     Ok(HttpResponse::Ok().finish())

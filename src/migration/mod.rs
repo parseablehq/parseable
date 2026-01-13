@@ -50,6 +50,7 @@ fn get_version(metadata: &serde_json::Value) -> Option<&str> {
 pub async fn run_metadata_migration(
     config: &Parseable,
     parseable_json: &mut Option<Bytes>,
+    tenant_id: &Option<String>,
 ) -> anyhow::Result<()> {
     let mut storage_metadata: Option<Value> = None;
     if parseable_json.is_some() {
@@ -69,7 +70,7 @@ pub async fn run_metadata_migration(
                 metadata = metadata_migration::remove_querier_metadata(metadata);
                 let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
                 *parseable_json = Some(_metadata);
-                put_remote_metadata(metadata).await?;
+                put_remote_metadata(metadata, tenant_id).await?;
             }
             Some("v2") => {
                 let mut metadata = metadata_migration::v2_v3(storage_metadata);
@@ -79,7 +80,7 @@ pub async fn run_metadata_migration(
                 metadata = metadata_migration::remove_querier_metadata(metadata);
                 let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
                 *parseable_json = Some(_metadata);
-                put_remote_metadata(metadata).await?;
+                put_remote_metadata(metadata, tenant_id).await?;
             }
             Some("v3") => {
                 let mut metadata = metadata_migration::v3_v4(storage_metadata);
@@ -88,7 +89,7 @@ pub async fn run_metadata_migration(
                 metadata = metadata_migration::remove_querier_metadata(metadata);
                 let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
                 *parseable_json = Some(_metadata);
-                put_remote_metadata(metadata).await?;
+                put_remote_metadata(metadata, tenant_id).await?;
             }
             Some("v4") => {
                 let mut metadata = metadata_migration::v4_v5(storage_metadata);
@@ -96,53 +97,57 @@ pub async fn run_metadata_migration(
                 metadata = metadata_migration::remove_querier_metadata(metadata);
                 let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
                 *parseable_json = Some(_metadata);
-                put_remote_metadata(metadata).await?;
+                put_remote_metadata(metadata, tenant_id).await?;
             }
             Some("v5") => {
                 let metadata = metadata_migration::v5_v6(storage_metadata);
                 let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
                 *parseable_json = Some(_metadata);
-                put_remote_metadata(metadata).await?;
+                put_remote_metadata(metadata, tenant_id).await?;
             }
             _ => {
                 let metadata = metadata_migration::remove_querier_metadata(storage_metadata);
-                put_remote_metadata(metadata).await?;
+                put_remote_metadata(metadata, tenant_id).await?;
             }
         }
     }
 
     // if staging metadata is none do nothing
     if let Some(staging_metadata) = staging_metadata {
-        migrate_staging(config, staging_metadata)?;
+        migrate_staging(config, staging_metadata, tenant_id)?;
     }
 
     Ok(())
 }
 
-fn migrate_staging(config: &Parseable, staging_metadata: Value) -> anyhow::Result<()> {
+fn migrate_staging(
+    config: &Parseable,
+    staging_metadata: Value,
+    tenant_id: &Option<String>,
+) -> anyhow::Result<()> {
     match get_version(&staging_metadata) {
         Some("v1") => {
             let mut metadata = metadata_migration::v1_v3(staging_metadata);
             metadata = metadata_migration::v3_v4(metadata);
-            put_staging_metadata(config, &metadata)?;
+            put_staging_metadata(config, &metadata, tenant_id)?;
         }
         Some("v2") => {
             let mut metadata = metadata_migration::v2_v3(staging_metadata);
             metadata = metadata_migration::v3_v4(metadata);
-            put_staging_metadata(config, &metadata)?;
+            put_staging_metadata(config, &metadata, tenant_id)?;
         }
         Some("v3") => {
             let metadata = metadata_migration::v3_v4(staging_metadata);
-            put_staging_metadata(config, &metadata)?;
+            put_staging_metadata(config, &metadata, tenant_id)?;
         }
         Some("v4") => {
             let metadata = metadata_migration::v4_v5(staging_metadata);
             let metadata = metadata_migration::v5_v6(metadata);
-            put_staging_metadata(config, &metadata)?;
+            put_staging_metadata(config, &metadata, tenant_id)?;
         }
         Some("v5") => {
             let metadata = metadata_migration::v5_v6(staging_metadata);
-            put_staging_metadata(config, &metadata)?;
+            put_staging_metadata(config, &metadata, tenant_id)?;
         }
         _ => (),
     }
@@ -153,31 +158,45 @@ fn migrate_staging(config: &Parseable, staging_metadata: Value) -> anyhow::Resul
 pub async fn run_migration(config: &Parseable) -> anyhow::Result<()> {
     let storage = config.storage.get_object_store();
 
-    // Get all stream names
-    let stream_names = PARSEABLE.metastore.list_streams().await?;
+    let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
+        tenants.into_iter().map(|t| Some(t)).collect()
+    } else {
+        vec![None]
+    };
+    let mut futures = Vec::new();
 
-    // Create futures for each stream migration
-    let futures = stream_names.into_iter().map(|stream_name| {
-        let storage = storage.clone();
-        async move {
-            match migration_stream(&stream_name, &*storage).await {
-                Ok(Some(metadata)) => {
-                    // Apply the metadata update
-                    config
-                        .get_or_create_stream(&stream_name)
-                        .set_metadata(metadata)
-                        .await;
-                    Ok(())
-                }
-                Ok(None) => Ok(()),
-                Err(e) => {
-                    // Optionally log error but continue with other streams
-                    warn!("Error migrating stream {}: {:?}", stream_name, e);
-                    Err(e)
+    for tenant_id in tenants {
+        // Get all stream names
+        let stream_names = PARSEABLE.metastore.list_streams(&tenant_id).await?;
+
+        // Create futures for each stream migration
+        let f = stream_names.into_iter().map(|stream_name| {
+            let storage = storage.clone();
+            let id = tenant_id.clone();
+            async move {
+                match migration_stream(&stream_name, &*storage, &id).await {
+                    Ok(Some(metadata)) => {
+                        // Apply the metadata update
+                        config
+                            .get_or_create_stream(&stream_name, &id)
+                            .set_metadata(metadata)
+                            .await;
+                        Ok(())
+                    }
+                    Ok(None) => Ok(()),
+                    Err(e) => {
+                        // Optionally log error but continue with other streams
+                        warn!(
+                            "Error migrating stream {}: tenant: {:?} {:?}",
+                            stream_name, id, e
+                        );
+                        Err(e)
+                    }
                 }
             }
-        }
-    });
+        });
+        futures.extend(f);
+    }
 
     // Execute all migrations concurrently
     let results = futures::future::join_all(futures).await;
@@ -199,11 +218,14 @@ pub async fn run_migration(config: &Parseable) -> anyhow::Result<()> {
 async fn migration_stream(
     stream: &str,
     storage: &dyn ObjectStorage,
+    tenant_id: &Option<String>,
 ) -> anyhow::Result<Option<LogStreamMetadata>> {
     let mut arrow_schema: Schema = Schema::empty();
 
-    let schema = storage.create_schema_from_metastore(stream).await?;
-    let stream_metadata = fetch_or_create_stream_metadata(stream, storage).await?;
+    let schema = storage
+        .create_schema_from_metastore(stream, tenant_id)
+        .await?;
+    let stream_metadata = fetch_or_create_stream_metadata(stream, storage, tenant_id).await?;
 
     let mut stream_meta_found = true;
     if stream_metadata.is_empty() {
@@ -218,7 +240,7 @@ async fn migration_stream(
         stream_metadata_value =
             serde_json::from_slice(&stream_metadata).expect("stream.json is valid json");
         stream_metadata_value =
-            migrate_stream_metadata(stream_metadata_value, stream, &schema).await?;
+            migrate_stream_metadata(stream_metadata_value, stream, &schema, tenant_id).await?;
     }
 
     if arrow_schema.fields().is_empty() {
@@ -226,26 +248,32 @@ async fn migration_stream(
     }
 
     let metadata =
-        setup_logstream_metadata(stream, &mut arrow_schema, stream_metadata_value).await?;
+        setup_logstream_metadata(stream, &mut arrow_schema, stream_metadata_value, tenant_id)
+            .await?;
     Ok(Some(metadata))
 }
 
 async fn fetch_or_create_stream_metadata(
     stream: &str,
     storage: &dyn ObjectStorage,
+    tenant_id: &Option<String>,
 ) -> anyhow::Result<Bytes> {
-    if let Ok(stream_metadata) = PARSEABLE.metastore.get_stream_json(stream, false).await {
+    if let Ok(stream_metadata) = PARSEABLE
+        .metastore
+        .get_stream_json(stream, false, tenant_id)
+        .await
+    {
         Ok(stream_metadata)
     } else {
         let querier_stream = storage
-            .create_stream_from_querier(stream)
+            .create_stream_from_querier(stream, tenant_id)
             .await
             .unwrap_or_default();
         if !querier_stream.is_empty() {
             Ok(querier_stream)
         } else {
             Ok(storage
-                .create_stream_from_ingestor(stream)
+                .create_stream_from_ingestor(stream, tenant_id)
                 .await
                 .unwrap_or_default())
         }
@@ -256,6 +284,7 @@ async fn migrate_stream_metadata(
     mut stream_metadata_value: Value,
     stream: &str,
     schema: &Bytes,
+    tenant_id: &Option<String>,
 ) -> anyhow::Result<Value> {
     let version = stream_metadata_value
         .as_object()
@@ -273,12 +302,15 @@ async fn migrate_stream_metadata(
                 serde_json::from_value(stream_metadata_value.clone())?;
             PARSEABLE
                 .metastore
-                .put_stream_json(&stream_json, stream)
+                .put_stream_json(&stream_json, stream, tenant_id)
                 .await?;
 
             let schema = serde_json::from_slice(schema).ok();
             let arrow_schema = schema_migration::v1_v4(schema)?;
-            PARSEABLE.metastore.put_schema(arrow_schema, stream).await?;
+            PARSEABLE
+                .metastore
+                .put_schema(arrow_schema, stream, tenant_id)
+                .await?;
         }
         Some("v2") => {
             stream_metadata_value = stream_metadata_migration::v2_v4(stream_metadata_value);
@@ -290,12 +322,15 @@ async fn migrate_stream_metadata(
                 serde_json::from_value(stream_metadata_value.clone())?;
             PARSEABLE
                 .metastore
-                .put_stream_json(&stream_json, stream)
+                .put_stream_json(&stream_json, stream, tenant_id)
                 .await?;
 
             let schema = serde_json::from_slice(schema)?;
             let arrow_schema = schema_migration::v2_v4(schema)?;
-            PARSEABLE.metastore.put_schema(arrow_schema, stream).await?;
+            PARSEABLE
+                .metastore
+                .put_schema(arrow_schema, stream, tenant_id)
+                .await?;
         }
         Some("v3") => {
             stream_metadata_value = stream_metadata_migration::v3_v4(stream_metadata_value);
@@ -307,7 +342,7 @@ async fn migrate_stream_metadata(
                 serde_json::from_value(stream_metadata_value.clone())?;
             PARSEABLE
                 .metastore
-                .put_stream_json(&stream_json, stream)
+                .put_stream_json(&stream_json, stream, tenant_id)
                 .await?;
         }
         Some("v4") => {
@@ -319,7 +354,7 @@ async fn migrate_stream_metadata(
                 serde_json::from_value(stream_metadata_value.clone())?;
             PARSEABLE
                 .metastore
-                .put_stream_json(&stream_json, stream)
+                .put_stream_json(&stream_json, stream, tenant_id)
                 .await?;
         }
         Some("v5") => {
@@ -329,7 +364,7 @@ async fn migrate_stream_metadata(
                 serde_json::from_value(stream_metadata_value.clone())?;
             PARSEABLE
                 .metastore
-                .put_stream_json(&stream_json, stream)
+                .put_stream_json(&stream_json, stream, tenant_id)
                 .await?;
         }
         Some("v6") => {
@@ -338,7 +373,7 @@ async fn migrate_stream_metadata(
                 serde_json::from_value(stream_metadata_value.clone())?;
             PARSEABLE
                 .metastore
-                .put_stream_json(&stream_json, stream)
+                .put_stream_json(&stream_json, stream, tenant_id)
                 .await?;
         }
         _ => {
@@ -354,6 +389,7 @@ async fn setup_logstream_metadata(
     stream: &str,
     arrow_schema: &mut Schema,
     stream_metadata_value: Value,
+    tenant_id: &Option<String>,
 ) -> anyhow::Result<LogStreamMetadata> {
     let ObjectStoreFormat {
         schema_version,
@@ -377,13 +413,13 @@ async fn setup_logstream_metadata(
     update_data_type_time_partition(arrow_schema, time_partition.as_ref()).await?;
     PARSEABLE
         .metastore
-        .put_schema(arrow_schema.clone(), stream)
+        .put_schema(arrow_schema.clone(), stream, tenant_id)
         .await?;
     fetch_stats_from_storage(stream, stats).await;
     load_daily_metrics(&snapshot.manifest_list, stream);
 
     let schema = PARSEABLE
-        .get_or_create_stream(stream)
+        .get_or_create_stream(stream, tenant_id)
         .updated_schema(arrow_schema.clone());
     let schema = HashMap::from_iter(
         schema
@@ -434,11 +470,14 @@ pub fn get_staging_metadata(config: &Parseable) -> anyhow::Result<Option<serde_j
     Ok(Some(meta))
 }
 
-pub async fn put_remote_metadata(metadata: serde_json::Value) -> anyhow::Result<()> {
+pub async fn put_remote_metadata(
+    metadata: serde_json::Value,
+    tenant_id: &Option<String>,
+) -> anyhow::Result<()> {
     let metadata: StorageMetadata = serde_json::from_value(metadata)?;
     PARSEABLE
         .metastore
-        .put_parseable_metadata(&metadata)
+        .put_parseable_metadata(&metadata, tenant_id)
         .await?;
     Ok(())
 }
@@ -446,8 +485,17 @@ pub async fn put_remote_metadata(metadata: serde_json::Value) -> anyhow::Result<
 pub fn put_staging_metadata(
     config: &Parseable,
     metadata: &serde_json::Value,
+    tenant_id: &Option<String>,
 ) -> anyhow::Result<()> {
-    let path = config.options.staging_dir().join(".parseable.json");
+    let path = if let Some(tenant) = tenant_id.as_ref() {
+        config
+            .options
+            .staging_dir()
+            .join(tenant)
+            .join(".parseable.json")
+    } else {
+        config.options.staging_dir().join(".parseable.json")
+    };
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)

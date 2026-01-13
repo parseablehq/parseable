@@ -77,9 +77,10 @@ pub fn extract_time_range(eval_config: &super::EvalConfig) -> Result<TimeRange, 
 pub async fn execute_alert_query(
     query: &str,
     time_range: &TimeRange,
+    tenant_id: &Option<String>,
 ) -> Result<AlertQueryResult, AlertError> {
     match PARSEABLE.options.mode {
-        Mode::All | Mode::Query => execute_local_query(query, time_range).await,
+        Mode::All | Mode::Query => execute_local_query(query, time_range, tenant_id).await,
         Mode::Prism => execute_remote_query(query, time_range).await,
         _ => Err(AlertError::CustomError(format!(
             "Unsupported mode '{:?}' for alert evaluation",
@@ -92,11 +93,12 @@ pub async fn execute_alert_query(
 async fn execute_local_query(
     query: &str,
     time_range: &TimeRange,
+    tenant_id: &Option<String>,
 ) -> Result<AlertQueryResult, AlertError> {
     let session_state = QUERY_SESSION.state();
 
     let tables = resolve_stream_names(query)?;
-    create_streams_for_distributed(tables.clone())
+    create_streams_for_distributed(tables.clone(), tenant_id)
         .await
         .map_err(|err| AlertError::CustomError(format!("Failed to create streams: {err}")))?;
 
@@ -107,7 +109,7 @@ async fn execute_local_query(
         filter_tag: None,
     };
 
-    let (records, _) = execute(query, false)
+    let (records, _) = execute(query, false, tenant_id)
         .await
         .map_err(|err| AlertError::CustomError(format!("Failed to execute query: {err}")))?;
 
@@ -280,19 +282,34 @@ async fn update_alert_state(
     // Now perform the state update
     if let Some(msg) = message {
         alerts
-            .update_state(*alert.get_id(), AlertState::Triggered, Some(msg))
+            .update_state(
+                *alert.get_id(),
+                AlertState::Triggered,
+                Some(msg),
+                alert.get_tenant_id(),
+            )
             .await
     } else if alerts
-        .get_state(*alert.get_id())
+        .get_state(*alert.get_id(), alert.get_tenant_id())
         .await?
         .eq(&AlertState::Triggered)
     {
         alerts
-            .update_state(*alert.get_id(), AlertState::NotTriggered, Some("".into()))
+            .update_state(
+                *alert.get_id(),
+                AlertState::NotTriggered,
+                Some("".into()),
+                alert.get_tenant_id(),
+            )
             .await
     } else {
         alerts
-            .update_state(*alert.get_id(), AlertState::NotTriggered, None)
+            .update_state(
+                *alert.get_id(),
+                AlertState::NotTriggered,
+                None,
+                alert.get_tenant_id(),
+            )
             .await
     }
 }

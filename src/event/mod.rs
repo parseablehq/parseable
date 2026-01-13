@@ -30,8 +30,9 @@ use crate::{
     handlers::TelemetryType,
     metadata::update_stats,
     metrics::{increment_events_ingested_by_date, increment_events_ingested_size_by_date},
-    parseable::{PARSEABLE, StagingError},
+    parseable::{DEFAULT_TENANT, PARSEABLE, StagingError, StreamNotFound},
     storage::StreamType,
+    tenants::TenantNotFound,
 };
 use chrono::NaiveDateTime;
 use std::collections::HashMap;
@@ -54,6 +55,7 @@ pub struct Event {
     pub custom_partition_values: HashMap<String, String>,
     pub stream_type: StreamType,
     pub telemetry_type: TelemetryType,
+    pub tenant_id: Option<String>,
 }
 
 // Events holds the schema related to a each event for a single log stream
@@ -72,16 +74,18 @@ impl Event {
         }
 
         if self.is_first_event {
-            commit_schema(&self.stream_name, self.rb.schema())?;
+            commit_schema(&self.stream_name, self.rb.schema(), &self.tenant_id)?;
         }
 
-        PARSEABLE.get_or_create_stream(&self.stream_name).push(
-            &key,
-            &self.rb,
-            self.parsed_timestamp,
-            &self.custom_partition_values,
-            self.stream_type,
-        )?;
+        PARSEABLE
+            .get_or_create_stream(&self.stream_name, &self.tenant_id)
+            .push(
+                &key,
+                &self.rb,
+                self.parsed_timestamp,
+                &self.custom_partition_values,
+                self.stream_type,
+            )?;
 
         update_stats(
             &self.stream_name,
@@ -89,6 +93,7 @@ impl Event {
             self.origin_size,
             self.rb.num_rows(),
             self.parsed_timestamp.date(),
+            // self.tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
         );
 
         // Track billing metrics for event ingestion
@@ -104,13 +109,15 @@ impl Event {
     pub fn process_unchecked(&self) -> Result<(), EventError> {
         let key = get_schema_key(&self.rb.schema().fields);
 
-        PARSEABLE.get_or_create_stream(&self.stream_name).push(
-            &key,
-            &self.rb,
-            self.parsed_timestamp,
-            &self.custom_partition_values,
-            self.stream_type,
-        )?;
+        PARSEABLE
+            .get_or_create_stream(&self.stream_name, &self.tenant_id)
+            .push(
+                &key,
+                &self.rb,
+                self.parsed_timestamp,
+                &self.custom_partition_values,
+                self.stream_type,
+            )?;
 
         Ok(())
     }
@@ -126,12 +133,18 @@ pub fn get_schema_key(fields: &[Arc<Field>]) -> String {
     format!("{hash:x}")
 }
 
-pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), StagingError> {
+pub fn commit_schema(
+    stream_name: &str,
+    schema: Arc<Schema>,
+    tenant_id: &Option<String>,
+) -> Result<(), StagingError> {
     let mut stream_metadata = PARSEABLE.streams.write().expect("lock poisoned");
-
+    let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
     let map = &mut stream_metadata
+        .get_mut(tenant_id)
+        .ok_or_else(|| TenantNotFound(tenant_id.to_owned()))?
         .get_mut(stream_name)
-        .ok_or_else(|| StagingError::NotFound(stream_name.to_string()))?
+        .ok_or_else(|| StreamNotFound(stream_name.to_string()))?
         .metadata
         .write()
         .expect(LOCK_EXPECT)

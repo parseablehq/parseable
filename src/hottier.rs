@@ -89,20 +89,32 @@ impl HotTierManager {
             .map(|hot_tier_path| INSTANCE.get_or_init(|| HotTierManager::new(hot_tier_path)))
     }
 
-    ///get the total hot tier size for all streams
+    /// get the total hot tier size for all streams
     pub async fn get_hot_tiers_size(
         &self,
         current_stream: &str,
+        current_tenant_id: &Option<String>,
     ) -> Result<(u64, u64), HotTierError> {
         let mut total_hot_tier_size = 0;
         let mut total_hot_tier_used_size = 0;
-        for stream in PARSEABLE.streams.list() {
-            if self.check_stream_hot_tier_exists(&stream) && stream != current_stream {
-                let stream_hot_tier = self.get_hot_tier(&stream).await?;
-                total_hot_tier_size += &stream_hot_tier.size;
-                total_hot_tier_used_size += stream_hot_tier.used_size;
+        let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
+            tenants.into_iter().map(|v| Some(v)).collect()
+        } else {
+            vec![None]
+        };
+        for tenant_id in tenants {
+            for stream in PARSEABLE.streams.list(&tenant_id) {
+                if self.check_stream_hot_tier_exists(&stream, &tenant_id)
+                    && stream != current_stream
+                    && tenant_id != *current_tenant_id
+                {
+                    let stream_hot_tier = self.get_hot_tier(&stream, &tenant_id).await?;
+                    total_hot_tier_size += &stream_hot_tier.size;
+                    total_hot_tier_used_size += stream_hot_tier.used_size;
+                }
             }
         }
+
         Ok((total_hot_tier_size, total_hot_tier_used_size))
     }
 
@@ -114,11 +126,12 @@ impl HotTierManager {
         &self,
         stream: &str,
         stream_hot_tier_size: u64,
+        tenant_id: &Option<String>,
     ) -> Result<u64, HotTierError> {
         let mut existing_hot_tier_used_size = 0;
-        if self.check_stream_hot_tier_exists(stream) {
+        if self.check_stream_hot_tier_exists(stream, tenant_id) {
             //delete existing hot tier if its size is less than the updated hot tier size else return error
-            let existing_hot_tier = self.get_hot_tier(stream).await?;
+            let existing_hot_tier = self.get_hot_tier(stream, tenant_id).await?;
             existing_hot_tier_used_size = existing_hot_tier.used_size;
 
             if stream_hot_tier_size < existing_hot_tier_used_size {
@@ -141,7 +154,7 @@ impl HotTierManager {
             .expect("Codepath should only be hit if hottier is enabled");
 
         let (total_hot_tier_size, total_hot_tier_used_size) =
-            self.get_hot_tiers_size(stream).await?;
+            self.get_hot_tiers_size(stream, tenant_id).await?;
         let disk_threshold = (PARSEABLE.options.max_disk_usage * total_space as f64) / 100.0;
         let max_allowed_hot_tier_size = disk_threshold
             - total_hot_tier_size as f64
@@ -170,12 +183,16 @@ impl HotTierManager {
         Ok(existing_hot_tier_used_size)
     }
 
-    ///get the hot tier metadata file for the stream
-    pub async fn get_hot_tier(&self, stream: &str) -> Result<StreamHotTier, HotTierError> {
-        if !self.check_stream_hot_tier_exists(stream) {
+    /// get the hot tier metadata file for the stream
+    pub async fn get_hot_tier(
+        &self,
+        stream: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<StreamHotTier, HotTierError> {
+        if !self.check_stream_hot_tier_exists(stream, tenant_id) {
             return Err(HotTierValidationError::NotFound(stream.to_owned()).into());
         }
-        let path = self.hot_tier_file_path(stream)?;
+        let path = self.hot_tier_file_path(stream, tenant_id)?;
         let bytes = self
             .filesystem
             .get(&path)
@@ -188,8 +205,12 @@ impl HotTierManager {
         Ok(stream_hot_tier)
     }
 
-    pub async fn delete_hot_tier(&self, stream: &str) -> Result<(), HotTierError> {
-        if !self.check_stream_hot_tier_exists(stream) {
+    pub async fn delete_hot_tier(
+        &self,
+        stream: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<(), HotTierError> {
+        if !self.check_stream_hot_tier_exists(stream, tenant_id) {
             return Err(HotTierValidationError::NotFound(stream.to_owned()).into());
         }
         let path = self.hot_tier_path.join(stream);
@@ -204,8 +225,9 @@ impl HotTierManager {
         &self,
         stream: &str,
         hot_tier: &mut StreamHotTier,
+        tenant_id: &Option<String>,
     ) -> Result<(), HotTierError> {
-        let path = self.hot_tier_file_path(stream)?;
+        let path = self.hot_tier_file_path(stream, tenant_id)?;
         let bytes = serde_json::to_vec(&hot_tier)?.into();
         self.filesystem.put(&path, bytes).await?;
         Ok(())
@@ -215,11 +237,22 @@ impl HotTierManager {
     pub fn hot_tier_file_path(
         &self,
         stream: &str,
+        tenant_id: &Option<String>,
     ) -> Result<object_store::path::Path, HotTierError> {
-        let path = self
-            .hot_tier_path
-            .join(stream)
-            .join(STREAM_HOT_TIER_FILENAME);
+        // let path = self
+        //     .hot_tier_path
+        //     .join(stream)
+        //     .join(STREAM_HOT_TIER_FILENAME);
+        let path = if let Some(tenant_id) = tenant_id.as_ref() {
+            self.hot_tier_path
+                .join(tenant_id)
+                .join(stream)
+                .join(STREAM_HOT_TIER_FILENAME)
+        } else {
+            self.hot_tier_path
+                .join(stream)
+                .join(STREAM_HOT_TIER_FILENAME)
+        };
         let path = object_store::path::Path::from_absolute_path(path)?;
 
         Ok(path)
@@ -257,9 +290,16 @@ impl HotTierManager {
         }
 
         let mut sync_hot_tier_tasks = FuturesUnordered::new();
-        for stream in PARSEABLE.streams.list() {
-            if self.check_stream_hot_tier_exists(&stream) {
-                sync_hot_tier_tasks.push(self.process_stream(stream));
+        let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
+            tenants.into_iter().map(|v| Some(v)).collect()
+        } else {
+            vec![None]
+        };
+        for tenant_id in tenants {
+            for stream in PARSEABLE.streams.list(&tenant_id) {
+                if self.check_stream_hot_tier_exists(&stream, &tenant_id) {
+                    sync_hot_tier_tasks.push(self.process_stream(stream, tenant_id.to_owned()));
+                }
             }
         }
 
@@ -274,22 +314,31 @@ impl HotTierManager {
 
     /// process the hot tier files for the stream
     /// delete the files from the hot tier directory if the available date range is outside the hot tier range
-    async fn process_stream(&self, stream: String) -> Result<(), HotTierError> {
-        let stream_hot_tier = self.get_hot_tier(&stream).await?;
+    async fn process_stream(
+        &self,
+        stream: String,
+        tenant_id: Option<String>,
+    ) -> Result<(), HotTierError> {
+        let stream_hot_tier = self.get_hot_tier(&stream, &tenant_id).await?;
         let mut parquet_file_size = stream_hot_tier.used_size;
 
         let mut s3_manifest_file_list = PARSEABLE
             .metastore
-            .get_all_manifest_files(&stream)
+            .get_all_manifest_files(&stream, &tenant_id)
             .await
             .map_err(|e| {
-            HotTierError::ObjectStorageError(ObjectStorageError::MetastoreError(Box::new(
-                e.to_detail(),
-            )))
-        })?;
+                HotTierError::ObjectStorageError(ObjectStorageError::MetastoreError(Box::new(
+                    e.to_detail(),
+                )))
+            })?;
 
-        self.process_manifest(&stream, &mut s3_manifest_file_list, &mut parquet_file_size)
-            .await?;
+        self.process_manifest(
+            &stream,
+            &mut s3_manifest_file_list,
+            &mut parquet_file_size,
+            &tenant_id,
+        )
+        .await?;
 
         Ok(())
     }
@@ -303,6 +352,7 @@ impl HotTierManager {
         stream: &str,
         manifest_files_to_download: &mut BTreeMap<String, Vec<Manifest>>,
         parquet_file_size: &mut u64,
+        tenant_id: &Option<String>,
     ) -> Result<(), HotTierError> {
         if manifest_files_to_download.is_empty() {
             return Ok(());
@@ -335,6 +385,7 @@ impl HotTierManager {
                                 parquet_file_size,
                                 parquet_path,
                                 date,
+                                tenant_id,
                             )
                             .await?
                         {
@@ -363,9 +414,10 @@ impl HotTierManager {
         parquet_file_size: &mut u64,
         parquet_path: PathBuf,
         date: NaiveDate,
+        tenant_id: &Option<String>,
     ) -> Result<bool, HotTierError> {
         let mut file_processed = false;
-        let mut stream_hot_tier = self.get_hot_tier(stream).await?;
+        let mut stream_hot_tier = self.get_hot_tier(stream, tenant_id).await?;
         if !self.is_disk_available(parquet_file.file_size).await?
             || stream_hot_tier.available_size <= parquet_file.file_size
         {
@@ -375,6 +427,7 @@ impl HotTierManager {
                     &mut stream_hot_tier,
                     &parquet_path,
                     parquet_file.file_size,
+                    tenant_id,
                 )
                 .await?
             {
@@ -395,7 +448,8 @@ impl HotTierManager {
         stream_hot_tier.used_size = *parquet_file_size;
 
         stream_hot_tier.available_size -= parquet_file.file_size;
-        self.put_hot_tier(stream, &mut stream_hot_tier).await?;
+        self.put_hot_tier(stream, &mut stream_hot_tier, tenant_id)
+            .await?;
         file_processed = true;
         let path = self.get_stream_path_for_date(stream, &date);
         let mut hot_tier_manifest = HotTierManager::get_hot_tier_manifest_from_path(path).await?;
@@ -539,12 +593,13 @@ impl HotTierManager {
     }
 
     ///check if the hot tier metadata file exists for the stream
-    pub fn check_stream_hot_tier_exists(&self, stream: &str) -> bool {
-        let path = self
-            .hot_tier_path
-            .join(stream)
-            .join(STREAM_HOT_TIER_FILENAME);
-        path.exists()
+    pub fn check_stream_hot_tier_exists(&self, stream: &str, tenant_id: &Option<String>) -> bool {
+        // let path = self
+        //     .hot_tier_path
+        //     .join(stream)
+        //     .join(STREAM_HOT_TIER_FILENAME);
+        let path = self.hot_tier_file_path(stream, tenant_id).unwrap();
+        PathBuf::from(path.to_string()).exists()
     }
 
     ///delete the parquet file from the hot tier directory for the stream
@@ -559,6 +614,7 @@ impl HotTierManager {
         stream_hot_tier: &mut StreamHotTier,
         download_file_path: &Path,
         parquet_file_size: u64,
+        tenant_id: &Option<String>,
     ) -> Result<bool, HotTierError> {
         let mut delete_successful = false;
         let dates = self.fetch_hot_tier_dates(stream).await?;
@@ -607,7 +663,8 @@ impl HotTierManager {
 
                         stream_hot_tier.used_size -= file_size;
                         stream_hot_tier.available_size += file_size;
-                        self.put_hot_tier(stream, stream_hot_tier).await?;
+                        self.put_hot_tier(stream, stream_hot_tier, tenant_id)
+                            .await?;
                         delete_successful = true;
 
                         if stream_hot_tier.available_size <= parquet_file_size {
@@ -697,38 +754,53 @@ impl HotTierManager {
     }
 
     pub async fn put_internal_stream_hot_tier(&self) -> Result<(), HotTierError> {
-        if !self.check_stream_hot_tier_exists(PMETA_STREAM_NAME) {
-            let mut stream_hot_tier = StreamHotTier {
-                version: Some(CURRENT_HOT_TIER_VERSION.to_string()),
-                size: INTERNAL_STREAM_HOT_TIER_SIZE_BYTES,
-                used_size: 0,
-                available_size: INTERNAL_STREAM_HOT_TIER_SIZE_BYTES,
-                oldest_date_time_entry: None,
-            };
-            self.put_hot_tier(PMETA_STREAM_NAME, &mut stream_hot_tier)
-                .await?;
+        let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
+            tenants.into_iter().map(|v| Some(v)).collect()
+        } else {
+            vec![None]
+        };
+
+        for tenant_id in tenants {
+            if !self.check_stream_hot_tier_exists(PMETA_STREAM_NAME, &tenant_id) {
+                let mut stream_hot_tier = StreamHotTier {
+                    version: Some(CURRENT_HOT_TIER_VERSION.to_string()),
+                    size: INTERNAL_STREAM_HOT_TIER_SIZE_BYTES,
+                    used_size: 0,
+                    available_size: INTERNAL_STREAM_HOT_TIER_SIZE_BYTES,
+                    oldest_date_time_entry: None,
+                };
+                self.put_hot_tier(PMETA_STREAM_NAME, &mut stream_hot_tier, &tenant_id)
+                    .await?;
+            }
         }
         Ok(())
     }
 
     /// Creates hot tier for pstats internal stream if the stream exists in storage
     async fn create_pstats_hot_tier(&self) -> Result<(), HotTierError> {
-        // Check if pstats hot tier already exists
-        if !self.check_stream_hot_tier_exists(DATASET_STATS_STREAM_NAME) {
-            // Check if pstats stream exists in storage by attempting to load it
-            if PARSEABLE
-                .check_or_load_stream(DATASET_STATS_STREAM_NAME)
-                .await
-            {
-                let mut stream_hot_tier = StreamHotTier {
-                    version: Some(CURRENT_HOT_TIER_VERSION.to_string()),
-                    size: MIN_STREAM_HOT_TIER_SIZE_BYTES,
-                    used_size: 0,
-                    available_size: MIN_STREAM_HOT_TIER_SIZE_BYTES,
-                    oldest_date_time_entry: None,
-                };
-                self.put_hot_tier(DATASET_STATS_STREAM_NAME, &mut stream_hot_tier)
-                    .await?;
+        let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
+            tenants.into_iter().map(|v| Some(v)).collect()
+        } else {
+            vec![None]
+        };
+        for tenant_id in tenants {
+            // Check if pstats hot tier already exists
+            if !self.check_stream_hot_tier_exists(DATASET_STATS_STREAM_NAME, &tenant_id) {
+                // Check if pstats stream exists in storage by attempting to load it
+                if PARSEABLE
+                    .check_or_load_stream(DATASET_STATS_STREAM_NAME, &tenant_id)
+                    .await
+                {
+                    let mut stream_hot_tier = StreamHotTier {
+                        version: Some(CURRENT_HOT_TIER_VERSION.to_string()),
+                        size: MIN_STREAM_HOT_TIER_SIZE_BYTES,
+                        used_size: 0,
+                        available_size: MIN_STREAM_HOT_TIER_SIZE_BYTES,
+                        oldest_date_time_entry: None,
+                    };
+                    self.put_hot_tier(DATASET_STATS_STREAM_NAME, &mut stream_hot_tier, &tenant_id)
+                        .await?;
+                }
             }
         }
 

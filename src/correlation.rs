@@ -36,12 +36,12 @@ use crate::{
         users::{CORRELATION_DIR, USERS_ROOT_DIR},
     },
     metastore::{MetastoreError, metastore_traits::MetastoreObject},
-    parseable::PARSEABLE,
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     query::QUERY_SESSION,
     rbac::{Users, map::SessionKey},
     storage::ObjectStorageError,
     users::filters::FilterQuery,
-    utils::{get_hash, user_auth_for_datasets},
+    utils::{get_hash, get_tenant_id_from_key, user_auth_for_datasets},
 };
 
 pub static CORRELATIONS: Lazy<Correlations> = Lazy::new(Correlations::default);
@@ -49,7 +49,7 @@ pub static CORRELATIONS: Lazy<Correlations> = Lazy::new(Correlations::default);
 type CorrelationMap = HashMap<CorrelationId, CorrelationConfig>;
 
 #[derive(Debug, Default, derive_more::Deref)]
-pub struct Correlations(RwLock<CorrelationMap>);
+pub struct Correlations(RwLock<HashMap<String, CorrelationMap>>);
 
 impl Correlations {
     // Load correlations from storage
@@ -58,17 +58,20 @@ impl Correlations {
 
         let mut guard = self.write().await;
 
-        for correlations_bytes in all_correlations {
-            let correlation = match serde_json::from_slice::<CorrelationConfig>(&correlations_bytes)
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    error!("Unable to load correlation file : {e}");
-                    continue;
-                }
-            };
+        for (tenant_id, correlations_bytes) in all_correlations {
+            let mut corrs = HashMap::new();
+            for corr in correlations_bytes {
+                let correlation = match serde_json::from_slice::<CorrelationConfig>(&corr) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        error!("Unable to load correlation file : {e}");
+                        continue;
+                    }
+                };
+                corrs.insert(correlation.id.clone(), correlation);
+            }
 
-            guard.insert(correlation.id.to_owned(), correlation);
+            guard.insert(tenant_id, corrs);
         }
 
         Ok(())
@@ -80,15 +83,21 @@ impl Correlations {
     ) -> Result<Vec<CorrelationConfig>, CorrelationError> {
         let mut user_correlations = vec![];
         let permissions = Users.get_permissions(session_key);
-
-        for correlation in self.read().await.values() {
-            let tables = &correlation
-                .table_configs
-                .iter()
-                .map(|t| t.table_name.clone())
-                .collect_vec();
-            if user_auth_for_datasets(&permissions, tables).await.is_ok() {
-                user_correlations.push(correlation.clone());
+        let tenant_id = get_tenant_id_from_key(session_key);
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        if let Some(corrs) = self.read().await.get(tenant) {
+            for correlation in corrs.values() {
+                let tables = &correlation
+                    .table_configs
+                    .iter()
+                    .map(|t| t.table_name.clone())
+                    .collect_vec();
+                if user_auth_for_datasets(&permissions, tables, &tenant_id)
+                    .await
+                    .is_ok()
+                {
+                    user_correlations.push(correlation.clone());
+                }
             }
         }
 
@@ -98,16 +107,20 @@ impl Correlations {
     pub async fn get_correlation(
         &self,
         correlation_id: &str,
+        tenant_id: &Option<String>,
     ) -> Result<CorrelationConfig, CorrelationError> {
-        self.read()
-            .await
-            .get(correlation_id)
-            .cloned()
-            .ok_or_else(|| {
+        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        if let Some(corrs) = self.read().await.get(tenant_id) {
+            corrs.get(correlation_id).cloned().ok_or_else(|| {
                 CorrelationError::AnyhowError(anyhow::Error::msg(format!(
                     "Unable to find correlation with ID- {correlation_id}"
                 )))
             })
+        } else {
+            return Err(CorrelationError::AnyhowError(anyhow::Error::msg(format!(
+                "Unable to find correlation with ID- {correlation_id}"
+            ))));
+        }
     }
 
     /// Create correlation associated with the user
@@ -118,14 +131,17 @@ impl Correlations {
     ) -> Result<CorrelationConfig, CorrelationError> {
         correlation.id = get_hash(Utc::now().timestamp_micros().to_string().as_str());
         correlation.validate(session_key).await?;
-
+        let tenant_id = get_tenant_id_from_key(session_key);
         // Update in metastore
-        PARSEABLE.metastore.put_correlation(&correlation).await?;
-
+        PARSEABLE
+            .metastore
+            .put_correlation(&correlation, &tenant_id)
+            .await?;
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         // Update in memory
-        self.write()
-            .await
-            .insert(correlation.id.to_owned(), correlation.clone());
+        if let Some(corrs) = self.write().await.get_mut(tenant) {
+            corrs.insert(correlation.id.to_owned(), correlation.clone());
+        }
 
         Ok(correlation)
     }
@@ -136,8 +152,11 @@ impl Correlations {
         mut updated_correlation: CorrelationConfig,
         session_key: &SessionKey,
     ) -> Result<CorrelationConfig, CorrelationError> {
+        let tenant_id = get_tenant_id_from_key(session_key);
         // validate whether user has access to this correlation object or not
-        let correlation = self.get_correlation(&updated_correlation.id).await?;
+        let correlation = self
+            .get_correlation(&updated_correlation.id, &tenant_id)
+            .await?;
         if correlation.user_id != updated_correlation.user_id {
             return Err(CorrelationError::AnyhowError(anyhow::Error::msg(format!(
                 r#"User "{}" isn't authorized to update correlation with ID - {}"#,
@@ -151,14 +170,17 @@ impl Correlations {
         // Update in metastore
         PARSEABLE
             .metastore
-            .put_correlation(&updated_correlation)
+            .put_correlation(&updated_correlation, &tenant_id)
             .await?;
 
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         // Update in memory
-        self.write().await.insert(
-            updated_correlation.id.to_owned(),
-            updated_correlation.clone(),
-        );
+        if let Some(corrs) = self.write().await.get_mut(tenant) {
+            corrs.insert(
+                updated_correlation.id.to_owned(),
+                updated_correlation.clone(),
+            );
+        }
 
         Ok(updated_correlation)
     }
@@ -168,8 +190,9 @@ impl Correlations {
         &self,
         correlation_id: &str,
         user_id: &str,
+        tenant_id: &Option<String>
     ) -> Result<(), CorrelationError> {
-        let correlation = CORRELATIONS.get_correlation(correlation_id).await?;
+        let correlation = CORRELATIONS.get_correlation(correlation_id, tenant_id).await?;
         if correlation.user_id != user_id {
             return Err(CorrelationError::AnyhowError(anyhow::Error::msg(format!(
                 r#"User "{user_id}" isn't authorized to delete correlation with ID - {correlation_id}"#
@@ -177,7 +200,7 @@ impl Correlations {
         }
 
         // Delete from storage
-        PARSEABLE.metastore.delete_correlation(&correlation).await?;
+        PARSEABLE.metastore.delete_correlation(&correlation, tenant_id).await?;
 
         // Delete from memory
         self.write().await.remove(&correlation.id);
@@ -245,7 +268,7 @@ impl CorrelationConfig {
     /// This function will validate the TableConfigs, JoinConfig, and user auth
     pub async fn validate(&self, session_key: &SessionKey) -> Result<(), CorrelationError> {
         let ctx = &QUERY_SESSION;
-
+        let tenant_id = get_tenant_id_from_key(session_key);
         let h1: HashSet<&String> = self.table_configs.iter().map(|t| &t.table_name).collect();
         let h2: HashSet<&String> = self
             .join_config
@@ -277,7 +300,7 @@ impl CorrelationConfig {
             .map(|t| t.table_name.clone())
             .collect_vec();
 
-        user_auth_for_datasets(&permissions, tables).await?;
+        user_auth_for_datasets(&permissions, tables, &tenant_id).await?;
 
         // to validate table config, we need to check whether the mentioned fields
         // are present in the table or not

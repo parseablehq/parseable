@@ -204,21 +204,29 @@ fn total_event_stats() -> (Stats, Stats, Stats) {
     let mut deleted_parquet_bytes: u64 = 0;
     let mut deleted_json_bytes: u64 = 0;
 
-    for stream in PARSEABLE.streams.list() {
-        let Some(stats) = stats::get_current_stats(&stream, "json") else {
-            continue;
-        };
-        total_events += stats.lifetime_stats.events;
-        total_parquet_bytes += stats.lifetime_stats.storage;
-        total_json_bytes += stats.lifetime_stats.ingestion;
+    let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
+        tenants.into_iter().map(|v| Some(v)).collect()
+    } else {
+        vec![None]
+    };
 
-        current_events += stats.current_stats.events;
-        current_parquet_bytes += stats.current_stats.storage;
-        current_json_bytes += stats.current_stats.ingestion;
+    for tenant_id in tenants {
+        for stream in PARSEABLE.streams.list(&tenant_id) {
+            let Some(stats) = stats::get_current_stats(&stream, "json", &tenant_id) else {
+                continue;
+            };
+            total_events += stats.lifetime_stats.events;
+            total_parquet_bytes += stats.lifetime_stats.storage;
+            total_json_bytes += stats.lifetime_stats.ingestion;
 
-        deleted_events += stats.deleted_stats.events;
-        deleted_parquet_bytes += stats.deleted_stats.storage;
-        deleted_json_bytes += stats.deleted_stats.ingestion;
+            current_events += stats.current_stats.events;
+            current_parquet_bytes += stats.current_stats.storage;
+            current_json_bytes += stats.current_stats.ingestion;
+
+            deleted_events += stats.deleted_stats.events;
+            deleted_parquet_bytes += stats.deleted_stats.storage;
+            deleted_json_bytes += stats.deleted_stats.ingestion;
+        }
     }
 
     (

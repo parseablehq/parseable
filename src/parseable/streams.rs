@@ -56,6 +56,7 @@ use crate::{
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     storage::{StreamType, object_storage::to_bytes, retention::Retention},
     utils::time::{Minute, TimeRange},
 };
@@ -119,9 +120,10 @@ impl Stream {
         stream_name: impl Into<String>,
         metadata: LogStreamMetadata,
         ingestor_id: Option<String>,
+        tenant_id: &Option<String>,
     ) -> StreamRef {
         let stream_name = stream_name.into();
-        let data_path = options.local_stream_data_path(&stream_name);
+        let data_path = options.local_stream_data_path(&stream_name, tenant_id);
 
         Arc::new(Self {
             stream_name: stream_name.clone(),
@@ -153,8 +155,11 @@ impl Stream {
             }
         };
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
-            let filename =
-                self.filename_by_partition(schema_key, parsed_timestamp, custom_partition_values);
+            let filename = self.filename_by_partition(
+                schema_key,
+                parsed_timestamp,
+                custom_partition_values,
+            );
             match guard.disk.get_mut(&filename) {
                 Some(writer) => {
                     writer.write(record)?;
@@ -1024,8 +1029,11 @@ impl Stream {
     }
 }
 
+// #[derive(Deref, DerefMut, Default)]
+// pub struct Streams(RwLock<HashMap<String, StreamRef>>);
+
 #[derive(Deref, DerefMut, Default)]
-pub struct Streams(RwLock<HashMap<String, StreamRef>>);
+pub struct Streams(RwLock<HashMap<String, HashMap<String, StreamRef>>>);
 
 // PARSEABLE.streams should be updated
 // 1. During server start up
@@ -1042,30 +1050,62 @@ impl Streams {
         stream_name: String,
         metadata: LogStreamMetadata,
         ingestor_id: Option<String>,
+        tenant_id: &Option<String>,
     ) -> StreamRef {
         let mut guard = self.write().expect(LOCK_EXPECT);
-        if let Some(stream) = guard.get(&stream_name) {
+        tracing::warn!("get_or_create- stream- {stream_name}, tenant- {tenant_id:?}");
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+
+        if let Some(tenant_streams) = guard.get(tenant)
+            && let Some(stream) = tenant_streams.get(&stream_name)
+        {
             return stream.clone();
         }
 
-        let stream = Stream::new(options, &stream_name, metadata, ingestor_id);
-        guard.insert(stream_name, stream.clone());
+        // if let Some(stream) = guard.get(&stream_name) {
+        //     return stream.clone();
+        // }
+        // guard.insert(stream_name, stream.clone());
 
+        let stream = Stream::new(options, &stream_name, metadata, ingestor_id, tenant_id);
+        tracing::warn!("creating new stream- {stream_name}");
+        guard
+            .entry(tenant.to_owned())
+            .or_default()
+            .insert(stream_name, stream.clone());
+        tracing::warn!("inserted stream in mem");
         stream
     }
 
     /// TODO: validate possibility of stream continuing to exist despite being deleted
-    pub fn delete(&self, stream_name: &str) {
-        self.write().expect(LOCK_EXPECT).remove(stream_name);
+    pub fn delete(&self, stream_name: &str, tenant_id: &Option<String>) {
+        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let mut guard = self.write().expect(LOCK_EXPECT);
+        if let Some(tenant_streams) = guard.get_mut(tenant_id) {
+            tenant_streams.remove(stream_name);
+        }
+        // self.write().expect(LOCK_EXPECT).remove(stream_name);
     }
 
-    pub fn contains(&self, stream_name: &str) -> bool {
-        self.read().expect(LOCK_EXPECT).contains_key(stream_name)
+    pub fn contains(&self, stream_name: &str, tenant_id: &Option<String>) -> bool {
+        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        if let Some(tenant) = self.read().expect(LOCK_EXPECT).get(tenant_id) {
+            tenant.contains_key(stream_name)
+        } else {
+            tracing::warn!(
+                "Tenant with id {tenant_id} does not exist! Shouldn't happen (stream- {stream_name})"
+            );
+            false
+        }
     }
 
     /// Returns the number of logstreams that parseable is aware of
     pub fn len(&self) -> usize {
-        self.read().expect(LOCK_EXPECT).len()
+        self.read()
+            .expect(LOCK_EXPECT)
+            .iter()
+            .map(|map| map.1.len())
+            .sum()
     }
 
     /// Returns true if parseable is not aware of any streams
@@ -1073,24 +1113,42 @@ impl Streams {
         self.len() == 0
     }
 
-    /// Listing of logstream names that parseable is aware of
-    pub fn list(&self) -> Vec<LogStream> {
-        self.read()
-            .expect(LOCK_EXPECT)
-            .keys()
-            .map(String::clone)
-            .collect()
+    /// Listing of logstream names for a given tenant that parseable is aware of
+    pub fn list(&self, tenant_id: &Option<String>) -> Vec<LogStream> {
+        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+
+        let guard = self.read().expect(LOCK_EXPECT);
+        let l = if let Some(tenant_streams) = guard.get(tenant_id) {
+            tenant_streams.keys().map(String::clone).collect()
+        } else {
+            vec![]
+        };
+        tracing::warn!("listing streams for tenant- {tenant_id}\n{l:?}");
+        l
+        // self.read()
+        //     .expect(LOCK_EXPECT)
+        //     .get(&tenant_id)
+        //     .and_then(|v|v.keys())
+        //     .map(f)
+        //     .keys()
+        //     .map(String::clone)
+        //     .collect()
     }
 
-    pub fn list_internal_streams(&self) -> Vec<String> {
+    pub fn list_internal_streams(&self, tenant_id: &Option<String>) -> Vec<String> {
         let map = self.read().expect(LOCK_EXPECT);
-
-        map.iter()
-            .filter(|(_, stream)| {
-                stream.metadata.read().expect(LOCK_EXPECT).stream_type == StreamType::Internal
-            })
-            .map(|(k, _)| k.clone())
-            .collect()
+        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        if let Some(tenant_streams) = map.get(tenant_id) {
+            tenant_streams
+                .iter()
+                .filter(|(_, stream)| {
+                    stream.metadata.read().expect(LOCK_EXPECT).stream_type == StreamType::Internal
+                })
+                .map(|(k, _)| k.clone())
+                .collect()
+        } else {
+            vec![]
+        }
     }
 
     /// Asynchronously flushes arrows and compacts into parquet data on all streams in staging,
@@ -1101,15 +1159,29 @@ impl Streams {
         init_signal: bool,
         shutdown_signal: bool,
     ) {
-        let streams: Vec<Arc<Stream>> = self
-            .read()
-            .expect(LOCK_EXPECT)
-            .values()
-            .map(Arc::clone)
-            .collect();
-        for stream in streams {
-            joinset.spawn(async move { stream.flush_and_convert(init_signal, shutdown_signal) });
+        let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
+            tenants
+        } else {
+            vec![DEFAULT_TENANT.to_owned()]
+        };
+        for tenant_id in tenants {
+            let guard = self.read().expect(LOCK_EXPECT);
+            let streams: Vec<Arc<Stream>> = if let Some(tenant_streams) = guard.get(&tenant_id) {
+                tenant_streams.values().map(Arc::clone).collect()
+            } else {
+                vec![]
+            };
+            for stream in streams {
+                joinset
+                    .spawn(async move { stream.flush_and_convert(init_signal, shutdown_signal) });
+            }
         }
+        // let streams: Vec<Arc<Stream>> = self
+        //     .read()
+        //     .expect(LOCK_EXPECT)
+        //     .values()
+        //     .map(Arc::clone)
+        //     .collect();
     }
 }
 

@@ -24,14 +24,11 @@ use argon2::{
 };
 
 use openid::Bearer;
-use rand::distributions::{Alphanumeric, DistString};
+use rand::{RngCore, distributions::{Alphanumeric, DistString}};
 
 use crate::{
-    handlers::http::{
-        modal::utils::rbac_utils::{get_metadata, put_metadata},
-        rbac::{InvalidUserGroupError, RBACError},
-    },
-    parseable::PARSEABLE,
+    handlers::http::rbac::{InvalidUserGroupError, RBACError},
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::map::{mut_sessions, read_user_groups, roles, users},
 };
 
@@ -48,11 +45,12 @@ pub struct User {
     pub ty: UserType,
     pub roles: HashSet<String>,
     pub user_groups: HashSet<String>,
+    pub tenant: Option<String>,
 }
 
 impl User {
     // create a new User and return self with password generated for said user.
-    pub fn new_basic(username: String) -> (Self, String) {
+    pub fn new_basic(username: String, tenant: Option<String>) -> (Self, String) {
         let PassCode { password, hash } = Basic::gen_new_password();
         (
             Self {
@@ -62,6 +60,7 @@ impl User {
                 }),
                 roles: HashSet::new(),
                 user_groups: HashSet::new(),
+                tenant,
             },
             password,
         )
@@ -72,6 +71,7 @@ impl User {
         roles: HashSet<String>,
         user_info: UserInfo,
         bearer: Option<Bearer>,
+        tenant: Option<String>,
     ) -> Self {
         Self {
             ty: UserType::OAuth(Box::new(OAuth {
@@ -81,6 +81,7 @@ impl User {
             })),
             roles,
             user_groups: HashSet::new(),
+            tenant,
         }
     }
 
@@ -127,7 +128,7 @@ pub struct Basic {
 impl Basic {
     // generate a new password
     pub fn gen_new_password() -> PassCode {
-        let password = Alphanumeric.sample_string(&mut rand::thread_rng(), 16);
+        let password = Alphanumeric.sample_string(&mut rand::thread_rng(), 32);
         let hash = gen_hash(&password);
         PassCode { password, hash }
     }
@@ -150,7 +151,11 @@ pub fn verify(password_hash: &str, password: &str) -> bool {
 // generate a one way hash for password to be stored in metadata file
 // ref https://github.com/P-H-C/phc-string-format/blob/master/phc-sf-spec.md
 fn gen_hash(password: &str) -> String {
-    let salt = SaltString::generate(&mut OsRng);
+    let mut bytes = [0u8; 32];
+    let r = &mut OsRng;
+    r.fill_bytes(&mut bytes);
+    let salt = SaltString::encode_b64(&bytes).unwrap();
+    // let salt = SaltString::generate(&mut OsRng);
     let argon2 = Argon2::default();
     argon2
         .hash_password(password.as_bytes(), &salt)
@@ -163,7 +168,7 @@ pub struct PassCode {
     pub hash: String,
 }
 
-pub fn get_admin_user() -> User {
+pub fn get_super_admin_user() -> User {
     let username = PARSEABLE.options.username.clone();
     let password = PARSEABLE.options.password.clone();
     let hashcode = gen_hash(&password);
@@ -173,8 +178,9 @@ pub fn get_admin_user() -> User {
             username,
             password_hash: hashcode,
         }),
-        roles: ["admin".to_string()].into(),
+        roles: ["super-admin".to_string()].into(),
         user_groups: HashSet::new(),
+        tenant: Some(DEFAULT_TENANT.to_owned()),
     }
 }
 
@@ -237,6 +243,7 @@ pub struct GroupUser {
     pub userid: String,
     pub username: String,
     pub method: String,
+    pub tenant_id: Option<String>,
 }
 
 impl PartialEq for GroupUser {
@@ -274,6 +281,7 @@ impl GroupUser {
                 userid: username.clone(), // Same value for basic users
                 username: username.clone(),
                 method: "native".to_string(),
+                tenant_id: user.tenant.clone(),
             },
             UserType::OAuth(oauth) => {
                 // For OAuth users, derive the display username from user_info
@@ -289,6 +297,7 @@ impl GroupUser {
                     userid: userid.clone(),
                     username: display_username,
                     method: "oauth".to_string(),
+                    tenant_id: user.tenant.clone(),
                 }
             }
         }
@@ -362,14 +371,14 @@ impl UserGroup {
         UserGroup { name, roles, users }
     }
 
-    pub fn add_roles(&mut self, roles: HashSet<String>) -> Result<(), RBACError> {
+    pub fn add_roles(&mut self, roles: HashSet<String>, tenant_id: &str) -> Result<(), RBACError> {
         if roles.is_empty() {
             return Ok(());
         }
         self.roles.extend(roles);
         // also refresh all user sessions
         for group_user in &self.users {
-            mut_sessions().remove_user(group_user.userid());
+            mut_sessions().remove_user(group_user.userid(), tenant_id);
         }
         Ok(())
     }
@@ -381,7 +390,10 @@ impl UserGroup {
         self.users.extend(users.clone());
         // also refresh all user sessions
         for group_user in &users {
-            mut_sessions().remove_user(group_user.userid());
+            mut_sessions().remove_user(
+                group_user.userid(),
+                group_user.tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+            );
         }
         Ok(())
     }
@@ -400,7 +412,10 @@ impl UserGroup {
 
         // also refresh all user sessions
         for group_user in &self.users {
-            mut_sessions().remove_user(group_user.userid());
+            mut_sessions().remove_user(
+                group_user.userid(),
+                group_user.tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+            );
         }
         Ok(())
     }
@@ -416,7 +431,10 @@ impl UserGroup {
         }
         // also refresh all user sessions
         for group_user in &removed_users {
-            mut_sessions().remove_user(group_user.userid());
+            mut_sessions().remove_user(
+                group_user.userid(),
+                group_user.tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+            );
         }
         self.users.clone_from(&new_users);
 
@@ -451,11 +469,11 @@ impl UserGroup {
         self.remove_users(users_to_remove)
     }
 
-    pub async fn update_in_metadata(&self) -> Result<(), RBACError> {
-        let mut metadata = get_metadata().await?;
-        metadata.user_groups.retain(|x| x.name != self.name);
-        metadata.user_groups.push(self.clone());
-        put_metadata(&metadata).await?;
-        Ok(())
-    }
+    // pub async fn update_in_metadata(&self, tenant_id: &Option<String>) -> Result<(), RBACError> {
+    //     let mut metadata = get_metadata(tenant_id).await?;
+    //     metadata.user_groups.retain(|x| x.name != self.name);
+    //     metadata.user_groups.push(self.clone());
+    //     put_metadata(&metadata).await?;
+    //     Ok(())
+    // }
 }

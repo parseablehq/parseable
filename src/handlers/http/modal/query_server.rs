@@ -97,7 +97,7 @@ impl ParseableServer for QueryServer {
         }
 
         let mut parseable_json = PARSEABLE.validate_storage().await?;
-        migration::run_metadata_migration(&PARSEABLE, &mut parseable_json).await?;
+        migration::run_metadata_migration(&PARSEABLE, &mut parseable_json, &None).await?;
         Ok(parseable_json)
     }
 
@@ -117,7 +117,8 @@ impl ParseableServer for QueryServer {
             .await;
         migration::run_migration(&PARSEABLE).await?;
 
-        //create internal stream at server start
+        // create internal stream at server start
+        // Multi-tenant mode is not allowed in OSS hence no need to have knowledge of tenant id
         PARSEABLE.create_internal_stream_if_not_exists().await?;
         // load on init
         load_on_init().await?;

@@ -116,7 +116,7 @@ impl FlightService for FlightServiceImpl {
         }
 
         let schema = PARSEABLE
-            .get_stream(stream)
+            .get_stream(stream, &None)
             .map_err(|err| Status::failed_precondition(err.to_string()))?
             .get_schema();
 

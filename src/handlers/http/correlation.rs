@@ -23,7 +23,9 @@ use itertools::Itertools;
 
 use crate::rbac::Users;
 use crate::utils::actix::extract_session_key_from_req;
-use crate::utils::{get_hash, get_user_from_request, user_auth_for_datasets};
+use crate::utils::{
+    get_hash, get_tenant_id_from_request, get_user_and_tenant_from_request, user_auth_for_datasets,
+};
 
 use crate::correlation::{CORRELATIONS, CorrelationConfig, CorrelationError};
 
@@ -40,11 +42,14 @@ pub async fn get(
     req: HttpRequest,
     correlation_id: Path<String>,
 ) -> Result<impl Responder, CorrelationError> {
+    let tenant_id = get_tenant_id_from_request(&req);
     let correlation_id = correlation_id.into_inner();
     let session_key = extract_session_key_from_req(&req)
         .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
 
-    let correlation = CORRELATIONS.get_correlation(&correlation_id).await?;
+    let correlation = CORRELATIONS
+        .get_correlation(&correlation_id, &tenant_id)
+        .await?;
 
     let permissions = Users.get_permissions(&session_key);
 
@@ -54,7 +59,7 @@ pub async fn get(
         .map(|t| t.table_name.clone())
         .collect_vec();
 
-    user_auth_for_datasets(&permissions, tables).await?;
+    user_auth_for_datasets(&permissions, tables, &tenant_id).await?;
 
     Ok(web::Json(correlation))
 }
@@ -65,8 +70,8 @@ pub async fn post(
 ) -> Result<impl Responder, CorrelationError> {
     let session_key = extract_session_key_from_req(&req)
         .map_err(|err| CorrelationError::AnyhowError(anyhow::Error::msg(err.to_string())))?;
-    let user_id = get_user_from_request(&req)
-        .map(|s| get_hash(&s.to_string()))
+    let user_id = get_user_and_tenant_from_request(&req)
+        .map(|(s, _)| get_hash(&s.to_string()))
         .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
     correlation.user_id = user_id;
 
@@ -81,8 +86,8 @@ pub async fn modify(
     Json(mut correlation): Json<CorrelationConfig>,
 ) -> Result<impl Responder, CorrelationError> {
     correlation.id = correlation_id.into_inner();
-    correlation.user_id = get_user_from_request(&req)
-        .map(|s| get_hash(&s.to_string()))
+    correlation.user_id = get_user_and_tenant_from_request(&req)
+        .map(|(s, _)| get_hash(&s.to_string()))
         .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
 
     let session_key = extract_session_key_from_req(&req)
@@ -98,11 +103,13 @@ pub async fn delete(
     correlation_id: Path<String>,
 ) -> Result<impl Responder, CorrelationError> {
     let correlation_id = correlation_id.into_inner();
-    let user_id = get_user_from_request(&req)
-        .map(|s| get_hash(&s.to_string()))
+    let (user_id, tenant_id) = get_user_and_tenant_from_request(&req)
+        .map(|(s, t)| (get_hash(&s.to_string()), t))
         .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
 
-    CORRELATIONS.delete(&correlation_id, &user_id).await?;
+    CORRELATIONS
+        .delete(&correlation_id, &user_id, &Some(tenant_id))
+        .await?;
 
     Ok(HttpResponse::Ok().finish())
 }

@@ -16,6 +16,8 @@
  *
  */
 
+use std::collections::HashMap;
+
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -24,10 +26,10 @@ use tokio::sync::RwLock;
 use super::TimeFilter;
 use crate::{
     metastore::metastore_traits::MetastoreObject,
-    parseable::PARSEABLE,
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::{Users, map::SessionKey},
     storage::object_storage::filter_path,
-    utils::{get_hash, user_auth_for_datasets, user_auth_for_query},
+    utils::{get_hash, get_tenant_id_from_key, user_auth_for_datasets, user_auth_for_query},
 };
 
 pub static FILTERS: Lazy<Filters> = Lazy::new(Filters::default);
@@ -109,27 +111,34 @@ pub struct Rules {
 }
 
 #[derive(Debug, Default)]
-pub struct Filters(RwLock<Vec<Filter>>);
+pub struct Filters(RwLock<HashMap<String, Vec<Filter>>>);
 
 impl Filters {
     pub async fn load(&self) -> anyhow::Result<()> {
         let all_filters = PARSEABLE.metastore.get_filters().await.unwrap_or_default();
 
         let mut s = self.0.write().await;
-        s.extend(all_filters);
+        for (tenant_id, filters) in all_filters {
+            s.entry(tenant_id).or_default().extend(filters);
+        }
 
         Ok(())
     }
 
-    pub async fn update(&self, filter: &Filter) {
+    pub async fn update(&self, filter: &Filter, tenant_id: &Option<String>) {
         let mut s = self.0.write().await;
-        s.retain(|f| f.filter_id != filter.filter_id);
-        s.push(filter.clone());
+        if let Some(filters) = s.get_mut(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v)) {
+            filters.retain(|f| f.filter_id != filter.filter_id);
+            filters.push(filter.clone());
+        }
     }
 
-    pub async fn delete_filter(&self, filter_id: &str) {
+    pub async fn delete_filter(&self, filter_id: &str, tenant_id: &Option<String>) {
+        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         let mut s = self.0.write().await;
-        s.retain(|f| f.filter_id != Some(filter_id.to_string()));
+        if let Some(filters) = s.get_mut(tenant_id) {
+            filters.retain(|f| f.filter_id != Some(filter_id.to_string()));
+        }
     }
 
     pub async fn get_filter(
@@ -137,44 +146,53 @@ impl Filters {
         filter_id: &str,
         user_id: &str,
         is_admin: bool,
+        tenant_id: &Option<String>,
     ) -> Option<Filter> {
-        self.0
-            .read()
-            .await
-            .iter()
-            .find(|f| {
-                f.filter_id == Some(filter_id.to_string())
-                    && (f.user_id == Some(user_id.to_string()) || is_admin)
-            })
-            .cloned()
+        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        if let Some(filters) = self.0.read().await.get(tenant_id) {
+            filters
+                .iter()
+                .find(|f| {
+                    f.filter_id == Some(filter_id.to_string())
+                        && (f.user_id == Some(user_id.to_string()) || is_admin)
+                })
+                .cloned()
+        } else {
+            None
+        }
     }
 
     pub async fn list_filters(&self, key: &SessionKey) -> Vec<Filter> {
         let read = self.0.read().await;
-
-        let mut filters = Vec::new();
+        let tenant_id = get_tenant_id_from_key(key);
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let mut _filters = Vec::new();
         let permissions = Users.get_permissions(key);
-        for f in read.iter() {
-            let query: &str = f.query.filter_query.as_deref().unwrap_or("");
-            let filter_type = &f.query.filter_type;
+        if let Some(filters) = read.get(tenant) {
+            for f in filters.iter() {
+                let query: &str = f.query.filter_query.as_deref().unwrap_or("");
+                let filter_type = &f.query.filter_type;
 
-            // if filter type is SQL, check if the user has access to the dataset based on the query string
-            // if filter type is search or filter, check if the user has access to the dataset based on the dataset name
-            if *filter_type == FilterType::SQL {
-                if (user_auth_for_query(key, query).await).is_ok() {
-                    filters.push(f.clone())
-                }
-            } else if *filter_type == FilterType::Search || *filter_type == FilterType::Filter {
-                let dataset_name = &f.stream_name;
-                if user_auth_for_datasets(&permissions, &[dataset_name.to_string()])
-                    .await
-                    .is_ok()
-                {
-                    filters.push(f.clone())
+                // if filter type is SQL, check if the user has access to the dataset based on the query string
+                // if filter type is search or filter, check if the user has access to the dataset based on the dataset name
+                if *filter_type == FilterType::SQL {
+                    if (user_auth_for_query(key, query).await).is_ok() {
+                        _filters.push(f.clone())
+                    }
+                } else if *filter_type == FilterType::Search || *filter_type == FilterType::Filter {
+                    let dataset_name = &f.stream_name;
+                    if user_auth_for_datasets(&permissions, &[dataset_name.to_string()], &tenant_id)
+                        .await
+                        .is_ok()
+                    {
+                        _filters.push(f.clone())
+                    }
                 }
             }
+            _filters
+        } else {
+            vec![]
         }
-        filters
     }
 }
 

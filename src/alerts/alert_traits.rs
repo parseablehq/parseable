@@ -76,6 +76,7 @@ pub trait AlertTrait: Debug + Send + Sync + MetastoreObject {
     fn get_datasets(&self) -> &[String];
     fn to_alert_config(&self) -> AlertConfig;
     fn clone_box(&self) -> Box<dyn AlertTrait>;
+    fn get_tenant_id(&self) -> &Option<String>;
 }
 
 #[async_trait]
@@ -86,25 +87,27 @@ pub trait AlertManagerTrait: Send + Sync {
         session: SessionKey,
         tags: Vec<String>,
     ) -> Result<Vec<AlertConfig>, AlertError>;
-    async fn get_alert_by_id(&self, id: Ulid) -> Result<Box<dyn AlertTrait>, AlertError>;
+    async fn get_alert_by_id(&self, id: Ulid, tenant_id: &Option<String>) -> Result<Box<dyn AlertTrait>, AlertError>;
     async fn update(&self, alert: &dyn AlertTrait);
     async fn update_state(
         &self,
         alert_id: Ulid,
         new_state: AlertState,
         trigger_notif: Option<String>,
+        tenant_id: &Option<String>
     ) -> Result<(), AlertError>;
     async fn update_notification_state(
         &self,
         alert_id: Ulid,
         new_notification_state: NotificationState,
+        tenant_id: &Option<String>
     ) -> Result<(), AlertError>;
-    async fn delete(&self, alert_id: Ulid) -> Result<(), AlertError>;
-    async fn get_state(&self, alert_id: Ulid) -> Result<AlertState, AlertError>;
+    async fn delete(&self, alert_id: Ulid, tenant_id: &Option<String>) -> Result<(), AlertError>;
+    async fn get_state(&self, alert_id: Ulid, tenant_id: &Option<String>) -> Result<AlertState, AlertError>;
     async fn start_task(&self, alert: Box<dyn AlertTrait>) -> Result<(), AlertError>;
     async fn delete_task(&self, alert_id: Ulid) -> Result<(), AlertError>;
-    async fn list_tags(&self) -> Vec<String>;
-    async fn get_all_alerts(&self) -> HashMap<Ulid, Box<dyn AlertTrait>>;
+    async fn list_tags(&self, tenant_id: &Option<String>) -> Vec<String>;
+    async fn get_all_alerts(&self, tenant_id: &Option<String>) -> HashMap<Ulid, Box<dyn AlertTrait>>;
 }
 
 #[async_trait]
