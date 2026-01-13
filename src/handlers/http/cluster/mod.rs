@@ -17,7 +17,9 @@
  */
 
 pub mod utils;
+use actix_web::http::StatusCode;
 use futures::{StreamExt, future, stream};
+use http::header;
 use lazy_static::lazy_static;
 use std::collections::{HashMap, HashSet};
 use std::future::Future;
@@ -25,13 +27,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, Semaphore};
 
-use actix_web::Responder;
-use actix_web::http::StatusCode;
 use actix_web::http::header::HeaderMap;
 use actix_web::web::Path;
+use actix_web::{HttpRequest, Responder};
 use bytes::Bytes;
 use chrono::Utc;
-use http::header;
 use itertools::Itertools;
 use serde::de::{DeserializeOwned, Error};
 use serde_json::error::Error as SerdeError;
@@ -41,6 +41,7 @@ use url::Url;
 use utils::{IngestionStats, QueriedStats, StorageStats, check_liveness, to_url_string};
 
 use crate::INTRA_CLUSTER_CLIENT;
+use crate::handlers::http::modal::ingest::SyncRole;
 use crate::handlers::http::query::{Query, QueryError, TIME_ELAPSED_HEADER};
 use crate::metrics::prom_utils::Metrics;
 use crate::option::Mode;
@@ -367,6 +368,7 @@ pub async fn sync_streams_with_ingestors(
     headers: HeaderMap,
     body: Bytes,
     stream_name: &str,
+    // tenant_id: &Option<String>
 ) -> Result<(), StreamError> {
     let mut reqwest_headers = reqwest::header::HeaderMap::new();
 
@@ -583,6 +585,7 @@ pub async fn sync_user_deletion_with_ingestors(userid: &str) -> Result<(), RBACE
 pub async fn sync_user_creation_with_ingestors(
     user: User,
     role: &Option<HashSet<String>>,
+    // tenant_id: &str
 ) -> Result<(), RBACError> {
     let mut user = user.clone();
 
@@ -639,7 +642,10 @@ pub async fn sync_user_creation_with_ingestors(
 }
 
 // forward the password reset request to all ingestors to keep them in sync
-pub async fn sync_password_reset_with_ingestors(username: &str) -> Result<(), RBACError> {
+pub async fn sync_password_reset_with_ingestors(
+    req: HttpRequest,
+    username: &str,
+) -> Result<(), RBACError> {
     let username = username.to_owned();
 
     for_each_live_ingestor(move |ingestor| {
@@ -681,9 +687,12 @@ pub async fn sync_password_reset_with_ingestors(username: &str) -> Result<(), RB
 
 // forward the put role request to all ingestors to keep them in sync
 pub async fn sync_role_update_with_ingestors(
+    req: HttpRequest,
     name: String,
     privileges: Vec<DefaultPrivilege>,
+    tenant_id: &str,
 ) -> Result<(), RoleError> {
+    let tenant_id = tenant_id.to_string();
     for_each_live_ingestor(move |ingestor| {
         let url = format!(
             "{}{}/role/{}/sync",
@@ -693,13 +702,13 @@ pub async fn sync_role_update_with_ingestors(
         );
 
         let privileges = privileges.clone();
-
+        let tenant = tenant_id.clone();
         async move {
             let res = INTRA_CLUSTER_CLIENT
                 .put(url)
                 .header(header::AUTHORIZATION, &ingestor.token)
                 .header(header::CONTENT_TYPE, "application/json")
-                .json(&privileges)
+                .json(&SyncRole::new(privileges, tenant.clone()))
                 .send()
                 .await
                 .map_err(|err| {
@@ -754,10 +763,11 @@ pub fn fetch_daily_stats(
 /// get the cumulative stats from all ingestors
 pub async fn fetch_stats_from_ingestors(
     stream_name: &str,
+    tenant_id: &Option<String>,
 ) -> Result<Vec<utils::QueriedStats>, StreamError> {
     let obs = PARSEABLE
         .metastore
-        .get_all_stream_jsons(stream_name, Some(Mode::Ingest))
+        .get_all_stream_jsons(stream_name, Some(Mode::Ingest), tenant_id)
         .await?;
 
     let mut ingestion_size = 0u64;

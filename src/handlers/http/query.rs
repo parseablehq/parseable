@@ -56,7 +56,7 @@ use crate::response::QueryResponse;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::time::{TimeParseError, TimeRange};
-use crate::utils::user_auth_for_datasets;
+use crate::utils::{get_tenant_id_from_request, user_auth_for_datasets};
 
 pub const TIME_ELAPSED_HEADER: &str = "p-time-elapsed";
 /// Query Request through http endpoint.
@@ -82,21 +82,22 @@ pub struct Query {
 pub async fn get_records_and_fields(
     query_request: &Query,
     creds: &SessionKey,
+    tenant_id: &Option<String>,
 ) -> Result<(Option<Vec<RecordBatch>>, Option<Vec<String>>), QueryError> {
     let session_state = QUERY_SESSION.state();
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
     let tables = resolve_stream_names(&query_request.query)?;
     //check or load streams in memory
-    create_streams_for_distributed(tables.clone()).await?;
+    create_streams_for_distributed(tables.clone(), tenant_id).await?;
 
     let query: LogicalQuery = into_query(query_request, &session_state, time_range).await?;
 
     let permissions = Users.get_permissions(creds);
 
-    user_auth_for_datasets(&permissions, &tables).await?;
+    user_auth_for_datasets(&permissions, &tables, tenant_id).await?;
 
-    let (records, fields) = execute(query, false).await?;
+    let (records, fields) = execute(query, false, tenant_id).await?;
 
     let records = match records {
         Either::Left(vec_rb) => vec_rb,
@@ -114,13 +115,14 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
     let tables = resolve_stream_names(&query_request.query)?;
     //check or load streams in memory
-    create_streams_for_distributed(tables.clone()).await?;
+    create_streams_for_distributed(tables.clone(), &get_tenant_id_from_request(&req)).await?;
 
+    let tenant_id = get_tenant_id_from_request(&req);
     let query: LogicalQuery = into_query(&query_request, &session_state, time_range).await?;
     let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);
 
-    user_auth_for_datasets(&permissions, &tables).await?;
+    user_auth_for_datasets(&permissions, &tables, &tenant_id).await?;
     let time = Instant::now();
 
     // Track billing metrics for query calls
@@ -134,18 +136,18 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         let table = tables
             .first()
             .ok_or_else(|| QueryError::MalformedQuery("No table name found in query"))?;
-        return handle_count_query(&query_request, table, column_name, time).await;
+        return handle_count_query(&query_request, table, column_name, time, &tenant_id).await;
     }
 
     // if the query request has streaming = false (default)
     // we use datafusion's `execute` method to get the records
     if !query_request.streaming {
-        return handle_non_streaming_query(query, tables, &query_request, time).await;
+        return handle_non_streaming_query(query, tables, &query_request, time, &tenant_id).await;
     }
 
     // if the query request has streaming = true
     // we use datafusion's `execute_stream` method to get the records
-    handle_streaming_query(query, tables, &query_request, time).await
+    handle_streaming_query(query, tables, &query_request, time, &tenant_id).await
 }
 
 /// Handles count queries (e.g., `SELECT COUNT(*) FROM <dataset-name>`)
@@ -167,6 +169,7 @@ async fn handle_count_query(
     table_name: &str,
     column_name: &str,
     time: Instant,
+    tenant_id: &Option<String>,
 ) -> Result<HttpResponse, QueryError> {
     let counts_req = CountsRequest {
         stream: table_name.to_string(),
@@ -175,7 +178,7 @@ async fn handle_count_query(
         num_bins: Some(1),
         conditions: None,
     };
-    let count_records = counts_req.get_bin_density().await?;
+    let count_records = counts_req.get_bin_density(tenant_id).await?;
     let count = count_records[0].count;
     let response = if query_request.fields {
         json!({
@@ -217,9 +220,10 @@ async fn handle_non_streaming_query(
     table_name: Vec<String>,
     query_request: &Query,
     time: Instant,
+    tenant_id: &Option<String>,
 ) -> Result<HttpResponse, QueryError> {
     let first_table_name = table_name[0].clone();
-    let (records, fields) = execute(query, query_request.streaming).await?;
+    let (records, fields) = execute(query, query_request.streaming, tenant_id).await?;
     let records = match records {
         Either::Left(rbs) => rbs,
         Either::Right(_) => {
@@ -266,9 +270,10 @@ async fn handle_streaming_query(
     table_name: Vec<String>,
     query_request: &Query,
     time: Instant,
+    tenant_id: &Option<String>,
 ) -> Result<HttpResponse, QueryError> {
     let first_table_name = table_name[0].clone();
-    let (records_stream, fields) = execute(query, query_request.streaming).await?;
+    let (records_stream, fields) = execute(query, query_request.streaming, tenant_id).await?;
     let records_stream = match records_stream {
         Either::Left(_) => {
             return Err(QueryError::MalformedQuery(
@@ -347,11 +352,11 @@ pub async fn get_counts(
 ) -> Result<impl Responder, QueryError> {
     let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);
-
+    let tenant_id = get_tenant_id_from_request(&req);
     let body = counts_request.into_inner();
 
     // does user have access to table?
-    user_auth_for_datasets(&permissions, std::slice::from_ref(&body.stream)).await?;
+    user_auth_for_datasets(&permissions, std::slice::from_ref(&body.stream), &tenant_id).await?;
     // Track billing metrics for query calls
     let current_date = chrono::Utc::now().date_naive().to_string();
     increment_query_calls_by_date(&current_date);
@@ -359,7 +364,7 @@ pub async fn get_counts(
     // this could include filters or group by
     if body.conditions.is_some() {
         let time_partition = PARSEABLE
-            .get_stream(&body.stream)?
+            .get_stream(&body.stream, &tenant_id)?
             .get_time_partition()
             .unwrap_or_else(|| DEFAULT_TIMESTAMP_KEY.into());
 
@@ -377,7 +382,7 @@ pub async fn get_counts(
 
         let creds = extract_session_key_from_req(&req)?;
 
-        let (records, _) = get_records_and_fields(&query_request, &creds).await?;
+        let (records, _) = get_records_and_fields(&query_request, &creds, &tenant_id).await?;
 
         if let Some(records) = records {
             let json_records = record_batches_to_json(&records)?;
@@ -396,7 +401,7 @@ pub async fn get_counts(
         }
     }
 
-    let records = body.get_bin_density().await?;
+    let records = body.get_bin_density(&tenant_id).await?;
     let res = json!({
         "fields": vec!["start_time", "endTime", "count"],
         "records": records,
@@ -404,14 +409,17 @@ pub async fn get_counts(
     Ok(web::Json(res))
 }
 
-pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), EventError> {
+pub async fn update_schema_when_distributed(
+    tables: &Vec<String>,
+    tenant_id: &Option<String>,
+) -> Result<(), EventError> {
     // if the mode is query or prism, we need to update the schema in memory
     // no need to commit schema to storage
     // as the schema is read from memory everytime
     if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
         for table in tables {
-            if let Ok(new_schema) = fetch_schema(table).await {
-                commit_schema(table, Arc::new(new_schema))?;
+            if let Ok(new_schema) = fetch_schema(table, tenant_id).await {
+                commit_schema(table, Arc::new(new_schema), tenant_id)?;
             }
         }
     }
@@ -421,15 +429,19 @@ pub async fn update_schema_when_distributed(tables: &Vec<String>) -> Result<(), 
 /// Create streams for querier if they do not exist
 /// get list of streams from memory and storage
 /// create streams for memory from storage if they do not exist
-pub async fn create_streams_for_distributed(streams: Vec<String>) -> Result<(), QueryError> {
+pub async fn create_streams_for_distributed(
+    streams: Vec<String>,
+    tenant_id: &Option<String>,
+) -> Result<(), QueryError> {
     if PARSEABLE.options.mode != Mode::Query && PARSEABLE.options.mode != Mode::Prism {
         return Ok(());
     }
     let mut join_set = JoinSet::new();
     for stream_name in streams {
+        let id = tenant_id.to_owned();
         join_set.spawn(async move {
             let result = PARSEABLE
-                .create_stream_and_schema_from_storage(&stream_name)
+                .create_stream_and_schema_from_storage(&stream_name, &id)
                 .await;
 
             if let Err(e) = &result {

@@ -16,14 +16,16 @@
  *
  */
 
-use actix_web::http::StatusCode;
-use actix_web::{HttpResponse, Result, http::header::ContentType, web};
+use actix_web::{HttpRequest, HttpResponse, Result, http::{StatusCode, header::ContentType}, web};
 use http::header;
 use itertools::Itertools;
 use reqwest;
 use serde_json::{Value, json};
 
-use crate::{parseable::PARSEABLE, parseable::StreamNotFound};
+use crate::{
+    parseable::{PARSEABLE, StreamNotFound},
+    utils::get_tenant_id_from_request,
+};
 
 const OPEN_AI_URL: &str = "https://api.openai.com/v1/chat/completions";
 
@@ -83,14 +85,18 @@ fn build_request_body(ai_prompt: String) -> impl serde::Serialize {
     })
 }
 
-pub async fn make_llm_request(body: web::Json<AiPrompt>) -> Result<HttpResponse, LLMError> {
+pub async fn make_llm_request(
+    req: HttpRequest,
+    body: web::Json<AiPrompt>,
+) -> Result<HttpResponse, LLMError> {
     let api_key = match &PARSEABLE.options.open_ai_key {
         Some(api_key) if api_key.len() > 3 => api_key,
         _ => return Err(LLMError::InvalidAPIKey),
     };
 
     let stream_name = &body.stream;
-    let schema = PARSEABLE.get_stream(stream_name)?.get_schema();
+    let tenant_id = get_tenant_id_from_request(&req);
+    let schema = PARSEABLE.get_stream(stream_name, &tenant_id)?.get_schema();
     let filtered_schema = schema
         .flattened_fields()
         .into_iter()

@@ -35,13 +35,15 @@ use crate::{
         logstream::error::StreamError,
         query::{QueryError, update_schema_when_distributed},
     },
-    hottier::HotTierError,
-    parseable::{PARSEABLE, StreamNotFound},
+    hottier::{HotTierError, HotTierManager, StreamHotTier},
+    parseable::{DEFAULT_TENANT, PARSEABLE, StreamNotFound},
     query::{CountsRequest, CountsResponse, error::ExecuteError},
     rbac::{Users, map::SessionKey, role::Action},
     stats,
     storage::{StreamInfo, StreamType, retention::Retention},
-    utils::time::TimeParseError,
+    tenants::TenantNotFound,
+    utils::{get_tenant_id_from_key, time::TimeParseError},
+    validator::error::HotTierValidationError,
 };
 
 #[derive(Serialize)]
@@ -54,20 +56,25 @@ pub struct PrismLogstreamInfo {
 
 pub async fn get_prism_logstream_info(
     stream_name: &str,
+    tenant_id: &Option<String>,
 ) -> Result<PrismLogstreamInfo, PrismLogstreamError> {
     let (info, schema, stats) = tokio::join!(
-        get_stream_info_helper(stream_name),
-        get_stream_schema_helper(stream_name),
-        get_stats(stream_name),
+        get_stream_info_helper(stream_name, tenant_id),
+        get_stream_schema_helper(stream_name, tenant_id),
+        get_stats(stream_name, tenant_id),
     );
-
+    tracing::warn!("starting dataset info");
     let info = info?;
+    tracing::warn!("got info");
     let schema = schema?;
-    let stats = stats?;
+    tracing::warn!("got schema");
+    // let stats = stats?;
+    let stats = QueriedStats::default();
+    tracing::warn!("got FAKE stats");
 
     // get retention
     let retention = PARSEABLE
-        .get_stream(stream_name)?
+        .get_stream(stream_name, tenant_id)?
         .get_retention()
         .unwrap_or_default();
 
@@ -79,14 +86,17 @@ pub async fn get_prism_logstream_info(
     })
 }
 
-async fn get_stream_schema_helper(stream_name: &str) -> Result<Arc<Schema>, StreamError> {
+async fn get_stream_schema_helper(
+    stream_name: &str,
+    tenant_id: &Option<String>,
+) -> Result<Arc<Schema>, StreamError> {
     // Ensure parseable is aware of stream in distributed mode
-    if !PARSEABLE.check_or_load_stream(stream_name).await {
+    if !PARSEABLE.check_or_load_stream(stream_name, tenant_id).await {
         return Err(StreamNotFound(stream_name.to_owned()).into());
     }
 
-    let stream = PARSEABLE.get_stream(stream_name)?;
-    match update_schema_when_distributed(&vec![stream_name.to_owned()]).await {
+    let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
+    match update_schema_when_distributed(&vec![stream_name.to_owned()], tenant_id).await {
         Ok(_) => {
             let schema = stream.get_schema();
             Ok(schema)
@@ -98,15 +108,19 @@ async fn get_stream_schema_helper(stream_name: &str) -> Result<Arc<Schema>, Stre
     }
 }
 
-async fn get_stats(stream_name: &str) -> Result<QueriedStats, PrismLogstreamError> {
-    let stats = stats::get_current_stats(stream_name, "json")
+async fn get_stats(
+    stream_name: &str,
+    tenant_id: &Option<String>,
+) -> Result<QueriedStats, PrismLogstreamError> {
+    tracing::warn!("starting stats");
+    let stats = stats::get_current_stats(stream_name, "json", tenant_id)
         .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?;
 
     let ingestor_stats = if PARSEABLE
-        .get_stream(stream_name)
+        .get_stream(stream_name, tenant_id)
         .is_ok_and(|stream| stream.get_stream_type() == StreamType::UserDefined)
     {
-        Some(fetch_stats_from_ingestors(stream_name).await?)
+        Some(fetch_stats_from_ingestors(stream_name, tenant_id).await?)
     } else {
         None
     };
@@ -143,11 +157,14 @@ async fn get_stats(stream_name: &str) -> Result<QueriedStats, PrismLogstreamErro
     Ok(stats)
 }
 
-pub async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, StreamError> {
+pub async fn get_stream_info_helper(
+    stream_name: &str,
+    tenant_id: &Option<String>,
+) -> Result<StreamInfo, StreamError> {
     // For query mode, if the stream not found in memory map,
-    //check if it exists in the storage
-    //create stream and schema from storage
-    if !PARSEABLE.check_or_load_stream(stream_name).await {
+    // check if it exists in the storage
+    // create stream and schema from storage
+    if !PARSEABLE.check_or_load_stream(stream_name, tenant_id).await {
         return Err(StreamNotFound(stream_name.to_owned()).into());
     }
 
@@ -168,13 +185,20 @@ pub async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, Str
         }
     };
 
-    let hash_map = PARSEABLE.streams.read().unwrap();
-    let stream_meta = hash_map
-        .get(stream_name)
-        .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?
-        .metadata
-        .read()
-        .expect(LOCK_EXPECT);
+    let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
+    let stream_meta = stream.metadata.read().unwrap();
+
+    // let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+
+    // let hash_map = PARSEABLE.streams.read().unwrap();
+    // let stream_meta = hash_map
+    //     .get(stream_name)
+    //     .ok_or_else(|| TenantNotFound(tenant_id.to_owned()))?
+    //     .get(stream_name)
+    //     .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?
+    //     .metadata
+    //     .read()
+    //     .expect(LOCK_EXPECT);
 
     let stream_info =
         StreamInfo::from_metadata(&stream_meta, stream_first_event_at, stream_latest_event_at);
@@ -185,7 +209,7 @@ pub async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, Str
 /// Response structure for Prism dataset queries.
 /// Contains information about a stream, its statistics, retention policy,
 /// and query results.
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct PrismDatasetResponse {
     /// Name of the stream
     stream: String,
@@ -229,15 +253,17 @@ impl PrismDatasetRequest {
         mut self,
         key: SessionKey,
     ) -> Result<Vec<PrismDatasetResponse>, PrismLogstreamError> {
+        let tenant_id = get_tenant_id_from_key(&key);
         if self.streams.is_empty() {
-            self.streams = PARSEABLE.streams.list();
+            self.streams = PARSEABLE.streams.list(&tenant_id);
         }
+        tracing::warn!(get_datasets_streams=?self.streams);
 
         // Process streams concurrently
         let results = futures::future::join_all(
             self.streams
                 .iter()
-                .map(|stream| self.process_stream(stream.clone(), key.clone())),
+                .map(|stream| self.process_stream(stream.clone(), key.clone(), &tenant_id)),
         )
         .await;
 
@@ -264,14 +290,17 @@ impl PrismDatasetRequest {
         &self,
         stream: String,
         key: SessionKey,
+        tenant_id: &Option<String>,
     ) -> Result<Option<PrismDatasetResponse>, PrismLogstreamError> {
         // Skip unauthorized streams
         if !self.is_authorized(&stream, &key) {
+            tracing::warn!("not authorized for datasets");
             return Ok(None);
         }
 
         // Skip streams that don't exist
-        if !PARSEABLE.check_or_load_stream(&stream).await {
+        if !PARSEABLE.check_or_load_stream(&stream, tenant_id).await {
+            tracing::warn!("unable to load stream {stream} for tenant {tenant_id:?}");
             return Ok(None);
         }
 
@@ -286,8 +315,10 @@ impl PrismDatasetRequest {
         }
 
         // Process stream data
-        match get_prism_logstream_info(&stream).await {
-            Ok(info) => Ok(Some(self.build_dataset_response(stream, info).await?)),
+        match get_prism_logstream_info(&stream, tenant_id).await {
+            Ok(info) => Ok(Some(
+                self.build_dataset_response(stream, info, tenant_id).await?,
+            )),
             Err(err) => Err(err),
         }
     }
@@ -307,21 +338,47 @@ impl PrismDatasetRequest {
         &self,
         stream: String,
         info: PrismLogstreamInfo,
+        tenant_id: &Option<String>,
     ) -> Result<PrismDatasetResponse, PrismLogstreamError> {
-        // Get counts
-        let counts = self.get_counts(&stream).await?;
+        // Get hot tier info
+        let hottier = self.get_hot_tier_info(&stream, tenant_id).await?;
 
-        Ok(PrismDatasetResponse {
+        // Get counts
+        let counts = self.get_counts(&stream, tenant_id).await?;
+        tracing::warn!("got counts");
+        let res = PrismDatasetResponse {
             stream,
             info: info.info,
             schema: info.schema,
             stats: info.stats,
             retention: info.retention,
             counts,
-        })
+        };
+        tracing::warn!(prism_logstream_res=?res);
+        Ok(res)
+    }
+    async fn get_hot_tier_info(
+        &self,
+        stream: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Option<StreamHotTier>, PrismLogstreamError> {
+        match HotTierManager::global() {
+            Some(manager) => match manager.get_hot_tier(stream, tenant_id).await {
+                Ok(stats) => Ok(Some(stats)),
+                Err(HotTierError::HotTierValidationError(HotTierValidationError::NotFound(_))) => {
+                    Ok(None)
+                }
+                Err(err) => Err(err.into()),
+            },
+            None => Ok(None),
+        }
     }
 
-    async fn get_counts(&self, stream: &str) -> Result<CountsResponse, PrismLogstreamError> {
+    async fn get_counts(
+        &self,
+        stream: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<CountsResponse, PrismLogstreamError> {
         let count_request = CountsRequest {
             stream: stream.to_owned(),
             start_time: "1h".to_owned(),
@@ -330,7 +387,7 @@ impl PrismDatasetRequest {
             conditions: None,
         };
 
-        let records = count_request.get_bin_density().await?;
+        let records = count_request.get_bin_density(tenant_id).await?;
         Ok(CountsResponse {
             fields: vec!["start_time".into(), "end_time".into(), "count".into()],
             records,

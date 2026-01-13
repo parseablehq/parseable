@@ -48,71 +48,164 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
     async fn get_objects(&self, parent_path: &str) -> Result<Vec<Bytes>, MetastoreError>;
 
     /// overview
-    async fn get_overviews(&self) -> Result<HashMap<String, Option<Bytes>>, MetastoreError>;
+    async fn get_overviews(
+        &self,
+        tenant_id: &Option<String>,
+    ) -> Result<HashMap<String, Option<Bytes>>, MetastoreError>;
     async fn put_overview(
         &self,
         obj: &dyn MetastoreObject,
         stream: &str,
+        tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError>;
-    async fn delete_overview(&self, stream: &str) -> Result<(), MetastoreError>;
+    async fn delete_overview(
+        &self,
+        stream: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
 
     /// keystone
-    async fn get_keystones(&self) -> Result<Vec<Bytes>, MetastoreError>;
-    async fn put_keystone(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
-    async fn delete_keystone(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn get_keystones(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError>;
+    async fn put_keystone(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
+    async fn delete_keystone(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
 
     /// conversations
-    async fn get_conversations(&self) -> Result<Vec<Bytes>, MetastoreError>;
-    async fn put_conversation(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
-    async fn delete_conversation(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn get_conversations(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError>;
+    async fn put_conversation(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
+    async fn delete_conversation(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
 
     /// alerts
-    async fn get_alerts(&self) -> Result<Vec<Bytes>, MetastoreError>;
-    async fn put_alert(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
-    async fn delete_alert(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn get_alerts(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError>;
+    async fn put_alert(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
+    async fn delete_alert(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
 
     /// alerts state
-    async fn get_alert_states(&self) -> Result<Vec<AlertStateEntry>, MetastoreError>;
+    async fn get_alert_states(&self, tenant_id: &Option<String>) -> Result<Vec<AlertStateEntry>, MetastoreError>;
     async fn get_alert_state_entry(
         &self,
         alert_id: &Ulid,
+        tenant_id: &Option<String>,
     ) -> Result<Option<AlertStateEntry>, MetastoreError>;
-    async fn put_alert_state(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
-    async fn delete_alert_state(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn put_alert_state(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
+    async fn delete_alert_state(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
 
     /// mttr history
-    async fn get_mttr_history(&self) -> Result<Option<MTTRHistory>, MetastoreError>;
-    async fn put_mttr_history(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn get_mttr_history(&self, tenant_id: &Option<String>) -> Result<Option<MTTRHistory>, MetastoreError>;
+    async fn put_mttr_history(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
 
     /// llmconfig
-    async fn get_llmconfigs(&self) -> Result<Vec<Bytes>, MetastoreError>;
-    async fn put_llmconfig(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
-    async fn delete_llmconfig(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn get_llmconfigs(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError>;
+    async fn put_llmconfig(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
+    async fn delete_llmconfig(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
 
     /// targets
-    async fn get_targets(&self) -> Result<Vec<Target>, MetastoreError>;
-    async fn put_target(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
-    async fn delete_target(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn get_targets(&self) -> Result<HashMap<String, Vec<Target>>, MetastoreError>;
+    async fn put_target(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
+    async fn delete_target(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
 
     /// dashboards
-    async fn get_dashboards(&self) -> Result<Vec<Bytes>, MetastoreError>;
-    async fn put_dashboard(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
-    async fn delete_dashboard(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn get_dashboards(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError>;
+    async fn put_dashboard(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
+    async fn delete_dashboard(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
 
     /// chats
     async fn get_chats(&self) -> Result<DashMap<String, Vec<Bytes>>, MetastoreError>;
-    async fn put_chat(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
-    async fn delete_chat(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn put_chat(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
+    async fn delete_chat(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
 
     /// filters
-    async fn get_filters(&self) -> Result<Vec<Filter>, MetastoreError>;
-    async fn put_filter(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
-    async fn delete_filter(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn get_filters(&self) -> Result<HashMap<String, Vec<Filter>>, MetastoreError>;
+    async fn put_filter(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
+    async fn delete_filter(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
 
     /// correlations
-    async fn get_correlations(&self) -> Result<Vec<Bytes>, MetastoreError>;
-    async fn put_correlation(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
-    async fn delete_correlation(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
+    async fn get_correlations(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError>;
+    async fn put_correlation(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
+    async fn delete_correlation(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
 
     /// stream metadata
     /// `get_base` when set to true, will fetch the stream.json present at the base of
@@ -123,11 +216,13 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         &self,
         stream_name: &str,
         get_base: bool,
+        tenant_id: &Option<String>,
     ) -> Result<Bytes, MetastoreError>;
     async fn put_stream_json(
         &self,
         obj: &dyn MetastoreObject,
         stream_name: &str,
+        tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError>;
     /// This function will fetch multiple stream jsons
     ///
@@ -138,12 +233,14 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         &self,
         stream_name: &str,
         mode: Option<Mode>,
+        tenant_id: &Option<String>,
     ) -> Result<Vec<Bytes>, MetastoreError>;
 
     /// manifest
     async fn get_all_manifest_files(
         &self,
         stream_name: &str,
+        tenant_id: &Option<String>,
     ) -> Result<BTreeMap<String, Vec<Manifest>>, MetastoreError>;
     async fn get_manifest(
         &self,
@@ -151,6 +248,7 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         lower_bound: DateTime<Utc>,
         upper_bound: DateTime<Utc>,
         manifest_url: Option<String>,
+        tenant_id: &Option<String>,
     ) -> Result<Option<Manifest>, MetastoreError>;
     async fn put_manifest(
         &self,
@@ -158,31 +256,55 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         stream_name: &str,
         lower_bound: DateTime<Utc>,
         upper_bound: DateTime<Utc>,
+        tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError>;
     async fn delete_manifest(
         &self,
         stream_name: &str,
         lower_bound: DateTime<Utc>,
         upper_bound: DateTime<Utc>,
+        tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError>;
     async fn get_manifest_path(
         &self,
         stream_name: &str,
         lower_bound: DateTime<Utc>,
         upper_bound: DateTime<Utc>,
+        tenant_id: &Option<String>,
     ) -> Result<String, MetastoreError>;
 
     /// schema
     /// This function will fetch all schemas for the given stream
-    async fn get_all_schemas(&self, stream_name: &str) -> Result<Vec<Schema>, MetastoreError>;
-    async fn get_schema(&self, stream_name: &str) -> Result<Bytes, MetastoreError>;
-    async fn put_schema(&self, obj: Schema, stream_name: &str) -> Result<(), MetastoreError>;
+    async fn get_all_schemas(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<Schema>, MetastoreError>;
+    async fn get_schema(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Bytes, MetastoreError>;
+    async fn put_schema(
+        &self,
+        obj: Schema,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
 
     /// parseable metadata
-    async fn get_parseable_metadata(&self) -> Result<Option<Bytes>, MetastoreError>;
+    async fn get_parseable_metadata(
+        &self,
+        tenant_id: &Option<String>,
+    ) -> Result<Option<Bytes>, MetastoreError>;
     async fn get_ingestor_metadata(&self) -> Result<Vec<Bytes>, MetastoreError>;
-    async fn put_parseable_metadata(&self, obj: &dyn MetastoreObject)
-    -> Result<(), MetastoreError>;
+    async fn put_parseable_metadata(
+        &self,
+        obj: &dyn MetastoreObject,
+        tenant_id: &Option<String>,
+    ) -> Result<(), MetastoreError>;
+    // async fn get_tenant_metadata(&self, tenant_id: &str) -> Result<Bytes, MetastoreError>;
+    // async fn put_tenant_metadata(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
 
     /// node metadata
     async fn get_node_metadata(&self, node_type: NodeType) -> Result<Vec<Bytes>, MetastoreError>;
@@ -192,7 +314,10 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         node_type: NodeType,
     ) -> Result<bool, MetastoreError>;
     async fn put_node_metadata(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
-    async fn list_streams(&self) -> Result<HashSet<String>, MetastoreError>;
+    async fn list_streams(
+        &self,
+        tenant_id: &Option<String>,
+    ) -> Result<HashSet<String>, MetastoreError>;
 }
 
 /// This trait allows a struct to get treated as a Metastore Object

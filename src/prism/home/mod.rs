@@ -38,6 +38,7 @@ use crate::{
     stats::Stats,
     storage::{ObjectStorageError, ObjectStoreFormat, StreamType},
     users::{dashboards::DASHBOARDS, filters::FILTERS},
+    utils::get_tenant_id_from_key,
 };
 
 type StreamMetadataResponse = Result<
@@ -101,13 +102,15 @@ pub async fn generate_home_response(
     key: &SessionKey,
     include_internal: bool,
 ) -> Result<HomeResponse, PrismHomeError> {
+    let tenant_id = &get_tenant_id_from_key(key);
     // Execute these operations concurrently
     let (stream_titles_result, alerts_summary_result) =
-        tokio::join!(get_stream_titles(key), get_alerts_summary(key));
-
+        tokio::join!(get_stream_titles(key, tenant_id), get_alerts_summary(key));
+    tracing::warn!("starting home response data collection");
     let stream_titles = stream_titles_result?;
+    tracing::warn!("got stream titles response {stream_titles:?}");
     let alerts_summary = alerts_summary_result?;
-
+    tracing::warn!("got alerts summary response {alerts_summary:?}");
     // Generate dates for date-wise stats
     let mut dates = (0..7)
         .map(|i| {
@@ -122,7 +125,7 @@ pub async fn generate_home_response(
     // Process stream metadata concurrently
     let stream_metadata_futures = stream_titles
         .iter()
-        .map(|stream| get_stream_metadata(stream.clone()));
+        .map(|stream| get_stream_metadata(stream.clone(), tenant_id));
     let stream_metadata_results: Vec<StreamMetadataResponse> =
         futures::future::join_all(stream_metadata_futures).await;
 
@@ -130,6 +133,7 @@ pub async fn generate_home_response(
     let mut datasets = Vec::new();
 
     for result in stream_metadata_results {
+        tracing::warn!("stream_metadata_result- {result:?}");
         match result {
             Ok((stream, metadata, dataset_type, time_partition)) => {
                 // Skip internal streams if the flag is false
@@ -216,6 +220,7 @@ fn get_top_5_streams_by_ingestion(
 
 async fn get_stream_metadata(
     stream: String,
+    tenant_id: &Option<String>,
 ) -> Result<
     (
         String,
@@ -227,9 +232,9 @@ async fn get_stream_metadata(
 > {
     let obs = PARSEABLE
         .metastore
-        .get_all_stream_jsons(&stream, None)
+        .get_all_stream_jsons(&stream, None, tenant_id)
         .await?;
-
+    tracing::warn!("all stream jsons- {obs:?}");
     let mut stream_jsons = Vec::new();
     for ob in obs {
         let stream_metadata: ObjectStoreFormat = match serde_json::from_slice(&ob) {
@@ -303,12 +308,13 @@ pub async fn generate_home_search_response(
     query_value: &str,
 ) -> Result<HomeSearchResponse, PrismHomeError> {
     let mut resources = Vec::new();
+    let tenant_id = &get_tenant_id_from_key(key);
     let (alert_titles, correlation_titles, dashboard_titles, filter_titles, stream_titles) = tokio::join!(
         get_alert_titles(key, query_value),
         get_correlation_titles(key, query_value),
-        get_dashboard_titles(query_value),
+        get_dashboard_titles(query_value, tenant_id),
         get_filter_titles(key, query_value),
-        get_stream_titles(key)
+        get_stream_titles(key, tenant_id)
     );
 
     let alerts = alert_titles?;
@@ -334,10 +340,13 @@ pub async fn generate_home_search_response(
 }
 
 // Helper functions to split the work
-async fn get_stream_titles(key: &SessionKey) -> Result<Vec<String>, PrismHomeError> {
+async fn get_stream_titles(
+    key: &SessionKey,
+    tenant_id: &Option<String>,
+) -> Result<Vec<String>, PrismHomeError> {
     let stream_titles: Vec<String> = PARSEABLE
         .metastore
-        .list_streams()
+        .list_streams(tenant_id)
         .await
         .map_err(|e| PrismHomeError::Anyhow(anyhow::Error::new(e)))?
         .into_iter()
@@ -411,9 +420,12 @@ async fn get_correlation_titles(
     Ok(correlations)
 }
 
-async fn get_dashboard_titles(query_value: &str) -> Result<Vec<Resource>, PrismHomeError> {
+async fn get_dashboard_titles(
+    query_value: &str,
+    tenant_id: &Option<String>,
+) -> Result<Vec<Resource>, PrismHomeError> {
     let dashboard_titles = DASHBOARDS
-        .list_dashboards(0)
+        .list_dashboards(0, tenant_id)
         .await
         .iter()
         .filter_map(|dashboard| {

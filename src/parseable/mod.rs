@@ -22,7 +22,7 @@ use std::{
     num::NonZeroU32,
     path::PathBuf,
     str::FromStr,
-    sync::Arc,
+    sync::{Arc, RwLock},
 };
 
 use actix_web::http::StatusCode;
@@ -32,11 +32,14 @@ use bytes::Bytes;
 use chrono::Utc;
 use clap::{Parser, error::ErrorKind};
 use once_cell::sync::Lazy;
+use relative_path::RelativePathBuf;
 pub use staging::StagingError;
 use streams::StreamRef;
 pub use streams::{Stream, StreamNotFound, Streams};
 use tokio::try_join;
 use tracing::error;
+
+pub const DEFAULT_TENANT: &str = "DEFAULT_TENANT";
 
 #[cfg(feature = "kafka")]
 use crate::connectors::kafka::config::KafkaConfig;
@@ -65,8 +68,9 @@ use crate::{
     static_schema::{StaticSchema, convert_static_schema_to_arrow_schema},
     storage::{
         ObjectStorageError, ObjectStorageProvider, ObjectStoreFormat, Owner, Permisssion,
-        StreamType,
+        StorageMetadata, StreamType,
     },
+    tenants::TENANT_METADATA,
     validator,
 };
 
@@ -166,9 +170,12 @@ pub struct Parseable {
     pub options: Arc<Options>,
     /// Storage engine backing parseable
     pub storage: Arc<dyn ObjectStorageProvider>,
-    /// Metadata and staging realting to each logstreams
+    // /// ObjectStorageProvider for each tenant
+    // pub tenant_storage: Arc<DashMap<String, Arc<dyn ObjectStorageProvider>>>,
+    /// Metadata and staging relating to each logstreams
     /// A globally shared mapping of `Streams` that parseable is aware of.
     pub streams: Streams,
+    pub tenants: Arc<RwLock<Vec<String>>>,
     /// metastore
     pub metastore: Arc<dyn Metastore>,
     /// Used to configure the kafka connector
@@ -188,23 +195,31 @@ impl Parseable {
             storage,
             metastore,
             streams: Streams::default(),
+            tenants: Arc::new(RwLock::new(vec![])),
             #[cfg(feature = "kafka")]
             kafka_config,
         }
     }
     /// Try to get the handle of a stream in staging, if it doesn't exist return `None`.
-    pub fn get_stream(&self, stream_name: &str) -> Result<StreamRef, StreamNotFound> {
+    pub fn get_stream(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<StreamRef, StreamNotFound> {
+        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         self.streams
             .read()
             .unwrap()
-            .get(stream_name)
+            .get(tenant_id)
+            .ok_or_else(|| StreamNotFound(format!("{stream_name} with tenant {tenant_id}")))
+            .map(|v| v.get(stream_name))?
             .ok_or_else(|| StreamNotFound(stream_name.to_owned()))
             .cloned()
     }
 
     /// Get the handle to a stream in staging, create one if it doesn't exist
-    pub fn get_or_create_stream(&self, stream_name: &str) -> StreamRef {
-        if let Ok(staging) = self.get_stream(stream_name) {
+    pub fn get_or_create_stream(&self, stream_name: &str, tenant_id: &Option<String>) -> StreamRef {
+        if let Ok(staging) = self.get_stream(stream_name, tenant_id) {
             return staging;
         }
 
@@ -218,31 +233,40 @@ impl Parseable {
             stream_name.to_owned(),
             LogStreamMetadata::default(),
             ingestor_id,
+            tenant_id,
         )
     }
 
     /// Checks for the stream in memory, or loads it from storage when in distributed mode
     /// return true if stream exists in memory or loaded from storage
     /// return false if stream doesn't exist in memory and not loaded from storage
-    pub async fn check_or_load_stream(&self, stream_name: &str) -> bool {
-        if self.streams.contains(stream_name) {
+    pub async fn check_or_load_stream(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> bool {
+        tracing::warn!("check or load streams- {stream_name}, {tenant_id:?}");
+        if self.streams.contains(stream_name, tenant_id) {
             return true;
         }
+        tracing::warn!("check or load streams not present, creating {stream_name}, {tenant_id:?}");
         (self.options.mode == Mode::Query || self.options.mode == Mode::Prism)
             && self
-                .create_stream_and_schema_from_storage(stream_name)
+                .create_stream_and_schema_from_storage(stream_name, tenant_id)
                 .await
                 .unwrap_or_default()
     }
 
     // validate the storage, if the proper path for staging directory is provided
     // if the proper data directory is provided, or s3 bucket is provided etc
-    pub async fn validate_storage(&self) -> Result<Option<Bytes>, ObjectStorageError> {
+    pub async fn validate_storage(
+        &self,
+    ) -> Result<Option<Bytes>, ObjectStorageError> {
         let obj_store = self.storage.get_object_store();
         let mut has_parseable_json = false;
         let parseable_json_result = self
             .metastore
-            .get_parseable_metadata()
+            .get_parseable_metadata(&None) // load the server meta
             .await
             .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
@@ -257,11 +281,24 @@ impl Parseable {
             Err(_) => false,
         };
 
-        let has_streams = PARSEABLE.metastore.list_streams().await.is_ok();
         if !has_dirs && !has_parseable_json {
             return Ok(None);
         }
-        if has_streams {
+        let has_stream = if let Some(tenants) = PARSEABLE.list_tenants() {
+            let mut has_stream = true;
+            for tenant in tenants {
+                if let Err(e) = PARSEABLE.metastore.list_streams(&Some(tenant)).await {
+                    tracing::error!("{e}");
+                    has_stream = false;
+                    break;
+                };
+            }
+            has_stream
+        } else {
+            PARSEABLE.metastore.list_streams(&None).await.is_ok()
+        };
+
+        if has_stream {
             return Ok(parseable_json_result);
         }
 
@@ -279,6 +316,16 @@ impl Parseable {
             self.storage.get_endpoint(),
             JOIN_COMMUNITY
         )))
+    }
+
+    /// this function only gets called from enterprise main
+    /// If the server has traces of multi-tenancy AND is started with multi-tenant flag, then proceed
+    /// otherwise fail with error
+    ///
+    /// if the server doesn't have traces of multi-tenancy AND is started without the flag, then proceed
+    /// otherwise fail with error
+    pub async fn validate_multi_tenancy(&self) -> Result<Option<()>, anyhow::Error> {
+        self.load_tenants().await
     }
 
     pub fn storage(&self) -> Arc<dyn ObjectStorageProvider> {
@@ -322,16 +369,18 @@ impl Parseable {
     pub async fn create_stream_and_schema_from_storage(
         &self,
         stream_name: &str,
+        tenant_id: &Option<String>,
     ) -> Result<bool, StreamError> {
         // Proceed to create log stream if it doesn't exist
         let storage = self.storage.get_object_store();
-        let streams = PARSEABLE.metastore.list_streams().await?;
+        let streams = PARSEABLE.metastore.list_streams(tenant_id).await?;
         if !streams.contains(stream_name) {
+            tracing::warn!("returning ok(false) for {stream_name} , {tenant_id:?}");
             return Ok(false);
         }
         let (stream_metadata_bytes, schema_bytes) = try_join!(
-            storage.create_stream_from_ingestor(stream_name),
-            storage.create_schema_from_metastore(stream_name)
+            storage.create_stream_from_ingestor(stream_name, tenant_id),
+            storage.create_schema_from_metastore(stream_name, tenant_id)
         )?;
 
         let stream_metadata = if stream_metadata_bytes.is_empty() {
@@ -392,6 +441,7 @@ impl Parseable {
             stream_name.to_owned(),
             metadata,
             ingestor_id,
+            tenant_id,
         );
 
         // Set hot tier configuration in memory based on stored metadata
@@ -399,70 +449,84 @@ impl Parseable {
             stream.set_hot_tier(Some(hot_tier_config));
         }
 
-        //commit schema in memory
-        commit_schema(stream_name, schema).map_err(|e| StreamError::Anyhow(e.into()))?;
+        // commit schema in memory
+        commit_schema(stream_name, schema, tenant_id).map_err(|e| StreamError::Anyhow(e.into()))?;
 
         Ok(true)
     }
 
     pub async fn create_internal_stream_if_not_exists(&self) -> Result<(), StreamError> {
         let log_source_entry = LogSourceEntry::new(LogSource::Pmeta, HashSet::new());
-        let internal_stream_result = self
-            .create_stream_if_not_exists(
-                PMETA_STREAM_NAME,
-                StreamType::Internal,
-                None,
-                vec![log_source_entry],
-                TelemetryType::Logs,
-            )
-            .await;
+        let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
+            tenants.into_iter().map(|t| Some(t)).collect()
+        } else {
+            vec![None]
+        };
+        for tenant_id in tenants {
+            let internal_stream_result = self
+                .create_stream_if_not_exists(
+                    PMETA_STREAM_NAME,
+                    StreamType::Internal,
+                    None,
+                    vec![log_source_entry.clone()],
+                    TelemetryType::Logs,
+                    &tenant_id,
+                )
+                .await;
 
-        let log_source_entry = LogSourceEntry::new(LogSource::Json, HashSet::new());
-        let billing_stream_result = self
-            .create_stream_if_not_exists(
-                BILLING_METRICS_STREAM_NAME,
-                StreamType::Internal,
-                None,
-                vec![log_source_entry],
-                TelemetryType::Logs,
-            )
-            .await;
+            let log_source_entry = LogSourceEntry::new(LogSource::Json, HashSet::new());
+            let billing_stream_result = self
+                .create_stream_if_not_exists(
+                    BILLING_METRICS_STREAM_NAME,
+                    StreamType::Internal,
+                    None,
+                    vec![log_source_entry],
+                    TelemetryType::Logs,
+                    &tenant_id,
+                )
+                .await;
 
-        // Check if either stream creation failed
-        if let Err(e) = &internal_stream_result {
-            tracing::error!("Failed to create pmeta stream: {:?}", e);
-        }
-        if let Err(e) = &billing_stream_result {
-            tracing::error!("Failed to create billing stream: {:?}", e);
-        }
+            // Check if either stream creation failed
+            if let Err(e) = &internal_stream_result {
+                tracing::error!("Failed to create pmeta stream: {:?}", e);
+            }
+            if let Err(e) = &billing_stream_result {
+                tracing::error!("Failed to create billing stream: {:?}", e);
+            }
 
-        // Check if both streams already existed
-        if matches!(internal_stream_result, Ok(true)) && matches!(billing_stream_result, Ok(true)) {
-            return Ok(());
-        }
+            // Check if both streams already existed
+            if matches!(internal_stream_result, Ok(true))
+                && matches!(billing_stream_result, Ok(true))
+            {
+                continue;
+            }
 
-        let mut header_map = HeaderMap::new();
-        header_map.insert(
-            HeaderName::from_str(STREAM_TYPE_KEY).unwrap(),
-            HeaderValue::from_str(&StreamType::Internal.to_string()).unwrap(),
-        );
-        header_map.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+            let mut header_map = HeaderMap::new();
+            header_map.insert(
+                HeaderName::from_str(STREAM_TYPE_KEY).unwrap(),
+                HeaderValue::from_str(&StreamType::Internal.to_string()).unwrap(),
+            );
+            header_map.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
-        // Sync only the streams that were created successfully
-        if matches!(internal_stream_result, Ok(false))
-            && let Err(e) =
-                sync_streams_with_ingestors(header_map.clone(), Bytes::new(), PMETA_STREAM_NAME)
-                    .await
-        {
-            tracing::error!("Failed to sync pmeta stream with ingestors: {:?}", e);
-        }
+            // Sync only the streams that were created successfully
+            if matches!(internal_stream_result, Ok(false))
+                && let Err(e) =
+                    sync_streams_with_ingestors(header_map.clone(), Bytes::new(), PMETA_STREAM_NAME)
+                        .await
+            {
+                tracing::error!("Failed to sync pmeta stream with ingestors: {:?}", e);
+            }
 
-        if matches!(billing_stream_result, Ok(false))
-            && let Err(e) =
-                sync_streams_with_ingestors(header_map, Bytes::new(), BILLING_METRICS_STREAM_NAME)
-                    .await
-        {
-            tracing::error!("Failed to sync billing stream with ingestors: {:?}", e);
+            if matches!(billing_stream_result, Ok(false))
+                && let Err(e) = sync_streams_with_ingestors(
+                    header_map,
+                    Bytes::new(),
+                    BILLING_METRICS_STREAM_NAME,
+                )
+                .await
+            {
+                tracing::error!("Failed to sync billing stream with ingestors: {:?}", e);
+            }
         }
 
         Ok(())
@@ -476,8 +540,9 @@ impl Parseable {
         custom_partition: Option<&String>,
         log_source: Vec<LogSourceEntry>,
         telemetry_type: TelemetryType,
+        tenant_id: &Option<String>,
     ) -> Result<bool, PostError> {
-        if self.streams.contains(stream_name) {
+        if self.streams.contains(stream_name, tenant_id) {
             return Ok(true);
         }
 
@@ -491,7 +556,7 @@ impl Parseable {
         //create stream and schema from storage
         if self.options.mode != Mode::All
             && self
-                .create_stream_and_schema_from_storage(stream_name)
+                .create_stream_and_schema_from_storage(stream_name, tenant_id)
                 .await?
         {
             return Ok(true);
@@ -507,6 +572,7 @@ impl Parseable {
             stream_type,
             log_source,
             telemetry_type,
+            tenant_id,
         )
         .await?;
 
@@ -517,8 +583,11 @@ impl Parseable {
         &self,
         stream_name: &str,
         log_source: LogSourceEntry,
+        tenant_id: &Option<String>,
     ) -> Result<(), StreamError> {
-        let stream = self.get_stream(stream_name).expect(STREAM_EXISTS);
+        let stream = self
+            .get_stream(stream_name, tenant_id)
+            .expect(STREAM_EXISTS);
         let mut log_sources = stream.get_log_source();
         let mut changed = false;
 
@@ -554,7 +623,7 @@ impl Parseable {
 
             let storage = self.storage.get_object_store();
             if let Err(err) = storage
-                .update_log_source_in_stream(stream_name, &log_sources)
+                .update_log_source_in_stream(stream_name, &log_sources, tenant_id)
                 .await
             {
                 return Err(StreamError::Storage(err));
@@ -569,6 +638,7 @@ impl Parseable {
         headers: &HeaderMap,
         body: &Bytes,
         stream_name: &str,
+        tenant_id: &Option<String>,
     ) -> Result<HeaderMap, StreamError> {
         let PutStreamHeaders {
             time_partition,
@@ -582,14 +652,15 @@ impl Parseable {
         } = headers.into();
 
         let stream_in_memory_dont_update =
-            self.streams.contains(stream_name) && !update_stream_flag;
+            self.streams.contains(stream_name, tenant_id) && !update_stream_flag;
+        tracing::warn!(stream_in_memory_dont_update=?stream_in_memory_dont_update);
         // check if stream in storage only if not in memory
         // for Parseable OSS, create_update_stream is called only from query node
         // for Parseable Enterprise, create_update_stream is called from prism node
-        let stream_in_storage_only_for_query_node = !self.streams.contains(stream_name)
+        let stream_in_storage_only_for_query_node = !self.streams.contains(stream_name, tenant_id)
             && (self.options.mode == Mode::Query || self.options.mode == Mode::Prism)
             && self
-                .create_stream_and_schema_from_storage(stream_name)
+                .create_stream_and_schema_from_storage(stream_name, tenant_id)
                 .await?;
         if stream_in_memory_dont_update || stream_in_storage_only_for_query_node {
             return Err(StreamError::Custom {
@@ -609,6 +680,7 @@ impl Parseable {
                     static_schema_flag,
                     &time_partition_limit,
                     custom_partition.as_ref(),
+                    tenant_id,
                 )
                 .await;
         }
@@ -637,6 +709,7 @@ impl Parseable {
             custom_partition.as_ref(),
             static_schema_flag,
         )?;
+        tracing::warn!("validated static schema");
         let log_source_entry = LogSourceEntry::new(log_source, HashSet::new());
         self.create_stream(
             stream_name.to_string(),
@@ -648,9 +721,10 @@ impl Parseable {
             stream_type,
             vec![log_source_entry],
             telemetry_type,
+            tenant_id,
         )
         .await?;
-
+        tracing::warn!("created stream");
         Ok(headers.clone())
     }
 
@@ -662,8 +736,9 @@ impl Parseable {
         static_schema_flag: bool,
         time_partition_limit: &str,
         custom_partition: Option<&String>,
+        tenant_id: &Option<String>,
     ) -> Result<HeaderMap, StreamError> {
-        if !self.streams.contains(stream_name) {
+        if !self.streams.contains(stream_name, tenant_id) {
             return Err(StreamNotFound(stream_name.to_string()).into());
         }
         if !time_partition.is_empty() {
@@ -683,11 +758,12 @@ impl Parseable {
             self.update_time_partition_limit_in_stream(
                 stream_name.to_string(),
                 time_partition_days,
+                tenant_id,
             )
             .await?;
             return Ok(headers.clone());
         }
-        self.validate_and_update_custom_partition(stream_name, custom_partition)
+        self.validate_and_update_custom_partition(stream_name, custom_partition, tenant_id)
             .await?;
 
         Ok(headers.clone())
@@ -705,6 +781,7 @@ impl Parseable {
         stream_type: StreamType,
         log_source: Vec<LogSourceEntry>,
         telemetry_type: TelemetryType,
+        tenant_id: &Option<String>,
     ) -> Result<(), CreateStreamError> {
         // fail to proceed if invalid stream name
         if stream_type != StreamType::Internal {
@@ -732,10 +809,11 @@ impl Parseable {
         };
 
         match storage
-            .create_stream(&stream_name, meta, schema.clone())
+            .create_stream(&stream_name, meta, schema.clone(), tenant_id)
             .await
         {
             Ok(created_at) => {
+                tracing::warn!(created_stream_at=?created_at);
                 let mut static_schema: HashMap<String, Arc<Field>> = HashMap::new();
 
                 for (field_name, field) in schema
@@ -768,6 +846,7 @@ impl Parseable {
                     stream_name.to_owned(),
                     metadata,
                     ingestor_id,
+                    tenant_id,
                 );
             }
             Err(err) => {
@@ -781,8 +860,11 @@ impl Parseable {
         &self,
         stream_name: &str,
         custom_partition: Option<&String>,
+        tenant_id: &Option<String>,
     ) -> Result<(), StreamError> {
-        let stream = self.get_stream(stream_name).expect(STREAM_EXISTS);
+        let stream = self
+            .get_stream(stream_name, tenant_id)
+            .expect(STREAM_EXISTS);
         if stream.get_time_partition().is_some() {
             return Err(StreamError::Custom {
                 msg: "Cannot set both time partition and custom partition".to_string(),
@@ -793,8 +875,12 @@ impl Parseable {
             validate_custom_partition(custom_partition)?;
         }
 
-        self.update_custom_partition_in_stream(stream_name.to_string(), custom_partition)
-            .await?;
+        self.update_custom_partition_in_stream(
+            stream_name.to_string(),
+            custom_partition,
+            tenant_id,
+        )
+        .await?;
 
         Ok(())
     }
@@ -803,16 +889,17 @@ impl Parseable {
         &self,
         stream_name: String,
         time_partition_limit: NonZeroU32,
+        tenant_id: &Option<String>,
     ) -> Result<(), CreateStreamError> {
         let storage = self.storage.get_object_store();
         if let Err(err) = storage
-            .update_time_partition_limit_in_stream(&stream_name, time_partition_limit)
+            .update_time_partition_limit_in_stream(&stream_name, time_partition_limit, tenant_id)
             .await
         {
             return Err(CreateStreamError::Storage { stream_name, err });
         }
 
-        if let Ok(stream) = self.get_stream(&stream_name) {
+        if let Ok(stream) = self.get_stream(&stream_name, tenant_id) {
             stream.set_time_partition_limit(time_partition_limit)
         } else {
             return Err(CreateStreamError::Custom {
@@ -828,8 +915,11 @@ impl Parseable {
         &self,
         stream_name: String,
         custom_partition: Option<&String>,
+        tenant_id: &Option<String>,
     ) -> Result<(), CreateStreamError> {
-        let stream = self.get_stream(&stream_name).expect(STREAM_EXISTS);
+        let stream = self
+            .get_stream(&stream_name, tenant_id)
+            .expect(STREAM_EXISTS);
         let static_schema_flag = stream.get_static_schema_flag();
         let time_partition = stream.get_time_partition();
         if static_schema_flag {
@@ -869,7 +959,7 @@ impl Parseable {
         }
         let storage = self.storage.get_object_store();
         if let Err(err) = storage
-            .update_custom_partition_in_stream(&stream_name, custom_partition)
+            .update_custom_partition_in_stream(&stream_name, custom_partition, tenant_id)
             .await
         {
             return Err(CreateStreamError::Storage { stream_name, err });
@@ -915,10 +1005,11 @@ impl Parseable {
         &self,
         stream_name: &str,
         first_event_at: &str,
+        tenant_id: &Option<String>,
     ) -> Option<String> {
         let storage = self.storage.get_object_store();
         if let Err(err) = storage
-            .update_first_event_in_stream(stream_name, first_event_at)
+            .update_first_event_in_stream(stream_name, first_event_at, tenant_id)
             .await
         {
             error!(
@@ -926,7 +1017,7 @@ impl Parseable {
             );
         }
 
-        match self.get_stream(stream_name) {
+        match self.get_stream(stream_name, tenant_id) {
             Ok(stream) => stream.set_first_event_at(first_event_at),
             Err(err) => error!(
                 "Failed to update first_event_at in stream info for stream {stream_name:?}: {err:?}"
@@ -940,19 +1031,90 @@ impl Parseable {
         &self,
         stream_name: &str,
         log_source: Vec<LogSourceEntry>,
+        tenant_id: &Option<String>,
     ) -> Result<(), StreamError> {
         let storage = self.storage.get_object_store();
         if let Err(err) = storage
-            .update_log_source_in_stream(stream_name, &log_source)
+            .update_log_source_in_stream(stream_name, &log_source, tenant_id)
             .await
         {
             return Err(StreamError::Storage(err));
         }
 
-        let stream = self.get_stream(stream_name).expect(STREAM_EXISTS);
+        let stream = self
+            .get_stream(stream_name, tenant_id)
+            .expect(STREAM_EXISTS);
         stream.set_log_source(log_source);
 
         Ok(())
+    }
+
+    pub fn add_tenant(
+        &self,
+        tenant_id: String,
+        tenant_meta: StorageMetadata,
+    ) -> Result<(), anyhow::Error> {
+        if !self.options.is_multi_tenant() {
+            return Err(anyhow::Error::msg("P_MULTI_TENANCY is set to false"));
+        }
+
+        if self.tenants.read().unwrap().contains(&tenant_id) {
+            return Err(anyhow::Error::msg(format!(
+                "Tenant with id- {tenant_id} already exists"
+            )));
+        } else {
+            self.tenants.write().unwrap().push(tenant_id.clone());
+            TENANT_METADATA.insert(tenant_id, tenant_meta);
+        }
+
+        Ok(())
+    }
+
+    async fn load_tenants(&self) -> Result<Option<()>, anyhow::Error> {
+        let is_multi_tenant = self.options.is_multi_tenant();
+
+        let obj_store = self.storage().get_object_store();
+        let dirs: Vec<String> = obj_store
+            .list_dirs_relative(&RelativePathBuf::from_iter([""]))
+            .await?
+            .into_iter()
+            .filter(|d| !d.starts_with("."))
+            .collect();
+        tracing::warn!("multi-tenant dirs- {dirs:?}");
+        // validate the possible presence of tenant storage metadata
+        for tenant_id in dirs.iter() {
+            if let Some(meta) = PARSEABLE
+                .metastore
+                .get_parseable_metadata(&Some(tenant_id.clone()))
+                .await?
+                && is_multi_tenant
+            {
+                let metadata: StorageMetadata = serde_json::from_slice(&meta)?;
+                tracing::warn!("inserting tenant data- {metadata:?} for tenant- {tenant_id}");
+                TENANT_METADATA.insert(tenant_id.clone(), metadata.clone());
+            } else if !is_multi_tenant {
+            } else {
+                return Err(anyhow::Error::msg(format!(
+                    "Found invalid tenant directory with multi-tenant mode- {tenant_id}.\nExiting."
+                )));
+            }
+        }
+
+        if let Ok(mut t) = self.tenants.write() {
+            t.extend(dirs);
+            Ok(Some(()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn list_tenants(&self) -> Option<Vec<String>> {
+        if let Ok(t) = self.tenants.as_ref().read() {
+            let t = t.clone();
+            Some(t)
+        } else {
+            None
+        }
     }
 }
 

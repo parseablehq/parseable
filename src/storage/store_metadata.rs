@@ -120,6 +120,7 @@ impl MetastoreObject for StorageMetadata {
 /// overwrites staging metadata while updating storage info
 pub async fn resolve_parseable_metadata(
     parseable_metadata: &Option<Bytes>,
+    tenant_id: &Option<String>
 ) -> Result<StorageMetadata, ObjectStorageError> {
     let staging_metadata = get_staging_metadata()?;
     let remote_metadata = parseable_metadata
@@ -133,10 +134,10 @@ pub async fn resolve_parseable_metadata(
     metadata.server_mode = PARSEABLE.options.mode;
 
     if overwrite_remote {
-        put_remote_metadata(&metadata).await?;
+        put_remote_metadata(&metadata, tenant_id).await?;
     }
     if overwrite_staging {
-        put_staging_metadata(&metadata)?;
+        put_staging_metadata(&metadata, tenant_id)?;
     }
 
     Ok(metadata)
@@ -289,22 +290,30 @@ pub fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {
     Ok(Some(meta))
 }
 
-pub async fn put_remote_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageError> {
+pub async fn put_remote_metadata(metadata: &StorageMetadata, tenant_id: &Option<String>) -> Result<(), ObjectStorageError> {
     PARSEABLE
         .metastore
-        .put_parseable_metadata(metadata)
+        .put_parseable_metadata(metadata, tenant_id)
         .await
         .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))
 }
 
-pub fn put_staging_metadata(meta: &StorageMetadata) -> io::Result<()> {
+pub fn put_staging_metadata(meta: &StorageMetadata, tenant_id: &Option<String>) -> io::Result<()> {
     let mut staging_metadata = meta.clone();
     staging_metadata.server_mode = PARSEABLE.options.mode;
     staging_metadata.staging = PARSEABLE.options.staging_dir().to_path_buf();
-    let path = PARSEABLE
-        .options
-        .staging_dir()
-        .join(PARSEABLE_METADATA_FILE_NAME);
+    let path = if let Some(tenant_id) = tenant_id.as_ref() {
+        PARSEABLE
+            .options
+            .staging_dir()
+            .join(tenant_id)
+            .join(PARSEABLE_METADATA_FILE_NAME)
+    } else {
+        PARSEABLE
+            .options
+            .staging_dir()
+            .join(PARSEABLE_METADATA_FILE_NAME)
+    };
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)

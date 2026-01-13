@@ -111,7 +111,7 @@ impl FlightService for AirServiceImpl {
         let table_name = table_name[0].clone();
 
         let schema = PARSEABLE
-            .get_stream(&table_name)
+            .get_stream(&table_name, &None)
             .map_err(|err| Status::failed_precondition(err.to_string()))?
             .get_schema();
 
@@ -198,14 +198,14 @@ impl FlightService for AirServiceImpl {
 
         let permissions = Users.get_permissions(&key);
 
-        user_auth_for_datasets(&permissions, &streams)
+        user_auth_for_datasets(&permissions, &streams, &None)
             .await
             .map_err(|_| {
                 Status::permission_denied("User Does not have permission to access this")
             })?;
         let time = Instant::now();
 
-        let (records, _) = execute(query, false)
+        let (records, _) = execute(query, false, &None)
             .await
             .map_err(|err| Status::internal(err.to_string()))?;
 
@@ -234,7 +234,7 @@ impl FlightService for AirServiceImpl {
 
         if event.is_some() {
             // Clear staging of stream once airplane has taxied
-            PARSEABLE.get_or_create_stream(&stream_name).clear();
+            PARSEABLE.get_or_create_stream(&stream_name, &None).clear();
         }
 
         let time = time.elapsed().as_secs_f64();

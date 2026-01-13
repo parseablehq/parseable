@@ -38,7 +38,7 @@ use url::Url;
 use crate::{
     alerts::{AlertError, AlertState, Context, alert_traits::CallableTarget},
     metastore::metastore_traits::MetastoreObject,
-    parseable::PARSEABLE,
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     storage::object_storage::target_json_path,
 };
 
@@ -50,7 +50,7 @@ pub static TARGETS: Lazy<TargetConfigs> = Lazy::new(|| TargetConfigs {
 
 #[derive(Debug)]
 pub struct TargetConfigs {
-    pub target_configs: RwLock<HashMap<Ulid, Target>>,
+    pub target_configs: RwLock<HashMap<String, HashMap<Ulid, Target>>>,
 }
 
 impl TargetConfigs {
@@ -58,44 +58,82 @@ impl TargetConfigs {
     pub async fn load(&self) -> anyhow::Result<()> {
         let targets = PARSEABLE.metastore.get_targets().await?;
         let mut map = self.target_configs.write().await;
-        for target in targets {
-            map.insert(target.id, target);
+        for (tenant_id, targets) in targets {
+            let inner = targets
+                .into_iter()
+                .map(|mut t| {
+                    t.tenant = Some(tenant_id.clone());
+                    (t.id, t)
+                })
+                .collect();
+            map.insert(tenant_id, inner);
         }
 
         Ok(())
     }
 
     pub async fn update(&self, target: Target) -> Result<(), AlertError> {
-        PARSEABLE.metastore.put_target(&target).await?;
+        PARSEABLE
+            .metastore
+            .put_target(&target, &target.tenant)
+            .await?;
         let mut map = self.target_configs.write().await;
-        map.insert(target.id, target.clone());
+        let tenant_id = target.tenant.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        map.entry(tenant_id.to_owned())
+            .or_default()
+            .insert(target.id, target);
+        // map.insert(target.id, target.clone());
         Ok(())
     }
 
-    pub async fn list(&self) -> Result<Vec<Target>, AlertError> {
-        let targets = self
-            .target_configs
-            .read()
-            .await
-            .values()
-            .cloned()
-            .collect_vec();
+    pub async fn list(&self, tenant_id: &Option<String>) -> Result<Vec<Target>, AlertError> {
+        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let targets = if let Some(targets) = self.target_configs.read().await.get(tenant_id) {
+            targets.values().cloned().collect_vec()
+        } else {
+            vec![]
+        };
+        // let targets = self
+        //     .target_configs
+        //     .read()
+        //     .await
+        //     .values()
+        //     .cloned()
+        //     .collect_vec();
         Ok(targets)
     }
 
-    pub async fn get_target_by_id(&self, target_id: &Ulid) -> Result<Target, AlertError> {
-        let target = self
-            .target_configs
-            .read()
-            .await
-            .get(target_id)
-            .ok_or(AlertError::InvalidTargetID(target_id.to_string()))
-            .cloned()?;
+    pub async fn get_target_by_id(
+        &self,
+        target_id: &Ulid,
+        tenant_id: &Option<String>,
+    ) -> Result<Target, AlertError> {
+        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let target = if let Some(targets) = self.target_configs.read().await.get(tenant_id) {
+            targets
+                .get(target_id)
+                .ok_or(AlertError::InvalidTargetID(target_id.to_string()))
+                .cloned()?
+        } else {
+            return Err(AlertError::InvalidTargetID(target_id.to_string()));
+        };
+        // let target = self
+        //     .target_configs
+        //     .read()
+        //     .await
+        //     .get(target_id)
+        //     .ok_or(AlertError::InvalidTargetID(target_id.to_string()))
+        //     .cloned()?;
 
         Ok(target)
     }
 
-    pub async fn delete(&self, target_id: &Ulid) -> Result<Target, AlertError> {
+    pub async fn delete(
+        &self,
+        target_id: &Ulid,
+        tenant_id: &Option<String>,
+    ) -> Result<Target, AlertError> {
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         // ensure that the target is not being used by any alert
         let guard = ALERTS.read().await;
         let alerts = if let Some(alerts) = guard.as_ref() {
@@ -104,18 +142,28 @@ impl TargetConfigs {
             return Err(AlertError::CustomError("No AlertManager set".into()));
         };
 
-        for (_, alert) in alerts.get_all_alerts().await.iter() {
+        for (_, alert) in alerts.get_all_alerts(tenant_id).await.iter() {
             if alert.get_targets().contains(target_id) {
                 return Err(AlertError::TargetInUse);
             }
         }
-        let target = self
-            .target_configs
-            .write()
-            .await
-            .remove(target_id)
-            .ok_or(AlertError::InvalidTargetID(target_id.to_string()))?;
-        PARSEABLE.metastore.delete_target(&target).await?;
+        let target = if let Some(targets) = self.target_configs.write().await.get_mut(tenant) {
+            targets
+                .remove(target_id)
+                .ok_or(AlertError::InvalidTargetID(target_id.to_string()))?
+        } else {
+            return Err(AlertError::InvalidTargetID(target_id.to_string()));
+        };
+        // let target = self
+        //     .target_configs
+        //     .write()
+        //     .await
+        //     .remove(target_id)
+        //     .ok_or(AlertError::InvalidTargetID(target_id.to_string()))?;
+        PARSEABLE
+            .metastore
+            .delete_target(&target, tenant_id)
+            .await?;
         Ok(target)
     }
 }
@@ -143,6 +191,7 @@ pub struct Target {
     pub target: TargetType,
     #[serde(default = "Ulid::new")]
     pub id: Ulid,
+    pub tenant: Option<String>,
 }
 
 impl Target {
@@ -259,6 +308,7 @@ impl Target {
         let timeout = target_timeout.interval;
         let target = self.target.clone();
         let alert_id = alert_context.alert_info.alert_id;
+        let tenant_id = self.tenant.clone();
 
         let sleep_and_check_if_call =
             move |timeout_state: Arc<Mutex<TimeoutState>>, current_state: AlertState| async move {
@@ -291,7 +341,8 @@ impl Target {
 
             match retry {
                 Retry::Infinite => loop {
-                    let current_state = if let Ok(state) = alerts.get_state(alert_id).await {
+                    let current_state = if let Ok(state) = alerts.get_state(alert_id, &tenant_id).await
+                    {
                         state
                     } else {
                         *state.lock().unwrap() = TimeoutState::default();
@@ -309,7 +360,9 @@ impl Target {
                 },
                 Retry::Finite(times) => {
                     for _ in 0..(times - 1) {
-                        let current_state = if let Ok(state) = alerts.get_state(alert_id).await {
+                        let current_state = if let Ok(state) =
+                            alerts.get_state(alert_id, &tenant_id).await
+                        {
                             state
                         } else {
                             *state.lock().unwrap() = TimeoutState::default();
@@ -363,6 +416,7 @@ pub struct TargetVerifier {
     pub notification_config: Option<NotificationConfigVerifier>,
     #[serde(default = "Ulid::new")]
     pub id: Ulid,
+    pub tenant_id: Option<String>,
 }
 
 impl TryFrom<TargetVerifier> for Target {
@@ -392,6 +446,7 @@ impl TryFrom<TargetVerifier> for Target {
             name: value.name,
             target: value.target,
             id: value.id,
+            tenant: value.tenant_id,
         })
     }
 }

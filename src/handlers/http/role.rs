@@ -20,54 +20,69 @@ use std::collections::HashSet;
 
 use actix_web::http::StatusCode;
 use actix_web::{
-    HttpResponse, Responder,
+    HttpRequest, HttpResponse, Responder,
     http::header::ContentType,
     web::{self, Json},
 };
 
 use crate::{
-    parseable::PARSEABLE,
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::{
         map::{DEFAULT_ROLE, mut_roles, mut_sessions, read_user_groups, users},
         role::model::DefaultPrivilege,
     },
     storage::{self, ObjectStorageError, StorageMetadata},
+    utils::get_tenant_id_from_request,
     validator::{self, error::UsernameValidationError},
 };
 
 // Handler for PUT /api/v1/role/{name}
 // Creates a new role or update existing one
 pub async fn put(
+    req: HttpRequest,
     name: web::Path<String>,
     Json(privileges): Json<Vec<DefaultPrivilege>>,
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
+    let tenant_id = get_tenant_id_from_request(&req);
     // validate the role name
     validator::user_role_name(&name).map_err(RoleError::ValidationError)?;
-    let mut metadata = get_metadata().await?;
+
+    let mut metadata = get_metadata(&tenant_id).await?;
     metadata.roles.insert(name.clone(), privileges.clone());
 
-    put_metadata(&metadata).await?;
-    mut_roles().insert(name.clone(), privileges.clone());
+    put_metadata(&metadata, &tenant_id).await?;
+
+    let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    mut_roles("role put")
+        .entry(tenant_id.to_owned())
+        .or_default()
+        .insert(name.clone(), privileges.clone());
+    // mut_roles().insert(name.clone(), privileges.clone());
 
     // refresh the sessions of all users using this role
     // for this, iterate over all user_groups and users and create a hashset of users
     let mut session_refresh_users: HashSet<String> = HashSet::new();
-    for user_group in read_user_groups().values() {
-        if user_group.roles.contains(&name) {
-            session_refresh_users.extend(user_group.users.iter().map(|u| u.userid().to_string()));
+    if let Some(groups) = read_user_groups().get(tenant_id) {
+        for user_group in groups.values() {
+            if user_group.roles.contains(&name) {
+                session_refresh_users
+                    .extend(user_group.users.iter().map(|u| u.userid().to_string()));
+            }
         }
     }
 
     // iterate over all users to see if they have this role
-    for user in users().values() {
-        if user.roles.contains(&name) {
-            session_refresh_users.insert(user.userid().to_string());
+    if let Some(users) = users().get(tenant_id) {
+        for user in users.values() {
+            if user.roles.contains(&name) {
+                session_refresh_users.insert(user.userid().to_string());
+            }
         }
     }
 
     for userid in session_refresh_users {
-        mut_sessions().remove_user(&userid);
+        mut_sessions().remove_user(&userid, tenant_id);
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -75,35 +90,42 @@ pub async fn put(
 
 // Handler for GET /api/v1/role/{name}
 // Fetch role by name
-pub async fn get(name: web::Path<String>) -> Result<impl Responder, RoleError> {
+pub async fn get(req: HttpRequest, name: web::Path<String>) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
-    let metadata = get_metadata().await?;
+    let tenant_id = get_tenant_id_from_request(&req);
+    let metadata = get_metadata(&tenant_id).await?;
     let privileges = metadata.roles.get(&name).cloned().unwrap_or_default();
     Ok(web::Json(privileges))
 }
 
 // Handler for GET /api/v1/role
 // Fetch all roles in the system
-pub async fn list() -> Result<impl Responder, RoleError> {
-    let metadata = get_metadata().await?;
+pub async fn list(req: HttpRequest) -> Result<impl Responder, RoleError> {
+    let tenant_id = get_tenant_id_from_request(&req);
+    let metadata = get_metadata(&tenant_id).await?;
     let roles: Vec<String> = metadata.roles.keys().cloned().collect();
     Ok(web::Json(roles))
 }
 
 // Handler for GET /api/v1/roles
 // Fetch all roles in the system
-pub async fn list_roles() -> Result<impl Responder, RoleError> {
-    let metadata = get_metadata().await?;
+pub async fn list_roles(req: HttpRequest) -> Result<impl Responder, RoleError> {
+    let tenant_id = get_tenant_id_from_request(&req);
+    let metadata = get_metadata(&tenant_id).await?;
     let roles = metadata.roles.clone();
     Ok(web::Json(roles))
 }
 
 // Handler for DELETE /api/v1/role/{name}
 // Delete existing role
-pub async fn delete(name: web::Path<String>) -> Result<impl Responder, RoleError> {
+pub async fn delete(
+    req: HttpRequest,
+    name: web::Path<String>,
+) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
+    let tenant_id = get_tenant_id_from_request(&req);
     // check if the role is being used by any user or group
-    let mut metadata = get_metadata().await?;
+    let mut metadata = get_metadata(&tenant_id).await?;
     if metadata.users.iter().any(|user| user.roles.contains(&name)) {
         return Err(RoleError::RoleInUse);
     }
@@ -115,47 +137,79 @@ pub async fn delete(name: web::Path<String>) -> Result<impl Responder, RoleError
         return Err(RoleError::RoleInUse);
     }
     metadata.roles.remove(&name);
-    put_metadata(&metadata).await?;
-    mut_roles().remove(&name);
+    put_metadata(&metadata, &tenant_id).await?;
+
+    let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    mut_roles("role delete")
+        .entry(tenant_id.to_owned())
+        .or_default()
+        .remove(&name);
+    // mut_roles().remove(&name);
 
     Ok(HttpResponse::Ok().finish())
 }
 
 // Handler for PUT /api/v1/role/default
 // Delete existing role
-pub async fn put_default(name: web::Json<String>) -> Result<impl Responder, RoleError> {
+pub async fn put_default(
+    req: HttpRequest,
+    name: web::Json<String>,
+) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
-    let mut metadata = get_metadata().await?;
+    let tenant_id = get_tenant_id_from_request(&req);
+    let mut metadata = get_metadata(&tenant_id).await?;
     metadata.default_role = Some(name.clone());
-    *DEFAULT_ROLE.lock().unwrap() = Some(name);
-    put_metadata(&metadata).await?;
+    DEFAULT_ROLE.write().unwrap().insert(
+        tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v).to_owned(),
+        Some(name),
+    );
+    // *DEFAULT_ROLE.lock().unwrap() = Some(name);
+    put_metadata(&metadata, &tenant_id).await?;
     Ok(HttpResponse::Ok().finish())
 }
 
 // Handler for GET /api/v1/role/default
 // Delete existing role
-pub async fn get_default() -> Result<impl Responder, RoleError> {
-    let res = match DEFAULT_ROLE.lock().unwrap().clone() {
-        Some(role) => serde_json::Value::String(role),
-        None => serde_json::Value::Null,
+pub async fn get_default(req: HttpRequest) -> Result<impl Responder, RoleError> {
+    let tenant_id = get_tenant_id_from_request(&req);
+    let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    let res = if let Some(role) = DEFAULT_ROLE.read().unwrap().get(tenant_id)
+        && let Some(role) = role
+    {
+        serde_json::Value::String(role.to_string())
+    } else {
+        serde_json::Value::Null
     };
+    // let res = match DEFAULT_ROLE
+    //     .read()
+    //     .unwrap()
+    //     .get()
+    // {
+    //     Some(role) => serde_json::Value::String(role),
+    //     None => serde_json::Value::Null,
+    // };
 
     Ok(web::Json(res))
 }
 
-async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
+async fn get_metadata(
+    tenant_id: &Option<String>,
+) -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
     let metadata = PARSEABLE
         .metastore
-        .get_parseable_metadata()
+        .get_parseable_metadata(tenant_id)
         .await
         .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
         .ok_or_else(|| ObjectStorageError::Custom("parseable metadata not initialized".into()))?;
     Ok(serde_json::from_slice::<StorageMetadata>(&metadata)?)
 }
 
-async fn put_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageError> {
-    storage::put_remote_metadata(metadata).await?;
-    storage::put_staging_metadata(metadata)?;
+async fn put_metadata(
+    metadata: &StorageMetadata,
+    tenant_id: &Option<String>,
+) -> Result<(), ObjectStorageError> {
+    storage::put_remote_metadata(metadata, tenant_id).await?;
+    storage::put_staging_metadata(metadata, tenant_id)?;
     Ok(())
 }
 

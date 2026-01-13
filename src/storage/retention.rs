@@ -45,26 +45,34 @@ pub fn init_scheduler() {
     let mut scheduler = AsyncScheduler::new();
     let func = move || async {
         //get retention every day at 12 am
-        for stream_name in PARSEABLE.streams.list() {
-            match PARSEABLE.get_stream(&stream_name) {
-                Ok(stream) => {
-                    if let Some(config) = stream.get_retention() {
-                        for Task { action, days, .. } in config.tasks.into_iter() {
-                            match action {
-                                Action::Delete => {
-                                    let stream_name = stream_name.clone();
-                                    tokio::spawn(async move {
-                                        action::delete(stream_name, u32::from(days)).await;
-                                    });
-                                }
-                            };
+        let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
+            tenants.into_iter().map(|v| Some(v)).collect()
+        } else {
+            vec![None]
+        };
+        for tenant_id in tenants {
+            for stream_name in PARSEABLE.streams.list(&tenant_id) {
+                match PARSEABLE.get_stream(&stream_name, &tenant_id) {
+                    Ok(stream) => {
+                        if let Some(config) = stream.get_retention() {
+                            for Task { action, days, .. } in config.tasks.into_iter() {
+                                match action {
+                                    Action::Delete => {
+                                        let stream_name = stream_name.clone();
+                                        let id = tenant_id.clone();
+                                        tokio::spawn(async move {
+                                            action::delete(stream_name, u32::from(days), &id).await;
+                                        });
+                                    }
+                                };
+                            }
                         }
                     }
-                }
-                Err(err) => {
-                    warn!("failed to load retention config for {stream_name} due to {err:?}")
-                }
-            };
+                    Err(err) => {
+                        warn!("failed to load retention config for {stream_name} due to {err:?}")
+                    }
+                };
+            }
         }
     };
 
@@ -177,7 +185,7 @@ mod action {
     use relative_path::RelativePathBuf;
     use tracing::{error, info};
 
-    pub(super) async fn delete(stream_name: String, days: u32) {
+    pub(super) async fn delete(stream_name: String, days: u32, tenant_id: &Option<String>) {
         info!("running retention task - delete for stream={stream_name}");
         let store = PARSEABLE.storage.get_object_store();
 
@@ -195,7 +203,8 @@ mod action {
         if !dates.is_empty() {
             let delete_tasks = FuturesUnordered::new();
             if let Err(err) =
-                remove_manifest_from_snapshot(store.clone(), &stream_name, dates.clone()).await
+                remove_manifest_from_snapshot(&store, &stream_name, dates.clone(), tenant_id)
+                    .await
             {
                 error!(
                     "Failed to update snapshot for retention cleanup (stream={}): {}. Aborting delete.",

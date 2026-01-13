@@ -68,6 +68,7 @@ use super::listing_table_builder::ListingTableBuilder;
 #[derive(Debug)]
 pub struct GlobalSchemaProvider {
     pub storage: Arc<dyn ObjectStorage>,
+    pub tenant_id: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -77,17 +78,18 @@ impl SchemaProvider for GlobalSchemaProvider {
     }
 
     fn table_names(&self) -> Vec<String> {
-        PARSEABLE.streams.list()
+        PARSEABLE.streams.list(&self.tenant_id)
     }
 
     async fn table(&self, name: &str) -> DataFusionResult<Option<Arc<dyn TableProvider>>> {
         if self.table_exist(name) {
             Ok(Some(Arc::new(StandardTableProvider {
                 schema: PARSEABLE
-                    .get_stream(name)
+                    .get_stream(name, &self.tenant_id)
                     .expect(STREAM_EXISTS)
                     .get_schema(),
                 stream: name.to_owned(),
+                tenant_id: self.tenant_id.clone(),
             })))
         } else {
             Ok(None)
@@ -95,7 +97,7 @@ impl SchemaProvider for GlobalSchemaProvider {
     }
 
     fn table_exist(&self, name: &str) -> bool {
-        PARSEABLE.streams.contains(name)
+        PARSEABLE.get_stream(name, &self.tenant_id).is_ok()
     }
 }
 
@@ -104,6 +106,7 @@ struct StandardTableProvider {
     schema: SchemaRef,
     // prefix under which to find snapshot
     stream: String,
+    tenant_id: Option<String>,
 }
 
 impl StandardTableProvider {
@@ -218,9 +221,14 @@ impl StandardTableProvider {
             .collect();
 
         let (partitioned_files, statistics) = self.partitioned_files(hot_tier_files);
+        let object_store_url = if let Some(tenant_id) = self.tenant_id.as_ref() {
+            &format!("file:///{tenant_id}/")
+        } else {
+            "file:///"
+        };
         self.create_parquet_physical_plan(
             execution_plans,
-            ObjectStoreUrl::parse("file:///").unwrap(),
+            ObjectStoreUrl::parse(object_store_url).unwrap(),
             partitioned_files,
             statistics,
             projection,
@@ -244,7 +252,7 @@ impl StandardTableProvider {
         state: &dyn Session,
         time_partition: Option<&String>,
     ) -> Result<(), DataFusionError> {
-        let Ok(staging) = PARSEABLE.get_stream(&self.stream) else {
+        let Ok(staging) = PARSEABLE.get_stream(&self.stream, &self.tenant_id) else {
             return Ok(());
         };
 
@@ -273,9 +281,14 @@ impl StandardTableProvider {
         // NOTE: There is the possibility of a parquet file being pushed to object store
         // and deleted from staging in the time it takes for datafusion to get to it.
         // Staging parquet execution plan
+        let object_store_url = if let Some(tenant_id) = self.tenant_id.as_ref() {
+            &format!("file:///{tenant_id}/")
+        } else {
+            "file:///"
+        };
         self.create_parquet_physical_plan(
             execution_plans,
-            ObjectStoreUrl::parse("file:///").unwrap(),
+            ObjectStoreUrl::parse(object_store_url).unwrap(),
             vec![partitioned_files],
             Statistics::new_unknown(&self.schema),
             projection,
@@ -433,6 +446,7 @@ async fn collect_from_snapshot(
     filters: &[Expr],
     limit: Option<usize>,
     stream_name: &str,
+    tenant_id: &Option<String>,
 ) -> Result<Vec<File>, DataFusionError> {
     let mut manifest_files = Vec::new();
 
@@ -444,6 +458,7 @@ async fn collect_from_snapshot(
                 manifest_item.time_lower_bound,
                 manifest_item.time_upper_bound,
                 Some(manifest_item.manifest_path),
+                tenant_id,
             )
             .await
             .map_err(|e| DataFusionError::Plan(e.to_string()))?;
@@ -515,7 +530,7 @@ impl TableProvider for StandardTableProvider {
         let object_store_format: ObjectStoreFormat = serde_json::from_slice(
             &PARSEABLE
                 .metastore
-                .get_stream_json(&self.stream, false)
+                .get_stream_json(&self.stream, false, &self.tenant_id)
                 .await
                 .map_err(|e| DataFusionError::Plan(e.to_string()))?,
         )
@@ -538,7 +553,7 @@ impl TableProvider for StandardTableProvider {
         if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
             let obs = PARSEABLE
                 .metastore
-                .get_all_stream_jsons(&self.stream, None)
+                .get_all_stream_jsons(&self.stream, None, &self.tenant_id)
                 .await;
             if let Ok(obs) = obs {
                 for ob in obs {
@@ -583,6 +598,7 @@ impl TableProvider for StandardTableProvider {
             filters,
             limit,
             &self.stream,
+            &self.tenant_id,
         )
         .await?;
 
@@ -592,7 +608,7 @@ impl TableProvider for StandardTableProvider {
 
         // Hot tier data fetch
         if let Some(hot_tier_manager) = HotTierManager::global()
-            && hot_tier_manager.check_stream_hot_tier_exists(&self.stream)
+            && hot_tier_manager.check_stream_hot_tier_exists(&self.stream, &self.tenant_id)
         {
             self.get_hottier_exectuion_plan(
                 &mut execution_plans,
@@ -612,9 +628,14 @@ impl TableProvider for StandardTableProvider {
         }
 
         let (partitioned_files, statistics) = self.partitioned_files(manifest_files);
+        let object_store_url = if let Some(tenant_id) = self.tenant_id.as_ref() {
+            glob_storage.store_url().join(tenant_id).unwrap()
+        } else {
+            glob_storage.store_url()
+        };
         self.create_parquet_physical_plan(
             &mut execution_plans,
-            ObjectStoreUrl::parse(glob_storage.store_url()).unwrap(),
+            ObjectStoreUrl::parse(object_store_url).unwrap(),
             partitioned_files,
             statistics,
             projection,
