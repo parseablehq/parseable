@@ -169,6 +169,32 @@ pub struct StreamInfo {
     pub log_source: Vec<LogSourceEntry>,
     #[serde(default)]
     pub telemetry_type: TelemetryType,
+    #[serde(default)]
+    pub hot_tier_enabled: bool,
+}
+
+impl StreamInfo {
+    /// Creates a StreamInfo from LogStreamMetadata
+    /// and first_event_at and latest_event_at timestamps
+    pub fn from_metadata(
+        metadata: &crate::metadata::LogStreamMetadata,
+        first_event_at: Option<String>,
+        latest_event_at: Option<String>,
+    ) -> Self {
+        StreamInfo {
+            stream_type: metadata.stream_type,
+            created_at: metadata.created_at.clone(),
+            first_event_at,
+            latest_event_at,
+            time_partition: metadata.time_partition.clone(),
+            time_partition_limit: metadata.time_partition_limit.map(|limit| limit.to_string()),
+            custom_partition: metadata.custom_partition.clone(),
+            static_schema_flag: metadata.static_schema_flag,
+            log_source: metadata.log_source.clone(),
+            telemetry_type: metadata.telemetry_type,
+            hot_tier_enabled: metadata.hot_tier_enabled,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]

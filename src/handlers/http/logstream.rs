@@ -356,20 +356,8 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
         .read()
         .expect(LOCK_EXPECT);
 
-    let stream_info = StreamInfo {
-        stream_type: stream_meta.stream_type,
-        created_at: stream_meta.created_at.clone(),
-        first_event_at: stream_first_event_at,
-        latest_event_at: stream_latest_event_at,
-        time_partition: stream_meta.time_partition.clone(),
-        time_partition_limit: stream_meta
-            .time_partition_limit
-            .map(|limit| limit.to_string()),
-        custom_partition: stream_meta.custom_partition.clone(),
-        static_schema_flag: stream_meta.static_schema_flag,
-        log_source: stream_meta.log_source.clone(),
-        telemetry_type: stream_meta.telemetry_type,
-    };
+    let stream_info =
+        StreamInfo::from_metadata(&stream_meta, stream_first_event_at, stream_latest_event_at);
 
     Ok((web::Json(stream_info), StatusCode::OK))
 }
