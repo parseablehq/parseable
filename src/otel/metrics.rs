@@ -16,7 +16,6 @@
  *
  */
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
-use opentelemetry_proto::tonic::common::v1::KeyValue;
 use opentelemetry_proto::tonic::metrics::v1::number_data_point::Value as NumberDataPointValue;
 use opentelemetry_proto::tonic::metrics::v1::{
     Exemplar, ExponentialHistogram, Gauge, Histogram, Metric, MetricsData, NumberDataPoint, Sum,
@@ -25,7 +24,6 @@ use opentelemetry_proto::tonic::metrics::v1::{
 use serde_json::{Map, Value};
 
 use crate::metrics::increment_metrics_collected_by_date;
-use crate::otel::otel_utils::flatten_attributes;
 
 use super::otel_utils::{
     convert_epoch_nano_to_timestamp, insert_attributes, insert_number_if_some,
@@ -77,7 +75,7 @@ fn flatten_exemplar(exemplars: &[Exemplar]) -> Vec<Map<String, Value>> {
         .iter()
         .map(|exemplar| {
             let mut exemplar_json = Map::new();
-            insert_exemplar_attributes(&mut exemplar_json, &exemplar.filtered_attributes);
+            insert_attributes(&mut exemplar_json, &exemplar.filtered_attributes);
             exemplar_json.insert(
                 "exemplar_time_unix_nano".to_string(),
                 Value::String(convert_epoch_nano_to_timestamp(
@@ -124,7 +122,7 @@ fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<Map<String
         .iter()
         .map(|data_point| {
             let mut data_point_json = Map::new();
-            insert_metric_attributes(&mut data_point_json, &data_point.attributes);
+            insert_attributes(&mut data_point_json, &data_point.attributes);
             data_point_json.insert(
                 "start_time_unix_nano".to_string(),
                 Value::String(convert_epoch_nano_to_timestamp(
@@ -222,7 +220,7 @@ fn flatten_histogram(histogram: &Histogram) -> Vec<Map<String, Value>> {
     let mut data_points_json = Vec::new();
     for data_point in &histogram.data_points {
         let mut data_point_json = Map::new();
-        insert_metric_attributes(&mut data_point_json, &data_point.attributes);
+        insert_attributes(&mut data_point_json, &data_point.attributes);
         data_point_json.insert(
             "start_time_unix_nano".to_string(),
             Value::String(convert_epoch_nano_to_timestamp(
@@ -319,7 +317,7 @@ fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<Map<String
     let mut data_points_json = Vec::new();
     for data_point in &exp_histogram.data_points {
         let mut data_point_json = Map::new();
-        insert_metric_attributes(&mut data_point_json, &data_point.attributes);
+        insert_attributes(&mut data_point_json, &data_point.attributes);
         data_point_json.insert(
             "start_time_unix_nano".to_string(),
             Value::String(convert_epoch_nano_to_timestamp(
@@ -388,7 +386,7 @@ fn flatten_summary(summary: &Summary) -> Vec<Map<String, Value>> {
     let mut data_points_json = Vec::new();
     for data_point in &summary.data_points {
         let mut data_point_json = Map::new();
-        insert_metric_attributes(&mut data_point_json, &data_point.attributes);
+        insert_attributes(&mut data_point_json, &data_point.attributes);
         data_point_json.insert(
             "start_time_unix_nano".to_string(),
             Value::String(convert_epoch_nano_to_timestamp(
@@ -654,18 +652,4 @@ fn flatten_data_point_flags(flags: u32) -> Map<String, Value> {
         Value::String(description.to_string()),
     );
     data_point_flags_json
-}
-
-fn insert_metric_attributes(map: &mut Map<String, Value>, attributes: &[KeyValue]) {
-    let attributes_json = flatten_attributes(attributes);
-    for (key, value) in attributes_json {
-        map.insert(format!("metric_{}", key), value);
-    }
-}
-
-fn insert_exemplar_attributes(map: &mut Map<String, Value>, attributes: &[KeyValue]) {
-    let attributes_json = flatten_attributes(attributes);
-    for (key, value) in attributes_json {
-        map.insert(format!("exemplar_{}", key), value);
-    }
 }
