@@ -27,7 +27,10 @@ use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use datafusion::arrow::util::bit_util::round_upto_multiple_of_64;
 use itertools::Itertools;
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 use tracing::error;
 
 use super::EventFormat;
@@ -73,6 +76,10 @@ impl EventFormat for Event {
             value @ Value::Object(_) => vec![value],
             _ => unreachable!("flatten would have failed beforehand"),
         };
+
+        // Rename JSON keys starting with '@' to '_' to match the schema
+        // Reject event if renaming would cause a key collision
+        let value_arr = rename_json_keys(value_arr)?;
 
         // collect all the keys from all the json objects in the request body
         let fields =
@@ -255,6 +262,49 @@ fn collect_keys<'a>(values: impl Iterator<Item = &'a Value>) -> Result<Vec<&'a s
         }
     }
     Ok(keys)
+}
+
+/// Renames JSON keys to match the schema transformation using normalize_field_name.
+/// Returns an error if renaming would cause a key collision.
+fn rename_json_keys(values: Vec<Value>) -> Result<Vec<Value>, anyhow::Error> {
+    values
+        .into_iter()
+        .map(|value| {
+            if let Value::Object(map) = value {
+                // Collect original keys to check for collisions
+                let original_keys: HashSet<String> = map.keys().cloned().collect();
+
+                // Check for collisions before renaming
+                for key in map.keys() {
+                    if key.starts_with('@') {
+                        let mut normalized_key = key.clone();
+                        super::normalize_field_name(&mut normalized_key);
+                        if original_keys.contains(&normalized_key) {
+                            return Err(anyhow!(
+                                "Key collision detected: '{}' and '{}' would both map to '{}'",
+                                key,
+                                normalized_key,
+                                normalized_key
+                            ));
+                        }
+                    }
+                }
+
+                let new_map: serde_json::Map<String, Value> = map
+                    .into_iter()
+                    .map(|(mut key, val)| {
+                        if key.starts_with('@') {
+                            super::normalize_field_name(&mut key);
+                        }
+                        (key, val)
+                    })
+                    .collect();
+                Ok(Value::Object(new_map))
+            } else {
+                Ok(value)
+            }
+        })
+        .collect()
 }
 
 fn fields_mismatch(
