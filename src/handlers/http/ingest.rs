@@ -182,7 +182,10 @@ pub async fn setup_otel_stream(
 
     let log_source = LogSource::from(log_source.to_str().unwrap());
     if log_source != expected_log_source {
-        return Err(PostError::IncorrectLogSource(expected_log_source));
+        return Err(PostError::IncorrectLogSource(
+            expected_log_source,
+            telemetry_type.to_string(),
+        ));
     }
 
     let stream_name = stream_name.to_str().unwrap().to_owned();
@@ -484,8 +487,8 @@ pub enum PostError {
     OtelNotSupported,
     #[error("The stream {0} is reserved for internal use and cannot be ingested into")]
     InternalStream(String),
-    #[error(r#"Please use "x-p-log-source: {0}" for ingesting otel logs"#)]
-    IncorrectLogSource(LogSource),
+    #[error(r#"Please use "x-p-log-source: {0}" for ingesting otel {1} data"#)]
+    IncorrectLogSource(LogSource, String),
     #[error("Ingestion is not allowed in Query mode")]
     IngestionNotAllowed,
     #[error("Missing field for time partition in json: {0}")]
@@ -516,7 +519,7 @@ impl actix_web::ResponseError for PostError {
             | Header(_)
             | Invalid(_)
             | InternalStream(_)
-            | IncorrectLogSource(_)
+            | IncorrectLogSource(_, _)
             | IngestionNotAllowed
             | MissingTimePartition(_)
             | KnownFormat(_)
