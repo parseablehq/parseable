@@ -24,6 +24,7 @@ use actix_web::{HttpRequest, HttpResponse, http::header::ContentType};
 use arrow_array::RecordBatch;
 use bytes::Bytes;
 use chrono::Utc;
+use tracing::error;
 
 use crate::event::error::EventError;
 use crate::event::format::known_schema::{self, KNOWN_SCHEMA_LIST};
@@ -543,6 +544,7 @@ impl actix_web::ResponseError for PostError {
     }
 
     fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
+        error!("{self}");
         match self {
             PostError::MetastoreError(metastore_error) => {
                 actix_web::HttpResponse::build(metastore_error.status_code())
