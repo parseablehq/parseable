@@ -35,14 +35,13 @@ use crate::{
         logstream::error::StreamError,
         query::{QueryError, update_schema_when_distributed},
     },
-    hottier::{HotTierError, HotTierManager, StreamHotTier},
+    hottier::HotTierError,
     parseable::{PARSEABLE, StreamNotFound},
     query::{CountsRequest, CountsResponse, error::ExecuteError},
     rbac::{Users, map::SessionKey, role::Action},
     stats,
     storage::{StreamInfo, StreamType, retention::Retention},
     utils::time::TimeParseError,
-    validator::error::HotTierValidationError,
 };
 
 #[derive(Serialize)]
@@ -177,20 +176,8 @@ pub async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, Str
         .read()
         .expect(LOCK_EXPECT);
 
-    let stream_info = StreamInfo {
-        stream_type: stream_meta.stream_type,
-        created_at: stream_meta.created_at.clone(),
-        first_event_at: stream_first_event_at,
-        latest_event_at: stream_latest_event_at,
-        time_partition: stream_meta.time_partition.clone(),
-        time_partition_limit: stream_meta
-            .time_partition_limit
-            .map(|limit| limit.to_string()),
-        custom_partition: stream_meta.custom_partition.clone(),
-        static_schema_flag: stream_meta.static_schema_flag,
-        log_source: stream_meta.log_source.clone(),
-        telemetry_type: stream_meta.telemetry_type,
-    };
+    let stream_info =
+        StreamInfo::from_metadata(&stream_meta, stream_first_event_at, stream_latest_event_at);
 
     Ok(stream_info)
 }
@@ -210,8 +197,6 @@ pub struct PrismDatasetResponse {
     stats: QueriedStats,
     /// Retention policy details
     retention: Retention,
-    /// Hot tier information if available
-    hottier: Option<StreamHotTier>,
     /// Count of records in the specified time range
     counts: CountsResponse,
 }
@@ -313,9 +298,6 @@ impl PrismDatasetRequest {
         stream: String,
         info: PrismLogstreamInfo,
     ) -> Result<PrismDatasetResponse, PrismLogstreamError> {
-        // Get hot tier info
-        let hottier = self.get_hot_tier_info(&stream).await?;
-
         // Get counts
         let counts = self.get_counts(&stream).await?;
 
@@ -325,25 +307,8 @@ impl PrismDatasetRequest {
             schema: info.schema,
             stats: info.stats,
             retention: info.retention,
-            hottier,
             counts,
         })
-    }
-
-    async fn get_hot_tier_info(
-        &self,
-        stream: &str,
-    ) -> Result<Option<StreamHotTier>, PrismLogstreamError> {
-        match HotTierManager::global() {
-            Some(manager) => match manager.get_hot_tier(stream).await {
-                Ok(stats) => Ok(Some(stats)),
-                Err(HotTierError::HotTierValidationError(HotTierValidationError::NotFound(_))) => {
-                    Ok(None)
-                }
-                Err(err) => Err(err.into()),
-            },
-            None => Ok(None),
-        }
     }
 
     async fn get_counts(&self, stream: &str) -> Result<CountsResponse, PrismLogstreamError> {
