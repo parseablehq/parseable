@@ -66,7 +66,7 @@ pub async fn delete(
     let objectstore = PARSEABLE.storage.get_object_store();
 
     // Delete from storage
-    objectstore.delete_stream(&stream_name).await?;
+    objectstore.delete_stream(&stream_name, &tenant_id).await?;
     // Delete from staging
     let stream_dir = PARSEABLE.get_or_create_stream(&stream_name, &tenant_id);
     if let Err(err) = fs::remove_dir_all(&stream_dir.data_path) {
@@ -269,9 +269,14 @@ pub async fn put_retention(
     ))
 }
 
-pub async fn get_stats_date(stream_name: &str, date: &str) -> Result<Stats, StreamError> {
-    let event_labels = event_labels_date(stream_name, "json", date);
-    let storage_size_labels = storage_size_labels_date(stream_name, date);
+pub async fn get_stats_date(
+    stream_name: &str,
+    date: &str,
+    tenant_id: &Option<String>,
+) -> Result<Stats, StreamError> {
+    let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    let event_labels = event_labels_date(stream_name, "json", date, tenant);
+    let storage_size_labels = storage_size_labels_date(stream_name, date, tenant);
     let events_ingested = EVENTS_INGESTED_DATE
         .get_metric_with_label_values(&event_labels)
         .unwrap()
@@ -322,7 +327,7 @@ pub async fn get_stats(
         }
 
         if !date_value.is_empty() {
-            let stats = get_stats_date(&stream_name, date_value).await?;
+            let stats = get_stats_date(&stream_name, date_value, &tenant_id).await?;
             let stats = serde_json::to_value(stats)?;
             return Ok((web::Json(stats), StatusCode::OK));
         }
@@ -378,7 +383,7 @@ pub async fn get_stream_info(
 
     // Get first and latest event timestamps from storage
     let (stream_first_event_at, stream_latest_event_at) = match storage
-        .get_first_and_latest_event_from_storage(&stream_name)
+        .get_first_and_latest_event_from_storage(&stream_name, &tenant_id)
         .await
     {
         Ok(result) => result,

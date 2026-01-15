@@ -713,7 +713,7 @@ pub struct DailyMTTRStats {
 pub struct MTTRHistory {
     /// Array of daily MTTR statistics
     pub daily_stats: Vec<DailyMTTRStats>,
-    pub tenant_id: Option<String>
+    pub tenant_id: Option<String>,
 }
 
 /// Query parameters for MTTR API endpoint

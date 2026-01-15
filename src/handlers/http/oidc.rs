@@ -129,7 +129,7 @@ pub async fn login(
                 );
                 let _session = session_cookie.value().to_owned();
                 let _user = user.clone();
-                let r = for_each_live_node(move |node| {
+                let r = for_each_live_node(&tenant_id, move |node| {
                     let url = format!(
                         "{}{}/o/login/sync",
                         node.domain_name,

@@ -34,7 +34,7 @@ use crate::{
     metadata::{LogStreamMetadata, load_daily_metrics, update_data_type_time_partition},
     metrics::fetch_stats_from_storage,
     option::Mode,
-    parseable::{PARSEABLE, Parseable},
+    parseable::{DEFAULT_TENANT, PARSEABLE, Parseable},
     storage::{ObjectStorage, ObjectStoreFormat, PARSEABLE_METADATA_FILE_NAME, StorageMetadata},
 };
 
@@ -415,8 +415,17 @@ async fn setup_logstream_metadata(
         .metastore
         .put_schema(arrow_schema.clone(), stream, tenant_id)
         .await?;
-    fetch_stats_from_storage(stream, stats).await;
-    load_daily_metrics(&snapshot.manifest_list, stream);
+    fetch_stats_from_storage(
+        stream,
+        stats,
+        tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+    )
+    .await;
+    load_daily_metrics(
+        &snapshot.manifest_list,
+        stream,
+        tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+    );
 
     let schema = PARSEABLE
         .get_or_create_stream(stream, tenant_id)

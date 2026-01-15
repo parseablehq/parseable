@@ -28,10 +28,16 @@ use relative_path::RelativePathBuf;
 use std::io;
 
 use crate::{
-    metastore::metastore_traits::MetastoreObject, option::Mode, parseable::{JOIN_COMMUNITY, PARSEABLE}, rbac::{
+    metastore::metastore_traits::MetastoreObject,
+    option::Mode,
+    parseable::{JOIN_COMMUNITY, PARSEABLE},
+    rbac::{
         role::model::DefaultPrivilege,
         user::{User, UserGroup},
-    }, storage::{ObjectStorageError, object_storage::parseable_json_path}, tenants::Service, utils::uid
+    },
+    storage::{ObjectStorageError, object_storage::parseable_json_path},
+    tenants::Service,
+    utils::uid,
 };
 
 use super::PARSEABLE_METADATA_FILE_NAME;
@@ -63,7 +69,7 @@ pub struct StorageMetadata {
     pub roles: HashMap<String, Vec<DefaultPrivilege>>,
     #[serde(default)]
     pub default_role: Option<String>,
-    pub suspended_services: Option<HashSet<Service>>
+    pub suspended_services: Option<HashSet<Service>>,
 }
 
 impl Default for StorageMetadata {
@@ -80,7 +86,7 @@ impl Default for StorageMetadata {
             streams: Vec::new(),
             roles: HashMap::default(),
             default_role: None,
-            suspended_services: None
+            suspended_services: None,
         }
     }
 }
@@ -117,7 +123,7 @@ impl MetastoreObject for StorageMetadata {
 /// overwrites staging metadata while updating storage info
 pub async fn resolve_parseable_metadata(
     parseable_metadata: &Option<Bytes>,
-    tenant_id: &Option<String>
+    tenant_id: &Option<String>,
 ) -> Result<StorageMetadata, ObjectStorageError> {
     let staging_metadata = get_staging_metadata()?;
     let remote_metadata = parseable_metadata
@@ -287,7 +293,10 @@ pub fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {
     Ok(Some(meta))
 }
 
-pub async fn put_remote_metadata(metadata: &StorageMetadata, tenant_id: &Option<String>) -> Result<(), ObjectStorageError> {
+pub async fn put_remote_metadata(
+    metadata: &StorageMetadata,
+    tenant_id: &Option<String>,
+) -> Result<(), ObjectStorageError> {
     PARSEABLE
         .metastore
         .put_parseable_metadata(metadata, tenant_id)

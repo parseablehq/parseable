@@ -110,7 +110,7 @@ impl ParseableServer for QueryServer {
         // write the ingestor metadata to storage
         QUERIER_META
             .get_or_init(|| async {
-                QuerierMetadata::load_node_metadata(NodeType::Querier)
+                QuerierMetadata::load_node_metadata(NodeType::Querier, &None)
                     .await
                     .expect("Querier Metadata should be set in ingestor mode")
             })

@@ -34,7 +34,7 @@ use crate::{
         STREAM_NAME_HEADER_KEY, http::modal::OIDC_CLIENT,
     },
     option::Mode,
-    parseable::PARSEABLE,
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::{
         EXPIRY_DURATION,
         map::{SessionKey, mut_sessions, mut_users, sessions, users},
@@ -167,10 +167,13 @@ where
         // append tenant id if present
         let user_and_tenant_id = match get_user_and_tenant_from_request(req.request()) {
             Ok((uid, tid)) => {
-                req.headers_mut().insert(
-                    HeaderName::from_static("tenant"),
-                    HeaderValue::from_str(&tid).unwrap(),
-                );
+                if tid.is_some() {
+                    req.headers_mut().insert(
+                        HeaderName::from_static("tenant"),
+                        HeaderValue::from_str(&tid.as_ref().unwrap()).unwrap(),
+                    );
+                }
+
                 Ok((uid, tid))
             }
             Err(e) => Err(e),
@@ -197,7 +200,8 @@ where
                     && let Ok((userid, tenant_id)) = user_and_tenant_id
                 {
                     let bearer_to_refresh = {
-                        if let Some(users) = users().get(&tenant_id)
+                        if let Some(users) =
+                            users().get(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v))
                             && let Some(user) = users.get(&userid)
                         {
                             match &user.ty {
@@ -244,7 +248,8 @@ where
 
                         let user_roles = {
                             let mut users_guard = mut_users();
-                            if let Some(users) = users_guard.get_mut(&tenant_id)
+                            if let Some(users) = users_guard
+                                .get_mut(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v))
                                 && let Some(user) = users.get_mut(&userid)
                             {
                                 if let user::UserType::OAuth(oauth) = &mut user.ty {
@@ -262,18 +267,25 @@ where
                             userid.clone(),
                             key.clone(),
                             Utc::now() + expires_in,
-                            roles_to_permission(user_roles, &tenant_id),
-                            &Some(tenant_id),
+                            roles_to_permission(
+                                user_roles,
+                                tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+                            ),
+                            &tenant_id,
                         );
-                    } else if let Some(users) = users().get(&tenant_id)
+                    } else if let Some(users) =
+                        users().get(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v))
                         && let Some(user) = users.get(&userid)
                     {
                         mut_sessions().track_new(
                             userid.clone(),
                             key.clone(),
                             Utc::now() + EXPIRY_DURATION,
-                            roles_to_permission(user.roles(), &tenant_id),
-                            &Some(tenant_id),
+                            roles_to_permission(
+                                user.roles(),
+                                tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+                            ),
+                            &tenant_id,
                         );
                     }
                 }

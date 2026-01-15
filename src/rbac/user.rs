@@ -24,7 +24,10 @@ use argon2::{
 };
 
 use openid::Bearer;
-use rand::{RngCore, distributions::{Alphanumeric, DistString}};
+use rand::{
+    RngCore,
+    distributions::{Alphanumeric, DistString},
+};
 
 use crate::{
     handlers::http::rbac::{InvalidUserGroupError, RBACError},
@@ -180,7 +183,7 @@ pub fn get_super_admin_user() -> User {
         }),
         roles: ["super-admin".to_string()].into(),
         user_groups: HashSet::new(),
-        tenant: Some(DEFAULT_TENANT.to_owned()),
+        tenant: None,
     }
 }
 

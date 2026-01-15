@@ -166,7 +166,7 @@ impl FlightService for AirServiceImpl {
             })
             .to_string();
 
-            let ingester_metadatas: Vec<NodeMetadata> = get_node_info(NodeType::Ingestor)
+            let ingester_metadatas: Vec<NodeMetadata> = get_node_info(NodeType::Ingestor, &None)
                 .await
                 .map_err(|err| Status::failed_precondition(err.to_string()))?;
             let mut minute_result: Vec<RecordBatch> = vec![];

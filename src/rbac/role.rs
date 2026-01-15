@@ -168,9 +168,7 @@ impl RoleBuilder {
                 | Action::GetRetention
                 | Action::PutRetention
                 | Action::All
-                | Action::SuperAdmin => {
-                    Permission::Resource(action, self.resource_type.clone())
-                }
+                | Action::SuperAdmin => Permission::Resource(action, self.resource_type.clone()),
             };
             perms.push(perm);
         }

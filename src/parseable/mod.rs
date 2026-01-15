@@ -25,7 +25,10 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use actix_web::http::{StatusCode, header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue}};
+use actix_web::http::{
+    StatusCode,
+    header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue},
+};
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Utc;
@@ -280,7 +283,7 @@ impl Parseable {
 
         // Lists all the directories in the root of the bucket/directory
         // can be a stream (if it contains .stream.json file) or not
-        let has_dirs = match obj_store.list_dirs().await {
+        let has_dirs = match obj_store.list_dirs(&None).await {
             Ok(dirs) => !dirs.is_empty(),
             Err(_) => false,
         };
@@ -386,6 +389,8 @@ impl Parseable {
             storage.create_stream_from_ingestor(stream_name, tenant_id),
             storage.create_schema_from_metastore(stream_name, tenant_id)
         )?;
+        tracing::warn!(stream_metadata_bytes=?stream_metadata_bytes);
+        tracing::warn!(schema_bytes=?schema_bytes);
 
         let stream_metadata = if stream_metadata_bytes.is_empty() {
             ObjectStoreFormat::default()
@@ -452,7 +457,7 @@ impl Parseable {
         if let Some(hot_tier_config) = hot_tier {
             stream.set_hot_tier(Some(hot_tier_config));
         }
-
+        tracing::warn!(commit_schema=?schema);
         // commit schema in memory
         commit_schema(stream_name, schema, tenant_id).map_err(|e| StreamError::Anyhow(e.into()))?;
 
@@ -514,9 +519,13 @@ impl Parseable {
 
             // Sync only the streams that were created successfully
             if matches!(internal_stream_result, Ok(false))
-                && let Err(e) =
-                    sync_streams_with_ingestors(header_map.clone(), Bytes::new(), PMETA_STREAM_NAME)
-                        .await
+                && let Err(e) = sync_streams_with_ingestors(
+                    header_map.clone(),
+                    Bytes::new(),
+                    PMETA_STREAM_NAME,
+                    &tenant_id,
+                )
+                .await
             {
                 tracing::error!("Failed to sync pmeta stream with ingestors: {:?}", e);
             }
@@ -526,6 +535,7 @@ impl Parseable {
                     header_map,
                     Bytes::new(),
                     BILLING_METRICS_STREAM_NAME,
+                    &tenant_id,
                 )
                 .await
             {
@@ -556,8 +566,8 @@ impl Parseable {
         }
 
         // For distributed deployments, if the stream not found in memory map,
-        //check if it exists in the storage
-        //create stream and schema from storage
+        // check if it exists in the storage
+        // create stream and schema from storage
         if self.options.mode != Mode::All
             && self
                 .create_stream_and_schema_from_storage(stream_name, tenant_id)
@@ -794,6 +804,7 @@ impl Parseable {
         // Proceed to create log stream if it doesn't exist
         let storage = self.storage.get_object_store();
 
+        // update owner and permissions
         let meta = ObjectStoreFormat {
             created_at: Utc::now().to_rfc3339(),
             permissions: vec![Permisssion::new(PARSEABLE.options.username.clone())],
@@ -812,12 +823,16 @@ impl Parseable {
             ..Default::default()
         };
 
+        tracing::warn!(meta=?meta);
         match storage
             .create_stream(&stream_name, meta, schema.clone(), tenant_id)
             .await
         {
             Ok(created_at) => {
                 tracing::warn!(created_stream_at=?created_at);
+                tracing::warn!(stream_name=?stream_name);
+                tracing::warn!(schema=?schema);
+                tracing::warn!(tenant_id=?tenant_id);
                 let mut static_schema: HashMap<String, Arc<Field>> = HashMap::new();
 
                 for (field_name, field) in schema
@@ -1147,7 +1162,7 @@ impl Parseable {
 
         let obj_store = self.storage().get_object_store();
         let dirs: Vec<String> = obj_store
-            .list_dirs_relative(&RelativePathBuf::from_iter([""]))
+            .list_dirs_relative(&RelativePathBuf::from_iter([""]), &None)
             .await?
             .into_iter()
             .filter(|d| !d.starts_with("."))
@@ -1181,7 +1196,9 @@ impl Parseable {
     }
 
     pub fn list_tenants(&self) -> Option<Vec<String>> {
-        if let Ok(t) = self.tenants.as_ref().read() {
+        if let Ok(t) = self.tenants.as_ref().read()
+            && !t.is_empty()
+        {
             let t = t.clone();
             Some(t)
         } else {

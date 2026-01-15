@@ -25,7 +25,10 @@ use actix_web::{
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    handlers::http::{modal::{ingest::SyncRole, utils::rbac_utils::get_metadata}, role::RoleError},
+    handlers::http::{
+        modal::{ingest::SyncRole, utils::rbac_utils::get_metadata},
+        role::RoleError,
+    },
     parseable::DEFAULT_TENANT,
     rbac::{
         map::{mut_roles, mut_sessions, read_user_groups, users},

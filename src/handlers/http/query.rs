@@ -47,10 +47,10 @@ use tracing::{error, warn};
 
 use crate::event::{DEFAULT_TIMESTAMP_KEY, commit_schema};
 use crate::metrics::{QUERY_EXECUTE_TIME, increment_query_calls_by_date};
-use crate::parseable::{PARSEABLE, StreamNotFound};
+use crate::parseable::{DEFAULT_TENANT, PARSEABLE, StreamNotFound};
 use crate::query::error::ExecuteError;
-use crate::query::{CountsRequest, QUERY_SESSION, Query as LogicalQuery, execute};
 use crate::query::resolve_stream_names;
+use crate::query::{CountsRequest, QUERY_SESSION, Query as LogicalQuery, execute};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
 use crate::storage::ObjectStorageError;
@@ -123,6 +123,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         .options_mut()
         .catalog
         .default_schema = tenant_id.as_ref().map_or("public".into(), |v| v.to_owned());
+
     let query: LogicalQuery = into_query(&query_request, &session_state, time_range).await?;
     let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);
@@ -132,7 +133,10 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
 
     // Track billing metrics for query calls
     let current_date = chrono::Utc::now().date_naive().to_string();
-    increment_query_calls_by_date(&current_date);
+    increment_query_calls_by_date(
+        &current_date,
+        tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+    );
 
     // if the query is `select count(*) from <dataset>`
     // we use the `get_bin_density` method to get the count of records in the dataset
@@ -198,7 +202,7 @@ async fn handle_count_query(
     let time = time.elapsed().as_secs_f64();
 
     QUERY_EXECUTE_TIME
-        .with_label_values(&[table_name])
+        .with_label_values(&[table_name, tenant_id.as_deref().unwrap_or(DEFAULT_TENANT)])
         .observe(time);
 
     Ok(HttpResponse::Ok()
@@ -241,7 +245,10 @@ async fn handle_non_streaming_query(
     let time = time.elapsed().as_secs_f64();
 
     QUERY_EXECUTE_TIME
-        .with_label_values(&[&first_table_name])
+        .with_label_values(&[
+            &first_table_name,
+            tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
+        ])
         .observe(time);
     let response = QueryResponse {
         records,
@@ -290,7 +297,10 @@ async fn handle_streaming_query(
     let total_time = format!("{:?}", time.elapsed());
     let time = time.elapsed().as_secs_f64();
     QUERY_EXECUTE_TIME
-        .with_label_values(&[&first_table_name])
+        .with_label_values(&[
+            &first_table_name,
+            tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
+        ])
         .observe(time);
 
     let send_null = query_request.send_null;
@@ -364,7 +374,10 @@ pub async fn get_counts(
     user_auth_for_datasets(&permissions, std::slice::from_ref(&body.stream), &tenant_id).await?;
     // Track billing metrics for query calls
     let current_date = chrono::Utc::now().date_naive().to_string();
-    increment_query_calls_by_date(&current_date);
+    increment_query_calls_by_date(
+        &current_date,
+        tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+    );
     // if the user has given a sql query (counts call with filters applied), then use this flow
     // this could include filters or group by
     if body.conditions.is_some() {

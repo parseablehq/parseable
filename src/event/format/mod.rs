@@ -231,7 +231,7 @@ pub trait EventFormat: Sized {
         stream_type: StreamType,
         p_custom_fields: &HashMap<String, String>,
         telemetry_type: TelemetryType,
-        tenant_id: &Option<String>
+        tenant_id: &Option<String>,
     ) -> Result<Event, AnyError>;
 }
 

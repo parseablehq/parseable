@@ -119,7 +119,8 @@ impl Report {
 
         // check liveness of indexers
         // get the count of active and inactive indexers
-        let indexer_infos: Vec<NodeMetadata> = cluster::get_node_info(NodeType::Indexer).await?;
+        let indexer_infos: Vec<NodeMetadata> =
+            cluster::get_node_info(NodeType::Indexer, &None).await?;
         for indexer in indexer_infos {
             if check_liveness(&indexer.domain_name).await {
                 active_indexers += 1;
@@ -130,7 +131,8 @@ impl Report {
 
         // check liveness of queriers
         // get the count of active and inactive queriers
-        let query_infos: Vec<NodeMetadata> = cluster::get_node_info(NodeType::Querier).await?;
+        let query_infos: Vec<NodeMetadata> =
+            cluster::get_node_info(NodeType::Querier, &None).await?;
         for query in query_infos {
             if check_liveness(&query.domain_name).await {
                 active_queriers += 1;
@@ -274,7 +276,8 @@ async fn fetch_ingestors_metrics()
         // send analytics for ingest servers
 
         // ingestor infos should be valid here, if not some thing is wrong
-        let ingestor_infos: Vec<NodeMetadata> = cluster::get_node_info(NodeType::Ingestor).await?;
+        let ingestor_infos: Vec<NodeMetadata> =
+            cluster::get_node_info(NodeType::Ingestor, &None).await?;
 
         for im in ingestor_infos {
             if !check_liveness(&im.domain_name).await {

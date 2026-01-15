@@ -110,11 +110,11 @@ impl AlertTrait for ThresholdAlert {
                     // save that user's basic auth
                     // use that to send request
                     None
-                },
+                }
                 crate::rbac::user::UserType::OAuth(_) => {
                     tracing::warn!("admin user is oauth");
                     None
-                },
+                }
             }
         } else {
             None

@@ -170,7 +170,7 @@ pub async fn calculate_field_stats(
             StreamType::Internal,
             &p_custom_fields,
             TelemetryType::Logs,
-            tenant_id
+            tenant_id,
         )?
         .process()?;
     }

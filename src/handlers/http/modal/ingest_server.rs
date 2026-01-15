@@ -110,7 +110,7 @@ impl ParseableServer for IngestServer {
         // write the ingestor metadata to storage
         INGESTOR_META
             .get_or_init(|| async {
-                IngestorMetadata::load_node_metadata(NodeType::Ingestor)
+                IngestorMetadata::load_node_metadata(NodeType::Ingestor, &None)
                     .await
                     .expect("Ingestor Metadata should be set in ingestor mode")
             })
@@ -173,8 +173,7 @@ impl IngestServer {
             )
             .service(
                 web::resource("/{name}/sync")
-                    .route(web::put().to(ingestor_role::put).authorize(Action::PutRole))
-                    // .route(web::delete().to(ingestor_role::delete).authorize(Action::DeleteRole)),
+                    .route(web::put().to(ingestor_role::put).authorize(Action::PutRole)), // .route(web::delete().to(ingestor_role::delete).authorize(Action::DeleteRole)),
             )
     }
     // get the user webscope

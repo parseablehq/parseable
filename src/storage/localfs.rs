@@ -42,7 +42,7 @@ use crate::{
         increment_files_scanned_in_object_store_calls_by_date, increment_object_store_calls_by_date,
     },
     option::validation,
-    parseable::LogStream,
+    parseable::{DEFAULT_TENANT, LogStream},
     storage::SETTINGS_ROOT_DIRECTORY,
 };
 
@@ -110,15 +110,17 @@ impl ObjectStorage for LocalFS {
         &self,
         key: &RelativePath,
         path: &Path,
+        tenant_id: &Option<String>,
     ) -> Result<(), ObjectStorageError> {
         let mut file = OpenOptions::new().read(true).open(path).await?;
         let mut data = Vec::new();
         file.read_to_end(&mut data).await?;
-        self.put_object(key, data.into()).await
+        self.put_object(key, data.into(), tenant_id).await
     }
     async fn get_buffered_reader(
         &self,
         _path: &RelativePath,
+        _tenant_id: &Option<String>,
     ) -> Result<BufReader, ObjectStorageError> {
         Err(ObjectStorageError::UnhandledError(Box::new(
             std::io::Error::new(
@@ -127,7 +129,11 @@ impl ObjectStorage for LocalFS {
             ),
         )))
     }
-    async fn head(&self, path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
+    async fn head(
+        &self,
+        path: &RelativePath,
+        _tenant_id: &Option<String>,
+    ) -> Result<ObjectMeta, ObjectStorageError> {
         let file_path = self.path_in_root(path);
 
         // Check if file exists and get metadata
@@ -153,8 +159,13 @@ impl ObjectStorage for LocalFS {
             Err(e) => Err(ObjectStorageError::IoError(e)),
         }
     }
-    async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
+    async fn get_object(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<Bytes, ObjectStorageError> {
         let file_path;
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
         // this is for the `get_manifest()` function because inside a snapshot, we store the absolute path (without `/`) on linux based OS
         // `home/user/.../manifest.json`
@@ -185,8 +196,13 @@ impl ObjectStorage for LocalFS {
                     "GET",
                     1,
                     &Utc::now().date_naive().to_string(),
+                    tenant_str,
                 );
-                increment_object_store_calls_by_date("GET", &Utc::now().date_naive().to_string());
+                increment_object_store_calls_by_date(
+                    "GET",
+                    &Utc::now().date_naive().to_string(),
+                    tenant_str,
+                );
                 Ok(x.into())
             }
             Err(e) => {
@@ -203,9 +219,11 @@ impl ObjectStorage for LocalFS {
 
     async fn get_ingestor_meta_file_paths(
         &self,
+        tenant_id: &Option<String>,
     ) -> Result<Vec<RelativePathBuf>, ObjectStorageError> {
         let mut path_arr = vec![];
         let mut files_scanned = 0u64;
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
         let entries_result = fs::read_dir(&self.root).await;
         let mut entries = match entries_result {
@@ -238,8 +256,13 @@ impl ObjectStorage for LocalFS {
             "LIST",
             files_scanned,
             &Utc::now().date_naive().to_string(),
+            tenant_str,
         );
-        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date(
+            "LIST",
+            &Utc::now().date_naive().to_string(),
+            tenant_str,
+        );
         Ok(path_arr)
     }
 
@@ -248,12 +271,14 @@ impl ObjectStorage for LocalFS {
         &self,
         base_path: Option<&RelativePath>,
         filter_func: Box<dyn Fn(String) -> bool + std::marker::Send + 'static>,
+        tenant_id: &Option<String>,
     ) -> Result<Vec<Bytes>, ObjectStorageError> {
         let prefix = if let Some(path) = base_path {
             path.to_path(&self.root)
         } else {
             self.root.clone()
         };
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
         let entries_result = fs::read_dir(&prefix).await;
         let mut entries = match entries_result {
@@ -291,10 +316,12 @@ impl ObjectStorage for LocalFS {
                         "GET",
                         1,
                         &Utc::now().date_naive().to_string(),
+                        tenant_str,
                     );
                     increment_object_store_calls_by_date(
                         "GET",
                         &Utc::now().date_naive().to_string(),
+                        tenant_str,
                     );
                     res.push(file.into());
                 }
@@ -308,8 +335,13 @@ impl ObjectStorage for LocalFS {
             "LIST",
             files_scanned as u64,
             &Utc::now().date_naive().to_string(),
+            tenant_str,
         );
-        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date(
+            "LIST",
+            &Utc::now().date_naive().to_string(),
+            tenant_str,
+        );
 
         Ok(res)
     }
@@ -318,8 +350,10 @@ impl ObjectStorage for LocalFS {
         &self,
         path: &RelativePath,
         resource: Bytes,
+        tenant_id: &Option<String>,
     ) -> Result<(), ObjectStorageError> {
         let path = self.path_in_root(path);
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).await?;
         }
@@ -331,26 +365,45 @@ impl ObjectStorage for LocalFS {
                 "PUT",
                 1,
                 &Utc::now().date_naive().to_string(),
+                tenant_str,
             );
-            increment_object_store_calls_by_date("PUT", &Utc::now().date_naive().to_string());
+            increment_object_store_calls_by_date(
+                "PUT",
+                &Utc::now().date_naive().to_string(),
+                tenant_str,
+            );
         }
 
         res.map_err(Into::into)
     }
 
-    async fn delete_prefix(&self, path: &RelativePath) -> Result<(), ObjectStorageError> {
+    async fn delete_prefix(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError> {
         let path = self.path_in_root(path);
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
         let result = tokio::fs::remove_dir_all(path).await;
         if result.is_ok() {
-            increment_object_store_calls_by_date("DELETE", &Utc::now().date_naive().to_string());
+            increment_object_store_calls_by_date(
+                "DELETE",
+                &Utc::now().date_naive().to_string(),
+                tenant_str,
+            );
         }
         result?;
         Ok(())
     }
 
-    async fn delete_object(&self, path: &RelativePath) -> Result<(), ObjectStorageError> {
+    async fn delete_object(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError> {
         let path = self.path_in_root(path);
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
         let result = tokio::fs::remove_file(path).await;
         if result.is_ok() {
@@ -359,40 +412,68 @@ impl ObjectStorage for LocalFS {
                 "DELETE",
                 1,
                 &Utc::now().date_naive().to_string(),
+                tenant_str,
             );
-            increment_object_store_calls_by_date("DELETE", &Utc::now().date_naive().to_string());
+            increment_object_store_calls_by_date(
+                "DELETE",
+                &Utc::now().date_naive().to_string(),
+                tenant_str,
+            );
         }
 
         result?;
         Ok(())
     }
 
-    async fn check(&self) -> Result<(), ObjectStorageError> {
+    async fn check(&self, tenant_id: &Option<String>) -> Result<(), ObjectStorageError> {
         let result = fs::create_dir_all(&self.root).await;
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if result.is_ok() {
-            increment_object_store_calls_by_date("HEAD", &Utc::now().date_naive().to_string());
+            increment_object_store_calls_by_date(
+                "HEAD",
+                &Utc::now().date_naive().to_string(),
+                tenant_str,
+            );
         }
 
         result.map_err(|e| ObjectStorageError::UnhandledError(e.into()))
     }
 
-    async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
+    async fn delete_stream(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError> {
         let path = self.root.join(stream_name);
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
         let result = fs::remove_dir_all(path).await;
         if result.is_ok() {
-            increment_object_store_calls_by_date("DELETE", &Utc::now().date_naive().to_string());
+            increment_object_store_calls_by_date(
+                "DELETE",
+                &Utc::now().date_naive().to_string(),
+                tenant_str,
+            );
         }
 
         Ok(result?)
     }
 
-    async fn try_delete_node_meta(&self, node_filename: String) -> Result<(), ObjectStorageError> {
+    async fn try_delete_node_meta(
+        &self,
+        node_filename: String,
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError> {
         let path = self.root.join(node_filename);
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
         let result = fs::remove_file(path).await;
         if result.is_ok() {
-            increment_object_store_calls_by_date("DELETE", &Utc::now().date_naive().to_string());
+            increment_object_store_calls_by_date(
+                "DELETE",
+                &Utc::now().date_naive().to_string(),
+                tenant_str,
+            );
         }
 
         Ok(result?)
@@ -410,7 +491,11 @@ impl ObjectStorage for LocalFS {
         let result = fs::read_dir(&self.root).await;
         let directories = match result {
             Ok(read_dir) => {
-                increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
+                increment_object_store_calls_by_date(
+                    "LIST",
+                    &Utc::now().date_naive().to_string(),
+                    "default",
+                );
                 ReadDirStream::new(read_dir)
             }
             Err(err) => {
@@ -442,7 +527,11 @@ impl ObjectStorage for LocalFS {
         let result = fs::read_dir(&self.root).await;
         let directories = match result {
             Ok(read_dir) => {
-                increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
+                increment_object_store_calls_by_date(
+                    "LIST",
+                    &Utc::now().date_naive().to_string(),
+                    "default",
+                );
                 ReadDirStream::new(read_dir)
             }
             Err(err) => {
@@ -463,11 +552,19 @@ impl ObjectStorage for LocalFS {
         Ok(logstreams)
     }
 
-    async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError> {
+    async fn list_dirs(
+        &self,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<String>, ObjectStorageError> {
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let result = fs::read_dir(&self.root).await;
         let read_dir = match result {
             Ok(read_dir) => {
-                increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
+                increment_object_store_calls_by_date(
+                    "LIST",
+                    &Utc::now().date_naive().to_string(),
+                    tenant_str,
+                );
                 read_dir
             }
             Err(err) => {
@@ -498,6 +595,7 @@ impl ObjectStorage for LocalFS {
     async fn list_dirs_relative(
         &self,
         relative_path: &RelativePath,
+        _tenant_id: &Option<String>,
     ) -> Result<Vec<String>, ObjectStorageError> {
         let root = self.root.join(relative_path.as_str());
 
@@ -529,13 +627,22 @@ impl ObjectStorage for LocalFS {
         Ok(dirs)
     }
 
-    async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError> {
+    async fn list_dates(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<String>, ObjectStorageError> {
         let path = self.root.join(stream_name);
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
         let result = fs::read_dir(&path).await;
         let read_dir = match result {
             Ok(read_dir) => {
-                increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
+                increment_object_store_calls_by_date(
+                    "LIST",
+                    &Utc::now().date_naive().to_string(),
+                    tenant_str,
+                );
                 read_dir
             }
             Err(err) => {
@@ -559,6 +666,7 @@ impl ObjectStorage for LocalFS {
         &self,
         stream_name: &str,
         date: &str,
+        _tenant_id: &Option<String>,
     ) -> Result<Vec<String>, ObjectStorageError> {
         let path = self.root.join(stream_name).join(date);
         let directories = ReadDirStream::new(fs::read_dir(&path).await?);
@@ -577,6 +685,7 @@ impl ObjectStorage for LocalFS {
         stream_name: &str,
         date: &str,
         hour: &str,
+        _tenant_id: &Option<String>,
     ) -> Result<Vec<String>, ObjectStorageError> {
         let path = self.root.join(stream_name).join(date).join(hour);
         // Propagate any read_dir errors instead of swallowing them
@@ -592,13 +701,19 @@ impl ObjectStorage for LocalFS {
             .collect())
     }
 
-    async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
+    async fn upload_file(
+        &self,
+        key: &str,
+        path: &Path,
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError> {
         let op = CopyOptions {
             overwrite: true,
             skip_exist: true,
             ..CopyOptions::default()
         };
         let to_path = self.root.join(key);
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if let Some(path) = to_path.parent() {
             fs::create_dir_all(path).await?;
         }
@@ -606,7 +721,11 @@ impl ObjectStorage for LocalFS {
         let result = fs_extra::file::copy(path, to_path, &op);
         match result {
             Ok(_) => {
-                increment_object_store_calls_by_date("PUT", &Utc::now().date_naive().to_string());
+                increment_object_store_calls_by_date(
+                    "PUT",
+                    &Utc::now().date_naive().to_string(),
+                    tenant_str,
+                );
                 Ok(())
             }
             Err(err) => Err(err.into()),

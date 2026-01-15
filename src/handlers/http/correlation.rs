@@ -108,7 +108,7 @@ pub async fn delete(
         .map_err(|err| CorrelationError::AnyhowError(Error::msg(err.to_string())))?;
 
     CORRELATIONS
-        .delete(&correlation_id, &user_id, &Some(tenant_id))
+        .delete(&correlation_id, &user_id, &tenant_id)
         .await?;
 
     Ok(HttpResponse::Ok().finish())

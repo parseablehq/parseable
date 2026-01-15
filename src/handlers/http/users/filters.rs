@@ -50,7 +50,7 @@ pub async fn get(
     let filter_id = filter_id.into_inner();
     let is_admin = is_admin(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
     if let Some(filter) = FILTERS
-        .get_filter(&filter_id, &get_hash(&user_id), is_admin, &Some(tenant_id))
+        .get_filter(&filter_id, &get_hash(&user_id), is_admin, &tenant_id)
         .await
     {
         return Ok((web::Json(filter), StatusCode::OK));
@@ -71,9 +71,8 @@ pub async fn post(
     filter.filter_id = Some(filter_id.clone());
     filter.user_id = Some(user_id.clone());
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
-    let tenant_id = &Some(tenant_id);
-    PARSEABLE.metastore.put_filter(&filter, tenant_id).await?;
-    FILTERS.update(&filter, tenant_id).await;
+    PARSEABLE.metastore.put_filter(&filter, &tenant_id).await?;
+    FILTERS.update(&filter, &tenant_id).await;
 
     Ok((web::Json(filter), StatusCode::OK))
 }
@@ -88,9 +87,8 @@ pub async fn update(
     let filter_id = filter_id.into_inner();
     let is_admin = is_admin(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
 
-    let tenant_id = &Some(tenant_id);
     if FILTERS
-        .get_filter(&filter_id, &user_id, is_admin, tenant_id)
+        .get_filter(&filter_id, &user_id, is_admin, &tenant_id)
         .await
         .is_none()
     {
@@ -102,8 +100,8 @@ pub async fn update(
     filter.user_id = Some(user_id.clone());
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
 
-    PARSEABLE.metastore.put_filter(&filter, tenant_id).await?;
-    FILTERS.update(&filter, tenant_id).await;
+    PARSEABLE.metastore.put_filter(&filter, &tenant_id).await?;
+    FILTERS.update(&filter, &tenant_id).await;
 
     Ok((web::Json(filter), StatusCode::OK))
 }
@@ -115,10 +113,9 @@ pub async fn delete(
     let (mut user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
     user_id = get_hash(&user_id);
     let filter_id = filter_id.into_inner();
-    let tenant_id = &Some(tenant_id);
     let is_admin = is_admin(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
     let filter = FILTERS
-        .get_filter(&filter_id, &user_id, is_admin, tenant_id)
+        .get_filter(&filter_id, &user_id, is_admin, &tenant_id)
         .await
         .ok_or(FiltersError::Metadata(
             "Filter does not exist or user is not authorized",
@@ -126,9 +123,9 @@ pub async fn delete(
 
     PARSEABLE
         .metastore
-        .delete_filter(&filter, tenant_id)
+        .delete_filter(&filter, &tenant_id)
         .await?;
-    FILTERS.delete_filter(&filter_id, tenant_id).await;
+    FILTERS.delete_filter(&filter_id, &tenant_id).await;
 
     Ok(HttpResponse::Ok().finish())
 }

@@ -46,7 +46,7 @@ pub enum Response {
     Authorized,
     UnAuthorized,
     ReloadRequired,
-    Suspended(String)
+    Suspended(String),
 }
 
 // This type encapsulates both the user_map and auth_map

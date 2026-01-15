@@ -16,7 +16,11 @@
  *
  */
 
-use actix_web::{HttpRequest, HttpResponse, Result, http::{StatusCode, header::ContentType}, web};
+use actix_web::{
+    HttpRequest, HttpResponse, Result,
+    http::{StatusCode, header::ContentType},
+    web,
+};
 use http::header;
 use itertools::Itertools;
 use reqwest;

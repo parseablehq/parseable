@@ -328,7 +328,10 @@ impl NodeMetadata {
         }
     }
 
-    pub async fn load_node_metadata(node_type: NodeType) -> anyhow::Result<Arc<Self>> {
+    pub async fn load_node_metadata(
+        node_type: NodeType,
+        tenant_id: &Option<String>,
+    ) -> anyhow::Result<Arc<Self>> {
         let staging_path = PARSEABLE.options.staging_dir();
         let node_type_str = node_type.as_str();
 
@@ -339,7 +342,7 @@ impl NodeMetadata {
         }
 
         // Attempt to load metadata from storage
-        let storage_metas = Self::load_from_storage(node_type.clone()).await;
+        let storage_metas = Self::load_from_storage(node_type.clone(), tenant_id).await;
         let url = PARSEABLE.options.get_url(node_type.to_mode());
         let port = url.port().unwrap_or(80).to_string();
         let url = url.to_string();
@@ -381,8 +384,14 @@ impl NodeMetadata {
         Ok(Arc::new(meta))
     }
 
-    async fn load_from_storage(node_type: NodeType) -> Vec<NodeMetadata> {
-        let obs = PARSEABLE.metastore.get_node_metadata(node_type).await;
+    async fn load_from_storage(
+        node_type: NodeType,
+        tenant_id: &Option<String>,
+    ) -> Vec<NodeMetadata> {
+        let obs = PARSEABLE
+            .metastore
+            .get_node_metadata(node_type, tenant_id)
+            .await;
 
         let mut metadata = vec![];
         if let Ok(obs) = obs {

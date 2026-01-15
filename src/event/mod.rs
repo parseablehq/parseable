@@ -87,19 +87,25 @@ impl Event {
                 self.stream_type,
             )?;
 
+        let tenant = self.tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         update_stats(
             &self.stream_name,
             self.origin_format,
             self.origin_size,
             self.rb.num_rows(),
             self.parsed_timestamp.date(),
-            // self.tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+            tenant,
         );
 
         // Track billing metrics for event ingestion
         let date_string = self.parsed_timestamp.date().to_string();
-        increment_events_ingested_by_date(self.rb.num_rows() as u64, &date_string);
-        increment_events_ingested_size_by_date(self.origin_size, &date_string, self.telemetry_type);
+        increment_events_ingested_by_date(self.rb.num_rows() as u64, &date_string, tenant);
+        increment_events_ingested_size_by_date(
+            self.origin_size,
+            &date_string,
+            self.telemetry_type,
+            tenant,
+        );
 
         crate::livetail::LIVETAIL.process(&self.stream_name, &self.rb);
 

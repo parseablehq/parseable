@@ -27,7 +27,7 @@ pub mod uid;
 pub mod update;
 
 use crate::handlers::http::rbac::RBACError;
-use crate::parseable::PARSEABLE;
+use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
 use crate::query::resolve_stream_names;
 use crate::rbac::Users;
 use crate::rbac::map::SessionKey;
@@ -58,20 +58,25 @@ pub fn extract_datetime(path: &str) -> Option<NaiveDateTime> {
     }
 }
 
-pub fn get_user_and_tenant_from_request(req: &HttpRequest) -> Result<(String, String), RBACError> {
+pub fn get_user_and_tenant_from_request(
+    req: &HttpRequest,
+) -> Result<(String, Option<String>), RBACError> {
     let session_key = extract_session_key_from_req(req).map_err(|_| RBACError::UserDoesNotExist)?;
     match &session_key {
         SessionKey::BasicAuth { username, password } => {
-            if let Some(user) = Users.get_user_from_basic(&username, &password)
-                && let Some(tenant) = user.tenant
-            {
-                return Ok((username.clone(), tenant));
+            if let Some(user) = Users.get_user_from_basic(&username, &password) {
+                return Ok((username.clone(), user.tenant.clone()));
             }
         }
         SessionKey::SessionId(_) => {}
     }
     let Some((user_id, tenant_id)) = Users.get_userid_from_session(&session_key) else {
         return Err(RBACError::UserDoesNotExist);
+    };
+    let tenant_id = if tenant_id.eq(DEFAULT_TENANT) {
+        None
+    } else {
+        Some(tenant_id)
     };
     Ok((user_id, tenant_id))
 }
@@ -85,7 +90,9 @@ pub fn get_tenant_id_from_request(req: &HttpRequest) -> Option<String> {
 }
 
 pub fn get_tenant_id_from_key(key: &SessionKey) -> Option<String> {
-    if let Some((_, tenant_id)) = Users.get_userid_from_session(key) {
+    if let Some((_, tenant_id)) = Users.get_userid_from_session(key)
+        && tenant_id.ne(DEFAULT_TENANT)
+    {
         Some(tenant_id.clone())
     } else {
         None

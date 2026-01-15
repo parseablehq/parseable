@@ -73,12 +73,17 @@ impl Metastore for ObjectStoreMetastore {
     }
 
     /// Fetch mutiple .json objects
-    async fn get_objects(&self, parent_path: &str) -> Result<Vec<Bytes>, MetastoreError> {
+    async fn get_objects(
+        &self,
+        parent_path: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<Bytes>, MetastoreError> {
         Ok(self
             .storage
             .get_objects(
                 Some(&RelativePathBuf::from(parent_path)),
                 Box::new(|file_name| file_name.ends_with(".json")),
+                tenant_id,
             )
             .await?)
     }
@@ -96,7 +101,7 @@ impl Metastore for ObjectStoreMetastore {
             let overview_path = RelativePathBuf::from_iter([root, &stream, "overview"]);
 
             // if the file doesn't exist, load an empty overview
-            let overview = (self.storage.get_object(&overview_path).await).ok();
+            let overview = (self.storage.get_object(&overview_path, tenant_id).await).ok();
 
             all_overviews.insert(stream, overview);
         }
@@ -116,7 +121,10 @@ impl Metastore for ObjectStoreMetastore {
         } else {
             RelativePathBuf::from_iter([stream, "overview"])
         };
-        Ok(self.storage.put_object(&path, to_bytes(obj)).await?)
+        Ok(self
+            .storage
+            .put_object(&path, to_bytes(obj), tenant_id)
+            .await?)
     }
 
     /// Delete an overview
@@ -130,7 +138,7 @@ impl Metastore for ObjectStoreMetastore {
         } else {
             RelativePathBuf::from_iter([stream, "overview"])
         };
-        Ok(self.storage.delete_object(&path).await?)
+        Ok(self.storage.delete_object(&path, tenant_id).await?)
     }
 
     /// This function fetches all the keystones from the underlying object store
@@ -146,6 +154,7 @@ impl Metastore for ObjectStoreMetastore {
                     Box::new(|file_name| {
                         file_name.ends_with(".json") && !file_name.starts_with("conv_")
                     }),
+                    &Some(tenant.clone()),
                 )
                 .await?;
             if tenant.eq(&mut "") {
@@ -169,7 +178,10 @@ impl Metastore for ObjectStoreMetastore {
         } else {
             RelativePathBuf::from_iter([".keystone", &format!("{id}.json")])
         };
-        Ok(self.storage.put_object(&path, to_bytes(obj)).await?)
+        Ok(self
+            .storage
+            .put_object(&path, to_bytes(obj), tenant_id)
+            .await?)
     }
 
     /// Delete a keystone
@@ -184,7 +196,7 @@ impl Metastore for ObjectStoreMetastore {
         } else {
             RelativePathBuf::from_iter([".keystone", &format!("{id}.json")])
         };
-        Ok(self.storage.delete_object(&path).await?)
+        Ok(self.storage.delete_object(&path, tenant_id).await?)
     }
 
     /// This function fetches all the conversations from the underlying object store
@@ -200,6 +212,7 @@ impl Metastore for ObjectStoreMetastore {
                     Box::new(|file_name| {
                         file_name.ends_with(".json") && file_name.starts_with("conv_")
                     }),
+                    &Some(tenant.clone()),
                 )
                 .await?;
             if tenant.eq(&mut "") {
@@ -223,7 +236,10 @@ impl Metastore for ObjectStoreMetastore {
         } else {
             RelativePathBuf::from_iter([".keystone", &format!("conv_{id}.json")])
         };
-        Ok(self.storage.put_object(&path, to_bytes(obj)).await?)
+        Ok(self
+            .storage
+            .put_object(&path, to_bytes(obj), tenant_id)
+            .await?)
     }
 
     /// Delete a conversation
@@ -238,7 +254,7 @@ impl Metastore for ObjectStoreMetastore {
         } else {
             RelativePathBuf::from_iter([".keystone", &format!("conv_{id}.json")])
         };
-        Ok(self.storage.delete_object(&path).await?)
+        Ok(self.storage.delete_object(&path, tenant_id).await?)
     }
 
     /// This function fetches all the alerts from the underlying object store
@@ -254,6 +270,7 @@ impl Metastore for ObjectStoreMetastore {
                     Box::new(|file_name| {
                         !file_name.starts_with("alert_state_") && file_name.ends_with(".json")
                     }),
+                    &Some(tenant.clone()),
                 )
                 .await?;
             if tenant.eq(&mut "") {
@@ -277,7 +294,10 @@ impl Metastore for ObjectStoreMetastore {
         })?;
         let path = alert_json_path(id, tenant_id);
 
-        Ok(self.storage.put_object(&path, to_bytes(obj)).await?)
+        Ok(self
+            .storage
+            .put_object(&path, to_bytes(obj), tenant_id)
+            .await?)
     }
 
     /// Delete an alert
@@ -289,7 +309,7 @@ impl Metastore for ObjectStoreMetastore {
         let path = obj.get_object_path();
         Ok(self
             .storage
-            .delete_object(&RelativePathBuf::from(path))
+            .delete_object(&RelativePathBuf::from(path), tenant_id)
             .await?)
     }
 
@@ -307,6 +327,7 @@ impl Metastore for ObjectStoreMetastore {
                 Box::new(|file_name| {
                     file_name.starts_with("alert_state_") && file_name.ends_with(".json")
                 }),
+                tenant_id,
             )
             .await?;
 
@@ -326,7 +347,7 @@ impl Metastore for ObjectStoreMetastore {
         tenant_id: &Option<String>,
     ) -> Result<Option<AlertStateEntry>, MetastoreError> {
         let path = alert_state_json_path(*alert_id);
-        match self.storage.get_object(&path).await {
+        match self.storage.get_object(&path, tenant_id).await {
             Ok(bytes) => {
                 if let Ok(entry) = serde_json::from_slice::<AlertStateEntry>(&bytes) {
                     Ok(Some(entry))
@@ -362,7 +383,7 @@ impl Metastore for ObjectStoreMetastore {
             .state;
 
         // Try to read and parse existing file
-        if let Ok(existing_bytes) = self.storage.get_object(&path).await {
+        if let Ok(existing_bytes) = self.storage.get_object(&path, tenant_id).await {
             // File exists - try to parse and update
             if let Ok(mut existing_entry) =
                 serde_json::from_slice::<AlertStateEntry>(&existing_bytes)
@@ -374,7 +395,9 @@ impl Metastore for ObjectStoreMetastore {
                     let updated_bytes = serde_json::to_vec(&existing_entry)
                         .map_err(MetastoreError::JsonParseError)?;
 
-                    self.storage.put_object(&path, updated_bytes.into()).await?;
+                    self.storage
+                        .put_object(&path, updated_bytes.into(), tenant_id)
+                        .await?;
                 }
                 return Ok(());
             }
@@ -384,7 +407,9 @@ impl Metastore for ObjectStoreMetastore {
         let new_entry = AlertStateEntry::new(id, new_state);
         let new_bytes = serde_json::to_vec(&new_entry).map_err(MetastoreError::JsonParseError)?;
 
-        self.storage.put_object(&path, new_bytes.into()).await?;
+        self.storage
+            .put_object(&path, new_bytes.into(), tenant_id)
+            .await?;
 
         Ok(())
     }
@@ -398,7 +423,7 @@ impl Metastore for ObjectStoreMetastore {
         let path = obj.get_object_path();
         Ok(self
             .storage
-            .delete_object(&RelativePathBuf::from(path))
+            .delete_object(&RelativePathBuf::from(path), tenant_id)
             .await?)
     }
 
@@ -408,7 +433,7 @@ impl Metastore for ObjectStoreMetastore {
         tenant_id: &Option<String>,
     ) -> Result<Option<MTTRHistory>, MetastoreError> {
         let path = mttr_json_path(tenant_id);
-        match self.storage.get_object(&path).await {
+        match self.storage.get_object(&path, tenant_id).await {
             Ok(bytes) => {
                 if let Ok(mut history) = serde_json::from_slice::<MTTRHistory>(&bytes) {
                     if let Some(tenant) = tenant_id.as_ref() {
@@ -431,7 +456,10 @@ impl Metastore for ObjectStoreMetastore {
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
         let path = RelativePathBuf::from(obj.get_object_path());
-        Ok(self.storage.put_object(&path, to_bytes(obj)).await?)
+        Ok(self
+            .storage
+            .put_object(&path, to_bytes(obj), tenant_id)
+            .await?)
     }
 
     /// This function fetches all the llmconfigs from the underlying object store
@@ -446,6 +474,7 @@ impl Metastore for ObjectStoreMetastore {
                 .get_objects(
                     Some(&base_path),
                     Box::new(|file_name| file_name.ends_with(".json")),
+                    &Some(tenant.clone()),
                 )
                 .await?;
             if tenant.eq(&mut "") {
@@ -466,7 +495,7 @@ impl Metastore for ObjectStoreMetastore {
 
         Ok(self
             .storage
-            .put_object(&RelativePathBuf::from(path), to_bytes(obj))
+            .put_object(&RelativePathBuf::from(path), to_bytes(obj), tenant_id)
             .await?)
     }
 
@@ -479,7 +508,7 @@ impl Metastore for ObjectStoreMetastore {
         let path = obj.get_object_path();
         Ok(self
             .storage
-            .delete_object(&RelativePathBuf::from(path))
+            .delete_object(&RelativePathBuf::from(path), tenant_id)
             .await?)
     }
 
@@ -488,14 +517,20 @@ impl Metastore for ObjectStoreMetastore {
         let mut dashboards = HashMap::new();
         let base_paths = PARSEABLE.list_tenants().map_or(vec!["".into()], |v| v);
         for mut tenant in base_paths {
+            let tenant_id = &Some(tenant.clone());
             let users_dir = RelativePathBuf::from_iter([&tenant, USERS_ROOT_DIR]);
-            for user in self.storage.list_dirs_relative(&users_dir).await? {
+            for user in self
+                .storage
+                .list_dirs_relative(&users_dir, tenant_id)
+                .await?
+            {
                 let dashboards_path = users_dir.join(&user).join("dashboards");
                 let dashboard_bytes = self
                     .storage
                     .get_objects(
                         Some(&dashboards_path),
                         Box::new(|file_name| file_name.ends_with(".json")),
+                        tenant_id,
                     )
                     .await?;
                 if tenant.eq(&mut "") {
@@ -520,7 +555,7 @@ impl Metastore for ObjectStoreMetastore {
 
         Ok(self
             .storage
-            .put_object(&RelativePathBuf::from(path), to_bytes(obj))
+            .put_object(&RelativePathBuf::from(path), to_bytes(obj), tenant_id)
             .await?)
     }
 
@@ -533,7 +568,7 @@ impl Metastore for ObjectStoreMetastore {
         let path = obj.get_object_path();
         Ok(self
             .storage
-            .delete_object(&RelativePathBuf::from(path))
+            .delete_object(&RelativePathBuf::from(path), tenant_id)
             .await?)
     }
 
@@ -542,7 +577,7 @@ impl Metastore for ObjectStoreMetastore {
         let all_user_chats = DashMap::new();
 
         let users_dir = RelativePathBuf::from(USERS_ROOT_DIR);
-        for user in self.storage.list_dirs_relative(&users_dir).await? {
+        for user in self.storage.list_dirs_relative(&users_dir, &None).await? {
             if user.starts_with(".") {
                 continue;
             }
@@ -553,6 +588,7 @@ impl Metastore for ObjectStoreMetastore {
                 .get_objects(
                     Some(&chats_path),
                     Box::new(|file_name| file_name.ends_with(".json")),
+                    &None,
                 )
                 .await?;
             for chat in user_chats {
@@ -576,7 +612,7 @@ impl Metastore for ObjectStoreMetastore {
 
         Ok(self
             .storage
-            .put_object(&RelativePathBuf::from(path), to_bytes(obj))
+            .put_object(&RelativePathBuf::from(path), to_bytes(obj), tenant_id)
             .await?)
     }
 
@@ -589,7 +625,7 @@ impl Metastore for ObjectStoreMetastore {
         let path = obj.get_object_path();
         Ok(self
             .storage
-            .delete_object(&RelativePathBuf::from(path))
+            .delete_object(&RelativePathBuf::from(path), tenant_id)
             .await?)
     }
 
@@ -601,12 +637,20 @@ impl Metastore for ObjectStoreMetastore {
 
         for mut tenant in base_paths {
             let users_dir = RelativePathBuf::from_iter([&tenant, USERS_ROOT_DIR]);
-
+            let tenant_id = &Some(tenant.clone());
             let mut filters = Vec::new();
-            for user in self.storage.list_dirs_relative(&users_dir).await? {
+            for user in self
+                .storage
+                .list_dirs_relative(&users_dir, tenant_id)
+                .await?
+            {
                 let stream_dir = users_dir.join(&user).join("filters");
 
-                for stream in self.storage.list_dirs_relative(&stream_dir).await? {
+                for stream in self
+                    .storage
+                    .list_dirs_relative(&stream_dir, tenant_id)
+                    .await?
+                {
                     let filters_path = stream_dir.join(&stream);
 
                     // read filter object
@@ -615,6 +659,7 @@ impl Metastore for ObjectStoreMetastore {
                         .get_objects(
                             Some(&filters_path),
                             Box::new(|file_name| file_name.ends_with(".json")),
+                            tenant_id,
                         )
                         .await?;
 
@@ -628,7 +673,7 @@ impl Metastore for ObjectStoreMetastore {
 
                             if version == Some("v1") {
                                 // delete older version of the filter
-                                self.storage.delete_object(&filters_path).await?;
+                                self.storage.delete_object(&filters_path, tenant_id).await?;
 
                                 filter_value = migrate_v1_v2(filter_value);
                                 let user_id = filter_value
@@ -657,7 +702,9 @@ impl Metastore for ObjectStoreMetastore {
                                         &format!("{filter_id}.json"),
                                     );
                                     let filter_bytes = to_bytes(&filter_value);
-                                    self.storage.put_object(&path, filter_bytes.clone()).await?;
+                                    self.storage
+                                        .put_object(&path, filter_bytes.clone(), tenant_id)
+                                        .await?;
                                 }
                             }
 
@@ -689,7 +736,7 @@ impl Metastore for ObjectStoreMetastore {
 
         Ok(self
             .storage
-            .put_object(&RelativePathBuf::from(path), to_bytes(obj))
+            .put_object(&RelativePathBuf::from(path), to_bytes(obj), tenant_id)
             .await?)
     }
 
@@ -703,7 +750,7 @@ impl Metastore for ObjectStoreMetastore {
 
         Ok(self
             .storage
-            .delete_object(&RelativePathBuf::from(path))
+            .delete_object(&RelativePathBuf::from(path), tenant_id)
             .await?)
     }
 
@@ -712,15 +759,21 @@ impl Metastore for ObjectStoreMetastore {
         let mut correlations = HashMap::new();
         let base_paths = PARSEABLE.list_tenants().map_or(vec!["".into()], |v| v);
         for mut tenant in base_paths {
+            let tenant_id = &Some(tenant.clone());
             let mut corrs = Vec::new();
             let users_dir = RelativePathBuf::from_iter([&tenant, USERS_ROOT_DIR]);
-            for user in self.storage.list_dirs_relative(&users_dir).await? {
+            for user in self
+                .storage
+                .list_dirs_relative(&users_dir, tenant_id)
+                .await?
+            {
                 let correlations_path = users_dir.join(&user).join("correlations");
                 let correlation_bytes = self
                     .storage
                     .get_objects(
                         Some(&correlations_path),
                         Box::new(|file_name| file_name.ends_with(".json")),
+                        tenant_id,
                     )
                     .await?;
 
@@ -743,7 +796,7 @@ impl Metastore for ObjectStoreMetastore {
         let path = obj.get_object_path();
         Ok(self
             .storage
-            .put_object(&RelativePathBuf::from(path), to_bytes(obj))
+            .put_object(&RelativePathBuf::from(path), to_bytes(obj), tenant_id)
             .await?)
     }
 
@@ -757,7 +810,7 @@ impl Metastore for ObjectStoreMetastore {
 
         Ok(self
             .storage
-            .delete_object(&RelativePathBuf::from(path))
+            .delete_object(&RelativePathBuf::from(path), tenant_id)
             .await?)
     }
 
@@ -781,7 +834,7 @@ impl Metastore for ObjectStoreMetastore {
         } else {
             stream_json_path(stream_name, tenant_id)
         };
-        Ok(self.storage.get_object(&path).await?)
+        Ok(self.storage.get_object(&path, tenant_id).await?)
     }
 
     /// Fetch all `ObjectStoreFormat` present in a stream folder
@@ -802,6 +855,7 @@ impl Metastore for ObjectStoreMetastore {
                         Box::new(|file_name| {
                             file_name.starts_with(".ingestor") && file_name.ends_with("stream.json")
                         }),
+                        tenant_id,
                     )
                     .await?)
             } else {
@@ -818,6 +872,7 @@ impl Metastore for ObjectStoreMetastore {
                 .get_objects(
                     Some(&path),
                     Box::new(|file_name| file_name.ends_with("stream.json")),
+                    tenant_id,
                 )
                 .await?)
         }
@@ -832,7 +887,10 @@ impl Metastore for ObjectStoreMetastore {
     ) -> Result<(), MetastoreError> {
         let path = stream_json_path(stream_name, tenant_id);
         // tracing::warn!(put_stream_json_path=?path);
-        Ok(self.storage.put_object(&path, to_bytes(obj)).await?)
+        Ok(self
+            .storage
+            .put_object(&path, to_bytes(obj), tenant_id)
+            .await?)
     }
 
     /// Fetch all `Manifest` files
@@ -871,7 +929,7 @@ impl Metastore for ObjectStoreMetastore {
             for path in manifest_paths {
                 let bytes = self
                     .storage
-                    .get_object(&RelativePathBuf::from(path))
+                    .get_object(&RelativePathBuf::from(path), tenant_id)
                     .await?;
 
                 result_file_list
@@ -899,7 +957,7 @@ impl Metastore for ObjectStoreMetastore {
                 manifest_path(path.as_str())
             }
         };
-        match self.storage.get_object(&path).await {
+        match self.storage.get_object(&path, tenant_id).await {
             Ok(bytes) => {
                 let manifest = serde_json::from_slice(&bytes)?;
                 Ok(Some(manifest))
@@ -948,7 +1006,10 @@ impl Metastore for ObjectStoreMetastore {
         let path = partition_path(stream_name, lower_bound, upper_bound, tenant_id)
             .join(&manifest_file_name);
         // tracing::warn!(put_manifest_path=?path);
-        Ok(self.storage.put_object(&path, to_bytes(obj)).await?)
+        Ok(self
+            .storage
+            .put_object(&path, to_bytes(obj), tenant_id)
+            .await?)
     }
 
     async fn delete_manifest(
@@ -961,7 +1022,7 @@ impl Metastore for ObjectStoreMetastore {
         let manifest_file_name = manifest_path("").to_string();
         let path = partition_path(stream_name, lower_bound, upper_bound, tenant_id)
             .join(&manifest_file_name);
-        Ok(self.storage.delete_object(&path).await?)
+        Ok(self.storage.delete_object(&path, tenant_id).await?)
     }
 
     /// targets
@@ -979,6 +1040,7 @@ impl Metastore for ObjectStoreMetastore {
                 .get_objects(
                     Some(&targets_path),
                     Box::new(|file_name| file_name.ends_with(".json")),
+                    &Some(tenant.clone()),
                 )
                 .await?
                 .iter()
@@ -1006,7 +1068,7 @@ impl Metastore for ObjectStoreMetastore {
 
         Ok(self
             .storage
-            .put_object(&RelativePathBuf::from(path), to_bytes(obj))
+            .put_object(&RelativePathBuf::from(path), to_bytes(obj), tenant_id)
             .await?)
     }
 
@@ -1020,7 +1082,7 @@ impl Metastore for ObjectStoreMetastore {
 
         Ok(self
             .storage
-            .delete_object(&RelativePathBuf::from(path))
+            .delete_object(&RelativePathBuf::from(path), tenant_id)
             .await?)
     }
 
@@ -1041,6 +1103,7 @@ impl Metastore for ObjectStoreMetastore {
             .get_objects(
                 Some(&path_prefix),
                 Box::new(|file_name: String| file_name.contains(".schema")),
+                tenant_id,
             )
             .await?
             .iter()
@@ -1059,7 +1122,7 @@ impl Metastore for ObjectStoreMetastore {
     ) -> Result<Bytes, MetastoreError> {
         Ok(self
             .storage
-            .get_object(&schema_path(stream_name, tenant_id))
+            .get_object(&schema_path(stream_name, tenant_id), tenant_id)
             .await?)
     }
 
@@ -1070,7 +1133,10 @@ impl Metastore for ObjectStoreMetastore {
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
         let path = schema_path(stream_name, tenant_id);
-        Ok(self.storage.put_object(&path, to_bytes(&obj)).await?)
+        Ok(self
+            .storage
+            .put_object(&path, to_bytes(&obj), tenant_id)
+            .await?)
     }
 
     async fn get_parseable_metadata(
@@ -1083,23 +1149,24 @@ impl Metastore for ObjectStoreMetastore {
             parseable_json_path()
         };
 
-        let parseable_metadata: Option<Bytes> = match self.storage.get_object(&path).await {
-            Ok(bytes) => Some(bytes),
-            Err(err) => {
-                if matches!(err, ObjectStorageError::NoSuchKey(_)) {
-                    None
-                } else {
-                    return Err(MetastoreError::ObjectStorageError(err));
+        let parseable_metadata: Option<Bytes> =
+            match self.storage.get_object(&path, tenant_id).await {
+                Ok(bytes) => Some(bytes),
+                Err(err) => {
+                    if matches!(err, ObjectStorageError::NoSuchKey(_)) {
+                        None
+                    } else {
+                        return Err(MetastoreError::ObjectStorageError(err));
+                    }
                 }
-            }
-        };
+            };
 
         Ok(parseable_metadata)
     }
 
     async fn delete_tenant(&self, tenant_id: &str) -> Result<(), MetastoreError> {
         self.storage
-            .delete_prefix(&RelativePathBuf::from(tenant_id))
+            .delete_prefix(&RelativePathBuf::from(tenant_id), &None)
             .await
             .map_err(MetastoreError::ObjectStorageError)
     }
@@ -1111,6 +1178,7 @@ impl Metastore for ObjectStoreMetastore {
             .get_objects(
                 Some(&base_path),
                 Box::new(|file_name| file_name.starts_with("ingestor")),
+                &None,
             )
             .await?)
     }
@@ -1127,12 +1195,16 @@ impl Metastore for ObjectStoreMetastore {
         };
 
         self.storage
-            .put_object(&path, to_bytes(obj))
+            .put_object(&path, to_bytes(obj), tenant_id)
             .await
             .map_err(MetastoreError::ObjectStorageError)
     }
 
-    async fn get_node_metadata(&self, node_type: NodeType) -> Result<Vec<Bytes>, MetastoreError> {
+    async fn get_node_metadata(
+        &self,
+        node_type: NodeType,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<Bytes>, MetastoreError> {
         let root_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
         let prefix_owned = node_type.to_string();
 
@@ -1141,6 +1213,7 @@ impl Metastore for ObjectStoreMetastore {
             .get_objects(
                 Some(&root_path),
                 Box::new(move |file_name| file_name.starts_with(&prefix_owned)), // Use the owned copy
+                tenant_id,
             )
             .await?
             .into_iter()
@@ -1152,7 +1225,7 @@ impl Metastore for ObjectStoreMetastore {
     async fn put_node_metadata(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
         let path = obj.get_object_path();
         self.storage
-            .put_object(&RelativePathBuf::from(path), to_bytes(obj))
+            .put_object(&RelativePathBuf::from(path), to_bytes(obj), &None)
             .await?;
         Ok(())
     }
@@ -1167,6 +1240,7 @@ impl Metastore for ObjectStoreMetastore {
             .get_objects(
                 Some(&RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY)),
                 Box::new(move |file_name| file_name.starts_with(&node_type.to_string())),
+                &None,
             )
             .await?;
 
@@ -1185,7 +1259,7 @@ impl Metastore for ObjectStoreMetastore {
         let node_meta_filename = node_metadatas[0].file_path().to_string();
         let file = RelativePathBuf::from(&node_meta_filename);
 
-        match self.storage.delete_object(&file).await {
+        match self.storage.delete_object(&file, &None).await {
             Ok(_) => Ok(true),
             Err(err) => {
                 if matches!(err, ObjectStorageError::IoError(_)) {

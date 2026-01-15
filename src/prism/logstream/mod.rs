@@ -172,7 +172,7 @@ pub async fn get_stream_info_helper(
 
     // Get first and latest event timestamps from storage
     let (stream_first_event_at, stream_latest_event_at) = match storage
-        .get_first_and_latest_event_from_storage(stream_name)
+        .get_first_and_latest_event_from_storage(stream_name, tenant_id)
         .await
     {
         Ok(result) => result,
@@ -187,18 +187,6 @@ pub async fn get_stream_info_helper(
 
     let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
     let stream_meta = stream.metadata.read().unwrap();
-
-    // let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
-
-    // let hash_map = PARSEABLE.streams.read().unwrap();
-    // let stream_meta = hash_map
-    //     .get(stream_name)
-    //     .ok_or_else(|| TenantNotFound(tenant_id.to_owned()))?
-    //     .get(stream_name)
-    //     .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?
-    //     .metadata
-    //     .read()
-    //     .expect(LOCK_EXPECT);
 
     let stream_info =
         StreamInfo::from_metadata(&stream_meta, stream_first_event_at, stream_latest_event_at);
