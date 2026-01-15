@@ -95,7 +95,7 @@ fn status_info(config: &Parseable, scheme: &str, id: Uid) {
 /// - Store (path where the data is stored and its latency)
 async fn storage_info(config: &Parseable) {
     let storage = config.storage();
-    let latency = storage.get_object_store().get_latency().await;
+    let latency = storage.get_object_store().get_latency(&None).await;
 
     eprintln!(
         "

@@ -123,24 +123,30 @@ pub async fn update_deleted_stats(
     let mut num_row: i64 = 0;
     let mut storage_size: i64 = 0;
     let mut ingestion_size: i64 = 0;
-
+    let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
     let mut manifests = meta.snapshot.manifest_list;
     manifests.retain(|item| dates.iter().any(|date| item.manifest_path.contains(date)));
     if !manifests.is_empty() {
         for manifest in manifests {
             let manifest_date = manifest.time_lower_bound.date_naive().to_string();
-            let _ =
-                EVENTS_INGESTED_DATE.remove_label_values(&[stream_name, "json", &manifest_date]);
+            let _ = EVENTS_INGESTED_DATE.remove_label_values(&[
+                stream_name,
+                "json",
+                &manifest_date,
+                tenant,
+            ]);
             let _ = EVENTS_INGESTED_SIZE_DATE.remove_label_values(&[
                 stream_name,
                 "json",
                 &manifest_date,
+                tenant,
             ]);
             let _ = EVENTS_STORAGE_SIZE_DATE.remove_label_values(&[
                 "data",
                 stream_name,
                 "parquet",
                 &manifest_date,
+                tenant,
             ]);
 
             num_row += manifest.events_ingested as i64;
@@ -149,22 +155,22 @@ pub async fn update_deleted_stats(
         }
     }
     EVENTS_DELETED
-        .with_label_values(&[stream_name, "json"])
+        .with_label_values(&[stream_name, "json", tenant])
         .add(num_row);
     EVENTS_DELETED_SIZE
-        .with_label_values(&[stream_name, "json"])
+        .with_label_values(&[stream_name, "json", tenant])
         .add(ingestion_size);
     DELETED_EVENTS_STORAGE_SIZE
-        .with_label_values(&["data", stream_name, "parquet"])
+        .with_label_values(&["data", stream_name, "parquet", tenant])
         .add(storage_size);
     EVENTS_INGESTED
-        .with_label_values(&[stream_name, "json"])
+        .with_label_values(&[stream_name, "json", tenant])
         .sub(num_row);
     EVENTS_INGESTED_SIZE
-        .with_label_values(&[stream_name, "json"])
+        .with_label_values(&[stream_name, "json", tenant])
         .sub(ingestion_size);
     STORAGE_SIZE
-        .with_label_values(&["data", stream_name, "parquet"])
+        .with_label_values(&["data", stream_name, "parquet", tenant])
         .sub(storage_size);
     let stats = get_current_stats(stream_name, "json", tenant_id);
     if let Some(stats) = stats
@@ -238,7 +244,10 @@ pub fn event_labels<'a>(
     }
 }
 
-pub fn storage_size_labels<'a>(stream_name: &'a str, tenant_id: &'a Option<String>) -> [&'a str; 4] {
+pub fn storage_size_labels<'a>(
+    stream_name: &'a str,
+    tenant_id: &'a Option<String>,
+) -> [&'a str; 4] {
     if let Some(tenant_id) = tenant_id.as_ref() {
         ["data", stream_name, "parquet", tenant_id]
     } else {
@@ -250,10 +259,15 @@ pub fn event_labels_date<'a>(
     stream_name: &'a str,
     format: &'static str,
     date: &'a str,
-) -> [&'a str; 3] {
-    [stream_name, format, date]
+    tenant_id: &'a str,
+) -> [&'a str; 4] {
+    [stream_name, format, date, tenant_id]
 }
 
-pub fn storage_size_labels_date<'a>(stream_name: &'a str, date: &'a str) -> [&'a str; 4] {
-    ["data", stream_name, "parquet", date]
+pub fn storage_size_labels_date<'a>(
+    stream_name: &'a str,
+    date: &'a str,
+    tenant_id: &'a str,
+) -> [&'a str; 5] {
+    ["data", stream_name, "parquet", date, tenant_id]
 }

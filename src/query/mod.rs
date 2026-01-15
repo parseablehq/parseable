@@ -69,7 +69,7 @@ use crate::event::DEFAULT_TIMESTAMP_KEY;
 use crate::handlers::http::query::QueryError;
 use crate::metrics::increment_bytes_scanned_in_query_by_date;
 use crate::option::Mode;
-use crate::parseable::PARSEABLE;
+use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
 use crate::storage::{ObjectStorageProvider, ObjectStoreFormat};
 use crate::utils::time::TimeRange;
 
@@ -312,7 +312,7 @@ impl Query {
             .get_ctx()
             .execute_logical_plan(self.final_logical_plan(tenant_id))
             .await?;
-
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         let fields = df
             .schema()
             .fields()
@@ -344,7 +344,7 @@ impl Query {
 
             // Track billing metrics for query scan
             let current_date = chrono::Utc::now().date_naive().to_string();
-            increment_bytes_scanned_in_query_by_date(actual_io_bytes, &current_date);
+            increment_bytes_scanned_in_query_by_date(actual_io_bytes, &current_date, tenant);
 
             Either::Left(batches)
         } else {
@@ -1015,7 +1015,11 @@ impl PartitionedMetricMonitor {
         if prev_count == 1 {
             let bytes = get_total_bytes_scanned(&self.state.plan);
             let current_date = chrono::Utc::now().date_naive().to_string();
-            increment_bytes_scanned_in_query_by_date(bytes, &current_date);
+            increment_bytes_scanned_in_query_by_date(
+                bytes,
+                &current_date,
+                self.tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+            );
         }
     }
 }

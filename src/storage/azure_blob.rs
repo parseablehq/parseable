@@ -55,7 +55,7 @@ use crate::{
         increment_files_scanned_in_object_store_calls_by_date,
         increment_object_store_calls_by_date,
     },
-    parseable::LogStream,
+    parseable::{DEFAULT_TENANT, LogStream},
 };
 
 use super::{
@@ -212,9 +212,14 @@ pub struct BlobStore {
 }
 
 impl BlobStore {
-    async fn _get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
+    async fn _get_object(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<Bytes, ObjectStorageError> {
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         let resp = self.client.get(&to_object_store_path(path)).await;
-        increment_object_store_calls_by_date("GET", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("GET", &Utc::now().date_naive().to_string(), tenant);
 
         match resp {
             Ok(resp) => {
@@ -223,11 +228,13 @@ impl BlobStore {
                     "GET",
                     1,
                     &Utc::now().date_naive().to_string(),
+                    tenant,
                 );
                 increment_bytes_scanned_in_object_store_calls_by_date(
                     "GET",
                     body.len() as u64,
                     &Utc::now().date_naive().to_string(),
+                    tenant,
                 );
                 Ok(body)
             }
@@ -239,15 +246,18 @@ impl BlobStore {
         &self,
         path: &RelativePath,
         resource: PutPayload,
+        tenant_id: &Option<String>,
     ) -> Result<(), ObjectStorageError> {
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         let resp = self.client.put(&to_object_store_path(path), resource).await;
-        increment_object_store_calls_by_date("PUT", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("PUT", &Utc::now().date_naive().to_string(), tenant);
         match resp {
             Ok(_) => {
                 increment_files_scanned_in_object_store_calls_by_date(
                     "PUT",
                     1,
                     &Utc::now().date_naive().to_string(),
+                    tenant,
                 );
                 Ok(())
             }
@@ -255,11 +265,16 @@ impl BlobStore {
         }
     }
 
-    async fn _delete_prefix(&self, key: &str) -> Result<(), ObjectStorageError> {
+    async fn _delete_prefix(
+        &self,
+        key: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError> {
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         let files_scanned = Arc::new(AtomicU64::new(0));
         let files_deleted = Arc::new(AtomicU64::new(0));
         let object_stream = self.client.list(Some(&(key.into())));
-        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string(), tenant);
 
         object_stream
             .for_each_concurrent(None, |x| async {
@@ -272,6 +287,7 @@ impl BlobStore {
                         increment_object_store_calls_by_date(
                             "DELETE",
                             &Utc::now().date_naive().to_string(),
+                            tenant,
                         );
                         if delete_resp.is_err() {
                             error!(
@@ -291,21 +307,28 @@ impl BlobStore {
             "LIST",
             files_scanned.load(Ordering::Relaxed),
             &Utc::now().date_naive().to_string(),
+            tenant,
         );
         increment_files_scanned_in_object_store_calls_by_date(
             "DELETE",
             files_deleted.load(Ordering::Relaxed),
             &Utc::now().date_naive().to_string(),
+            tenant,
         );
         Ok(())
     }
 
-    async fn _list_dates(&self, stream: &str) -> Result<Vec<String>, ObjectStorageError> {
+    async fn _list_dates(
+        &self,
+        stream: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<String>, ObjectStorageError> {
         let resp: Result<object_store::ListResult, object_store::Error> = self
             .client
             .list_with_delimiter(Some(&(stream.into())))
             .await;
-        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string(), tenant);
 
         let resp = match resp {
             Ok(resp) => resp,
@@ -320,6 +343,7 @@ impl BlobStore {
             "LIST",
             common_prefixes.len() as u64,
             &Utc::now().date_naive().to_string(),
+            tenant,
         );
 
         // return prefixes at the root level
@@ -332,17 +356,23 @@ impl BlobStore {
         Ok(dates)
     }
 
-    async fn _upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
+    async fn _upload_file(
+        &self,
+        key: &str,
+        path: &Path,
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError> {
         let bytes = tokio::fs::read(path).await?;
-
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         let result = self.client.put(&key.into(), bytes.into()).await;
-        increment_object_store_calls_by_date("PUT", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("PUT", &Utc::now().date_naive().to_string(), tenant);
         match result {
             Ok(_) => {
                 increment_files_scanned_in_object_store_calls_by_date(
                     "PUT",
                     1,
                     &Utc::now().date_naive().to_string(),
+                    tenant,
                 );
                 Ok(())
             }
@@ -354,10 +384,11 @@ impl BlobStore {
         &self,
         key: &RelativePath,
         path: &Path,
+        tenant_id: &Option<String>,
     ) -> Result<(), ObjectStorageError> {
         let mut file = OpenOptions::new().read(true).open(path).await?;
         let location = &to_object_store_path(key);
-
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         let async_writer = self.client.put_multipart(location).await;
         let mut async_writer = match async_writer {
             Ok(writer) => writer,
@@ -372,7 +403,11 @@ impl BlobStore {
             let mut data = Vec::new();
             file.read_to_end(&mut data).await?;
             let result = self.client.put(location, data.into()).await;
-            increment_object_store_calls_by_date("PUT", &Utc::now().date_naive().to_string());
+            increment_object_store_calls_by_date(
+                "PUT",
+                &Utc::now().date_naive().to_string(),
+                tenant,
+            );
 
             match result {
                 Ok(_) => {
@@ -380,6 +415,7 @@ impl BlobStore {
                         "PUT",
                         1,
                         &Utc::now().date_naive().to_string(),
+                        tenant,
                     );
                 }
                 Err(err) => {
@@ -420,6 +456,7 @@ impl BlobStore {
                 increment_object_store_calls_by_date(
                     "PUT_MULTIPART",
                     &Utc::now().date_naive().to_string(),
+                    tenant,
                 );
             }
 
@@ -440,6 +477,7 @@ impl ObjectStorage for BlobStore {
     async fn get_buffered_reader(
         &self,
         _path: &RelativePath,
+        _tenant_id: &Option<String>,
     ) -> Result<BufReader, ObjectStorageError> {
         Err(ObjectStorageError::UnhandledError(Box::new(
             std::io::Error::new(
@@ -453,39 +491,51 @@ impl ObjectStorage for BlobStore {
         &self,
         key: &RelativePath,
         path: &Path,
+        tenant_id: &Option<String>,
     ) -> Result<(), ObjectStorageError> {
-        self._upload_multipart(key, path).await
+        self._upload_multipart(key, path, tenant_id).await
     }
 
-    async fn head(&self, path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError> {
+    async fn head(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<ObjectMeta, ObjectStorageError> {
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         let result = self.client.head(&to_object_store_path(path)).await;
-        increment_object_store_calls_by_date("HEAD", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("HEAD", &Utc::now().date_naive().to_string(), tenant);
         if result.is_ok() {
             increment_files_scanned_in_object_store_calls_by_date(
                 "HEAD",
                 1,
                 &Utc::now().date_naive().to_string(),
+                tenant,
             );
         }
 
         Ok(result?)
     }
 
-    async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError> {
-        Ok(self._get_object(path).await?)
+    async fn get_object(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<Bytes, ObjectStorageError> {
+        Ok(self._get_object(path, tenant_id).await?)
     }
 
     async fn get_objects(
         &self,
         base_path: Option<&RelativePath>,
         filter_func: Box<dyn Fn(String) -> bool + Send>,
+        tenant_id: &Option<String>,
     ) -> Result<Vec<Bytes>, ObjectStorageError> {
         let prefix = if let Some(base_path) = base_path {
             to_object_store_path(base_path)
         } else {
             self.root.clone()
         };
-
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         let mut list_stream = self.client.list(Some(&prefix));
 
         let mut res = vec![];
@@ -511,6 +561,7 @@ impl ObjectStorage for BlobStore {
                 .get_object(
                     RelativePath::from_path(meta.location.as_ref())
                         .map_err(ObjectStorageError::PathError)?,
+                    tenant_id,
                 )
                 .await?;
             res.push(byts);
@@ -521,19 +572,21 @@ impl ObjectStorage for BlobStore {
             "LIST",
             files_scanned as u64,
             &Utc::now().date_naive().to_string(),
+            tenant,
         );
-        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string(), tenant);
         Ok(res)
     }
 
     async fn get_ingestor_meta_file_paths(
         &self,
+        tenant_id: &Option<String>,
     ) -> Result<Vec<RelativePathBuf>, ObjectStorageError> {
         let mut path_arr = vec![];
         let mut files_scanned = 0;
-
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         let mut object_stream = self.client.list(Some(&self.root));
-        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string(), tenant);
 
         while let Some(meta_result) = object_stream.next().await {
             let meta = match meta_result {
@@ -555,6 +608,7 @@ impl ObjectStorage for BlobStore {
             "LIST",
             files_scanned as u64,
             &Utc::now().date_naive().to_string(),
+            tenant,
         );
         Ok(path_arr)
     }
@@ -563,68 +617,98 @@ impl ObjectStorage for BlobStore {
         &self,
         path: &RelativePath,
         resource: Bytes,
+        tenant_id: &Option<String>,
     ) -> Result<(), ObjectStorageError> {
-        self._put_object(path, resource.into())
+        self._put_object(path, resource.into(), tenant_id)
             .await
             .map_err(|err| ObjectStorageError::ConnectionError(Box::new(err)))?;
 
         Ok(())
     }
 
-    async fn delete_prefix(&self, path: &RelativePath) -> Result<(), ObjectStorageError> {
-        self._delete_prefix(path.as_ref()).await?;
+    async fn delete_prefix(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError> {
+        self._delete_prefix(path.as_ref(), tenant_id).await?;
 
         Ok(())
     }
 
-    async fn delete_object(&self, path: &RelativePath) -> Result<(), ObjectStorageError> {
+    async fn delete_object(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError> {
         let result = self.client.delete(&to_object_store_path(path)).await;
-        increment_object_store_calls_by_date("DELETE", &Utc::now().date_naive().to_string());
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        increment_object_store_calls_by_date(
+            "DELETE",
+            &Utc::now().date_naive().to_string(),
+            tenant,
+        );
         if result.is_ok() {
             increment_files_scanned_in_object_store_calls_by_date(
                 "DELETE",
                 1,
                 &Utc::now().date_naive().to_string(),
+                tenant,
             );
         }
 
         Ok(result?)
     }
 
-    async fn check(&self) -> Result<(), ObjectStorageError> {
+    async fn check(&self, tenant_id: &Option<String>) -> Result<(), ObjectStorageError> {
         let result = self
             .client
             .head(&to_object_store_path(&parseable_json_path()))
             .await;
-        increment_object_store_calls_by_date("HEAD", &Utc::now().date_naive().to_string());
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        increment_object_store_calls_by_date("HEAD", &Utc::now().date_naive().to_string(), tenant);
         if result.is_ok() {
             increment_files_scanned_in_object_store_calls_by_date(
                 "HEAD",
                 1,
                 &Utc::now().date_naive().to_string(),
+                tenant,
             );
         }
 
         Ok(result.map(|_| ())?)
     }
 
-    async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError> {
-        self._delete_prefix(stream_name).await?;
+    async fn delete_stream(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError> {
+        self._delete_prefix(stream_name, tenant_id).await?;
 
         Ok(())
     }
 
-    async fn try_delete_node_meta(&self, node_filename: String) -> Result<(), ObjectStorageError> {
+    async fn try_delete_node_meta(
+        &self,
+        node_filename: String,
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError> {
         let file = RelativePathBuf::from(&node_filename);
-
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         let result = self.client.delete(&to_object_store_path(&file)).await;
-        increment_object_store_calls_by_date("DELETE", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date(
+            "DELETE",
+            &Utc::now().date_naive().to_string(),
+            tenant,
+        );
         match result {
             Ok(_) => {
                 increment_files_scanned_in_object_store_calls_by_date(
                     "DELETE",
                     1,
                     &Utc::now().date_naive().to_string(),
+                    tenant,
                 );
                 Ok(())
             }
@@ -647,8 +731,13 @@ impl ObjectStorage for BlobStore {
             "LIST",
             common_prefixes.len() as u64,
             &Utc::now().date_naive().to_string(),
+            DEFAULT_TENANT,
         );
-        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date(
+            "LIST",
+            &Utc::now().date_naive().to_string(),
+            DEFAULT_TENANT,
+        );
         // return prefixes at the root level
         let dirs: HashSet<_> = common_prefixes
             .iter()
@@ -663,7 +752,11 @@ impl ObjectStorage for BlobStore {
             let key = format!("{dir}/{STREAM_METADATA_FILE_NAME}");
             let task = async move {
                 let result = self.client.head(&StorePath::from(key)).await;
-                increment_object_store_calls_by_date("HEAD", &Utc::now().date_naive().to_string());
+                increment_object_store_calls_by_date(
+                    "HEAD",
+                    &Utc::now().date_naive().to_string(),
+                    DEFAULT_TENANT,
+                );
                 result.map(|_| ())
             };
             stream_json_check.push(task);
@@ -672,14 +765,19 @@ impl ObjectStorage for BlobStore {
             "HEAD",
             dirs.len() as u64,
             &Utc::now().date_naive().to_string(),
+            DEFAULT_TENANT,
         );
         stream_json_check.try_collect::<()>().await?;
 
         Ok(dirs)
     }
 
-    async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError> {
-        let streams = self._list_dates(stream_name).await?;
+    async fn list_dates(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<String>, ObjectStorageError> {
+        let streams = self._list_dates(stream_name, tenant_id).await?;
 
         Ok(streams)
     }
@@ -688,15 +786,18 @@ impl ObjectStorage for BlobStore {
         &self,
         stream_name: &str,
         date: &str,
+        tenant_id: &Option<String>,
     ) -> Result<Vec<String>, ObjectStorageError> {
         let pre = object_store::path::Path::from(format!("{}/{}/", stream_name, date));
         let resp = self.client.list_with_delimiter(Some(&pre)).await?;
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         increment_files_scanned_in_object_store_calls_by_date(
             "LIST",
             resp.common_prefixes.len() as u64,
             &Utc::now().date_naive().to_string(),
+            tenant,
         );
-        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string(), tenant);
 
         let hours: Vec<String> = resp
             .common_prefixes
@@ -723,15 +824,18 @@ impl ObjectStorage for BlobStore {
         stream_name: &str,
         date: &str,
         hour: &str,
+        tenant_id: &Option<String>,
     ) -> Result<Vec<String>, ObjectStorageError> {
         let pre = object_store::path::Path::from(format!("{}/{}/{}/", stream_name, date, hour));
         let resp = self.client.list_with_delimiter(Some(&pre)).await?;
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         increment_files_scanned_in_object_store_calls_by_date(
             "LIST",
             resp.common_prefixes.len() as u64,
             &Utc::now().date_naive().to_string(),
+            tenant,
         );
-        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string(), tenant);
         let minutes: Vec<String> = resp
             .common_prefixes
             .iter()
@@ -753,8 +857,13 @@ impl ObjectStorage for BlobStore {
         Ok(minutes)
     }
 
-    async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError> {
-        Ok(self._upload_file(key, path).await?)
+    async fn upload_file(
+        &self,
+        key: &str,
+        path: &Path,
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError> {
+        Ok(self._upload_file(key, path, tenant_id).await?)
     }
 
     fn absolute_url(&self, prefix: &RelativePath) -> object_store::path::Path {
@@ -779,17 +888,21 @@ impl ObjectStorage for BlobStore {
         Url::parse(&url_string).unwrap()
     }
 
-    async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError> {
+    async fn list_dirs(
+        &self,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<String>, ObjectStorageError> {
         let pre = object_store::path::Path::from("/");
-
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         let resp = self.client.list_with_delimiter(Some(&pre)).await;
-        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string(), tenant);
         let resp = match resp {
             Ok(resp) => {
                 increment_files_scanned_in_object_store_calls_by_date(
                     "LIST",
                     resp.common_prefixes.len() as u64,
                     &Utc::now().date_naive().to_string(),
+                    tenant,
                 );
 
                 resp
@@ -810,16 +923,19 @@ impl ObjectStorage for BlobStore {
     async fn list_dirs_relative(
         &self,
         relative_path: &RelativePath,
+        tenant_id: &Option<String>,
     ) -> Result<Vec<String>, ObjectStorageError> {
+        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         let prefix = object_store::path::Path::from(relative_path.as_str());
         let resp = self.client.list_with_delimiter(Some(&prefix)).await;
-        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string());
+        increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string(), tenant);
         let resp = match resp {
             Ok(resp) => {
                 increment_files_scanned_in_object_store_calls_by_date(
                     "LIST",
                     resp.common_prefixes.len() as u64,
                     &Utc::now().date_naive().to_string(),
+                    tenant,
                 );
 
                 resp

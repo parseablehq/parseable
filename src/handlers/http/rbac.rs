@@ -127,7 +127,9 @@ pub async fn post_user(
 
     let mut non_existent_roles = Vec::new();
     for role in &user_roles {
-        if !roles().contains_key(role) {
+        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+            && !tenant_roles.contains_key(role)
+        {
             non_existent_roles.push(role.clone());
         }
     }
@@ -144,7 +146,6 @@ pub async fn post_user(
         return Err(RBACError::UserExists(username));
     }
 
-    // LET TENANT BE NONE FOR NOW!!!
     let (user, password) = user::User::new_basic(username.clone(), tenant_id.clone());
 
     metadata.users.push(user.clone());
@@ -160,7 +161,6 @@ pub async fn post_user(
         )
         .await?;
     }
-
     Ok(password)
 }
 
@@ -293,6 +293,7 @@ pub async fn delete_user(
 
     // update in mem table
     Users.delete_user(&userid, &tenant_id);
+
     Ok(HttpResponse::Ok().json(format!("deleted user: {username}")))
 }
 
@@ -323,7 +324,9 @@ pub async fn add_roles_to_user(
 
     // check if the role exists
     for role in &roles_to_add {
-        if !roles().contains_key(role) {
+        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+            && !tenant_roles.contains_key(role)
+        {
             non_existent_roles.push(role.clone());
         }
     }
@@ -379,7 +382,9 @@ pub async fn remove_roles_from_user(
 
     // check if the role exists
     for role in &roles_to_remove {
-        if !roles().contains_key(role) {
+        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+            && !tenant_roles.contains_key(role)
+        {
             non_existent_roles.push(role.clone());
         }
     }

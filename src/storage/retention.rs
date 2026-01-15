@@ -139,6 +139,12 @@ impl TryFrom<Vec<TaskView>> for Retention {
                 return Err("could not convert duration to an unsigned number".to_string());
             };
 
+            if u32::from(days) > 36500 {
+                return Err(
+                    "retention cannot be greater than 36500 days (approx 100 years)".to_string(),
+                );
+            }
+
             if set.contains(&task.action) {
                 return Err(format!(
                     "Configuration contains two task both of action \"{}\"",
@@ -191,7 +197,7 @@ mod action {
 
         let retain_until = get_retain_until(Utc::now().date_naive(), days as u64);
 
-        let Ok(mut dates) = store.list_dates(&stream_name).await else {
+        let Ok(mut dates) = store.list_dates(&stream_name, tenant_id).await else {
             return;
         };
         dates.retain(|date| date.starts_with("date"));
@@ -203,8 +209,7 @@ mod action {
         if !dates.is_empty() {
             let delete_tasks = FuturesUnordered::new();
             if let Err(err) =
-                remove_manifest_from_snapshot(&store, &stream_name, dates.clone(), tenant_id)
-                    .await
+                remove_manifest_from_snapshot(&store, &stream_name, dates.clone(), tenant_id).await
             {
                 error!(
                     "Failed to update snapshot for retention cleanup (stream={}): {}. Aborting delete.",
@@ -219,7 +224,7 @@ mod action {
                     PARSEABLE
                         .storage
                         .get_object_store()
-                        .delete_prefix(&path)
+                        .delete_prefix(&path, tenant_id)
                         .await
                 });
             }

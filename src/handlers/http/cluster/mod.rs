@@ -45,11 +45,12 @@ use crate::handlers::http::modal::ingest::SyncRole;
 use crate::handlers::http::query::{Query, QueryError, TIME_ELAPSED_HEADER};
 use crate::metrics::prom_utils::Metrics;
 use crate::option::Mode;
-use crate::parseable::PARSEABLE;
+use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
 use crate::rbac::role::model::DefaultPrivilege;
 use crate::rbac::user::User;
 use crate::stats::Stats;
 use crate::storage::{ObjectStorageError, ObjectStoreFormat};
+use crate::utils::get_tenant_id_from_request;
 
 use super::base_path_without_preceding_slash;
 use super::ingest::PostError;
@@ -327,7 +328,7 @@ impl BillingMetricsCollector {
     }
 }
 
-pub async fn for_each_live_node<F, Fut, E>(api_fn: F) -> Result<(), E>
+pub async fn for_each_live_node<F, Fut, E>(tenant_id: &Option<String>, api_fn: F) -> Result<(), E>
 where
     F: Fn(NodeMetadata) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = Result<(), E>> + Send,
@@ -335,19 +336,23 @@ where
 {
     let mut nodes = Vec::new();
 
-    let ingestor_infos: Vec<NodeMetadata> =
-        get_node_info(NodeType::Ingestor).await.map_err(|err| {
+    let ingestor_infos: Vec<NodeMetadata> = get_node_info(NodeType::Ingestor, tenant_id)
+        .await
+        .map_err(|err| {
             error!("Fatal: failed to get ingestor info: {:?}", err);
             E::from(err)
         })?;
     nodes.extend(ingestor_infos);
 
-    let querier_infos: Vec<NodeMetadata> =
-        get_node_info(NodeType::Querier).await.map_err(|err| {
-            error!("Fatal: failed to get querier info: {:?}", err);
-            E::from(err)
-        })?;
-    nodes.extend(querier_infos);
+    if !PARSEABLE.options.mode.eq(&Mode::Query) {
+        let querier_infos: Vec<NodeMetadata> = get_node_info(NodeType::Querier, tenant_id)
+            .await
+            .map_err(|err| {
+                error!("Fatal: failed to get querier info: {:?}", err);
+                E::from(err)
+            })?;
+        nodes.extend(querier_infos);
+    }
 
     let mut live_nodes = Vec::new();
     for node in nodes {
@@ -378,7 +383,7 @@ pub async fn sync_streams_with_ingestors(
     headers: HeaderMap,
     body: Bytes,
     stream_name: &str,
-    // tenant_id: &Option<String>
+    tenant_id: &Option<String>,
 ) -> Result<(), StreamError> {
     let mut reqwest_headers = reqwest::header::HeaderMap::new();
 
@@ -395,7 +400,7 @@ pub async fn sync_streams_with_ingestors(
     let stream_name = stream_name.to_string();
     let reqwest_headers_clone = reqwest_headers.clone();
 
-    for_each_live_node(
+    for_each_live_node(tenant_id,
         move |ingestor| {
             let url = format!(
                 "{}{}/logstream/{}/sync",
@@ -435,9 +440,13 @@ pub async fn sync_streams_with_ingestors(
 }
 
 // forward the demo data request to one of the live ingestor
-pub async fn get_demo_data_from_ingestor(action: &str) -> Result<(), PostError> {
-    let ingestor_infos: Vec<NodeMetadata> =
-        get_node_info(NodeType::Ingestor).await.map_err(|err| {
+pub async fn get_demo_data_from_ingestor(
+    action: &str,
+    tenant_id: &Option<String>,
+) -> Result<(), PostError> {
+    let ingestor_infos: Vec<NodeMetadata> = get_node_info(NodeType::Ingestor, tenant_id)
+        .await
+        .map_err(|err| {
             error!("Fatal: failed to get ingestor info: {:?}", err);
             PostError::Invalid(err)
         })?;
@@ -495,6 +504,7 @@ pub async fn sync_users_with_roles_with_ingestors(
     userid: &str,
     role: &HashSet<String>,
     operation: &str,
+    tenant_id: &Option<String>,
 ) -> Result<(), RBACError> {
     match operation {
         "add" | "remove" => {}
@@ -510,7 +520,7 @@ pub async fn sync_users_with_roles_with_ingestors(
 
     let op = operation.to_string();
 
-    for_each_live_node(move |ingestor| {
+    for_each_live_node(tenant_id, move |ingestor| {
         let url = format!(
             "{}{}/user/{}/role/sync/{}",
             ingestor.domain_name,
@@ -552,10 +562,13 @@ pub async fn sync_users_with_roles_with_ingestors(
 }
 
 // forward the delete user request to all ingestors to keep them in sync
-pub async fn sync_user_deletion_with_ingestors(userid: &str) -> Result<(), RBACError> {
+pub async fn sync_user_deletion_with_ingestors(
+    userid: &str,
+    tenant_id: &Option<String>,
+) -> Result<(), RBACError> {
     let userid = userid.to_owned();
 
-    for_each_live_node(move |ingestor| {
+    for_each_live_node(tenant_id, move |ingestor| {
         let url = format!(
             "{}{}/user/{}/sync",
             ingestor.domain_name,
@@ -595,7 +608,7 @@ pub async fn sync_user_deletion_with_ingestors(userid: &str) -> Result<(), RBACE
 pub async fn sync_user_creation(
     user: User,
     role: &Option<HashSet<String>>,
-    // tenant_id: &str
+    tenant_id: &Option<String>,
 ) -> Result<(), RBACError> {
     let mut user = user.clone();
 
@@ -611,7 +624,7 @@ pub async fn sync_user_creation(
 
     let userid = userid.to_string();
 
-    for_each_live_node(move |node| {
+    for_each_live_node(tenant_id, move |node| {
         let url = format!(
             "{}{}/user/{}/sync",
             node.domain_name,
@@ -657,8 +670,8 @@ pub async fn sync_password_reset_with_ingestors(
     username: &str,
 ) -> Result<(), RBACError> {
     let username = username.to_owned();
-
-    for_each_live_node(move |ingestor| {
+    let tenant_id = get_tenant_id_from_request(&req);
+    for_each_live_node(&tenant_id, move |ingestor| {
         let url = format!(
             "{}{}/user/{}/generate-new-password/sync",
             ingestor.domain_name,
@@ -700,10 +713,10 @@ pub async fn sync_role_update(
     req: HttpRequest,
     name: String,
     privileges: Vec<DefaultPrivilege>,
-    tenant_id: &str,
+    tenant_id: &Option<String>,
 ) -> Result<(), RoleError> {
-    let tenant_id = tenant_id.to_string();
-    for_each_live_node(move |node| {
+    let tenant = tenant_id.to_owned();
+    for_each_live_node(tenant_id, move |node| {
         let url = format!(
             "{}{}/role/{}/sync",
             node.domain_name,
@@ -712,13 +725,14 @@ pub async fn sync_role_update(
         );
 
         let privileges = privileges.clone();
-        let tenant = tenant_id.clone();
+
+        let tenant_id = tenant.clone();
         async move {
             let res = INTRA_CLUSTER_CLIENT
                 .put(url)
                 .header(header::AUTHORIZATION, &node.token)
                 .header(header::CONTENT_TYPE, "application/json")
-                .json(&SyncRole::new(privileges, tenant.clone()))
+                .json(&SyncRole::new(privileges, tenant_id.clone()))
                 .send()
                 .await
                 .map_err(|err| {
@@ -903,13 +917,14 @@ pub async fn send_retention_cleanup_request(
 }
 
 /// Fetches cluster information for all nodes (ingestor, indexer, querier and prism)
-pub async fn get_cluster_info() -> Result<impl Responder, StreamError> {
+pub async fn get_cluster_info(req: HttpRequest) -> Result<impl Responder, StreamError> {
+    let tenant_id = &get_tenant_id_from_request(&req);
     // Get querier, ingestor and indexer metadata concurrently
     let (prism_result, querier_result, ingestor_result, indexer_result) = future::join4(
-        get_node_info(NodeType::Prism),
-        get_node_info(NodeType::Querier),
-        get_node_info(NodeType::Ingestor),
-        get_node_info(NodeType::Indexer),
+        get_node_info(NodeType::Prism, tenant_id),
+        get_node_info(NodeType::Querier, tenant_id),
+        get_node_info(NodeType::Ingestor, tenant_id),
+        get_node_info(NodeType::Indexer, tenant_id),
     )
     .await;
 
@@ -1048,8 +1063,9 @@ async fn fetch_nodes_info<T: Metadata>(
     Ok(infos)
 }
 
-pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
-    let dresses = fetch_cluster_metrics().await.map_err(|err| {
+pub async fn get_cluster_metrics(req: HttpRequest) -> Result<impl Responder, PostError> {
+    let tenant_id = &get_tenant_id_from_request(&req);
+    let dresses = fetch_cluster_metrics(tenant_id).await.map_err(|err| {
         error!("Fatal: failed to fetch cluster metrics: {:?}", err);
         PostError::Invalid(err.into())
     })?;
@@ -1062,10 +1078,11 @@ pub async fn get_cluster_metrics() -> Result<impl Responder, PostError> {
 /// it will return the metadata for all nodes of that type
 pub async fn get_node_info<T: Metadata + DeserializeOwned>(
     node_type: NodeType,
+    tenant_id: &Option<String>,
 ) -> anyhow::Result<Vec<T>> {
     let metadata = PARSEABLE
         .metastore
-        .get_node_metadata(node_type)
+        .get_node_metadata(node_type, tenant_id)
         .await?
         .iter()
         .filter_map(|x| match serde_json::from_slice::<T>(x) {
@@ -1219,13 +1236,13 @@ where
 /// fetches node info for all nodes
 /// fetches metrics for all nodes
 /// combines all metrics into a single vector
-async fn fetch_cluster_metrics() -> Result<Vec<Metrics>, PostError> {
+async fn fetch_cluster_metrics(tenant_id: &Option<String>) -> Result<Vec<Metrics>, PostError> {
     // Get ingestor and indexer metadata concurrently
     let (prism_result, querier_result, ingestor_result, indexer_result) = future::join4(
-        get_node_info(NodeType::Prism),
-        get_node_info(NodeType::Querier),
-        get_node_info(NodeType::Ingestor),
-        get_node_info(NodeType::Indexer),
+        get_node_info(NodeType::Prism, tenant_id),
+        get_node_info(NodeType::Querier, tenant_id),
+        get_node_info(NodeType::Ingestor, tenant_id),
+        get_node_info(NodeType::Indexer, tenant_id),
     )
     .await;
 
@@ -1593,13 +1610,15 @@ where
 }
 
 /// Main function to fetch billing metrics from all nodes
-pub async fn fetch_cluster_billing_metrics() -> Result<Vec<BillingMetricEvent>, PostError> {
+pub async fn fetch_cluster_billing_metrics(
+    tenant_id: &Option<String>,
+) -> Result<Vec<BillingMetricEvent>, PostError> {
     // Get all node types metadata concurrently
     let (prism_result, querier_result, ingestor_result, indexer_result) = future::join4(
-        get_node_info(NodeType::Prism),
-        get_node_info(NodeType::Querier),
-        get_node_info(NodeType::Ingestor),
-        get_node_info(NodeType::Indexer),
+        get_node_info(NodeType::Prism, tenant_id),
+        get_node_info(NodeType::Querier, tenant_id),
+        get_node_info(NodeType::Ingestor, tenant_id),
+        get_node_info(NodeType::Indexer, tenant_id),
     )
     .await;
 
@@ -1667,9 +1686,11 @@ struct QuerierStatus {
     last_used: Option<Instant>,
 }
 
-pub async fn get_available_querier() -> Result<QuerierMetadata, QueryError> {
+pub async fn get_available_querier(
+    tenant_id: &Option<String>,
+) -> Result<QuerierMetadata, QueryError> {
     // Get all querier metadata
-    let querier_metadata: Vec<NodeMetadata> = get_node_info(NodeType::Querier).await?;
+    let querier_metadata: Vec<NodeMetadata> = get_node_info(NodeType::Querier, tenant_id).await?;
 
     // No queriers found
     if querier_metadata.is_empty() {
@@ -1856,8 +1877,9 @@ pub async fn mark_querier_available(domain_name: &str) {
 pub async fn send_query_request(
     auth_token: Option<HeaderMap>,
     query_request: &Query,
+    tenant_id: &Option<String>,
 ) -> Result<(JsonValue, String), QueryError> {
-    let querier = get_available_querier().await?;
+    let querier = get_available_querier(tenant_id).await?;
     let domain_name = querier.domain_name.clone();
 
     // Perform the query request

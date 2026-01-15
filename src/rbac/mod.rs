@@ -23,8 +23,11 @@ pub mod utils;
 
 use std::collections::{HashMap, HashSet};
 
+use actix_web::dev::ServiceRequest;
+use actix_web::http::header::{HeaderName, HeaderValue};
 use chrono::{DateTime, Duration, TimeDelta, Utc};
 use itertools::Itertools;
+use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 use role::model::DefaultPrivilege;
 use serde::Serialize;
 use url::Url;
@@ -46,7 +49,7 @@ pub enum Response {
     Authorized,
     UnAuthorized,
     ReloadRequired,
-    Suspended(String)
+    Suspended(String),
 }
 
 // This type encapsulates both the user_map and auth_map
@@ -233,8 +236,8 @@ impl Users {
             return Response::ReloadRequired;
         };
 
-        let tenant_id = if let Some(user) = self.get_user_from_basic(username, password) {
-            user.tenant
+        let tenant_id = if let Some(tenant) = self.get_user_tenant_from_basic(username, password) {
+            Some(tenant)
         } else {
             get_tenant_id_from_key(&key)
         };
@@ -267,18 +270,96 @@ impl Users {
         Response::UnAuthorized
     }
 
+    pub fn validate_basic_user_tenant_id(
+        &self,
+        username: &str,
+        password: &str,
+        tenant_id: &str,
+    ) -> bool {
+        let res = if let Some(tenant_users) = users().get(tenant_id)
+            && tenant_users
+                .values()
+                .par_bridge()
+                .find_any(|user| {
+                    if let UserType::Native(basic) = &user.ty
+                        && basic.username.eq(username)
+                        && basic.verify_password(password)
+                    {
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .is_some()
+        {
+            true
+        } else {
+            false
+        };
+        res
+    }
+
+    pub fn mutate_request_with_basic_user(
+        &self,
+        username: &str,
+        password: &str,
+        req: &mut ServiceRequest,
+    ) {
+        if let Some((tenant, _)) = users().par_iter().find_first(|(_, usermap)| {
+            usermap
+                .par_iter()
+                .find_first(|(_, user)| {
+                    if let UserType::Native(basic) = &user.ty
+                        && basic.username.eq(username)
+                        && basic.verify_password(password)
+                        && let Some(_) = &user.tenant
+                    {
+                        // req.headers_mut().insert(
+                        //     HeaderName::from_static("tenant"),
+                        //     HeaderValue::from_bytes(tenant.as_bytes()).unwrap(),
+                        // );
+                        true
+                    } else {
+                        false
+                    }
+                })
+                .is_some()
+        }) {
+            req.headers_mut().insert(
+                HeaderName::from_static("tenant"),
+                HeaderValue::from_bytes(tenant.as_bytes()).unwrap(),
+            );
+        };
+        // for (_, usermap) in users().iter() {
+        //     for (_, user) in usermap.iter() {
+        //         if let UserType::Native(basic) = &user.ty
+        //             && basic.username.eq(username)
+        //             && basic.verify_password(password)
+        //             && let Some(tenant) = &user.tenant
+        //         {
+        //             req.headers_mut().insert(
+        //                 HeaderName::from_static("tenant"),
+        //                 HeaderValue::from_bytes(tenant.as_bytes()).unwrap(),
+        //             );
+        //             return;
+        //         }
+        //     }
+        // }
+    }
+
     pub fn get_userid_from_session(&self, session: &SessionKey) -> Option<(String, String)> {
         sessions().get_user_and_tenant_id(session)
     }
 
-    pub fn get_user_from_basic(&self, username: &str, password: &str) -> Option<User> {
+    pub fn get_user_tenant_from_basic(&self, username: &str, password: &str) -> Option<String> {
         for (_, usermap) in users().iter() {
             for (_, user) in usermap.iter() {
                 if let UserType::Native(basic) = &user.ty
                     && basic.username.eq(username)
                     && basic.verify_password(password)
+                    && let Some(tenant) = &user.tenant
                 {
-                    return Some(user.clone());
+                    return Some(tenant.clone());
                 }
             }
         }

@@ -441,7 +441,7 @@ impl HotTierManager {
         let parquet_data = PARSEABLE
             .storage
             .get_object_store()
-            .get_object(&parquet_file_path)
+            .get_object(&parquet_file_path, tenant_id)
             .await?;
         file.write_all(&parquet_data).await?;
         *parquet_file_size += parquet_file.file_size;

@@ -35,7 +35,7 @@ use crate::{
     },
     metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE},
     option::Mode,
-    parseable::PARSEABLE,
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     query::PartialTimeFilter,
     stats::{event_labels_date, get_current_stats, storage_size_labels_date, update_deleted_stats},
     storage::{
@@ -187,10 +187,14 @@ fn create_partition_bounds(lower_bound: DateTime<Utc>) -> (DateTime<Utc>, DateTi
 }
 
 /// Extracts statistics from live metrics for a given partition date
-fn extract_partition_metrics(stream_name: &str, partition_lower: DateTime<Utc>) -> (u64, u64, u64) {
+fn extract_partition_metrics(
+    stream_name: &str,
+    partition_lower: DateTime<Utc>,
+    tenant_id: &str,
+) -> (u64, u64, u64) {
     let date_str = partition_lower.date_naive().to_string();
-    let event_labels = event_labels_date(stream_name, "json", &date_str);
-    let storage_labels = storage_size_labels_date(stream_name, &date_str);
+    let event_labels = event_labels_date(stream_name, "json", &date_str, tenant_id);
+    let storage_labels = storage_size_labels_date(stream_name, &date_str, tenant_id);
 
     let events_ingested = EVENTS_INGESTED_DATE
         .get_metric_with_label_values(&event_labels)
@@ -220,8 +224,11 @@ async fn process_partition_groups(
     let mut new_manifest_entries = Vec::new();
 
     for ((partition_lower, _partition_upper), partition_changes) in partition_groups {
-        let (events_ingested, ingestion_size, storage_size) =
-            extract_partition_metrics(stream_name, partition_lower);
+        let (events_ingested, ingestion_size, storage_size) = extract_partition_metrics(
+            stream_name,
+            partition_lower,
+            tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+        );
 
         let manifest_entry = process_single_partition(
             partition_lower,
@@ -530,7 +537,7 @@ pub async fn remove_manifest_from_snapshot(
         let stream_name_clone = stream_name.to_string();
         let dates_clone = dates.clone();
 
-        for_each_live_node(move |ingestor| {
+        for_each_live_node(tenant_id, move |ingestor| {
             let stream_name = stream_name_clone.clone();
             let dates = dates_clone.clone();
             async move {

@@ -100,7 +100,7 @@ pub async fn create_dashboard(
     let user_id = get_hash(&user_id);
 
     DASHBOARDS
-        .create(&user_id, &mut dashboard, &Some(tenant_id))
+        .create(&user_id, &mut dashboard, &tenant_id)
         .await?;
     Ok((web::Json(dashboard), StatusCode::OK))
 }
@@ -114,9 +114,8 @@ pub async fn update_dashboard(
     let user_id = get_hash(&user_id);
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
     let is_admin = is_admin(&req).map_err(|e| DashboardError::Custom(e.to_string()))?;
-    let tenant_id = &Some(tenant_id);
     let mut existing_dashboard = DASHBOARDS
-        .get_dashboard_by_user(dashboard_id, &user_id, is_admin, tenant_id)
+        .get_dashboard_by_user(dashboard_id, &user_id, is_admin, &tenant_id)
         .await
         .ok_or(DashboardError::Metadata(
             "Dashboard does not exist or user is not authorized",
@@ -189,7 +188,7 @@ pub async fn update_dashboard(
     };
 
     DASHBOARDS
-        .update(&user_id, dashboard_id, &mut final_dashboard, tenant_id)
+        .update(&user_id, dashboard_id, &mut final_dashboard, &tenant_id)
         .await?;
 
     Ok((web::Json(final_dashboard), StatusCode::OK))
@@ -206,7 +205,7 @@ pub async fn delete_dashboard(
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
 
     DASHBOARDS
-        .delete_dashboard(&user_id, dashboard_id, is_admin, &Some(tenant_id))
+        .delete_dashboard(&user_id, dashboard_id, is_admin, &tenant_id)
         .await?;
 
     Ok(HttpResponse::Ok().finish())
@@ -223,12 +222,11 @@ pub async fn add_tile(
 
     let (user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
     let user_id = get_hash(&user_id);
-    let tenant_id = &Some(tenant_id);
     let dashboard_id = validate_dashboard_id(dashboard_id.into_inner())?;
     let is_admin = is_admin(&req).map_err(|e| DashboardError::Custom(e.to_string()))?;
 
     let mut dashboard = DASHBOARDS
-        .get_dashboard_by_user(dashboard_id, &user_id, is_admin, tenant_id)
+        .get_dashboard_by_user(dashboard_id, &user_id, is_admin, &tenant_id)
         .await
         .ok_or(DashboardError::Unauthorized)?;
 
@@ -241,7 +239,7 @@ pub async fn add_tile(
     tiles.push(tile);
 
     DASHBOARDS
-        .update(&user_id, dashboard_id, &mut dashboard, tenant_id)
+        .update(&user_id, dashboard_id, &mut dashboard, &tenant_id)
         .await?;
 
     Ok((web::Json(dashboard), StatusCode::OK))

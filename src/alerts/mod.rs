@@ -1043,7 +1043,11 @@ impl AlertManagerTrait for Alerts {
         let mut map = self.alerts.write().await;
 
         for (tenant_id, raw_bytes) in raw_objects {
-            let tenant = &Some(tenant_id.clone());
+            let tenant = if tenant_id.is_empty() {
+                &None
+            } else {
+                &Some(tenant_id.clone())
+            };
             for alert_bytes in raw_bytes {
                 // First, try to parse as JSON Value to check version
                 let json_value: JsonValue = match serde_json::from_slice(&alert_bytes) {
@@ -1233,25 +1237,17 @@ impl AlertManagerTrait for Alerts {
                 "No alert found for the given ID- {id}"
             )))
         }
-        // if let Some(alert) = read_access.get(&id) {
-        //     Ok(alert.clone_box())
-        // } else {
-        //     Err(AlertError::CustomError(format!(
-        //         "No alert found for the given ID- {id}"
-        //     )))
-        // }
     }
 
     /// Update the in-mem vector of alerts
     async fn update(&self, alert: &dyn AlertTrait) {
         let tenant = alert.get_tenant_id().as_ref().map_or(DEFAULT_TENANT, |v| v);
-        if let Some(alerts) = self.alerts.write().await.get_mut(tenant) {
-            alerts.insert(*alert.get_id(), alert.clone_box());
-        }
-        // self.alerts
-        //     .write()
-        //     .await
-        //     .insert(*alert.get_id(), alert.clone_box());
+        self.alerts
+            .write()
+            .await
+            .entry(tenant.to_owned())
+            .or_default()
+            .insert(*alert.get_id(), alert.clone_box());
     }
 
     /// Update the state of alert

@@ -40,25 +40,26 @@ pub fn update_stats(
     size: u64,
     num_rows: usize,
     parsed_date: NaiveDate,
+    tenant_id: &str,
 ) {
     let parsed_date = parsed_date.to_string();
     EVENTS_INGESTED
-        .with_label_values(&[stream_name, origin])
+        .with_label_values(&[stream_name, origin, tenant_id])
         .add(num_rows as i64);
     EVENTS_INGESTED_DATE
-        .with_label_values(&[stream_name, origin, &parsed_date])
+        .with_label_values(&[stream_name, origin, &parsed_date, tenant_id])
         .inc_by(num_rows as u64);
     EVENTS_INGESTED_SIZE
-        .with_label_values(&[stream_name, origin])
+        .with_label_values(&[stream_name, origin, tenant_id])
         .add(size as i64);
     EVENTS_INGESTED_SIZE_DATE
-        .with_label_values(&[stream_name, origin, &parsed_date])
+        .with_label_values(&[stream_name, origin, &parsed_date, tenant_id])
         .inc_by(size);
     LIFETIME_EVENTS_INGESTED
-        .with_label_values(&[stream_name, origin])
+        .with_label_values(&[stream_name, origin, tenant_id])
         .add(num_rows as i64);
     LIFETIME_EVENTS_INGESTED_SIZE
-        .with_label_values(&[stream_name, origin])
+        .with_label_values(&[stream_name, origin, tenant_id])
         .add(size as i64);
 }
 
@@ -136,7 +137,7 @@ impl LogStreamMetadata {
     }
 }
 
-///this function updates the data type of time partition field
+/// this function updates the data type of time partition field
 /// from utf-8 to timestamp if it is not already timestamp
 /// and updates the schema in the storage
 /// required only when migrating from version 1.2.0 and below
@@ -167,20 +168,20 @@ pub async fn update_data_type_time_partition(
     Ok(())
 }
 
-pub fn load_daily_metrics(manifests: &Vec<ManifestItem>, stream_name: &str) {
+pub fn load_daily_metrics(manifests: &Vec<ManifestItem>, stream_name: &str, tenant_id: &str) {
     for manifest in manifests {
         let manifest_date = manifest.time_lower_bound.date_naive().to_string();
         let events_ingested = manifest.events_ingested;
         let ingestion_size = manifest.ingestion_size;
         let storage_size = manifest.storage_size;
         EVENTS_INGESTED_DATE
-            .with_label_values(&[stream_name, "json", &manifest_date])
+            .with_label_values(&[stream_name, "json", &manifest_date, tenant_id])
             .inc_by(events_ingested);
         EVENTS_INGESTED_SIZE_DATE
-            .with_label_values(&[stream_name, "json", &manifest_date])
+            .with_label_values(&[stream_name, "json", &manifest_date, tenant_id])
             .inc_by(ingestion_size);
         EVENTS_STORAGE_SIZE_DATE
-            .with_label_values(&["data", stream_name, "parquet", &manifest_date])
+            .with_label_values(&["data", stream_name, "parquet", &manifest_date, tenant_id])
             .inc_by(storage_size);
     }
 }

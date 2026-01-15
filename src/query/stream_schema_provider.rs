@@ -58,7 +58,7 @@ use crate::{
     hottier::HotTierManager,
     metrics::{QUERY_CACHE_HIT, increment_files_scanned_in_query_by_date},
     option::Mode,
-    parseable::{PARSEABLE, STREAM_EXISTS},
+    parseable::{DEFAULT_TENANT, PARSEABLE, STREAM_EXISTS},
     storage::{ObjectStorage, ObjectStoreFormat},
 };
 
@@ -436,7 +436,11 @@ impl StandardTableProvider {
 
         // Track billing metrics for query scan
         let current_date = chrono::Utc::now().date_naive().to_string();
-        increment_files_scanned_in_query_by_date(file_count, &current_date);
+        increment_files_scanned_in_query_by_date(
+            file_count,
+            &current_date,
+            self.tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+        );
 
         (partitioned_files, statistics)
     }

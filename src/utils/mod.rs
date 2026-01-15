@@ -27,13 +27,15 @@ pub mod uid;
 pub mod update;
 
 use crate::handlers::http::rbac::RBACError;
-use crate::parseable::PARSEABLE;
+use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
 use crate::query::resolve_stream_names;
 use crate::rbac::Users;
-use crate::rbac::map::SessionKey;
+use crate::rbac::map::{SessionKey, sessions};
 use crate::rbac::role::{Action, ParseableResourceType, Permission};
 use actix::extract_session_key_from_req;
-use actix_web::HttpRequest;
+use actix_web::dev::ServiceRequest;
+use actix_web::{FromRequest, HttpRequest};
+use actix_web_httpauth::extractors::basic::BasicAuth;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use regex::Regex;
 use sha2::{Digest, Sha256};
@@ -58,22 +60,67 @@ pub fn extract_datetime(path: &str) -> Option<NaiveDateTime> {
     }
 }
 
-pub fn get_user_and_tenant_from_request(req: &HttpRequest) -> Result<(String, String), RBACError> {
+pub fn mutate_request_with_tenant(req: &mut ServiceRequest) {
+    let creds = BasicAuth::extract(req.request()).into_inner();
+
+    if let Ok(basic) = &creds {
+        Users.mutate_request_with_basic_user(
+            basic.user_id(),
+            basic.password().as_deref().unwrap(),
+            req,
+        );
+    } else if let Some(cookie) = req.cookie("session") {
+        if let Ok(ulid) = ulid::Ulid::from_string(cookie.value()) {
+            let key = SessionKey::SessionId(ulid);
+            sessions().mutate_request_with_tenant(&key, req);
+        }
+    };
+}
+
+pub fn get_user_from_request(req: &HttpRequest) -> Result<String, RBACError> {
     let session_key = extract_session_key_from_req(req).map_err(|_| RBACError::UserDoesNotExist)?;
-    match &session_key {
+    let user_id = Users.get_userid_from_session(&session_key);
+    if user_id.is_none() {
+        return Err(RBACError::UserDoesNotExist);
+    }
+    let (user_id, _) = user_id.unwrap();
+    Ok(user_id)
+}
+
+pub fn get_user_and_tenant_from_request(
+    req: &HttpRequest,
+) -> Result<(String, Option<String>), RBACError> {
+    let session_key = extract_session_key_from_req(req).map_err(|_| RBACError::UserDoesNotExist)?;
+    match session_key {
         SessionKey::BasicAuth { username, password } => {
-            if let Some(user) = Users.get_user_from_basic(&username, &password)
-                && let Some(tenant) = user.tenant
-            {
-                return Ok((username.clone(), tenant));
+            if let Some(tenant) = Users.get_user_tenant_from_basic(&username, &password) {
+                return Ok((username.clone(), Some(tenant)));
+            } else {
+                return Ok((username.clone(), None));
             }
         }
-        SessionKey::SessionId(_) => {}
+        session @ SessionKey::SessionId(_) => {
+            let Some((user_id, tenant_id)) = Users.get_userid_from_session(&session) else {
+                return Err(RBACError::UserDoesNotExist);
+            };
+            let tenant_id = if tenant_id.eq(DEFAULT_TENANT) {
+                None
+            } else {
+                Some(tenant_id)
+            };
+            Ok((user_id, tenant_id))
+        }
     }
-    let Some((user_id, tenant_id)) = Users.get_userid_from_session(&session_key) else {
-        return Err(RBACError::UserDoesNotExist);
-    };
-    Ok((user_id, tenant_id))
+    // let Some((user_id, tenant_id)) = Users.get_userid_from_session(&session_key) else {
+    //     return Err(RBACError::UserDoesNotExist);
+    // };
+    // let tenant_id = if tenant_id.eq(DEFAULT_TENANT) {
+    //     None
+    // } else {
+    //     // Some(std::borrow::Cow::Borrowed(tenant_id.as_str()))
+    //     Some(tenant_id)
+    // };
+    // Ok((user_id, tenant_id))
 }
 
 pub fn get_tenant_id_from_request(req: &HttpRequest) -> Option<String> {
@@ -85,7 +132,9 @@ pub fn get_tenant_id_from_request(req: &HttpRequest) -> Option<String> {
 }
 
 pub fn get_tenant_id_from_key(key: &SessionKey) -> Option<String> {
-    if let Some((_, tenant_id)) = Users.get_userid_from_session(key) {
+    if let Some((_, tenant_id)) = Users.get_userid_from_session(key)
+        && tenant_id.ne(DEFAULT_TENANT)
+    {
         Some(tenant_id.clone())
     } else {
         None

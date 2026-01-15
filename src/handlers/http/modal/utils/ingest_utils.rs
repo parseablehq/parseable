@@ -39,7 +39,7 @@ use crate::{
         },
     },
     otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
-    parseable::PARSEABLE,
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     storage::StreamType,
     utils::json::{convert_array_to_object, flatten::convert_to_array},
 };
@@ -55,8 +55,9 @@ pub async fn flatten_and_push_logs(
     p_custom_fields: &HashMap<String, String>,
     time_partition: Option<String>,
     telemetry_type: TelemetryType,
-    tenant_id: &Option<String>
+    tenant_id: &Option<String>,
 ) -> Result<(), PostError> {
+    let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     // Verify the dataset fields count
     verify_dataset_fields_count(stream_name, tenant_id)?;
 
@@ -73,14 +74,14 @@ pub async fn flatten_and_push_logs(
                 p_custom_fields,
                 time_partition,
                 telemetry_type,
-                tenant_id
+                tenant_id,
             )
             .await?;
         }
         LogSource::OtelLogs => {
             //custom flattening required for otel logs
             let logs: LogsData = serde_json::from_value(json)?;
-            for record in flatten_otel_logs(&logs) {
+            for record in flatten_otel_logs(&logs, tenant_str) {
                 push_logs(
                     stream_name,
                     record,
@@ -88,7 +89,7 @@ pub async fn flatten_and_push_logs(
                     p_custom_fields,
                     time_partition.clone(),
                     telemetry_type,
-                    tenant_id
+                    tenant_id,
                 )
                 .await?;
             }
@@ -96,7 +97,7 @@ pub async fn flatten_and_push_logs(
         LogSource::OtelTraces => {
             //custom flattening required for otel traces
             let traces: TracesData = serde_json::from_value(json)?;
-            for record in flatten_otel_traces(&traces) {
+            for record in flatten_otel_traces(&traces, tenant_str) {
                 push_logs(
                     stream_name,
                     record,
@@ -104,7 +105,7 @@ pub async fn flatten_and_push_logs(
                     p_custom_fields,
                     time_partition.clone(),
                     telemetry_type,
-                    tenant_id
+                    tenant_id,
                 )
                 .await?;
             }
@@ -112,7 +113,7 @@ pub async fn flatten_and_push_logs(
         LogSource::OtelMetrics => {
             //custom flattening required for otel metrics
             let metrics: MetricsData = serde_json::from_value(json)?;
-            for record in flatten_otel_metrics(metrics) {
+            for record in flatten_otel_metrics(metrics, tenant_str) {
                 push_logs(
                     stream_name,
                     record,
@@ -120,7 +121,7 @@ pub async fn flatten_and_push_logs(
                     p_custom_fields,
                     time_partition.clone(),
                     telemetry_type,
-                    tenant_id
+                    tenant_id,
                 )
                 .await?;
             }
@@ -133,7 +134,7 @@ pub async fn flatten_and_push_logs(
                 p_custom_fields,
                 time_partition,
                 telemetry_type,
-                tenant_id
+                tenant_id,
             )
             .await?
         }
@@ -149,7 +150,7 @@ pub async fn push_logs(
     p_custom_fields: &HashMap<String, String>,
     time_partition: Option<String>,
     telemetry_type: TelemetryType,
-    tenant_id: &Option<String>
+    tenant_id: &Option<String>,
 ) -> Result<(), PostError> {
     let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
     let time_partition_limit = PARSEABLE
@@ -171,7 +172,9 @@ pub async fn push_logs(
 
     for json in data {
         let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
-        let schema = PARSEABLE.get_stream(stream_name, tenant_id)?.get_schema_raw();
+        let schema = PARSEABLE
+            .get_stream(stream_name, tenant_id)?
+            .get_schema_raw();
         json::Event { json, p_timestamp }
             .into_event(
                 stream_name.to_owned(),
@@ -184,7 +187,7 @@ pub async fn push_logs(
                 StreamType::UserDefined,
                 p_custom_fields,
                 telemetry_type,
-                tenant_id
+                tenant_id,
             )?
             .process()?;
     }
@@ -252,7 +255,10 @@ pub fn get_custom_fields_from_header(req: &HttpRequest) -> HashMap<String, Strin
     p_custom_fields
 }
 
-fn verify_dataset_fields_count(stream_name: &str, tenant_id: &Option<String>) -> Result<(), PostError> {
+fn verify_dataset_fields_count(
+    stream_name: &str,
+    tenant_id: &Option<String>,
+) -> Result<(), PostError> {
     let fields_count = PARSEABLE
         .get_stream(stream_name, tenant_id)?
         .get_schema()
@@ -284,7 +290,10 @@ fn verify_dataset_fields_count(stream_name: &str, tenant_id: &Option<String>) ->
     Ok(())
 }
 
-pub fn validate_stream_for_ingestion(stream_name: &str, tenant_id: &Option<String>) -> Result<(), PostError> {
+pub fn validate_stream_for_ingestion(
+    stream_name: &str,
+    tenant_id: &Option<String>,
+) -> Result<(), PostError> {
     let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
 
     // Validate that the stream's log source is compatible

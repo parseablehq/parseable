@@ -82,7 +82,7 @@ pub async fn execute_alert_query(
 ) -> Result<AlertQueryResult, AlertError> {
     match PARSEABLE.options.mode {
         Mode::All | Mode::Query => execute_local_query(query, time_range, tenant_id).await,
-        Mode::Prism => execute_remote_query(auth_token, query, time_range).await,
+        Mode::Prism => execute_remote_query(auth_token, query, time_range, tenant_id).await,
         _ => Err(AlertError::CustomError(format!(
             "Unsupported mode '{:?}' for alert evaluation",
             PARSEABLE.options.mode
@@ -131,6 +131,7 @@ async fn execute_remote_query(
     auth_token: Option<String>,
     query: &str,
     time_range: &TimeRange,
+    tenant_id: &Option<String>,
 ) -> Result<AlertQueryResult, AlertError> {
     let session_state = QUERY_SESSION.get_ctx().state();
     let raw_logical_plan = session_state.create_logical_plan(query).await?;
@@ -145,7 +146,7 @@ async fn execute_remote_query(
         filter_tags: None,
     };
 
-    let (result_value, _) = send_query_request(None,&query_request)
+    let (result_value, _) = send_query_request(None, &query_request, tenant_id)
         .await
         .map_err(|err| AlertError::CustomError(format!("Failed to send query request: {err}")))?;
 

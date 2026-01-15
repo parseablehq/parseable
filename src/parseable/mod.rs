@@ -25,7 +25,10 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use actix_web::http::{StatusCode, header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue}};
+use actix_web::http::{
+    StatusCode,
+    header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue},
+};
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Utc;
@@ -251,11 +254,11 @@ impl Parseable {
         stream_name: &str,
         tenant_id: &Option<String>,
     ) -> bool {
-        tracing::warn!("check or load streams- {stream_name}, {tenant_id:?}");
+        // tracing::warn!("check or load streams- {stream_name}, {tenant_id:?}");
         if self.streams.contains(stream_name, tenant_id) {
             return true;
         }
-        tracing::warn!("check or load streams not present, creating {stream_name}, {tenant_id:?}");
+        // tracing::warn!("check or load streams not present, creating {stream_name}, {tenant_id:?}");
         (self.options.mode == Mode::Query || self.options.mode == Mode::Prism)
             && self
                 .create_stream_and_schema_from_storage(stream_name, tenant_id)
@@ -280,7 +283,7 @@ impl Parseable {
 
         // Lists all the directories in the root of the bucket/directory
         // can be a stream (if it contains .stream.json file) or not
-        let has_dirs = match obj_store.list_dirs().await {
+        let has_dirs = match obj_store.list_dirs(&None).await {
             Ok(dirs) => !dirs.is_empty(),
             Err(_) => false,
         };
@@ -379,13 +382,15 @@ impl Parseable {
         let storage = self.storage.get_object_store();
         let streams = PARSEABLE.metastore.list_streams(tenant_id).await?;
         if !streams.contains(stream_name) {
-            tracing::warn!("returning ok(false) for {stream_name} , {tenant_id:?}");
+            // tracing::warn!("returning ok(false) for {stream_name} , {tenant_id:?}");
             return Ok(false);
         }
         let (stream_metadata_bytes, schema_bytes) = try_join!(
             storage.create_stream_from_ingestor(stream_name, tenant_id),
             storage.create_schema_from_metastore(stream_name, tenant_id)
         )?;
+        // tracing::warn!(stream_metadata_bytes=?stream_metadata_bytes);
+        // tracing::warn!(schema_bytes=?schema_bytes);
 
         let stream_metadata = if stream_metadata_bytes.is_empty() {
             ObjectStoreFormat::default()
@@ -452,7 +457,7 @@ impl Parseable {
         if let Some(hot_tier_config) = hot_tier {
             stream.set_hot_tier(Some(hot_tier_config));
         }
-
+        // tracing::warn!(commit_schema=?schema);
         // commit schema in memory
         commit_schema(stream_name, schema, tenant_id).map_err(|e| StreamError::Anyhow(e.into()))?;
 
@@ -514,9 +519,13 @@ impl Parseable {
 
             // Sync only the streams that were created successfully
             if matches!(internal_stream_result, Ok(false))
-                && let Err(e) =
-                    sync_streams_with_ingestors(header_map.clone(), Bytes::new(), PMETA_STREAM_NAME)
-                        .await
+                && let Err(e) = sync_streams_with_ingestors(
+                    header_map.clone(),
+                    Bytes::new(),
+                    PMETA_STREAM_NAME,
+                    &tenant_id,
+                )
+                .await
             {
                 tracing::error!("Failed to sync pmeta stream with ingestors: {:?}", e);
             }
@@ -526,6 +535,7 @@ impl Parseable {
                     header_map,
                     Bytes::new(),
                     BILLING_METRICS_STREAM_NAME,
+                    &tenant_id,
                 )
                 .await
             {
@@ -556,8 +566,8 @@ impl Parseable {
         }
 
         // For distributed deployments, if the stream not found in memory map,
-        //check if it exists in the storage
-        //create stream and schema from storage
+        // check if it exists in the storage
+        // create stream and schema from storage
         if self.options.mode != Mode::All
             && self
                 .create_stream_and_schema_from_storage(stream_name, tenant_id)
@@ -657,7 +667,7 @@ impl Parseable {
 
         let stream_in_memory_dont_update =
             self.streams.contains(stream_name, tenant_id) && !update_stream_flag;
-        tracing::warn!(stream_in_memory_dont_update=?stream_in_memory_dont_update);
+        // tracing::warn!(stream_in_memory_dont_update=?stream_in_memory_dont_update);
         // check if stream in storage only if not in memory
         // for Parseable OSS, create_update_stream is called only from query node
         // for Parseable Enterprise, create_update_stream is called from prism node
@@ -713,7 +723,7 @@ impl Parseable {
             custom_partition.as_ref(),
             static_schema_flag,
         )?;
-        tracing::warn!("validated static schema");
+        // tracing::warn!("validated static schema");
         let log_source_entry = LogSourceEntry::new(log_source, HashSet::new());
         self.create_stream(
             stream_name.to_string(),
@@ -728,7 +738,7 @@ impl Parseable {
             tenant_id,
         )
         .await?;
-        tracing::warn!("created stream");
+        // tracing::warn!("created stream");
         Ok(headers.clone())
     }
 
@@ -794,6 +804,7 @@ impl Parseable {
         // Proceed to create log stream if it doesn't exist
         let storage = self.storage.get_object_store();
 
+        // update owner and permissions
         let meta = ObjectStoreFormat {
             created_at: Utc::now().to_rfc3339(),
             permissions: vec![Permisssion::new(PARSEABLE.options.username.clone())],
@@ -812,12 +823,16 @@ impl Parseable {
             ..Default::default()
         };
 
+        // tracing::warn!(meta=?meta);
         match storage
             .create_stream(&stream_name, meta, schema.clone(), tenant_id)
             .await
         {
             Ok(created_at) => {
-                tracing::warn!(created_stream_at=?created_at);
+                // tracing::warn!(created_stream_at=?created_at);
+                // tracing::warn!(stream_name=?stream_name);
+                // tracing::warn!(schema=?schema);
+                // tracing::warn!(tenant_id=?tenant_id);
                 let mut static_schema: HashMap<String, Arc<Field>> = HashMap::new();
 
                 for (field_name, field) in schema
@@ -1117,7 +1132,6 @@ impl Parseable {
         // delete users and sessions
         let users = mut_users().remove(tenant_id);
         if let Some(users) = users {
-            tracing::warn!("found tenant users, deleting");
             for (userid, user) in users {
                 // metadata
                 //     .users
@@ -1147,12 +1161,12 @@ impl Parseable {
 
         let obj_store = self.storage().get_object_store();
         let dirs: Vec<String> = obj_store
-            .list_dirs_relative(&RelativePathBuf::from_iter([""]))
+            .list_dirs_relative(&RelativePathBuf::from_iter([""]), &None)
             .await?
             .into_iter()
             .filter(|d| !d.starts_with("."))
             .collect();
-        tracing::warn!("multi-tenant dirs- {dirs:?}");
+
         // validate the possible presence of tenant storage metadata
         for tenant_id in dirs.iter() {
             if let Some(meta) = PARSEABLE
@@ -1162,7 +1176,7 @@ impl Parseable {
                 && is_multi_tenant
             {
                 let metadata: StorageMetadata = serde_json::from_slice(&meta)?;
-                tracing::warn!("inserting tenant data- {metadata:?} for tenant- {tenant_id}");
+                // tracing::warn!("inserting tenant data- {metadata:?} for tenant- {tenant_id}");
                 TENANT_METADATA.insert_tenant(tenant_id.clone(), metadata.clone());
             } else if !is_multi_tenant {
             } else {
@@ -1181,7 +1195,9 @@ impl Parseable {
     }
 
     pub fn list_tenants(&self) -> Option<Vec<String>> {
-        if let Ok(t) = self.tenants.as_ref().read() {
+        if let Ok(t) = self.tenants.as_ref().read()
+            && !t.is_empty()
+        {
             let t = t.clone();
             Some(t)
         } else {

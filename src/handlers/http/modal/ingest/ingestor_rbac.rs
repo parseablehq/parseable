@@ -106,7 +106,9 @@ pub async fn add_roles_to_user(
     // check if all roles exist
     let mut non_existent_roles = Vec::new();
     roles_to_add.iter().for_each(|r| {
-        if roles().get(r).is_none() {
+        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+            && tenant_roles.get(r).is_none()
+        {
             non_existent_roles.push(r.clone());
         }
     });
@@ -150,7 +152,9 @@ pub async fn remove_roles_from_user(
     // check if all roles exist
     let mut non_existent_roles = Vec::new();
     roles_to_remove.iter().for_each(|r| {
-        if roles().get(r).is_none() {
+        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+            && tenant_roles.get(r).is_none()
+        {
             non_existent_roles.push(r.clone());
         }
     });

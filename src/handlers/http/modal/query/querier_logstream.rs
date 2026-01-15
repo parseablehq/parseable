@@ -72,7 +72,7 @@ pub async fn delete(
 
     let objectstore = PARSEABLE.storage.get_object_store();
     // Delete from storage
-    objectstore.delete_stream(&stream_name).await?;
+    objectstore.delete_stream(&stream_name, &tenant_id).await?;
     let stream_dir = PARSEABLE.get_or_create_stream(&stream_name, &tenant_id);
     if let Err(err) = fs::remove_dir_all(&stream_dir.data_path) {
         warn!(
@@ -90,12 +90,13 @@ pub async fn delete(
             .await?;
     }
 
-    let ingestor_metadata: Vec<NodeMetadata> = cluster::get_node_info(NodeType::Ingestor)
-        .await
-        .map_err(|err| {
-            error!("Fatal: failed to get ingestor info: {:?}", err);
-            err
-        })?;
+    let ingestor_metadata: Vec<NodeMetadata> =
+        cluster::get_node_info(NodeType::Ingestor, &tenant_id)
+            .await
+            .map_err(|err| {
+                error!("Fatal: failed to get ingestor info: {:?}", err);
+                err
+            })?;
 
     for ingestor in ingestor_metadata {
         let url = format!(
@@ -135,7 +136,7 @@ pub async fn put_stream(
         false
     };
 
-    sync_streams_with_ingestors(headers, body, &stream_name).await?;
+    sync_streams_with_ingestors(headers, body, &stream_name, &tenant_id).await?;
 
     if is_update {
         Ok(("Log stream updated", StatusCode::OK))

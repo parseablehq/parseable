@@ -27,11 +27,14 @@ pub mod ingestor_role;
 #[derive(Deserialize, Serialize)]
 pub struct SyncRole {
     privileges: Vec<DefaultPrivilege>,
-    tenant_id: String
+    tenant_id: Option<String>,
 }
 
 impl SyncRole {
-    pub fn new(privileges: Vec<DefaultPrivilege>, tenant_id: String) -> Self {
-        Self { privileges, tenant_id }
+    pub fn new(privileges: Vec<DefaultPrivilege>, tenant_id: Option<String>) -> Self {
+        Self {
+            privileges,
+            tenant_id,
+        }
     }
 }

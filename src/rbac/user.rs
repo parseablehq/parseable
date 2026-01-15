@@ -24,7 +24,10 @@ use argon2::{
 };
 
 use openid::Bearer;
-use rand::{RngCore, distributions::{Alphanumeric, DistString}};
+use rand::{
+    RngCore,
+    distributions::{Alphanumeric, DistString},
+};
 
 use crate::{
     handlers::http::rbac::{InvalidUserGroupError, RBACError},
@@ -180,7 +183,7 @@ pub fn get_super_admin_user() -> User {
         }),
         roles: ["super-admin".to_string()].into(),
         user_groups: HashSet::new(),
-        tenant: Some(DEFAULT_TENANT.to_owned()),
+        tenant: None,
     }
 }
 
@@ -322,7 +325,7 @@ fn is_valid_group_name(name: &str) -> bool {
 }
 
 impl UserGroup {
-    pub fn validate(&self) -> Result<(), RBACError> {
+    pub fn validate(&self, tenant_id: &Option<String>) -> Result<(), RBACError> {
         let valid_name = is_valid_group_name(&self.name);
 
         if read_user_groups().contains_key(&self.name) {
@@ -332,7 +335,10 @@ impl UserGroup {
         if !self.roles.is_empty() {
             // validate that the roles exist
             for role in &self.roles {
-                if !roles().contains_key(role) {
+                if let Some(tenant_roles) =
+                    roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+                    && !tenant_roles.contains_key(role)
+                {
                     non_existent_roles.push(role.clone());
                 }
             }

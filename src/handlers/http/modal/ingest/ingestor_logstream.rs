@@ -30,7 +30,8 @@ use crate::{
     catalog::remove_manifest_from_snapshot,
     handlers::http::logstream::error::StreamError,
     parseable::{PARSEABLE, StreamNotFound},
-    stats, utils::get_tenant_id_from_request,
+    stats,
+    utils::get_tenant_id_from_request,
 };
 
 pub async fn retention_cleanup(
@@ -53,7 +54,8 @@ pub async fn retention_cleanup(
         return Err(StreamNotFound(stream_name.clone()).into());
     }
 
-    if let Err(err) = remove_manifest_from_snapshot(&storage, &stream_name, date_list, &tenant_id).await
+    if let Err(err) =
+        remove_manifest_from_snapshot(&storage, &stream_name, date_list, &tenant_id).await
     {
         return Err(StreamError::Custom {
             msg: format!(
@@ -67,7 +69,10 @@ pub async fn retention_cleanup(
     Ok(actix_web::HttpResponse::NoContent().finish())
 }
 
-pub async fn delete(req: HttpRequest, stream_name: Path<String>) -> Result<impl Responder, StreamError> {
+pub async fn delete(
+    req: HttpRequest,
+    stream_name: Path<String>,
+) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     // Delete from staging

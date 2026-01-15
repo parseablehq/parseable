@@ -31,17 +31,18 @@ use futures_util::future::LocalBoxFuture;
 use crate::{
     handlers::{
         AUTHORIZATION_KEY, KINESIS_COMMON_ATTRIBUTES_KEY, LOG_SOURCE_KEY, LOG_SOURCE_KINESIS,
-        STREAM_NAME_HEADER_KEY, http::modal::OIDC_CLIENT,
+        STREAM_NAME_HEADER_KEY,
+        http::{ingest::PostError, modal::OIDC_CLIENT, rbac::RBACError},
     },
     option::Mode,
-    parseable::PARSEABLE,
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::{
         EXPIRY_DURATION,
         map::{SessionKey, mut_sessions, mut_users, sessions, users},
         roles_to_permission, user,
     },
     tenants::TENANT_METADATA,
-    utils::get_user_and_tenant_from_request,
+    utils::{get_user_and_tenant_from_request, get_user_from_request},
 };
 use crate::{
     rbac::Users,
@@ -164,22 +165,115 @@ where
             );
         }
         /* ## Section end */
-        // append tenant id if present
-        let user_and_tenant_id = match get_user_and_tenant_from_request(req.request()) {
-            Ok((uid, tid)) => {
-                req.headers_mut().insert(
-                    HeaderName::from_static("tenant"),
-                    HeaderValue::from_str(&tid).unwrap(),
-                );
-                Ok((uid, tid))
-            }
-            Err(e) => Err(e),
-        };
+        // if action is Ingest and multi-tenancy is on, then request MUST have tenant id
+        // else check for the presence of tenant id using other details
+
+        // an optional error to track the presence of CORRECTtenant header in case of ingestion
+        let mut header_error = None;
+        let user_and_tenant_id: Result<(Result<String, RBACError>, Option<String>), RBACError> =
+            if PARSEABLE.options.is_multi_tenant() {
+                // if ingestion then tenant MUST be present and should not be DEFAULT_TENANT
+                let tenant = if self.action.eq(&Action::Ingest) {
+                    if let Some(tenant) = req.headers().get("tenant")
+                        && let Ok(tenant) = tenant.to_str()
+                    {
+                        if tenant.eq(DEFAULT_TENANT) {
+                            header_error = Some(actix_web::Error::from(PostError::Header(
+                                crate::utils::header_parsing::ParseHeaderError::InvalidTenantId,
+                            )));
+                        }
+                        Some(tenant.to_owned())
+                    } else {
+                        // tenant header is not present, error out
+                        header_error = Some(actix_web::Error::from(PostError::Header(
+                            crate::utils::header_parsing::ParseHeaderError::MissingTenantId,
+                        )));
+                        None
+                    }
+                } else {
+                    // tenant header should not be present, modify request to add
+                    let tenant = if let Ok((_, tenant)) =
+                        get_user_and_tenant_from_request(req.request())
+                        && let Some(tid) = tenant.as_ref()
+                    {
+                        req.headers_mut().insert(
+                            HeaderName::from_static("tenant"),
+                            HeaderValue::from_str(&tid).unwrap(),
+                        );
+                        tenant
+                    } else {
+                        header_error = Some(actix_web::Error::from(PostError::Header(
+                            crate::utils::header_parsing::ParseHeaderError::InvalidTenantId,
+                        )));
+                        None
+                    };
+                    tenant
+                };
+                let userid = get_user_from_request(req.request());
+                Ok((userid, tenant))
+            } else {
+                // not multi-tenant, tenant header should NOT be present
+                if req.headers().get("tenant").is_some() {
+                    header_error = Some(actix_web::Error::from(PostError::Header(
+                        crate::utils::header_parsing::ParseHeaderError::UnexpectedHeader(
+                            "tenant".into(),
+                        ),
+                    )));
+                }
+                let userid = get_user_from_request(req.request());
+                Ok((userid, None))
+            };
+        // if self.action.eq(&Action::Ingest) && PARSEABLE.options.is_multi_tenant() {
+        //     if req.headers().get("tenant").is_none() {
+        //         header_error = Some(actix_web::Error::from(PostError::Header(
+        //             crate::utils::header_parsing::ParseHeaderError::MissingTenantId,
+        //         )));
+        //     }
+
+        //     let userid = get_user_from_request(req.request());
+        //     let tid = req
+        //         .headers()
+        //         .get("tenant")
+        //         .unwrap()
+        //         .to_str()
+        //         .unwrap()
+        //         .to_owned();
+        //     Ok((userid, Some(tid)))
+        // } else {
+        // match get_user_and_tenant_from_request(req.request()) {
+        //     Ok((uid, tid)) => {
+        //         if tid.is_some() {
+        //             req.headers_mut().insert(
+        //                 HeaderName::from_static("tenant"),
+        //                 HeaderValue::from_str(&tid.as_ref().unwrap()).unwrap(),
+        //             );
+        //         }
+
+        //         Ok((Ok(uid), tid))
+        //     }
+        //     Err(e) => Err(e),
+        // }
+        // };
+
+        // tracing::error!("spent {:?} to extract tenant", time.elapsed());
         // tracing::warn!("incomin request- {req:?}");
 
-        let auth_result: Result<_, Error> = (self.auth_method)(&mut req, self.action);
-
         let key: Result<SessionKey, Error> = extract_session_key(&mut req);
+
+        // if action is ingestion, check if tenant is correct for basic auth user
+        if self.action.eq(&Action::Ingest)
+            && let Ok(key) = &key
+            && let SessionKey::BasicAuth { username, password } = &key
+            && let Ok((_, tenant)) = &user_and_tenant_id
+            && let Some(tenant) = tenant.as_ref()
+            && !Users.validate_basic_user_tenant_id(username, password, tenant)
+        {
+            header_error = Some(actix_web::Error::from(PostError::Header(
+                crate::utils::header_parsing::ParseHeaderError::InvalidTenantId,
+            )));
+        }
+
+        let auth_result: Result<_, Error> = (self.auth_method)(&mut req, self.action);
 
         let fut = self.service.call(req);
         Box::pin(async move {
@@ -189,15 +283,33 @@ where
                 ));
             };
 
+            if let Some(err) = header_error {
+                return Err(err);
+            }
+
+            // // if action is ingestion, check if tenant is correct for basic auth user
+            // if action.eq(&Action::Ingest)
+            //     && let SessionKey::BasicAuth { username, password } = &key
+            //     && let Ok((_, tenant)) = &user_and_tenant_id
+            //     && let Some(tenant) = tenant.as_ref()
+            //     && !Users.validate_basic_user_tenant_id(username, password, tenant)
+            // {
+            //     return Err(actix_web::Error::from(PostError::Header(
+            //         crate::utils::header_parsing::ParseHeaderError::InvalidTenantId,
+            //     )));
+            // }
+
             // if session is expired, refresh token
             if sessions().is_session_expired(&key) {
                 let oidc_client = OIDC_CLIENT.get();
 
                 if let Some(client) = oidc_client
                     && let Ok((userid, tenant_id)) = user_and_tenant_id
+                    && let Ok(userid) = userid
                 {
                     let bearer_to_refresh = {
-                        if let Some(users) = users().get(&tenant_id)
+                        if let Some(users) =
+                            users().get(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v))
                             && let Some(user) = users.get(&userid)
                         {
                             match &user.ty {
@@ -244,7 +356,8 @@ where
 
                         let user_roles = {
                             let mut users_guard = mut_users();
-                            if let Some(users) = users_guard.get_mut(&tenant_id)
+                            if let Some(users) = users_guard
+                                .get_mut(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v))
                                 && let Some(user) = users.get_mut(&userid)
                             {
                                 if let user::UserType::OAuth(oauth) = &mut user.ty {
@@ -262,18 +375,25 @@ where
                             userid.clone(),
                             key.clone(),
                             Utc::now() + expires_in,
-                            roles_to_permission(user_roles, &tenant_id),
-                            &Some(tenant_id),
+                            roles_to_permission(
+                                user_roles,
+                                tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+                            ),
+                            &tenant_id,
                         );
-                    } else if let Some(users) = users().get(&tenant_id)
+                    } else if let Some(users) =
+                        users().get(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v))
                         && let Some(user) = users.get(&userid)
                     {
                         mut_sessions().track_new(
                             userid.clone(),
                             key.clone(),
                             Utc::now() + EXPIRY_DURATION,
-                            roles_to_permission(user.roles(), &tenant_id),
-                            &Some(tenant_id),
+                            roles_to_permission(
+                                user.roles(),
+                                tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+                            ),
+                            &tenant_id,
                         );
                     }
                 }

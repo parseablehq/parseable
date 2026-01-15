@@ -341,7 +341,8 @@ impl Target {
 
             match retry {
                 Retry::Infinite => loop {
-                    let current_state = if let Ok(state) = alerts.get_state(alert_id, &tenant_id).await
+                    let current_state = if let Ok(state) =
+                        alerts.get_state(alert_id, &tenant_id).await
                     {
                         state
                     } else {

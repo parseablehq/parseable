@@ -164,6 +164,7 @@ tempfile = "3.20.0"
 lazy_static = "1.4.0"
 prost = "0.13.1"
 dashmap = "6.1.0"
+parking_lot = "0.12.5"
 
 [build-dependencies]
 cargo_toml = "0.21"

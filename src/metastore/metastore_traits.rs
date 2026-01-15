@@ -45,7 +45,11 @@ use crate::{
 #[async_trait]
 pub trait Metastore: std::fmt::Debug + Send + Sync {
     async fn initiate_connection(&self) -> Result<(), MetastoreError>;
-    async fn get_objects(&self, parent_path: &str) -> Result<Vec<Bytes>, MetastoreError>;
+    async fn get_objects(
+        &self,
+        parent_path: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<Bytes>, MetastoreError>;
 
     /// overview
     async fn get_overviews(
@@ -104,7 +108,10 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
     ) -> Result<(), MetastoreError>;
 
     /// alerts state
-    async fn get_alert_states(&self, tenant_id: &Option<String>) -> Result<Vec<AlertStateEntry>, MetastoreError>;
+    async fn get_alert_states(
+        &self,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<AlertStateEntry>, MetastoreError>;
     async fn get_alert_state_entry(
         &self,
         alert_id: &Ulid,
@@ -122,7 +129,10 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
     ) -> Result<(), MetastoreError>;
 
     /// mttr history
-    async fn get_mttr_history(&self, tenant_id: &Option<String>) -> Result<Option<MTTRHistory>, MetastoreError>;
+    async fn get_mttr_history(
+        &self,
+        tenant_id: &Option<String>,
+    ) -> Result<Option<MTTRHistory>, MetastoreError>;
     async fn put_mttr_history(
         &self,
         obj: &dyn MetastoreObject,
@@ -307,7 +317,11 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
     // async fn put_tenant_metadata(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
 
     /// node metadata
-    async fn get_node_metadata(&self, node_type: NodeType) -> Result<Vec<Bytes>, MetastoreError>;
+    async fn get_node_metadata(
+        &self,
+        node_type: NodeType,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<Bytes>, MetastoreError>;
     async fn delete_node_metadata(
         &self,
         domain_name: &str,

@@ -53,6 +53,7 @@ use crate::metrics::increment_parquets_stored_by_date;
 use crate::metrics::increment_parquets_stored_size_by_date;
 use crate::metrics::{EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE};
 use crate::option::Mode;
+use crate::parseable::DEFAULT_TENANT;
 use crate::parseable::{LogStream, PARSEABLE, Stream};
 use crate::stats::FullStats;
 use crate::storage::SETTINGS_ROOT_DIRECTORY;
@@ -117,7 +118,11 @@ async fn upload_single_parquet_file(
 
     // Upload the file
     store
-        .upload_multipart(&RelativePathBuf::from(&stream_relative_path), &path)
+        .upload_multipart(
+            &RelativePathBuf::from(&stream_relative_path),
+            &path,
+            &tenant_id,
+        )
         .await
         .map_err(|e| {
             error!("Failed to upload file {filename:?} to {stream_relative_path}: {e}");
@@ -130,13 +135,14 @@ async fn upload_single_parquet_file(
         &stream_relative_path,
         local_file_size,
         &stream_name,
+        &tenant_id,
     )
     .await?;
 
     if !upload_is_valid {
         // Upload validation failed, clean up the uploaded file and return error
         let _ = store
-            .delete_object(&RelativePathBuf::from(&stream_relative_path))
+            .delete_object(&RelativePathBuf::from(&stream_relative_path), &tenant_id)
             .await;
         error!("Upload size validation failed for file {filename:?}, deleted from object storage");
         return Ok(UploadResult {
@@ -146,7 +152,12 @@ async fn upload_single_parquet_file(
     }
 
     // Update storage metrics
-    update_storage_metrics(&path, &stream_name, filename)?;
+    update_storage_metrics(
+        &path,
+        &stream_name,
+        filename,
+        tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+    )?;
 
     // Create manifest entry
     let absolute_path = store
@@ -169,6 +180,7 @@ fn update_storage_metrics(
     path: &std::path::Path,
     stream_name: &str,
     filename: &str,
+    tenant_id: &str,
 ) -> Result<(), ObjectStorageError> {
     let mut file_date_part = filename.split('.').collect::<Vec<&str>>()[0];
     file_date_part = file_date_part.split('=').collect::<Vec<&str>>()[1];
@@ -177,18 +189,18 @@ fn update_storage_metrics(
         .map(|m| m.len())
         .map_err(|e| ObjectStorageError::Custom(format!("metadata failed for {filename}: {e}")))?;
     STORAGE_SIZE
-        .with_label_values(&["data", stream_name, "parquet"])
+        .with_label_values(&["data", stream_name, "parquet", tenant_id])
         .add(compressed_size as i64);
     EVENTS_STORAGE_SIZE_DATE
-        .with_label_values(&["data", stream_name, "parquet", file_date_part])
+        .with_label_values(&["data", stream_name, "parquet", file_date_part, tenant_id])
         .inc_by(compressed_size);
     LIFETIME_EVENTS_STORAGE_SIZE
-        .with_label_values(&["data", stream_name, "parquet"])
+        .with_label_values(&["data", stream_name, "parquet", tenant_id])
         .add(compressed_size as i64);
 
     // billing metrics for parquet storage
-    increment_parquets_stored_by_date(file_date_part);
-    increment_parquets_stored_size_by_date(compressed_size, file_date_part);
+    increment_parquets_stored_by_date(file_date_part, tenant_id);
+    increment_parquets_stored_size_by_date(compressed_size, file_date_part, tenant_id);
 
     Ok(())
 }
@@ -220,10 +232,11 @@ async fn validate_uploaded_parquet_file(
     stream_relative_path: &str,
     expected_size: u64,
     stream_name: &str,
+    tenant_id: &Option<String>,
 ) -> Result<bool, ObjectStorageError> {
     // Verify the file exists and has the expected size
     match store
-        .head(&RelativePathBuf::from(stream_relative_path))
+        .head(&RelativePathBuf::from(stream_relative_path), tenant_id)
         .await
     {
         Ok(metadata) => {
@@ -269,37 +282,65 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     async fn get_buffered_reader(
         &self,
         path: &RelativePath,
+        tenant_id: &Option<String>,
     ) -> Result<BufReader, ObjectStorageError>;
-    async fn head(&self, path: &RelativePath) -> Result<ObjectMeta, ObjectStorageError>;
-    async fn get_object(&self, path: &RelativePath) -> Result<Bytes, ObjectStorageError>;
+    async fn head(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<ObjectMeta, ObjectStorageError>;
+    async fn get_object(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<Bytes, ObjectStorageError>;
     // TODO: make the filter function optional as we may want to get all objects
     async fn get_objects(
         &self,
         base_path: Option<&RelativePath>,
         filter_fun: Box<dyn Fn(String) -> bool + Send>,
+        tenant_id: &Option<String>,
     ) -> Result<Vec<Bytes>, ObjectStorageError>;
     async fn upload_multipart(
         &self,
         key: &RelativePath,
         path: &Path,
+        tenant_id: &Option<String>,
     ) -> Result<(), ObjectStorageError>;
     async fn put_object(
         &self,
         path: &RelativePath,
         resource: Bytes,
+        tenant_id: &Option<String>,
     ) -> Result<(), ObjectStorageError>;
-    async fn delete_prefix(&self, path: &RelativePath) -> Result<(), ObjectStorageError>;
-    async fn check(&self) -> Result<(), ObjectStorageError>;
-    async fn delete_stream(&self, stream_name: &str) -> Result<(), ObjectStorageError>;
+    async fn delete_prefix(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError>;
+    async fn check(&self, tenant_id: &Option<String>) -> Result<(), ObjectStorageError>;
+    async fn delete_stream(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError>;
     async fn list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError>;
     async fn list_old_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError>;
-    async fn list_dirs(&self) -> Result<Vec<String>, ObjectStorageError>;
+    async fn list_dirs(
+        &self,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<String>, ObjectStorageError>;
     async fn list_dirs_relative(
         &self,
         relative_path: &RelativePath,
+        tenant_id: &Option<String>,
     ) -> Result<Vec<String>, ObjectStorageError>;
 
-    async fn list_dates(&self, stream_name: &str) -> Result<Vec<String>, ObjectStorageError>;
+    async fn list_dates(
+        &self,
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<String>, ObjectStorageError>;
     /// Lists the immediate “hour=” partition directories under the given date.
     /// Only immediate child entries named `hour=HH` should be returned (no trailing slash).
     /// `HH` must be zero-padded two-digit numerals (`"hour=00"` through `"hour=23"`).
@@ -307,6 +348,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         &self,
         stream_name: &str,
         date: &str,
+        tenant_id: &Option<String>,
     ) -> Result<Vec<String>, ObjectStorageError>;
 
     /// Lists the immediate “minute=” partition directories under the given date/hour.
@@ -317,25 +359,40 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         stream_name: &str,
         date: &str,
         hour: &str,
+        tenant_id: &Option<String>,
     ) -> Result<Vec<String>, ObjectStorageError>;
     // async fn list_manifest_files(
     //     &self,
     //     stream_name: &str,
     // ) -> Result<BTreeMap<String, Vec<String>>, ObjectStorageError>;
-    async fn upload_file(&self, key: &str, path: &Path) -> Result<(), ObjectStorageError>;
-    async fn delete_object(&self, path: &RelativePath) -> Result<(), ObjectStorageError>;
+    async fn upload_file(
+        &self,
+        key: &str,
+        path: &Path,
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError>;
+    async fn delete_object(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError>;
     async fn get_ingestor_meta_file_paths(
         &self,
+        tenant_id: &Option<String>,
     ) -> Result<Vec<RelativePathBuf>, ObjectStorageError>;
-    async fn try_delete_node_meta(&self, node_filename: String) -> Result<(), ObjectStorageError>;
+    async fn try_delete_node_meta(
+        &self,
+        node_filename: String,
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError>;
     /// Returns the amount of time taken by the `ObjectStore` to perform a get
     /// call.
-    async fn get_latency(&self) -> Duration {
+    async fn get_latency(&self, tenant_id: &Option<String>) -> Duration {
         // It's Ok to `unwrap` here. The hardcoded value will always Result in
         // an `Ok`.
         let path = parseable_json_path();
         let start = Instant::now();
-        let _ = self.get_object(&path).await;
+        let _ = self.get_object(&path, tenant_id).await;
         start.elapsed()
     }
 
@@ -630,7 +687,9 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
             return Ok(stream_metadata_bytes);
         }
-        tracing::warn!("unable to find stream- {stream_name} with tenant- {tenant_id:?} in PARSEABLE.get_stream");
+        tracing::warn!(
+            "unable to find stream- {stream_name} with tenant- {tenant_id:?} in PARSEABLE.get_stream"
+        );
         let mut all_log_sources: Vec<LogSourceEntry> = Vec::new();
 
         if let Some(stream_metadata_obs) = PARSEABLE
@@ -769,9 +828,10 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     async fn get_first_and_latest_event_from_storage(
         &self,
         stream_name: &str,
+        tenant_id: &Option<String>,
     ) -> Result<(Option<String>, Option<String>), ObjectStorageError> {
         // Get all available dates for the stream
-        let dates = self.list_dates(stream_name).await?;
+        let dates = self.list_dates(stream_name, tenant_id).await?;
         if dates.is_empty() {
             return Ok((None, None));
         }
@@ -801,10 +861,10 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
         // Extract timestamps for min and max dates
         let first_timestamp = self
-            .extract_timestamp_for_date(stream_name, min_date, true)
+            .extract_timestamp_for_date(stream_name, min_date, true, tenant_id)
             .await?;
         let latest_timestamp = self
-            .extract_timestamp_for_date(stream_name, max_date, false)
+            .extract_timestamp_for_date(stream_name, max_date, false, tenant_id)
             .await?;
 
         let first_event_at = first_timestamp.map(|ts| ts.to_rfc3339());
@@ -819,9 +879,10 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         stream_name: &str,
         date: &str,
         find_min: bool,
+        tenant_id: &Option<String>,
     ) -> Result<Option<DateTime<Utc>>, ObjectStorageError> {
         // Get all hours for this date
-        let hours = self.list_hours(stream_name, date).await?;
+        let hours = self.list_hours(stream_name, date, tenant_id).await?;
         if hours.is_empty() {
             return Ok(None);
         }
@@ -847,7 +908,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
         // Get all minutes for the target hour
         let minutes = self
-            .list_minutes(stream_name, date, target_hour_str)
+            .list_minutes(stream_name, date, target_hour_str, tenant_id)
             .await?;
         if minutes.is_empty() {
             return Ok(None);
@@ -1055,6 +1116,7 @@ async fn process_schema_files(
     tenant_id: &Option<String>,
 ) -> Result<(), ObjectStorageError> {
     for path in upload_context.stream.schema_files() {
+        tracing::warn!(upload_context_schema_files=?path);
         let file = File::open(&path)?;
         let schema: Schema = serde_json::from_reader(file)?;
         commit_schema_to_storage(stream_name, schema, tenant_id).await?;
@@ -1079,7 +1141,9 @@ fn stream_relative_path(
         let custom_partition_list = custom_partition_fields.split(',').collect::<Vec<&str>>();
         file_suffix = str::replacen(filename, ".", "/", 3 + custom_partition_list.len());
     }
-    if let Some(tenant) = tenant_id {
+    if let Some(tenant) = tenant_id
+        && !tenant.eq(DEFAULT_TENANT)
+    {
         format!("{tenant}/{stream_name}/{file_suffix}")
     } else {
         format!("{stream_name}/{file_suffix}")

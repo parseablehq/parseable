@@ -465,6 +465,7 @@ impl Stream {
         &self,
         init_signal: bool,
         shutdown_signal: bool,
+        tenant_id: &Option<String>,
     ) -> Result<(), StagingError> {
         info!(
             "Starting arrow_conversion job for stream- {}",
@@ -481,6 +482,7 @@ impl Stream {
             custom_partition.as_ref(),
             init_signal,
             shutdown_signal,
+            tenant_id,
         )?;
         // check if there is already a schema file in staging pertaining to this stream
         // if yes, then merge them and save
@@ -582,22 +584,28 @@ impl Stream {
         props.set_sorting_columns(Some(sorting_column_vec)).build()
     }
 
-    fn reset_staging_metrics(&self) {
+    fn reset_staging_metrics(&self, tenant_id: &Option<String>) {
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         metrics::STAGING_FILES
-            .with_label_values(&[&self.stream_name])
+            .with_label_values(&[&self.stream_name, tenant_str])
             .set(0);
         metrics::STORAGE_SIZE
-            .with_label_values(&["staging", &self.stream_name, "arrows"])
+            .with_label_values(&["staging", &self.stream_name, "arrows", tenant_str])
             .set(0);
         metrics::STORAGE_SIZE
-            .with_label_values(&["staging", &self.stream_name, "parquet"])
+            .with_label_values(&["staging", &self.stream_name, "parquet", tenant_str])
             .set(0);
     }
 
-    fn update_staging_metrics(&self, staging_files: &HashMap<PathBuf, Vec<PathBuf>>) {
+    fn update_staging_metrics(
+        &self,
+        staging_files: &HashMap<PathBuf, Vec<PathBuf>>,
+        tenant_id: &Option<String>,
+    ) {
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let total_arrow_files = staging_files.values().map(|v| v.len()).sum::<usize>();
         metrics::STAGING_FILES
-            .with_label_values(&[&self.stream_name])
+            .with_label_values(&[&self.stream_name, tenant_str])
             .set(total_arrow_files as i64);
 
         let total_arrow_files_size = staging_files
@@ -609,7 +617,7 @@ impl Stream {
             })
             .sum::<u64>();
         metrics::STORAGE_SIZE
-            .with_label_values(&["staging", &self.stream_name, "arrows"])
+            .with_label_values(&["staging", &self.stream_name, "arrows", tenant_str])
             .set(total_arrow_files_size as i64);
     }
 
@@ -622,6 +630,7 @@ impl Stream {
         custom_partition: Option<&String>,
         init_signal: bool,
         shutdown_signal: bool,
+        tenant_id: &Option<String>,
     ) -> Result<Option<Schema>, StagingError> {
         let mut schemas = Vec::new();
 
@@ -630,11 +639,11 @@ impl Stream {
         let staging_files =
             self.arrow_files_grouped_exclude_time(now, group_minute, init_signal, shutdown_signal);
         if staging_files.is_empty() {
-            self.reset_staging_metrics();
+            self.reset_staging_metrics(tenant_id);
             return Ok(None);
         }
 
-        self.update_staging_metrics(&staging_files);
+        self.update_staging_metrics(&staging_files, tenant_id);
         for (parquet_path, arrow_files) in staging_files {
             let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
             if record_reader.readers.is_empty() {
@@ -646,6 +655,7 @@ impl Stream {
             let schema = Arc::new(merged_schema);
 
             let part_path = parquet_path.with_extension("part");
+            // tracing::warn!(part_path=?part_path);
             if !self.write_parquet_part_file(
                 &part_path,
                 record_reader,
@@ -659,7 +669,7 @@ impl Stream {
             if let Err(e) = std::fs::rename(&part_path, &parquet_path) {
                 error!("Couldn't rename part file: {part_path:?} -> {parquet_path:?}, error = {e}");
             } else {
-                self.cleanup_arrow_files_and_dir(&arrow_files);
+                self.cleanup_arrow_files_and_dir(&arrow_files, tenant_id);
             }
         }
 
@@ -744,7 +754,8 @@ impl Stream {
         }
     }
 
-    fn cleanup_arrow_files_and_dir(&self, arrow_files: &[PathBuf]) {
+    fn cleanup_arrow_files_and_dir(&self, arrow_files: &[PathBuf], tenant_id: &Option<String>) {
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         for (i, file) in arrow_files.iter().enumerate() {
             match file.metadata() {
                 Ok(meta) => {
@@ -756,6 +767,7 @@ impl Stream {
                                     "staging",
                                     &self.stream_name,
                                     ARROW_FILE_EXTENSION,
+                                    tenant_str,
                                 ])
                                 .sub(file_size as i64);
                         }
@@ -1003,6 +1015,7 @@ impl Stream {
         &self,
         init_signal: bool,
         shutdown_signal: bool,
+        tenant_id: &Option<String>,
     ) -> Result<(), StagingError> {
         let start_flush = Instant::now();
         // Force flush for init or shutdown signals to convert all .part files to .arrows
@@ -1017,7 +1030,7 @@ impl Stream {
 
         let start_convert = Instant::now();
 
-        self.prepare_parquet(init_signal, shutdown_signal)?;
+        self.prepare_parquet(init_signal, shutdown_signal, tenant_id)?;
         trace!(
             "Converting arrows to parquet on stream ({}) took: {}s",
             self.stream_name,
@@ -1052,9 +1065,9 @@ impl Streams {
         tenant_id: &Option<String>,
     ) -> StreamRef {
         let mut guard = self.write().expect(LOCK_EXPECT);
-        tracing::warn!(
-            "get_or_create\nstream- {stream_name}\ntenant- {tenant_id:?}\nmetadata- {metadata:?}\noptions- {options:?}"
-        );
+        // tracing::warn!(
+        //     "get_or_create\nstream- {stream_name}\ntenant- {tenant_id:?}\nmetadata- {metadata:?}\noptions- {options:?}"
+        // );
         let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
 
         if let Some(tenant_streams) = guard.get(tenant)
@@ -1069,12 +1082,12 @@ impl Streams {
         // guard.insert(stream_name, stream.clone());
 
         let stream = Stream::new(options, &stream_name, metadata, ingestor_id, tenant_id);
-        tracing::warn!("creating new stream- {stream_name}");
+        // tracing::warn!("creating new stream- {stream_name}");
         guard
             .entry(tenant.to_owned())
             .or_default()
             .insert(stream_name, stream.clone());
-        tracing::warn!("inserted stream in mem");
+        // tracing::warn!("inserted stream in mem");
         stream
     }
 
@@ -1093,9 +1106,9 @@ impl Streams {
         if let Some(tenant) = self.read().expect(LOCK_EXPECT).get(tenant_id) {
             tenant.contains_key(stream_name)
         } else {
-            tracing::warn!(
-                "Tenant with id {tenant_id} does not exist! Shouldn't happen (stream- {stream_name})"
-            );
+            // tracing::warn!(
+            //     "Tenant with id {tenant_id} does not exist! Shouldn't happen (stream- {stream_name})"
+            // );
             false
         }
     }
@@ -1164,6 +1177,8 @@ impl Streams {
         } else {
             vec![DEFAULT_TENANT.to_owned()]
         };
+        // tracing::warn!(flush_and_convert_tenants=?tenants);
+        // tracing::warn!(parseable_streams_tenants=?self.read().unwrap().keys());
         for tenant_id in tenants {
             let guard = self.read().expect(LOCK_EXPECT);
             let streams: Vec<Arc<Stream>> = if let Some(tenant_streams) = guard.get(&tenant_id) {
@@ -1172,16 +1187,12 @@ impl Streams {
                 vec![]
             };
             for stream in streams {
-                joinset
-                    .spawn(async move { stream.flush_and_convert(init_signal, shutdown_signal) });
+                let tenant = tenant_id.clone();
+                joinset.spawn(async move {
+                    stream.flush_and_convert(init_signal, shutdown_signal, &Some(tenant))
+                });
             }
         }
-        // let streams: Vec<Arc<Stream>> = self
-        //     .read()
-        //     .expect(LOCK_EXPECT)
-        //     .values()
-        //     .map(Arc::clone)
-        //     .collect();
     }
 }
 

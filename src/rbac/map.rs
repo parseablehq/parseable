@@ -28,6 +28,8 @@ use super::{
     role::{Action, Permission, RoleBuilder, model::DefaultPrivilege},
     user,
 };
+use actix_web::dev::ServiceRequest;
+use actix_web::http::header::{HeaderName, HeaderValue};
 use chrono::{DateTime, Utc};
 use itertools::Itertools;
 use once_cell::sync::{Lazy, OnceCell};
@@ -36,11 +38,11 @@ use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub type Roles = HashMap<String, HashMap<String, Vec<DefaultPrivilege>>>;
 
-pub static USERS: OnceCell<RwLock<Users>> = OnceCell::new();
+pub static USERS: OnceCell<parking_lot::RwLock<Users>> = OnceCell::new();
 pub static ROLES: OnceCell<RwLock<Roles>> = OnceCell::new();
 pub static DEFAULT_ROLE: Lazy<RwLock<HashMap<String, Option<String>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
-pub static SESSIONS: OnceCell<RwLock<Sessions>> = OnceCell::new();
+pub static SESSIONS: OnceCell<parking_lot::RwLock<Sessions>> = OnceCell::new();
 pub static USER_GROUPS: OnceCell<RwLock<UserGroups>> = OnceCell::new();
 
 pub fn read_user_groups() -> RwLockReadGuard<'static, UserGroups> {
@@ -59,22 +61,16 @@ pub fn write_user_groups() -> RwLockWriteGuard<'static, UserGroups> {
         .expect("UserGroups map is poisoned")
 }
 
-pub fn users() -> RwLockReadGuard<'static, Users> {
+pub fn users() -> parking_lot::RwLockReadGuard<'static, Users> {
     {
-        USERS
-            .get()
-            .expect("map is set")
-            .read()
-            .expect("not poisoned")
+        USERS.get().expect("map is set").read()
+        // .expect("not poisoned")
     }
 }
 
-pub fn mut_users() -> RwLockWriteGuard<'static, Users> {
-    USERS
-        .get()
-        .expect("map is set")
-        .write()
-        .expect("not poisoned")
+pub fn mut_users() -> parking_lot::RwLockWriteGuard<'static, Users> {
+    USERS.get().expect("map is set").write()
+    // .expect("not poisoned")
 }
 
 pub fn roles() -> RwLockReadGuard<'static, Roles> {
@@ -95,20 +91,14 @@ pub fn mut_roles() -> RwLockWriteGuard<'static, Roles> {
         .expect("not poisoned")
 }
 
-pub fn sessions() -> RwLockReadGuard<'static, Sessions> {
-    SESSIONS
-        .get()
-        .expect("map is set")
-        .read()
-        .expect("not poisoned")
+pub fn sessions() -> parking_lot::RwLockReadGuard<'static, Sessions> {
+    SESSIONS.get().expect("map is set").read()
+    // .expect("not poisoned")
 }
 
-pub fn mut_sessions() -> RwLockWriteGuard<'static, Sessions> {
-    SESSIONS
-        .get()
-        .expect("map is set")
-        .write()
-        .expect("not poisoned")
+pub fn mut_sessions() -> parking_lot::RwLockWriteGuard<'static, Sessions> {
+    SESSIONS.get().expect("map is set").write()
+    // .expect("not poisoned")
 }
 
 // initialize the user and auth maps
@@ -154,6 +144,13 @@ pub fn init(metadata: &StorageMetadata) {
     //     admin_permissions,
     // );
 
+    PARSEABLE
+        .streams
+        .write()
+        .unwrap()
+        .entry(DEFAULT_TENANT.to_owned())
+        .or_default();
+
     sessions
         .user_sessions
         .entry(DEFAULT_TENANT.to_owned())
@@ -170,10 +167,31 @@ pub fn init(metadata: &StorageMetadata) {
     map.insert(DEFAULT_TENANT.to_owned(), roles);
     ROLES.set(RwLock::new(map)).expect("map is only set once");
 
-    USERS.set(RwLock::new(users)).expect("map is only set once");
+    // let all_users = Users::from(users.clone());
+    // let basic_users = all_users.0.iter()
+    //     .map(|(k,v)| {
+    //         for (uid,user) in v.iter() {
+    //             match &user.ty {
+    //                 user::UserType::Native(basic) => {
+    //                     (basic.username,)
+    //                 },
+    //                 _ => {},
+    //             }
+    //         }
+    //     })
+    // USERS2
+    //     .set(parking_lot::RwLock::new(Users2 {
+    //         all_users: all_users.0,
+    //         basic_users: (),
+    //     }))
+    //     .unwrap();
+
+    USERS
+        .set(parking_lot::RwLock::new(users))
+        .expect("map is only set once");
 
     SESSIONS
-        .set(RwLock::new(sessions))
+        .set(parking_lot::RwLock::new(sessions))
         .expect("map is only set once");
 
     USER_GROUPS
@@ -414,6 +432,15 @@ impl Sessions {
         self.active_sessions
             .get(key)
             .map(|(userid, tenant_id, _)| (userid.clone(), tenant_id.clone()))
+    }
+
+    pub fn mutate_request_with_tenant(&self, key: &SessionKey, req: &mut ServiceRequest) {
+        if let Some((_, tenant, _)) = self.active_sessions.get(key) {
+            req.headers_mut().insert(
+                HeaderName::from_static("tenant"),
+                HeaderValue::from_bytes(tenant.as_bytes()).unwrap(),
+            );
+        }
     }
 }
 

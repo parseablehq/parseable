@@ -22,15 +22,14 @@ use actix_web::{
     HttpRequest, HttpResponse, Responder,
     web::{self, Json},
 };
-use serde::{Deserialize, Serialize};
 
 use crate::{
-    handlers::http::{modal::{ingest::SyncRole, utils::rbac_utils::get_metadata}, role::RoleError},
-    parseable::DEFAULT_TENANT,
-    rbac::{
-        map::{mut_roles, mut_sessions, read_user_groups, users},
-        role::model::DefaultPrivilege,
+    handlers::http::{
+        modal::{ingest::SyncRole, utils::rbac_utils::get_metadata},
+        role::RoleError,
     },
+    parseable::DEFAULT_TENANT,
+    rbac::map::{mut_roles, mut_sessions, read_user_groups, users},
     storage,
     utils::get_tenant_id_from_request,
 };
@@ -45,18 +44,18 @@ pub async fn put(
     let name = name.into_inner();
     let req_tenant_id = get_tenant_id_from_request(&req);
     let req_tenant = req_tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
-    if req_tenant.ne(DEFAULT_TENANT) && (req_tenant.eq(&sync_req.tenant_id)) {
+    if req_tenant.ne(DEFAULT_TENANT) && (req_tenant_id.eq(&sync_req.tenant_id)) {
         return Err(RoleError::Anyhow(anyhow::Error::msg(
             "non super-admin user trying to create role for another tenant",
         )));
     }
-    let req_tenant_id = &Some(sync_req.tenant_id);
-    let mut metadata = get_metadata(req_tenant_id).await?;
+    // let req_tenant_id = &Some(sync_req.tenant_id);
+    let mut metadata = get_metadata(&sync_req.tenant_id).await?;
     metadata
         .roles
         .insert(name.clone(), sync_req.privileges.clone());
 
-    let _ = storage::put_staging_metadata(&metadata, req_tenant_id);
+    let _ = storage::put_staging_metadata(&metadata, &sync_req.tenant_id);
     let tenant_id = req_tenant_id
         .as_ref()
         .map_or(DEFAULT_TENANT, |v| v)

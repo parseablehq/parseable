@@ -59,7 +59,9 @@ pub async fn post_user(
 
     let mut non_existent_roles = Vec::new();
     for role in &user_roles {
-        if !roles().contains_key(role) {
+        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+            && !tenant_roles.contains_key(role)
+        {
             non_existent_roles.push(role.clone());
         }
     }
@@ -84,7 +86,7 @@ pub async fn post_user(
     let created_role = user_roles.clone();
     Users.put_user(user.clone());
 
-    sync_user_creation(user, &Some(user_roles)).await?;
+    sync_user_creation(user, &Some(user_roles), &tenant_id).await?;
     if !created_role.is_empty() {
         add_roles_to_user(
             req,
@@ -160,7 +162,7 @@ pub async fn delete_user(
     }
     put_metadata(&metadata, &tenant_id).await?;
 
-    sync_user_deletion_with_ingestors(&userid).await?;
+    sync_user_deletion_with_ingestors(&userid, &tenant_id).await?;
 
     // update in mem table
     Users.delete_user(&userid, &tenant_id);
@@ -194,7 +196,9 @@ pub async fn add_roles_to_user(
 
     // check if the role exists
     roles_to_add.iter().for_each(|r| {
-        if roles().get(r).is_none() {
+        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+            && tenant_roles.get(r).is_none()
+        {
             non_existent_roles.push(r.clone());
         }
     });
@@ -220,7 +224,7 @@ pub async fn add_roles_to_user(
     // update in mem table
     Users.add_roles(&userid.clone(), roles_to_add.clone(), &tenant_id);
 
-    sync_users_with_roles_with_ingestors(&userid, &roles_to_add, "add").await?;
+    sync_users_with_roles_with_ingestors(&userid, &roles_to_add, "add", &tenant_id).await?;
 
     Ok(format!("Roles updated successfully for {username}"))
 }
@@ -254,7 +258,9 @@ pub async fn remove_roles_from_user(
 
     // check if the role exists
     roles_to_remove.iter().for_each(|r| {
-        if roles().get(r).is_none() {
+        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+            && tenant_roles.get(r).is_none()
+        {
             non_existent_roles.push(r.clone());
         }
     });
@@ -292,7 +298,7 @@ pub async fn remove_roles_from_user(
     // update in mem table
     Users.remove_roles(&userid.clone(), roles_to_remove.clone(), &tenant_id);
 
-    sync_users_with_roles_with_ingestors(&userid, &roles_to_remove, "remove").await?;
+    sync_users_with_roles_with_ingestors(&userid, &roles_to_remove, "remove", &tenant_id).await?;
 
     Ok(HttpResponse::Ok().json(format!("Roles updated successfully for {username}")))
 }

@@ -50,8 +50,13 @@ pub enum Service {
 impl TenantMetadata {
     pub fn insert_tenant(&self, tenant_id: String, meta: StorageMetadata) {
         let suspensions = meta.suspended_services.clone().unwrap_or_default();
-        self.tenants
-            .insert(tenant_id, TenantOverview { suspended_services: suspensions, meta });
+        self.tenants.insert(
+            tenant_id,
+            TenantOverview {
+                suspended_services: suspensions,
+                meta,
+            },
+        );
     }
 
     pub fn suspend_service(&self, tenant_id: &str, service: Service) {
