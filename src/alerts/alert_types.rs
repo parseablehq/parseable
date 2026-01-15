@@ -39,7 +39,10 @@ use crate::{
     metastore::metastore_traits::MetastoreObject,
     parseable::PARSEABLE,
     query::resolve_stream_names,
-    rbac::map::SessionKey,
+    rbac::{
+        map::{SessionKey, roles, users},
+        role::model::DefaultPrivilege,
+    },
     storage::object_storage::alert_json_path,
     utils::user_auth_for_query,
 };
@@ -85,8 +88,39 @@ impl MetastoreObject for ThresholdAlert {
 impl AlertTrait for ThresholdAlert {
     async fn eval_alert(&self) -> Result<Option<String>, AlertError> {
         let time_range = extract_time_range(&self.eval_config)?;
+        let auth = if let Some(tenant) = &self.tenant_id
+            && let Some(tenant_users) = users().get(tenant)
+            && let Some(tenant_roles) = roles().get(tenant)
+            && let Some(user) = tenant_users.iter().find_map(|(_, user)| {
+                let mut res = None;
+                for role in &user.roles {
+                    if let Some(role) = tenant_roles.get(role)
+                        && role.contains(&DefaultPrivilege::Admin)
+                    {
+                        res = Some(user.clone());
+                        break;
+                    }
+                }
+                res
+            }) {
+            // fetch admin credentials for tenant
+            match user.ty {
+                crate::rbac::user::UserType::Native(basic) => {
+                    // Create a protected user whose details can't be edited
+                    // save that user's basic auth
+                    // use that to send request
+                    None
+                },
+                crate::rbac::user::UserType::OAuth(_) => {
+                    tracing::warn!("admin user is oauth");
+                    None
+                },
+            }
+        } else {
+            None
+        };
         let query_result =
-            execute_alert_query(self.get_query(), &time_range, &self.tenant_id).await?;
+            execute_alert_query(auth, self.get_query(), &time_range, &self.tenant_id).await?;
 
         if query_result.is_simple_query {
             // Handle simple queries

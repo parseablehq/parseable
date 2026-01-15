@@ -113,6 +113,7 @@ impl FlightService for FlightServiceImpl {
             rbac::Response::ReloadRequired => {
                 return Err(Status::unauthenticated("reload required"));
             }
+            rbac::Response::Suspended(_) => return Err(Status::permission_denied("Suspended")),
         }
 
         let schema = PARSEABLE

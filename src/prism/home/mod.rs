@@ -106,11 +106,8 @@ pub async fn generate_home_response(
     // Execute these operations concurrently
     let (stream_titles_result, alerts_summary_result) =
         tokio::join!(get_stream_titles(key, tenant_id), get_alerts_summary(key));
-    tracing::warn!("starting home response data collection");
     let stream_titles = stream_titles_result?;
-    tracing::warn!("got stream titles response {stream_titles:?}");
     let alerts_summary = alerts_summary_result?;
-    tracing::warn!("got alerts summary response {alerts_summary:?}");
     // Generate dates for date-wise stats
     let mut dates = (0..7)
         .map(|i| {
@@ -133,7 +130,6 @@ pub async fn generate_home_response(
     let mut datasets = Vec::new();
 
     for result in stream_metadata_results {
-        tracing::warn!("stream_metadata_result- {result:?}");
         match result {
             Ok((stream, metadata, dataset_type, time_partition)) => {
                 // Skip internal streams if the flag is false
@@ -234,7 +230,6 @@ async fn get_stream_metadata(
         .metastore
         .get_all_stream_jsons(&stream, None, tenant_id)
         .await?;
-    tracing::warn!("all stream jsons- {obs:?}");
     let mut stream_jsons = Vec::new();
     for ob in obs {
         let stream_metadata: ObjectStoreFormat = match serde_json::from_slice(&ob) {

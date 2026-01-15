@@ -90,7 +90,7 @@ pub async fn calculate_field_stats(
     parquet_path: &Path,
     schema: &Schema,
     max_field_statistics: usize,
-    tenant_id: &Option<String>
+    tenant_id: &Option<String>,
 ) -> Result<bool, PostError> {
     //create datetime from timestamp present in parquet path
     let parquet_ts = extract_datetime_from_parquet_path_regex(parquet_path).map_err(|e| {
@@ -100,7 +100,13 @@ pub async fn calculate_field_stats(
         ))
     })?;
     let field_stats = {
-        let ctx = SessionContext::new_with_state(QUERY_SESSION_STATE.clone());
+        let mut session_state = QUERY_SESSION_STATE.clone();
+        session_state
+            .config_mut()
+            .options_mut()
+            .catalog
+            .default_schema = tenant_id.as_ref().map_or("public".into(), |v| v.to_owned());
+        let ctx = SessionContext::new_with_state(session_state);
         let table_name = Ulid::new().to_string();
         ctx.register_parquet(
             &table_name,
@@ -133,7 +139,7 @@ pub async fn calculate_field_stats(
             Some(&DATASET_STATS_CUSTOM_PARTITION.to_string()),
             vec![log_source_entry],
             TelemetryType::Logs,
-            tenant_id
+            tenant_id,
         )
         .await?;
     let vec_json = apply_generic_flattening_for_partition(

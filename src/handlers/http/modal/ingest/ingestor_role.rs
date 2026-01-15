@@ -61,7 +61,7 @@ pub async fn put(
         .as_ref()
         .map_or(DEFAULT_TENANT, |v| v)
         .to_owned();
-    mut_roles("ingestor_role_put")
+    mut_roles()
         .entry(tenant_id.clone())
         .or_default()
         .insert(name.clone(), sync_req.privileges);

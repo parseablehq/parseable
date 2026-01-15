@@ -17,7 +17,6 @@
  */
 
 use actix_web::http::header::HeaderMap;
-
 use crate::{
     event::format::LogSource,
     handlers::{

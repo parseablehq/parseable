@@ -190,9 +190,11 @@ impl Correlations {
         &self,
         correlation_id: &str,
         user_id: &str,
-        tenant_id: &Option<String>
+        tenant_id: &Option<String>,
     ) -> Result<(), CorrelationError> {
-        let correlation = CORRELATIONS.get_correlation(correlation_id, tenant_id).await?;
+        let correlation = CORRELATIONS
+            .get_correlation(correlation_id, tenant_id)
+            .await?;
         if correlation.user_id != user_id {
             return Err(CorrelationError::AnyhowError(anyhow::Error::msg(format!(
                 r#"User "{user_id}" isn't authorized to delete correlation with ID - {correlation_id}"#
@@ -200,7 +202,10 @@ impl Correlations {
         }
 
         // Delete from storage
-        PARSEABLE.metastore.delete_correlation(&correlation, tenant_id).await?;
+        PARSEABLE
+            .metastore
+            .delete_correlation(&correlation, tenant_id)
+            .await?;
 
         // Delete from memory
         self.write().await.remove(&correlation.id);
@@ -267,7 +272,7 @@ impl CorrelationConfig {
 
     /// This function will validate the TableConfigs, JoinConfig, and user auth
     pub async fn validate(&self, session_key: &SessionKey) -> Result<(), CorrelationError> {
-        let ctx = &QUERY_SESSION;
+        let ctx = &QUERY_SESSION.get_ctx();
         let tenant_id = get_tenant_id_from_key(session_key);
         let h1: HashSet<&String> = self.table_configs.iter().map(|t| &t.table_name).collect();
         let h2: HashSet<&String> = self

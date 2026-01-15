@@ -25,8 +25,7 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-use actix_web::http::StatusCode;
-use actix_web::http::header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue};
+use actix_web::http::{StatusCode, header::{CONTENT_TYPE, HeaderMap, HeaderName, HeaderValue}};
 use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Utc;
@@ -57,7 +56,10 @@ use crate::{
             },
             ingest::PostError,
             logstream::error::{CreateStreamError, StreamError},
-            modal::{ingest_server::INGESTOR_META, utils::logstream_utils::PutStreamHeaders},
+            modal::{
+                ingest_server::INGESTOR_META,
+                utils::{logstream_utils::PutStreamHeaders, rbac_utils::get_metadata},
+            },
         },
     },
     metadata::{LogStreamMetadata, SchemaVersion},
@@ -65,12 +67,16 @@ use crate::{
         metastore_traits::Metastore, metastores::object_store_metastore::ObjectStoreMetastore,
     },
     option::Mode,
+    rbac::{
+        Users,
+        map::{mut_roles, mut_users},
+    },
     static_schema::{StaticSchema, convert_static_schema_to_arrow_schema},
     storage::{
         ObjectStorageError, ObjectStorageProvider, ObjectStoreFormat, Owner, Permisssion,
-        StorageMetadata, StreamType,
+        StorageMetadata, StreamType, put_remote_metadata,
     },
-    tenants::TENANT_METADATA,
+    tenants::{Service, TENANT_METADATA},
     validator,
 };
 
@@ -259,9 +265,7 @@ impl Parseable {
 
     // validate the storage, if the proper path for staging directory is provided
     // if the proper data directory is provided, or s3 bucket is provided etc
-    pub async fn validate_storage(
-        &self,
-    ) -> Result<Option<Bytes>, ObjectStorageError> {
+    pub async fn validate_storage(&self) -> Result<Option<Bytes>, ObjectStorageError> {
         let obj_store = self.storage.get_object_store();
         let mut has_parseable_json = false;
         let parseable_json_result = self
@@ -1064,9 +1068,77 @@ impl Parseable {
             )));
         } else {
             self.tenants.write().unwrap().push(tenant_id.clone());
-            TENANT_METADATA.insert(tenant_id, tenant_meta);
+            TENANT_METADATA.insert_tenant(tenant_id, tenant_meta);
         }
 
+        Ok(())
+    }
+
+    pub async fn suspend_tenant_service(
+        &self,
+        tenant_id: String,
+        service: Service,
+    ) -> Result<(), anyhow::Error> {
+        TENANT_METADATA.suspend_service(&tenant_id, service.clone());
+
+        // write to disk
+        let tenant_id = &Some(tenant_id);
+        let mut meta = get_metadata(tenant_id).await?;
+        if let Some(sus) = meta.suspended_services.as_mut() {
+            sus.insert(service);
+        } else {
+            meta.suspended_services = Some(HashSet::from_iter([service]));
+        }
+
+        put_remote_metadata(&meta, tenant_id).await?;
+        Ok(())
+    }
+
+    pub async fn resume_tenant_service(
+        &self,
+        tenant_id: String,
+        service: Service,
+    ) -> Result<(), anyhow::Error> {
+        TENANT_METADATA.resume_service(&tenant_id, service.clone());
+
+        // write to disk
+        let tenant_id = &Some(tenant_id);
+        let mut meta = get_metadata(tenant_id).await?;
+        if let Some(sus) = meta.suspended_services.as_mut() {
+            sus.remove(&service);
+        }
+
+        put_remote_metadata(&meta, tenant_id).await?;
+        Ok(())
+    }
+
+    pub fn delete_tenant(&self, tenant_id: &str) -> Result<(), anyhow::Error> {
+        // let mut metadata = get_metadata(&Some(tenant_id.to_owned())).await?;
+        // delete users and sessions
+        let users = mut_users().remove(tenant_id);
+        if let Some(users) = users {
+            tracing::warn!("found tenant users, deleting");
+            for (userid, user) in users {
+                // metadata
+                //     .users
+                //     .retain(|u| u.tenant.eq(&Some(tenant_id.to_owned())));
+
+                Users.delete_user(&userid, &user.tenant);
+            }
+        }
+
+        // delete roles
+        mut_roles().remove(tenant_id);
+        // if let Some(roles) = mut_roles().remove(tenant_id) {
+        //     for (role, _) in roles {
+        //         // metadata.roles.retain(|r, _| !role.eq(r));
+        //     }
+        // }
+
+        // delete resources
+
+        // delete from in-mem
+        TENANT_METADATA.delete_tenant(&tenant_id);
         Ok(())
     }
 
@@ -1091,7 +1163,7 @@ impl Parseable {
             {
                 let metadata: StorageMetadata = serde_json::from_slice(&meta)?;
                 tracing::warn!("inserting tenant data- {metadata:?} for tenant- {tenant_id}");
-                TENANT_METADATA.insert(tenant_id.clone(), metadata.clone());
+                TENANT_METADATA.insert_tenant(tenant_id.clone(), metadata.clone());
             } else if !is_multi_tenant {
             } else {
                 return Err(anyhow::Error::msg(format!(

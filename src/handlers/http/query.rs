@@ -49,8 +49,8 @@ use crate::event::{DEFAULT_TIMESTAMP_KEY, commit_schema};
 use crate::metrics::{QUERY_EXECUTE_TIME, increment_query_calls_by_date};
 use crate::parseable::{PARSEABLE, StreamNotFound};
 use crate::query::error::ExecuteError;
-use crate::query::{CountsRequest, Query as LogicalQuery, execute};
-use crate::query::{QUERY_SESSION, resolve_stream_names};
+use crate::query::{CountsRequest, QUERY_SESSION, Query as LogicalQuery, execute};
+use crate::query::resolve_stream_names;
 use crate::rbac::Users;
 use crate::response::QueryResponse;
 use crate::storage::ObjectStorageError;
@@ -84,7 +84,7 @@ pub async fn get_records_and_fields(
     creds: &SessionKey,
     tenant_id: &Option<String>,
 ) -> Result<(Option<Vec<RecordBatch>>, Option<Vec<String>>), QueryError> {
-    let session_state = QUERY_SESSION.state();
+    let session_state = QUERY_SESSION.get_ctx().state();
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
     let tables = resolve_stream_names(&query_request.query)?;
@@ -110,14 +110,19 @@ pub async fn get_records_and_fields(
 }
 
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
-    let session_state = QUERY_SESSION.state();
+    let mut session_state = QUERY_SESSION.get_ctx().state();
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
     let tables = resolve_stream_names(&query_request.query)?;
-    //check or load streams in memory
+    // check or load streams in memory
     create_streams_for_distributed(tables.clone(), &get_tenant_id_from_request(&req)).await?;
 
     let tenant_id = get_tenant_id_from_request(&req);
+    session_state
+        .config_mut()
+        .options_mut()
+        .catalog
+        .default_schema = tenant_id.as_ref().map_or("public".into(), |v| v.to_owned());
     let query: LogicalQuery = into_query(&query_request, &session_state, time_range).await?;
     let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);

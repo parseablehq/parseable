@@ -16,24 +16,88 @@
  *
  */
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::HashSet, sync::Arc};
 
 use dashmap::DashMap;
+use itertools::Itertools;
 use once_cell::sync::Lazy;
+use serde::{Deserialize, Serialize};
 
-use crate::{
-    metastore::metastore_traits::MetastoreObject,
-    option::Mode,
-    rbac::{
-        role::model::DefaultPrivilege,
-        user::{User, UserGroup},
-    },
-    storage::StorageMetadata,
-    utils::uid,
-};
+use crate::{rbac::role::Action, storage::StorageMetadata};
 
-pub static TENANT_METADATA: Lazy<Arc<DashMap<String, StorageMetadata>>> =
-    Lazy::new(|| Arc::new(DashMap::new()));
+pub static TENANT_METADATA: Lazy<Arc<TenantMetadata>> =
+    Lazy::new(|| Arc::new(TenantMetadata::default()));
+
+#[derive(Default)]
+pub struct TenantMetadata {
+    tenants: DashMap<String, TenantOverview>,
+}
+
+#[derive(Default, PartialEq, Eq)]
+pub struct TenantOverview {
+    suspended_services: HashSet<Service>,
+    meta: StorageMetadata,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub enum Service {
+    Ingest,
+    Query,
+    Workspace,
+}
+
+impl TenantMetadata {
+    pub fn insert_tenant(&self, tenant_id: String, meta: StorageMetadata) {
+        let suspensions = meta.suspended_services.clone().unwrap_or_default();
+        self.tenants
+            .insert(tenant_id, TenantOverview { suspended_services: suspensions, meta });
+    }
+
+    pub fn suspend_service(&self, tenant_id: &str, service: Service) {
+        if let Some(mut tenant) = self.tenants.get_mut(tenant_id) {
+            tenant.suspended_services.insert(service);
+        }
+    }
+
+    pub fn resume_service(&self, tenant_id: &str, service: Service) {
+        if let Some(mut tenant) = self.tenants.get_mut(tenant_id) {
+            tenant.suspended_services.remove(&service);
+        }
+    }
+
+    pub fn delete_tenant(&self, tenant_id: &str) {
+        self.tenants.remove(tenant_id);
+    }
+
+    pub fn is_action_suspended(
+        &self,
+        tenant_id: &str,
+        action: &Action,
+    ) -> Result<Option<String>, TenantNotFound> {
+        if let Some(tenant) = self.tenants.get(tenant_id) {
+            let states = &tenant.value().suspended_services;
+            if states.contains(&Service::Ingest) && action.eq(&Action::Ingest) {
+                Ok(Some("Ingestion is suspended for your workspace".into()))
+            } else if states.contains(&Service::Query) && action.eq(&Action::Query) {
+                Ok(Some("Querying is suspended for your workspace".into()))
+            } else if states.contains(&Service::Workspace) {
+                Ok(Some("Your workspace is suspended".into()))
+            } else {
+                Ok(None)
+            }
+        } else {
+            return Err(TenantNotFound(tenant_id.to_owned()));
+        }
+    }
+
+    pub fn get_tenants(&self) -> Vec<(String, StorageMetadata)> {
+        self.tenants
+            .iter()
+            .map(|k| (k.key().clone(), k.value().meta.clone()))
+            .collect_vec()
+    }
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("Tenant not found: {0}")]

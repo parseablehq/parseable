@@ -221,11 +221,12 @@ impl StandardTableProvider {
             .collect();
 
         let (partitioned_files, statistics) = self.partitioned_files(hot_tier_files);
-        let object_store_url = if let Some(tenant_id) = self.tenant_id.as_ref() {
-            &format!("file:///{tenant_id}/")
-        } else {
-            "file:///"
-        };
+        // let object_store_url = if let Some(tenant_id) = self.tenant_id.as_ref() {
+        //     &format!("file:///{tenant_id}/")
+        // } else {
+        //     "file:///"
+        // };
+        let object_store_url = "file:///";
         self.create_parquet_physical_plan(
             execution_plans,
             ObjectStoreUrl::parse(object_store_url).unwrap(),
@@ -278,14 +279,15 @@ impl StandardTableProvider {
             partitioned_files.push(file)
         }
 
-        // NOTE: There is the possibility of a parquet file being pushed to object store
-        // and deleted from staging in the time it takes for datafusion to get to it.
-        // Staging parquet execution plan
-        let object_store_url = if let Some(tenant_id) = self.tenant_id.as_ref() {
-            &format!("file:///{tenant_id}/")
-        } else {
-            "file:///"
-        };
+        // // NOTE: There is the possibility of a parquet file being pushed to object store
+        // // and deleted from staging in the time it takes for datafusion to get to it.
+        // // Staging parquet execution plan
+        // let object_store_url = if let Some(tenant_id) = self.tenant_id.as_ref() {
+        //     &format!("file://{tenant_id}/")
+        // } else {
+        //     "file:///"
+        // };
+        let object_store_url = "file:///";
         self.create_parquet_physical_plan(
             execution_plans,
             ObjectStoreUrl::parse(object_store_url).unwrap(),
@@ -524,6 +526,12 @@ impl TableProvider for StandardTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
+        tracing::warn!(
+            "entered scan with\ntenant- {:?}\nschema- {:?}\nstream- {}",
+            self.tenant_id,
+            self.schema,
+            self.stream
+        );
         let mut execution_plans = vec![];
         let glob_storage = PARSEABLE.storage.get_object_store();
 
@@ -628,11 +636,13 @@ impl TableProvider for StandardTableProvider {
         }
 
         let (partitioned_files, statistics) = self.partitioned_files(manifest_files);
-        let object_store_url = if let Some(tenant_id) = self.tenant_id.as_ref() {
-            glob_storage.store_url().join(tenant_id).unwrap()
-        } else {
-            glob_storage.store_url()
-        };
+        // let object_store_url = if let Some(tenant_id) = self.tenant_id.as_ref() {
+        //     glob_storage.store_url().join(tenant_id).unwrap()
+        // } else {
+        //     glob_storage.store_url()
+        // };
+        let object_store_url = glob_storage.store_url();
+        tracing::warn!(object_store_url=?object_store_url);
         self.create_parquet_physical_plan(
             &mut execution_plans,
             ObjectStoreUrl::parse(object_store_url).unwrap(),

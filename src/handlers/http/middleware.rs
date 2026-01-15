@@ -20,7 +20,7 @@
 use std::future::{Ready, ready};
 
 use actix_web::{
-    Error, HttpMessage, Route,
+    Error, HttpMessage, HttpRequest, Route,
     dev::{Service, ServiceRequest, ServiceResponse, Transform, forward_ready},
     error::{ErrorBadRequest, ErrorForbidden, ErrorUnauthorized},
     http::header::{self, HeaderName, HeaderValue},
@@ -40,6 +40,7 @@ use crate::{
         map::{SessionKey, mut_sessions, mut_users, sessions, users},
         roles_to_permission, user,
     },
+    tenants::TENANT_METADATA,
     utils::get_user_and_tenant_from_request,
 };
 use crate::{
@@ -242,7 +243,7 @@ where
                             };
 
                         let user_roles = {
-                            let mut users_guard = mut_users("middleware");
+                            let mut users_guard = mut_users();
                             if let Some(users) = users_guard.get_mut(&tenant_id)
                                 && let Some(user) = users.get_mut(&userid)
                             {
@@ -289,6 +290,9 @@ where
                         "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
                     ));
                 }
+                rbac::Response::Suspended(msg) => {
+                    return Err(ErrorBadRequest(msg));
+                }
                 _ => {}
             }
 
@@ -297,7 +301,25 @@ where
     }
 }
 
+pub fn check_suspension(req: &HttpRequest, action: Action) -> rbac::Response {
+    if let Some(tenant) = req.headers().get("tenant")
+        && let Ok(tenant) = tenant.to_str()
+    {
+        if let Ok(Some(suspension)) = TENANT_METADATA.is_action_suspended(tenant, &action) {
+            return rbac::Response::Suspended(suspension);
+        } else {
+            // tenant does not exist
+        }
+    }
+    rbac::Response::Authorized
+}
+
 pub fn auth_no_context(req: &mut ServiceRequest, action: Action) -> Result<rbac::Response, Error> {
+    // check if tenant is suspended
+    match check_suspension(req.request(), action) {
+        rbac::Response::Suspended(msg) => return Ok(rbac::Response::Suspended(msg)),
+        _ => {}
+    }
     let creds = extract_session_key(req);
     creds.map(|key| Users.authorize(key, action, None, None))
 }
@@ -306,6 +328,11 @@ pub fn auth_resource_context(
     req: &mut ServiceRequest,
     action: Action,
 ) -> Result<rbac::Response, Error> {
+    // check if tenant is suspended
+    match check_suspension(req.request(), action) {
+        rbac::Response::Suspended(msg) => return Ok(rbac::Response::Suspended(msg)),
+        _ => {}
+    }
     let creds = extract_session_key(req);
     let usergroup = req.match_info().get("usergroup");
     let llmid = req.match_info().get("llmid");
@@ -328,6 +355,11 @@ pub fn auth_user_context(
     req: &mut ServiceRequest,
     action: Action,
 ) -> Result<rbac::Response, Error> {
+    // check if tenant is suspended
+    match check_suspension(req.request(), action) {
+        rbac::Response::Suspended(msg) => return Ok(rbac::Response::Suspended(msg)),
+        _ => {}
+    }
     let creds = extract_session_key(req);
     let user = req.match_info().get("username");
     creds.map(|key| Users.authorize(key, action, None, user))

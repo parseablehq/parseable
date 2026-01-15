@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
 
     // load metadata from persistence
     let parseable_json = server.load_metadata().await?;
-    let metadata = storage::resolve_parseable_metadata(&parseable_json).await?;
+    let metadata = storage::resolve_parseable_metadata(&parseable_json, &None).await?;
     banner::print(&PARSEABLE, &metadata).await;
     // initialize the rbac map
     rbac::map::init(&metadata);

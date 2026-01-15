@@ -46,6 +46,7 @@ pub enum Response {
     Authorized,
     UnAuthorized,
     ReloadRequired,
+    Suspended(String)
 }
 
 // This type encapsulates both the user_map and auth_map
@@ -56,8 +57,7 @@ impl Users {
     pub fn put_user(&self, user: User) {
         let tenant_id = user.tenant.as_ref().map_or(DEFAULT_TENANT, |v| v);
         mut_sessions().remove_user(user.userid(), tenant_id);
-        tracing::warn!("done removing session");
-        mut_users("Users.put_user").insert(user);
+        mut_users().insert(user);
     }
 
     pub fn get_user_groups(&self, userid: &str, tenant_id: &Option<String>) -> HashSet<String> {
@@ -117,7 +117,7 @@ impl Users {
     }
 
     fn remove_user(&mut self, userid: &str, tenant_id: &str) {
-        match mut_users("Users.remove_user").get_mut(tenant_id) {
+        match mut_users().get_mut(tenant_id) {
             Some(users) => {
                 users.remove(userid);
             }
@@ -128,7 +128,7 @@ impl Users {
     // caller ensures that this operation is valid for the user
     pub fn change_password_hash(&self, userid: &str, hash: &String, tenant_id: &Option<String>) {
         let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
-        if let Some(users) = mut_users("Users.chage pwd").get_mut(tenant_id)
+        if let Some(users) = mut_users().get_mut(tenant_id)
             && let Some(User {
                 ty: UserType::Native(user),
                 ..
@@ -141,7 +141,7 @@ impl Users {
 
     pub fn add_roles(&self, userid: &str, roles: HashSet<String>, tenant_id: &Option<String>) {
         let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
-        if let Some(users) = mut_users("Users.add role").get_mut(tenant_id)
+        if let Some(users) = mut_users().get_mut(tenant_id)
             && let Some(user) = users.get_mut(userid)
         {
             user.roles.extend(roles);
@@ -151,7 +151,7 @@ impl Users {
 
     pub fn remove_roles(&self, userid: &str, roles: HashSet<String>, tenant_id: &Option<String>) {
         let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
-        if let Some(users) = mut_users("Users.remove role").get_mut(tenant_id)
+        if let Some(users) = mut_users().get_mut(tenant_id)
             && let Some(user) = users.get_mut(userid)
         {
             let diff = HashSet::from_iter(user.roles.difference(&roles).cloned());
@@ -224,7 +224,7 @@ impl Users {
     ) -> Response {
         // try fetch from auth map for faster auth flow
         if let Some(res) = sessions().check_auth(&key, action, context_stream, context_user) {
-            tracing::warn!("returning with res- {res:?}");
+            // tracing::warn!("returning with res- {res:?}");
             return res;
         }
         // attempt reloading permissions into new session for basic auth user

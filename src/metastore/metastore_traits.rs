@@ -303,7 +303,7 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError>;
-    // async fn get_tenant_metadata(&self, tenant_id: &str) -> Result<Bytes, MetastoreError>;
+    async fn delete_tenant(&self, tenant_id: &str) -> Result<(), MetastoreError>;
     // async fn put_tenant_metadata(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError>;
 
     /// node metadata

@@ -23,7 +23,7 @@ use actix_web::{HttpRequest, HttpResponse, Responder, web};
 use crate::{
     handlers::http::{
         cluster::{
-            sync_password_reset_with_ingestors, sync_user_creation_with_ingestors,
+            sync_password_reset_with_ingestors, sync_user_creation,
             sync_user_deletion_with_ingestors, sync_users_with_roles_with_ingestors,
         },
         modal::utils::rbac_utils::{get_metadata, put_metadata},
@@ -84,7 +84,7 @@ pub async fn post_user(
     let created_role = user_roles.clone();
     Users.put_user(user.clone());
 
-    sync_user_creation_with_ingestors(user, &Some(user_roles)).await?;
+    sync_user_creation(user, &Some(user_roles)).await?;
     if !created_role.is_empty() {
         add_roles_to_user(
             req,
