@@ -22,22 +22,26 @@ use actix_web::http::StatusCode;
 use actix_web::{
     HttpRequest, HttpResponse,
     cookie::{Cookie, SameSite, time},
-    http::header::{self, ContentType},
+    http::header::ContentType,
     web,
 };
 use chrono::{Duration, TimeDelta};
+use http::header;
 use openid::{Bearer, Options, Token, Userinfo};
 use regex::Regex;
 use serde::Deserialize;
+use serde_json::json;
 use tokio::sync::RwLock;
 use ulid::Ulid;
 use url::Url;
 
 use crate::{
+    INTRA_CLUSTER_CLIENT,
     handlers::{
         COOKIE_AGE_DAYS, SESSION_COOKIE_NAME, USER_COOKIE_NAME, USER_ID_COOKIE_NAME,
         http::{
-            API_BASE_PATH, API_VERSION,
+            API_BASE_PATH, API_VERSION, base_path_without_preceding_slash,
+            cluster::for_each_live_node,
             modal::{GlobalClient, OIDC_CLIENT},
         },
     },
@@ -99,7 +103,9 @@ pub async fn login(
     // try authorize
     match Users.authorize(session_key.clone(), rbac::role::Action::Login, None, None) {
         rbac::Response::Authorized => (),
-        rbac::Response::UnAuthorized | rbac::Response::ReloadRequired => {
+        rbac::Response::UnAuthorized
+        | rbac::Response::ReloadRequired
+        | rbac::Response::Suspended(_) => {
             return Err(OIDCError::Unauthorized);
         }
     }
@@ -121,6 +127,36 @@ pub async fn login(
                     SessionKey::BasicAuth { username, password },
                     EXPIRY_DURATION,
                 );
+                let _session = session_cookie.value().to_owned();
+                let _user = user.clone();
+                let r = for_each_live_node(move |node| {
+                    let url = format!(
+                        "{}{}/o/login/sync",
+                        node.domain_name,
+                        base_path_without_preceding_slash(),
+                    );
+                    let _session = _session.clone();
+                    let _user = _user.clone();
+
+                    async move {
+                        INTRA_CLUSTER_CLIENT
+                            .post(url)
+                            .header(header::AUTHORIZATION, node.token)
+                            .header(header::CONTENT_TYPE, "application/json")
+                            .json(&json!(
+                                {
+                                    "sessionCookie": _session,
+                                    "user": _user,
+                                    "expiry": EXPIRY_DURATION
+                                }
+                            ))
+                            .send()
+                            .await?;
+                        Ok::<(), anyhow::Error>(())
+                    }
+                })
+                .await;
+                tracing::warn!(login_sync=?r);
                 Ok(redirect_to_client(
                     query.redirect.as_str(),
                     [user_cookie, user_id_cookie, session_cookie],
@@ -358,15 +394,18 @@ fn redirect_to_oidc(
     let mut url: String = auth_url.into();
     url.push_str("&access_type=offline&prompt=consent");
     HttpResponse::TemporaryRedirect()
-        .insert_header((header::LOCATION, url))
+        .insert_header((actix_web::http::header::LOCATION, url))
         .finish()
 }
 
 fn redirect_to_oidc_logout(mut logout_endpoint: Url, redirect: &Url) -> HttpResponse {
     logout_endpoint.set_query(Some(&format!("post_logout_redirect_uri={redirect}")));
     HttpResponse::TemporaryRedirect()
-        .insert_header((header::CACHE_CONTROL, "no-store"))
-        .insert_header((header::LOCATION, logout_endpoint.to_string()))
+        .insert_header((actix_web::http::header::CACHE_CONTROL, "no-store"))
+        .insert_header((
+            actix_web::http::header::LOCATION,
+            logout_endpoint.to_string(),
+        ))
         .finish()
 }
 
@@ -375,11 +414,11 @@ pub fn redirect_to_client(
     cookies: impl IntoIterator<Item = Cookie<'static>>,
 ) -> HttpResponse {
     let mut response = HttpResponse::MovedPermanently();
-    response.insert_header((header::LOCATION, url));
+    response.insert_header((actix_web::http::header::LOCATION, url));
     for cookie in cookies {
         response.cookie(cookie);
     }
-    response.insert_header((header::CACHE_CONTROL, "no-store"));
+    response.insert_header((actix_web::http::header::CACHE_CONTROL, "no-store"));
 
     let res = response.finish();
     res
@@ -388,8 +427,8 @@ pub fn redirect_to_client(
 fn redirect_no_oauth_setup(mut url: Url) -> HttpResponse {
     url.set_path("oidc-not-configured");
     let mut response = HttpResponse::MovedPermanently();
-    response.insert_header((header::LOCATION, url.as_str()));
-    response.insert_header((header::CACHE_CONTROL, "no-store"));
+    response.insert_header((actix_web::http::header::LOCATION, url.as_str()));
+    response.insert_header((actix_web::http::header::CACHE_CONTROL, "no-store"));
     response.finish()
 }
 

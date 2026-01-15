@@ -25,7 +25,7 @@ use actix_web::{
 
 use crate::{
     handlers::http::{
-        cluster::sync_role_update_with_ingestors,
+        cluster::sync_role_update,
         modal::utils::rbac_utils::{get_metadata, put_metadata},
         role::RoleError,
     },
@@ -54,7 +54,7 @@ pub async fn put(
     metadata.roles.insert(name.clone(), privileges.clone());
 
     put_metadata(&metadata, &tenant_id).await?;
-    mut_roles("querier_role_put")
+    mut_roles()
         .entry(tenant.to_owned())
         .or_default()
         .insert(name.clone(), privileges.clone());
@@ -85,7 +85,7 @@ pub async fn put(
         mut_sessions().remove_user(&userid, tenant);
     }
 
-    sync_role_update_with_ingestors(req, name.clone(), privileges.clone(), tenant).await?;
+    sync_role_update(req, name.clone(), privileges.clone(), tenant).await?;
 
     Ok(HttpResponse::Ok().finish())
 }

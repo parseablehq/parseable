@@ -75,13 +75,14 @@ pub fn extract_time_range(eval_config: &super::EvalConfig) -> Result<TimeRange, 
 
 /// Execute the alert query based on the current mode and return structured group results
 pub async fn execute_alert_query(
+    auth_token: Option<String>,
     query: &str,
     time_range: &TimeRange,
     tenant_id: &Option<String>,
 ) -> Result<AlertQueryResult, AlertError> {
     match PARSEABLE.options.mode {
         Mode::All | Mode::Query => execute_local_query(query, time_range, tenant_id).await,
-        Mode::Prism => execute_remote_query(query, time_range).await,
+        Mode::Prism => execute_remote_query(auth_token, query, time_range).await,
         _ => Err(AlertError::CustomError(format!(
             "Unsupported mode '{:?}' for alert evaluation",
             PARSEABLE.options.mode
@@ -95,7 +96,7 @@ async fn execute_local_query(
     time_range: &TimeRange,
     tenant_id: &Option<String>,
 ) -> Result<AlertQueryResult, AlertError> {
-    let session_state = QUERY_SESSION.state();
+    let session_state = QUERY_SESSION.get_ctx().state();
 
     let tables = resolve_stream_names(query)?;
     create_streams_for_distributed(tables.clone(), tenant_id)
@@ -127,10 +128,11 @@ async fn execute_local_query(
 
 /// Execute alert query remotely (Prism mode)
 async fn execute_remote_query(
+    auth_token: Option<String>,
     query: &str,
     time_range: &TimeRange,
 ) -> Result<AlertQueryResult, AlertError> {
-    let session_state = QUERY_SESSION.state();
+    let session_state = QUERY_SESSION.get_ctx().state();
     let raw_logical_plan = session_state.create_logical_plan(query).await?;
 
     let query_request = Query {
@@ -143,7 +145,7 @@ async fn execute_remote_query(
         filter_tags: None,
     };
 
-    let (result_value, _) = send_query_request(&query_request)
+    let (result_value, _) = send_query_request(None,&query_request)
         .await
         .map_err(|err| AlertError::CustomError(format!("Failed to send query request: {err}")))?;
 

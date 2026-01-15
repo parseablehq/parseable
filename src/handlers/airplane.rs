@@ -136,7 +136,7 @@ impl FlightService for AirServiceImpl {
         info!("query requested to airplane: {:?}", ticket);
 
         // get the query session_state
-        let session_state = QUERY_SESSION.state();
+        let session_state = QUERY_SESSION.get_ctx().state();
 
         let time_range = TimeRange::parse_human_time(&ticket.start_time, &ticket.end_time)
             .map_err(|e| Status::internal(e.to_string()))?;
@@ -194,6 +194,7 @@ impl FlightService for AirServiceImpl {
             rbac::Response::ReloadRequired => {
                 return Err(Status::unauthenticated("reload required"));
             }
+            rbac::Response::Suspended(_) => return Err(Status::permission_denied("Suspended")),
         }
 
         let permissions = Users.get_permissions(&key);

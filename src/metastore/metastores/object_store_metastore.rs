@@ -830,10 +830,9 @@ impl Metastore for ObjectStoreMetastore {
         stream_name: &str,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        Ok(self
-            .storage
-            .put_object(&stream_json_path(stream_name, tenant_id), to_bytes(obj))
-            .await?)
+        let path = stream_json_path(stream_name, tenant_id);
+        // tracing::warn!(put_stream_json_path=?path);
+        Ok(self.storage.put_object(&path, to_bytes(obj)).await?)
     }
 
     /// Fetch all `Manifest` files
@@ -848,10 +847,7 @@ impl Metastore for ObjectStoreMetastore {
         } else {
             stream_name.into()
         };
-        let resp = self
-            .storage
-            .list_with_delimiter(Some(root.into()))
-            .await?;
+        let resp = self.storage.list_with_delimiter(Some(root.into())).await?;
 
         let dates = resp
             .common_prefixes
@@ -899,8 +895,8 @@ impl Metastore for ObjectStoreMetastore {
         let path = match manifest_url {
             Some(url) => RelativePathBuf::from(url),
             None => {
-                let path = partition_path(stream_name, lower_bound, upper_bound);
-                manifest_path(path.as_str(), tenant_id)
+                let path = partition_path(stream_name, lower_bound, upper_bound, tenant_id);
+                manifest_path(path.as_str())
             }
         };
         match self.storage.get_object(&path).await {
@@ -933,10 +929,10 @@ impl Metastore for ObjectStoreMetastore {
         upper_bound: DateTime<Utc>,
         tenant_id: &Option<String>,
     ) -> Result<String, MetastoreError> {
-        let path = partition_path(stream_name, lower_bound, upper_bound);
+        let path = partition_path(stream_name, lower_bound, upper_bound, tenant_id);
         Ok(self
             .storage
-            .absolute_url(&manifest_path(path.as_str(), tenant_id))
+            .absolute_url(&manifest_path(path.as_str()))
             .to_string())
     }
 
@@ -948,8 +944,10 @@ impl Metastore for ObjectStoreMetastore {
         upper_bound: DateTime<Utc>,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        let manifest_file_name = manifest_path("",tenant_id).to_string();
-        let path = partition_path(stream_name, lower_bound, upper_bound).join(&manifest_file_name);
+        let manifest_file_name = manifest_path("").to_string();
+        let path = partition_path(stream_name, lower_bound, upper_bound, tenant_id)
+            .join(&manifest_file_name);
+        // tracing::warn!(put_manifest_path=?path);
         Ok(self.storage.put_object(&path, to_bytes(obj)).await?)
     }
 
@@ -960,8 +958,9 @@ impl Metastore for ObjectStoreMetastore {
         upper_bound: DateTime<Utc>,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        let manifest_file_name = manifest_path("",tenant_id).to_string();
-        let path = partition_path(stream_name, lower_bound, upper_bound).join(&manifest_file_name);
+        let manifest_file_name = manifest_path("").to_string();
+        let path = partition_path(stream_name, lower_bound, upper_bound, tenant_id)
+            .join(&manifest_file_name);
         Ok(self.storage.delete_object(&path).await?)
     }
 
@@ -1030,8 +1029,13 @@ impl Metastore for ObjectStoreMetastore {
         stream_name: &str,
         tenant_id: &Option<String>,
     ) -> Result<Vec<Schema>, MetastoreError> {
-        let path_prefix =
-            relative_path::RelativePathBuf::from(format!("{stream_name}/{STREAM_ROOT_DIRECTORY}"));
+        let path_prefix = if let Some(tenant) = tenant_id {
+            relative_path::RelativePathBuf::from(format!(
+                "{tenant}/{stream_name}/{STREAM_ROOT_DIRECTORY}"
+            ))
+        } else {
+            relative_path::RelativePathBuf::from(format!("{stream_name}/{STREAM_ROOT_DIRECTORY}"))
+        };
         Ok(self
             .storage
             .get_objects(
@@ -1093,20 +1097,12 @@ impl Metastore for ObjectStoreMetastore {
         Ok(parseable_metadata)
     }
 
-    // async fn get_tenant_metadata(&self, tenant_id: &str) -> Result<Bytes, MetastoreError> {
-    //     let base_path = RelativePathBuf::from_iter([tenant_id, ".parseable.json"]);
-    //     self.storage
-    //         .get_object(&base_path)
-    //         .await
-    //         .map_err(MetastoreError::ObjectStorageError)
-    // }
-
-    // async fn put_tenant_metadata(&self, obj: &dyn MetastoreObject) -> Result<(), MetastoreError> {
-    //     self.storage
-    //         .put_object(&RelativePathBuf::from(obj.get_object_path()), to_bytes(obj))
-    //         .await
-    //         .map_err(MetastoreError::ObjectStorageError)
-    // }
+    async fn delete_tenant(&self, tenant_id: &str) -> Result<(), MetastoreError> {
+        self.storage
+            .delete_prefix(&RelativePathBuf::from(tenant_id))
+            .await
+            .map_err(MetastoreError::ObjectStorageError)
+    }
 
     async fn get_ingestor_metadata(&self) -> Result<Vec<Bytes>, MetastoreError> {
         let base_path = RelativePathBuf::from(PARSEABLE_ROOT_DIRECTORY);
@@ -1234,19 +1230,19 @@ impl Metastore for ObjectStoreMetastore {
                 .common_prefixes
                 .iter()
                 .flat_map(|path| {
-                    tracing::warn!("list_streams path- {path}");
+                    // tracing::warn!("list_streams path- {path}");
                     path.parts()
                 })
                 .map(|name| name.as_ref().to_string())
                 .filter(|name| {
-                    tracing::warn!("list_streams name- {name}");
+                    // tracing::warn!("list_streams name- {name}");
                     name != PARSEABLE_ROOT_DIRECTORY
                         && name != USERS_ROOT_DIR
                         && name != SETTINGS_ROOT_DIRECTORY
                         && name != ALERTS_ROOT_DIRECTORY
                 })
                 .collect::<Vec<_>>();
-            tracing::warn!("list_streams streams- {streams:?}");
+            // tracing::warn!("list_streams streams- {streams:?}");
             for stream in streams {
                 let stream_path = if let Some(root) = root.as_ref() {
                     object_store::path::Path::from_iter([
@@ -1261,14 +1257,14 @@ impl Metastore for ObjectStoreMetastore {
                 //     "{}/{}",
                 //     &stream, STREAM_ROOT_DIRECTORY
                 // ));
-                tracing::warn!("list_streams stream_path- {stream_path}");
+                // tracing::warn!("list_streams stream_path- {stream_path}");
                 let resp = self.storage.list_with_delimiter(Some(stream_path)).await?;
-                tracing::warn!("list_streams streams resp- {resp:?}");
+                // tracing::warn!("list_streams streams resp- {resp:?}");
                 if resp.objects.iter().any(|name| {
-                    tracing::warn!("list_streams streams resp name- {name:?}");
+                    // tracing::warn!("list_streams streams resp name- {name:?}");
                     name.location.filename().unwrap().ends_with("stream.json")
                 }) {
-                    tracing::warn!("inserting to list_streams- {stream}");
+                    // tracing::warn!("inserting to list_streams- {stream}");
                     result_file_list.insert(stream);
                 }
             }

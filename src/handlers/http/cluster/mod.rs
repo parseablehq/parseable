@@ -18,6 +18,7 @@
 
 pub mod utils;
 use actix_web::http::StatusCode;
+use actix_web::http::header::HeaderMap;
 use futures::{StreamExt, future, stream};
 use http::header;
 use lazy_static::lazy_static;
@@ -27,7 +28,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{RwLock, Semaphore};
 
-use actix_web::http::header::HeaderMap;
 use actix_web::web::Path;
 use actix_web::{HttpRequest, Responder};
 use bytes::Bytes;
@@ -327,29 +327,39 @@ impl BillingMetricsCollector {
     }
 }
 
-pub async fn for_each_live_ingestor<F, Fut, E>(api_fn: F) -> Result<(), E>
+pub async fn for_each_live_node<F, Fut, E>(api_fn: F) -> Result<(), E>
 where
     F: Fn(NodeMetadata) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = Result<(), E>> + Send,
     E: From<anyhow::Error> + Send + Sync + 'static,
 {
+    let mut nodes = Vec::new();
+
     let ingestor_infos: Vec<NodeMetadata> =
         get_node_info(NodeType::Ingestor).await.map_err(|err| {
             error!("Fatal: failed to get ingestor info: {:?}", err);
             E::from(err)
         })?;
+    nodes.extend(ingestor_infos);
 
-    let mut live_ingestors = Vec::new();
-    for ingestor in ingestor_infos {
-        if utils::check_liveness(&ingestor.domain_name).await {
-            live_ingestors.push(ingestor);
+    let querier_infos: Vec<NodeMetadata> =
+        get_node_info(NodeType::Querier).await.map_err(|err| {
+            error!("Fatal: failed to get querier info: {:?}", err);
+            E::from(err)
+        })?;
+    nodes.extend(querier_infos);
+
+    let mut live_nodes = Vec::new();
+    for node in nodes {
+        if utils::check_liveness(&node.domain_name).await {
+            live_nodes.push(node);
         } else {
-            warn!("Ingestor {} is not live", ingestor.domain_name);
+            warn!("Node {} is not live", node.domain_name);
         }
     }
 
     // Process all live ingestors in parallel
-    let results = futures::future::join_all(live_ingestors.into_iter().map(|ingestor| {
+    let results = futures::future::join_all(live_nodes.into_iter().map(|ingestor| {
         let api_fn = api_fn.clone();
         async move { api_fn(ingestor).await }
     }))
@@ -385,7 +395,7 @@ pub async fn sync_streams_with_ingestors(
     let stream_name = stream_name.to_string();
     let reqwest_headers_clone = reqwest_headers.clone();
 
-    for_each_live_ingestor(
+    for_each_live_node(
         move |ingestor| {
             let url = format!(
                 "{}{}/logstream/{}/sync",
@@ -500,7 +510,7 @@ pub async fn sync_users_with_roles_with_ingestors(
 
     let op = operation.to_string();
 
-    for_each_live_ingestor(move |ingestor| {
+    for_each_live_node(move |ingestor| {
         let url = format!(
             "{}{}/user/{}/role/sync/{}",
             ingestor.domain_name,
@@ -545,7 +555,7 @@ pub async fn sync_users_with_roles_with_ingestors(
 pub async fn sync_user_deletion_with_ingestors(userid: &str) -> Result<(), RBACError> {
     let userid = userid.to_owned();
 
-    for_each_live_ingestor(move |ingestor| {
+    for_each_live_node(move |ingestor| {
         let url = format!(
             "{}{}/user/{}/sync",
             ingestor.domain_name,
@@ -581,8 +591,8 @@ pub async fn sync_user_deletion_with_ingestors(userid: &str) -> Result<(), RBACE
     .await
 }
 
-// forward the create user request to all ingestors to keep them in sync
-pub async fn sync_user_creation_with_ingestors(
+// forward the create user request to all ingestors and queriers to keep them in sync
+pub async fn sync_user_creation(
     user: User,
     role: &Option<HashSet<String>>,
     // tenant_id: &str
@@ -601,10 +611,10 @@ pub async fn sync_user_creation_with_ingestors(
 
     let userid = userid.to_string();
 
-    for_each_live_ingestor(move |ingestor| {
+    for_each_live_node(move |node| {
         let url = format!(
             "{}{}/user/{}/sync",
-            ingestor.domain_name,
+            node.domain_name,
             base_path_without_preceding_slash(),
             userid
         );
@@ -614,23 +624,23 @@ pub async fn sync_user_creation_with_ingestors(
         async move {
             let res = INTRA_CLUSTER_CLIENT
                 .post(url)
-                .header(header::AUTHORIZATION, &ingestor.token)
+                .header(header::AUTHORIZATION, &node.token)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(user_data)
                 .send()
                 .await
                 .map_err(|err| {
                     error!(
-                        "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
-                        ingestor.domain_name, err
+                        "Fatal: failed to forward request to node: {}\n Error: {:?}",
+                        node.domain_name, err
                     );
                     RBACError::Network(err)
                 })?;
 
             if !res.status().is_success() {
                 error!(
-                    "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
-                    ingestor.domain_name,
+                    "failed to forward request to node: {}\nResponse Returned: {:?}",
+                    node.domain_name,
                     res.text().await
                 );
             }
@@ -648,7 +658,7 @@ pub async fn sync_password_reset_with_ingestors(
 ) -> Result<(), RBACError> {
     let username = username.to_owned();
 
-    for_each_live_ingestor(move |ingestor| {
+    for_each_live_node(move |ingestor| {
         let url = format!(
             "{}{}/user/{}/generate-new-password/sync",
             ingestor.domain_name,
@@ -685,18 +695,18 @@ pub async fn sync_password_reset_with_ingestors(
     .await
 }
 
-// forward the put role request to all ingestors to keep them in sync
-pub async fn sync_role_update_with_ingestors(
+// forward the put role request to all ingestors and queriers to keep them in sync
+pub async fn sync_role_update(
     req: HttpRequest,
     name: String,
     privileges: Vec<DefaultPrivilege>,
     tenant_id: &str,
 ) -> Result<(), RoleError> {
     let tenant_id = tenant_id.to_string();
-    for_each_live_ingestor(move |ingestor| {
+    for_each_live_node(move |node| {
         let url = format!(
             "{}{}/role/{}/sync",
-            ingestor.domain_name,
+            node.domain_name,
             base_path_without_preceding_slash(),
             name
         );
@@ -706,23 +716,23 @@ pub async fn sync_role_update_with_ingestors(
         async move {
             let res = INTRA_CLUSTER_CLIENT
                 .put(url)
-                .header(header::AUTHORIZATION, &ingestor.token)
+                .header(header::AUTHORIZATION, &node.token)
                 .header(header::CONTENT_TYPE, "application/json")
                 .json(&SyncRole::new(privileges, tenant.clone()))
                 .send()
                 .await
                 .map_err(|err| {
                     error!(
-                        "Fatal: failed to forward request to ingestor: {}\n Error: {:?}",
-                        ingestor.domain_name, err
+                        "Fatal: failed to forward request to node: {}\n Error: {:?}",
+                        node.domain_name, err
                     );
                     RoleError::Network(err)
                 })?;
 
             if !res.status().is_success() {
                 error!(
-                    "failed to forward request to ingestor: {}\nResponse Returned: {:?}",
-                    ingestor.domain_name,
+                    "failed to forward request to node: {}\nResponse Returned: {:?}",
+                    node.domain_name,
                     res.text().await
                 );
             }
@@ -1843,7 +1853,10 @@ pub async fn mark_querier_available(domain_name: &str) {
     }
 }
 
-pub async fn send_query_request(query_request: &Query) -> Result<(JsonValue, String), QueryError> {
+pub async fn send_query_request(
+    auth_token: Option<HeaderMap>,
+    query_request: &Query,
+) -> Result<(JsonValue, String), QueryError> {
     let querier = get_available_querier().await?;
     let domain_name = querier.domain_name.clone();
 
@@ -1864,10 +1877,26 @@ pub async fn send_query_request(query_request: &Query) -> Result<(JsonValue, Str
         }
     };
 
+    let mut map = reqwest::header::HeaderMap::new();
+
+    if let Some(auth) = auth_token {
+        for (key, value) in auth.iter() {
+            if let Ok(name) = reqwest::header::HeaderName::from_bytes(key.as_str().as_bytes())
+                && let Ok(val) = reqwest::header::HeaderValue::from_bytes(value.as_bytes())
+            {
+                map.insert(name, val);
+            }
+        }
+    } else {
+        map.insert(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_str(&querier.token).unwrap(),
+        );
+    };
     let res = match INTRA_CLUSTER_CLIENT
         .post(uri)
         .timeout(Duration::from_secs(300))
-        .header(header::AUTHORIZATION, &querier.token)
+        .headers(map)
         .header(header::CONTENT_TYPE, "application/json")
         .body(body)
         .send()

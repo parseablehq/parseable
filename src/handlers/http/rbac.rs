@@ -145,7 +145,7 @@ pub async fn post_user(
     }
 
     // LET TENANT BE NONE FOR NOW!!!
-    let (user, password) = user::User::new_basic(username.clone(), None);
+    let (user, password) = user::User::new_basic(username.clone(), tenant_id.clone());
 
     metadata.users.push(user.clone());
 

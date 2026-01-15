@@ -25,6 +25,7 @@ use crate::{
         modal::utils::rbac_utils::get_metadata,
         rbac::{RBACError, UPDATE_LOCK},
     },
+    parseable::DEFAULT_TENANT,
     rbac::{
         Users,
         map::roles,
@@ -42,16 +43,24 @@ pub async fn post_user(
     body: Option<web::Json<serde_json::Value>>,
 ) -> Result<HttpResponse, RBACError> {
     let username = username.into_inner();
-    let tenant_id = get_tenant_id_from_request(&req);
 
-    // todo handle tenant metadata
-    let metadata = get_metadata(&tenant_id).await?;
     if let Some(body) = body {
         let user: ParseableUser = serde_json::from_value(body.into_inner())?;
-        let _ = storage::put_staging_metadata(&metadata, &tenant_id);
+        let req_tenant_id = get_tenant_id_from_request(&req);
+        let req_tenant = req_tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        if req_tenant.ne(DEFAULT_TENANT)
+            && (req_tenant.eq(user.tenant.as_ref().map_or(DEFAULT_TENANT, |v| v)))
+        {
+            return Err(RBACError::Anyhow(anyhow::Error::msg(
+                "non super-admin user trying to create user for another tenant",
+            )));
+        }
+        let req_tenant_id = &user.tenant;
+        let metadata = get_metadata(req_tenant_id).await?;
+        let _ = storage::put_staging_metadata(&metadata, req_tenant_id);
         let created_role = user.roles.clone();
         Users.put_user(user.clone());
-        Users.add_roles(&username, created_role.clone(), &tenant_id);
+        Users.add_roles(&username, created_role.clone(), req_tenant_id);
     }
 
     Ok(HttpResponse::Ok().status(StatusCode::OK).finish())

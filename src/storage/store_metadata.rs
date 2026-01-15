@@ -17,7 +17,7 @@
  */
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, OpenOptions, create_dir_all},
     path::PathBuf,
 };
@@ -28,15 +28,10 @@ use relative_path::RelativePathBuf;
 use std::io;
 
 use crate::{
-    metastore::metastore_traits::MetastoreObject,
-    option::Mode,
-    parseable::{JOIN_COMMUNITY, PARSEABLE},
-    rbac::{
+    metastore::metastore_traits::MetastoreObject, option::Mode, parseable::{JOIN_COMMUNITY, PARSEABLE}, rbac::{
         role::model::DefaultPrivilege,
         user::{User, UserGroup},
-    },
-    storage::{ObjectStorageError, object_storage::parseable_json_path},
-    utils::uid,
+    }, storage::{ObjectStorageError, object_storage::parseable_json_path}, tenants::Service, utils::uid
 };
 
 use super::PARSEABLE_METADATA_FILE_NAME;
@@ -68,6 +63,7 @@ pub struct StorageMetadata {
     pub roles: HashMap<String, Vec<DefaultPrivilege>>,
     #[serde(default)]
     pub default_role: Option<String>,
+    pub suspended_services: Option<HashSet<Service>>
 }
 
 impl Default for StorageMetadata {
@@ -84,6 +80,7 @@ impl Default for StorageMetadata {
             streams: Vec::new(),
             roles: HashMap::default(),
             default_role: None,
+            suspended_services: None
         }
     }
 }

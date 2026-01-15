@@ -61,7 +61,6 @@ pub fn write_user_groups() -> RwLockWriteGuard<'static, UserGroups> {
 
 pub fn users() -> RwLockReadGuard<'static, Users> {
     {
-        tracing::warn!("users called by !!!!!");
         USERS
             .get()
             .expect("map is set")
@@ -70,20 +69,16 @@ pub fn users() -> RwLockReadGuard<'static, Users> {
     }
 }
 
-pub fn mut_users(by: &str) -> RwLockWriteGuard<'static, Users> {
-    {
-        tracing::warn!("mut_users called by {by}!!!!!");
-        USERS
-            .get()
-            .expect("map is set")
-            .write()
-            .expect("not poisoned")
-    }
+pub fn mut_users() -> RwLockWriteGuard<'static, Users> {
+    USERS
+        .get()
+        .expect("map is set")
+        .write()
+        .expect("not poisoned")
 }
 
 pub fn roles() -> RwLockReadGuard<'static, Roles> {
     {
-        tracing::warn!("roles called by !!!!!");
         ROLES
             .get()
             .expect("map is set")
@@ -92,15 +87,12 @@ pub fn roles() -> RwLockReadGuard<'static, Roles> {
     }
 }
 
-pub fn mut_roles(by: &str) -> RwLockWriteGuard<'static, Roles> {
-    {
-        tracing::warn!("mut_users called by {by}!!!!!");
-        ROLES
-            .get()
-            .expect("map is set")
-            .write()
-            .expect("not poisoned")
-    }
+pub fn mut_roles() -> RwLockWriteGuard<'static, Roles> {
+    ROLES
+        .get()
+        .expect("map is set")
+        .write()
+        .expect("not poisoned")
 }
 
 pub fn sessions() -> RwLockReadGuard<'static, Sessions> {
@@ -164,10 +156,10 @@ pub fn init(metadata: &StorageMetadata) {
 
     sessions
         .user_sessions
-        .entry(admin_username.clone())
+        .entry(DEFAULT_TENANT.to_owned())
         .or_default()
         .insert(
-            DEFAULT_TENANT.to_owned(),
+            admin_username.clone(),
             vec![(key.clone(), chrono::DateTime::<Utc>::MAX_UTC)],
         );
     sessions.active_sessions.insert(
@@ -202,7 +194,7 @@ pub enum SessionKey {
 pub struct Sessions {
     // map session key to user, tenant, and their permission
     active_sessions: HashMap<SessionKey, (String, String, Vec<Permission>)>,
-    // map user to one or more session
+    // map (tenant, user) to one or more session
     // this tracks session based on session id. Not basic auth
     // Ulid time contains expiration datetime
     user_sessions: HashMap<String, HashMap<String, Vec<(SessionKey, DateTime<Utc>)>>>,
@@ -211,6 +203,12 @@ pub struct Sessions {
 impl Sessions {
     pub fn get_active_sessions(&self) -> Vec<SessionKey> {
         self.active_sessions.keys().cloned().collect_vec()
+    }
+
+    pub fn remove_tenant_sessions(&mut self, tenant_id: &str) {
+        self.active_sessions
+            .retain(|_, (_, tenantid, _)| !tenant_id.eq(tenantid));
+        self.user_sessions.remove(tenant_id);
     }
 
     // only checks if the session is expired or not
@@ -251,8 +249,8 @@ impl Sessions {
         let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
         self.remove_expired_session(&user, &tenant_id);
 
-        let sessions = self.user_sessions.entry(user.clone()).or_default();
-        sessions.insert(tenant_id.to_owned(), vec![(key.clone(), expiry)]);
+        let sessions = self.user_sessions.entry(tenant_id.to_owned()).or_default();
+        sessions.insert(user.clone(), vec![(key.clone(), expiry)]);
         // sessions.push((key.clone(), expiry));
         self.active_sessions
             .insert(key, (user, tenant_id.to_string(), permissions));
@@ -274,18 +272,18 @@ impl Sessions {
 
     // remove sessions related to a user
     pub fn remove_user(&mut self, username: &str, tenant_id: &str) {
-        tracing::warn!("removing user- {username}, tenant_id- {tenant_id}");
-        tracing::warn!("active sessions- {:?}", self.active_sessions);
-        tracing::warn!("user sessions- {:?}", self.user_sessions);
+        // tracing::warn!("removing user- {username}, tenant_id- {tenant_id}");
+        // tracing::warn!("active sessions- {:?}", self.active_sessions);
+        // tracing::warn!("user sessions- {:?}", self.user_sessions);
         let sessions = if let Some(tenant_sessions) = self.user_sessions.get_mut(tenant_id) {
-            tracing::warn!("found session for tenant- {tenant_id}");
+            // tracing::warn!("found session for tenant- {tenant_id}");
             tenant_sessions.remove(username)
         } else {
-            tracing::warn!("not found session for tenant- {tenant_id}");
+            // tracing::warn!("not found session for tenant- {tenant_id}");
             None
         };
         if let Some(sessions) = sessions {
-            tracing::warn!("found active sessions for user {username}-   {sessions:?}");
+            // tracing::warn!("found active sessions for user {username}-   {sessions:?}");
             sessions.into_iter().for_each(|(key, _)| {
                 self.active_sessions.remove(&key);
             })
@@ -319,9 +317,9 @@ impl Sessions {
         context_resource: Option<&str>,
         context_user: Option<&str>,
     ) -> Option<Response> {
-        tracing::warn!(
-            "required_action- {required_action:?} context_resource- {context_resource:?}, context_user usr- {context_user:?}"
-        );
+        // tracing::warn!(
+        //     "required_action- {required_action:?} context_resource- {context_resource:?}, context_user usr- {context_user:?}"
+        // );
         self.active_sessions
             .get(key)
             .map(|(username, tenant_id, perms)| {
@@ -329,7 +327,7 @@ impl Sessions {
                 perms.extend(aggregate_group_permissions(username, tenant_id));
 
                 if perms.iter().any(|user_perm| {
-                    tracing::warn!("user-perm- {user_perm:?}");
+                    // tracing::warn!("user-perm- {user_perm:?}");
                     match *user_perm {
                         // if any action is ALL then we we authorize
                         Permission::Unit(action) => {
@@ -369,7 +367,7 @@ impl Sessions {
                                     }
                                 }
                             } else if resource_type.is_none() && action.eq(&Action::Ingest) {
-                                tracing::warn!("resource_type is None");
+                                // tracing::warn!("resource_type is None");
                                 // flow for global-ingestion
                                 let ok_resource =
                                     if let Some(context_resource_id) = context_resource {
@@ -383,14 +381,13 @@ impl Sessions {
                                                     .get_stream_type()
                                                     .eq(&crate::storage::StreamType::Internal)
                                             });
-                                        tracing::warn!(is_internal=?is_internal);
                                         !is_internal
                                     } else {
                                         // if no resource to match then resource check is not needed
                                         // WHEN IS THIS VALID??
                                         true
                                     };
-                                tracing::warn!(ok_resource=?ok_resource);
+                                // tracing::warn!(ok_resource=?ok_resource);
                                 action == required_action && ok_resource
                             } else {
                                 // the default flow (some resource_type and an action) was covered in the first if
@@ -404,10 +401,10 @@ impl Sessions {
                         _ => false,
                     }
                 }) {
-                    tracing::warn!("Authorized");
+                    // tracing::warn!("Authorized");
                     Response::Authorized
                 } else {
-                    tracing::warn!("UnAuthorized");
+                    // tracing::warn!("UnAuthorized");
                     Response::UnAuthorized
                 }
             })
@@ -427,7 +424,7 @@ pub struct Users(HashMap<String, HashMap<String, User>>);
 
 impl Users {
     pub fn insert(&mut self, user: User) {
-        tracing::warn!("inserting user- {user:?}");
+        // tracing::warn!("inserting user- {user:?}");
         let tenant_id = user.tenant.as_ref().map_or(DEFAULT_TENANT, |v| v);
         self.0
             .entry(tenant_id.to_owned())

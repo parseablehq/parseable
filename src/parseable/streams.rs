@@ -155,11 +155,8 @@ impl Stream {
             }
         };
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
-            let filename = self.filename_by_partition(
-                schema_key,
-                parsed_timestamp,
-                custom_partition_values,
-            );
+            let filename =
+                self.filename_by_partition(schema_key, parsed_timestamp, custom_partition_values);
             match guard.disk.get_mut(&filename) {
                 Some(writer) => {
                     writer.write(record)?;
@@ -413,13 +410,15 @@ impl Stream {
             return vec![];
         };
 
-        dir.flatten()
+        let dirs = dir
+            .flatten()
             .map(|file| file.path())
             .filter(|file| {
                 file.extension().is_some_and(|ext| ext.eq("parquet"))
                     && Self::is_valid_parquet_file(file, &self.stream_name)
             })
-            .collect()
+            .collect();
+        dirs
     }
 
     pub fn schema_files(&self) -> Vec<PathBuf> {
@@ -1053,7 +1052,9 @@ impl Streams {
         tenant_id: &Option<String>,
     ) -> StreamRef {
         let mut guard = self.write().expect(LOCK_EXPECT);
-        tracing::warn!("get_or_create- stream- {stream_name}, tenant- {tenant_id:?}");
+        tracing::warn!(
+            "get_or_create\nstream- {stream_name}\ntenant- {tenant_id:?}\nmetadata- {metadata:?}\noptions- {options:?}"
+        );
         let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
 
         if let Some(tenant_streams) = guard.get(tenant)
@@ -1118,13 +1119,12 @@ impl Streams {
         let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
 
         let guard = self.read().expect(LOCK_EXPECT);
-        let l = if let Some(tenant_streams) = guard.get(tenant_id) {
+        if let Some(tenant_streams) = guard.get(tenant_id) {
             tenant_streams.keys().map(String::clone).collect()
         } else {
             vec![]
-        };
-        tracing::warn!("listing streams for tenant- {tenant_id}\n{l:?}");
-        l
+        }
+
         // self.read()
         //     .expect(LOCK_EXPECT)
         //     .get(&tenant_id)

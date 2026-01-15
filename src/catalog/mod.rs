@@ -31,7 +31,7 @@ use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
     handlers::{
         self,
-        http::{base_path_without_preceding_slash, cluster::for_each_live_ingestor},
+        http::{base_path_without_preceding_slash, cluster::for_each_live_node},
     },
     metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE},
     option::Mode,
@@ -304,7 +304,7 @@ async fn handle_existing_partition(
 ) -> Result<Option<snapshot::ManifestItem>, ObjectStorageError> {
     let manifests = &mut meta.snapshot.manifest_list;
 
-    let manifest_file_name = manifest_path("", tenant_id).to_string();
+    let manifest_file_name = manifest_path("").to_string();
     let should_update = manifests[pos].manifest_path.contains(&manifest_file_name);
 
     if should_update {
@@ -530,7 +530,7 @@ pub async fn remove_manifest_from_snapshot(
         let stream_name_clone = stream_name.to_string();
         let dates_clone = dates.clone();
 
-        for_each_live_ingestor(move |ingestor| {
+        for_each_live_node(move |ingestor| {
             let stream_name = stream_name_clone.clone();
             let dates = dates_clone.clone();
             async move {
@@ -557,12 +557,14 @@ pub fn partition_path(
     stream: &str,
     lower_bound: DateTime<Utc>,
     upper_bound: DateTime<Utc>,
+    tenant_id: &Option<String>,
 ) -> RelativePathBuf {
+    let root = tenant_id.as_ref().map_or("", |v| v);
     let lower = lower_bound.date_naive().format("%Y-%m-%d").to_string();
     let upper = upper_bound.date_naive().format("%Y-%m-%d").to_string();
     if lower == upper {
-        RelativePathBuf::from_iter([stream, &format!("date={lower}")])
+        RelativePathBuf::from_iter([root, stream, &format!("date={lower}")])
     } else {
-        RelativePathBuf::from_iter([stream, &format!("date={lower}:{upper}")])
+        RelativePathBuf::from_iter([root, stream, &format!("date={lower}:{upper}")])
     }
 }

@@ -54,7 +54,7 @@ pub async fn put(
     put_metadata(&metadata, &tenant_id).await?;
 
     let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
-    mut_roles("role put")
+    mut_roles()
         .entry(tenant_id.to_owned())
         .or_default()
         .insert(name.clone(), privileges.clone());
@@ -140,7 +140,7 @@ pub async fn delete(
     put_metadata(&metadata, &tenant_id).await?;
 
     let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
-    mut_roles("role delete")
+    mut_roles()
         .entry(tenant_id.to_owned())
         .or_default()
         .remove(&name);
