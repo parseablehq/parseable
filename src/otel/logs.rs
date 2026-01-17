@@ -100,6 +100,7 @@ pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
             // If value is a string that can be parsed as JSON object, extract its fields
             if let Value::String(s) = value
                 && let Ok(parsed) = serde_json::from_str::<Value>(s)
+                && parsed.is_object()
                 && let Ok(flattened_values) = generic_flattening(&parsed)
             {
                 for flattened_value in flattened_values {
