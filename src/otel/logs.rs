@@ -19,6 +19,7 @@ use super::otel_utils::collect_json_from_values;
 use super::otel_utils::convert_epoch_nano_to_timestamp;
 use super::otel_utils::insert_attributes;
 use crate::metrics::increment_logs_collected_by_date;
+use crate::utils::json::flatten::generic_flattening;
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::logs::v1::LogRecord;
 use opentelemetry_proto::tonic::logs::v1::LogsData;
@@ -92,8 +93,24 @@ pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
     if log_record.body.is_some() {
         let body = &log_record.body;
         let body_json = collect_json_from_values(body, &"body".to_string());
-        for key in body_json.keys() {
-            log_record_json.insert(key.to_owned(), body_json[key].to_owned());
+        for (key, value) in &body_json {
+            // Always insert the original body field as is
+            log_record_json.insert(key.clone(), value.clone());
+
+            // If value is a string that can be parsed as JSON object, extract its fields
+            if let Value::String(s) = value
+                && let Ok(parsed) = serde_json::from_str::<Value>(s)
+                && let Ok(flattened_values) = generic_flattening(&parsed)
+            {
+                for flattened_value in flattened_values {
+                    if let Value::Object(flattened_obj) = flattened_value {
+                        for (inner_key, inner_value) in flattened_obj {
+                            let prefixed_key = format!("{key}_{inner_key}");
+                            log_record_json.insert(prefixed_key, inner_value);
+                        }
+                    }
+                }
+            }
         }
     }
     insert_attributes(&mut log_record_json, &log_record.attributes);
