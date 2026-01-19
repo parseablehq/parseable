@@ -23,12 +23,16 @@ use actix_web::{
 
 use crate::{
     prism::logstream::{PrismDatasetRequest, PrismLogstreamError, get_prism_logstream_info},
-    utils::actix::extract_session_key_from_req,
+    utils::{actix::extract_session_key_from_req, get_tenant_id_from_request},
 };
 
 /// This API is essentially just combining the responses of /info and /schema together
-pub async fn get_info(stream_name: Path<String>) -> Result<impl Responder, PrismLogstreamError> {
-    let prism_logstream_info = get_prism_logstream_info(&stream_name).await?;
+pub async fn get_info(
+    req: HttpRequest,
+    stream_name: Path<String>,
+) -> Result<impl Responder, PrismLogstreamError> {
+    let prism_logstream_info =
+        get_prism_logstream_info(&stream_name, &get_tenant_id_from_request(&req)).await?;
 
     Ok(web::Json(prism_logstream_info))
 }

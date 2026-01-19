@@ -110,7 +110,7 @@ impl ParseableServer for IngestServer {
         // write the ingestor metadata to storage
         INGESTOR_META
             .get_or_init(|| async {
-                IngestorMetadata::load_node_metadata(NodeType::Ingestor)
+                IngestorMetadata::load_node_metadata(NodeType::Ingestor, &None)
                     .await
                     .expect("Ingestor Metadata should be set in ingestor mode")
             })
@@ -173,7 +173,7 @@ impl IngestServer {
             )
             .service(
                 web::resource("/{name}/sync")
-                    .route(web::put().to(ingestor_role::put).authorize(Action::PutRole)),
+                    .route(web::put().to(ingestor_role::put).authorize(Action::PutRole)), // .route(web::delete().to(ingestor_role::delete).authorize(Action::DeleteRole)),
             )
     }
     // get the user webscope
@@ -293,7 +293,7 @@ pub async fn check_querier_state() -> anyhow::Result<Option<Bytes>, ObjectStorag
     // i.e the querier will create the `.parseable.json` file
     let parseable_json = PARSEABLE
         .metastore
-        .get_parseable_metadata()
+        .get_parseable_metadata(&None)
         .await
         .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 

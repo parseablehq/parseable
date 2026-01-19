@@ -39,7 +39,10 @@ use crate::{
     metastore::metastore_traits::MetastoreObject,
     parseable::PARSEABLE,
     query::resolve_stream_names,
-    rbac::map::SessionKey,
+    rbac::{
+        map::{SessionKey, roles, users},
+        role::model::DefaultPrivilege,
+    },
     storage::object_storage::alert_json_path,
     utils::user_auth_for_query,
 };
@@ -68,11 +71,12 @@ pub struct ThresholdAlert {
     pub last_triggered_at: Option<DateTime<Utc>>,
     #[serde(flatten)]
     pub other_fields: Option<serde_json::Map<String, Value>>,
+    pub tenant_id: Option<String>,
 }
 
 impl MetastoreObject for ThresholdAlert {
     fn get_object_path(&self) -> String {
-        alert_json_path(self.id).to_string()
+        alert_json_path(self.id, &self.tenant_id).to_string()
     }
 
     fn get_object_id(&self) -> String {
@@ -84,7 +88,39 @@ impl MetastoreObject for ThresholdAlert {
 impl AlertTrait for ThresholdAlert {
     async fn eval_alert(&self) -> Result<Option<String>, AlertError> {
         let time_range = extract_time_range(&self.eval_config)?;
-        let query_result = execute_alert_query(self.get_query(), &time_range).await?;
+        let auth = if let Some(tenant) = &self.tenant_id
+            && let Some(tenant_users) = users().get(tenant)
+            && let Some(tenant_roles) = roles().get(tenant)
+            && let Some(user) = tenant_users.iter().find_map(|(_, user)| {
+                let mut res = None;
+                for role in &user.roles {
+                    if let Some(role) = tenant_roles.get(role)
+                        && role.contains(&DefaultPrivilege::Admin)
+                    {
+                        res = Some(user.clone());
+                        break;
+                    }
+                }
+                res
+            }) {
+            // fetch admin credentials for tenant
+            match user.ty {
+                crate::rbac::user::UserType::Native(basic) => {
+                    // Create a protected user whose details can't be edited
+                    // save that user's basic auth
+                    // use that to send request
+                    None
+                }
+                crate::rbac::user::UserType::OAuth(_) => {
+                    tracing::warn!("admin user is oauth");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let query_result =
+            execute_alert_query(auth, self.get_query(), &time_range, &self.tenant_id).await?;
 
         if query_result.is_simple_query {
             // Handle simple queries
@@ -164,7 +200,7 @@ impl AlertTrait for ThresholdAlert {
                 "No tables found in query".into(),
             ));
         }
-        create_streams_for_distributed(tables)
+        create_streams_for_distributed(tables, &self.tenant_id)
             .await
             .map_err(|_| AlertError::InvalidAlertQuery("Invalid tables".into()))?;
 
@@ -191,7 +227,7 @@ impl AlertTrait for ThresholdAlert {
         // update on disk
         PARSEABLE
             .metastore
-            .put_alert(&self.to_alert_config())
+            .put_alert(&self.to_alert_config(), &self.tenant_id)
             .await?;
         Ok(())
     }
@@ -217,12 +253,12 @@ impl AlertTrait for ThresholdAlert {
             // update on disk
             PARSEABLE
                 .metastore
-                .put_alert(&self.to_alert_config())
+                .put_alert(&self.to_alert_config(), &self.tenant_id)
                 .await?;
             let state_entry = AlertStateEntry::new(self.id, self.state);
             PARSEABLE
                 .metastore
-                .put_alert_state(&state_entry as &dyn MetastoreObject)
+                .put_alert_state(&state_entry as &dyn MetastoreObject, &self.tenant_id)
                 .await?;
             return Ok(());
         }
@@ -257,13 +293,13 @@ impl AlertTrait for ThresholdAlert {
         // update on disk
         PARSEABLE
             .metastore
-            .put_alert(&self.to_alert_config())
+            .put_alert(&self.to_alert_config(), &self.tenant_id)
             .await?;
         let state_entry = AlertStateEntry::new(self.id, self.state);
 
         PARSEABLE
             .metastore
-            .put_alert_state(&state_entry as &dyn MetastoreObject)
+            .put_alert_state(&state_entry as &dyn MetastoreObject, &self.tenant_id)
             .await?;
 
         if let Some(trigger_notif) = trigger_notif
@@ -335,6 +371,10 @@ impl AlertTrait for ThresholdAlert {
 
     fn get_datasets(&self) -> &[String] {
         &self.datasets
+    }
+
+    fn get_tenant_id(&self) -> &Option<String> {
+        &self.tenant_id
     }
 
     fn to_alert_config(&self) -> AlertConfig {
@@ -414,6 +454,7 @@ impl From<AlertConfig> for ThresholdAlert {
             datasets: value.datasets,
             last_triggered_at: value.last_triggered_at,
             other_fields: value.other_fields,
+            tenant_id: value.tenant_id,
         }
     }
 }
@@ -438,6 +479,7 @@ impl From<ThresholdAlert> for AlertConfig {
             datasets: val.datasets,
             last_triggered_at: val.last_triggered_at,
             other_fields: val.other_fields,
+            tenant_id: val.tenant_id,
         }
     }
 }

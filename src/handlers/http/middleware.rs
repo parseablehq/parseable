@@ -20,10 +20,10 @@
 use std::future::{Ready, ready};
 
 use actix_web::{
-    Error, HttpMessage, Route,
+    Error, HttpMessage, HttpRequest, Route,
     dev::{Service, ServiceRequest, ServiceResponse, Transform, forward_ready},
     error::{ErrorBadRequest, ErrorForbidden, ErrorUnauthorized},
-    http::header::{self, HeaderName},
+    http::header::{self, HeaderName, HeaderValue},
 };
 use chrono::{Duration, Utc};
 use futures_util::future::LocalBoxFuture;
@@ -31,17 +31,17 @@ use futures_util::future::LocalBoxFuture;
 use crate::{
     handlers::{
         AUTHORIZATION_KEY, KINESIS_COMMON_ATTRIBUTES_KEY, LOG_SOURCE_KEY, LOG_SOURCE_KINESIS,
-        STREAM_NAME_HEADER_KEY,
-        http::{modal::OIDC_CLIENT, rbac::RBACError},
+        STREAM_NAME_HEADER_KEY, http::modal::OIDC_CLIENT,
     },
     option::Mode,
-    parseable::PARSEABLE,
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::{
         EXPIRY_DURATION,
         map::{SessionKey, mut_sessions, mut_users, sessions, users},
         roles_to_permission, user,
     },
-    utils::get_user_from_request,
+    tenants::TENANT_METADATA,
+    utils::get_user_and_tenant_from_request,
 };
 use crate::{
     rbac::Users,
@@ -163,14 +163,26 @@ where
                 header::HeaderValue::from_static(LOG_SOURCE_KINESIS),
             );
         }
-
         /* ## Section end */
+        // append tenant id if present
+        let user_and_tenant_id = match get_user_and_tenant_from_request(req.request()) {
+            Ok((uid, tid)) => {
+                if tid.is_some() {
+                    req.headers_mut().insert(
+                        HeaderName::from_static("tenant"),
+                        HeaderValue::from_str(&tid.as_ref().unwrap()).unwrap(),
+                    );
+                }
+
+                Ok((uid, tid))
+            }
+            Err(e) => Err(e),
+        };
+        // tracing::warn!("incomin request- {req:?}");
 
         let auth_result: Result<_, Error> = (self.auth_method)(&mut req, self.action);
 
-        let http_req = req.request().clone();
         let key: Result<SessionKey, Error> = extract_session_key(&mut req);
-        let userid: Result<String, RBACError> = get_user_from_request(&http_req);
 
         let fut = self.service.call(req);
         Box::pin(async move {
@@ -185,10 +197,13 @@ where
                 let oidc_client = OIDC_CLIENT.get();
 
                 if let Some(client) = oidc_client
-                    && let Ok(userid) = userid
+                    && let Ok((userid, tenant_id)) = user_and_tenant_id
                 {
                     let bearer_to_refresh = {
-                        if let Some(user) = users().get(&userid) {
+                        if let Some(users) =
+                            users().get(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v))
+                            && let Some(user) = users.get(&userid)
+                        {
                             match &user.ty {
                                 user::UserType::OAuth(oauth) if oauth.bearer.is_some() => {
                                     Some(oauth.clone())
@@ -233,7 +248,10 @@ where
 
                         let user_roles = {
                             let mut users_guard = mut_users();
-                            if let Some(user) = users_guard.get_mut(&userid) {
+                            if let Some(users) = users_guard
+                                .get_mut(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v))
+                                && let Some(user) = users.get_mut(&userid)
+                            {
                                 if let user::UserType::OAuth(oauth) = &mut user.ty {
                                     oauth.bearer = Some(refreshed_token);
                                 }
@@ -249,14 +267,25 @@ where
                             userid.clone(),
                             key.clone(),
                             Utc::now() + expires_in,
-                            roles_to_permission(user_roles),
+                            roles_to_permission(
+                                user_roles,
+                                tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+                            ),
+                            &tenant_id,
                         );
-                    } else if let Some(user) = users().get(&userid) {
+                    } else if let Some(users) =
+                        users().get(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v))
+                        && let Some(user) = users.get(&userid)
+                    {
                         mut_sessions().track_new(
                             userid.clone(),
                             key.clone(),
                             Utc::now() + EXPIRY_DURATION,
-                            roles_to_permission(user.roles()),
+                            roles_to_permission(
+                                user.roles(),
+                                tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+                            ),
+                            &tenant_id,
                         );
                     }
                 }
@@ -273,6 +302,9 @@ where
                         "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
                     ));
                 }
+                rbac::Response::Suspended(msg) => {
+                    return Err(ErrorBadRequest(msg));
+                }
                 _ => {}
             }
 
@@ -281,7 +313,25 @@ where
     }
 }
 
+pub fn check_suspension(req: &HttpRequest, action: Action) -> rbac::Response {
+    if let Some(tenant) = req.headers().get("tenant")
+        && let Ok(tenant) = tenant.to_str()
+    {
+        if let Ok(Some(suspension)) = TENANT_METADATA.is_action_suspended(tenant, &action) {
+            return rbac::Response::Suspended(suspension);
+        } else {
+            // tenant does not exist
+        }
+    }
+    rbac::Response::Authorized
+}
+
 pub fn auth_no_context(req: &mut ServiceRequest, action: Action) -> Result<rbac::Response, Error> {
+    // check if tenant is suspended
+    match check_suspension(req.request(), action) {
+        rbac::Response::Suspended(msg) => return Ok(rbac::Response::Suspended(msg)),
+        _ => {}
+    }
     let creds = extract_session_key(req);
     creds.map(|key| Users.authorize(key, action, None, None))
 }
@@ -290,6 +340,11 @@ pub fn auth_resource_context(
     req: &mut ServiceRequest,
     action: Action,
 ) -> Result<rbac::Response, Error> {
+    // check if tenant is suspended
+    match check_suspension(req.request(), action) {
+        rbac::Response::Suspended(msg) => return Ok(rbac::Response::Suspended(msg)),
+        _ => {}
+    }
     let creds = extract_session_key(req);
     let usergroup = req.match_info().get("usergroup");
     let llmid = req.match_info().get("llmid");
@@ -312,6 +367,11 @@ pub fn auth_user_context(
     req: &mut ServiceRequest,
     action: Action,
 ) -> Result<rbac::Response, Error> {
+    // check if tenant is suspended
+    match check_suspension(req.request(), action) {
+        rbac::Response::Suspended(msg) => return Ok(rbac::Response::Suspended(msg)),
+        _ => {}
+    }
     let creds = extract_session_key(req);
     let user = req.match_info().get("username");
     creds.map(|key| Users.authorize(key, action, None, user))

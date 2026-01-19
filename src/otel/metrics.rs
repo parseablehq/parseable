@@ -514,6 +514,7 @@ fn process_resource_metrics<T, S, M>(
     get_scope_schema_url: fn(&S) -> &str,
     get_metrics: fn(&S) -> &[M],
     get_metric: fn(&M) -> &Metric,
+    tenant_id: &str,
 ) -> Vec<Value> {
     let mut vec_otel_json = Vec::new();
 
@@ -541,7 +542,7 @@ fn process_resource_metrics<T, S, M>(
             }
 
             let date = chrono::Utc::now().date_naive().to_string();
-            increment_metrics_collected_by_date(metrics.len() as u64, &date);
+            increment_metrics_collected_by_date(metrics.len() as u64, &date, tenant_id);
 
             if let Some(scope) = get_scope(scope_metric) {
                 scope_metrics_json
@@ -588,7 +589,7 @@ fn process_resource_metrics<T, S, M>(
 
 /// this function performs the custom flattening of the otel metrics
 /// and returns a `Vec` of `Value::Object` of the flattened json
-pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Value> {
+pub fn flatten_otel_metrics(message: MetricsData, tenant_id: &str) -> Vec<Value> {
     process_resource_metrics(
         &message.resource_metrics,
         |record| record.resource.as_ref(),
@@ -598,11 +599,15 @@ pub fn flatten_otel_metrics(message: MetricsData) -> Vec<Value> {
         |scope_metric| &scope_metric.schema_url,
         |scope_metric| &scope_metric.metrics,
         |metric| metric,
+        tenant_id,
     )
 }
 
 /// Flattens OpenTelemetry metrics from protobuf format
-pub fn flatten_otel_metrics_protobuf(message: &ExportMetricsServiceRequest) -> Vec<Value> {
+pub fn flatten_otel_metrics_protobuf(
+    message: &ExportMetricsServiceRequest,
+    tenant_id: &str,
+) -> Vec<Value> {
     process_resource_metrics(
         &message.resource_metrics,
         |record| record.resource.as_ref(),
@@ -612,6 +617,7 @@ pub fn flatten_otel_metrics_protobuf(message: &ExportMetricsServiceRequest) -> V
         |scope_metric| &scope_metric.schema_url,
         |scope_metric| &scope_metric.metrics,
         |metric| metric,
+        tenant_id,
     )
 }
 

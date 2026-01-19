@@ -90,6 +90,7 @@ pub async fn calculate_field_stats(
     parquet_path: &Path,
     schema: &Schema,
     max_field_statistics: usize,
+    tenant_id: &Option<String>,
 ) -> Result<bool, PostError> {
     //create datetime from timestamp present in parquet path
     let parquet_ts = extract_datetime_from_parquet_path_regex(parquet_path).map_err(|e| {
@@ -99,7 +100,13 @@ pub async fn calculate_field_stats(
         ))
     })?;
     let field_stats = {
-        let ctx = SessionContext::new_with_state(QUERY_SESSION_STATE.clone());
+        let mut session_state = QUERY_SESSION_STATE.clone();
+        session_state
+            .config_mut()
+            .options_mut()
+            .catalog
+            .default_schema = tenant_id.as_ref().map_or("public".into(), |v| v.to_owned());
+        let ctx = SessionContext::new_with_state(session_state);
         let table_name = Ulid::new().to_string();
         ctx.register_parquet(
             &table_name,
@@ -132,6 +139,7 @@ pub async fn calculate_field_stats(
             Some(&DATASET_STATS_CUSTOM_PARTITION.to_string()),
             vec![log_source_entry],
             TelemetryType::Logs,
+            tenant_id,
         )
         .await?;
     let vec_json = apply_generic_flattening_for_partition(
@@ -145,7 +153,7 @@ pub async fn calculate_field_stats(
     for json in vec_json {
         let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
         let schema = PARSEABLE
-            .get_stream(DATASET_STATS_STREAM_NAME)?
+            .get_stream(DATASET_STATS_STREAM_NAME, tenant_id)?
             .get_schema_raw();
         json::Event {
             json,
@@ -162,6 +170,7 @@ pub async fn calculate_field_stats(
             StreamType::Internal,
             &p_custom_fields,
             TelemetryType::Logs,
+            tenant_id,
         )?
         .process()?;
     }

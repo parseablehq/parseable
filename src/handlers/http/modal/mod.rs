@@ -42,7 +42,7 @@ use crate::{
     metastore::metastore_traits::MetastoreObject,
     oidc::{Claims, DiscoveredClient},
     option::Mode,
-    parseable::PARSEABLE,
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     storage::{ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY},
     users::{dashboards::DASHBOARDS, filters::FILTERS},
     utils::get_node_id,
@@ -328,7 +328,10 @@ impl NodeMetadata {
         }
     }
 
-    pub async fn load_node_metadata(node_type: NodeType) -> anyhow::Result<Arc<Self>> {
+    pub async fn load_node_metadata(
+        node_type: NodeType,
+        tenant_id: &Option<String>,
+    ) -> anyhow::Result<Arc<Self>> {
         let staging_path = PARSEABLE.options.staging_dir();
         let node_type_str = node_type.as_str();
 
@@ -339,7 +342,7 @@ impl NodeMetadata {
         }
 
         // Attempt to load metadata from storage
-        let storage_metas = Self::load_from_storage(node_type.clone()).await;
+        let storage_metas = Self::load_from_storage(node_type.clone(), tenant_id).await;
         let url = PARSEABLE.options.get_url(node_type.to_mode());
         let port = url.port().unwrap_or(80).to_string();
         let url = url.to_string();
@@ -381,8 +384,14 @@ impl NodeMetadata {
         Ok(Arc::new(meta))
     }
 
-    async fn load_from_storage(node_type: NodeType) -> Vec<NodeMetadata> {
-        let obs = PARSEABLE.metastore.get_node_metadata(node_type).await;
+    async fn load_from_storage(
+        node_type: NodeType,
+        tenant_id: &Option<String>,
+    ) -> Vec<NodeMetadata> {
+        let obs = PARSEABLE
+            .metastore
+            .get_node_metadata(node_type, tenant_id)
+            .await;
 
         let mut metadata = vec![];
         if let Ok(obs) = obs {
@@ -620,25 +629,47 @@ pub async fn initialize_hot_tier_metadata_on_startup(
     hot_tier_manager: &HotTierManager,
 ) -> anyhow::Result<()> {
     // Collect hot tier configurations from streams before doing async operations
-    let hot_tier_configs: Vec<(String, StreamHotTier)> = {
-        let streams_guard = PARSEABLE.streams.read().unwrap();
-        streams_guard
+    let hot_tier_configs: Vec<(String, Option<String>, StreamHotTier)> = {
+        let tenants_guard = PARSEABLE.streams.read().unwrap();
+        tenants_guard
             .iter()
-            .filter_map(|(stream_name, stream)| {
-                // Skip if hot tier metadata file already exists for this stream
-                if hot_tier_manager.check_stream_hot_tier_exists(stream_name) {
-                    return None;
-                }
+            .flat_map(|(tenant_id, streams)| {
+                streams.iter().filter_map(|(stream_name, stream)| {
+                    // Skip if hot tier metadata file already exists for this stream
+                    let tenant_id = if tenant_id.eq(DEFAULT_TENANT) {
+                        None
+                    } else {
+                        Some(tenant_id.clone())
+                    };
+                    if hot_tier_manager.check_stream_hot_tier_exists(stream_name, &tenant_id) {
+                        return None;
+                    }
 
-                // Get the hot tier configuration from the in-memory stream metadata
-                stream
-                    .get_hot_tier()
-                    .map(|config| (stream_name.clone(), config))
+                    // Get the hot tier configuration from the in-memory stream metadata
+                    stream
+                        .get_hot_tier()
+                        .map(|config| (stream_name.clone(), tenant_id, config.clone()))
+                })
             })
             .collect()
+        // let streams_guard = PARSEABLE.streams.read().unwrap();
+        // streams_guard
+        //     .iter()
+        //     .filter_map(|(stream_name, stream)| {
+        //         // Skip if hot tier metadata file already exists for this stream
+        //         if hot_tier_manager.check_stream_hot_tier_exists(stream_name) {
+        //             return None;
+        //         }
+
+        //         // Get the hot tier configuration from the in-memory stream metadata
+        //         stream
+        //             .get_hot_tier()
+        //             .map(|config| (stream_name.clone(), config))
+        //     })
+        //     .collect()
     };
 
-    for (stream_name, hot_tier_config) in hot_tier_configs {
+    for (stream_name, tenant_id, hot_tier_config) in hot_tier_configs {
         // Create the hot tier metadata file with the configuration from stream metadata
         let mut hot_tier_metadata = hot_tier_config;
         hot_tier_metadata.used_size = 0;
@@ -649,7 +680,7 @@ pub async fn initialize_hot_tier_metadata_on_startup(
         }
 
         if let Err(e) = hot_tier_manager
-            .put_hot_tier(&stream_name, &mut hot_tier_metadata)
+            .put_hot_tier(&stream_name, &mut hot_tier_metadata, &tenant_id)
             .await
         {
             warn!(

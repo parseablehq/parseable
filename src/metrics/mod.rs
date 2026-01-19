@@ -38,7 +38,7 @@ pub static METRICS_REGISTRY: Lazy<Registry> = Lazy::new(|| {
 pub static EVENTS_INGESTED: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
         Opts::new("events_ingested", "Events ingested for a stream").namespace(METRICS_NAMESPACE),
-        &["stream", "format"],
+        &["stream", "format", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -50,7 +50,7 @@ pub static EVENTS_INGESTED_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
             "Events ingested size bytes for a stream",
         )
         .namespace(METRICS_NAMESPACE),
-        &["stream", "format"],
+        &["stream", "format", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -58,7 +58,7 @@ pub static EVENTS_INGESTED_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
 pub static STORAGE_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
         Opts::new("storage_size", "Storage size bytes for a stream").namespace(METRICS_NAMESPACE),
-        &["type", "stream", "format"],
+        &["type", "stream", "format", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -66,7 +66,7 @@ pub static STORAGE_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
 pub static EVENTS_DELETED: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
         Opts::new("events_deleted", "Events deleted for a stream").namespace(METRICS_NAMESPACE),
-        &["stream", "format"],
+        &["stream", "format", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -78,7 +78,7 @@ pub static EVENTS_DELETED_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
             "Events deleted size bytes for a stream",
         )
         .namespace(METRICS_NAMESPACE),
-        &["stream", "format"],
+        &["stream", "format", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -90,7 +90,7 @@ pub static DELETED_EVENTS_STORAGE_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
             "Deleted events storage size bytes for a stream",
         )
         .namespace(METRICS_NAMESPACE),
-        &["type", "stream", "format"],
+        &["type", "stream", "format", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -102,7 +102,7 @@ pub static LIFETIME_EVENTS_INGESTED: Lazy<IntGaugeVec> = Lazy::new(|| {
             "Lifetime events ingested for a stream",
         )
         .namespace(METRICS_NAMESPACE),
-        &["stream", "format"],
+        &["stream", "format", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -114,7 +114,7 @@ pub static LIFETIME_EVENTS_INGESTED_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
             "Lifetime events ingested size bytes for a stream",
         )
         .namespace(METRICS_NAMESPACE),
-        &["stream", "format"],
+        &["stream", "format", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -126,7 +126,7 @@ pub static LIFETIME_EVENTS_STORAGE_SIZE: Lazy<IntGaugeVec> = Lazy::new(|| {
             "Lifetime events storage size bytes for a stream",
         )
         .namespace(METRICS_NAMESPACE),
-        &["type", "stream", "format"],
+        &["type", "stream", "format", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -138,7 +138,7 @@ pub static EVENTS_INGESTED_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
             "Events ingested for a stream on a particular date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["stream", "format", "date"],
+        &["stream", "format", "date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -150,7 +150,7 @@ pub static EVENTS_INGESTED_SIZE_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
             "Events ingested size in bytes for a stream on a particular date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["stream", "format", "date"],
+        &["stream", "format", "date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -162,7 +162,7 @@ pub static EVENTS_STORAGE_SIZE_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
             "Events storage size in bytes for a stream on a particular date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["type", "stream", "format", "date"],
+        &["type", "stream", "format", "date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -170,7 +170,7 @@ pub static EVENTS_STORAGE_SIZE_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
 pub static STAGING_FILES: Lazy<IntGaugeVec> = Lazy::new(|| {
     IntGaugeVec::new(
         Opts::new("staging_files", "Active Staging files").namespace(METRICS_NAMESPACE),
-        &["stream"],
+        &["stream", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -178,7 +178,7 @@ pub static STAGING_FILES: Lazy<IntGaugeVec> = Lazy::new(|| {
 pub static QUERY_EXECUTE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
     HistogramVec::new(
         HistogramOpts::new("query_execute_time", "Query execute time").namespace(METRICS_NAMESPACE),
-        &["stream"],
+        &["stream", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -186,7 +186,7 @@ pub static QUERY_EXECUTE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
 pub static QUERY_CACHE_HIT: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         Opts::new("QUERY_CACHE_HIT", "Full Cache hit").namespace(METRICS_NAMESPACE),
-        &["stream"],
+        &["stream", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -194,7 +194,7 @@ pub static QUERY_CACHE_HIT: Lazy<IntCounterVec> = Lazy::new(|| {
 pub static ALERTS_STATES: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         Opts::new("alerts_states", "Alerts States").namespace(METRICS_NAMESPACE),
-        &["stream", "name", "state"],
+        &["stream", "name", "state", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -207,7 +207,7 @@ pub static TOTAL_EVENTS_INGESTED_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
             "Total events ingested by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["date"],
+        &["date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -219,7 +219,7 @@ pub static TOTAL_EVENTS_INGESTED_SIZE_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|
             "Total events ingested size in bytes by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["date"],
+        &["date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -231,7 +231,7 @@ pub static TOTAL_PARQUETS_STORED_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
             "Total parquet files stored by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["date"],
+        &["date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -243,7 +243,7 @@ pub static TOTAL_PARQUETS_STORED_SIZE_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|
             "Total parquet files stored size in bytes by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["date"],
+        &["date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -252,7 +252,7 @@ pub static TOTAL_QUERY_CALLS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         Opts::new("total_query_calls_by_date", "Total query calls by date")
             .namespace(METRICS_NAMESPACE),
-        &["date"],
+        &["date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -264,7 +264,7 @@ pub static TOTAL_FILES_SCANNED_IN_QUERY_BY_DATE: Lazy<IntCounterVec> = Lazy::new
             "Total files scanned in queries by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["date"],
+        &["date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -276,7 +276,7 @@ pub static TOTAL_BYTES_SCANNED_IN_QUERY_BY_DATE: Lazy<IntCounterVec> = Lazy::new
             "Total bytes scanned in queries by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["date"],
+        &["date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -288,7 +288,7 @@ pub static TOTAL_OBJECT_STORE_CALLS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| 
             "Total object store calls by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["method", "date"],
+        &["method", "date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -301,7 +301,7 @@ pub static TOTAL_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE: Lazy<IntCounterVec
                 "Total files scanned in object store calls by date",
             )
             .namespace(METRICS_NAMESPACE),
-            &["method", "date"],
+            &["method", "date", "tenant_id"],
         )
         .expect("metric can be created")
     });
@@ -314,7 +314,7 @@ pub static TOTAL_BYTES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE: Lazy<IntCounterVec
                 "Total bytes scanned in object store calls by date",
             )
             .namespace(METRICS_NAMESPACE),
-            &["method", "date"],
+            &["method", "date", "tenant_id"],
         )
         .expect("metric can be created")
     });
@@ -326,7 +326,7 @@ pub static TOTAL_INPUT_LLM_TOKENS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
             "Total input LLM tokens used by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["provider", "model", "date"],
+        &["provider", "model", "date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -338,7 +338,7 @@ pub static TOTAL_OUTPUT_LLM_TOKENS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
             "Total output LLM tokens used by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["provider", "model", "date"],
+        &["provider", "model", "date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -350,7 +350,7 @@ pub static TOTAL_CACHED_LLM_TOKENS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
             "Total cached LLM tokens used by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["provider", "model", "date"],
+        &["provider", "model", "date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -362,7 +362,7 @@ pub static TOTAL_REASONING_LLM_TOKENS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|
             "Total reasoning LLM tokens used by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["provider", "model", "date"],
+        &["provider", "model", "date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -383,7 +383,7 @@ pub static TOTAL_METRICS_COLLECTED_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
             "Total metrics collected by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["team", "date"],
+        &["team", "date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -395,7 +395,7 @@ pub static TOTAL_METRICS_COLLECTED_SIZE_BY_DATE: Lazy<IntCounterVec> = Lazy::new
             "Total metrics collected size in bytes by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["team", "date"],
+        &["team", "date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -407,7 +407,7 @@ pub static TOTAL_LOGS_COLLECTED_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
             "Total logs collected by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["team", "date"],
+        &["team", "date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -419,7 +419,7 @@ pub static TOTAL_LOGS_COLLECTED_SIZE_BY_DATE: Lazy<IntCounterVec> = Lazy::new(||
             "Total logs collected size in bytes by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["team", "date"],
+        &["team", "date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -431,7 +431,7 @@ pub static TOTAL_TRACES_COLLECTED_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
             "Total traces collected by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["team", "date"],
+        &["team", "date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -443,7 +443,7 @@ pub static TOTAL_TRACES_COLLECTED_SIZE_BY_DATE: Lazy<IntCounterVec> = Lazy::new(
             "Total traces collected size in bytes by date",
         )
         .namespace(METRICS_NAMESPACE),
-        &["team", "date"],
+        &["team", "date", "tenant_id"],
     )
     .expect("metric can be created")
 });
@@ -593,41 +593,41 @@ fn prom_process_metrics(metrics: &PrometheusMetrics) {
 #[cfg(not(target_os = "linux"))]
 fn prom_process_metrics(_metrics: &PrometheusMetrics) {}
 
-pub async fn fetch_stats_from_storage(stream_name: &str, stats: FullStats) {
+pub async fn fetch_stats_from_storage(stream_name: &str, stats: FullStats, tenant_id: &str) {
     EVENTS_INGESTED
-        .with_label_values(&[stream_name, "json"])
+        .with_label_values(&[stream_name, "json", tenant_id])
         .set(stats.current_stats.events as i64);
     EVENTS_INGESTED_SIZE
-        .with_label_values(&[stream_name, "json"])
+        .with_label_values(&[stream_name, "json", tenant_id])
         .set(stats.current_stats.ingestion as i64);
     STORAGE_SIZE
-        .with_label_values(&["data", stream_name, "parquet"])
+        .with_label_values(&["data", stream_name, "parquet", tenant_id])
         .set(stats.current_stats.storage as i64);
     EVENTS_DELETED
-        .with_label_values(&[stream_name, "json"])
+        .with_label_values(&[stream_name, "json", tenant_id])
         .set(stats.deleted_stats.events as i64);
     EVENTS_DELETED_SIZE
-        .with_label_values(&[stream_name, "json"])
+        .with_label_values(&[stream_name, "json", tenant_id])
         .set(stats.deleted_stats.ingestion as i64);
     DELETED_EVENTS_STORAGE_SIZE
-        .with_label_values(&["data", stream_name, "parquet"])
+        .with_label_values(&["data", stream_name, "parquet", tenant_id])
         .set(stats.deleted_stats.storage as i64);
 
     LIFETIME_EVENTS_INGESTED
-        .with_label_values(&[stream_name, "json"])
+        .with_label_values(&[stream_name, "json", tenant_id])
         .set(stats.lifetime_stats.events as i64);
     LIFETIME_EVENTS_INGESTED_SIZE
-        .with_label_values(&[stream_name, "json"])
+        .with_label_values(&[stream_name, "json", tenant_id])
         .set(stats.lifetime_stats.ingestion as i64);
     LIFETIME_EVENTS_STORAGE_SIZE
-        .with_label_values(&["data", stream_name, "parquet"])
+        .with_label_values(&["data", stream_name, "parquet", tenant_id])
         .set(stats.lifetime_stats.storage as i64);
 }
 
 // Helper functions for tracking billing metrics
-pub fn increment_events_ingested_by_date(count: u64, date: &str) {
+pub fn increment_events_ingested_by_date(count: u64, date: &str, tenant_id: &str) {
     TOTAL_EVENTS_INGESTED_BY_DATE
-        .with_label_values(&[date])
+        .with_label_values(&[date, tenant_id])
         .inc_by(count);
 }
 
@@ -635,90 +635,121 @@ pub fn increment_events_ingested_size_by_date(
     size: u64,
     date: &str,
     telemetry_type: TelemetryType,
+    tenant_id: &str,
 ) {
     TOTAL_EVENTS_INGESTED_SIZE_BY_DATE
-        .with_label_values(&[date])
+        .with_label_values(&[date, tenant_id])
         .inc_by(size);
     match telemetry_type {
         TelemetryType::Logs | TelemetryType::Events => {
             TOTAL_LOGS_COLLECTED_SIZE_BY_DATE
-                .with_label_values(&["all", date])
+                .with_label_values(&["all", date, tenant_id])
                 .inc_by(size);
         }
         TelemetryType::Metrics => {
             TOTAL_METRICS_COLLECTED_SIZE_BY_DATE
-                .with_label_values(&["all", date])
+                .with_label_values(&["all", date, tenant_id])
                 .inc_by(size);
         }
         TelemetryType::Traces => {
             TOTAL_TRACES_COLLECTED_SIZE_BY_DATE
-                .with_label_values(&["all", date])
+                .with_label_values(&["all", date, tenant_id])
                 .inc_by(size);
         }
     }
 }
 
-pub fn increment_parquets_stored_by_date(date: &str) {
+pub fn increment_parquets_stored_by_date(date: &str, tenant_id: &str) {
     TOTAL_PARQUETS_STORED_BY_DATE
-        .with_label_values(&[date])
+        .with_label_values(&[date, tenant_id])
         .inc();
 }
 
-pub fn increment_parquets_stored_size_by_date(size: u64, date: &str) {
+pub fn increment_parquets_stored_size_by_date(size: u64, date: &str, tenant_id: &str) {
     TOTAL_PARQUETS_STORED_SIZE_BY_DATE
-        .with_label_values(&[date])
+        .with_label_values(&[date, tenant_id])
         .inc_by(size);
 }
 
-pub fn increment_query_calls_by_date(date: &str) {
-    TOTAL_QUERY_CALLS_BY_DATE.with_label_values(&[date]).inc();
-}
-
-pub fn increment_files_scanned_in_query_by_date(count: u64, date: &str) {
-    TOTAL_FILES_SCANNED_IN_QUERY_BY_DATE
-        .with_label_values(&[date])
-        .inc_by(count);
-}
-
-pub fn increment_bytes_scanned_in_query_by_date(bytes: u64, date: &str) {
-    TOTAL_BYTES_SCANNED_IN_QUERY_BY_DATE
-        .with_label_values(&[date])
-        .inc_by(bytes);
-}
-
-pub fn increment_object_store_calls_by_date(method: &str, date: &str) {
-    TOTAL_OBJECT_STORE_CALLS_BY_DATE
-        .with_label_values(&[method, date])
+pub fn increment_query_calls_by_date(date: &str, tenant_id: &str) {
+    TOTAL_QUERY_CALLS_BY_DATE
+        .with_label_values(&[date, tenant_id])
         .inc();
 }
 
-pub fn increment_files_scanned_in_object_store_calls_by_date(method: &str, count: u64, date: &str) {
-    TOTAL_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE
-        .with_label_values(&[method, date])
+pub fn increment_files_scanned_in_query_by_date(count: u64, date: &str, tenant_id: &str) {
+    TOTAL_FILES_SCANNED_IN_QUERY_BY_DATE
+        .with_label_values(&[date, tenant_id])
         .inc_by(count);
 }
 
-pub fn increment_bytes_scanned_in_object_store_calls_by_date(method: &str, bytes: u64, date: &str) {
-    TOTAL_BYTES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE
-        .with_label_values(&[method, date])
+pub fn increment_bytes_scanned_in_query_by_date(bytes: u64, date: &str, tenant_id: &str) {
+    TOTAL_BYTES_SCANNED_IN_QUERY_BY_DATE
+        .with_label_values(&[date, tenant_id])
         .inc_by(bytes);
 }
 
-pub fn increment_input_llm_tokens_by_date(provider: &str, model: &str, tokens: u64, date: &str) {
+pub fn increment_object_store_calls_by_date(method: &str, date: &str, tenant_id: &str) {
+    TOTAL_OBJECT_STORE_CALLS_BY_DATE
+        .with_label_values(&[method, date, tenant_id])
+        .inc();
+}
+
+pub fn increment_files_scanned_in_object_store_calls_by_date(
+    method: &str,
+    count: u64,
+    date: &str,
+    tenant_id: &str,
+) {
+    TOTAL_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE
+        .with_label_values(&[method, date, tenant_id])
+        .inc_by(count);
+}
+
+pub fn increment_bytes_scanned_in_object_store_calls_by_date(
+    method: &str,
+    bytes: u64,
+    date: &str,
+    tenant_id: &str,
+) {
+    TOTAL_BYTES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE
+        .with_label_values(&[method, date, tenant_id])
+        .inc_by(bytes);
+}
+
+pub fn increment_input_llm_tokens_by_date(
+    provider: &str,
+    model: &str,
+    tokens: u64,
+    date: &str,
+    tenant_id: &str,
+) {
     TOTAL_INPUT_LLM_TOKENS_BY_DATE
-        .with_label_values(&[provider, model, date])
+        .with_label_values(&[provider, model, date, tenant_id])
         .inc_by(tokens);
 }
 
-pub fn increment_output_llm_tokens_by_date(provider: &str, model: &str, tokens: u64, date: &str) {
+pub fn increment_output_llm_tokens_by_date(
+    provider: &str,
+    model: &str,
+    tokens: u64,
+    date: &str,
+    tenant_id: &str,
+) {
     TOTAL_OUTPUT_LLM_TOKENS_BY_DATE
-        .with_label_values(&[provider, model, date])
+        .with_label_values(&[provider, model, date, tenant_id])
         .inc_by(tokens);
 }
 
-pub fn increment_cached_llm_tokens_by_date(provider: &str, model: &str, tokens: u64, date: &str) {
+pub fn increment_cached_llm_tokens_by_date(
+    provider: &str,
+    model: &str,
+    tokens: u64,
+    date: &str,
+    tenant_id: &str,
+) {
     TOTAL_CACHED_LLM_TOKENS_BY_DATE
-        .with_label_values(&[provider, model, date])
+        .with_label_values(&[provider, model, date, tenant_id])
         .inc_by(tokens);
 }
 
@@ -727,27 +758,28 @@ pub fn increment_reasoning_llm_tokens_by_date(
     model: &str,
     tokens: u64,
     date: &str,
+    tenant_id: &str,
 ) {
     TOTAL_REASONING_LLM_TOKENS_BY_DATE
-        .with_label_values(&[provider, model, date])
+        .with_label_values(&[provider, model, date, tenant_id])
         .inc_by(tokens);
 }
 
-pub fn increment_metrics_collected_by_date(count: u64, date: &str) {
+pub fn increment_metrics_collected_by_date(count: u64, date: &str, tenant_id: &str) {
     TOTAL_METRICS_COLLECTED_BY_DATE
-        .with_label_values(&["all", date])
+        .with_label_values(&["all", date, tenant_id])
         .inc_by(count);
 }
 
-pub fn increment_logs_collected_by_date(count: u64, date: &str) {
+pub fn increment_logs_collected_by_date(count: u64, date: &str, tenant_id: &str) {
     TOTAL_LOGS_COLLECTED_BY_DATE
-        .with_label_values(&["all", date])
+        .with_label_values(&["all", date, tenant_id])
         .inc_by(count);
 }
 
-pub fn increment_traces_collected_by_date(count: u64, date: &str) {
+pub fn increment_traces_collected_by_date(count: u64, date: &str, tenant_id: &str) {
     TOTAL_TRACES_COLLECTED_BY_DATE
-        .with_label_values(&["all", date])
+        .with_label_values(&["all", date, tenant_id])
         .inc_by(count);
 }
 

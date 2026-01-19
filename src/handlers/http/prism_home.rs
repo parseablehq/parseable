@@ -40,7 +40,6 @@ pub async fn home_api(req: HttpRequest) -> Result<impl Responder, PrismHomeError
         .map_err(|_| PrismHomeError::InvalidQueryParameter(HOME_QUERY_PARAM.to_string()))?;
 
     let include_internal = query_map.get(HOME_QUERY_PARAM).is_some_and(|v| v == "true");
-
     let res = generate_home_response(&key, include_internal).await?;
 
     Ok(web::Json(res))

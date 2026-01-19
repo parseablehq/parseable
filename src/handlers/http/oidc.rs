@@ -22,34 +22,40 @@ use actix_web::http::StatusCode;
 use actix_web::{
     HttpRequest, HttpResponse,
     cookie::{Cookie, SameSite, time},
-    http::header::{self, ContentType},
+    http::header::ContentType,
     web,
 };
 use chrono::{Duration, TimeDelta};
+use http::header;
 use openid::{Bearer, Options, Token, Userinfo};
 use regex::Regex;
 use serde::Deserialize;
+use serde_json::json;
 use tokio::sync::RwLock;
 use ulid::Ulid;
 use url::Url;
 
 use crate::{
+    INTRA_CLUSTER_CLIENT,
     handlers::{
         COOKIE_AGE_DAYS, SESSION_COOKIE_NAME, USER_COOKIE_NAME, USER_ID_COOKIE_NAME,
         http::{
-            API_BASE_PATH, API_VERSION,
+            API_BASE_PATH, API_VERSION, base_path_without_preceding_slash,
+            cluster::for_each_live_node,
             modal::{GlobalClient, OIDC_CLIENT},
         },
     },
     oidc::{Claims, DiscoveredClient},
-    parseable::PARSEABLE,
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::{
         self, EXPIRY_DURATION, Users,
         map::{DEFAULT_ROLE, SessionKey},
         user::{self, GroupUser, User, UserType},
     },
     storage::{self, ObjectStorageError, StorageMetadata},
-    utils::actix::extract_session_key_from_req,
+    utils::{
+        actix::extract_session_key_from_req, get_tenant_id_from_key, get_tenant_id_from_request,
+    },
 };
 
 /// Struct representing query params returned from oidc provider
@@ -73,7 +79,6 @@ pub async fn login(
 ) -> Result<HttpResponse, OIDCError> {
     let conn = req.connection_info().clone();
     let base_url_without_scheme = format!("{}/", conn.host());
-
     if !is_valid_redirect_url(&base_url_without_scheme, query.redirect.as_str()) {
         return Err(OIDCError::BadRequest(
             "Bad Request, Invalid Redirect URL!".to_string(),
@@ -94,16 +99,21 @@ pub async fn login(
         }
         (Some(session_key), client) => (session_key, client),
     };
+    // if control flow is here then it is most likely basic auth
     // try authorize
     match Users.authorize(session_key.clone(), rbac::role::Action::Login, None, None) {
         rbac::Response::Authorized => (),
-        rbac::Response::UnAuthorized | rbac::Response::ReloadRequired => {
+        rbac::Response::UnAuthorized
+        | rbac::Response::ReloadRequired
+        | rbac::Response::Suspended(_) => {
             return Err(OIDCError::Unauthorized);
         }
     }
+    let tenant_id = get_tenant_id_from_key(&session_key);
     match session_key {
         // We can exchange basic auth for session cookie
-        SessionKey::BasicAuth { username, password } => match Users.get_user(&username) {
+        SessionKey::BasicAuth { username, password } => match Users.get_user(&username, &tenant_id)
+        {
             Some(
                 ref user @ User {
                     ty: UserType::Native(ref basic),
@@ -117,6 +127,36 @@ pub async fn login(
                     SessionKey::BasicAuth { username, password },
                     EXPIRY_DURATION,
                 );
+                let _session = session_cookie.value().to_owned();
+                let _user = user.clone();
+                let r = for_each_live_node(&tenant_id, move |node| {
+                    let url = format!(
+                        "{}{}/o/login/sync",
+                        node.domain_name,
+                        base_path_without_preceding_slash(),
+                    );
+                    let _session = _session.clone();
+                    let _user = _user.clone();
+
+                    async move {
+                        INTRA_CLUSTER_CLIENT
+                            .post(url)
+                            .header(header::AUTHORIZATION, node.token)
+                            .header(header::CONTENT_TYPE, "application/json")
+                            .json(&json!(
+                                {
+                                    "sessionCookie": _session,
+                                    "user": _user,
+                                    "expiry": EXPIRY_DURATION
+                                }
+                            ))
+                            .send()
+                            .await?;
+                        Ok::<(), anyhow::Error>(())
+                    }
+                })
+                .await;
+                tracing::warn!(login_sync=?r);
                 Ok(redirect_to_client(
                     query.redirect.as_str(),
                     [user_cookie, user_id_cookie, session_cookie],
@@ -151,6 +191,7 @@ pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> 
     let Some(session) = extract_session_key_from_req(&req).ok() else {
         return redirect_to_client(query.redirect.as_str(), None);
     };
+    let tenant_id = get_tenant_id_from_key(&session);
     let user = Users.remove_session(&session);
     let logout_endpoint = if let Some(client) = oidc_client {
         client
@@ -166,7 +207,7 @@ pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> 
 
     match (user, logout_endpoint) {
         (Some(username), Some(logout_endpoint))
-            if Users.is_oauth(&username).unwrap_or_default() =>
+            if Users.is_oauth(&username, &tenant_id).unwrap_or_default() =>
         {
             redirect_to_oidc_logout(logout_endpoint, &query.redirect)
         }
@@ -176,12 +217,16 @@ pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> 
 
 /// Handler for code callback
 /// User should be redirected to page they were trying to access with cookie
-pub async fn reply_login(login_query: web::Query<Login>) -> Result<HttpResponse, OIDCError> {
+pub async fn reply_login(
+    req: HttpRequest,
+    login_query: web::Query<Login>,
+) -> Result<HttpResponse, OIDCError> {
     let oidc_client = if let Some(oidc_client) = OIDC_CLIENT.get() {
         oidc_client
     } else {
         return Err(OIDCError::Unauthorized);
     };
+    let tenant_id = get_tenant_id_from_request(&req);
 
     let (mut claims, user_info, bearer) = match request_token(oidc_client, &login_query).await {
         Ok(v) => v,
@@ -214,7 +259,7 @@ pub async fn reply_login(login_query: web::Query<Login>) -> Result<HttpResponse,
         .map(serde_json::from_value)
         .transpose()?
         .unwrap_or_default();
-    let metadata = get_metadata().await?;
+    let metadata = get_metadata(&tenant_id).await?;
 
     // Find which OIDC groups match existing roles in Parseable
     let mut valid_oidc_roles = HashSet::new();
@@ -225,13 +270,23 @@ pub async fn reply_login(login_query: web::Query<Login>) -> Result<HttpResponse,
         }
     }
 
-    let default_role = if let Some(default_role) = DEFAULT_ROLE.lock().unwrap().clone() {
-        HashSet::from([default_role])
+    let default_role = if let Some(role) = DEFAULT_ROLE
+        .read()
+        .unwrap()
+        .get(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v))
+        && let Some(role) = role
+    {
+        HashSet::from([role.to_owned()])
     } else {
         HashSet::new()
     };
+    // let default_role = if let Some(default_role) = DEFAULT_ROLE.lock().unwrap().clone() {
+    //     HashSet::from([default_role])
+    // } else {
+    //     HashSet::new()
+    // };
 
-    let existing_user = find_existing_user(&user_info);
+    let existing_user = find_existing_user(&user_info, tenant_id);
     let mut final_roles = match existing_user {
         Some(ref user) => {
             // For existing users: keep existing roles + add new valid OIDC roles
@@ -267,7 +322,8 @@ pub async fn reply_login(login_query: web::Query<Login>) -> Result<HttpResponse,
 
     let user = match (existing_user, final_roles) {
         (Some(user), roles) => update_user_if_changed(user, roles, user_info, bearer).await?,
-        (None, roles) => put_user(&user_id, roles, user_info, bearer).await?,
+        // LET TENANT BE NONE FOR NOW!!!
+        (None, roles) => put_user(&user_id, roles, user_info, bearer, None).await?,
     };
     let id = Ulid::new();
 
@@ -288,23 +344,23 @@ pub async fn reply_login(login_query: web::Query<Login>) -> Result<HttpResponse,
     ))
 }
 
-fn find_existing_user(user_info: &user::UserInfo) -> Option<User> {
+fn find_existing_user(user_info: &user::UserInfo, tenant_id: Option<String>) -> Option<User> {
     if let Some(sub) = &user_info.sub
-        && let Some(user) = Users.get_user(sub)
+        && let Some(user) = Users.get_user(sub, &tenant_id)
         && matches!(user.ty, UserType::OAuth(_))
     {
         return Some(user);
     }
 
     if let Some(name) = &user_info.name
-        && let Some(user) = Users.get_user(name)
+        && let Some(user) = Users.get_user(name, &tenant_id)
         && matches!(user.ty, UserType::OAuth(_))
     {
         return Some(user);
     }
 
     if let Some(email) = &user_info.email
-        && let Some(user) = Users.get_user(email)
+        && let Some(user) = Users.get_user(email, &tenant_id)
         && matches!(user.ty, UserType::OAuth(_))
     {
         return Some(user);
@@ -338,15 +394,18 @@ fn redirect_to_oidc(
     let mut url: String = auth_url.into();
     url.push_str("&access_type=offline&prompt=consent");
     HttpResponse::TemporaryRedirect()
-        .insert_header((header::LOCATION, url))
+        .insert_header((actix_web::http::header::LOCATION, url))
         .finish()
 }
 
 fn redirect_to_oidc_logout(mut logout_endpoint: Url, redirect: &Url) -> HttpResponse {
     logout_endpoint.set_query(Some(&format!("post_logout_redirect_uri={redirect}")));
     HttpResponse::TemporaryRedirect()
-        .insert_header((header::CACHE_CONTROL, "no-store"))
-        .insert_header((header::LOCATION, logout_endpoint.to_string()))
+        .insert_header((actix_web::http::header::CACHE_CONTROL, "no-store"))
+        .insert_header((
+            actix_web::http::header::LOCATION,
+            logout_endpoint.to_string(),
+        ))
         .finish()
 }
 
@@ -355,20 +414,21 @@ pub fn redirect_to_client(
     cookies: impl IntoIterator<Item = Cookie<'static>>,
 ) -> HttpResponse {
     let mut response = HttpResponse::MovedPermanently();
-    response.insert_header((header::LOCATION, url));
+    response.insert_header((actix_web::http::header::LOCATION, url));
     for cookie in cookies {
         response.cookie(cookie);
     }
-    response.insert_header((header::CACHE_CONTROL, "no-store"));
+    response.insert_header((actix_web::http::header::CACHE_CONTROL, "no-store"));
 
-    response.finish()
+    let res = response.finish();
+    res
 }
 
 fn redirect_no_oauth_setup(mut url: Url) -> HttpResponse {
     url.set_path("oidc-not-configured");
     let mut response = HttpResponse::MovedPermanently();
-    response.insert_header((header::LOCATION, url.as_str()));
-    response.insert_header((header::CACHE_CONTROL, "no-store"));
+    response.insert_header((actix_web::http::header::LOCATION, url.as_str()));
+    response.insert_header((actix_web::http::header::CACHE_CONTROL, "no-store"));
     response.finish()
 }
 
@@ -441,15 +501,16 @@ pub async fn request_token(
     Ok((claims, userinfo, bearer))
 }
 
-// put new user in metadata if does not exits
+// put new user in metadata if does not exit
 // update local cache
 pub async fn put_user(
     userid: &str,
     group: HashSet<String>,
     user_info: user::UserInfo,
     bearer: Bearer,
+    tenant: Option<String>,
 ) -> Result<User, ObjectStorageError> {
-    let mut metadata = get_metadata().await?;
+    let mut metadata = get_metadata(&tenant).await?;
 
     let mut user = metadata
         .users
@@ -457,12 +518,12 @@ pub async fn put_user(
         .find(|user| user.userid() == userid)
         .cloned()
         .unwrap_or_else(|| {
-            let user = User::new_oauth(userid.to_owned(), group, user_info, None);
+            let user = User::new_oauth(userid.to_owned(), group, user_info, None, tenant.clone());
             metadata.users.push(user.clone());
             user
         });
 
-    put_metadata(&metadata).await?;
+    put_metadata(&metadata, &tenant).await?;
 
     // modify before storing
     if let user::UserType::OAuth(oauth) = &mut user.ty {
@@ -509,7 +570,7 @@ pub async fn update_user_if_changed(
         oauth_user.userid.clone_from(sub);
     }
 
-    let mut metadata = get_metadata().await?;
+    let mut metadata = get_metadata(&user.tenant).await?;
 
     // Find the user entry using the old username (before migration)
     if let Some(entry) = metadata
@@ -524,8 +585,8 @@ pub async fn update_user_if_changed(
             group.users.insert(GroupUser::from_user(&user));
         }
     }
-    put_metadata(&metadata).await?;
-    Users.delete_user(&old_username);
+    put_metadata(&metadata, &user.tenant).await?;
+    Users.delete_user(&old_username, &user.tenant);
     // update oauth bearer
     if let user::UserType::OAuth(oauth) = &mut user.ty {
         oauth.bearer = Some(bearer);
@@ -534,19 +595,24 @@ pub async fn update_user_if_changed(
     Ok(user)
 }
 
-async fn get_metadata() -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
+async fn get_metadata(
+    tenant_id: &Option<String>,
+) -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
     let metadata = PARSEABLE
         .metastore
-        .get_parseable_metadata()
+        .get_parseable_metadata(tenant_id)
         .await
         .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
         .ok_or_else(|| ObjectStorageError::Custom("parseable metadata not initialized".into()))?;
     Ok(serde_json::from_slice::<StorageMetadata>(&metadata)?)
 }
 
-async fn put_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageError> {
-    storage::put_remote_metadata(metadata).await?;
-    storage::put_staging_metadata(metadata)?;
+async fn put_metadata(
+    metadata: &StorageMetadata,
+    tenant_id: &Option<String>,
+) -> Result<(), ObjectStorageError> {
+    storage::put_remote_metadata(metadata, tenant_id).await?;
+    storage::put_staging_metadata(metadata, tenant_id)?;
     Ok(())
 }
 
