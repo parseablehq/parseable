@@ -275,6 +275,16 @@ impl PrismDatasetRequest {
             return Ok(None);
         }
 
+        // exclude internal streams
+        let is_internal = PARSEABLE.get_stream(&stream).is_ok_and(|stream| {
+            stream
+                .get_stream_type()
+                .eq(&crate::storage::StreamType::Internal)
+        });
+        if is_internal {
+            return Ok(None);
+        }
+
         // Process stream data
         match get_prism_logstream_info(&stream).await {
             Ok(info) => Ok(Some(self.build_dataset_response(stream, info).await?)),
