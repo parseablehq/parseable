@@ -249,7 +249,7 @@ impl Dashboards {
     ) -> Result<(), DashboardError> {
         dashboard.created = Some(Utc::now());
         dashboard.set_metadata(user_id, None);
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let mut dashboards = self.0.write().await;
 
         if let Some(dbs) = dashboards.get_mut(tenant) {
@@ -278,7 +278,7 @@ impl Dashboards {
         tenant_id: &Option<String>,
     ) -> Result<(), DashboardError> {
         let mut dashboards = self.0.write().await;
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if let Some(dbs) = dashboards.get_mut(tenant) {
             let existing_dashboard = dbs
                 .iter()
@@ -351,7 +351,7 @@ impl Dashboards {
         self.0
             .write()
             .await
-            .get_mut(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v))
+            .get_mut(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
             .map(|dashboards| dashboards.retain(|d| d.dashboard_id != Some(dashboard_id)))
             .iter()
             .for_each(drop);
@@ -366,7 +366,7 @@ impl Dashboards {
         dashboard_id: Ulid,
         tenant_id: &Option<String>,
     ) -> Option<Dashboard> {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let dashboards = self.0.read().await;
         if let Some(dashboards) = dashboards.get(tenant_id) {
             dashboards
@@ -391,7 +391,7 @@ impl Dashboards {
         is_admin: bool,
         tenant_id: &Option<String>,
     ) -> Option<Dashboard> {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let dashboards = self.0.read().await;
         if let Some(dashboards) = dashboards.get(tenant_id) {
             dashboards
@@ -428,7 +428,7 @@ impl Dashboards {
     ) -> Vec<Dashboard> {
         // limit the number of dashboards returned in order of modified date
         // if limit is 0, return all dashboards
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let dashboards = self.0.read().await;
 
         let mut sorted_dashboards = if let Some(dashboards) = dashboards.get(tenant_id) {
@@ -456,7 +456,7 @@ impl Dashboards {
     /// List tags from all dashboards
     /// This function returns a list of unique tags from all dashboards
     pub async fn list_tags(&self, tenant_id: &Option<String>) -> Vec<String> {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let dashboards = self.0.read().await;
         let mut tags = if let Some(dashboards) = dashboards.get(tenant_id) {
             dashboards
@@ -485,7 +485,7 @@ impl Dashboards {
         tags: Vec<String>,
         tenant_id: &Option<String>,
     ) -> Vec<Dashboard> {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let dashboards = self.0.read().await;
         if let Some(dashboards) = dashboards.get(tenant_id) {
             dashboards

@@ -70,6 +70,7 @@ pub struct StorageMetadata {
     #[serde(default)]
     pub default_role: Option<String>,
     pub suspended_services: Option<HashSet<Service>>,
+    pub global_query_auth: Option<String>,
 }
 
 impl Default for StorageMetadata {
@@ -87,6 +88,7 @@ impl Default for StorageMetadata {
             roles: HashMap::default(),
             default_role: None,
             suspended_services: None,
+            global_query_auth: None,
         }
     }
 }

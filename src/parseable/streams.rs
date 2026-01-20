@@ -410,15 +410,13 @@ impl Stream {
             return vec![];
         };
 
-        let dirs = dir
-            .flatten()
+        dir.flatten()
             .map(|file| file.path())
             .filter(|file| {
                 file.extension().is_some_and(|ext| ext.eq("parquet"))
                     && Self::is_valid_parquet_file(file, &self.stream_name)
             })
-            .collect();
-        dirs
+            .collect()
     }
 
     pub fn schema_files(&self) -> Vec<PathBuf> {
@@ -1068,7 +1066,7 @@ impl Streams {
         // tracing::warn!(
         //     "get_or_create\nstream- {stream_name}\ntenant- {tenant_id:?}\nmetadata- {metadata:?}\noptions- {options:?}"
         // );
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
         if let Some(tenant_streams) = guard.get(tenant)
             && let Some(stream) = tenant_streams.get(&stream_name)
@@ -1093,7 +1091,7 @@ impl Streams {
 
     /// TODO: validate possibility of stream continuing to exist despite being deleted
     pub fn delete(&self, stream_name: &str, tenant_id: &Option<String>) {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let mut guard = self.write().expect(LOCK_EXPECT);
         if let Some(tenant_streams) = guard.get_mut(tenant_id) {
             tenant_streams.remove(stream_name);
@@ -1102,7 +1100,7 @@ impl Streams {
     }
 
     pub fn contains(&self, stream_name: &str, tenant_id: &Option<String>) -> bool {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if let Some(tenant) = self.read().expect(LOCK_EXPECT).get(tenant_id) {
             tenant.contains_key(stream_name)
         } else {
@@ -1129,7 +1127,7 @@ impl Streams {
 
     /// Listing of logstream names for a given tenant that parseable is aware of
     pub fn list(&self, tenant_id: &Option<String>) -> Vec<LogStream> {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
         let guard = self.read().expect(LOCK_EXPECT);
         if let Some(tenant_streams) = guard.get(tenant_id) {
@@ -1150,7 +1148,7 @@ impl Streams {
 
     pub fn list_internal_streams(&self, tenant_id: &Option<String>) -> Vec<String> {
         let map = self.read().expect(LOCK_EXPECT);
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if let Some(tenant_streams) = map.get(tenant_id) {
             tenant_streams
                 .iter()
@@ -1177,8 +1175,7 @@ impl Streams {
         } else {
             vec![DEFAULT_TENANT.to_owned()]
         };
-        // tracing::warn!(flush_and_convert_tenants=?tenants);
-        // tracing::warn!(parseable_streams_tenants=?self.read().unwrap().keys());
+
         for tenant_id in tenants {
             let guard = self.read().expect(LOCK_EXPECT);
             let streams: Vec<Arc<Stream>> = if let Some(tenant_streams) = guard.get(&tenant_id) {
@@ -1218,11 +1215,12 @@ mod tests {
             stream_name,
             LogStreamMetadata::default(),
             None,
+            &None,
         );
 
         assert_eq!(
             staging.data_path,
-            options.local_stream_data_path(stream_name)
+            options.local_stream_data_path(stream_name, &None)
         );
     }
 
@@ -1236,11 +1234,12 @@ mod tests {
             stream_name,
             LogStreamMetadata::default(),
             None,
+            &None,
         );
 
         assert_eq!(
             staging.data_path,
-            options.local_stream_data_path(stream_name)
+            options.local_stream_data_path(stream_name, &None)
         );
     }
 
@@ -1254,11 +1253,12 @@ mod tests {
             stream_name,
             LogStreamMetadata::default(),
             None,
+            &None,
         );
 
         assert_eq!(
             staging.data_path,
-            options.local_stream_data_path(stream_name)
+            options.local_stream_data_path(stream_name, &None)
         );
     }
 
@@ -1272,11 +1272,12 @@ mod tests {
             stream_name,
             LogStreamMetadata::default(),
             None,
+            &None,
         );
 
         assert_eq!(
             staging.data_path,
-            options.local_stream_data_path(stream_name)
+            options.local_stream_data_path(stream_name, &None)
         );
     }
 
@@ -1293,6 +1294,7 @@ mod tests {
             "test_stream",
             LogStreamMetadata::default(),
             None,
+            &None,
         );
 
         let files = staging.arrow_files();
@@ -1316,6 +1318,7 @@ mod tests {
             stream_name,
             LogStreamMetadata::default(),
             None,
+            &None,
         );
 
         let expected = format!(
@@ -1350,6 +1353,7 @@ mod tests {
             stream_name,
             LogStreamMetadata::default(),
             None,
+            &None,
         );
 
         let expected = format!(
@@ -1379,8 +1383,9 @@ mod tests {
             &stream,
             LogStreamMetadata::default(),
             None,
+            &None,
         )
-        .convert_disk_files_to_parquet(None, None, false, false)?;
+        .convert_disk_files_to_parquet(None, None, false, false, &None)?;
         assert!(result.is_none());
         // Verify metrics were set to 0
         let staging_files = metrics::STAGING_FILES.with_label_values(&[&stream]).get();
@@ -1436,6 +1441,7 @@ mod tests {
             stream_name,
             LogStreamMetadata::default(),
             None,
+            &None,
         );
 
         // Create test arrow files
@@ -1457,9 +1463,15 @@ mod tests {
         drop(staging);
 
         // Start with a fresh staging
-        let staging = Stream::new(options, stream_name, LogStreamMetadata::default(), None);
+        let staging = Stream::new(
+            options,
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
         let result = staging
-            .convert_disk_files_to_parquet(None, None, false, true)
+            .convert_disk_files_to_parquet(None, None, false, true, &None)
             .unwrap();
 
         assert!(result.is_some());
@@ -1485,6 +1497,7 @@ mod tests {
             stream_name,
             LogStreamMetadata::default(),
             None,
+            &None,
         );
 
         // Create test arrow files
@@ -1507,9 +1520,15 @@ mod tests {
         drop(staging);
 
         // Start with a fresh staging
-        let staging = Stream::new(options, stream_name, LogStreamMetadata::default(), None);
+        let staging = Stream::new(
+            options,
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
         let result = staging
-            .convert_disk_files_to_parquet(None, None, false, true)
+            .convert_disk_files_to_parquet(None, None, false, true, &None)
             .unwrap();
 
         assert!(result.is_some());
@@ -1535,6 +1554,7 @@ mod tests {
             stream_name,
             LogStreamMetadata::default(),
             None,
+            &None,
         );
 
         // Create test arrow files
@@ -1561,9 +1581,15 @@ mod tests {
         drop(staging);
 
         // Start with a fresh staging
-        let staging = Stream::new(options, stream_name, LogStreamMetadata::default(), None);
+        let staging = Stream::new(
+            options,
+            stream_name,
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
         let result = staging
-            .convert_disk_files_to_parquet(None, None, false, false)
+            .convert_disk_files_to_parquet(None, None, false, false, &None)
             .unwrap();
 
         assert!(result.is_some());
@@ -1640,6 +1666,7 @@ mod tests {
             stream_name.to_owned(),
             metadata.clone(),
             ingestor_id.clone(),
+            &None,
         );
 
         // Call get_or_create again with the same stream_name
@@ -1648,6 +1675,7 @@ mod tests {
             stream_name.to_owned(),
             metadata.clone(),
             ingestor_id.clone(),
+            &None,
         );
 
         // Assert that both references point to the same stream
@@ -1669,7 +1697,7 @@ mod tests {
         // Assert the stream doesn't exist already
         let guard = streams.read().expect("Failed to acquire read lock");
         assert_eq!(guard.len(), 0);
-        assert!(!guard.contains_key(stream_name));
+        assert!(!guard.get(DEFAULT_TENANT).unwrap().contains_key(stream_name));
         drop(guard);
 
         // Call get_or_create with a new stream_name
@@ -1678,6 +1706,7 @@ mod tests {
             stream_name.to_owned(),
             metadata.clone(),
             ingestor_id.clone(),
+            &None,
         );
 
         // verify created stream has the same ingestor_id
@@ -1686,7 +1715,7 @@ mod tests {
         // Assert that the stream is created
         let guard = streams.read().expect("Failed to acquire read lock");
         assert_eq!(guard.len(), 1);
-        assert!(guard.contains_key(stream_name));
+        assert!(guard.get(DEFAULT_TENANT).unwrap().contains_key(stream_name));
     }
 
     #[test]
@@ -1711,7 +1740,7 @@ mod tests {
         // First thread
         let handle1 = spawn(move || {
             barrier1.wait();
-            streams1.get_or_create(options1, stream_name1, metadata1, ingestor_id1)
+            streams1.get_or_create(options1, stream_name1, metadata1, ingestor_id1, &None)
         });
 
         // Cloned for the second thread
@@ -1720,7 +1749,7 @@ mod tests {
         // Second thread
         let handle2 = spawn(move || {
             barrier.wait();
-            streams2.get_or_create(options, stream_name, metadata, ingestor_id)
+            streams2.get_or_create(options, stream_name, metadata, ingestor_id, &None)
         });
 
         // Wait for both threads to complete and get their results

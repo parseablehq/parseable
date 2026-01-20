@@ -312,7 +312,7 @@ impl Query {
             .get_ctx()
             .execute_logical_plan(self.final_logical_plan(tenant_id))
             .await?;
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let fields = df
             .schema()
             .fields()
@@ -1018,7 +1018,7 @@ impl PartitionedMetricMonitor {
             increment_bytes_scanned_in_query_by_date(
                 bytes,
                 &current_date,
-                self.tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+                self.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
             );
         }
     }

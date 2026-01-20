@@ -78,7 +78,7 @@ impl TargetConfigs {
             .put_target(&target, &target.tenant)
             .await?;
         let mut map = self.target_configs.write().await;
-        let tenant_id = target.tenant.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = target.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
         map.entry(tenant_id.to_owned())
             .or_default()
             .insert(target.id, target);
@@ -87,7 +87,7 @@ impl TargetConfigs {
     }
 
     pub async fn list(&self, tenant_id: &Option<String>) -> Result<Vec<Target>, AlertError> {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let targets = if let Some(targets) = self.target_configs.read().await.get(tenant_id) {
             targets.values().cloned().collect_vec()
         } else {
@@ -108,7 +108,7 @@ impl TargetConfigs {
         target_id: &Ulid,
         tenant_id: &Option<String>,
     ) -> Result<Target, AlertError> {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let target = if let Some(targets) = self.target_configs.read().await.get(tenant_id) {
             targets
                 .get(target_id)
@@ -133,7 +133,7 @@ impl TargetConfigs {
         target_id: &Ulid,
         tenant_id: &Option<String>,
     ) -> Result<Target, AlertError> {
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         // ensure that the target is not being used by any alert
         let guard = ALERTS.read().await;
         let alerts = if let Some(alerts) = guard.as_ref() {

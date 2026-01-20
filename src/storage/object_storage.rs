@@ -156,7 +156,7 @@ async fn upload_single_parquet_file(
         &path,
         &stream_name,
         filename,
-        tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+        tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
     )?;
 
     // Create manifest entry
@@ -750,14 +750,14 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         Ok(Bytes::new())
     }
 
-    ///create schema from storage
+    /// create schema from storage
     async fn create_schema_from_metastore(
         &self,
         stream_name: &str,
         tenant_id: &Option<String>,
     ) -> Result<Bytes, ObjectStorageError> {
         let schema = fetch_schema(stream_name, tenant_id).await?;
-        tracing::warn!("fetched schema- {schema:?}");
+        // tracing::warn!("fetched schema for stream {stream_name} - {schema:?}");
         let schema_bytes = Bytes::from(serde_json::to_vec(&schema)?);
         // convert to bytes
         PARSEABLE
@@ -994,7 +994,6 @@ async fn process_parquet_files(
 
     // Spawn upload tasks for each parquet file
     for path in upload_context.stream.parquet_files() {
-        tracing::warn!(process_parquet_files_path=?path);
         spawn_parquet_upload_task(
             &mut join_set,
             semaphore.clone(),
@@ -1116,7 +1115,6 @@ async fn process_schema_files(
     tenant_id: &Option<String>,
 ) -> Result<(), ObjectStorageError> {
     for path in upload_context.stream.schema_files() {
-        tracing::warn!(upload_context_schema_files=?path);
         let file = File::open(&path)?;
         let schema: Schema = serde_json::from_reader(file)?;
         commit_schema_to_storage(stream_name, schema, tenant_id).await?;
@@ -1153,7 +1151,7 @@ fn stream_relative_path(
 pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
     let object_store = PARSEABLE.storage().get_object_store();
     let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
-        tenants.into_iter().map(|v| Some(v)).collect()
+        tenants.into_iter().map(Some).collect()
     } else {
         vec![None]
     };
@@ -1212,7 +1210,7 @@ pub fn to_bytes(any: &(impl ?Sized + serde::Serialize)) -> Bytes {
 }
 
 pub fn schema_path(stream_name: &str, tenant_id: &Option<String>) -> RelativePathBuf {
-    let tenant = tenant_id.as_ref().map_or("", |v| v);
+    let tenant = tenant_id.as_deref().unwrap_or("");
     if PARSEABLE.options.mode == Mode::Ingest {
         let id = INGESTOR_META
             .get()
@@ -1228,7 +1226,7 @@ pub fn schema_path(stream_name: &str, tenant_id: &Option<String>) -> RelativePat
 
 #[inline(always)]
 pub fn stream_json_path(stream_name: &str, tenant_id: &Option<String>) -> RelativePathBuf {
-    let tenant = tenant_id.as_ref().map_or("", |v| v);
+    let tenant = tenant_id.as_deref().unwrap_or("");
     if PARSEABLE.options.mode == Mode::Ingest {
         let id = INGESTOR_META
             .get()
@@ -1303,7 +1301,7 @@ pub fn alert_state_json_path(alert_id: Ulid) -> RelativePathBuf {
 #[inline(always)]
 pub fn mttr_json_path(tenant_id: &Option<String>) -> RelativePathBuf {
     if let Some(tenant) = tenant_id.as_ref() {
-        RelativePathBuf::from_iter([&tenant, ALERTS_ROOT_DIRECTORY, "mttr.json"])
+        RelativePathBuf::from_iter([tenant, ALERTS_ROOT_DIRECTORY, "mttr.json"])
     } else {
         RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY, "mttr.json"])
     }

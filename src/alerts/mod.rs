@@ -624,9 +624,9 @@ impl AlertConfig {
         }
 
         // get active sessions
-        let active_sessions = sessions().get_active_sessions();
+        let active_session = sessions().get_active_sessions();
         let mut broadcast_to = vec![];
-        for session in active_sessions {
+        for (session, _, _) in active_session {
             if user_auth_for_query(&session, &self.query).await.is_ok()
                 && let SessionKey::SessionId(id) = &session
             {
@@ -1095,7 +1095,7 @@ impl AlertManagerTrait for Alerts {
                 };
 
                 // ensure that alert config's tenant is correctly set
-                alert.tenant_id = tenant.clone();
+                alert.tenant_id.clone_from(tenant);
 
                 let alert: Box<dyn AlertTrait> = match &alert.alert_type {
                     AlertType::Threshold => {
@@ -1150,7 +1150,7 @@ impl AlertManagerTrait for Alerts {
         tags: Vec<String>,
     ) -> Result<Vec<AlertConfig>, AlertError> {
         let tenant_id = get_tenant_id_from_key(&session);
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         // First, collect all alerts without performing auth checks to avoid holding the lock
         let all_alerts: Vec<AlertConfig> = {
             let alerts_guard = self.alerts.read().await;
@@ -1226,7 +1226,7 @@ impl AlertManagerTrait for Alerts {
         id: Ulid,
         tenant_id: &Option<String>,
     ) -> Result<Box<dyn AlertTrait>, AlertError> {
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let read_access = self.alerts.read().await;
         if let Some(alerts) = read_access.get(tenant)
             && let Some(alert) = alerts.get(&id)
@@ -1241,7 +1241,7 @@ impl AlertManagerTrait for Alerts {
 
     /// Update the in-mem vector of alerts
     async fn update(&self, alert: &dyn AlertTrait) {
-        let tenant = alert.get_tenant_id().as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = alert.get_tenant_id().as_deref().unwrap_or(DEFAULT_TENANT);
         self.alerts
             .write()
             .await
@@ -1261,7 +1261,7 @@ impl AlertManagerTrait for Alerts {
         let (mut alert, should_delete_task, should_create_task) = {
             let read_access = self.alerts.read().await;
             let alert = if let Some(alerts) =
-                read_access.get(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v))
+                read_access.get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
                 && let Some(alert) = alerts.get(&alert_id)
             {
                 match &alert.get_alert_type() {
@@ -1331,7 +1331,7 @@ impl AlertManagerTrait for Alerts {
         {
             let mut write_access = self.alerts.write().await;
 
-            let tenant = alert.get_tenant_id().as_ref().map_or(DEFAULT_TENANT, |v| v);
+            let tenant = alert.get_tenant_id().as_deref().unwrap_or(DEFAULT_TENANT);
             if let Some(alerts) = write_access.get_mut(tenant) {
                 alerts.insert(*alert.get_id(), alert.clone_box());
             }
@@ -1350,7 +1350,7 @@ impl AlertManagerTrait for Alerts {
     ) -> Result<(), AlertError> {
         // read and modify alert
         let mut write_access = self.alerts.write().await;
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let mut alert: Box<dyn AlertTrait> = if let Some(alerts) = write_access.get(tenant)
             && let Some(alert) = alerts.get(&alert_id)
         {
@@ -1377,26 +1377,21 @@ impl AlertManagerTrait for Alerts {
         if let Some(alerts) = write_access.get_mut(tenant) {
             alerts.insert(*alert.get_id(), alert.clone_box());
         }
-        // write_access.insert(*alert.get_id(), alert.clone_box());
 
         Ok(())
     }
 
     /// Remove alert and scheduled task from disk and memory
     async fn delete(&self, alert_id: Ulid, tenant_id: &Option<String>) -> Result<(), AlertError> {
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if let Some(alerts) = self.alerts.write().await.get_mut(tenant)
-            && let Some(_) = alerts.remove(&alert_id)
+            && alerts.remove(&alert_id).is_some()
         {
             trace!("removed alert from memory");
         } else {
             warn!("Alert ID- {alert_id} not found in memory!");
         }
-        // if self.alerts.write().await.remove(&alert_id).is_some() {
-        //     trace!("removed alert from memory");
-        // } else {
-        //     warn!("Alert ID- {alert_id} not found in memory!");
-        // }
+
         Ok(())
     }
 
@@ -1406,7 +1401,7 @@ impl AlertManagerTrait for Alerts {
         alert_id: Ulid,
         tenant_id: &Option<String>,
     ) -> Result<AlertState, AlertError> {
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let read_access = self.alerts.read().await;
 
         if let Some(alerts) = read_access.get(tenant)
@@ -1441,7 +1436,7 @@ impl AlertManagerTrait for Alerts {
     /// List tags from all alerts
     /// This function returns a list of unique tags from all alerts
     async fn list_tags(&self, tenant_id: &Option<String>) -> Vec<String> {
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         // let alerts = self.alerts.read().await;
         let mut tags = if let Some(alerts) = self.alerts.read().await.get(tenant) {
             alerts
@@ -1461,7 +1456,7 @@ impl AlertManagerTrait for Alerts {
         &self,
         tenant_id: &Option<String>,
     ) -> HashMap<Ulid, Box<dyn AlertTrait>> {
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if let Some(alerts) = self.alerts.read().await.get(tenant) {
             alerts.iter().map(|(k, v)| (*k, v.clone_box())).collect()
         } else {

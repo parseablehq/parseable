@@ -18,7 +18,7 @@
 
 use std::{collections::HashMap, fmt::Display};
 
-use actix_web::Either;
+use actix_web::{Either, http::header::HeaderMap};
 use arrow_array::{Array, Float64Array, Int64Array, RecordBatch};
 use datafusion::{
     logical_expr::{Literal, LogicalPlan},
@@ -75,7 +75,7 @@ pub fn extract_time_range(eval_config: &super::EvalConfig) -> Result<TimeRange, 
 
 /// Execute the alert query based on the current mode and return structured group results
 pub async fn execute_alert_query(
-    auth_token: Option<String>,
+    auth_token: Option<HeaderMap>,
     query: &str,
     time_range: &TimeRange,
     tenant_id: &Option<String>,
@@ -128,7 +128,7 @@ async fn execute_local_query(
 
 /// Execute alert query remotely (Prism mode)
 async fn execute_remote_query(
-    auth_token: Option<String>,
+    auth_token: Option<HeaderMap>,
     query: &str,
     time_range: &TimeRange,
     tenant_id: &Option<String>,
@@ -146,7 +146,7 @@ async fn execute_remote_query(
         filter_tags: None,
     };
 
-    let (result_value, _) = send_query_request(None, &query_request, tenant_id)
+    let (result_value, _) = send_query_request(auth_token, &query_request, tenant_id)
         .await
         .map_err(|err| AlertError::CustomError(format!("Failed to send query request: {err}")))?;
 

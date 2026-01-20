@@ -84,12 +84,18 @@ pub async fn get_records_and_fields(
     creds: &SessionKey,
     tenant_id: &Option<String>,
 ) -> Result<(Option<Vec<RecordBatch>>, Option<Vec<String>>), QueryError> {
-    let session_state = QUERY_SESSION.get_ctx().state();
+    let mut session_state = QUERY_SESSION.get_ctx().state();
     let time_range =
         TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
     let tables = resolve_stream_names(&query_request.query)?;
-    //check or load streams in memory
+    // check or load streams in memory
     create_streams_for_distributed(tables.clone(), tenant_id).await?;
+
+    session_state
+        .config_mut()
+        .options_mut()
+        .catalog
+        .default_schema = tenant_id.as_deref().unwrap_or("public").to_owned();
 
     let query: LogicalQuery = into_query(query_request, &session_state, time_range).await?;
 
@@ -122,7 +128,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
         .config_mut()
         .options_mut()
         .catalog
-        .default_schema = tenant_id.as_ref().map_or("public".into(), |v| v.to_owned());
+        .default_schema = tenant_id.as_deref().unwrap_or("public").to_owned();
 
     let query: LogicalQuery = into_query(&query_request, &session_state, time_range).await?;
     let creds = extract_session_key_from_req(&req)?;
@@ -135,7 +141,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
     let current_date = chrono::Utc::now().date_naive().to_string();
     increment_query_calls_by_date(
         &current_date,
-        tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+        tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
     );
 
     // if the query is `select count(*) from <dataset>`
@@ -376,7 +382,7 @@ pub async fn get_counts(
     let current_date = chrono::Utc::now().date_naive().to_string();
     increment_query_calls_by_date(
         &current_date,
-        tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+        tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
     );
     // if the user has given a sql query (counts call with filters applied), then use this flow
     // this could include filters or group by

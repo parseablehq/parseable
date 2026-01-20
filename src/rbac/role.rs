@@ -198,7 +198,7 @@ pub mod model {
             resource: Option<ParseableResourceType>,
         },
         Reader {
-            resource: ParseableResourceType,
+            resource: Option<ParseableResourceType>,
         },
     }
 
@@ -212,7 +212,11 @@ pub mod model {
                     writer_perm_builder().with_resource(resource.to_owned())
                 }
                 DefaultPrivilege::Reader { resource } => {
-                    reader_perm_builder().with_resource(resource.to_owned())
+                    if let Some(resource) = resource.as_ref() {
+                        reader_perm_builder().with_resource(resource.to_owned())
+                    } else {
+                        reader_perm_builder()
+                    }
                 }
                 DefaultPrivilege::Ingestor { resource } => {
                     if let Some(resource) = resource.as_ref() {
@@ -227,7 +231,7 @@ pub mod model {
 
     fn super_admin_perm_builder() -> RoleBuilder {
         RoleBuilder {
-            actions: vec![Action::All],
+            actions: vec![Action::SuperAdmin],
             resource_type: Some(ParseableResourceType::All),
         }
     }

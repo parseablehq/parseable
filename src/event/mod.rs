@@ -87,7 +87,7 @@ impl Event {
                 self.stream_type,
             )?;
 
-        let tenant = self.tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = self.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         update_stats(
             &self.stream_name,
             self.origin_format,
@@ -145,7 +145,7 @@ pub fn commit_schema(
     tenant_id: &Option<String>,
 ) -> Result<(), StagingError> {
     let mut stream_metadata = PARSEABLE.streams.write().expect("lock poisoned");
-    let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     let map = &mut stream_metadata
         .get_mut(tenant_id)
         .ok_or_else(|| TenantNotFound(tenant_id.to_owned()))?

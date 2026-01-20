@@ -64,16 +64,12 @@ pub fn mutate_request_with_tenant(req: &mut ServiceRequest) {
     let creds = BasicAuth::extract(req.request()).into_inner();
 
     if let Ok(basic) = &creds {
-        Users.mutate_request_with_basic_user(
-            basic.user_id(),
-            basic.password().as_deref().unwrap(),
-            req,
-        );
-    } else if let Some(cookie) = req.cookie("session") {
-        if let Ok(ulid) = ulid::Ulid::from_string(cookie.value()) {
-            let key = SessionKey::SessionId(ulid);
-            sessions().mutate_request_with_tenant(&key, req);
-        }
+        Users.mutate_request_with_basic_user(basic.user_id(), basic.password().unwrap(), req);
+    } else if let Some(cookie) = req.cookie("session")
+        && let Ok(ulid) = ulid::Ulid::from_string(cookie.value())
+    {
+        let key = SessionKey::SessionId(ulid);
+        sessions().mutate_request_with_tenant(&key, req);
     };
 }
 
@@ -94,9 +90,13 @@ pub fn get_user_and_tenant_from_request(
     match session_key {
         SessionKey::BasicAuth { username, password } => {
             if let Some(tenant) = Users.get_user_tenant_from_basic(&username, &password) {
-                return Ok((username.clone(), Some(tenant)));
+                tracing::warn!(tenant=?tenant);
+                tracing::warn!(user=?username);
+                Ok((username.clone(), Some(tenant)))
             } else {
-                return Ok((username.clone(), None));
+                // tracing::warn!(req=?req);
+                // tracing::warn!(user=?username);
+                Ok((username.clone(), None))
             }
         }
         session @ SessionKey::SessionId(_) => {
@@ -124,11 +124,9 @@ pub fn get_user_and_tenant_from_request(
 }
 
 pub fn get_tenant_id_from_request(req: &HttpRequest) -> Option<String> {
-    if let Some(tenant_value) = req.headers().get("tenant") {
-        Some(tenant_value.to_str().unwrap().to_owned())
-    } else {
-        None
-    }
+    req.headers()
+        .get("tenant")
+        .map(|tenant_value| tenant_value.to_str().unwrap().to_owned())
 }
 
 pub fn get_tenant_id_from_key(key: &SessionKey) -> Option<String> {

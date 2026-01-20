@@ -97,7 +97,7 @@ impl Metastore for ObjectStoreMetastore {
 
         let mut all_overviews = HashMap::new();
         for stream in streams {
-            let root = tenant_id.as_ref().map_or("", |v| v);
+            let root = tenant_id.as_deref().unwrap_or("");
             let overview_path = RelativePathBuf::from_iter([root, &stream, "overview"]);
 
             // if the file doesn't exist, load an empty overview
@@ -143,7 +143,7 @@ impl Metastore for ObjectStoreMetastore {
 
     /// This function fetches all the keystones from the underlying object store
     async fn get_keystones(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError> {
-        let base_paths = PARSEABLE.list_tenants().map_or(vec!["".into()], |v| v);
+        let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
         let mut keystones = HashMap::new();
         for mut tenant in base_paths {
             let keystone_path = RelativePathBuf::from_iter([&tenant, ".keystone"]);
@@ -157,7 +157,7 @@ impl Metastore for ObjectStoreMetastore {
                     &Some(tenant.clone()),
                 )
                 .await?;
-            if tenant.eq(&mut "") {
+            if tenant.is_empty() {
                 tenant.clone_from(&DEFAULT_TENANT.to_string());
             }
             keystones.insert(tenant, objs);
@@ -201,7 +201,7 @@ impl Metastore for ObjectStoreMetastore {
 
     /// This function fetches all the conversations from the underlying object store
     async fn get_conversations(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError> {
-        let base_paths = PARSEABLE.list_tenants().map_or(vec!["".into()], |v| v);
+        let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
         let mut conversations = HashMap::new();
         for mut tenant in base_paths {
             let conv_path = RelativePathBuf::from_iter([&tenant, ".keystone"]);
@@ -215,7 +215,7 @@ impl Metastore for ObjectStoreMetastore {
                     &Some(tenant.clone()),
                 )
                 .await?;
-            if tenant.eq(&mut "") {
+            if tenant.is_empty() {
                 tenant.clone_from(&DEFAULT_TENANT.to_string());
             }
             conversations.insert(tenant, objs);
@@ -259,7 +259,7 @@ impl Metastore for ObjectStoreMetastore {
 
     /// This function fetches all the alerts from the underlying object store
     async fn get_alerts(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError> {
-        let base_paths = PARSEABLE.list_tenants().map_or(vec!["".into()], |v| v);
+        let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
         let mut all_alerts = HashMap::new();
         for mut tenant in base_paths {
             let alerts_path = RelativePathBuf::from_iter([&tenant, ALERTS_ROOT_DIRECTORY]);
@@ -273,7 +273,7 @@ impl Metastore for ObjectStoreMetastore {
                     &Some(tenant.clone()),
                 )
                 .await?;
-            if tenant.eq(&mut "") {
+            if tenant.is_empty() {
                 tenant.clone_from(&DEFAULT_TENANT.to_string());
             }
             all_alerts.insert(tenant, alerts);
@@ -318,8 +318,8 @@ impl Metastore for ObjectStoreMetastore {
         &self,
         tenant_id: &Option<String>,
     ) -> Result<Vec<AlertStateEntry>, MetastoreError> {
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
-        let base_path = RelativePathBuf::from_iter([&tenant, ALERTS_ROOT_DIRECTORY]);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let base_path = RelativePathBuf::from_iter([tenant, ALERTS_ROOT_DIRECTORY]);
         let alert_state_bytes = self
             .storage
             .get_objects(
@@ -464,7 +464,7 @@ impl Metastore for ObjectStoreMetastore {
 
     /// This function fetches all the llmconfigs from the underlying object store
     async fn get_llmconfigs(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError> {
-        let base_paths = PARSEABLE.list_tenants().map_or(vec!["".into()], |v| v);
+        let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
         let mut all_configs = HashMap::new();
         for mut tenant in base_paths {
             let base_path =
@@ -477,7 +477,7 @@ impl Metastore for ObjectStoreMetastore {
                     &Some(tenant.clone()),
                 )
                 .await?;
-            if tenant.eq(&mut "") {
+            if tenant.is_empty() {
                 tenant.clone_from(&DEFAULT_TENANT.to_string());
             }
             all_configs.insert(tenant, conf_bytes);
@@ -515,7 +515,7 @@ impl Metastore for ObjectStoreMetastore {
     /// Fetch all dashboards
     async fn get_dashboards(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError> {
         let mut dashboards = HashMap::new();
-        let base_paths = PARSEABLE.list_tenants().map_or(vec!["".into()], |v| v);
+        let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
         for mut tenant in base_paths {
             let tenant_id = &Some(tenant.clone());
             let users_dir = RelativePathBuf::from_iter([&tenant, USERS_ROOT_DIR]);
@@ -533,7 +533,7 @@ impl Metastore for ObjectStoreMetastore {
                         tenant_id,
                     )
                     .await?;
-                if tenant.eq(&mut "") {
+                if tenant.is_empty() {
                     tenant.clone_from(&DEFAULT_TENANT.to_string());
                 }
                 dashboards.insert(tenant.to_owned(), dashboard_bytes);
@@ -633,7 +633,7 @@ impl Metastore for ObjectStoreMetastore {
     // return deserialized filter
     async fn get_filters(&self) -> Result<HashMap<String, Vec<Filter>>, MetastoreError> {
         let mut this = HashMap::new();
-        let base_paths = PARSEABLE.list_tenants().map_or(vec!["".into()], |v| v);
+        let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
 
         for mut tenant in base_paths {
             let users_dir = RelativePathBuf::from_iter([&tenant, USERS_ROOT_DIR]);
@@ -716,7 +716,7 @@ impl Metastore for ObjectStoreMetastore {
                     }
                 }
             }
-            if tenant.eq(&mut "") {
+            if tenant.is_empty() {
                 tenant.clone_from(&DEFAULT_TENANT.to_string());
             }
             this.insert(tenant, filters);
@@ -757,7 +757,7 @@ impl Metastore for ObjectStoreMetastore {
     /// Get all correlations
     async fn get_correlations(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError> {
         let mut correlations = HashMap::new();
-        let base_paths = PARSEABLE.list_tenants().map_or(vec!["".into()], |v| v);
+        let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
         for mut tenant in base_paths {
             let tenant_id = &Some(tenant.clone());
             let mut corrs = Vec::new();
@@ -779,7 +779,7 @@ impl Metastore for ObjectStoreMetastore {
 
                 corrs.extend(correlation_bytes);
             }
-            if tenant.eq(&mut "") {
+            if tenant.is_empty() {
                 tenant.clone_from(&DEFAULT_TENANT.to_string());
             }
             correlations.insert(tenant, corrs);
@@ -823,7 +823,7 @@ impl Metastore for ObjectStoreMetastore {
         get_base: bool,
         tenant_id: &Option<String>,
     ) -> Result<Bytes, MetastoreError> {
-        let tenant = tenant_id.as_ref().map_or("", |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or("");
         let path = if get_base {
             RelativePathBuf::from_iter([
                 tenant,
@@ -844,7 +844,7 @@ impl Metastore for ObjectStoreMetastore {
         mode: Option<Mode>,
         tenant_id: &Option<String>,
     ) -> Result<Vec<Bytes>, MetastoreError> {
-        let root = tenant_id.as_ref().map_or("", |v| v);
+        let root = tenant_id.as_deref().unwrap_or("");
         let path = RelativePathBuf::from_iter([root, stream_name, STREAM_ROOT_DIRECTORY]);
         if let Some(mode) = mode {
             if mode.eq(&Mode::Ingest) {
@@ -1027,7 +1027,7 @@ impl Metastore for ObjectStoreMetastore {
 
     /// targets
     async fn get_targets(&self) -> Result<HashMap<String, Vec<Target>>, MetastoreError> {
-        let base_paths = PARSEABLE.list_tenants().map_or(vec!["".into()], |v| v);
+        let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
         let mut all_targets = HashMap::new();
         for mut tenant in base_paths {
             let targets_path = RelativePathBuf::from_iter([
@@ -1050,7 +1050,7 @@ impl Metastore for ObjectStoreMetastore {
                         .ok()
                 })
                 .collect();
-            if tenant.eq(&mut "") {
+            if tenant.is_empty() {
                 tenant.clone_from(&DEFAULT_TENANT.to_string());
             }
             all_targets.insert(tenant, targets);
@@ -1286,11 +1286,9 @@ impl Metastore for ObjectStoreMetastore {
         } else {
             // not local-disk, object storage
             let mut result_file_list = HashSet::new();
-            let root = if let Some(tenant) = tenant_id {
-                Some(object_store::path::Path::from_iter([tenant.clone()]))
-            } else {
-                None
-            };
+            let root = tenant_id
+                .as_ref()
+                .map(|tenant| object_store::path::Path::from_iter([tenant.clone()]));
             // tracing::warn!("list_streams root- {root:?}");
             // let dirs = self.storage.list_dirs().await?;
             // tracing::warn!("list_streams dirs- {dirs:?}");
@@ -1320,7 +1318,7 @@ impl Metastore for ObjectStoreMetastore {
             for stream in streams {
                 let stream_path = if let Some(root) = root.as_ref() {
                     object_store::path::Path::from_iter([
-                        &root.to_string(),
+                        root.as_ref(),
                         &stream,
                         STREAM_ROOT_DIRECTORY,
                     ])

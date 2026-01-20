@@ -59,6 +59,14 @@ impl TenantMetadata {
         );
     }
 
+    pub fn get_global_query_auth(&self, tenant_id: &str) -> Option<String> {
+        if let Some(tenant) = self.tenants.get(tenant_id) {
+            tenant.meta.global_query_auth.clone()
+        } else {
+            None
+        }
+    }
+
     pub fn suspend_service(&self, tenant_id: &str, service: Service) {
         if let Some(mut tenant) = self.tenants.get_mut(tenant_id) {
             tenant.suspended_services.insert(service);
@@ -92,7 +100,7 @@ impl TenantMetadata {
                 Ok(None)
             }
         } else {
-            return Err(TenantNotFound(tenant_id.to_owned()));
+            Err(TenantNotFound(tenant_id.to_owned()))
         }
     }
 

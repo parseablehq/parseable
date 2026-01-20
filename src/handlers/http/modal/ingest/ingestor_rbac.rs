@@ -47,9 +47,9 @@ pub async fn post_user(
     if let Some(body) = body {
         let user: ParseableUser = serde_json::from_value(body.into_inner())?;
         let req_tenant_id = get_tenant_id_from_request(&req);
-        let req_tenant = req_tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let req_tenant = req_tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if req_tenant.ne(DEFAULT_TENANT)
-            && (req_tenant.eq(user.tenant.as_ref().map_or(DEFAULT_TENANT, |v| v)))
+            && (req_tenant.eq(user.tenant.as_deref().unwrap_or(DEFAULT_TENANT)))
         {
             return Err(RBACError::Anyhow(anyhow::Error::msg(
                 "non super-admin user trying to create user for another tenant",

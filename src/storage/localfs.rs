@@ -494,7 +494,7 @@ impl ObjectStorage for LocalFS {
                 increment_object_store_calls_by_date(
                     "LIST",
                     &Utc::now().date_naive().to_string(),
-                    "default",
+                    DEFAULT_TENANT,
                 );
                 ReadDirStream::new(read_dir)
             }
@@ -530,7 +530,7 @@ impl ObjectStorage for LocalFS {
                 increment_object_store_calls_by_date(
                     "LIST",
                     &Utc::now().date_naive().to_string(),
-                    "default",
+                    DEFAULT_TENANT,
                 );
                 ReadDirStream::new(read_dir)
             }

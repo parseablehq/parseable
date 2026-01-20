@@ -274,7 +274,7 @@ pub async fn get_stats_date(
     date: &str,
     tenant_id: &Option<String>,
 ) -> Result<Stats, StreamError> {
-    let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     let event_labels = event_labels_date(stream_name, "json", date, tenant);
     let storage_size_labels = storage_size_labels_date(stream_name, date, tenant);
     let events_ingested = EVENTS_INGESTED_DATE
@@ -396,7 +396,7 @@ pub async fn get_stream_info(
         }
     };
 
-    let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     let hash_map = PARSEABLE.streams.read().unwrap();
     let stream_meta = hash_map
         .get(tenant_id)

@@ -439,7 +439,7 @@ impl StandardTableProvider {
         increment_files_scanned_in_query_by_date(
             file_count,
             &current_date,
-            self.tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+            self.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
         );
 
         (partitioned_files, statistics)
@@ -530,12 +530,6 @@ impl TableProvider for StandardTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        tracing::warn!(
-            "entered scan with\ntenant- {:?}\nschema- {:?}\nstream- {}",
-            self.tenant_id,
-            self.schema,
-            self.stream
-        );
         let mut execution_plans = vec![];
         let glob_storage = PARSEABLE.storage.get_object_store();
 
@@ -646,7 +640,7 @@ impl TableProvider for StandardTableProvider {
         //     glob_storage.store_url()
         // };
         let object_store_url = glob_storage.store_url();
-        tracing::warn!(object_store_url=?object_store_url);
+
         self.create_parquet_physical_plan(
             &mut execution_plans,
             ObjectStoreUrl::parse(object_store_url).unwrap(),

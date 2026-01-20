@@ -100,12 +100,8 @@ pub async fn calculate_field_stats(
         ))
     })?;
     let field_stats = {
-        let mut session_state = QUERY_SESSION_STATE.clone();
-        session_state
-            .config_mut()
-            .options_mut()
-            .catalog
-            .default_schema = tenant_id.as_ref().map_or("public".into(), |v| v.to_owned());
+        let session_state = QUERY_SESSION_STATE.clone();
+
         let ctx = SessionContext::new_with_state(session_state);
         let table_name = Ulid::new().to_string();
         ctx.register_parquet(

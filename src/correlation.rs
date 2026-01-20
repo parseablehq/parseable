@@ -84,7 +84,7 @@ impl Correlations {
         let mut user_correlations = vec![];
         let permissions = Users.get_permissions(session_key);
         let tenant_id = get_tenant_id_from_key(session_key);
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if let Some(corrs) = self.read().await.get(tenant) {
             for correlation in corrs.values() {
                 let tables = &correlation
@@ -109,7 +109,7 @@ impl Correlations {
         correlation_id: &str,
         tenant_id: &Option<String>,
     ) -> Result<CorrelationConfig, CorrelationError> {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if let Some(corrs) = self.read().await.get(tenant_id) {
             corrs.get(correlation_id).cloned().ok_or_else(|| {
                 CorrelationError::AnyhowError(anyhow::Error::msg(format!(
@@ -117,9 +117,9 @@ impl Correlations {
                 )))
             })
         } else {
-            return Err(CorrelationError::AnyhowError(anyhow::Error::msg(format!(
+            Err(CorrelationError::AnyhowError(anyhow::Error::msg(format!(
                 "Unable to find correlation with ID- {correlation_id}"
-            ))));
+            ))))
         }
     }
 
@@ -137,7 +137,7 @@ impl Correlations {
             .metastore
             .put_correlation(&correlation, &tenant_id)
             .await?;
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         // Update in memory
         if let Some(corrs) = self.write().await.get_mut(tenant) {
             corrs.insert(correlation.id.to_owned(), correlation.clone());
@@ -173,7 +173,7 @@ impl Correlations {
             .put_correlation(&updated_correlation, &tenant_id)
             .await?;
 
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         // Update in memory
         if let Some(corrs) = self.write().await.get_mut(tenant) {
             corrs.insert(

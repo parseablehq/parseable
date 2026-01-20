@@ -215,7 +215,7 @@ impl Parseable {
         stream_name: &str,
         tenant_id: &Option<String>,
     ) -> Result<StreamRef, StreamNotFound> {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         self.streams
             .read()
             .unwrap()
@@ -467,7 +467,7 @@ impl Parseable {
     pub async fn create_internal_stream_if_not_exists(&self) -> Result<(), StreamError> {
         let log_source_entry = LogSourceEntry::new(LogSource::Pmeta, HashSet::new());
         let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
-            tenants.into_iter().map(|t| Some(t)).collect()
+            tenants.into_iter().map(Some).collect()
         } else {
             vec![None]
         };
@@ -742,6 +742,7 @@ impl Parseable {
         Ok(headers.clone())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn update_stream(
         &self,
         headers: &HeaderMap,
@@ -1152,7 +1153,7 @@ impl Parseable {
         // delete resources
 
         // delete from in-mem
-        TENANT_METADATA.delete_tenant(&tenant_id);
+        TENANT_METADATA.delete_tenant(tenant_id);
         Ok(())
     }
 

@@ -127,14 +127,14 @@ impl Filters {
 
     pub async fn update(&self, filter: &Filter, tenant_id: &Option<String>) {
         let mut s = self.0.write().await;
-        if let Some(filters) = s.get_mut(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v)) {
+        if let Some(filters) = s.get_mut(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT)) {
             filters.retain(|f| f.filter_id != filter.filter_id);
             filters.push(filter.clone());
         }
     }
 
     pub async fn delete_filter(&self, filter_id: &str, tenant_id: &Option<String>) {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let mut s = self.0.write().await;
         if let Some(filters) = s.get_mut(tenant_id) {
             filters.retain(|f| f.filter_id != Some(filter_id.to_string()));
@@ -148,7 +148,7 @@ impl Filters {
         is_admin: bool,
         tenant_id: &Option<String>,
     ) -> Option<Filter> {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if let Some(filters) = self.0.read().await.get(tenant_id) {
             filters
                 .iter()
@@ -165,7 +165,7 @@ impl Filters {
     pub async fn list_filters(&self, key: &SessionKey) -> Vec<Filter> {
         let read = self.0.read().await;
         let tenant_id = get_tenant_id_from_key(key);
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let mut _filters = Vec::new();
         let permissions = Users.get_permissions(key);
         if let Some(filters) = read.get(tenant) {

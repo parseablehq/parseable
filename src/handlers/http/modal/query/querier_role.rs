@@ -47,7 +47,7 @@ pub async fn put(
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     // validate the role name
     validator::user_role_name(&name).map_err(RoleError::ValidationError)?;
     let mut metadata = get_metadata(&tenant_id).await?;
@@ -85,7 +85,7 @@ pub async fn put(
         mut_sessions().remove_user(&userid, tenant);
     }
 
-    sync_role_update(req, name.clone(), privileges.clone(), &tenant_id).await?;
+    sync_role_update(name.clone(), privileges.clone(), &tenant_id).await?;
 
     Ok(HttpResponse::Ok().finish())
 }

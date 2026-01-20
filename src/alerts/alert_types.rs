@@ -18,6 +18,7 @@
 
 use std::{str::FromStr, time::Duration};
 
+use actix_web::http::header::{HeaderMap, HeaderName, HeaderValue};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use tonic::async_trait;
@@ -39,11 +40,9 @@ use crate::{
     metastore::metastore_traits::MetastoreObject,
     parseable::PARSEABLE,
     query::resolve_stream_names,
-    rbac::{
-        map::{SessionKey, roles, users},
-        role::model::DefaultPrivilege,
-    },
+    rbac::map::SessionKey,
     storage::object_storage::alert_json_path,
+    tenants::TENANT_METADATA,
     utils::user_auth_for_query,
 };
 
@@ -88,34 +87,15 @@ impl MetastoreObject for ThresholdAlert {
 impl AlertTrait for ThresholdAlert {
     async fn eval_alert(&self) -> Result<Option<String>, AlertError> {
         let time_range = extract_time_range(&self.eval_config)?;
-        let auth = if let Some(tenant) = &self.tenant_id
-            && let Some(tenant_users) = users().get(tenant)
-            && let Some(tenant_roles) = roles().get(tenant)
-            && let Some(user) = tenant_users.iter().find_map(|(_, user)| {
-                let mut res = None;
-                for role in &user.roles {
-                    if let Some(role) = tenant_roles.get(role)
-                        && role.contains(&DefaultPrivilege::Admin)
-                    {
-                        res = Some(user.clone());
-                        break;
-                    }
-                }
-                res
-            }) {
-            // fetch admin credentials for tenant
-            match user.ty {
-                crate::rbac::user::UserType::Native(basic) => {
-                    // Create a protected user whose details can't be edited
-                    // save that user's basic auth
-                    // use that to send request
-                    None
-                }
-                crate::rbac::user::UserType::OAuth(_) => {
-                    tracing::warn!("admin user is oauth");
-                    None
-                }
-            }
+        let auth = if let Some(tenant) = self.tenant_id.as_ref()
+            && let Some(header) = TENANT_METADATA.get_global_query_auth(tenant)
+        {
+            let mut map = HeaderMap::new();
+            map.insert(
+                HeaderName::from_static("authorization"),
+                HeaderValue::from_str(&header).unwrap(),
+            );
+            Some(map)
         } else {
             None
         };

@@ -49,11 +49,12 @@ pub struct User {
     pub roles: HashSet<String>,
     pub user_groups: HashSet<String>,
     pub tenant: Option<String>,
+    pub protected: bool,
 }
 
 impl User {
     // create a new User and return self with password generated for said user.
-    pub fn new_basic(username: String, tenant: Option<String>) -> (Self, String) {
+    pub fn new_basic(username: String, tenant: Option<String>, protected: bool) -> (Self, String) {
         let PassCode { password, hash } = Basic::gen_new_password();
         (
             Self {
@@ -64,6 +65,7 @@ impl User {
                 roles: HashSet::new(),
                 user_groups: HashSet::new(),
                 tenant,
+                protected,
             },
             password,
         )
@@ -75,6 +77,7 @@ impl User {
         user_info: UserInfo,
         bearer: Option<Bearer>,
         tenant: Option<String>,
+        protected: bool,
     ) -> Self {
         Self {
             ty: UserType::OAuth(Box::new(OAuth {
@@ -85,6 +88,7 @@ impl User {
             roles,
             user_groups: HashSet::new(),
             tenant,
+            protected,
         }
     }
 
@@ -184,6 +188,7 @@ pub fn get_super_admin_user() -> User {
         roles: ["super-admin".to_string()].into(),
         user_groups: HashSet::new(),
         tenant: None,
+        protected: true,
     }
 }
 
@@ -398,7 +403,7 @@ impl UserGroup {
         for group_user in &users {
             mut_sessions().remove_user(
                 group_user.userid(),
-                group_user.tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+                group_user.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
             );
         }
         Ok(())
@@ -420,7 +425,7 @@ impl UserGroup {
         for group_user in &self.users {
             mut_sessions().remove_user(
                 group_user.userid(),
-                group_user.tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+                group_user.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
             );
         }
         Ok(())
@@ -439,7 +444,7 @@ impl UserGroup {
         for group_user in &removed_users {
             mut_sessions().remove_user(
                 group_user.userid(),
-                group_user.tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+                group_user.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
             );
         }
         self.users.clone_from(&new_users);

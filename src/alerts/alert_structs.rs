@@ -75,9 +75,11 @@ pub struct BasicAlertFields {
     pub severity: Severity,
 }
 
+pub type AlertMap = HashMap<Ulid, Box<dyn AlertTrait>>;
+
 #[derive(Debug)]
 pub struct Alerts {
-    pub alerts: RwLock<HashMap<String, HashMap<Ulid, Box<dyn AlertTrait>>>>,
+    pub alerts: RwLock<HashMap<String, AlertMap>>,
     pub sender: mpsc::Sender<AlertTask>,
 }
 

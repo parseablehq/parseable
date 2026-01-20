@@ -227,7 +227,7 @@ async fn process_partition_groups(
         let (events_ingested, ingestion_size, storage_size) = extract_partition_metrics(
             stream_name,
             partition_lower,
-            tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+            tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
         );
 
         let manifest_entry = process_single_partition(
@@ -464,7 +464,7 @@ async fn create_manifest(
         .get_manifest_path(stream_name, lower_bound, upper_bound, tenant_id)
         .await
         .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
-    tracing::warn!("manifest path_url= {path_url}");
+
     let new_snapshot_entry = snapshot::ManifestItem {
         manifest_path: path_url.to_owned(),
         time_lower_bound: lower_bound,
@@ -566,7 +566,7 @@ pub fn partition_path(
     upper_bound: DateTime<Utc>,
     tenant_id: &Option<String>,
 ) -> RelativePathBuf {
-    let root = tenant_id.as_ref().map_or("", |v| v);
+    let root = tenant_id.as_deref().unwrap_or("");
     let lower = lower_bound.date_naive().format("%Y-%m-%d").to_string();
     let upper = upper_bound.date_naive().format("%Y-%m-%d").to_string();
     if lower == upper {

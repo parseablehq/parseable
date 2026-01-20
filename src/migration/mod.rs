@@ -159,7 +159,7 @@ pub async fn run_migration(config: &Parseable) -> anyhow::Result<()> {
     let storage = config.storage.get_object_store();
 
     let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
-        tenants.into_iter().map(|t| Some(t)).collect()
+        tenants.into_iter().map(Some).collect()
     } else {
         vec![None]
     };
@@ -418,13 +418,13 @@ async fn setup_logstream_metadata(
     fetch_stats_from_storage(
         stream,
         stats,
-        tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+        tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
     )
     .await;
     load_daily_metrics(
         &snapshot.manifest_list,
         stream,
-        tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v),
+        tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
     );
 
     let schema = PARSEABLE

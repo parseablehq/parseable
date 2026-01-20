@@ -78,7 +78,7 @@ pub async fn post_user(
         return Err(RBACError::UserExists(username));
     }
 
-    let (user, password) = user::User::new_basic(username.clone(), None);
+    let (user, password) = user::User::new_basic(username.clone(), None, false);
 
     metadata.users.push(user.clone());
 
@@ -106,7 +106,7 @@ pub async fn delete_user(
 ) -> Result<impl Responder, RBACError> {
     let userid = userid.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     let _guard = UPDATE_LOCK.lock().await;
     // fail this request if the user does not exist
     if !Users.contains(&userid, &tenant_id) {
@@ -182,7 +182,7 @@ pub async fn add_roles_to_user(
         return Err(RBACError::UserDoesNotExist);
     };
 
-    let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     // find username by userid, for native users, username is userid, for oauth users, we need to look up
     let username = if let Some(users) = users().get(tenant)
         && let Some(user) = users.get(&userid)
@@ -238,7 +238,7 @@ pub async fn remove_roles_from_user(
     let userid = userid.into_inner();
     let roles_to_remove = roles_to_remove.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     let _guard = UPDATE_LOCK.lock().await;
 
     if !Users.contains(&userid, &tenant_id) {

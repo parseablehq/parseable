@@ -34,6 +34,7 @@ use chrono::{DateTime, Utc};
 use itertools::Itertools;
 use once_cell::sync::{Lazy, OnceCell};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
+use serde::{Deserialize, Serialize};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub type Roles = HashMap<String, HashMap<String, Vec<DefaultPrivilege>>>;
@@ -202,11 +203,13 @@ pub fn init(metadata: &StorageMetadata) {
 // A session is loosly active mapping to permissions
 // this is lazily initialized and
 // cleanup of unused session is done when a new session is added
-#[derive(Debug, Clone, Hash, PartialEq, Eq)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionKey {
     BasicAuth { username: String, password: String },
     SessionId(ulid::Ulid),
 }
+
+pub type UserSessionMap = HashMap<String, Vec<(SessionKey, DateTime<Utc>)>>;
 
 #[derive(Debug, Default)]
 pub struct Sessions {
@@ -215,12 +218,16 @@ pub struct Sessions {
     // map (tenant, user) to one or more session
     // this tracks session based on session id. Not basic auth
     // Ulid time contains expiration datetime
-    user_sessions: HashMap<String, HashMap<String, Vec<(SessionKey, DateTime<Utc>)>>>,
+    user_sessions: HashMap<String, UserSessionMap>,
 }
 
 impl Sessions {
-    pub fn get_active_sessions(&self) -> Vec<SessionKey> {
-        self.active_sessions.keys().cloned().collect_vec()
+    /// return session key, userid
+    pub fn get_active_sessions(&self) -> Vec<(SessionKey, String, String)> {
+        self.active_sessions
+            .iter()
+            .map(|(k, (userid, tenant, _))| (k.clone(), userid.clone(), tenant.clone()))
+            .collect_vec()
     }
 
     pub fn remove_tenant_sessions(&mut self, tenant_id: &str) {
@@ -264,8 +271,8 @@ impl Sessions {
         tenant_id: &Option<String>,
     ) {
         // let tenant_id = get_tenant_id_from_key(&key);
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
-        self.remove_expired_session(&user, &tenant_id);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        self.remove_expired_session(&user, tenant_id);
 
         let sessions = self.user_sessions.entry(tenant_id.to_owned()).or_default();
         sessions.insert(user.clone(), vec![(key.clone(), expiry)]);
@@ -384,9 +391,11 @@ impl Sessions {
                                         action == required_action || action == Action::All
                                     }
                                 }
-                            } else if resource_type.is_none() && action.eq(&Action::Ingest) {
+                            } else if resource_type.is_none()
+                                && (action.eq(&Action::Ingest) || action.eq(&Action::Query))
+                            {
                                 // tracing::warn!("resource_type is None");
-                                // flow for global-ingestion
+                                // flow for global-ingestion / global-query
                                 let ok_resource =
                                     if let Some(context_resource_id) = context_resource {
                                         let is_internal = PARSEABLE
@@ -452,7 +461,7 @@ pub struct Users(HashMap<String, HashMap<String, User>>);
 impl Users {
     pub fn insert(&mut self, user: User) {
         // tracing::warn!("inserting user- {user:?}");
-        let tenant_id = user.tenant.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = user.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
         self.0
             .entry(tenant_id.to_owned())
             .or_default()
@@ -465,7 +474,7 @@ impl From<Vec<User>> for Users {
     fn from(users: Vec<User>) -> Self {
         let mut map = Self::default();
         for user in users {
-            let tenant_id = user.tenant.as_ref().map_or(DEFAULT_TENANT, |v| v);
+            let tenant_id = user.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
             map.entry(tenant_id.to_owned())
                 .or_default()
                 .insert(user.userid().to_owned(), user);

@@ -51,7 +51,7 @@ const HOT_TIER_SYNC_DURATION: Interval = clokwerk::Interval::Minutes(1);
 pub const INTERNAL_STREAM_HOT_TIER_SIZE_BYTES: u64 = 10485760; //10 MiB
 pub const CURRENT_HOT_TIER_VERSION: &str = "v2";
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize, serde::Serialize, Default)]
 pub struct StreamHotTier {
     pub version: Option<String>,
     #[serde(with = "crate::utils::human_size")]
@@ -98,7 +98,7 @@ impl HotTierManager {
         let mut total_hot_tier_size = 0;
         let mut total_hot_tier_used_size = 0;
         let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
-            tenants.into_iter().map(|v| Some(v)).collect()
+            tenants.into_iter().map(Some).collect()
         } else {
             vec![None]
         };
@@ -291,7 +291,7 @@ impl HotTierManager {
 
         let mut sync_hot_tier_tasks = FuturesUnordered::new();
         let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
-            tenants.into_iter().map(|v| Some(v)).collect()
+            tenants.into_iter().map(Some).collect()
         } else {
             vec![None]
         };
@@ -755,7 +755,7 @@ impl HotTierManager {
 
     pub async fn put_internal_stream_hot_tier(&self) -> Result<(), HotTierError> {
         let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
-            tenants.into_iter().map(|v| Some(v)).collect()
+            tenants.into_iter().map(Some).collect()
         } else {
             vec![None]
         };
@@ -779,7 +779,7 @@ impl HotTierManager {
     /// Creates hot tier for pstats internal stream if the stream exists in storage
     async fn create_pstats_hot_tier(&self) -> Result<(), HotTierError> {
         let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
-            tenants.into_iter().map(|v| Some(v)).collect()
+            tenants.into_iter().map(Some).collect()
         } else {
             vec![None]
         };

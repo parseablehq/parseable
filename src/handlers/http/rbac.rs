@@ -78,7 +78,7 @@ pub async fn list_users(req: HttpRequest) -> impl Responder {
 /// returns list of all registered users along with their roles and other info
 pub async fn list_users_prism(req: HttpRequest) -> impl Responder {
     let tenant_id = get_tenant_id_from_request(&req);
-    let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     // get all users
     let prism_users = match rbac::map::users().get(tenant_id) {
         Some(users) => users.values().map(to_prism_user).collect_vec(),
@@ -96,7 +96,7 @@ pub async fn get_prism_user(
     let tenant_id = get_tenant_id_from_request(&req);
     // First check if the user exists
     let users = rbac::map::users();
-    if let Some(users) = users.get(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v))
+    if let Some(users) = users.get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
         && let Some(user) = users.get(&username)
     {
         // Create UsersPrism for the found user only
@@ -146,7 +146,7 @@ pub async fn post_user(
         return Err(RBACError::UserExists(username));
     }
 
-    let (user, password) = user::User::new_basic(username.clone(), tenant_id.clone());
+    let (user, password) = user::User::new_basic(username.clone(), tenant_id.clone(), false);
 
     metadata.users.push(user.clone());
 
@@ -207,7 +207,7 @@ pub async fn get_role(
 ) -> Result<impl Responder, RBACError> {
     let userid = userid.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     if !Users.contains(&userid, &tenant_id) {
         return Err(RBACError::UserDoesNotExist);
     };
@@ -277,8 +277,7 @@ pub async fn delete_user(
     };
 
     // find username by userid, for native users, username is userid, for oauth users, we need to look up
-    let username = if let Some(users) =
-        users().get(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v))
+    let username = if let Some(users) = users().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
         && let Some(user) = users.get(&userid)
     {
         user.username_by_userid()
@@ -311,8 +310,7 @@ pub async fn add_roles_to_user(
     };
 
     // find username by userid, for native users, username is userid, for oauth users, we need to look up
-    let username = if let Some(users) =
-        users().get(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v))
+    let username = if let Some(users) = users().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
         && let Some(user) = users.get(&userid)
     {
         user.username_by_userid()
@@ -369,8 +367,7 @@ pub async fn remove_roles_from_user(
     };
 
     // find username by userid, for native users, username is userid, for oauth users, we need to look up
-    let username = if let Some(users) =
-        users().get(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v))
+    let username = if let Some(users) = users().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
         && let Some(user) = users.get(&userid)
     {
         user.username_by_userid()

@@ -53,7 +53,7 @@ pub async fn put(
 
     put_metadata(&metadata, &tenant_id).await?;
 
-    let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     mut_roles()
         .entry(tenant_id.to_owned())
         .or_default()
@@ -139,7 +139,7 @@ pub async fn delete(
     metadata.roles.remove(&name);
     put_metadata(&metadata, &tenant_id).await?;
 
-    let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     mut_roles()
         .entry(tenant_id.to_owned())
         .or_default()
@@ -160,7 +160,7 @@ pub async fn put_default(
     let mut metadata = get_metadata(&tenant_id).await?;
     metadata.default_role = Some(name.clone());
     DEFAULT_ROLE.write().unwrap().insert(
-        tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v).to_owned(),
+        tenant_id.as_deref().unwrap_or(DEFAULT_TENANT).to_owned(),
         Some(name),
     );
     // *DEFAULT_ROLE.lock().unwrap() = Some(name);
@@ -172,7 +172,7 @@ pub async fn put_default(
 // Delete existing role
 pub async fn get_default(req: HttpRequest) -> Result<impl Responder, RoleError> {
     let tenant_id = get_tenant_id_from_request(&req);
-    let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     let res = if let Some(role) = DEFAULT_ROLE.read().unwrap().get(tenant_id)
         && let Some(role) = role
     {

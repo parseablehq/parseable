@@ -273,7 +273,7 @@ pub async fn reply_login(
     let default_role = if let Some(role) = DEFAULT_ROLE
         .read()
         .unwrap()
-        .get(tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v))
+        .get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
         && let Some(role) = role
     {
         HashSet::from([role.to_owned()])
@@ -420,8 +420,7 @@ pub fn redirect_to_client(
     }
     response.insert_header((actix_web::http::header::CACHE_CONTROL, "no-store"));
 
-    let res = response.finish();
-    res
+    response.finish()
 }
 
 fn redirect_no_oauth_setup(mut url: Url) -> HttpResponse {
@@ -518,7 +517,14 @@ pub async fn put_user(
         .find(|user| user.userid() == userid)
         .cloned()
         .unwrap_or_else(|| {
-            let user = User::new_oauth(userid.to_owned(), group, user_info, None, tenant.clone());
+            let user = User::new_oauth(
+                userid.to_owned(),
+                group,
+                user_info,
+                None,
+                tenant.clone(),
+                false,
+            );
             metadata.users.push(user.clone());
             user
         });

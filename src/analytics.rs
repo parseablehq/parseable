@@ -207,7 +207,7 @@ fn total_event_stats() -> (Stats, Stats, Stats) {
     let mut deleted_json_bytes: u64 = 0;
 
     let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
-        tenants.into_iter().map(|v| Some(v)).collect()
+        tenants.into_iter().map(Some).collect()
     } else {
         vec![None]
     };

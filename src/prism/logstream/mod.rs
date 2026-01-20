@@ -26,7 +26,6 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::{
-    LOCK_EXPECT,
     handlers::http::{
         cluster::{
             fetch_stats_from_ingestors,
@@ -35,15 +34,13 @@ use crate::{
         logstream::error::StreamError,
         query::{QueryError, update_schema_when_distributed},
     },
-    hottier::{HotTierError, HotTierManager, StreamHotTier},
-    parseable::{DEFAULT_TENANT, PARSEABLE, StreamNotFound},
+    hottier::HotTierError,
+    parseable::{PARSEABLE, StreamNotFound},
     query::{CountsRequest, CountsResponse, error::ExecuteError},
     rbac::{Users, map::SessionKey, role::Action},
     stats,
     storage::{StreamInfo, StreamType, retention::Retention},
-    tenants::TenantNotFound,
     utils::{get_tenant_id_from_key, time::TimeParseError},
-    validator::error::HotTierValidationError,
 };
 
 #[derive(Serialize)]
@@ -69,6 +66,7 @@ pub async fn get_prism_logstream_info(
     let schema = schema?;
     tracing::warn!("got schema");
     // let stats = stats?;
+    tracing::warn!(real_stats=?stats);
     let stats = QueriedStats::default();
     tracing::warn!("got FAKE stats");
 
@@ -293,11 +291,13 @@ impl PrismDatasetRequest {
         }
 
         // exclude internal streams
-        let is_internal = PARSEABLE.get_stream(&stream).is_ok_and(|stream| {
-            stream
-                .get_stream_type()
-                .eq(&crate::storage::StreamType::Internal)
-        });
+        let is_internal = PARSEABLE
+            .get_stream(&stream, tenant_id)
+            .is_ok_and(|stream| {
+                stream
+                    .get_stream_type()
+                    .eq(&crate::storage::StreamType::Internal)
+            });
         if is_internal {
             return Ok(None);
         }
@@ -328,12 +328,9 @@ impl PrismDatasetRequest {
         info: PrismLogstreamInfo,
         tenant_id: &Option<String>,
     ) -> Result<PrismDatasetResponse, PrismLogstreamError> {
-        // Get hot tier info
-        let hottier = self.get_hot_tier_info(&stream, tenant_id).await?;
-
         // Get counts
         let counts = self.get_counts(&stream, tenant_id).await?;
-        tracing::warn!("got counts");
+
         let res = PrismDatasetResponse {
             stream,
             info: info.info,
@@ -342,24 +339,8 @@ impl PrismDatasetRequest {
             retention: info.retention,
             counts,
         };
-        tracing::warn!(prism_logstream_res=?res);
+
         Ok(res)
-    }
-    async fn get_hot_tier_info(
-        &self,
-        stream: &str,
-        tenant_id: &Option<String>,
-    ) -> Result<Option<StreamHotTier>, PrismLogstreamError> {
-        match HotTierManager::global() {
-            Some(manager) => match manager.get_hot_tier(stream, tenant_id).await {
-                Ok(stats) => Ok(Some(stats)),
-                Err(HotTierError::HotTierValidationError(HotTierValidationError::NotFound(_))) => {
-                    Ok(None)
-                }
-                Err(err) => Err(err.into()),
-            },
-            None => Ok(None),
-        }
     }
 
     async fn get_counts(

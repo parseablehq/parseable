@@ -123,7 +123,7 @@ pub async fn update_deleted_stats(
     let mut num_row: i64 = 0;
     let mut storage_size: i64 = 0;
     let mut ingestion_size: i64 = 0;
-    let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     let mut manifests = meta.snapshot.manifest_list;
     manifests.retain(|item| dates.iter().any(|date| item.manifest_path.contains(date)));
     if !manifests.is_empty() {

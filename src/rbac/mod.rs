@@ -58,13 +58,13 @@ pub struct Users;
 
 impl Users {
     pub fn put_user(&self, user: User) {
-        let tenant_id = user.tenant.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = user.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
         mut_sessions().remove_user(user.userid(), tenant_id);
         mut_users().insert(user);
     }
 
     pub fn get_user_groups(&self, userid: &str, tenant_id: &Option<String>) -> HashSet<String> {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         users()
             .get(tenant_id)
             .filter(|users| users.get(userid).is_some())
@@ -73,17 +73,17 @@ impl Users {
     }
 
     pub fn get_user(&self, userid: &str, tenant_id: &Option<String>) -> Option<User> {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
-        let u = users()
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+
+        users()
             .get(tenant_id)
             .filter(|users| users.get(userid).is_some())
-            .map(|users| users.get(userid).unwrap().to_owned());
-        u
+            .map(|users| users.get(userid).unwrap().to_owned())
         // .get(userid).cloned()
     }
 
     pub fn is_oauth(&self, userid: &str, tenant_id: &Option<String>) -> Option<bool> {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         users()
             .get(tenant_id)
             .filter(|users| users.get(userid).is_some())
@@ -95,7 +95,7 @@ impl Users {
         &self,
         tenant_id: &Option<String>,
     ) -> Vec<T> {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         match users().get(tenant_id) {
             Some(users) => users.values().map(|user| user.into()).collect_vec(),
             None => vec![],
@@ -103,7 +103,7 @@ impl Users {
     }
 
     pub fn get_role(&self, userid: &str, tenant_id: &Option<String>) -> Vec<String> {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         users()
             .get(tenant_id)
             .filter(|users| users.get(userid).is_some())
@@ -114,23 +114,20 @@ impl Users {
     }
 
     pub fn delete_user(&mut self, userid: &str, tenant_id: &Option<String>) {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         self.remove_user(userid, tenant_id);
         mut_sessions().remove_user(userid, tenant_id);
     }
 
     fn remove_user(&mut self, userid: &str, tenant_id: &str) {
-        match mut_users().get_mut(tenant_id) {
-            Some(users) => {
-                users.remove(userid);
-            }
-            None => {}
+        if let Some(users) = mut_users().get_mut(tenant_id) {
+            users.remove(userid);
         }
     }
 
     // caller ensures that this operation is valid for the user
     pub fn change_password_hash(&self, userid: &str, hash: &String, tenant_id: &Option<String>) {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if let Some(users) = mut_users().get_mut(tenant_id)
             && let Some(User {
                 ty: UserType::Native(user),
@@ -143,7 +140,7 @@ impl Users {
     }
 
     pub fn add_roles(&self, userid: &str, roles: HashSet<String>, tenant_id: &Option<String>) {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if let Some(users) = mut_users().get_mut(tenant_id)
             && let Some(user) = users.get_mut(userid)
         {
@@ -153,7 +150,7 @@ impl Users {
     }
 
     pub fn remove_roles(&self, userid: &str, roles: HashSet<String>, tenant_id: &Option<String>) {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if let Some(users) = mut_users().get_mut(tenant_id)
             && let Some(user) = users.get_mut(userid)
         {
@@ -164,7 +161,7 @@ impl Users {
     }
 
     pub fn contains(&self, userid: &str, tenant_id: &Option<String>) -> bool {
-        let tenant_id = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         match users().get(tenant_id) {
             Some(users) => users.contains_key(userid),
             None => false,
@@ -208,7 +205,7 @@ impl Users {
 
     pub fn new_session(&self, user: &User, session: SessionKey, expires_in: TimeDelta) {
         let tenant_id = &user.tenant;
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         mut_sessions().track_new(
             user.userid().to_owned(),
             session,
@@ -241,7 +238,7 @@ impl Users {
         } else {
             get_tenant_id_from_key(&key)
         };
-        let tenant = tenant_id.as_ref().map_or(DEFAULT_TENANT, |v| v);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if let Some(users) = users().get(tenant)
             && let Some(
                 user @ User {
@@ -270,33 +267,24 @@ impl Users {
         Response::UnAuthorized
     }
 
+    #[inline(always)]
     pub fn validate_basic_user_tenant_id(
         &self,
         username: &str,
         password: &str,
         tenant_id: &str,
     ) -> bool {
-        let res = if let Some(tenant_users) = users().get(tenant_id)
-            && tenant_users
-                .values()
-                .par_bridge()
-                .find_any(|user| {
-                    if let UserType::Native(basic) = &user.ty
-                        && basic.username.eq(username)
-                        && basic.verify_password(password)
-                    {
-                        true
-                    } else {
-                        false
-                    }
-                })
-                .is_some()
-        {
-            true
-        } else {
-            false
-        };
-        res
+        users()
+            .get(tenant_id)
+            .is_some_and(|tenant_users| {
+                tenant_users
+                    .values()
+                    .par_bridge()
+                    .find_any(|user| {
+                        matches!(&user.ty, UserType::Native(basic) if basic.username.eq(username) && basic.verify_password(password))
+                    })
+                    .is_some()
+            })
     }
 
     pub fn mutate_request_with_basic_user(
@@ -305,23 +293,11 @@ impl Users {
         password: &str,
         req: &mut ServiceRequest,
     ) {
-        if let Some((tenant, _)) = users().par_iter().find_first(|(_, usermap)| {
+        if let Some((tenant, _)) = users().par_iter().find_any(|(_, usermap)| {
             usermap
                 .par_iter()
-                .find_first(|(_, user)| {
-                    if let UserType::Native(basic) = &user.ty
-                        && basic.username.eq(username)
-                        && basic.verify_password(password)
-                        && let Some(_) = &user.tenant
-                    {
-                        // req.headers_mut().insert(
-                        //     HeaderName::from_static("tenant"),
-                        //     HeaderValue::from_bytes(tenant.as_bytes()).unwrap(),
-                        // );
-                        true
-                    } else {
-                        false
-                    }
+                .find_any(|(_, user)| {
+                    matches!(&user.ty, UserType::Native(basic) if basic.username.eq(username) && basic.verify_password(password)) && user.tenant.is_some()
                 })
                 .is_some()
         }) {
@@ -330,21 +306,6 @@ impl Users {
                 HeaderValue::from_bytes(tenant.as_bytes()).unwrap(),
             );
         };
-        // for (_, usermap) in users().iter() {
-        //     for (_, user) in usermap.iter() {
-        //         if let UserType::Native(basic) = &user.ty
-        //             && basic.username.eq(username)
-        //             && basic.verify_password(password)
-        //             && let Some(tenant) = &user.tenant
-        //         {
-        //             req.headers_mut().insert(
-        //                 HeaderName::from_static("tenant"),
-        //                 HeaderValue::from_bytes(tenant.as_bytes()).unwrap(),
-        //             );
-        //             return;
-        //         }
-        //     }
-        // }
     }
 
     pub fn get_userid_from_session(&self, session: &SessionKey) -> Option<(String, String)> {

@@ -434,6 +434,8 @@ pub fn insert_links_attributes(map: &mut Map<String, Value>, attributes: &[KeyVa
 
 #[cfg(test)]
 mod tests {
+    use crate::parseable::DEFAULT_TENANT;
+
     use super::*;
     use opentelemetry_proto::tonic::common::v1::{AnyValue, EntityRef, KeyValue};
     use opentelemetry_proto::tonic::resource::v1::Resource;
@@ -919,7 +921,7 @@ mod tests {
             }],
         };
 
-        let result = flatten_otel_traces(&traces_data);
+        let result = flatten_otel_traces(&traces_data, DEFAULT_TENANT);
 
         assert_eq!(result.len(), 1, "Should have one flattened record");
 

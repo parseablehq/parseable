@@ -46,7 +46,7 @@ pub fn init_scheduler() {
     let func = move || async {
         //get retention every day at 12 am
         let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
-            tenants.into_iter().map(|v| Some(v)).collect()
+            tenants.into_iter().map(Some).collect()
         } else {
             vec![None]
         };
@@ -98,7 +98,7 @@ pub fn init_scheduler() {
 #[serde(try_from = "Vec<TaskView>")]
 #[serde(into = "Vec<TaskView>")]
 pub struct Retention {
-    tasks: Vec<Task>,
+    pub tasks: Vec<Task>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -106,6 +106,17 @@ pub struct Task {
     description: String,
     action: Action,
     days: NonZeroU32,
+}
+
+impl Task {
+    pub fn new(description: String, days: u32) -> Self {
+        let days = NonZeroU32::new(days).unwrap();
+        Self {
+            description,
+            days,
+            action: Action::Delete,
+        }
+    }
 }
 
 #[derive(

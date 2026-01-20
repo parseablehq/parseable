@@ -45,7 +45,7 @@ use crate::handlers::http::modal::ingest::SyncRole;
 use crate::handlers::http::query::{Query, QueryError, TIME_ELAPSED_HEADER};
 use crate::metrics::prom_utils::Metrics;
 use crate::option::Mode;
-use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
+use crate::parseable::PARSEABLE;
 use crate::rbac::role::model::DefaultPrivilege;
 use crate::rbac::user::User;
 use crate::stats::Stats;
@@ -710,7 +710,6 @@ pub async fn sync_password_reset_with_ingestors(
 
 // forward the put role request to all ingestors and queriers to keep them in sync
 pub async fn sync_role_update(
-    req: HttpRequest,
     name: String,
     privileges: Vec<DefaultPrivilege>,
     tenant_id: &Option<String>,
@@ -1902,6 +1901,7 @@ pub async fn send_query_request(
     let mut map = reqwest::header::HeaderMap::new();
 
     if let Some(auth) = auth_token {
+        // always basic auth
         for (key, value) in auth.iter() {
             if let Ok(name) = reqwest::header::HeaderName::from_bytes(key.as_str().as_bytes())
                 && let Ok(val) = reqwest::header::HeaderValue::from_bytes(value.as_bytes())
