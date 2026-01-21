@@ -258,7 +258,8 @@ async fn get_stream_metadata(
     let dataset_format = stream_jsons[0]
         .log_source
         .first()
-        .unwrap_or(&LogSourceEntry::default())
+        .cloned()
+        .unwrap_or_else(LogSourceEntry::default)
         .log_source_format
         .clone();
 
