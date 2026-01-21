@@ -28,7 +28,7 @@ use tracing::error;
 use crate::{
     alerts::{ALERTS, AlertError, alert_structs::AlertsSummary, get_alerts_summary},
     correlation::{CORRELATIONS, CorrelationError},
-    event::format::LogSource,
+    event::format::{LogSource, LogSourceEntry},
     handlers::{
         TelemetryType,
         http::{cluster::fetch_daily_stats, logstream::error::StreamError},
@@ -255,7 +255,12 @@ async fn get_stream_metadata(
 
     let dataset_type = stream_jsons[0].telemetry_type;
     let time_partition = stream_jsons[0].time_partition.clone();
-    let dataset_format = stream_jsons[0].log_source[0].log_source_format.clone();
+    let dataset_format = stream_jsons[0]
+        .log_source
+        .first()
+        .unwrap_or(&LogSourceEntry::default())
+        .log_source_format
+        .clone();
 
     Ok((
         stream,
