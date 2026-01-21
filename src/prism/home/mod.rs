@@ -28,6 +28,7 @@ use tracing::error;
 use crate::{
     alerts::{ALERTS, AlertError, alert_structs::AlertsSummary, get_alerts_summary},
     correlation::{CORRELATIONS, CorrelationError},
+    event::format::{LogSource, LogSourceEntry},
     handlers::{
         TelemetryType,
         http::{cluster::fetch_daily_stats, logstream::error::StreamError},
@@ -46,6 +47,7 @@ type StreamMetadataResponse = Result<
         Vec<ObjectStoreFormat>,
         TelemetryType,
         Option<String>,
+        LogSource,
     ),
     PrismHomeError,
 >;
@@ -65,6 +67,7 @@ pub struct DataSet {
     dataset_type: TelemetryType,
     #[serde(skip_serializing_if = "Option::is_none")]
     time_partition: Option<String>,
+    dataset_format: LogSource,
 }
 
 #[derive(Debug, Serialize)]
@@ -131,7 +134,7 @@ pub async fn generate_home_response(
 
     for result in stream_metadata_results {
         match result {
-            Ok((stream, metadata, dataset_type, time_partition)) => {
+            Ok((stream, metadata, dataset_type, time_partition, dataset_format)) => {
                 // Skip internal streams if the flag is false
                 if !include_internal
                     && metadata
@@ -145,6 +148,7 @@ pub async fn generate_home_response(
                     title: stream,
                     dataset_type,
                     time_partition,
+                    dataset_format,
                 });
             }
             Err(e) => {
@@ -222,6 +226,7 @@ async fn get_stream_metadata(
         Vec<ObjectStoreFormat>,
         TelemetryType,
         Option<String>,
+        LogSource,
     ),
     PrismHomeError,
 > {
@@ -250,8 +255,21 @@ async fn get_stream_metadata(
 
     let dataset_type = stream_jsons[0].telemetry_type;
     let time_partition = stream_jsons[0].time_partition.clone();
+    let dataset_format = stream_jsons[0]
+        .log_source
+        .first()
+        .cloned()
+        .unwrap_or_else(LogSourceEntry::default)
+        .log_source_format
+        .clone();
 
-    Ok((stream, stream_jsons, dataset_type, time_partition))
+    Ok((
+        stream,
+        stream_jsons,
+        dataset_type,
+        time_partition,
+        dataset_format,
+    ))
 }
 
 async fn stats_for_date(
