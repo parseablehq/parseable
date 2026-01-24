@@ -180,9 +180,6 @@ impl Server {
         web::scope("/home")
             .service(web::resource("").route(web::get().to(http::prism_home::home_api)))
             .service(web::resource("/search").route(web::get().to(http::prism_home::home_search)))
-            .service(
-                web::resource("/checklist").route(web::get().to(http::checklist::get_checklist)),
-            )
     }
 
     pub fn get_prism_logstream() -> Scope {
