@@ -179,7 +179,23 @@ pub struct FilterConfig {
 pub struct ConditionConfig {
     pub column: String,
     pub operator: WhereConfigOperator,
-    pub value: Option<String>,
+    pub value: Option<serde_json::Value>,
+    #[serde(rename = "type")]
+    pub value_type: Option<String>,
+}
+
+impl ConditionConfig {
+    pub fn value_as_sql_str(&self) -> Option<String> {
+        let value = self.value.as_ref()?;
+        
+        match value {
+            serde_json::Value::String(s) => Some(s.clone()),
+            serde_json::Value::Bool(b) => Some(b.to_string()),
+            serde_json::Value::Number(n) => Some(n.to_string()),
+
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -196,26 +212,32 @@ impl Conditions {
                 LogicalOperator::And | LogicalOperator::Or => {
                     let expr1 = &self.condition_config[0];
                     let expr2 = &self.condition_config[1];
-                    let expr1_msg = if expr1.value.as_ref().is_some_and(|v| !v.is_empty()) {
+                    let expr1_msg = if let Some(expr1_val) = expr1.value_as_sql_str() { 
                         format!(
                             "{} {} {}",
                             expr1.column,
                             expr1.operator,
-                            expr1.value.as_ref().unwrap()
+                            expr1_val,
                         )
                     } else {
-                        format!("{} {}", expr1.column, expr1.operator)
+                        match expr1.value {
+                           None => format!("{} {}", expr1.column, expr1.operator),
+                           Some(_) => "unsupported JSON value type in filter".into(),
+                        }
                     };
 
-                    let expr2_msg = if expr2.value.as_ref().is_some_and(|v| !v.is_empty()) {
+                    let expr2_msg = if let Some(expr2_val) = expr2.value_as_sql_str() {
                         format!(
                             "{} {} {}",
                             expr2.column,
                             expr2.operator,
-                            expr2.value.as_ref().unwrap()
+                            expr2_val
                         )
                     } else {
-                        format!("{} {}", expr2.column, expr2.operator)
+                        match expr1.value {
+                            None => format!("{} {}", expr2.column, expr2.operator),
+                            Some(_) => "unspported JSON value type in filter".into(),
+                        }
                     };
 
                     format!("[{expr1_msg} {op} {expr2_msg}]")

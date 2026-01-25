@@ -28,9 +28,7 @@ use tracing::trace;
 
 use crate::{
     alerts::{
-        AlertTrait, LogicalOperator, WhereConfigOperator,
-        alert_structs::{AlertQueryResult, Conditions, GroupResult},
-        extract_aggregate_aliases,
+        AlertTrait, LogicalOperator, WhereConfigOperator, alert_structs::{AlertQueryResult, Conditions, GroupResult}, extract_aggregate_aliases
     },
     handlers::http::{
         cluster::send_query_request,
@@ -364,111 +362,130 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
             &LogicalOperator::And => {
                 let mut exprs = vec![];
                 for condition in &where_clause.condition_config {
-                    match condition.value.as_deref() {
-                        Some(v) if !v.is_empty() => {
-                            // ad-hoc error check in case value is some and operator is either `is null` or `is not null`
-                            if condition.operator.eq(&WhereConfigOperator::IsNull)
-                                || condition.operator.eq(&WhereConfigOperator::IsNotNull)
-                            {
-                                return Err("value must be null when operator is either `is null` or `is not null`"
-                                    .into());
+                    match condition.value.clone() {
+                        Some(serde_json::Value::String(value)) => { 
+                            if !value.is_empty() {
+                                // ad-hoc error check in case value is some and operator is either `is null` or `is not null`
+                                if condition.operator.eq(&WhereConfigOperator::IsNull)
+                                    || condition.operator.eq(&WhereConfigOperator::IsNotNull)
+                                {
+                                    return Err("value must be null when operator is either `is null` or `is not null`".into());
+                                }
+        
+                                let operator_and_value = match condition.operator {
+                                    WhereConfigOperator::Contains => {
+                                        let escaped_value = value
+                                            .replace("'", "\\'")
+                                            .replace('%', "\\%")
+                                            .replace('_', "\\_");
+                                        format!("LIKE '%{escaped_value}%' ESCAPE '\\'")
+                                    }
+                                    WhereConfigOperator::DoesNotContain => {
+                                        let escaped_value = value
+                                            .replace("'", "\\'")
+                                            .replace('%', "\\%  
+                                                ")
+                                            .replace('_', "\\_");
+                                        format!("NOT LIKE '%{escaped_value}%' ESCAPE '\\'")
+                                    }
+                                    WhereConfigOperator::ILike => {
+                                        let escaped_value = value
+                                            .replace("'", "\\'")
+                                            .replace('%', "\\%")
+                                            .replace('_', "\\_");
+                                        format!("ILIKE '%{escaped_value}%' ESCAPE '\\'")
+                                    }
+                                    WhereConfigOperator::BeginsWith => {
+                                        let escaped_value = value
+                                            .replace("'", "\\'")
+                                            .replace('%', "\\%")
+                                            .replace('_', "\\_");
+                                        format!("LIKE '{escaped_value}%' ESCAPE '\\'")
+                                    }
+                                    WhereConfigOperator::DoesNotBeginWith => {
+                                        let escaped_value = value
+                                            .replace("'", "\\'")
+                                            .replace('%', "\\%")
+                                            .replace('_', "\\_");
+                                        format!("NOT LIKE '{escaped_value}%' ESCAPE '\\'")
+                                    }
+                                    WhereConfigOperator::EndsWith => {
+                                        let escaped_value = value
+                                            .replace("'", "\\'")
+                                            .replace('%', "\\%")
+                                            .replace('_', "\\_");
+                                        format!("LIKE '%{escaped_value}' ESCAPE '\\'")
+                                    }
+                                    WhereConfigOperator::DoesNotEndWith => {
+                                        let escaped_value = value
+                                            .replace("'", "\\'")
+                                            .replace('%', "\\%")
+                                            .replace('_', "\\_");
+                                        format!("NOT LIKE '%{escaped_value}' ESCAPE '\\'")
+                                    }
+                                    _ => format!("{} {}", condition.operator, value)
+                                };
+                                exprs.push(format!("\"{}\" {}", condition.column, operator_and_value));
+                            } else {
+                                match condition.operator {
+                                    WhereConfigOperator::Equal => {
+                                        exprs.push(format!("\"{}\" = ''", condition.column));
+                                    }
+                                    WhereConfigOperator::NotEqual => {
+                                        exprs.push(format!("\"{}\" != ''", condition.column));
+                                    }
+                                    _ => {
+                                        tracing::warn!(
+                                            "ignoring empty string filter for: {} {}",
+                                            condition.column,
+                                            condition.operator
+                                        );
+                                        continue;
+                                        // or return an error instead?
+                                    }
+                                }
                             }
-    
-                            let value = condition.value.as_ref().unwrap();
-    
-                            let operator_and_value = match condition.operator {
-                                WhereConfigOperator::Contains => {
-                                    let escaped_value = value
-                                        .replace("'", "\\'")
-                                        .replace('%', "\\%")
-                                        .replace('_', "\\_");
-                                    format!("LIKE '%{escaped_value}%' ESCAPE '\\'")
-                                }
-                                WhereConfigOperator::DoesNotContain => {
-                                    let escaped_value = value
-                                        .replace("'", "\\'")
-                                        .replace('%', "\\%")
-                                        .replace('_', "\\_");
-                                    format!("NOT LIKE '%{escaped_value}%' ESCAPE '\\'")
-                                }
-                                WhereConfigOperator::ILike => {
-                                    let escaped_value = value
-                                        .replace("'", "\\'")
-                                        .replace('%', "\\%")
-                                        .replace('_', "\\_");
-                                    format!("ILIKE '%{escaped_value}%' ESCAPE '\\'")
-                                }
-                                WhereConfigOperator::BeginsWith => {
-                                    let escaped_value = value
-                                        .replace("'", "\\'")
-                                        .replace('%', "\\%")
-                                        .replace('_', "\\_");
-                                    format!("LIKE '{escaped_value}%' ESCAPE '\\'")
-                                }
-                                WhereConfigOperator::DoesNotBeginWith => {
-                                    let escaped_value = value
-                                        .replace("'", "\\'")
-                                        .replace('%', "\\%")
-                                        .replace('_', "\\_");
-                                    format!("NOT LIKE '{escaped_value}%' ESCAPE '\\'")
-                                }
-                                WhereConfigOperator::EndsWith => {
-                                    let escaped_value = value
-                                        .replace("'", "\\'")
-                                        .replace('%', "\\%")
-                                        .replace('_', "\\_");
-                                    format!("LIKE '%{escaped_value}' ESCAPE '\\'")
-                                }
-                                WhereConfigOperator::DoesNotEndWith => {
-                                    let escaped_value = value
-                                        .replace("'", "\\'")
-                                        .replace('%', "\\%")
-                                        .replace('_', "\\_");
-                                    format!("NOT LIKE '%{escaped_value}' ESCAPE '\\'")
-                                }
-                                _ => {
-                                    let value = match ValueType::from_string(value.to_owned()) {
-                                        ValueType::Number(val) => format!("{val}"),
-                                        ValueType::Boolean(val) => format!("{val}"),
-                                        ValueType::String(val) => {
-                                            format!("'{val}'")
-                                        }
-                                    };
-                                    format!("{} {}", condition.operator, value)
-                                }
-                            };
-                            exprs.push(format!("\"{}\" {}", condition.column, operator_and_value))
                         }
-                        Some("") => match condition.operator {
-                            WhereConfigOperator::Equal => {
-                                exprs.push(format!("\"{}\" = ''", condition.column));
-                            }
-                            WhereConfigOperator::NotEqual => {
-                                exprs.push(format!("\"{}\" != ''", condition.column));
-                            }
-                            _ => {
-                                tracing::warn!(
-                                    "ignoring empty string filter for: {} {}",
-                                    condition.column,
-                                    condition.operator
-                                );
-                                continue;
-                                // or return an error instead?
-                            }
-                        },
+                        
+                        Some(_) => {
+                            let Some(value) = condition.value_as_sql_str() else {
+                                return Err("unsupported JSON value type in filters".into());
+                            };
+                            exprs.push(format!(
+                                "\"{}\" {} {}",
+                                condition.column,
+                                condition.operator,
+                                value
+                            ))
+                        }
+                            
                         None => match condition.operator {
                             WhereConfigOperator::IsNull | WhereConfigOperator::IsNotNull => {
                                 exprs.push(format!("\"{}\" {}", condition.column, condition.operator))
                             }
                             _ => {
-                                return Err(format!(
+                                if condition.value_type.as_ref().is_some_and(|v| v == "null") {
+                                    match condition.operator {
+                                        WhereConfigOperator::Equal => {
+                                            exprs.push(format!("\"{}\" {}", condition.column, WhereConfigOperator::IsNull))
+                                        }
+                                        
+                                        WhereConfigOperator::NotEqual => {
+                                            exprs.push(format!("\"{}\" {}", condition.column, WhereConfigOperator::IsNotNull))
+                                        }
+                                        _ => {
+                                            return Err(format!("invalid operator [{}] with [null]", condition.operator));
+                                        }
+                                    }
+                                } else {
+                                    return Err(format!(
                                     "value cannot be NULL for: {} {}", 
                                     condition.column, 
                                     condition.operator
-                                ));
+                                    ));
+                                }
                             }
                         }
-                        _ => continue,
                     }
                 }
 
