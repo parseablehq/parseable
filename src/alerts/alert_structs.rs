@@ -187,7 +187,7 @@ pub struct ConditionConfig {
 impl ConditionConfig {
     pub fn value_as_sql_str(&self) -> Option<String> {
         let value = self.value.as_ref()?;
-        
+
         match value {
             serde_json::Value::String(s) => Some(s.clone()),
             serde_json::Value::Bool(b) => Some(b.to_string()),
@@ -212,31 +212,21 @@ impl Conditions {
                 LogicalOperator::And | LogicalOperator::Or => {
                     let expr1 = &self.condition_config[0];
                     let expr2 = &self.condition_config[1];
-                    let expr1_msg = if let Some(expr1_val) = expr1.value_as_sql_str() { 
-                        format!(
-                            "{} {} {}",
-                            expr1.column,
-                            expr1.operator,
-                            expr1_val,
-                        )
+                    let expr1_msg = if let Some(expr1_val) = expr1.value_as_sql_str() {
+                        format!("{} {} {}", expr1.column, expr1.operator, expr1_val,)
                     } else {
                         match expr1.value {
-                           None => format!("{} {}", expr1.column, expr1.operator),
-                           Some(_) => "unsupported JSON value type in filter".into(),
+                            None => format!("{} {}", expr1.column, expr1.operator),
+                            Some(_) => "unsupported JSON value type in filter".into(),
                         }
                     };
 
                     let expr2_msg = if let Some(expr2_val) = expr2.value_as_sql_str() {
-                        format!(
-                            "{} {} {}",
-                            expr2.column,
-                            expr2.operator,
-                            expr2_val
-                        )
+                        format!("{} {} {}", expr2.column, expr2.operator, expr2_val)
                     } else {
-                        match expr1.value {
+                        match expr2.value {
                             None => format!("{} {}", expr2.column, expr2.operator),
-                            Some(_) => "unspported JSON value type in filter".into(),
+                            Some(_) => "unsupported JSON value type in filter".into(),
                         }
                     };
 

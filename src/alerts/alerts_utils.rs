@@ -28,7 +28,9 @@ use tracing::trace;
 
 use crate::{
     alerts::{
-        AlertTrait, LogicalOperator, WhereConfigOperator, alert_structs::{AlertQueryResult, Conditions, GroupResult}, extract_aggregate_aliases
+        AlertTrait, LogicalOperator, WhereConfigOperator,
+        alert_structs::{AlertQueryResult, Conditions, GroupResult},
+        extract_aggregate_aliases,
     },
     handlers::http::{
         cluster::send_query_request,
@@ -363,7 +365,7 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
                 let mut exprs = vec![];
                 for condition in &where_clause.condition_config {
                     match condition.value.clone() {
-                        Some(serde_json::Value::String(value)) => { 
+                        Some(serde_json::Value::String(value)) => {
                             if !value.is_empty() {
                                 // ad-hoc error check in case value is some and operator is either `is null` or `is not null`
                                 if condition.operator.eq(&WhereConfigOperator::IsNull)
@@ -371,7 +373,7 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
                                 {
                                     return Err("value must be null when operator is either `is null` or `is not null`".into());
                                 }
-        
+
                                 let operator_and_value = match condition.operator {
                                     WhereConfigOperator::Contains => {
                                         let escaped_value = value
@@ -383,8 +385,11 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
                                     WhereConfigOperator::DoesNotContain => {
                                         let escaped_value = value
                                             .replace("'", "\\'")
-                                            .replace('%', "\\%  
-                                                ")
+                                            .replace(
+                                                '%',
+                                                "\\%  
+                                                ",
+                                            )
                                             .replace('_', "\\_");
                                         format!("NOT LIKE '%{escaped_value}%' ESCAPE '\\'")
                                     }
@@ -423,9 +428,16 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
                                             .replace('_', "\\_");
                                         format!("NOT LIKE '%{escaped_value}' ESCAPE '\\'")
                                     }
-                                    _ => format!("{} {}", condition.operator, value)
+                                    _ => format!(
+                                        "{} '{}'",
+                                        condition.operator,
+                                        value.replace("'", "''")
+                                    ),
                                 };
-                                exprs.push(format!("\"{}\" {}", condition.column, operator_and_value));
+                                exprs.push(format!(
+                                    "\"{}\" {}",
+                                    condition.column, operator_and_value
+                                ));
                             } else {
                                 match condition.operator {
                                     WhereConfigOperator::Equal => {
@@ -446,46 +458,49 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
                                 }
                             }
                         }
-                        
+
                         Some(_) => {
                             let Some(value) = condition.value_as_sql_str() else {
                                 return Err("unsupported JSON value type in filters".into());
                             };
                             exprs.push(format!(
                                 "\"{}\" {} {}",
-                                condition.column,
-                                condition.operator,
-                                value
+                                condition.column, condition.operator, value
                             ))
                         }
-                            
+
                         None => match condition.operator {
-                            WhereConfigOperator::IsNull | WhereConfigOperator::IsNotNull => {
-                                exprs.push(format!("\"{}\" {}", condition.column, condition.operator))
-                            }
+                            WhereConfigOperator::IsNull | WhereConfigOperator::IsNotNull => exprs
+                                .push(format!("\"{}\" {}", condition.column, condition.operator)),
                             _ => {
                                 if condition.value_type.as_ref().is_some_and(|v| v == "null") {
                                     match condition.operator {
-                                        WhereConfigOperator::Equal => {
-                                            exprs.push(format!("\"{}\" {}", condition.column, WhereConfigOperator::IsNull))
-                                        }
-                                        
-                                        WhereConfigOperator::NotEqual => {
-                                            exprs.push(format!("\"{}\" {}", condition.column, WhereConfigOperator::IsNotNull))
-                                        }
+                                        WhereConfigOperator::Equal => exprs.push(format!(
+                                            "\"{}\" {}",
+                                            condition.column,
+                                            WhereConfigOperator::IsNull
+                                        )),
+
+                                        WhereConfigOperator::NotEqual => exprs.push(format!(
+                                            "\"{}\" {}",
+                                            condition.column,
+                                            WhereConfigOperator::IsNotNull
+                                        )),
                                         _ => {
-                                            return Err(format!("invalid operator [{}] with [null]", condition.operator));
+                                            return Err(format!(
+                                                "invalid operator [{}] with [null]",
+                                                condition.operator
+                                            ));
                                         }
                                     }
                                 } else {
                                     return Err(format!(
-                                    "value cannot be NULL for: {} {}", 
-                                    condition.column, 
-                                    condition.operator
+                                        "value cannot be NULL for: {} {}",
+                                        condition.column, condition.operator
                                     ));
                                 }
                             }
-                        }
+                        },
                     }
                 }
 
