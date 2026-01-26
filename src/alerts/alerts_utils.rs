@@ -478,8 +478,7 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
                                     exprs.push(format!("\"{}\" {}", condition.column, operator));
                                 } else {
                                     return Err(format!(
-                                        "value cannot be NULL for: {} {}",
-                                        condition.column, condition.operator
+                                        "For [value: null], explicitly set [type: \"null\"]"
                                     ));
                                 }
                             }
