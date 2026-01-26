@@ -33,9 +33,11 @@ use crate::{
 
 // POST /targets
 pub async fn post(
-    _req: HttpRequest,
-    Json(target): Json<Target>,
+    req: HttpRequest,
+    Json(mut target): Json<Target>,
 ) -> Result<impl Responder, AlertError> {
+    let tenant_id = get_tenant_id_from_request(&req);
+    target.tenant = tenant_id;
     // should check for duplicacy and liveness (??)
     // add to the map
     TARGETS.update(target.clone()).await?;
@@ -88,7 +90,7 @@ pub async fn update(
 
     // esnure that the supplied target id is assigned to the target config
     target.id = target_id;
-
+    target.tenant = tenant_id;
     // should check for duplicacy and liveness (??)
     // add to the map
     TARGETS.update(target.clone()).await?;

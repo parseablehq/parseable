@@ -33,17 +33,17 @@ use actix_web::http::header::{HeaderName, HeaderValue};
 use chrono::{DateTime, Utc};
 use itertools::Itertools;
 use once_cell::sync::{Lazy, OnceCell};
+use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 pub type Roles = HashMap<String, HashMap<String, Vec<DefaultPrivilege>>>;
 
-pub static USERS: OnceCell<parking_lot::RwLock<Users>> = OnceCell::new();
+pub static USERS: OnceCell<RwLock<Users>> = OnceCell::new();
 pub static ROLES: OnceCell<RwLock<Roles>> = OnceCell::new();
 pub static DEFAULT_ROLE: Lazy<RwLock<HashMap<String, Option<String>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
-pub static SESSIONS: OnceCell<parking_lot::RwLock<Sessions>> = OnceCell::new();
+pub static SESSIONS: OnceCell<RwLock<Sessions>> = OnceCell::new();
 pub static USER_GROUPS: OnceCell<RwLock<UserGroups>> = OnceCell::new();
 
 pub fn read_user_groups() -> RwLockReadGuard<'static, UserGroups> {
@@ -51,7 +51,7 @@ pub fn read_user_groups() -> RwLockReadGuard<'static, UserGroups> {
         .get()
         .expect("UserGroups map not created")
         .read()
-        .expect("UserGroups map is poisoned")
+    // .expect("UserGroups map is poisoned")
 }
 
 pub fn write_user_groups() -> RwLockWriteGuard<'static, UserGroups> {
@@ -59,45 +59,39 @@ pub fn write_user_groups() -> RwLockWriteGuard<'static, UserGroups> {
         .get()
         .expect("UserGroups map not created")
         .write()
-        .expect("UserGroups map is poisoned")
+    // .expect("UserGroups map is poisoned")
 }
 
-pub fn users() -> parking_lot::RwLockReadGuard<'static, Users> {
+pub fn users() -> RwLockReadGuard<'static, Users> {
     {
         USERS.get().expect("map is set").read()
         // .expect("not poisoned")
     }
 }
 
-pub fn mut_users() -> parking_lot::RwLockWriteGuard<'static, Users> {
+pub fn mut_users() -> RwLockWriteGuard<'static, Users> {
     USERS.get().expect("map is set").write()
     // .expect("not poisoned")
 }
 
 pub fn roles() -> RwLockReadGuard<'static, Roles> {
     {
-        ROLES
-            .get()
-            .expect("map is set")
-            .read()
-            .expect("not poisoned")
+        ROLES.get().expect("map is set").read()
+        // .expect("not poisoned")
     }
 }
 
 pub fn mut_roles() -> RwLockWriteGuard<'static, Roles> {
-    ROLES
-        .get()
-        .expect("map is set")
-        .write()
-        .expect("not poisoned")
+    ROLES.get().expect("map is set").write()
+    // .expect("not poisoned")
 }
 
-pub fn sessions() -> parking_lot::RwLockReadGuard<'static, Sessions> {
+pub fn sessions() -> RwLockReadGuard<'static, Sessions> {
     SESSIONS.get().expect("map is set").read()
     // .expect("not poisoned")
 }
 
-pub fn mut_sessions() -> parking_lot::RwLockWriteGuard<'static, Sessions> {
+pub fn mut_sessions() -> RwLockWriteGuard<'static, Sessions> {
     SESSIONS.get().expect("map is set").write()
     // .expect("not poisoned")
 }
@@ -113,7 +107,7 @@ pub fn init(metadata: &StorageMetadata) {
 
     DEFAULT_ROLE
         .write()
-        .unwrap()
+        // .unwrap()
         .insert(DEFAULT_TENANT.to_owned(), metadata.default_role.clone());
 
     // DEFAULT_ROLE
@@ -181,18 +175,16 @@ pub fn init(metadata: &StorageMetadata) {
     //         }
     //     })
     // USERS2
-    //     .set(parking_lot::RwLock::new(Users2 {
+    //     .set(RwLock::new(Users2 {
     //         all_users: all_users.0,
     //         basic_users: (),
     //     }))
     //     .unwrap();
 
-    USERS
-        .set(parking_lot::RwLock::new(users))
-        .expect("map is only set once");
+    USERS.set(RwLock::new(users)).expect("map is only set once");
 
     SESSIONS
-        .set(parking_lot::RwLock::new(sessions))
+        .set(RwLock::new(sessions))
         .expect("map is only set once");
 
     USER_GROUPS
@@ -343,8 +335,9 @@ impl Sessions {
         context_user: Option<&str>,
     ) -> Option<Response> {
         // tracing::warn!(
-        //     "required_action- {required_action:?} context_resource- {context_resource:?}, context_user usr- {context_user:?}"
+        //     "key- {key:?}\nrequired_action- {required_action:?}\ncontext_resource- {context_resource:?}\ncontext_user usr- {context_user:?}"
         // );
+        // tracing::warn!(active_sessions=?self.active_sessions);
         self.active_sessions
             .get(key)
             .map(|(username, tenant_id, perms)| {
@@ -356,7 +349,9 @@ impl Sessions {
                     match *user_perm {
                         // if any action is ALL then we we authorize
                         Permission::Unit(action) => {
-                            action == required_action || action == Action::All
+                            action == required_action
+                                || action == Action::All
+                                || action == Action::SuperAdmin
                         }
                         Permission::Resource(action, ref resource_type) => {
                             if let Some(resource_type) = resource_type.as_ref() {
@@ -384,11 +379,15 @@ impl Sessions {
                                                 // WHEN IS THIS VALID??
                                                 true
                                             };
-                                        (action == required_action || action == Action::All)
+                                        (action == required_action
+                                            || action == Action::All
+                                            || action == Action::SuperAdmin)
                                             && ok_resource
                                     }
                                     ParseableResourceType::All => {
-                                        action == required_action || action == Action::All
+                                        action == required_action
+                                            || action == Action::All
+                                            || action == Action::SuperAdmin
                                     }
                                 }
                             } else if resource_type.is_none()

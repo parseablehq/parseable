@@ -272,8 +272,8 @@ impl CorrelationConfig {
 
     /// This function will validate the TableConfigs, JoinConfig, and user auth
     pub async fn validate(&self, session_key: &SessionKey) -> Result<(), CorrelationError> {
-        let ctx = &QUERY_SESSION.get_ctx();
         let tenant_id = get_tenant_id_from_key(session_key);
+        let ctx = &QUERY_SESSION.get_ctx();
         let h1: HashSet<&String> = self.table_configs.iter().map(|t| &t.table_name).collect();
         let h2: HashSet<&String> = self
             .join_config

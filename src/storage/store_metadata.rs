@@ -24,7 +24,6 @@ use std::{
 
 use bytes::Bytes;
 use once_cell::sync::OnceCell;
-use relative_path::RelativePathBuf;
 use std::io;
 
 use crate::{
@@ -127,7 +126,7 @@ pub async fn resolve_parseable_metadata(
     parseable_metadata: &Option<Bytes>,
     tenant_id: &Option<String>,
 ) -> Result<StorageMetadata, ObjectStorageError> {
-    let staging_metadata = get_staging_metadata()?;
+    let staging_metadata = get_staging_metadata(tenant_id)?;
     let remote_metadata = parseable_metadata
         .as_ref()
         .map(|meta| serde_json::from_slice(meta).expect("parseable config is valid json"));
@@ -279,9 +278,19 @@ pub enum EnvChange {
     CreateBoth,
 }
 
-pub fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {
-    let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME)
-        .to_path(PARSEABLE.options.staging_dir());
+pub fn get_staging_metadata(tenant_id: &Option<String>) -> io::Result<Option<StorageMetadata>> {
+    let path = if let Some(tenant_id) = tenant_id.as_ref() {
+        let tenant_dir = PARSEABLE.options.staging_dir().join(tenant_id);
+        create_dir_all(&tenant_dir)?;
+        tenant_dir.join(PARSEABLE_METADATA_FILE_NAME)
+    } else {
+        PARSEABLE
+            .options
+            .staging_dir()
+            .join(PARSEABLE_METADATA_FILE_NAME)
+    };
+    // let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME)
+    //     .to_path(PARSEABLE.options.staging_dir());
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) => match err.kind() {
@@ -311,11 +320,9 @@ pub fn put_staging_metadata(meta: &StorageMetadata, tenant_id: &Option<String>) 
     staging_metadata.server_mode = PARSEABLE.options.mode;
     staging_metadata.staging = PARSEABLE.options.staging_dir().to_path_buf();
     let path = if let Some(tenant_id) = tenant_id.as_ref() {
-        PARSEABLE
-            .options
-            .staging_dir()
-            .join(tenant_id)
-            .join(PARSEABLE_METADATA_FILE_NAME)
+        let tenant_dir = PARSEABLE.options.staging_dir().join(tenant_id);
+        create_dir_all(&tenant_dir)?;
+        tenant_dir.join(PARSEABLE_METADATA_FILE_NAME)
     } else {
         PARSEABLE
             .options

@@ -60,15 +60,9 @@ pub async fn get_prism_logstream_info(
         get_stream_schema_helper(stream_name, tenant_id),
         get_stats(stream_name, tenant_id),
     );
-    tracing::warn!("starting dataset info");
     let info = info?;
-    tracing::warn!("got info");
     let schema = schema?;
-    tracing::warn!("got schema");
-    // let stats = stats?;
-    tracing::warn!(real_stats=?stats);
-    let stats = QueriedStats::default();
-    tracing::warn!("got FAKE stats");
+    let stats = stats?;
 
     // get retention
     let retention = PARSEABLE

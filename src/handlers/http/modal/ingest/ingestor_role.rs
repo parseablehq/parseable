@@ -49,14 +49,14 @@ pub async fn put(
             "non super-admin user trying to create role for another tenant",
         )));
     }
-    // let req_tenant_id = &Some(sync_req.tenant_id);
     let mut metadata = get_metadata(&sync_req.tenant_id).await?;
     metadata
         .roles
         .insert(name.clone(), sync_req.privileges.clone());
 
     let _ = storage::put_staging_metadata(&metadata, &sync_req.tenant_id);
-    let tenant_id = req_tenant_id
+    let tenant_id = sync_req
+        .tenant_id
         .as_deref()
         .unwrap_or(DEFAULT_TENANT)
         .to_owned();

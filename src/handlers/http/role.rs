@@ -159,10 +159,13 @@ pub async fn put_default(
     let tenant_id = get_tenant_id_from_request(&req);
     let mut metadata = get_metadata(&tenant_id).await?;
     metadata.default_role = Some(name.clone());
-    DEFAULT_ROLE.write().unwrap().insert(
-        tenant_id.as_deref().unwrap_or(DEFAULT_TENANT).to_owned(),
-        Some(name),
-    );
+    DEFAULT_ROLE
+        .write()
+        // .unwrap()
+        .insert(
+            tenant_id.as_deref().unwrap_or(DEFAULT_TENANT).to_owned(),
+            Some(name),
+        );
     // *DEFAULT_ROLE.lock().unwrap() = Some(name);
     put_metadata(&metadata, &tenant_id).await?;
     Ok(HttpResponse::Ok().finish())
@@ -173,7 +176,10 @@ pub async fn put_default(
 pub async fn get_default(req: HttpRequest) -> Result<impl Responder, RoleError> {
     let tenant_id = get_tenant_id_from_request(&req);
     let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-    let res = if let Some(role) = DEFAULT_ROLE.read().unwrap().get(tenant_id)
+    let res = if let Some(role) = DEFAULT_ROLE
+        .read()
+        // .unwrap()
+        .get(tenant_id)
         && let Some(role) = role
     {
         serde_json::Value::String(role.to_string())

@@ -78,23 +78,16 @@ pub async fn post_user(
         return Err(RBACError::UserExists(username));
     }
 
-    let (user, password) = user::User::new_basic(username.clone(), None, false);
-
+    let (mut user, password) = user::User::new_basic(username.clone(), tenant_id.clone(), false);
+    // add user roles
+    user.roles.clone_from(&user_roles);
     metadata.users.push(user.clone());
 
     put_metadata(&metadata, &tenant_id).await?;
-    let created_role = user_roles.clone();
+    // let created_role = user_roles.clone();
     Users.put_user(user.clone());
 
-    sync_user_creation(user, &Some(user_roles), &tenant_id).await?;
-    if !created_role.is_empty() {
-        add_roles_to_user(
-            req,
-            web::Path::<String>::from(username.clone()),
-            web::Json(created_role),
-        )
-        .await?;
-    }
+    sync_user_creation(user, &None, &tenant_id).await?;
 
     Ok(password)
 }
@@ -162,7 +155,7 @@ pub async fn delete_user(
     }
     put_metadata(&metadata, &tenant_id).await?;
 
-    sync_user_deletion_with_ingestors(&userid, &tenant_id).await?;
+    sync_user_deletion_with_ingestors(&req, &userid, &tenant_id).await?;
 
     // update in mem table
     Users.delete_user(&userid, &tenant_id);
@@ -224,7 +217,7 @@ pub async fn add_roles_to_user(
     // update in mem table
     Users.add_roles(&userid.clone(), roles_to_add.clone(), &tenant_id);
 
-    sync_users_with_roles_with_ingestors(&userid, &roles_to_add, "add", &tenant_id).await?;
+    sync_users_with_roles_with_ingestors(&req, &userid, &roles_to_add, "add", &tenant_id).await?;
 
     Ok(format!("Roles updated successfully for {username}"))
 }
@@ -298,7 +291,8 @@ pub async fn remove_roles_from_user(
     // update in mem table
     Users.remove_roles(&userid.clone(), roles_to_remove.clone(), &tenant_id);
 
-    sync_users_with_roles_with_ingestors(&userid, &roles_to_remove, "remove", &tenant_id).await?;
+    sync_users_with_roles_with_ingestors(&req, &userid, &roles_to_remove, "remove", &tenant_id)
+        .await?;
 
     Ok(HttpResponse::Ok().json(format!("Roles updated successfully for {username}")))
 }

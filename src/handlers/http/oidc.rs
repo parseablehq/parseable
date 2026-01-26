@@ -26,22 +26,19 @@ use actix_web::{
     web,
 };
 use chrono::{Duration, TimeDelta};
-use http::header;
 use openid::{Bearer, Options, Token, Userinfo};
 use regex::Regex;
 use serde::Deserialize;
-use serde_json::json;
 use tokio::sync::RwLock;
 use ulid::Ulid;
 use url::Url;
 
+use crate::utils::login_sync;
 use crate::{
-    INTRA_CLUSTER_CLIENT,
     handlers::{
         COOKIE_AGE_DAYS, SESSION_COOKIE_NAME, USER_COOKIE_NAME, USER_ID_COOKIE_NAME,
         http::{
-            API_BASE_PATH, API_VERSION, base_path_without_preceding_slash,
-            cluster::for_each_live_node,
+            API_BASE_PATH, API_VERSION,
             modal::{GlobalClient, OIDC_CLIENT},
         },
     },
@@ -129,33 +126,7 @@ pub async fn login(
                 );
                 let _session = session_cookie.value().to_owned();
                 let _user = user.clone();
-                let r = for_each_live_node(&tenant_id, move |node| {
-                    let url = format!(
-                        "{}{}/o/login/sync",
-                        node.domain_name,
-                        base_path_without_preceding_slash(),
-                    );
-                    let _session = _session.clone();
-                    let _user = _user.clone();
-
-                    async move {
-                        INTRA_CLUSTER_CLIENT
-                            .post(url)
-                            .header(header::AUTHORIZATION, node.token)
-                            .header(header::CONTENT_TYPE, "application/json")
-                            .json(&json!(
-                                {
-                                    "sessionCookie": _session,
-                                    "user": _user,
-                                    "expiry": EXPIRY_DURATION
-                                }
-                            ))
-                            .send()
-                            .await?;
-                        Ok::<(), anyhow::Error>(())
-                    }
-                })
-                .await;
+                let r = login_sync(_session, _user, EXPIRY_DURATION, &tenant_id).await;
                 tracing::warn!(login_sync=?r);
                 Ok(redirect_to_client(
                     query.redirect.as_str(),
@@ -272,7 +243,7 @@ pub async fn reply_login(
 
     let default_role = if let Some(role) = DEFAULT_ROLE
         .read()
-        .unwrap()
+        // .unwrap()
         .get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
         && let Some(role) = role
     {

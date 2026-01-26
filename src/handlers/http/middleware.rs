@@ -190,12 +190,9 @@ where
                         )));
                         None
                     }
-                } else if self.action.eq(&Action::SuperAdmin) {
+                } else if self.action.eq(&Action::SuperAdmin) || self.action.eq(&Action::Login) {
                     None
-                } else if self.action.eq(&Action::Login) {
-                    None
-                }
-                else {
+                } else {
                     // tenant header should not be present, modify request to add
                     let mut t = None;
                     if let Ok((_, tenant)) = get_user_and_tenant_from_request(req.request())

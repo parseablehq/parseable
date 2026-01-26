@@ -50,7 +50,7 @@ use crate::rbac::role::model::DefaultPrivilege;
 use crate::rbac::user::User;
 use crate::stats::Stats;
 use crate::storage::{ObjectStorageError, ObjectStoreFormat};
-use crate::utils::get_tenant_id_from_request;
+use crate::utils::{create_intracluster_auth_headermap, get_tenant_id_from_request};
 
 use super::base_path_without_preceding_slash;
 use super::ingest::PostError;
@@ -501,6 +501,7 @@ pub async fn get_demo_data_from_ingestor(
 
 // forward the role update request to all ingestors to keep them in sync
 pub async fn sync_users_with_roles_with_ingestors(
+    req: &HttpRequest,
     userid: &str,
     role: &HashSet<String>,
     operation: &str,
@@ -519,7 +520,7 @@ pub async fn sync_users_with_roles_with_ingestors(
     let userid = userid.to_owned();
 
     let op = operation.to_string();
-
+    let headermap = create_intracluster_auth_headermap(req);
     for_each_live_node(tenant_id, move |ingestor| {
         let url = format!(
             "{}{}/user/{}/role/sync/{}",
@@ -530,11 +531,12 @@ pub async fn sync_users_with_roles_with_ingestors(
         );
 
         let role_data = role_data.clone();
-
+        let headermap = headermap.clone();
         async move {
             let res = INTRA_CLUSTER_CLIENT
                 .patch(url)
-                .header(header::AUTHORIZATION, &ingestor.token)
+                .headers(headermap)
+                // .header(header::AUTHORIZATION, &ingestor.token)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(role_data)
                 .send()
@@ -563,11 +565,12 @@ pub async fn sync_users_with_roles_with_ingestors(
 
 // forward the delete user request to all ingestors to keep them in sync
 pub async fn sync_user_deletion_with_ingestors(
+    req: &HttpRequest,
     userid: &str,
     tenant_id: &Option<String>,
 ) -> Result<(), RBACError> {
     let userid = userid.to_owned();
-
+    let headermap = create_intracluster_auth_headermap(req);
     for_each_live_node(tenant_id, move |ingestor| {
         let url = format!(
             "{}{}/user/{}/sync",
@@ -575,11 +578,12 @@ pub async fn sync_user_deletion_with_ingestors(
             base_path_without_preceding_slash(),
             userid
         );
-
+        let headermap = headermap.clone();
         async move {
             let res = INTRA_CLUSTER_CLIENT
                 .delete(url)
-                .header(header::AUTHORIZATION, &ingestor.token)
+                // .header(header::AUTHORIZATION, &ingestor.token)
+                .headers(headermap)
                 .send()
                 .await
                 .map_err(|err| {

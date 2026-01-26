@@ -26,18 +26,24 @@ pub mod time;
 pub mod uid;
 pub mod update;
 
+use crate::INTRA_CLUSTER_CLIENT;
+use crate::handlers::http::base_path_without_preceding_slash;
+use crate::handlers::http::cluster::for_each_live_node;
 use crate::handlers::http::rbac::RBACError;
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
 use crate::query::resolve_stream_names;
 use crate::rbac::Users;
 use crate::rbac::map::{SessionKey, sessions};
 use crate::rbac::role::{Action, ParseableResourceType, Permission};
+use crate::rbac::user::User;
 use actix::extract_session_key_from_req;
 use actix_web::dev::ServiceRequest;
 use actix_web::{FromRequest, HttpRequest};
 use actix_web_httpauth::extractors::basic::BasicAuth;
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use http::header;
 use regex::Regex;
+use serde_json::json;
 use sha2::{Digest, Sha256};
 
 pub fn get_node_id() -> String {
@@ -243,4 +249,58 @@ pub fn is_admin(req: &HttpRequest) -> Result<bool, anyhow::Error> {
     }
 
     Ok(false)
+}
+
+pub fn create_intracluster_auth_headermap(req: &HttpRequest) -> reqwest::header::HeaderMap {
+    let mut map = reqwest::header::HeaderMap::new();
+    if let Some(auth) = req.headers().get(actix_web::http::header::AUTHORIZATION) {
+        map.insert(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_bytes(auth.as_bytes()).unwrap(),
+        );
+        // tracing::warn!("got query request with auth header- {auth:?}");
+    } else if let Some(auth) = req.headers().get(actix_web::http::header::COOKIE) {
+        map.insert(
+            reqwest::header::COOKIE,
+            reqwest::header::HeaderValue::from_bytes(auth.as_bytes()).unwrap(),
+        );
+        // tracing::warn!("got query request with auth header- {auth:?}");
+    }
+    map
+}
+
+pub async fn login_sync(
+    session: String,
+    user: User,
+    expiry: Duration,
+    tenant_id: &Option<String>,
+) -> Result<(), anyhow::Error> {
+    for_each_live_node(tenant_id, move |node| {
+        let url = format!(
+            "{}{}/o/login/sync",
+            node.domain_name,
+            base_path_without_preceding_slash(),
+        );
+        let _session = session.clone();
+        let _user = user.clone();
+        let _expiry = expiry;
+
+        async move {
+            INTRA_CLUSTER_CLIENT
+                .post(url)
+                .header(header::AUTHORIZATION, node.token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .json(&json!(
+                    {
+                        "sessionCookie": _session,
+                        "user": _user,
+                        "expiry": _expiry
+                    }
+                ))
+                .send()
+                .await?;
+            Ok::<(), anyhow::Error>(())
+        }
+    })
+    .await
 }

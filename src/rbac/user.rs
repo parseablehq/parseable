@@ -251,6 +251,7 @@ pub struct GroupUser {
     pub userid: String,
     pub username: String,
     pub method: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub tenant_id: Option<String>,
 }
 
@@ -330,30 +331,46 @@ fn is_valid_group_name(name: &str) -> bool {
 }
 
 impl UserGroup {
+    pub fn mask(self) -> Self {
+        let users = self
+            .users
+            .into_iter()
+            .map(|mut u| {
+                u.tenant_id = None;
+                u
+            })
+            .collect();
+        Self {
+            name: self.name,
+            roles: self.roles,
+            users,
+        }
+    }
     pub fn validate(&self, tenant_id: &Option<String>) -> Result<(), RBACError> {
         let valid_name = is_valid_group_name(&self.name);
-
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if read_user_groups().contains_key(&self.name) {
             return Err(RBACError::UserGroupExists(self.name.clone()));
         }
         let mut non_existent_roles = Vec::new();
         if !self.roles.is_empty() {
             // validate that the roles exist
-            for role in &self.roles {
-                if let Some(tenant_roles) =
-                    roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-                    && !tenant_roles.contains_key(role)
-                {
-                    non_existent_roles.push(role.clone());
+            if let Some(tenant_roles) = roles().get(tenant) {
+                for role in &self.roles {
+                    if !tenant_roles.contains_key(role) {
+                        non_existent_roles.push(role.clone());
+                    }
                 }
             }
         }
         let mut non_existent_users = Vec::new();
         if !self.users.is_empty() {
             // validate that the users exist
-            for group_user in &self.users {
-                if !users().contains_key(group_user.userid()) {
-                    non_existent_users.push(group_user.userid().to_string());
+            if let Some(users) = users().get(tenant) {
+                for group_user in &self.users {
+                    if !users.contains_key(group_user.userid()) {
+                        non_existent_users.push(group_user.userid().to_string());
+                    }
                 }
             }
         }
