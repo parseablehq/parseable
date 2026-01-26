@@ -385,11 +385,7 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
                                     WhereConfigOperator::DoesNotContain => {
                                         let escaped_value = value
                                             .replace("'", "\\'")
-                                            .replace(
-                                                '%',
-                                                "\\%  
-                                                ",
-                                            )
+                                            .replace('%', "\\%")
                                             .replace('_', "\\_");
                                         format!("NOT LIKE '%{escaped_value}%' ESCAPE '\\'")
                                     }
@@ -472,33 +468,26 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
                         None => match condition.operator {
                             WhereConfigOperator::IsNull | WhereConfigOperator::IsNotNull => exprs
                                 .push(format!("\"{}\" {}", condition.column, condition.operator)),
-                            _ => {
+                            
+                            WhereConfigOperator::Equal | WhereConfigOperator::NotEqual => {
                                 if condition.value_type.as_ref().is_some_and(|v| v == "null") {
-                                    match condition.operator {
-                                        WhereConfigOperator::Equal => exprs.push(format!(
-                                            "\"{}\" {}",
-                                            condition.column,
-                                            WhereConfigOperator::IsNull
-                                        )),
-
-                                        WhereConfigOperator::NotEqual => exprs.push(format!(
-                                            "\"{}\" {}",
-                                            condition.column,
-                                            WhereConfigOperator::IsNotNull
-                                        )),
-                                        _ => {
-                                            return Err(format!(
-                                                "invalid operator [{}] with [null]",
-                                                condition.operator
-                                            ));
-                                        }
-                                    }
+                                    let operator = match condition.operator {
+                                        WhereConfigOperator::Equal => WhereConfigOperator::IsNull,
+                                        _ => WhereConfigOperator::IsNotNull,
+                                    };
+                                    exprs.push(format!("\"{}\" {}", condition.column, operator));
                                 } else {
                                     return Err(format!(
                                         "value cannot be NULL for: {} {}",
                                         condition.column, condition.operator
                                     ));
                                 }
+                            }
+                            _ => {
+                                return Err(format!(
+                                    "invalid null operation: [{}]",
+                                    condition.operator
+                                ));
                             }
                         },
                     }
