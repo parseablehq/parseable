@@ -599,10 +599,10 @@ pub fn build_stats_sql(
                 .collect();
             format!("AND  rv.field_name IN ({})", quoted_fields.join(", "))
         } else {
-            String::new()
+            String::default()
         }
     } else {
-        String::new()
+        String::default()
     };
     let dataset_name = dataset_name.replace('"', "\"\"");
 
