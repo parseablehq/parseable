@@ -157,13 +157,13 @@ pub async fn generate_home_response(
     let (alert_created, triggered_alerts_count) = {
         let guard = ALERTS.read().await;
         if let Some(alerts) = guard.as_ref() {
-            let all_alerts = alerts.get_all_alerts().await;
-            let total_alerts = !all_alerts.is_empty();
+            let user_alerts = alerts.list_alerts_for_user(key.clone(), vec![]).await?;
+            let total_alerts = !user_alerts.is_empty();
 
             // Count alerts currently in triggered state
-            let triggered_count = all_alerts
-                .values()
-                .filter(|alert| alert.get_state() == &AlertState::Triggered)
+            let triggered_count = user_alerts
+                .iter()
+                .filter(|alert| alert.state == AlertState::Triggered)
                 .count() as u64;
 
             (total_alerts, triggered_count)
