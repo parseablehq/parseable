@@ -22,7 +22,7 @@ use serde::{Deserialize, Serialize};
 use tracing::error;
 
 use crate::{
-    alerts::{ALERTS, AlertError},
+    alerts::{ALERTS, AlertError, AlertState},
     correlation::{CORRELATIONS, CorrelationError},
     event::format::{LogSource, LogSourceEntry},
     handlers::{TelemetryType, http::logstream::error::StreamError},
@@ -160,19 +160,11 @@ pub async fn generate_home_response(
             let all_alerts = alerts.get_all_alerts().await;
             let total_alerts = !all_alerts.is_empty();
 
-            // Get alert states and count those currently triggered
-            let triggered_count = match PARSEABLE.metastore.get_alert_states().await {
-                Ok(alert_states) => alert_states
-                    .iter()
-                    .filter(|state_entry| {
-                        state_entry
-                            .current_state()
-                            .map(|s| s.state == crate::alerts::AlertState::Triggered)
-                            .unwrap_or(false)
-                    })
-                    .count() as u64,
-                Err(_) => 0,
-            };
+            // Count alerts currently in triggered state
+            let triggered_count = all_alerts
+                .values()
+                .filter(|alert| alert.get_state() == &AlertState::Triggered)
+                .count() as u64;
 
             (total_alerts, triggered_count)
         } else {
