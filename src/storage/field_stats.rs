@@ -612,18 +612,23 @@ pub fn build_stats_sql(
 
     format!(
         "WITH field_totals AS (
-                SELECT 
+            SELECT 
+                field_stats_field_name,
+                SUM(field_stats_count) as total_field_count
+            FROM (
+                SELECT DISTINCT 
+                    p_timestamp,
                     field_stats_field_name,
-                    SUM(DISTINCT field_stats_count) as total_field_count
-                FROM {DATASET_STATS_STREAM_NAME} 
+                    field_stats_count
+                FROM {DATASET_STATS_STREAM_NAME}
                 WHERE dataset_name = '{dataset_name}'
-                GROUP BY field_stats_field_name
+            ) deduped
+            GROUP BY field_stats_field_name
             ),
             ranked_values AS (
                 SELECT 
                     field_stats_field_name as field_name,
                     field_stats_distinct_stats_distinct_value as distinct_value,
-                    MAX(field_stats_distinct_count) as distinct_count,
                     SUM(field_stats_distinct_stats_count) as distinct_value_count,
                     ROW_NUMBER() OVER (
                         PARTITION BY field_stats_field_name 
@@ -633,15 +638,23 @@ pub fn build_stats_sql(
                 WHERE dataset_name = '{dataset_name}'
                 AND field_stats_distinct_stats_distinct_value IS NOT NULL
                 GROUP BY field_stats_field_name, field_stats_distinct_stats_distinct_value
+            ),
+            field_distinct_counts AS (
+                SELECT 
+                    field_name,
+                    COUNT(*) as distinct_count
+                FROM ranked_values
+                GROUP BY field_name
             )
             SELECT 
                 rv.field_name,
                 ft.total_field_count as field_count,
-                rv.distinct_count,
+                fdc.distinct_count,
                 rv.distinct_value,
                 rv.distinct_value_count
             FROM ranked_values rv
             JOIN field_totals ft ON rv.field_name = ft.field_stats_field_name
+            JOIN field_distinct_counts fdc ON rv.field_name = fdc.field_name
             WHERE rv.rn > {rn_start} AND rv.rn <= {rn_end}
                 {fields_filter} 
             ORDER BY rv.field_name, rv.distinct_value_count DESC"
