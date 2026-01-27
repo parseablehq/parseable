@@ -196,7 +196,7 @@ async fn calculate_stats_if_enabled(
     path: &std::path::Path,
     schema: &Arc<Schema>,
 ) {
-    if stream_name != DATASET_STATS_STREAM_NAME && PARSEABLE.options.collect_dataset_stats {
+    if stream_name != DATASET_STATS_STREAM_NAME {
         let max_field_statistics = PARSEABLE.options.max_field_statistics;
         if let Err(err) =
             calculate_field_stats(stream_name, path, schema, max_field_statistics).await
