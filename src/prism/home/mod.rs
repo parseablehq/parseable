@@ -17,20 +17,22 @@
  */
 use actix_web::http::StatusCode;
 use actix_web::http::header::ContentType;
-use chrono::{DateTime, Utc};
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 use tracing::error;
 
 use crate::{
-    alerts::{ALERTS, AlertError, alert_structs::AlertsSummary, get_alerts_summary},
+    alerts::{ALERTS, AlertError},
     correlation::{CORRELATIONS, CorrelationError},
     event::format::{LogSource, LogSourceEntry},
     handlers::{TelemetryType, http::logstream::error::StreamError},
     metastore::MetastoreError,
     parseable::PARSEABLE,
-    rbac::map::users,
-    rbac::{Users, map::SessionKey, role::Action},
+    rbac::{
+        Users,
+        map::{SessionKey, users},
+        role::Action,
+    },
     storage::{ObjectStorageError, ObjectStoreFormat, StreamType},
     users::{dashboards::DASHBOARDS, filters::FILTERS},
 };
@@ -46,14 +48,6 @@ type StreamMetadataResponse = Result<
     PrismHomeError,
 >;
 
-#[derive(Debug, Serialize, Default)]
-pub struct DatedStats {
-    date: String,
-    events: u64,
-    ingestion: u64,
-    storage: u64,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DataSet {
@@ -68,44 +62,17 @@ pub struct DataSet {
 #[serde(rename_all = "camelCase")]
 pub struct Checklist {
     pub data_ingested: bool,
-    pub metrics_dataset: bool,
     pub keystone_created: bool,
     pub alert_created: bool,
     pub user_added: bool,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct SeverityCount {
-    pub critical: u64,
-    pub high: u64,
-    pub medium: u64,
-    pub low: u64,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(rename_all = "camelCase")]
-pub struct TimeBin {
-    pub start_time: DateTime<Utc>,
-    pub end_time: DateTime<Utc>,
-    pub counts: SeverityCount,
-}
-
-#[derive(Debug, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct AlertTriggerHistory {
-    pub total_triggers: u64,
-    pub severity_counts: SeverityCount,
-    pub time_bins: Vec<TimeBin>,
-}
-
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HomeResponse {
-    pub alerts_summary: AlertsSummary,
     pub datasets: Vec<DataSet>,
     pub checklist: Checklist,
-    pub alert_trigger_history: AlertTriggerHistory,
+    pub triggered_alerts_count: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -134,11 +101,7 @@ pub async fn generate_home_response(
     include_internal: bool,
 ) -> Result<HomeResponse, PrismHomeError> {
     // Execute these operations concurrently
-    let (alerts_summary_result, all_streams_result) =
-        tokio::join!(get_alerts_summary(key), PARSEABLE.metastore.list_streams());
-
-    let alerts_summary = alerts_summary_result?;
-    let all_streams = all_streams_result?;
+    let all_streams = PARSEABLE.metastore.list_streams().await?;
 
     let stream_titles: Vec<String> = all_streams
         .iter()
@@ -158,7 +121,6 @@ pub async fn generate_home_response(
         futures::future::join_all(stream_metadata_futures).await;
 
     let mut datasets = Vec::new();
-    let mut has_metrics_dataset = false;
 
     for result in stream_metadata_results {
         match result {
@@ -170,10 +132,6 @@ pub async fn generate_home_response(
                         .all(|m| m.stream_type == StreamType::Internal)
                 {
                     continue;
-                }
-                // Check for metrics dataset
-                if dataset_type == TelemetryType::Metrics {
-                    has_metrics_dataset = true;
                 }
 
                 datasets.push(DataSet {
@@ -190,28 +148,49 @@ pub async fn generate_home_response(
         }
     }
 
-    // Generate checklist
+    // Generate checklist and count triggered alerts
     let data_ingested = !all_streams.is_empty();
-    let alert_created = alerts_summary.total > 0;
     let user_count = users().len();
     let user_added = user_count > 1; // more than just the default admin user
 
+    // Calculate triggered alerts count
+    let (alert_created, triggered_alerts_count) = {
+        let guard = ALERTS.read().await;
+        if let Some(alerts) = guard.as_ref() {
+            let all_alerts = alerts.get_all_alerts().await;
+            let total_alerts = !all_alerts.is_empty();
+
+            // Get alert states and count those currently triggered
+            let triggered_count = match PARSEABLE.metastore.get_alert_states().await {
+                Ok(alert_states) => alert_states
+                    .iter()
+                    .filter(|state_entry| {
+                        state_entry
+                            .current_state()
+                            .map(|s| s.state == crate::alerts::AlertState::Triggered)
+                            .unwrap_or(false)
+                    })
+                    .count() as u64,
+                Err(_) => 0,
+            };
+
+            (total_alerts, triggered_count)
+        } else {
+            (false, 0)
+        }
+    };
+
     let checklist = Checklist {
         data_ingested,
-        metrics_dataset: has_metrics_dataset,
         keystone_created: false, // Enterprise will override
         alert_created,
         user_added,
     };
 
-    // AlertTriggerHistory is empty for OSS - enterprise will override
-    let alert_trigger_history = AlertTriggerHistory::default();
-
     Ok(HomeResponse {
         datasets,
-        alerts_summary,
         checklist,
-        alert_trigger_history,
+        triggered_alerts_count,
     })
 }
 
