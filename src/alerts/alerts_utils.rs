@@ -29,7 +29,7 @@ use tracing::trace;
 use crate::{
     alerts::{
         AlertTrait, LogicalOperator, WhereConfigOperator,
-        alert_structs::{AlertQueryResult, Conditions, GroupResult},
+        alert_structs::{AlertQueryResult, ConditionConfig, Conditions, GroupResult},
         extract_aggregate_aliases,
     },
     handlers::http::{
@@ -364,84 +364,8 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
             &LogicalOperator::And => {
                 let mut exprs = vec![];
                 for condition in &where_clause.condition_config {
-                    if condition.value.as_ref().is_some_and(|v| !v.is_empty()) {
-                        // ad-hoc error check in case value is some and operator is either `is null` or `is not null`
-                        if condition.operator.eq(&WhereConfigOperator::IsNull)
-                            || condition.operator.eq(&WhereConfigOperator::IsNotNull)
-                        {
-                            return Err("value must be null when operator is either `is null` or `is not null`"
-                                .into());
-                        }
-
-                        let value = condition.value.as_ref().unwrap();
-
-                        let operator_and_value = match condition.operator {
-                            WhereConfigOperator::Contains => {
-                                let escaped_value = value
-                                    .replace("'", "\\'")
-                                    .replace('%', "\\%")
-                                    .replace('_', "\\_");
-                                format!("LIKE '%{escaped_value}%' ESCAPE '\\'")
-                            }
-                            WhereConfigOperator::DoesNotContain => {
-                                let escaped_value = value
-                                    .replace("'", "\\'")
-                                    .replace('%', "\\%")
-                                    .replace('_', "\\_");
-                                format!("NOT LIKE '%{escaped_value}%' ESCAPE '\\'")
-                            }
-                            WhereConfigOperator::ILike => {
-                                let escaped_value = value
-                                    .replace("'", "\\'")
-                                    .replace('%', "\\%")
-                                    .replace('_', "\\_");
-                                format!("ILIKE '%{escaped_value}%' ESCAPE '\\'")
-                            }
-                            WhereConfigOperator::BeginsWith => {
-                                let escaped_value = value
-                                    .replace("'", "\\'")
-                                    .replace('%', "\\%")
-                                    .replace('_', "\\_");
-                                format!("LIKE '{escaped_value}%' ESCAPE '\\'")
-                            }
-                            WhereConfigOperator::DoesNotBeginWith => {
-                                let escaped_value = value
-                                    .replace("'", "\\'")
-                                    .replace('%', "\\%")
-                                    .replace('_', "\\_");
-                                format!("NOT LIKE '{escaped_value}%' ESCAPE '\\'")
-                            }
-                            WhereConfigOperator::EndsWith => {
-                                let escaped_value = value
-                                    .replace("'", "\\'")
-                                    .replace('%', "\\%")
-                                    .replace('_', "\\_");
-                                format!("LIKE '%{escaped_value}' ESCAPE '\\'")
-                            }
-                            WhereConfigOperator::DoesNotEndWith => {
-                                let escaped_value = value
-                                    .replace("'", "\\'")
-                                    .replace('%', "\\%")
-                                    .replace('_', "\\_");
-                                format!("NOT LIKE '%{escaped_value}' ESCAPE '\\'")
-                            }
-                            _ => {
-                                let value = match ValueType::from_string(value.to_owned()) {
-                                    ValueType::Number(val) => format!("{val}"),
-                                    ValueType::Boolean(val) => format!("{val}"),
-                                    ValueType::String(val) => {
-                                        format!("'{val}'")
-                                    }
-                                };
-                                format!("{} {}", condition.operator, value)
-                            }
-                        };
-                        exprs.push(format!("\"{}\" {}", condition.column, operator_and_value))
-                    } else {
-                        exprs.push(format!("\"{}\" {}", condition.column, condition.operator))
-                    }
+                    exprs.push(condition_to_expr(condition)?);
                 }
-
                 Ok(exprs.join(" AND "))
             }
             _ => Err(String::from("Invalid option 'or', only 'and' is supported")),
@@ -450,6 +374,108 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
             "Invalid option 'null', only 'and' is supported",
         )),
     }
+}
+
+fn condition_to_expr(condition: &ConditionConfig) -> Result<String, String> {
+    // is null / is not null don't take a value
+    if condition.operator == WhereConfigOperator::IsNull
+        || condition.operator == WhereConfigOperator::IsNotNull
+    {
+        if condition.value.as_ref().is_some_and(|v| !v.is_empty()) {
+            return Err(
+                "value must be null when operator is either `is null` or `is not null`".into(),
+            );
+        }
+        return Ok(format!("\"{}\" {}", condition.column, condition.operator));
+    }
+
+    let value = condition.value.as_deref().unwrap_or("");
+
+    let is_list_type = condition
+        .column_type
+        .as_ref()
+        .is_some_and(|t| t.starts_with("list"));
+
+    if is_list_type {
+        list_condition_expr(&condition.column, &condition.operator, value)
+    } else {
+        scalar_condition_expr(
+            &condition.column,
+            &condition.operator,
+            value,
+            condition.column_type.as_deref(),
+        )
+    }
+}
+
+fn list_condition_expr(
+    column: &str,
+    operator: &WhereConfigOperator,
+    value: &str,
+) -> Result<String, String> {
+    match operator {
+        WhereConfigOperator::Contains => Ok(format!("array_has_all(\"{column}\", ARRAY[{value}])")),
+        WhereConfigOperator::DoesNotContain => {
+            Ok(format!("NOT array_has_all(\"{column}\", ARRAY[{value}])"))
+        }
+        WhereConfigOperator::Equal => Ok(format!("\"{column}\" = ARRAY[{value}]")),
+        WhereConfigOperator::NotEqual => Ok(format!("\"{column}\" != ARRAY[{value}]")),
+        _ => Err(format!(
+            "Operator '{operator}' is not supported for list type columns"
+        )),
+    }
+}
+
+fn scalar_condition_expr(
+    column: &str,
+    operator: &WhereConfigOperator,
+    value: &str,
+    column_type: Option<&str>,
+) -> Result<String, String> {
+    let operator_and_value = match operator {
+        WhereConfigOperator::Contains => {
+            format!("LIKE '%{}%' ESCAPE '\\'", escape_like(value))
+        }
+        WhereConfigOperator::DoesNotContain => {
+            format!("NOT LIKE '%{}%' ESCAPE '\\'", escape_like(value))
+        }
+        WhereConfigOperator::ILike => {
+            format!("ILIKE '%{}%' ESCAPE '\\'", escape_like(value))
+        }
+        WhereConfigOperator::BeginsWith => {
+            format!("LIKE '{}%' ESCAPE '\\'", escape_like(value))
+        }
+        WhereConfigOperator::DoesNotBeginWith => {
+            format!("NOT LIKE '{}%' ESCAPE '\\'", escape_like(value))
+        }
+        WhereConfigOperator::EndsWith => {
+            format!("LIKE '%{}' ESCAPE '\\'", escape_like(value))
+        }
+        WhereConfigOperator::DoesNotEndWith => {
+            format!("NOT LIKE '%{}' ESCAPE '\\'", escape_like(value))
+        }
+        _ => {
+            let formatted = match column_type {
+                Some("bool") | Some("boolean") => value.to_string(),
+                Some("int") | Some("float") | Some("number") => value.to_string(),
+                Some(_) => format!("'{}'", value.replace("'", "''")),
+                None => match ValueType::from_string(value.to_owned()) {
+                    ValueType::Number(val) => format!("{val}"),
+                    ValueType::Boolean(val) => format!("{val}"),
+                    ValueType::String(val) => format!("'{}'", val.replace("'", "''")),
+                },
+            };
+            format!("{operator} {formatted}")
+        }
+    };
+    Ok(format!("\"{column}\" {operator_and_value}"))
+}
+
+fn escape_like(value: &str) -> String {
+    value
+        .replace("'", "''")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
 }
 
 enum ValueType {
