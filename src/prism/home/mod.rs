@@ -152,7 +152,7 @@ pub async fn generate_home_response(
     }
 
     // Generate checklist and count triggered alerts
-    let data_ingested = datasets.iter().all(|d| d.ingestion);
+    let data_ingested = datasets.iter().any(|d| d.ingestion);
     let user_count = users().len();
     let user_added = user_count > 1; // more than just the default admin user
 
@@ -234,7 +234,9 @@ async fn get_stream_metadata(
         .unwrap_or_else(LogSourceEntry::default)
         .log_source_format
         .clone();
-    let ingested = stream_jsons.iter().all(|s| s.first_event_at.is_some());
+    let ingested = stream_jsons
+        .iter()
+        .any(|s| s.stats.current_stats.events > 0);
 
     Ok((
         stream,
