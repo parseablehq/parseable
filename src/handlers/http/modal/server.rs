@@ -37,6 +37,7 @@ use crate::hottier::HotTierManager;
 use crate::metrics;
 use crate::migration;
 use crate::storage;
+use crate::storage::field_stats::get_dataset_stats;
 use crate::sync;
 use crate::sync::sync_start;
 
@@ -100,7 +101,8 @@ impl ParseableServer for Server {
                     .service(Self::get_alerts_webscope())
                     .service(Self::get_targets_webscope())
                     .service(Self::get_metrics_webscope())
-                    .service(Self::get_demo_data_webscope()),
+                    .service(Self::get_demo_data_webscope())
+                    .service(Self::get_dataset_stats_webscope()),
             )
             .service(
                 web::scope(&prism_base_path())
@@ -724,6 +726,12 @@ impl Server {
     // get the about factory
     pub fn get_about_factory() -> Resource {
         web::resource("/about").route(web::get().to(about::about).authorize(Action::GetAbout))
+    }
+
+    // get the dataset stats webscope
+    pub fn get_dataset_stats_webscope() -> Resource {
+        web::resource("/dataset_stats")
+            .route(web::post().to(get_dataset_stats).authorize(Action::Query))
     }
 
     // GET "/" ==> Serve the static frontend directory

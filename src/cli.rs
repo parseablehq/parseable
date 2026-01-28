@@ -450,15 +450,6 @@ pub struct Options {
     )]
     pub max_event_payload_size: usize,
 
-    // collect dataset stats
-    #[arg(
-        long,
-        env = "P_COLLECT_DATASET_STATS",
-        default_value = "false",
-        help = "Enable/Disable collecting dataset stats"
-    )]
-    pub collect_dataset_stats: bool,
-
     // the duration during which local sync should be completed
     #[arg(
         long,

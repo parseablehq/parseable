@@ -1,6 +1,6 @@
 [package]
 name = "parseable"
-version = "2.5.9"
+version = "2.5.10"
 authors = ["Parseable Team <hi@parseable.com>"]
 edition = "2024"
 rust-version = "1.88.0"
@@ -165,6 +165,7 @@ lazy_static = "1.4.0"
 prost = "0.13.1"
 dashmap = "6.1.0"
 parking_lot = "0.12.5"
+indexmap = { version = "2.13.0", features = ["serde"] }
 
 [build-dependencies]
 cargo_toml = "0.21"
@@ -182,8 +183,8 @@ arrow = "57.1.0"
 temp-dir = "0.1.14"
 
 [package.metadata.parseable_ui]
-assets-url = "https://parseable-prism-build.s3.us-east-2.amazonaws.com/v2.5.9/build.zip"
-assets-sha1 = "881a1e93c8aff42d517953a7da98d8d03d623db2"
+assets-url = "https://parseable-prism-build.s3.us-east-2.amazonaws.com/v2.5.10/build.zip"
+assets-sha1 = "46befc943348d7b350eff304390c1e96ef7d06b5"
 
 [features]
 debug = []

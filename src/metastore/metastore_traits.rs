@@ -179,7 +179,7 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
     ) -> Result<(), MetastoreError>;
 
     /// chats
-    async fn get_chats(&self) -> Result<DashMap<String, Vec<Bytes>>, MetastoreError>;
+    async fn get_chats(&self) -> Result<DashMap<String, DashMap<String, Vec<Bytes>>>, MetastoreError>;
     async fn put_chat(
         &self,
         obj: &dyn MetastoreObject,

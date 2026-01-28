@@ -15,27 +15,24 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
-
-use std::collections::HashMap;
-
 use actix_web::http::StatusCode;
 use actix_web::http::header::ContentType;
-use chrono::Utc;
 use itertools::Itertools;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tracing::error;
 
 use crate::{
-    alerts::{ALERTS, AlertError, alert_structs::AlertsSummary, get_alerts_summary},
+    alerts::{ALERTS, AlertError, AlertState},
     correlation::{CORRELATIONS, CorrelationError},
-    handlers::{
-        TelemetryType,
-        http::{cluster::fetch_daily_stats, logstream::error::StreamError},
-    },
+    event::format::{LogSource, LogSourceEntry},
+    handlers::{TelemetryType, http::logstream::error::StreamError},
     metastore::MetastoreError,
     parseable::PARSEABLE,
-    rbac::{Users, map::SessionKey, role::Action},
-    stats::Stats,
+    rbac::{
+        Users,
+        map::{SessionKey, users},
+        role::Action,
+    },
     storage::{ObjectStorageError, ObjectStoreFormat, StreamType},
     users::{dashboards::DASHBOARDS, filters::FILTERS},
     utils::get_tenant_id_from_key,
@@ -47,17 +44,10 @@ type StreamMetadataResponse = Result<
         Vec<ObjectStoreFormat>,
         TelemetryType,
         Option<String>,
+        LogSource,
     ),
     PrismHomeError,
 >;
-
-#[derive(Debug, Serialize, Default)]
-pub struct DatedStats {
-    date: String,
-    events: u64,
-    ingestion: u64,
-    storage: u64,
-}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,15 +56,24 @@ pub struct DataSet {
     dataset_type: TelemetryType,
     #[serde(skip_serializing_if = "Option::is_none")]
     time_partition: Option<String>,
+    dataset_format: LogSource,
+}
+
+#[derive(Debug, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct Checklist {
+    pub data_ingested: bool,
+    pub keystone_created: bool,
+    pub alert_created: bool,
+    pub user_added: bool,
 }
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct HomeResponse {
-    pub alerts_summary: AlertsSummary,
-    pub stats_details: Vec<DatedStats>,
     pub datasets: Vec<DataSet>,
-    pub top_five_ingestion: HashMap<String, Stats>,
+    pub checklist: Checklist,
+    pub triggered_alerts_count: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -104,20 +103,17 @@ pub async fn generate_home_response(
 ) -> Result<HomeResponse, PrismHomeError> {
     let tenant_id = &get_tenant_id_from_key(key);
     // Execute these operations concurrently
-    let (stream_titles_result, alerts_summary_result) =
-        tokio::join!(get_stream_titles(key, tenant_id), get_alerts_summary(key));
-    let stream_titles = stream_titles_result?;
-    let alerts_summary = alerts_summary_result?;
-    // Generate dates for date-wise stats
-    let mut dates = (0..7)
-        .map(|i| {
-            Utc::now()
-                .checked_sub_signed(chrono::Duration::days(i))
-                .expect("Date conversion failed")
+    let all_streams = PARSEABLE.metastore.list_streams(tenant_id).await?;
+
+    let stream_titles: Vec<String> = all_streams
+        .iter()
+        .filter(|logstream| {
+            Users.authorize(key.clone(), Action::ListStream, Some(logstream), None)
+                == crate::rbac::Response::Authorized
         })
-        .map(|date| date.format("%Y-%m-%d").to_string())
+        .cloned()
+        .sorted()
         .collect_vec();
-    dates.reverse();
 
     // Process stream metadata concurrently
     let stream_metadata_futures = stream_titles
@@ -126,12 +122,11 @@ pub async fn generate_home_response(
     let stream_metadata_results: Vec<StreamMetadataResponse> =
         futures::future::join_all(stream_metadata_futures).await;
 
-    let mut stream_wise_stream_json: HashMap<String, Vec<ObjectStoreFormat>> = HashMap::new();
     let mut datasets = Vec::new();
 
     for result in stream_metadata_results {
         match result {
-            Ok((stream, metadata, dataset_type, time_partition)) => {
+            Ok((stream, metadata, dataset_type, time_partition, dataset_format)) => {
                 // Skip internal streams if the flag is false
                 if !include_internal
                     && metadata
@@ -140,11 +135,12 @@ pub async fn generate_home_response(
                 {
                     continue;
                 }
-                stream_wise_stream_json.insert(stream.clone(), metadata);
+
                 datasets.push(DataSet {
                     title: stream,
                     dataset_type,
                     time_partition,
+                    dataset_format,
                 });
             }
             Err(e) => {
@@ -154,64 +150,42 @@ pub async fn generate_home_response(
         }
     }
 
-    let top_five_ingestion = get_top_5_streams_by_ingestion(&stream_wise_stream_json);
+    // Generate checklist and count triggered alerts
+    let data_ingested = !all_streams.is_empty();
+    let user_count = users().len();
+    let user_added = user_count > 1; // more than just the default admin user
 
-    // Process stats for all dates concurrently
-    let stats_futures = dates
-        .iter()
-        .map(|date| stats_for_date(date.clone(), stream_wise_stream_json.clone()));
-    let stats_results: Vec<Result<DatedStats, PrismHomeError>> =
-        futures::future::join_all(stats_futures).await;
+    // Calculate triggered alerts count
+    let (alert_created, triggered_alerts_count) = {
+        let guard = ALERTS.read().await;
+        if let Some(alerts) = guard.as_ref() {
+            let user_alerts = alerts.list_alerts_for_user(key.clone(), vec![]).await?;
+            let total_alerts = !user_alerts.is_empty();
 
-    let mut stream_details = Vec::new();
+            // Count alerts currently in triggered state
+            let triggered_count = user_alerts
+                .iter()
+                .filter(|alert| alert.state == AlertState::Triggered)
+                .count() as u64;
 
-    for result in stats_results {
-        match result {
-            Ok(dated_stats) => {
-                stream_details.push(dated_stats);
-            }
-            Err(e) => {
-                error!("Failed to process stats for date: {:?}", e);
-                // Continue with other dates instead of failing entirely
-            }
+            (total_alerts, triggered_count)
+        } else {
+            (false, 0)
         }
-    }
+    };
+
+    let checklist = Checklist {
+        data_ingested,
+        keystone_created: false, // Enterprise will override
+        alert_created,
+        user_added,
+    };
 
     Ok(HomeResponse {
-        stats_details: stream_details,
         datasets,
-        alerts_summary,
-        top_five_ingestion,
+        checklist,
+        triggered_alerts_count,
     })
-}
-
-fn get_top_5_streams_by_ingestion(
-    stream_wise_stream_json: &HashMap<String, Vec<ObjectStoreFormat>>,
-) -> HashMap<String, Stats> {
-    let mut result: Vec<_> = stream_wise_stream_json
-        .iter()
-        .map(|(stream_name, formats)| {
-            let total_stats = formats.iter().fold(
-                Stats {
-                    events: 0,
-                    ingestion: 0,
-                    storage: 0,
-                },
-                |mut acc, osf| {
-                    let current = &osf.stats.current_stats;
-                    acc.events += current.events;
-                    acc.ingestion += current.ingestion;
-                    acc.storage += current.storage;
-                    acc
-                },
-            );
-            (stream_name.clone(), total_stats)
-        })
-        .collect();
-
-    result.sort_by_key(|(_, stats)| std::cmp::Reverse(stats.ingestion));
-    result.truncate(5);
-    result.into_iter().collect()
 }
 
 async fn get_stream_metadata(
@@ -223,6 +197,7 @@ async fn get_stream_metadata(
         Vec<ObjectStoreFormat>,
         TelemetryType,
         Option<String>,
+        LogSource,
     ),
     PrismHomeError,
 > {
@@ -250,52 +225,21 @@ async fn get_stream_metadata(
 
     let dataset_type = stream_jsons[0].telemetry_type;
     let time_partition = stream_jsons[0].time_partition.clone();
+    let dataset_format = stream_jsons[0]
+        .log_source
+        .first()
+        .cloned()
+        .unwrap_or_else(LogSourceEntry::default)
+        .log_source_format
+        .clone();
 
-    Ok((stream, stream_jsons, dataset_type, time_partition))
-}
-
-async fn stats_for_date(
-    date: String,
-    stream_wise_meta: HashMap<String, Vec<ObjectStoreFormat>>,
-) -> Result<DatedStats, PrismHomeError> {
-    // Initialize result structure
-    let mut details = DatedStats {
-        date: date.clone(),
-        ..Default::default()
-    };
-
-    // Process each stream concurrently
-    let stream_stats_futures = stream_wise_meta
-        .values()
-        .map(|meta| get_stream_stats_for_date(date.clone(), meta));
-
-    let stream_stats_results = futures::future::join_all(stream_stats_futures).await;
-
-    // Aggregate results
-    for result in stream_stats_results {
-        match result {
-            Ok((events, ingestion, storage)) => {
-                details.events += events;
-                details.ingestion += ingestion;
-                details.storage += storage;
-            }
-            Err(e) => {
-                error!("Failed to get stats for stream: {:?}", e);
-                // Continue with other streams
-            }
-        }
-    }
-
-    Ok(details)
-}
-
-async fn get_stream_stats_for_date(
-    date: String,
-    meta: &[ObjectStoreFormat],
-) -> Result<(u64, u64, u64), PrismHomeError> {
-    let stats = fetch_daily_stats(&date, meta)?;
-
-    Ok((stats.events, stats.ingestion, stats.storage))
+    Ok((
+        stream,
+        stream_jsons,
+        dataset_type,
+        time_partition,
+        dataset_format,
+    ))
 }
 
 pub async fn generate_home_search_response(

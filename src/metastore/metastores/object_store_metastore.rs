@@ -573,32 +573,49 @@ impl Metastore for ObjectStoreMetastore {
     }
 
     /// Fetch all chats
-    async fn get_chats(&self) -> Result<DashMap<String, Vec<Bytes>>, MetastoreError> {
-        let all_user_chats = DashMap::new();
-
-        let users_dir = RelativePathBuf::from(USERS_ROOT_DIR);
-        for user in self.storage.list_dirs_relative(&users_dir, &None).await? {
-            if user.starts_with(".") {
-                continue;
-            }
-            let mut chats = Vec::new();
-            let chats_path = users_dir.join(&user).join("chats");
-            let user_chats = self
+    async fn get_chats(
+        &self,
+    ) -> Result<DashMap<String, DashMap<String, Vec<Bytes>>>, MetastoreError> {
+        let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
+        let all_chats = DashMap::new();
+        for tenant in base_paths {
+            let all_user_chats = DashMap::new();
+            let tenant_id = if tenant.eq("") {
+                None
+            } else {
+                Some(tenant.clone())
+            };
+            let users_dir = RelativePathBuf::from_iter([&tenant, USERS_ROOT_DIR]);
+            for user in self
                 .storage
-                .get_objects(
-                    Some(&chats_path),
-                    Box::new(|file_name| file_name.ends_with(".json")),
-                    &None,
-                )
-                .await?;
-            for chat in user_chats {
-                chats.push(chat);
+                .list_dirs_relative(&users_dir, &tenant_id)
+                .await?
+            {
+                if user.starts_with(".") {
+                    continue;
+                }
+                let mut chats = Vec::new();
+                let chats_path = users_dir.join(&user).join("chats");
+                let user_chats = self
+                    .storage
+                    .get_objects(
+                        Some(&chats_path),
+                        Box::new(|file_name| file_name.ends_with(".json")),
+                        &tenant_id,
+                    )
+                    .await?;
+                for chat in user_chats {
+                    chats.push(chat);
+                }
+
+                all_user_chats.insert(user, chats);
             }
-
-            all_user_chats.insert(user, chats);
+            all_chats.insert(
+                tenant_id.as_deref().unwrap_or(DEFAULT_TENANT).into(),
+                all_user_chats,
+            );
         }
-
-        Ok(all_user_chats)
+        Ok(all_chats)
     }
 
     /// Save a chat

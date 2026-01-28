@@ -252,17 +252,16 @@ impl Dashboards {
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let mut dashboards = self.0.write().await;
 
-        if let Some(dbs) = dashboards.get_mut(tenant) {
-            let has_duplicate = dbs
-                .iter()
-                .any(|d| d.title == dashboard.title && d.dashboard_id != dashboard.dashboard_id);
-            if has_duplicate {
-                return Err(DashboardError::Metadata("Dashboard title must be unique"));
-            }
-            self.save_dashboard(dashboard, tenant_id).await?;
-
-            dbs.push(dashboard.clone());
+        let dbs = dashboards.entry(tenant.to_owned()).or_default();
+        let has_duplicate = dbs
+            .iter()
+            .any(|d| d.title == dashboard.title && d.dashboard_id != dashboard.dashboard_id);
+        if has_duplicate {
+            return Err(DashboardError::Metadata("Dashboard title must be unique"));
         }
+        self.save_dashboard(dashboard, tenant_id).await?;
+
+        dbs.push(dashboard.clone());
 
         Ok(())
     }
