@@ -473,7 +473,7 @@ fn scalar_condition_expr(
 
 fn escape_like(value: &str) -> String {
     value
-        .replace("'", "''")
+        .replace('\'', "''")
         .replace('%', "\\%")
         .replace('_', "\\_")
 }
