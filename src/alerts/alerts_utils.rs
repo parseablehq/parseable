@@ -413,13 +413,22 @@ fn list_condition_expr(
     operator: &WhereConfigOperator,
     value: &str,
 ) -> Result<String, String> {
+    // Strip surrounding brackets if present to avoid nested arrays
+    let inner_value = value
+        .trim()
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(value);
+
     match operator {
-        WhereConfigOperator::Contains => Ok(format!("array_has_all(\"{column}\", ARRAY[{value}])")),
-        WhereConfigOperator::DoesNotContain => {
-            Ok(format!("NOT array_has_all(\"{column}\", ARRAY[{value}])"))
+        WhereConfigOperator::Contains => {
+            Ok(format!("array_has_all(\"{column}\", ARRAY[{inner_value}])"))
         }
-        WhereConfigOperator::Equal => Ok(format!("\"{column}\" = ARRAY[{value}]")),
-        WhereConfigOperator::NotEqual => Ok(format!("\"{column}\" != ARRAY[{value}]")),
+        WhereConfigOperator::DoesNotContain => Ok(format!(
+            "NOT array_has_all(\"{column}\", ARRAY[{inner_value}])"
+        )),
+        WhereConfigOperator::Equal => Ok(format!("\"{column}\" = ARRAY[{inner_value}]")),
+        WhereConfigOperator::NotEqual => Ok(format!("\"{column}\" != ARRAY[{inner_value}]")),
         _ => Err(format!(
             "Operator '{operator}' is not supported for list type columns"
         )),
@@ -458,11 +467,11 @@ fn scalar_condition_expr(
             let formatted = match column_type {
                 Some("bool") | Some("boolean") => value.to_string(),
                 Some("int") | Some("float") | Some("number") => value.to_string(),
-                Some(_) => format!("'{}'", value.replace("'", "''")),
+                Some(_) => format!("'{}'", value.replace('\'', "''")),
                 None => match ValueType::from_string(value.to_owned()) {
                     ValueType::Number(val) => format!("{val}"),
                     ValueType::Boolean(val) => format!("{val}"),
-                    ValueType::String(val) => format!("'{}'", val.replace("'", "''")),
+                    ValueType::String(val) => format!("'{}'", val.replace('\'', "''")),
                 },
             };
             format!("{operator} {formatted}")
