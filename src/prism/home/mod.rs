@@ -44,6 +44,7 @@ type StreamMetadataResponse = Result<
         TelemetryType,
         Option<String>,
         LogSource,
+        bool,
     ),
     PrismHomeError,
 >;
@@ -56,6 +57,7 @@ pub struct DataSet {
     #[serde(skip_serializing_if = "Option::is_none")]
     time_partition: Option<String>,
     dataset_format: LogSource,
+    ingestion: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -124,7 +126,7 @@ pub async fn generate_home_response(
 
     for result in stream_metadata_results {
         match result {
-            Ok((stream, metadata, dataset_type, time_partition, dataset_format)) => {
+            Ok((stream, metadata, dataset_type, time_partition, dataset_format, ingestion)) => {
                 // Skip internal streams if the flag is false
                 if !include_internal
                     && metadata
@@ -139,6 +141,7 @@ pub async fn generate_home_response(
                     dataset_type,
                     time_partition,
                     dataset_format,
+                    ingestion,
                 });
             }
             Err(e) => {
@@ -149,7 +152,7 @@ pub async fn generate_home_response(
     }
 
     // Generate checklist and count triggered alerts
-    let data_ingested = !all_streams.is_empty();
+    let data_ingested = datasets.iter().any(|d| d.ingestion);
     let user_count = users().len();
     let user_added = user_count > 1; // more than just the default admin user
 
@@ -195,6 +198,7 @@ async fn get_stream_metadata(
         TelemetryType,
         Option<String>,
         LogSource,
+        bool,
     ),
     PrismHomeError,
 > {
@@ -230,6 +234,7 @@ async fn get_stream_metadata(
         .unwrap_or_else(LogSourceEntry::default)
         .log_source_format
         .clone();
+    let ingested = stream_jsons.iter().any(|s| s.first_event_at.is_some());
 
     Ok((
         stream,
@@ -237,6 +242,7 @@ async fn get_stream_metadata(
         dataset_type,
         time_partition,
         dataset_format,
+        ingested,
     ))
 }
 
