@@ -488,18 +488,18 @@ pub struct DataSetStatsRequest {
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct FieldStats {
-    field_count: i64,
-    distinct_count: i64,
-    distinct_values: IndexMap<String, i64>,
+    field_count: f64,
+    distinct_count: f64,
+    distinct_values: IndexMap<String, f64>,
 }
 
 #[derive(Serialize, Deserialize)]
 pub struct QueryRow {
     field_name: String,
-    field_count: i64,
-    distinct_count: i64,
+    field_count: f64,
+    distinct_count: f64,
     distinct_value: String,
-    distinct_value_count: i64,
+    distinct_value_count: f64,
 }
 
 /// API handler to get the field stats for a dataset
