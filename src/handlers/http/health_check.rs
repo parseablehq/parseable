@@ -65,11 +65,8 @@ pub async fn shutdown() {
     // Perform sync operations
     perform_sync_operations().await;
 
-    // If collect_dataset_stats is enabled, perform sync operations
     // This is to ensure that all stats data is synced before the server shuts down
-    if PARSEABLE.options.collect_dataset_stats {
-        perform_sync_operations().await;
-    }
+    perform_sync_operations().await;
 }
 
 async fn set_shutdown_flag() {
