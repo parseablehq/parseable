@@ -465,13 +465,19 @@ fn scalar_condition_expr(
         }
         _ => {
             let formatted = match column_type {
-                Some("bool") | Some("boolean") => value.to_string(),
-                Some("int") | Some("float") | Some("number") => value.to_string(),
-                Some(_) => format!("'{}'", value.replace('\'', "''")),
+                Some("bool") | Some("boolean") => value
+                    .parse::<bool>()
+                    .map_err(|_| format!("Invalid boolean literal: {value}"))?
+                    .to_string(),
+                Some("int") | Some("float") | Some("number") => value
+                    .parse::<f64>()
+                    .map_err(|_| format!("Invalid numeric literal: {value}"))?
+                    .to_string(),
+                Some(_) => format!("'{}'", value.replace("'", "''")),
                 None => match ValueType::from_string(value.to_owned()) {
                     ValueType::Number(val) => format!("{val}"),
                     ValueType::Boolean(val) => format!("{val}"),
-                    ValueType::String(val) => format!("'{}'", val.replace('\'', "''")),
+                    ValueType::String(val) => format!("'{}'", val.replace("'", "''")),
                 },
             };
             format!("{operator} {formatted}")
@@ -482,6 +488,7 @@ fn scalar_condition_expr(
 
 fn escape_like(value: &str) -> String {
     value
+        .replace('\\', "\\\\")
         .replace('\'', "''")
         .replace('%', "\\%")
         .replace('_', "\\_")
