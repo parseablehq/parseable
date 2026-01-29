@@ -23,16 +23,21 @@ use actix_web::{
 use itertools::Itertools;
 use ulid::Ulid;
 
-use crate::alerts::{
-    AlertError,
-    target::{TARGETS, Target},
+use crate::{
+    alerts::{
+        AlertError,
+        target::{TARGETS, Target},
+    },
+    utils::get_tenant_id_from_request,
 };
 
 // POST /targets
 pub async fn post(
-    _req: HttpRequest,
-    Json(target): Json<Target>,
+    req: HttpRequest,
+    Json(mut target): Json<Target>,
 ) -> Result<impl Responder, AlertError> {
+    let tenant_id = get_tenant_id_from_request(&req);
+    target.tenant = tenant_id;
     // should check for duplicacy and liveness (??)
     // add to the map
     TARGETS.update(target.clone()).await?;
@@ -42,10 +47,11 @@ pub async fn post(
 }
 
 // GET /targets
-pub async fn list(_req: HttpRequest) -> Result<impl Responder, AlertError> {
+pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
+    let tenant_id = get_tenant_id_from_request(&req);
     // add to the map
     let list = TARGETS
-        .list()
+        .list(&tenant_id)
         .await?
         .into_iter()
         // .map(|t| t.mask())
@@ -55,10 +61,10 @@ pub async fn list(_req: HttpRequest) -> Result<impl Responder, AlertError> {
 }
 
 // GET /targets/{target_id}
-pub async fn get(_req: HttpRequest, target_id: Path<Ulid>) -> Result<impl Responder, AlertError> {
+pub async fn get(req: HttpRequest, target_id: Path<Ulid>) -> Result<impl Responder, AlertError> {
     let target_id = target_id.into_inner();
-
-    let target = TARGETS.get_target_by_id(&target_id).await?;
+    let tenant_id = get_tenant_id_from_request(&req);
+    let target = TARGETS.get_target_by_id(&target_id, &tenant_id).await?;
 
     // Ok(web::Json(target.mask()))
     Ok(web::Json(target))
@@ -66,14 +72,14 @@ pub async fn get(_req: HttpRequest, target_id: Path<Ulid>) -> Result<impl Respon
 
 // PUT /targets/{target_id}
 pub async fn update(
-    _req: HttpRequest,
+    req: HttpRequest,
     target_id: Path<Ulid>,
     Json(mut target): Json<Target>,
 ) -> Result<impl Responder, AlertError> {
     let target_id = target_id.into_inner();
-
+    let tenant_id = get_tenant_id_from_request(&req);
     // if target_id does not exist, error
-    let old_target = TARGETS.get_target_by_id(&target_id).await?;
+    let old_target = TARGETS.get_target_by_id(&target_id, &tenant_id).await?;
 
     // do not allow modifying name
     if old_target.name != target.name {
@@ -84,7 +90,7 @@ pub async fn update(
 
     // esnure that the supplied target id is assigned to the target config
     target.id = target_id;
-
+    target.tenant = tenant_id;
     // should check for duplicacy and liveness (??)
     // add to the map
     TARGETS.update(target.clone()).await?;
@@ -94,13 +100,10 @@ pub async fn update(
 }
 
 // DELETE /targets/{target_id}
-pub async fn delete(
-    _req: HttpRequest,
-    target_id: Path<Ulid>,
-) -> Result<impl Responder, AlertError> {
+pub async fn delete(req: HttpRequest, target_id: Path<Ulid>) -> Result<impl Responder, AlertError> {
     let target_id = target_id.into_inner();
-
-    let target = TARGETS.delete(&target_id).await?;
+    let tenant_id = get_tenant_id_from_request(&req);
+    let target = TARGETS.delete(&target_id, &tenant_id).await?;
 
     // Ok(web::Json(target.mask()))
     Ok(web::Json(target))

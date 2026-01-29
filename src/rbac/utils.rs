@@ -19,7 +19,10 @@ use std::collections::{HashMap, HashSet};
 
 use url::Url;
 
-use crate::{parseable::PARSEABLE, rbac::map::read_user_groups};
+use crate::{
+    parseable::{DEFAULT_TENANT, PARSEABLE},
+    rbac::map::read_user_groups,
+};
 
 use super::{
     Users, UsersPrism,
@@ -29,6 +32,7 @@ use super::{
 };
 
 pub fn to_prism_user(user: &User) -> UsersPrism {
+    let tenant_id = user.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
     let (id, username, method, email, picture) = match &user.ty {
         UserType::Native(_) => (user.userid(), user.userid(), "native", None, None),
         UserType::OAuth(oauth) => {
@@ -44,27 +48,43 @@ pub fn to_prism_user(user: &User) -> UsersPrism {
         }
     };
     let direct_roles: HashMap<String, Vec<DefaultPrivilege>> = Users
-        .get_role(id)
+        .get_role(id, &user.tenant)
         .iter()
         .filter_map(|role_name| {
             roles()
-                .get(role_name)
-                .map(|role| (role_name.to_owned(), role.clone()))
+                .get(tenant_id)
+                .filter(|roles| roles.get(role_name).is_some())
+                // .map(|roles| {
+                //     if let Some(role) = roles.get(role_name) {
+                //         (role_name.to_owned(), role.clone())
+                //     }
+                // })
+                // .get(role_name)
+                .map(|roles| {
+                    let role = roles.get(role_name).unwrap();
+                    (role_name.to_owned(), role.clone())
+                })
         })
         .collect();
 
     let mut group_roles: HashMap<String, HashMap<String, Vec<DefaultPrivilege>>> = HashMap::new();
     let mut user_groups = HashSet::new();
     // user might be part of some user groups, fetch the roles from there as well
-    for user_group in Users.get_user_groups(user.userid()) {
-        if let Some(group) = read_user_groups().get(&user_group) {
+    for user_group in Users.get_user_groups(user.userid(), &user.tenant) {
+        if let Some(groups) = read_user_groups().get(tenant_id)
+            && let Some(group) = groups.get(&user_group)
+        {
             let ug_roles: HashMap<String, Vec<DefaultPrivilege>> = group
                 .roles
                 .iter()
                 .filter_map(|role_name| {
                     roles()
-                        .get(role_name)
-                        .map(|role| (role_name.to_owned(), role.clone()))
+                        .get(tenant_id)
+                        .filter(|roles| roles.get(role_name).is_some())
+                        .map(|roles| {
+                            let role = roles.get(role_name).unwrap();
+                            (role_name.to_owned(), role.clone())
+                        })
                 })
                 .collect();
             group_roles.insert(group.name.clone(), ug_roles);

@@ -16,6 +16,25 @@
  *
  */
 
+use serde::{Deserialize, Serialize};
+
+use crate::rbac::role::model::DefaultPrivilege;
+
 pub mod ingestor_logstream;
 pub mod ingestor_rbac;
 pub mod ingestor_role;
+
+#[derive(Deserialize, Serialize)]
+pub struct SyncRole {
+    privileges: Vec<DefaultPrivilege>,
+    tenant_id: Option<String>,
+}
+
+impl SyncRole {
+    pub fn new(privileges: Vec<DefaultPrivilege>, tenant_id: Option<String>) -> Self {
+        Self {
+            privileges,
+            tenant_id,
+        }
+    }
+}

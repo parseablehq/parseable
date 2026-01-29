@@ -20,6 +20,7 @@ use crate::{
     handlers::http::{cluster::get_demo_data_from_ingestor, ingest::PostError},
     option::Mode,
     parseable::PARSEABLE,
+    utils::get_tenant_id_from_request,
 };
 use actix_web::{HttpRequest, HttpResponse, web};
 use std::{collections::HashMap, fs, process::Command};
@@ -48,7 +49,7 @@ pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> 
     let password = &PARSEABLE.options.password;
     let scheme = PARSEABLE.options.get_scheme();
     let url = format!("{scheme}://{url}");
-
+    let tenant_id = get_tenant_id_from_request(&req);
     match action.as_str() {
         "ingest" => match PARSEABLE.options.mode {
             Mode::Ingest | Mode::All => {
@@ -61,7 +62,7 @@ pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> 
             }
             Mode::Query | Mode::Prism => {
                 // Forward the request to ingestor asynchronously
-                match get_demo_data_from_ingestor(&action).await {
+                match get_demo_data_from_ingestor(&action, &tenant_id).await {
                     Ok(()) => Ok(HttpResponse::Accepted().finish()),
                     Err(e) => Err(e),
                 }

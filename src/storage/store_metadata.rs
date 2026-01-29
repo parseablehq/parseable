@@ -17,14 +17,13 @@
  */
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs::{self, OpenOptions, create_dir_all},
     path::PathBuf,
 };
 
 use bytes::Bytes;
 use once_cell::sync::OnceCell;
-use relative_path::RelativePathBuf;
 use std::io;
 
 use crate::{
@@ -36,6 +35,7 @@ use crate::{
         user::{User, UserGroup},
     },
     storage::{ObjectStorageError, object_storage::parseable_json_path},
+    tenants::Service,
     utils::uid,
 };
 
@@ -68,6 +68,8 @@ pub struct StorageMetadata {
     pub roles: HashMap<String, Vec<DefaultPrivilege>>,
     #[serde(default)]
     pub default_role: Option<String>,
+    pub suspended_services: Option<HashSet<Service>>,
+    pub global_query_auth: Option<String>,
 }
 
 impl Default for StorageMetadata {
@@ -84,6 +86,8 @@ impl Default for StorageMetadata {
             streams: Vec::new(),
             roles: HashMap::default(),
             default_role: None,
+            suspended_services: None,
+            global_query_auth: None,
         }
     }
 }
@@ -120,8 +124,9 @@ impl MetastoreObject for StorageMetadata {
 /// overwrites staging metadata while updating storage info
 pub async fn resolve_parseable_metadata(
     parseable_metadata: &Option<Bytes>,
+    tenant_id: &Option<String>,
 ) -> Result<StorageMetadata, ObjectStorageError> {
-    let staging_metadata = get_staging_metadata()?;
+    let staging_metadata = get_staging_metadata(tenant_id)?;
     let remote_metadata = parseable_metadata
         .as_ref()
         .map(|meta| serde_json::from_slice(meta).expect("parseable config is valid json"));
@@ -133,10 +138,10 @@ pub async fn resolve_parseable_metadata(
     metadata.server_mode = PARSEABLE.options.mode;
 
     if overwrite_remote {
-        put_remote_metadata(&metadata).await?;
+        put_remote_metadata(&metadata, tenant_id).await?;
     }
     if overwrite_staging {
-        put_staging_metadata(&metadata)?;
+        put_staging_metadata(&metadata, tenant_id)?;
     }
 
     Ok(metadata)
@@ -273,9 +278,19 @@ pub enum EnvChange {
     CreateBoth,
 }
 
-pub fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {
-    let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME)
-        .to_path(PARSEABLE.options.staging_dir());
+pub fn get_staging_metadata(tenant_id: &Option<String>) -> io::Result<Option<StorageMetadata>> {
+    let path = if let Some(tenant_id) = tenant_id.as_ref() {
+        let tenant_dir = PARSEABLE.options.staging_dir().join(tenant_id);
+        create_dir_all(&tenant_dir)?;
+        tenant_dir.join(PARSEABLE_METADATA_FILE_NAME)
+    } else {
+        PARSEABLE
+            .options
+            .staging_dir()
+            .join(PARSEABLE_METADATA_FILE_NAME)
+    };
+    // let path = RelativePathBuf::from(PARSEABLE_METADATA_FILE_NAME)
+    //     .to_path(PARSEABLE.options.staging_dir());
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(err) => match err.kind() {
@@ -289,22 +304,31 @@ pub fn get_staging_metadata() -> io::Result<Option<StorageMetadata>> {
     Ok(Some(meta))
 }
 
-pub async fn put_remote_metadata(metadata: &StorageMetadata) -> Result<(), ObjectStorageError> {
+pub async fn put_remote_metadata(
+    metadata: &StorageMetadata,
+    tenant_id: &Option<String>,
+) -> Result<(), ObjectStorageError> {
     PARSEABLE
         .metastore
-        .put_parseable_metadata(metadata)
+        .put_parseable_metadata(metadata, tenant_id)
         .await
         .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))
 }
 
-pub fn put_staging_metadata(meta: &StorageMetadata) -> io::Result<()> {
+pub fn put_staging_metadata(meta: &StorageMetadata, tenant_id: &Option<String>) -> io::Result<()> {
     let mut staging_metadata = meta.clone();
     staging_metadata.server_mode = PARSEABLE.options.mode;
     staging_metadata.staging = PARSEABLE.options.staging_dir().to_path_buf();
-    let path = PARSEABLE
-        .options
-        .staging_dir()
-        .join(PARSEABLE_METADATA_FILE_NAME);
+    let path = if let Some(tenant_id) = tenant_id.as_ref() {
+        let tenant_dir = PARSEABLE.options.staging_dir().join(tenant_id);
+        create_dir_all(&tenant_dir)?;
+        tenant_dir.join(PARSEABLE_METADATA_FILE_NAME)
+    } else {
+        PARSEABLE
+            .options
+            .staging_dir()
+            .join(PARSEABLE_METADATA_FILE_NAME)
+    };
     let mut file = OpenOptions::new()
         .create(true)
         .truncate(true)

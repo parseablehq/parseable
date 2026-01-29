@@ -98,7 +98,8 @@ impl ListingTableBuilder {
         // Use storage.list_dirs_relative for all prefixes and flatten results
         let mut listing = Vec::new();
         for prefix in prefixes {
-            match storage.list_dirs_relative(&prefix).await {
+            // None because no new data will be created using this method
+            match storage.list_dirs_relative(&prefix, &None).await {
                 Ok(paths) => {
                     listing.extend(paths.into_iter().map(|p| prefix.join(p).to_string()));
                 }

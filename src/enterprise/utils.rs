@@ -79,11 +79,12 @@ pub fn create_time_filter(
 pub async fn fetch_parquet_file_paths(
     stream: &str,
     time_range: &TimeRange,
+    tenant_id: &Option<String>,
 ) -> Result<HashMap<RelativePathBuf, Vec<File>>, ObjectStorageError> {
     let object_store_format: ObjectStoreFormat = serde_json::from_slice(
         &PARSEABLE
             .metastore
-            .get_stream_json(stream, false)
+            .get_stream_json(stream, false, tenant_id)
             .await
             .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
     )?;
@@ -96,7 +97,10 @@ pub async fn fetch_parquet_file_paths(
 
     let mut merged_snapshot: snapshot::Snapshot = snapshot::Snapshot::default();
 
-    let obs = PARSEABLE.metastore.get_all_stream_jsons(stream, None).await;
+    let obs = PARSEABLE
+        .metastore
+        .get_all_stream_jsons(stream, None, tenant_id)
+        .await;
     if let Ok(obs) = obs {
         for ob in obs {
             if let Ok(object_store_format) = serde_json::from_slice::<ObjectStoreFormat>(&ob) {
@@ -119,6 +123,7 @@ pub async fn fetch_parquet_file_paths(
                     manifest_item.time_lower_bound,
                     manifest_item.time_upper_bound,
                     Some(manifest_item.manifest_path),
+                    tenant_id,
                 )
                 .await
                 .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
