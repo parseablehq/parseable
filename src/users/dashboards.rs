@@ -204,9 +204,6 @@ impl Dashboards {
                 {
                     tenant_dbs.retain(|d: &Dashboard| d.dashboard_id != dashboard.dashboard_id);
                     tenant_dbs.push(dashboard);
-
-                    // this.retain(|d: &Dashboard| d.dashboard_id != dashboard.dashboard_id);
-                    // this.push(dashboard);
                 } else {
                     tracing::warn!("Failed to deserialize dashboard: {:?}", dashboard_value);
                 }

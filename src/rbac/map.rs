@@ -289,18 +289,12 @@ impl Sessions {
 
     // remove sessions related to a user
     pub fn remove_user(&mut self, username: &str, tenant_id: &str) {
-        // tracing::warn!("removing user- {username}, tenant_id- {tenant_id}");
-        // tracing::warn!("active sessions- {:?}", self.active_sessions);
-        // tracing::warn!("user sessions- {:?}", self.user_sessions);
         let sessions = if let Some(tenant_sessions) = self.user_sessions.get_mut(tenant_id) {
-            // tracing::warn!("found session for tenant- {tenant_id}");
             tenant_sessions.remove(username)
         } else {
-            // tracing::warn!("not found session for tenant- {tenant_id}");
             None
         };
         if let Some(sessions) = sessions {
-            // tracing::warn!("found active sessions for user {username}-   {sessions:?}");
             sessions.into_iter().for_each(|(key, _)| {
                 self.active_sessions.remove(&key);
             })
@@ -334,10 +328,6 @@ impl Sessions {
         context_resource: Option<&str>,
         context_user: Option<&str>,
     ) -> Option<Response> {
-        // tracing::warn!(
-        //     "key- {key:?}\nrequired_action- {required_action:?}\ncontext_resource- {context_resource:?}\ncontext_user usr- {context_user:?}"
-        // );
-        // tracing::warn!(active_sessions=?self.active_sessions);
         self.active_sessions
             .get(key)
             .map(|(username, tenant_id, perms)| {
@@ -345,7 +335,6 @@ impl Sessions {
                 perms.extend(aggregate_group_permissions(username, tenant_id));
 
                 if perms.iter().any(|user_perm| {
-                    // tracing::warn!("user-perm- {user_perm:?}");
                     match *user_perm {
                         // if any action is ALL then we we authorize
                         Permission::Unit(action) => {
@@ -393,7 +382,6 @@ impl Sessions {
                             } else if resource_type.is_none()
                                 && (action.eq(&Action::Ingest) || action.eq(&Action::Query))
                             {
-                                // tracing::warn!("resource_type is None");
                                 // flow for global-ingestion / global-query
                                 let ok_resource =
                                     if let Some(context_resource_id) = context_resource {
@@ -413,7 +401,6 @@ impl Sessions {
                                         // WHEN IS THIS VALID??
                                         true
                                     };
-                                // tracing::warn!(ok_resource=?ok_resource);
                                 action == required_action && ok_resource
                             } else {
                                 // the default flow (some resource_type and an action) was covered in the first if
@@ -427,10 +414,8 @@ impl Sessions {
                         _ => false,
                     }
                 }) {
-                    // tracing::warn!("Authorized");
                     Response::Authorized
                 } else {
-                    // tracing::warn!("UnAuthorized");
                     Response::UnAuthorized
                 }
             })
@@ -459,13 +444,11 @@ pub struct Users(HashMap<String, HashMap<String, User>>);
 
 impl Users {
     pub fn insert(&mut self, user: User) {
-        // tracing::warn!("inserting user- {user:?}");
         let tenant_id = user.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
         self.0
             .entry(tenant_id.to_owned())
             .or_default()
             .insert(user.userid().to_owned(), user);
-        // self.0.insert(user.userid().to_owned(), user);
     }
 }
 

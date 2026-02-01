@@ -580,7 +580,7 @@ impl Metastore for ObjectStoreMetastore {
         let all_chats = DashMap::new();
         for tenant in base_paths {
             let all_user_chats = DashMap::new();
-            let tenant_id = if tenant.eq("") {
+            let tenant_id = if tenant.is_empty() {
                 None
             } else {
                 Some(tenant.clone())
@@ -903,7 +903,7 @@ impl Metastore for ObjectStoreMetastore {
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
         let path = stream_json_path(stream_name, tenant_id);
-        // tracing::warn!(put_stream_json_path=?path);
+
         Ok(self
             .storage
             .put_object(&path, to_bytes(obj), tenant_id)
@@ -1022,7 +1022,7 @@ impl Metastore for ObjectStoreMetastore {
         let manifest_file_name = manifest_path("").to_string();
         let path = partition_path(stream_name, lower_bound, upper_bound, tenant_id)
             .join(&manifest_file_name);
-        // tracing::warn!(put_manifest_path=?path);
+
         Ok(self
             .storage
             .put_object(&path, to_bytes(obj), tenant_id)
@@ -1306,32 +1306,21 @@ impl Metastore for ObjectStoreMetastore {
             let root = tenant_id
                 .as_ref()
                 .map(|tenant| object_store::path::Path::from_iter([tenant.clone()]));
-            // tracing::warn!("list_streams root- {root:?}");
-            // let dirs = self.storage.list_dirs().await?;
-            // tracing::warn!("list_streams dirs- {dirs:?}");
 
             let resp = self.storage.list_with_delimiter(root.clone()).await?;
-            // tracing::warn!("list_streams resp- {resp:?}");
-            // let dirs_relative = self.storage.list_dirs_relative(&RelativePathBuf::from_iter([root.unwrap_or("".into()).to_string()])).await?;
-            // tracing::warn!("list_streams dirs_relative- {dirs_relative:?}");
 
             let streams = resp
                 .common_prefixes
                 .iter()
-                .flat_map(|path| {
-                    // tracing::warn!("list_streams path- {path}");
-                    path.parts()
-                })
+                .flat_map(|path| path.parts())
                 .map(|name| name.as_ref().to_string())
                 .filter(|name| {
-                    // tracing::warn!("list_streams name- {name}");
                     name != PARSEABLE_ROOT_DIRECTORY
                         && name != USERS_ROOT_DIR
                         && name != SETTINGS_ROOT_DIRECTORY
                         && name != ALERTS_ROOT_DIRECTORY
                 })
                 .collect::<Vec<_>>();
-            // tracing::warn!("list_streams streams- {streams:?}");
             for stream in streams {
                 let stream_path = if let Some(root) = root.as_ref() {
                     object_store::path::Path::from_iter([
@@ -1342,18 +1331,12 @@ impl Metastore for ObjectStoreMetastore {
                 } else {
                     object_store::path::Path::from(format!("{}/{}", &stream, STREAM_ROOT_DIRECTORY))
                 };
-                // let stream_path = object_store::path::Path::from(format!(
-                //     "{}/{}",
-                //     &stream, STREAM_ROOT_DIRECTORY
-                // ));
-                // tracing::warn!("list_streams stream_path- {stream_path}");
                 let resp = self.storage.list_with_delimiter(Some(stream_path)).await?;
-                // tracing::warn!("list_streams streams resp- {resp:?}");
-                if resp.objects.iter().any(|name| {
-                    // tracing::warn!("list_streams streams resp name- {name:?}");
-                    name.location.filename().unwrap().ends_with("stream.json")
-                }) {
-                    // tracing::warn!("inserting to list_streams- {stream}");
+                if resp
+                    .objects
+                    .iter()
+                    .any(|name| name.location.filename().unwrap().ends_with("stream.json"))
+                {
                     result_file_list.insert(stream);
                 }
             }

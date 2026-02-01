@@ -205,7 +205,7 @@ pub async fn put_stream(
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    // tracing::warn!(put_stream_req=?req);
+
     PARSEABLE
         .create_update_stream(req.headers(), &body, &stream_name, &tenant_id)
         .await?;
@@ -220,8 +220,8 @@ pub async fn get_retention(
     let stream_name = stream_name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     // For query mode, if the stream not found in memory map,
-    //check if it exists in the storage
-    //create stream and schema from storage
+    // check if it exists in the storage
+    // create stream and schema from storage
     if !PARSEABLE
         .check_or_load_stream(&stream_name, &tenant_id)
         .await

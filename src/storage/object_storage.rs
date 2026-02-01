@@ -113,8 +113,6 @@ async fn upload_single_parquet_file(
         .metadata()
         .map_err(|e| ObjectStorageError::Custom(format!("Failed to get local file metadata: {e}")))?
         .len();
-    // tracing::warn!("upload single stream_relative_path- {stream_relative_path:?}");
-    // tracing::warn!("upload single path- {path:?}");
 
     // Upload the file
     store
@@ -687,9 +685,6 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
             return Ok(stream_metadata_bytes);
         }
-        tracing::warn!(
-            "unable to find stream- {stream_name} with tenant- {tenant_id:?} in PARSEABLE.get_stream"
-        );
         let mut all_log_sources: Vec<LogSourceEntry> = Vec::new();
 
         if let Some(stream_metadata_obs) = PARSEABLE
@@ -705,7 +700,6 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                     serde_json::from_slice::<ObjectStoreFormat>(stream_metadata_bytes)?;
                 all_log_sources.extend(stream_ob_metadata.log_source.clone());
             }
-            tracing::warn!("inserted {} stream metadata", all_log_sources.len());
 
             // Merge log sources
             let mut merged_log_sources: Vec<LogSourceEntry> = Vec::new();
@@ -746,7 +740,6 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
             return Ok(stream_metadata_bytes);
         }
-        tracing::warn!("returning empty bytes");
         Ok(Bytes::new())
     }
 
@@ -757,7 +750,6 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         tenant_id: &Option<String>,
     ) -> Result<Bytes, ObjectStorageError> {
         let schema = fetch_schema(stream_name, tenant_id).await?;
-        // tracing::warn!("fetched schema for stream {stream_name} - {schema:?}");
         let schema_bytes = Bytes::from(serde_json::to_vec(&schema)?);
         // convert to bytes
         PARSEABLE
@@ -1025,7 +1017,6 @@ async fn spawn_parquet_upload_task(
         .expect("only parquet files are returned by iterator")
         .to_str()
         .expect("filename is valid string");
-    // tracing::warn!("spawn parquet file name- {filename}");
 
     let stream_relative_path = stream_relative_path(
         stream_name,
@@ -1033,7 +1024,6 @@ async fn spawn_parquet_upload_task(
         &upload_context.custom_partition,
         &tenant_id,
     );
-    // tracing::warn!("spawn parquet stream_relative_path- {stream_relative_path}");
 
     let stream_name = stream_name.to_string();
     let schema = upload_context.schema.clone();

@@ -653,7 +653,7 @@ impl Stream {
             let schema = Arc::new(merged_schema);
 
             let part_path = parquet_path.with_extension("part");
-            // tracing::warn!(part_path=?part_path);
+
             if !self.write_parquet_part_file(
                 &part_path,
                 record_reader,
@@ -1063,9 +1063,7 @@ impl Streams {
         tenant_id: &Option<String>,
     ) -> StreamRef {
         let mut guard = self.write().expect(LOCK_EXPECT);
-        // tracing::warn!(
-        //     "get_or_create\nstream- {stream_name}\ntenant- {tenant_id:?}\nmetadata- {metadata:?}\noptions- {options:?}"
-        // );
+
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
         if let Some(tenant_streams) = guard.get(tenant)
@@ -1074,18 +1072,11 @@ impl Streams {
             return stream.clone();
         }
 
-        // if let Some(stream) = guard.get(&stream_name) {
-        //     return stream.clone();
-        // }
-        // guard.insert(stream_name, stream.clone());
-
         let stream = Stream::new(options, &stream_name, metadata, ingestor_id, tenant_id);
-        // tracing::warn!("creating new stream- {stream_name}");
         guard
             .entry(tenant.to_owned())
             .or_default()
             .insert(stream_name, stream.clone());
-        // tracing::warn!("inserted stream in mem");
         stream
     }
 
@@ -1104,9 +1095,6 @@ impl Streams {
         if let Some(tenant) = self.read().expect(LOCK_EXPECT).get(tenant_id) {
             tenant.contains_key(stream_name)
         } else {
-            // tracing::warn!(
-            //     "Tenant with id {tenant_id} does not exist! Shouldn't happen (stream- {stream_name})"
-            // );
             false
         }
     }

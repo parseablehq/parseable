@@ -187,9 +187,7 @@ impl Query {
                         storage: storage.get_object_store(),
                         tenant_id: Some(t.clone()),
                     });
-                    // tracing::warn!("registering_schema- {schema_provider:?}\nwith tenant- {t}");
                     let _ = catalog.register_schema(t, schema_provider);
-                    // tracing::warn!("result=> {r:?}");
                 }
             }
         } else {
@@ -204,22 +202,8 @@ impl Query {
             );
         }
 
-        // state
-        //     .catalog_list()
-        //     .catalog(&state.config_options().catalog.default_catalog)
-        //     .expect("default catalog is provided by datafusion")
-        //     .register_schema(
-        //         &state.config_options().catalog.default_schema,
-        //         schema_provider,
-        //     )
-        //     .unwrap();
-
         SessionContext::new_with_state(state)
     }
-
-    // pub fn add_schema(&self, tenant_id: String, storage: Arc<dyn ObjectStorageProvider>) {
-    //     self.
-    // }
 
     fn create_session_state(storage: Arc<dyn ObjectStorageProvider>) -> SessionState {
         let runtime_config = storage

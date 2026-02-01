@@ -96,12 +96,8 @@ pub fn get_user_and_tenant_from_request(
     match session_key {
         SessionKey::BasicAuth { username, password } => {
             if let Some(tenant) = Users.get_user_tenant_from_basic(&username, &password) {
-                tracing::warn!(tenant=?tenant);
-                tracing::warn!(user=?username);
                 Ok((username.clone(), Some(tenant)))
             } else {
-                // tracing::warn!(req=?req);
-                // tracing::warn!(user=?username);
                 Ok((username.clone(), None))
             }
         }
@@ -117,16 +113,6 @@ pub fn get_user_and_tenant_from_request(
             Ok((user_id, tenant_id))
         }
     }
-    // let Some((user_id, tenant_id)) = Users.get_userid_from_session(&session_key) else {
-    //     return Err(RBACError::UserDoesNotExist);
-    // };
-    // let tenant_id = if tenant_id.eq(DEFAULT_TENANT) {
-    //     None
-    // } else {
-    //     // Some(std::borrow::Cow::Borrowed(tenant_id.as_str()))
-    //     Some(tenant_id)
-    // };
-    // Ok((user_id, tenant_id))
 }
 
 pub fn get_tenant_id_from_request(req: &HttpRequest) -> Option<String> {
@@ -258,13 +244,11 @@ pub fn create_intracluster_auth_headermap(req: &HttpRequest) -> reqwest::header:
             reqwest::header::AUTHORIZATION,
             reqwest::header::HeaderValue::from_bytes(auth.as_bytes()).unwrap(),
         );
-        // tracing::warn!("got query request with auth header- {auth:?}");
     } else if let Some(auth) = req.headers().get(actix_web::http::header::COOKIE) {
         map.insert(
             reqwest::header::COOKIE,
             reqwest::header::HeaderValue::from_bytes(auth.as_bytes()).unwrap(),
         );
-        // tracing::warn!("got query request with auth header- {auth:?}");
     }
     map
 }

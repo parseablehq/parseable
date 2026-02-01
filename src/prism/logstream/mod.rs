@@ -104,7 +104,6 @@ async fn get_stats(
     stream_name: &str,
     tenant_id: &Option<String>,
 ) -> Result<QueriedStats, PrismLogstreamError> {
-    tracing::warn!("starting stats");
     let stats = stats::get_current_stats(stream_name, "json", tenant_id)
         .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?;
 
@@ -237,7 +236,6 @@ impl PrismDatasetRequest {
         if self.streams.is_empty() {
             self.streams = PARSEABLE.streams.list(&tenant_id);
         }
-        tracing::warn!(get_datasets_streams=?self.streams);
 
         // Process streams concurrently
         let results = futures::future::join_all(
@@ -274,13 +272,11 @@ impl PrismDatasetRequest {
     ) -> Result<Option<PrismDatasetResponse>, PrismLogstreamError> {
         // Skip unauthorized streams
         if !self.is_authorized(&stream, &key) {
-            tracing::warn!("not authorized for datasets");
             return Ok(None);
         }
 
         // Skip streams that don't exist
         if !PARSEABLE.check_or_load_stream(&stream, tenant_id).await {
-            tracing::warn!("unable to load stream {stream} for tenant {tenant_id:?}");
             return Ok(None);
         }
 

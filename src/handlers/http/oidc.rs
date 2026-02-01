@@ -126,8 +126,8 @@ pub async fn login(
                 );
                 let _session = session_cookie.value().to_owned();
                 let _user = user.clone();
-                let r = login_sync(_session, _user, EXPIRY_DURATION, &tenant_id).await;
-                tracing::warn!(login_sync=?r);
+                let _ = login_sync(_session, _user, EXPIRY_DURATION, &tenant_id).await;
+
                 Ok(redirect_to_client(
                     query.redirect.as_str(),
                     [user_cookie, user_id_cookie, session_cookie],

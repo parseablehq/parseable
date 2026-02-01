@@ -67,6 +67,7 @@ pub async fn run_metadata_migration(
                 metadata = metadata_migration::v3_v4(metadata);
                 metadata = metadata_migration::v4_v5(metadata);
                 metadata = metadata_migration::v5_v6(metadata);
+                metadata = metadata_migration::v6_v7(metadata);
                 metadata = metadata_migration::remove_querier_metadata(metadata);
                 let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
                 *parseable_json = Some(_metadata);
@@ -77,6 +78,7 @@ pub async fn run_metadata_migration(
                 metadata = metadata_migration::v3_v4(metadata);
                 metadata = metadata_migration::v4_v5(metadata);
                 metadata = metadata_migration::v5_v6(metadata);
+                metadata = metadata_migration::v6_v7(metadata);
                 metadata = metadata_migration::remove_querier_metadata(metadata);
                 let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
                 *parseable_json = Some(_metadata);
@@ -86,6 +88,7 @@ pub async fn run_metadata_migration(
                 let mut metadata = metadata_migration::v3_v4(storage_metadata);
                 metadata = metadata_migration::v4_v5(metadata);
                 metadata = metadata_migration::v5_v6(metadata);
+                metadata = metadata_migration::v6_v7(metadata);
                 metadata = metadata_migration::remove_querier_metadata(metadata);
                 let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
                 *parseable_json = Some(_metadata);
@@ -94,13 +97,21 @@ pub async fn run_metadata_migration(
             Some("v4") => {
                 let mut metadata = metadata_migration::v4_v5(storage_metadata);
                 metadata = metadata_migration::v5_v6(metadata);
+                metadata = metadata_migration::v6_v7(metadata);
                 metadata = metadata_migration::remove_querier_metadata(metadata);
                 let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
                 *parseable_json = Some(_metadata);
                 put_remote_metadata(metadata, tenant_id).await?;
             }
             Some("v5") => {
-                let metadata = metadata_migration::v5_v6(storage_metadata);
+                let mut metadata = metadata_migration::v5_v6(storage_metadata);
+                metadata = metadata_migration::v6_v7(metadata);
+                let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
+                *parseable_json = Some(_metadata);
+                put_remote_metadata(metadata, tenant_id).await?;
+            }
+            Some("v6") => {
+                let metadata = metadata_migration::v6_v7(storage_metadata);
                 let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
                 *parseable_json = Some(_metadata);
                 put_remote_metadata(metadata, tenant_id).await?;

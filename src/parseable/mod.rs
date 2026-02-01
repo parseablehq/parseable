@@ -254,11 +254,9 @@ impl Parseable {
         stream_name: &str,
         tenant_id: &Option<String>,
     ) -> bool {
-        // tracing::warn!("check or load streams- {stream_name}, {tenant_id:?}");
         if self.streams.contains(stream_name, tenant_id) {
             return true;
         }
-        // tracing::warn!("check or load streams not present, creating {stream_name}, {tenant_id:?}");
         (self.options.mode == Mode::Query || self.options.mode == Mode::Prism)
             && self
                 .create_stream_and_schema_from_storage(stream_name, tenant_id)
@@ -382,16 +380,12 @@ impl Parseable {
         let storage = self.storage.get_object_store();
         let streams = PARSEABLE.metastore.list_streams(tenant_id).await?;
         if !streams.contains(stream_name) {
-            // tracing::warn!("returning ok(false) for {stream_name} , {tenant_id:?}");
             return Ok(false);
         }
         let (stream_metadata_bytes, schema_bytes) = try_join!(
             storage.create_stream_from_ingestor(stream_name, tenant_id),
             storage.create_schema_from_metastore(stream_name, tenant_id)
         )?;
-        // tracing::warn!(stream_metadata_bytes=?stream_metadata_bytes);
-        // tracing::warn!(schema_bytes=?schema_bytes);
-
         let stream_metadata = if stream_metadata_bytes.is_empty() {
             ObjectStoreFormat::default()
         } else {
@@ -457,7 +451,6 @@ impl Parseable {
         if let Some(hot_tier_config) = hot_tier {
             stream.set_hot_tier(Some(hot_tier_config));
         }
-        // tracing::warn!(commit_schema=?schema);
         // commit schema in memory
         commit_schema(stream_name, schema, tenant_id).map_err(|e| StreamError::Anyhow(e.into()))?;
 
@@ -667,7 +660,7 @@ impl Parseable {
 
         let stream_in_memory_dont_update =
             self.streams.contains(stream_name, tenant_id) && !update_stream_flag;
-        // tracing::warn!(stream_in_memory_dont_update=?stream_in_memory_dont_update);
+
         // check if stream in storage only if not in memory
         // for Parseable OSS, create_update_stream is called only from query node
         // for Parseable Enterprise, create_update_stream is called from prism node
@@ -723,7 +716,7 @@ impl Parseable {
             custom_partition.as_ref(),
             static_schema_flag,
         )?;
-        // tracing::warn!("validated static schema");
+
         let log_source_entry = LogSourceEntry::new(log_source, HashSet::new());
         self.create_stream(
             stream_name.to_string(),
@@ -738,7 +731,7 @@ impl Parseable {
             tenant_id,
         )
         .await?;
-        // tracing::warn!("created stream");
+
         Ok(headers.clone())
     }
 
@@ -824,16 +817,11 @@ impl Parseable {
             ..Default::default()
         };
 
-        // tracing::warn!(meta=?meta);
         match storage
             .create_stream(&stream_name, meta, schema.clone(), tenant_id)
             .await
         {
             Ok(created_at) => {
-                // tracing::warn!(created_stream_at=?created_at);
-                // tracing::warn!(stream_name=?stream_name);
-                // tracing::warn!(schema=?schema);
-                // tracing::warn!(tenant_id=?tenant_id);
                 let mut static_schema: HashMap<String, Arc<Field>> = HashMap::new();
 
                 for (field_name, field) in schema
@@ -1177,7 +1165,7 @@ impl Parseable {
                 && is_multi_tenant
             {
                 let metadata: StorageMetadata = serde_json::from_slice(&meta)?;
-                // tracing::warn!("inserting tenant data- {metadata:?} for tenant- {tenant_id}");
+
                 TENANT_METADATA.insert_tenant(tenant_id.clone(), metadata.clone());
             } else if !is_multi_tenant {
             } else {

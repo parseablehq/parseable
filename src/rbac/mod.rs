@@ -224,7 +224,6 @@ impl Users {
     ) -> Response {
         // try fetch from auth map for faster auth flow
         if let Some(res) = sessions().check_auth(&key, action, context_stream, context_user) {
-            // tracing::warn!("returning with res- {res:?}");
             return res;
         }
         // attempt reloading permissions into new session for basic auth user
