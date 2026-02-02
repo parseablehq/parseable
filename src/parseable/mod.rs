@@ -54,9 +54,7 @@ use crate::{
     handlers::{
         STREAM_TYPE_KEY, TelemetryType,
         http::{
-            cluster::{
-                BILLING_METRICS_STREAM_NAME, PMETA_STREAM_NAME, sync_streams_with_ingestors,
-            },
+            cluster::{PMETA_STREAM_NAME, sync_streams_with_ingestors},
             ingest::PostError,
             logstream::error::{CreateStreamError, StreamError},
             modal::{
@@ -476,30 +474,13 @@ impl Parseable {
                 )
                 .await;
 
-            let log_source_entry = LogSourceEntry::new(LogSource::Json, HashSet::new());
-            let billing_stream_result = self
-                .create_stream_if_not_exists(
-                    BILLING_METRICS_STREAM_NAME,
-                    StreamType::Internal,
-                    None,
-                    vec![log_source_entry],
-                    TelemetryType::Logs,
-                    &tenant_id,
-                )
-                .await;
-
             // Check if either stream creation failed
             if let Err(e) = &internal_stream_result {
                 tracing::error!("Failed to create pmeta stream: {:?}", e);
             }
-            if let Err(e) = &billing_stream_result {
-                tracing::error!("Failed to create billing stream: {:?}", e);
-            }
 
             // Check if both streams already existed
-            if matches!(internal_stream_result, Ok(true))
-                && matches!(billing_stream_result, Ok(true))
-            {
+            if matches!(internal_stream_result, Ok(true)) {
                 continue;
             }
 
@@ -521,18 +502,6 @@ impl Parseable {
                 .await
             {
                 tracing::error!("Failed to sync pmeta stream with ingestors: {:?}", e);
-            }
-
-            if matches!(billing_stream_result, Ok(false))
-                && let Err(e) = sync_streams_with_ingestors(
-                    header_map,
-                    Bytes::new(),
-                    BILLING_METRICS_STREAM_NAME,
-                    &tenant_id,
-                )
-                .await
-            {
-                tracing::error!("Failed to sync billing stream with ingestors: {:?}", e);
             }
         }
 
