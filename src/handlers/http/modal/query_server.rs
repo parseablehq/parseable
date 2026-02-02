@@ -98,7 +98,7 @@ impl ParseableServer for QueryServer {
         }
 
         let mut parseable_json = PARSEABLE.validate_storage().await?;
-        migration::run_metadata_migration(&PARSEABLE, &mut parseable_json).await?;
+        migration::run_metadata_migration(&PARSEABLE, &mut parseable_json, &None).await?;
         Ok(parseable_json)
     }
 
@@ -111,14 +111,15 @@ impl ParseableServer for QueryServer {
         // write the ingestor metadata to storage
         QUERIER_META
             .get_or_init(|| async {
-                QuerierMetadata::load_node_metadata(NodeType::Querier)
+                QuerierMetadata::load_node_metadata(NodeType::Querier, &None)
                     .await
                     .expect("Querier Metadata should be set in ingestor mode")
             })
             .await;
         migration::run_migration(&PARSEABLE).await?;
 
-        //create internal stream at server start
+        // create internal stream at server start
+        // Multi-tenant mode is not allowed in OSS hence no need to have knowledge of tenant id
         PARSEABLE.create_internal_stream_if_not_exists().await?;
         // load on init
         load_on_init().await?;

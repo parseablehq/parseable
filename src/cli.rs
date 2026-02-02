@@ -158,6 +158,14 @@ pub struct Options {
 
     #[arg(
         long,
+        env = "P_MULTI_TENANCY",
+        default_value = "false",
+        help = "Mode of parseable instance"
+    )]
+    pub multi_tenancy: bool,
+
+    #[arg(
+        long,
         env = "P_MODE",
         default_value = "all",
         value_parser = validation::mode,
@@ -513,8 +521,16 @@ pub struct OidcConfig {
 }
 
 impl Options {
-    pub fn local_stream_data_path(&self, stream_name: &str) -> PathBuf {
-        self.local_staging_path.join(stream_name)
+    pub fn local_stream_data_path(&self, stream_name: &str, tenant_id: &Option<String>) -> PathBuf {
+        if let Some(tenant_id) = tenant_id.as_ref() {
+            self.local_staging_path.join(tenant_id).join(stream_name)
+        } else {
+            self.local_staging_path.join(stream_name)
+        }
+    }
+
+    pub fn is_multi_tenant(&self) -> bool {
+        self.multi_tenancy
     }
 
     pub fn get_scheme(&self) -> String {

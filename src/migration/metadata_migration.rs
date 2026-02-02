@@ -198,6 +198,24 @@ pub fn v5_v6(mut storage_metadata: JsonValue) -> JsonValue {
     storage_metadata
 }
 
+// add `protected` key for users if not present
+pub fn v6_v7(mut storage_metadata: JsonValue) -> JsonValue {
+    let metadata = storage_metadata.as_object_mut().unwrap();
+    metadata.remove_entry("version");
+    metadata.insert("version".to_string(), JsonValue::String("v7".to_string()));
+
+    // add `protected` key for users if not present
+    let users = metadata.get_mut("users").unwrap().as_array_mut().unwrap();
+    for user in users.iter_mut() {
+        user.as_object_mut()
+            .unwrap()
+            .entry("protected")
+            .or_insert(JsonValue::Bool(false));
+    }
+
+    storage_metadata
+}
+
 /// Remove the querier endpoint and auth token from the storage metadata
 pub fn remove_querier_metadata(mut storage_metadata: JsonValue) -> JsonValue {
     let metadata = storage_metadata.as_object_mut().unwrap();

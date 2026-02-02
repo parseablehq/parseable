@@ -75,9 +75,11 @@ pub struct BasicAlertFields {
     pub severity: Severity,
 }
 
+pub type AlertMap = HashMap<Ulid, Box<dyn AlertTrait>>;
+
 #[derive(Debug)]
 pub struct Alerts {
-    pub alerts: RwLock<HashMap<Ulid, Box<dyn AlertTrait>>>,
+    pub alerts: RwLock<HashMap<String, AlertMap>>,
     pub sender: mpsc::Sender<AlertTask>,
 }
 
@@ -291,7 +293,7 @@ pub struct AlertRequest {
 }
 
 impl AlertRequest {
-    pub async fn into(self) -> Result<AlertConfig, AlertError> {
+    pub async fn into(self, tenant_id: Option<String>) -> Result<AlertConfig, AlertError> {
         // Validate that other_fields doesn't contain reserved field names
         let other_fields = if let Some(mut other_fields) = self.other_fields {
             // Limit other_fields to maximum 10 fields
@@ -319,7 +321,7 @@ impl AlertRequest {
 
         // Validate that all target IDs exist
         for id in &self.targets {
-            TARGETS.get_target_by_id(id).await?;
+            TARGETS.get_target_by_id(id, &tenant_id).await?;
         }
         let datasets = resolve_stream_names(&self.query)?;
 
@@ -372,6 +374,7 @@ impl AlertRequest {
             tags: self.tags,
             last_triggered_at: None,
             other_fields,
+            tenant_id,
         };
 
         Ok(config)
@@ -402,6 +405,7 @@ pub struct AlertConfig {
     pub last_triggered_at: Option<DateTime<Utc>>,
     #[serde(flatten)]
     pub other_fields: Option<serde_json::Map<String, Value>>,
+    pub tenant_id: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
@@ -714,6 +718,7 @@ pub struct DailyMTTRStats {
 pub struct MTTRHistory {
     /// Array of daily MTTR statistics
     pub daily_stats: Vec<DailyMTTRStats>,
+    pub tenant_id: Option<String>,
 }
 
 /// Query parameters for MTTR API endpoint
@@ -886,7 +891,7 @@ impl MetastoreObject for AlertConfig {
     }
 
     fn get_object_path(&self) -> String {
-        alert_json_path(self.id).to_string()
+        alert_json_path(self.id, &self.tenant_id).to_string()
     }
 }
 
@@ -896,6 +901,6 @@ impl MetastoreObject for MTTRHistory {
     }
 
     fn get_object_path(&self) -> String {
-        mttr_json_path().to_string()
+        mttr_json_path(&self.tenant_id).to_string()
     }
 }

@@ -26,7 +26,6 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::{
-    LOCK_EXPECT,
     handlers::http::{
         cluster::{
             fetch_stats_from_ingestors,
@@ -41,7 +40,7 @@ use crate::{
     rbac::{Users, map::SessionKey, role::Action},
     stats,
     storage::{StreamInfo, StreamType, retention::Retention},
-    utils::time::TimeParseError,
+    utils::{get_tenant_id_from_key, time::TimeParseError},
 };
 
 #[derive(Serialize)]
@@ -54,20 +53,20 @@ pub struct PrismLogstreamInfo {
 
 pub async fn get_prism_logstream_info(
     stream_name: &str,
+    tenant_id: &Option<String>,
 ) -> Result<PrismLogstreamInfo, PrismLogstreamError> {
     let (info, schema, stats) = tokio::join!(
-        get_stream_info_helper(stream_name),
-        get_stream_schema_helper(stream_name),
-        get_stats(stream_name),
+        get_stream_info_helper(stream_name, tenant_id),
+        get_stream_schema_helper(stream_name, tenant_id),
+        get_stats(stream_name, tenant_id),
     );
-
     let info = info?;
     let schema = schema?;
     let stats = stats?;
 
     // get retention
     let retention = PARSEABLE
-        .get_stream(stream_name)?
+        .get_stream(stream_name, tenant_id)?
         .get_retention()
         .unwrap_or_default();
 
@@ -79,14 +78,17 @@ pub async fn get_prism_logstream_info(
     })
 }
 
-async fn get_stream_schema_helper(stream_name: &str) -> Result<Arc<Schema>, StreamError> {
+async fn get_stream_schema_helper(
+    stream_name: &str,
+    tenant_id: &Option<String>,
+) -> Result<Arc<Schema>, StreamError> {
     // Ensure parseable is aware of stream in distributed mode
-    if !PARSEABLE.check_or_load_stream(stream_name).await {
+    if !PARSEABLE.check_or_load_stream(stream_name, tenant_id).await {
         return Err(StreamNotFound(stream_name.to_owned()).into());
     }
 
-    let stream = PARSEABLE.get_stream(stream_name)?;
-    match update_schema_when_distributed(&vec![stream_name.to_owned()]).await {
+    let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
+    match update_schema_when_distributed(&vec![stream_name.to_owned()], tenant_id).await {
         Ok(_) => {
             let schema = stream.get_schema();
             Ok(schema)
@@ -98,15 +100,18 @@ async fn get_stream_schema_helper(stream_name: &str) -> Result<Arc<Schema>, Stre
     }
 }
 
-async fn get_stats(stream_name: &str) -> Result<QueriedStats, PrismLogstreamError> {
-    let stats = stats::get_current_stats(stream_name, "json")
+async fn get_stats(
+    stream_name: &str,
+    tenant_id: &Option<String>,
+) -> Result<QueriedStats, PrismLogstreamError> {
+    let stats = stats::get_current_stats(stream_name, "json", tenant_id)
         .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?;
 
     let ingestor_stats = if PARSEABLE
-        .get_stream(stream_name)
+        .get_stream(stream_name, tenant_id)
         .is_ok_and(|stream| stream.get_stream_type() == StreamType::UserDefined)
     {
-        Some(fetch_stats_from_ingestors(stream_name).await?)
+        Some(fetch_stats_from_ingestors(stream_name, tenant_id).await?)
     } else {
         None
     };
@@ -143,11 +148,14 @@ async fn get_stats(stream_name: &str) -> Result<QueriedStats, PrismLogstreamErro
     Ok(stats)
 }
 
-pub async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, StreamError> {
+pub async fn get_stream_info_helper(
+    stream_name: &str,
+    tenant_id: &Option<String>,
+) -> Result<StreamInfo, StreamError> {
     // For query mode, if the stream not found in memory map,
-    //check if it exists in the storage
-    //create stream and schema from storage
-    if !PARSEABLE.check_or_load_stream(stream_name).await {
+    // check if it exists in the storage
+    // create stream and schema from storage
+    if !PARSEABLE.check_or_load_stream(stream_name, tenant_id).await {
         return Err(StreamNotFound(stream_name.to_owned()).into());
     }
 
@@ -155,7 +163,7 @@ pub async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, Str
 
     // Get first and latest event timestamps from storage
     let (stream_first_event_at, stream_latest_event_at) = match storage
-        .get_first_and_latest_event_from_storage(stream_name)
+        .get_first_and_latest_event_from_storage(stream_name, tenant_id)
         .await
     {
         Ok(result) => result,
@@ -168,13 +176,8 @@ pub async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, Str
         }
     };
 
-    let hash_map = PARSEABLE.streams.read().unwrap();
-    let stream_meta = hash_map
-        .get(stream_name)
-        .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?
-        .metadata
-        .read()
-        .expect(LOCK_EXPECT);
+    let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
+    let stream_meta = stream.metadata.read().unwrap();
 
     let stream_info =
         StreamInfo::from_metadata(&stream_meta, stream_first_event_at, stream_latest_event_at);
@@ -185,7 +188,7 @@ pub async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, Str
 /// Response structure for Prism dataset queries.
 /// Contains information about a stream, its statistics, retention policy,
 /// and query results.
-#[derive(Serialize)]
+#[derive(Serialize, Debug)]
 pub struct PrismDatasetResponse {
     /// Name of the stream
     stream: String,
@@ -229,15 +232,16 @@ impl PrismDatasetRequest {
         mut self,
         key: SessionKey,
     ) -> Result<Vec<PrismDatasetResponse>, PrismLogstreamError> {
+        let tenant_id = get_tenant_id_from_key(&key);
         if self.streams.is_empty() {
-            self.streams = PARSEABLE.streams.list();
+            self.streams = PARSEABLE.streams.list(&tenant_id);
         }
 
         // Process streams concurrently
         let results = futures::future::join_all(
             self.streams
                 .iter()
-                .map(|stream| self.process_stream(stream.clone(), key.clone())),
+                .map(|stream| self.process_stream(stream.clone(), key.clone(), &tenant_id)),
         )
         .await;
 
@@ -264,6 +268,7 @@ impl PrismDatasetRequest {
         &self,
         stream: String,
         key: SessionKey,
+        tenant_id: &Option<String>,
     ) -> Result<Option<PrismDatasetResponse>, PrismLogstreamError> {
         // Skip unauthorized streams
         if !self.is_authorized(&stream, &key) {
@@ -271,23 +276,27 @@ impl PrismDatasetRequest {
         }
 
         // Skip streams that don't exist
-        if !PARSEABLE.check_or_load_stream(&stream).await {
+        if !PARSEABLE.check_or_load_stream(&stream, tenant_id).await {
             return Ok(None);
         }
 
         // exclude internal streams
-        let is_internal = PARSEABLE.get_stream(&stream).is_ok_and(|stream| {
-            stream
-                .get_stream_type()
-                .eq(&crate::storage::StreamType::Internal)
-        });
+        let is_internal = PARSEABLE
+            .get_stream(&stream, tenant_id)
+            .is_ok_and(|stream| {
+                stream
+                    .get_stream_type()
+                    .eq(&crate::storage::StreamType::Internal)
+            });
         if is_internal {
             return Ok(None);
         }
 
         // Process stream data
-        match get_prism_logstream_info(&stream).await {
-            Ok(info) => Ok(Some(self.build_dataset_response(stream, info).await?)),
+        match get_prism_logstream_info(&stream, tenant_id).await {
+            Ok(info) => Ok(Some(
+                self.build_dataset_response(stream, info, tenant_id).await?,
+            )),
             Err(err) => Err(err),
         }
     }
@@ -307,21 +316,28 @@ impl PrismDatasetRequest {
         &self,
         stream: String,
         info: PrismLogstreamInfo,
+        tenant_id: &Option<String>,
     ) -> Result<PrismDatasetResponse, PrismLogstreamError> {
         // Get counts
-        let counts = self.get_counts(&stream).await?;
+        let counts = self.get_counts(&stream, tenant_id).await?;
 
-        Ok(PrismDatasetResponse {
+        let res = PrismDatasetResponse {
             stream,
             info: info.info,
             schema: info.schema,
             stats: info.stats,
             retention: info.retention,
             counts,
-        })
+        };
+
+        Ok(res)
     }
 
-    async fn get_counts(&self, stream: &str) -> Result<CountsResponse, PrismLogstreamError> {
+    async fn get_counts(
+        &self,
+        stream: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<CountsResponse, PrismLogstreamError> {
         let count_request = CountsRequest {
             stream: stream.to_owned(),
             start_time: "1h".to_owned(),
@@ -330,7 +346,7 @@ impl PrismDatasetRequest {
             conditions: None,
         };
 
-        let records = count_request.get_bin_density().await?;
+        let records = count_request.get_bin_density(tenant_id).await?;
         Ok(CountsResponse {
             fields: vec!["start_time".into(), "end_time".into(), "count".into()],
             records,

@@ -60,6 +60,7 @@ pub enum Action {
     ListClusterMetrics,
     DeleteNode,
     All,
+    SuperAdmin,
     GetAnalytics,
     ListDashboard,
     GetDashboard,
@@ -90,7 +91,7 @@ pub enum ParseableResourceType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Permission {
     Unit(Action),
-    Resource(Action, ParseableResourceType),
+    Resource(Action, Option<ParseableResourceType>),
     SelfUser,
 }
 
@@ -166,7 +167,8 @@ impl RoleBuilder {
                 | Action::GetStats
                 | Action::GetRetention
                 | Action::PutRetention
-                | Action::All => Permission::Resource(action, self.resource_type.clone().unwrap()),
+                | Action::All
+                | Action::SuperAdmin => Permission::Resource(action, self.resource_type.clone()),
             };
             perms.push(perm);
         }
@@ -186,28 +188,51 @@ pub mod model {
     #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Hash)]
     #[serde(tag = "privilege", rename_all = "lowercase")]
     pub enum DefaultPrivilege {
+        SuperAdmin,
         Admin,
         Editor,
-        Writer { resource: ParseableResourceType },
-        Ingestor { resource: ParseableResourceType },
-        Reader { resource: ParseableResourceType },
+        Writer {
+            resource: ParseableResourceType,
+        },
+        Ingestor {
+            resource: Option<ParseableResourceType>,
+        },
+        Reader {
+            resource: Option<ParseableResourceType>,
+        },
     }
 
     impl From<&DefaultPrivilege> for RoleBuilder {
         fn from(value: &DefaultPrivilege) -> Self {
             match value {
+                DefaultPrivilege::SuperAdmin => super_admin_perm_builder(),
                 DefaultPrivilege::Admin => admin_perm_builder(),
                 DefaultPrivilege::Editor => editor_perm_builder(),
                 DefaultPrivilege::Writer { resource } => {
                     writer_perm_builder().with_resource(resource.to_owned())
                 }
                 DefaultPrivilege::Reader { resource } => {
-                    reader_perm_builder().with_resource(resource.to_owned())
+                    if let Some(resource) = resource.as_ref() {
+                        reader_perm_builder().with_resource(resource.to_owned())
+                    } else {
+                        reader_perm_builder()
+                    }
                 }
                 DefaultPrivilege::Ingestor { resource } => {
-                    ingest_perm_builder().with_resource(resource.to_owned())
+                    if let Some(resource) = resource.as_ref() {
+                        ingest_perm_builder().with_resource(resource.to_owned())
+                    } else {
+                        ingest_perm_builder()
+                    }
                 }
             }
+        }
+    }
+
+    fn super_admin_perm_builder() -> RoleBuilder {
+        RoleBuilder {
+            actions: vec![Action::SuperAdmin],
+            resource_type: Some(ParseableResourceType::All),
         }
     }
 

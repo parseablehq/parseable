@@ -26,16 +26,24 @@ pub mod time;
 pub mod uid;
 pub mod update;
 
+use crate::INTRA_CLUSTER_CLIENT;
+use crate::handlers::http::base_path_without_preceding_slash;
+use crate::handlers::http::cluster::for_each_live_node;
 use crate::handlers::http::rbac::RBACError;
-use crate::parseable::PARSEABLE;
+use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
 use crate::query::resolve_stream_names;
 use crate::rbac::Users;
-use crate::rbac::map::SessionKey;
+use crate::rbac::map::{SessionKey, sessions};
 use crate::rbac::role::{Action, ParseableResourceType, Permission};
+use crate::rbac::user::User;
 use actix::extract_session_key_from_req;
-use actix_web::HttpRequest;
-use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use actix_web::dev::ServiceRequest;
+use actix_web::{FromRequest, HttpRequest};
+use actix_web_httpauth::extractors::basic::BasicAuth;
+use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use http::header;
 use regex::Regex;
+use serde_json::json;
 use sha2::{Digest, Sha256};
 
 pub fn get_node_id() -> String {
@@ -58,14 +66,69 @@ pub fn extract_datetime(path: &str) -> Option<NaiveDateTime> {
     }
 }
 
+pub fn mutate_request_with_tenant(req: &mut ServiceRequest) {
+    let creds = BasicAuth::extract(req.request()).into_inner();
+
+    if let Ok(basic) = &creds {
+        Users.mutate_request_with_basic_user(basic.user_id(), basic.password().unwrap(), req);
+    } else if let Some(cookie) = req.cookie("session")
+        && let Ok(ulid) = ulid::Ulid::from_string(cookie.value())
+    {
+        let key = SessionKey::SessionId(ulid);
+        sessions().mutate_request_with_tenant(&key, req);
+    };
+}
+
 pub fn get_user_from_request(req: &HttpRequest) -> Result<String, RBACError> {
     let session_key = extract_session_key_from_req(req).map_err(|_| RBACError::UserDoesNotExist)?;
     let user_id = Users.get_userid_from_session(&session_key);
     if user_id.is_none() {
         return Err(RBACError::UserDoesNotExist);
     }
-    let user_id = user_id.unwrap();
+    let (user_id, _) = user_id.unwrap();
     Ok(user_id)
+}
+
+pub fn get_user_and_tenant_from_request(
+    req: &HttpRequest,
+) -> Result<(String, Option<String>), RBACError> {
+    let session_key = extract_session_key_from_req(req).map_err(|_| RBACError::UserDoesNotExist)?;
+    match session_key {
+        SessionKey::BasicAuth { username, password } => {
+            if let Some(tenant) = Users.get_user_tenant_from_basic(&username, &password) {
+                Ok((username.clone(), Some(tenant)))
+            } else {
+                Ok((username.clone(), None))
+            }
+        }
+        session @ SessionKey::SessionId(_) => {
+            let Some((user_id, tenant_id)) = Users.get_userid_from_session(&session) else {
+                return Err(RBACError::UserDoesNotExist);
+            };
+            let tenant_id = if tenant_id.eq(DEFAULT_TENANT) {
+                None
+            } else {
+                Some(tenant_id)
+            };
+            Ok((user_id, tenant_id))
+        }
+    }
+}
+
+pub fn get_tenant_id_from_request(req: &HttpRequest) -> Option<String> {
+    req.headers()
+        .get("tenant")
+        .map(|tenant_value| tenant_value.to_str().unwrap().to_owned())
+}
+
+pub fn get_tenant_id_from_key(key: &SessionKey) -> Option<String> {
+    if let Some((_, tenant_id)) = Users.get_userid_from_session(key)
+        && tenant_id.ne(DEFAULT_TENANT)
+    {
+        Some(tenant_id.clone())
+    } else {
+        None
+    }
 }
 
 pub fn get_hash(key: &str) -> String {
@@ -82,13 +145,15 @@ pub async fn user_auth_for_query(
     let tables = resolve_stream_names(query).map_err(|e| {
         actix_web::error::ErrorBadRequest(format!("Failed to extract table names: {e}"))
     })?;
+    let tenant_id = get_tenant_id_from_key(session_key);
     let permissions = Users.get_permissions(session_key);
-    user_auth_for_datasets(&permissions, &tables).await
+    user_auth_for_datasets(&permissions, &tables, &tenant_id).await
 }
 
 pub async fn user_auth_for_datasets(
     permissions: &[Permission],
     tables: &[String],
+    tenant_id: &Option<String>,
 ) -> Result<(), actix_web::error::Error> {
     for table_name in tables {
         let mut authorized = false;
@@ -101,23 +166,29 @@ pub async fn user_auth_for_datasets(
                     authorized = true;
                     break;
                 }
-                Permission::Resource(Action::Query, ParseableResourceType::Stream(stream)) => {
-                    if !PARSEABLE.check_or_load_stream(stream).await {
+                Permission::Resource(
+                    Action::Query,
+                    Some(ParseableResourceType::Stream(stream)),
+                ) => {
+                    if !PARSEABLE.check_or_load_stream(stream, tenant_id).await {
                         return Err(actix_web::error::ErrorUnauthorized(format!(
                             "Stream not found: {table_name}"
                         )));
                     }
-                    let is_internal = PARSEABLE.get_stream(table_name).is_ok_and(|stream| {
-                        stream
-                            .get_stream_type()
-                            .eq(&crate::storage::StreamType::Internal)
-                    });
+                    let is_internal =
+                        PARSEABLE
+                            .get_stream(table_name, tenant_id)
+                            .is_ok_and(|stream| {
+                                stream
+                                    .get_stream_type()
+                                    .eq(&crate::storage::StreamType::Internal)
+                            });
 
                     if stream == table_name || stream == "*" || is_internal {
                         authorized = true;
                     }
                 }
-                Permission::Resource(action, ParseableResourceType::All)
+                Permission::Resource(action, Some(ParseableResourceType::All))
                     if ![
                         Action::All,
                         Action::PutUser,
@@ -156,7 +227,7 @@ pub fn is_admin(req: &HttpRequest) -> Result<bool, anyhow::Error> {
     // Check if user has admin permissions (Action::All on All resources)
     for permission in permissions.iter() {
         match permission {
-            Permission::Resource(Action::All, ParseableResourceType::All) => {
+            Permission::Resource(Action::All, Some(ParseableResourceType::All)) => {
                 return Ok(true);
             }
             _ => continue,
@@ -164,4 +235,56 @@ pub fn is_admin(req: &HttpRequest) -> Result<bool, anyhow::Error> {
     }
 
     Ok(false)
+}
+
+pub fn create_intracluster_auth_headermap(req: &HttpRequest) -> reqwest::header::HeaderMap {
+    let mut map = reqwest::header::HeaderMap::new();
+    if let Some(auth) = req.headers().get(actix_web::http::header::AUTHORIZATION) {
+        map.insert(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_bytes(auth.as_bytes()).unwrap(),
+        );
+    } else if let Some(auth) = req.headers().get(actix_web::http::header::COOKIE) {
+        map.insert(
+            reqwest::header::COOKIE,
+            reqwest::header::HeaderValue::from_bytes(auth.as_bytes()).unwrap(),
+        );
+    }
+    map
+}
+
+pub async fn login_sync(
+    session: String,
+    user: User,
+    expiry: Duration,
+    tenant_id: &Option<String>,
+) -> Result<(), anyhow::Error> {
+    for_each_live_node(tenant_id, move |node| {
+        let url = format!(
+            "{}{}/o/login/sync",
+            node.domain_name,
+            base_path_without_preceding_slash(),
+        );
+        let _session = session.clone();
+        let _user = user.clone();
+        let _expiry = expiry;
+
+        async move {
+            INTRA_CLUSTER_CLIENT
+                .post(url)
+                .header(header::AUTHORIZATION, node.token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .json(&json!(
+                    {
+                        "sessionCookie": _session,
+                        "user": _user,
+                        "expiry": _expiry
+                    }
+                ))
+                .send()
+                .await?;
+            Ok::<(), anyhow::Error>(())
+        }
+    })
+    .await
 }
