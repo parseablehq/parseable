@@ -139,7 +139,7 @@ uptime_lib = "0.3.0"
 
 # Utility Libraries
 anyhow = { version = "1.0", features = ["backtrace"] }
-bytes = "1.4"
+bytes = "1.11"
 clokwerk = "0.4"
 derive_more = { version = "1", features = ["full"] }
 itertools = "0.14"
