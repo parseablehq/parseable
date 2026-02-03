@@ -119,8 +119,8 @@ pub async fn ingest(
         .await?;
 
     //if stream exists, fetch the stream log source
-    //return error if the stream log source is otel traces or otel metrics
-    validate_stream_for_ingestion(&stream_name)?;
+    //return error if the stream log source is otel traces or otel metrics or otel logs
+    validate_stream_for_ingestion(&stream_name, &log_source)?;
 
     PARSEABLE
         .add_update_log_source(&stream_name, log_source_entry)
@@ -415,8 +415,8 @@ pub async fn post_event(
     }
 
     //if stream exists, fetch the stream log source
-    //return error if the stream log source is otel traces or otel metrics
-    validate_stream_for_ingestion(&stream_name)?;
+    //return error if the stream log source is otel traces or otel metrics or otel logs
+    validate_stream_for_ingestion(&stream_name, &log_source)?;
 
     flatten_and_push_logs(
         json,
