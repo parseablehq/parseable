@@ -159,7 +159,13 @@ pub async fn ingest(
 
 pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
     let size: usize = body.len();
-    let json: StrictValue = serde_json::from_slice(&body)?;
+    let json: StrictValue = match serde_json::from_slice(&body) {
+        Ok(v) => v,
+        Err(e) => {
+            error!("Ingestion failed for stream {stream_name}: malformed JSON in request body");
+            return Err(PostError::SerdeError(e));
+        }
+    };
     let schema = PARSEABLE.get_stream(&stream_name)?.get_schema_raw();
     let mut p_custom_fields = HashMap::new();
     p_custom_fields.insert(USER_AGENT_KEY.to_string(), "parseable".to_string());
@@ -277,8 +283,17 @@ async fn process_otel_content(
     {
         Some(content_type) => {
             if content_type == CONTENT_TYPE_JSON {
+                let json: serde_json::Value = match serde_json::from_slice(&body) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        error!(
+                            "Ingestion failed for stream {stream_name}: malformed JSON in request body"
+                        );
+                        return Err(PostError::SerdeError(e));
+                    }
+                };
                 if let Err(e) = flatten_and_push_logs(
-                    serde_json::from_slice(&body)?,
+                    json,
                     stream_name,
                     log_source,
                     &p_custom_fields,
