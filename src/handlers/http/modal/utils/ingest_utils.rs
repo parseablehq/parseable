@@ -292,6 +292,7 @@ fn verify_dataset_fields_count(
 
 pub fn validate_stream_for_ingestion(
     stream_name: &str,
+    log_source: &LogSource,
     tenant_id: &Option<String>,
 ) -> Result<(), PostError> {
     let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
@@ -305,6 +306,16 @@ pub fn validate_stream_for_ingestion(
                 && stream_log_source_entry.log_source_format != LogSource::OtelMetrics
         })
         .ok_or(PostError::IncorrectLogFormat(stream_name.to_string()))?;
+
+    // If stream has OtelLogs as log source, only allow OtelLogs ingestion
+    let has_otel_logs = stream
+        .get_log_source()
+        .iter()
+        .any(|entry| entry.log_source_format == LogSource::OtelLogs);
+
+    if has_otel_logs && *log_source != LogSource::OtelLogs {
+        return Err(PostError::IncorrectLogFormat(stream_name.to_string()));
+    }
 
     // Check for time partition
     if stream.get_time_partition().is_some() {

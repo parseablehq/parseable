@@ -182,6 +182,9 @@ pub struct ConditionConfig {
     pub column: String,
     pub operator: WhereConfigOperator,
     pub value: Option<String>,
+    #[serde(rename = "type")]
+    #[serde(default)]
+    pub column_type: Option<String>,
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
