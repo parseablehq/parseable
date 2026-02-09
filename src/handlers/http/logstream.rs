@@ -33,7 +33,7 @@ use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::json::flatten::{
     self, convert_to_array, generic_flattening, has_more_than_max_allowed_levels,
 };
-use crate::{LOCK_EXPECT, stats, validator};
+use crate::{stats, validator};
 
 use actix_web::http::StatusCode;
 use actix_web::web::{Json, Path};
@@ -348,13 +348,12 @@ pub async fn get_stream_info(stream_name: Path<String>) -> Result<impl Responder
         }
     };
 
-    let hash_map = PARSEABLE.streams.read().unwrap();
+    let hash_map = PARSEABLE.streams.read();
     let stream_meta = hash_map
         .get(&stream_name)
         .ok_or_else(|| StreamNotFound(stream_name.clone()))?
         .metadata
-        .read()
-        .expect(LOCK_EXPECT);
+        .read();
 
     let stream_info =
         StreamInfo::from_metadata(&stream_meta, stream_first_event_at, stream_latest_event_at);

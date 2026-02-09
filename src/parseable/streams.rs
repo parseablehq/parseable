@@ -17,12 +17,13 @@
  *
  */
 
+use parking_lot::{Mutex, RwLock};
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions, remove_file, write},
     num::NonZeroU32,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, RwLock},
+    sync::Arc,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -46,7 +47,7 @@ use tracing::{error, info, trace, warn};
 use ulid::Ulid;
 
 use crate::{
-    LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
+    OBJECT_STORE_DATA_GRANULARITY,
     cli::Options,
     event::{
         DEFAULT_TIMESTAMP_KEY,
@@ -142,16 +143,8 @@ impl Stream {
         custom_partition_values: &HashMap<String, String>,
         stream_type: StreamType,
     ) -> Result<(), StagingError> {
-        let mut guard = match self.writer.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                error!(
-                    "Writer lock poisoned while ingesting data for stream {}",
-                    self.stream_name
-                );
-                poisoned.into_inner()
-            }
-        };
+        let mut guard = self.writer.lock();
+
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
             let filename =
                 self.filename_by_partition(schema_key, parsed_timestamp, custom_partition_values);
@@ -507,24 +500,16 @@ impl Stream {
     }
 
     pub fn recordbatches_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
-        self.writer.lock().unwrap().mem.recordbatch_cloned(schema)
+        self.writer.lock().mem.recordbatch_cloned(schema)
     }
 
     pub fn clear(&self) {
-        self.writer.lock().unwrap().mem.clear();
+        self.writer.lock().mem.clear();
     }
 
     pub fn flush(&self, forced: bool) {
-        let mut writer = match self.writer.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                error!(
-                    "Writer lock poisoned while flushing data for stream {}",
-                    self.stream_name
-                );
-                poisoned.into_inner()
-            }
-        };
+        let mut writer = self.writer.lock();
+
         // Flush memory
         writer.mem.clear();
         // Drop schema -> disk writer mapping, triggers flush to disk
@@ -805,54 +790,39 @@ impl Stream {
 
     /// Stores the provided stream metadata in memory mapping
     pub async fn set_metadata(&self, updated_metadata: LogStreamMetadata) {
-        *self.metadata.write().expect(LOCK_EXPECT) = updated_metadata;
+        *self.metadata.write() = updated_metadata;
     }
 
     pub fn get_first_event(&self) -> Option<String> {
-        self.metadata
-            .read()
-            .expect(LOCK_EXPECT)
-            .first_event_at
-            .clone()
+        self.metadata.read().first_event_at.clone()
     }
 
     pub fn get_time_partition(&self) -> Option<String> {
-        self.metadata
-            .read()
-            .expect(LOCK_EXPECT)
-            .time_partition
-            .clone()
+        self.metadata.read().time_partition.clone()
     }
 
     pub fn get_time_partition_limit(&self) -> Option<NonZeroU32> {
-        self.metadata
-            .read()
-            .expect(LOCK_EXPECT)
-            .time_partition_limit
+        self.metadata.read().time_partition_limit
     }
 
     pub fn get_custom_partition(&self) -> Option<String> {
-        self.metadata
-            .read()
-            .expect(LOCK_EXPECT)
-            .custom_partition
-            .clone()
+        self.metadata.read().custom_partition.clone()
     }
 
     pub fn get_static_schema_flag(&self) -> bool {
-        self.metadata.read().expect(LOCK_EXPECT).static_schema_flag
+        self.metadata.read().static_schema_flag
     }
 
     pub fn get_retention(&self) -> Option<Retention> {
-        self.metadata.read().expect(LOCK_EXPECT).retention.clone()
+        self.metadata.read().retention.clone()
     }
 
     pub fn get_schema_version(&self) -> SchemaVersion {
-        self.metadata.read().expect(LOCK_EXPECT).schema_version
+        self.metadata.read().schema_version
     }
 
     pub fn get_schema(&self) -> Arc<Schema> {
-        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+        let metadata = self.metadata.read();
 
         // sort fields on read from hashmap as order of fields can differ.
         // This provides a stable output order if schema is same between calls to this function
@@ -867,15 +837,15 @@ impl Stream {
     }
 
     pub fn get_schema_raw(&self) -> HashMap<String, Arc<Field>> {
-        self.metadata.read().expect(LOCK_EXPECT).schema.clone()
+        self.metadata.read().schema.clone()
     }
 
     pub fn set_retention(&self, retention: Retention) {
-        self.metadata.write().expect(LOCK_EXPECT).retention = Some(retention);
+        self.metadata.write().retention = Some(retention);
     }
 
     pub fn set_first_event_at(&self, first_event_at: &str) {
-        self.metadata.write().expect(LOCK_EXPECT).first_event_at = Some(first_event_at.to_owned());
+        self.metadata.write().first_event_at = Some(first_event_at.to_owned());
     }
 
     /// Removes the `first_event_at` timestamp for the specified stream from the LogStreamMetadata.
@@ -903,52 +873,45 @@ impl Stream {
     /// }
     /// ```
     pub fn reset_first_event_at(&self) {
-        self.metadata
-            .write()
-            .expect(LOCK_EXPECT)
-            .first_event_at
-            .take();
+        self.metadata.write().first_event_at.take();
     }
 
     pub fn set_time_partition_limit(&self, time_partition_limit: NonZeroU32) {
-        self.metadata
-            .write()
-            .expect(LOCK_EXPECT)
-            .time_partition_limit = Some(time_partition_limit);
+        self.metadata.write().time_partition_limit = Some(time_partition_limit);
     }
 
     pub fn set_custom_partition(&self, custom_partition: Option<&String>) {
-        self.metadata.write().expect(LOCK_EXPECT).custom_partition = custom_partition.cloned();
+        self.metadata.write().custom_partition = custom_partition.cloned();
     }
 
     pub fn set_hot_tier(&self, hot_tier: Option<StreamHotTier>) {
-        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        let mut metadata = self.metadata.write();
         metadata.hot_tier.clone_from(&hot_tier);
         metadata.hot_tier_enabled = hot_tier.is_some();
     }
 
     pub fn get_hot_tier(&self) -> Option<StreamHotTier> {
-        self.metadata.read().expect(LOCK_EXPECT).hot_tier.clone()
+        self.metadata.read().hot_tier.clone()
     }
 
     pub fn is_hot_tier_enabled(&self) -> bool {
-        self.metadata.read().expect(LOCK_EXPECT).hot_tier_enabled
+        self.metadata.read().hot_tier_enabled
     }
 
     pub fn get_stream_type(&self) -> StreamType {
-        self.metadata.read().expect(LOCK_EXPECT).stream_type
+        self.metadata.read().stream_type
     }
 
     pub fn set_log_source(&self, log_source: Vec<LogSourceEntry>) {
-        self.metadata.write().expect(LOCK_EXPECT).log_source = log_source;
+        self.metadata.write().log_source = log_source;
     }
 
     pub fn get_log_source(&self) -> Vec<LogSourceEntry> {
-        self.metadata.read().expect(LOCK_EXPECT).log_source.clone()
+        self.metadata.read().log_source.clone()
     }
 
     pub fn add_log_source(&self, log_source: LogSourceEntry) {
-        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+        let metadata = self.metadata.read();
         for existing in &metadata.log_source {
             if existing.log_source_format == log_source.log_source_format {
                 drop(metadata);
@@ -961,7 +924,7 @@ impl Stream {
         }
         drop(metadata);
 
-        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        let mut metadata = self.metadata.write();
         for existing in &metadata.log_source {
             if existing.log_source_format == log_source.log_source_format {
                 self.add_fields_to_log_source(
@@ -975,7 +938,7 @@ impl Stream {
     }
 
     pub fn add_fields_to_log_source(&self, log_source: &LogSource, fields: HashSet<String>) {
-        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        let mut metadata = self.metadata.write();
         for log_source_entry in metadata.log_source.iter_mut() {
             if log_source_entry.log_source_format == *log_source {
                 log_source_entry.fields.extend(fields);
@@ -985,7 +948,7 @@ impl Stream {
     }
 
     pub fn get_fields_from_log_source(&self, log_source: &LogSource) -> Option<HashSet<String>> {
-        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+        let metadata = self.metadata.read();
         for log_source_entry in metadata.log_source.iter() {
             if log_source_entry.log_source_format == *log_source {
                 return Some(log_source_entry.fields.clone());
@@ -1043,7 +1006,7 @@ impl Streams {
         metadata: LogStreamMetadata,
         ingestor_id: Option<String>,
     ) -> StreamRef {
-        let mut guard = self.write().expect(LOCK_EXPECT);
+        let mut guard = self.write();
         if let Some(stream) = guard.get(&stream_name) {
             return stream.clone();
         }
@@ -1056,16 +1019,16 @@ impl Streams {
 
     /// TODO: validate possibility of stream continuing to exist despite being deleted
     pub fn delete(&self, stream_name: &str) {
-        self.write().expect(LOCK_EXPECT).remove(stream_name);
+        self.write().remove(stream_name);
     }
 
     pub fn contains(&self, stream_name: &str) -> bool {
-        self.read().expect(LOCK_EXPECT).contains_key(stream_name)
+        self.read().contains_key(stream_name)
     }
 
     /// Returns the number of logstreams that parseable is aware of
     pub fn len(&self) -> usize {
-        self.read().expect(LOCK_EXPECT).len()
+        self.read().len()
     }
 
     /// Returns true if parseable is not aware of any streams
@@ -1075,20 +1038,14 @@ impl Streams {
 
     /// Listing of logstream names that parseable is aware of
     pub fn list(&self) -> Vec<LogStream> {
-        self.read()
-            .expect(LOCK_EXPECT)
-            .keys()
-            .map(String::clone)
-            .collect()
+        self.read().keys().map(String::clone).collect()
     }
 
     pub fn list_internal_streams(&self) -> Vec<String> {
-        let map = self.read().expect(LOCK_EXPECT);
+        let map = self.read();
 
         map.iter()
-            .filter(|(_, stream)| {
-                stream.metadata.read().expect(LOCK_EXPECT).stream_type == StreamType::Internal
-            })
+            .filter(|(_, stream)| stream.metadata.read().stream_type == StreamType::Internal)
             .map(|(k, _)| k.clone())
             .collect()
     }
@@ -1101,12 +1058,7 @@ impl Streams {
         init_signal: bool,
         shutdown_signal: bool,
     ) {
-        let streams: Vec<Arc<Stream>> = self
-            .read()
-            .expect(LOCK_EXPECT)
-            .values()
-            .map(Arc::clone)
-            .collect();
+        let streams: Vec<Arc<Stream>> = self.read().values().map(Arc::clone).collect();
         for stream in streams {
             joinset.spawn(async move { stream.flush_and_convert(init_signal, shutdown_signal) });
         }
@@ -1571,7 +1523,7 @@ mod tests {
         assert!(Arc::ptr_eq(&stream1, &stream2));
 
         // Verify the map contains only one entry
-        let guard = streams.read().expect("Failed to acquire read lock");
+        let guard = streams.read();
         assert_eq!(guard.len(), 1);
     }
 
@@ -1584,7 +1536,7 @@ mod tests {
         let ingestor_id = Some("new_ingestor".to_owned());
 
         // Assert the stream doesn't exist already
-        let guard = streams.read().expect("Failed to acquire read lock");
+        let guard = streams.read();
         assert_eq!(guard.len(), 0);
         assert!(!guard.contains_key(stream_name));
         drop(guard);
@@ -1601,7 +1553,7 @@ mod tests {
         assert_eq!(stream.ingestor_id, ingestor_id);
 
         // Assert that the stream is created
-        let guard = streams.read().expect("Failed to acquire read lock");
+        let guard = streams.read();
         assert_eq!(guard.len(), 1);
         assert!(guard.contains_key(stream_name));
     }
@@ -1648,7 +1600,7 @@ mod tests {
         assert!(Arc::ptr_eq(&stream1, &stream2));
 
         // Verify the map contains only one entry
-        let guard = streams.read().expect("Failed to acquire read lock");
+        let guard = streams.read();
         assert_eq!(guard.len(), 1);
     }
 }

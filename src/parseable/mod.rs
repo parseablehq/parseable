@@ -196,7 +196,6 @@ impl Parseable {
     pub fn get_stream(&self, stream_name: &str) -> Result<StreamRef, StreamNotFound> {
         self.streams
             .read()
-            .unwrap()
             .get(stream_name)
             .ok_or_else(|| StreamNotFound(stream_name.to_owned()))
             .cloned()
