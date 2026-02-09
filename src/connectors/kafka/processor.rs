@@ -58,6 +58,7 @@ impl ParseableSinkProcessor {
                 None,
                 vec![log_source_entry],
                 TelemetryType::default(),
+                None,
             )
             .await?;
 

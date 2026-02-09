@@ -35,6 +35,7 @@ pub const AUTHORIZATION_KEY: &str = "authorization";
 pub const UPDATE_STREAM_KEY: &str = "x-p-update-stream";
 pub const STREAM_TYPE_KEY: &str = "x-p-stream-type";
 pub const TELEMETRY_TYPE_KEY: &str = "x-p-telemetry-type";
+pub const DATASET_TAG_KEY: &str = "x-p-dataset-tag";
 const COOKIE_AGE_DAYS: usize = 7;
 const SESSION_COOKIE_NAME: &str = "session";
 const USER_COOKIE_NAME: &str = "username";
@@ -78,6 +79,40 @@ impl Display for TelemetryType {
             TelemetryType::Metrics => "metrics",
             TelemetryType::Traces => "traces",
             TelemetryType::Events => "events",
+        })
+    }
+}
+
+/// Tag for categorizing datasets/streams by observability domain
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DatasetTag {
+    AgentObservability,
+    K8sObservability,
+    DatabaseObservability,
+}
+
+impl TryFrom<&str> for DatasetTag {
+    type Error = &'static str;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        match s.to_lowercase().as_str() {
+            "agent-observability" => Ok(DatasetTag::AgentObservability),
+            "k8s-observability" => Ok(DatasetTag::K8sObservability),
+            "database-observability" => Ok(DatasetTag::DatabaseObservability),
+            _ => Err(
+                "Invalid dataset tag. Supported values: agent-observability, k8s-observability, database-observability",
+            ),
+        }
+    }
+}
+
+impl Display for DatasetTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            DatasetTag::AgentObservability => "agent-observability",
+            DatasetTag::K8sObservability => "k8s-observability",
+            DatasetTag::DatabaseObservability => "database-observability",
         })
     }
 }

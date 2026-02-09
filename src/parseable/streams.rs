@@ -53,6 +53,7 @@ use crate::{
         DEFAULT_TIMESTAMP_KEY,
         format::{LogSource, LogSourceEntry},
     },
+    handlers::DatasetTag,
     hottier::StreamHotTier,
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
@@ -946,6 +947,10 @@ impl Stream {
 
     pub fn get_log_source(&self) -> Vec<LogSourceEntry> {
         self.metadata.read().expect(LOCK_EXPECT).log_source.clone()
+    }
+
+    pub fn get_dataset_tag(&self) -> Option<DatasetTag> {
+        self.metadata.read().expect(LOCK_EXPECT).dataset_tag
     }
 
     pub fn add_log_source(&self, log_source: LogSourceEntry) {

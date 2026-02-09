@@ -142,6 +142,7 @@ pub async fn calculate_field_stats(
             Some(&DATASET_STATS_CUSTOM_PARTITION.to_string()),
             vec![log_source_entry],
             TelemetryType::Logs,
+            None,
         )
         .await?;
     let vec_json = apply_generic_flattening_for_partition(
