@@ -26,7 +26,6 @@ use std::sync::Arc;
 
 use self::error::EventError;
 use crate::{
-    LOCK_EXPECT,
     handlers::TelemetryType,
     metadata::update_stats,
     metrics::{increment_events_ingested_by_date, increment_events_ingested_size_by_date},
@@ -127,14 +126,13 @@ pub fn get_schema_key(fields: &[Arc<Field>]) -> String {
 }
 
 pub fn commit_schema(stream_name: &str, schema: Arc<Schema>) -> Result<(), StagingError> {
-    let mut stream_metadata = PARSEABLE.streams.write().expect("lock poisoned");
+    let mut stream_metadata = PARSEABLE.streams.write();
 
     let map = &mut stream_metadata
         .get_mut(stream_name)
         .ok_or_else(|| StagingError::NotFound(stream_name.to_string()))?
         .metadata
         .write()
-        .expect(LOCK_EXPECT)
         .schema;
     let current_schema = Schema::new(map.values().cloned().collect::<Fields>());
     let schema = Schema::try_merge(vec![current_schema, schema.as_ref().clone()])?;

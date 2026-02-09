@@ -26,7 +26,6 @@ use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::{
-    LOCK_EXPECT,
     handlers::http::{
         cluster::{
             fetch_stats_from_ingestors,
@@ -168,13 +167,12 @@ pub async fn get_stream_info_helper(stream_name: &str) -> Result<StreamInfo, Str
         }
     };
 
-    let hash_map = PARSEABLE.streams.read().unwrap();
+    let hash_map = PARSEABLE.streams.read();
     let stream_meta = hash_map
         .get(stream_name)
         .ok_or_else(|| StreamNotFound(stream_name.to_owned()))?
         .metadata
-        .read()
-        .expect(LOCK_EXPECT);
+        .read();
 
     let stream_info =
         StreamInfo::from_metadata(&stream_meta, stream_first_event_at, stream_latest_event_at);
