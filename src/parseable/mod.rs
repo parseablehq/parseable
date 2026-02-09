@@ -47,7 +47,7 @@ use crate::{
         format::{LogSource, LogSourceEntry},
     },
     handlers::{
-        STREAM_TYPE_KEY, TelemetryType,
+        DatasetTag, STREAM_TYPE_KEY, TelemetryType,
         http::{
             cluster::{
                 BILLING_METRICS_STREAM_NAME, PMETA_STREAM_NAME, sync_streams_with_ingestors,
@@ -365,6 +365,7 @@ impl Parseable {
         let schema_version = stream_metadata.schema_version;
         let log_source = stream_metadata.log_source;
         let telemetry_type = stream_metadata.telemetry_type;
+        let dataset_tag = stream_metadata.dataset_tag;
         let mut metadata = LogStreamMetadata::new(
             created_at,
             time_partition,
@@ -376,6 +377,7 @@ impl Parseable {
             schema_version,
             log_source,
             telemetry_type,
+            dataset_tag,
         );
 
         // Set hot tier fields from the stored metadata
@@ -414,6 +416,7 @@ impl Parseable {
                 None,
                 vec![log_source_entry],
                 TelemetryType::Logs,
+                None,
             )
             .await;
 
@@ -425,6 +428,7 @@ impl Parseable {
                 None,
                 vec![log_source_entry],
                 TelemetryType::Logs,
+                None,
             )
             .await;
 
@@ -476,6 +480,7 @@ impl Parseable {
         custom_partition: Option<&String>,
         log_source: Vec<LogSourceEntry>,
         telemetry_type: TelemetryType,
+        dataset_tag: Option<DatasetTag>,
     ) -> Result<bool, PostError> {
         if self.streams.contains(stream_name) {
             return Ok(true);
@@ -507,6 +512,7 @@ impl Parseable {
             stream_type,
             log_source,
             telemetry_type,
+            dataset_tag,
         )
         .await?;
 
@@ -579,6 +585,7 @@ impl Parseable {
             stream_type,
             log_source,
             telemetry_type,
+            dataset_tag,
         } = headers.into();
 
         let stream_in_memory_dont_update =
@@ -648,6 +655,7 @@ impl Parseable {
             stream_type,
             vec![log_source_entry],
             telemetry_type,
+            dataset_tag,
         )
         .await?;
 
@@ -705,6 +713,7 @@ impl Parseable {
         stream_type: StreamType,
         log_source: Vec<LogSourceEntry>,
         telemetry_type: TelemetryType,
+        dataset_tag: Option<DatasetTag>,
     ) -> Result<(), CreateStreamError> {
         // fail to proceed if invalid stream name
         if stream_type != StreamType::Internal {
@@ -728,6 +737,7 @@ impl Parseable {
             },
             log_source: log_source.clone(),
             telemetry_type,
+            dataset_tag,
             ..Default::default()
         };
 
@@ -757,6 +767,7 @@ impl Parseable {
                     SchemaVersion::V1, // New stream
                     log_source,
                     telemetry_type,
+                    dataset_tag,
                 );
                 let ingestor_id = INGESTOR_META
                     .get()
