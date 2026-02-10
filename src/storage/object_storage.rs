@@ -20,6 +20,7 @@ use arrow_schema::Schema;
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
+use datafusion::config::ExtensionOptions;
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use object_store::ListResult;
 use object_store::ObjectMeta;
@@ -248,7 +249,7 @@ async fn validate_uploaded_parquet_file(
     }
 }
 
-pub trait ObjectStorageProvider: std::fmt::Debug + Send + Sync {
+pub trait ObjectStorageProvider: std::fmt::Debug + Send + Sync + ExtensionOptions {
     fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder;
     fn construct_client(&self) -> Arc<dyn ObjectStorage>;
     fn get_object_store(&self) -> Arc<dyn ObjectStorage> {

@@ -46,6 +46,7 @@ use datafusion::{
 };
 use futures_util::TryFutureExt;
 use itertools::Itertools;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     catalog::{
@@ -99,8 +100,8 @@ impl SchemaProvider for GlobalSchemaProvider {
     }
 }
 
-#[derive(Debug)]
-struct StandardTableProvider {
+#[derive(Debug, Serialize, Deserialize)]
+pub struct StandardTableProvider {
     schema: SchemaRef,
     // prefix under which to find snapshot
     stream: String,
