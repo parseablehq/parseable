@@ -81,7 +81,6 @@ fn collect_json_from_array_value(array_value: &ArrayValue) -> Value {
                 OtelValue::BoolValue(b) => json_array.push(Value::Bool(*b)),
                 OtelValue::IntValue(i) => {
                     json_array.push(Value::String(i.to_string()));
-                    json_array.push(Value::Number(serde_json::Number::from(*i)))
                 }
                 OtelValue::DoubleValue(d) => {
                     json_array.push(Value::String(d.to_string()));
