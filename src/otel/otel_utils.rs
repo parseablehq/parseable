@@ -36,9 +36,7 @@ pub fn collect_json_from_value(key: &String, value: OtelValue) -> Map<String, Va
             value_json.insert(key.to_string(), Value::String(int_val.to_string()));
         }
         OtelValue::DoubleValue(double_val) => {
-            if let Some(number) = serde_json::Number::from_f64(double_val) {
-                value_json.insert(key.to_string(), Value::Number(number));
-            }
+            value_json.insert(key.to_string(), Value::String(double_val.to_string()));
         }
         OtelValue::ArrayValue(array_val) => {
             let json_array_value = collect_json_from_array_value(&array_val);
@@ -82,12 +80,11 @@ fn collect_json_from_array_value(array_value: &ArrayValue) -> Value {
                 OtelValue::StringValue(s) => json_array.push(Value::String(s.clone())),
                 OtelValue::BoolValue(b) => json_array.push(Value::Bool(*b)),
                 OtelValue::IntValue(i) => {
+                    json_array.push(Value::String(i.to_string()));
                     json_array.push(Value::Number(serde_json::Number::from(*i)))
                 }
                 OtelValue::DoubleValue(d) => {
-                    if let Some(n) = serde_json::Number::from_f64(*d) {
-                        json_array.push(Value::Number(n));
-                    }
+                    json_array.push(Value::String(d.to_string()));
                 }
                 OtelValue::BytesValue(b) => {
                     json_array.push(Value::String(String::from_utf8_lossy(b).to_string()));
