@@ -58,14 +58,14 @@ use crate::alerts::alert_types::ThresholdAlert;
 use crate::alerts::target::{NotificationConfig, TARGETS};
 use crate::handlers::http::fetch_schema;
 use crate::metastore::MetastoreError;
-use crate::parseable::{PARSEABLE, StreamNotFound};
+use crate::parseable::{DEFAULT_TENANT, PARSEABLE, StreamNotFound};
 use crate::query::{QUERY_SESSION, resolve_stream_names};
 use crate::rbac::map::{SessionKey, sessions};
 use crate::sse::{SSE_HANDLER, SSEAlertInfo, SSEEvent};
 use crate::storage;
 use crate::storage::ObjectStorageError;
 use crate::sync::alert_runtime;
-use crate::utils::user_auth_for_query;
+use crate::utils::{get_tenant_id_from_key, user_auth_for_query};
 
 // these types describe the scheduled task for an alert
 pub type ScheduledTaskHandlers = (JoinHandle<()>, Receiver<()>, Sender<()>);
@@ -104,11 +104,14 @@ pub fn create_default_alerts_manager() -> Alerts {
 
 impl AlertConfig {
     /// Migration function to convert v1 alerts to v2 structure
-    pub async fn migrate_from_v1(alert_json: &JsonValue) -> Result<AlertConfig, AlertError> {
+    pub async fn migrate_from_v1(
+        alert_json: &JsonValue,
+        tenant_id: &Option<String>,
+    ) -> Result<AlertConfig, AlertError> {
         let basic_fields = Self::parse_basic_fields(alert_json)?;
         let alert_info = format!("Alert '{}' (ID: {})", basic_fields.title, basic_fields.id);
 
-        let query = Self::build_query_from_v1(alert_json, &alert_info).await?;
+        let query = Self::build_query_from_v1(alert_json, &alert_info, tenant_id).await?;
         let datasets = resolve_stream_names(&query)?;
         let threshold_config = Self::extract_threshold_config(alert_json, &alert_info)?;
         let eval_config = Self::extract_eval_config(alert_json, &alert_info)?;
@@ -134,10 +137,14 @@ impl AlertConfig {
             tags: None,
             last_triggered_at: None,
             other_fields: None,
+            tenant_id: tenant_id.clone(),
         };
 
         // Save the migrated alert back to storage
-        PARSEABLE.metastore.put_alert(&migrated_alert).await?;
+        PARSEABLE
+            .metastore
+            .put_alert(&migrated_alert, tenant_id)
+            .await?;
 
         Ok(migrated_alert)
     }
@@ -180,6 +187,7 @@ impl AlertConfig {
     async fn build_query_from_v1(
         alert_json: &JsonValue,
         alert_info: &str,
+        tenant_id: &Option<String>,
     ) -> Result<String, AlertError> {
         let stream = alert_json["stream"].as_str().ok_or_else(|| {
             AlertError::CustomError(format!("Missing stream in v1 alert for {alert_info}"))
@@ -192,7 +200,8 @@ impl AlertConfig {
         let base_query =
             Self::build_base_query(&aggregate_function, aggregate_config, stream, alert_info)?;
         let final_query =
-            Self::add_where_conditions(base_query, aggregate_config, stream, alert_info).await?;
+            Self::add_where_conditions(base_query, aggregate_config, stream, alert_info, tenant_id)
+                .await?;
 
         Ok(final_query)
     }
@@ -267,6 +276,7 @@ impl AlertConfig {
         aggregate_config: &JsonValue,
         stream: &str,
         alert_info: &str,
+        tenant_id: &Option<String>,
     ) -> Result<String, AlertError> {
         let Some(conditions) = aggregate_config["conditions"].as_object() else {
             return Ok(base_query);
@@ -281,7 +291,7 @@ impl AlertConfig {
         }
 
         // Fetch the stream schema for data type conversion
-        let schema = match fetch_schema(stream).await {
+        let schema = match fetch_schema(stream, tenant_id).await {
             Ok(schema) => schema,
             Err(e) => {
                 return Err(AlertError::CustomError(format!(
@@ -608,15 +618,15 @@ impl AlertConfig {
         context.message.clone_from(&message);
 
         for target_id in &self.targets {
-            let target = TARGETS.get_target_by_id(target_id).await?;
+            let target = TARGETS.get_target_by_id(target_id, &self.tenant_id).await?;
             trace!("Target (trigger_notifications)-\n{target:?}");
             target.call(context.clone());
         }
 
         // get active sessions
-        let active_sessions = sessions().get_active_sessions();
+        let active_session = sessions().get_active_sessions();
         let mut broadcast_to = vec![];
-        for session in active_sessions {
+        for (session, _, _) in active_session {
             if user_auth_for_query(&session, &self.query).await.is_ok()
                 && let SessionKey::SessionId(id) = &session
             {
@@ -722,7 +732,7 @@ impl AlertConfig {
 
 /// Check if a query is an aggregate query that returns a single value without executing it
 pub async fn get_number_of_agg_exprs(query: &str) -> Result<usize, AlertError> {
-    let session_state = QUERY_SESSION.state();
+    let session_state = QUERY_SESSION.get_ctx().state();
 
     // Parse the query into a logical plan
     let logical_plan = session_state
@@ -736,7 +746,7 @@ pub async fn get_number_of_agg_exprs(query: &str) -> Result<usize, AlertError> {
 
 /// Extract the projection which deals with aggregation
 pub async fn get_aggregate_projection(query: &str) -> Result<String, AlertError> {
-    let session_state = QUERY_SESSION.state();
+    let session_state = QUERY_SESSION.get_ctx().state();
 
     // Parse the query into a logical plan
     let logical_plan = session_state
@@ -1032,92 +1042,104 @@ impl AlertManagerTrait for Alerts {
 
         let mut map = self.alerts.write().await;
 
-        for raw_bytes in raw_objects {
-            // First, try to parse as JSON Value to check version
-            let json_value: JsonValue = match serde_json::from_slice(&raw_bytes) {
-                Ok(val) => val,
-                Err(e) => {
-                    error!("Failed to parse alert JSON: {e}");
-                    continue;
-                }
+        for (tenant_id, raw_bytes) in raw_objects {
+            let tenant = if tenant_id.is_empty() {
+                &None
+            } else {
+                &Some(tenant_id.clone())
             };
+            for alert_bytes in raw_bytes {
+                // First, try to parse as JSON Value to check version
+                let json_value: JsonValue = match serde_json::from_slice(&alert_bytes) {
+                    Ok(val) => val,
+                    Err(e) => {
+                        error!("Failed to parse alert JSON: {e}");
+                        continue;
+                    }
+                };
 
-            // Check version and handle migration
-            let alert = if let Some(version_str) = json_value["version"].as_str() {
-                if version_str == "v1"
-                    || json_value["query"].is_null()
-                    || json_value.get("stream").is_some()
-                {
-                    // This is a v1 alert that needs migration
-                    match AlertConfig::migrate_from_v1(&json_value).await {
-                        Ok(migrated) => migrated,
-                        Err(e) => {
-                            error!("Failed to migrate v1 alert: {e}");
-                            continue;
+                // Check version and handle migration
+                let mut alert = if let Some(version_str) = json_value["version"].as_str() {
+                    if version_str == "v1"
+                        || json_value["query"].is_null()
+                        || json_value.get("stream").is_some()
+                    {
+                        // This is a v1 alert that needs migration
+                        match AlertConfig::migrate_from_v1(&json_value, tenant).await {
+                            Ok(migrated) => migrated,
+                            Err(e) => {
+                                error!("Failed to migrate v1 alert: {e}");
+                                continue;
+                            }
+                        }
+                    } else {
+                        // Try to parse as v2
+                        match serde_json::from_value::<AlertConfig>(json_value) {
+                            Ok(alert) => alert,
+                            Err(e) => {
+                                error!("Failed to parse v2 alert: {e}");
+                                continue;
+                            }
                         }
                     }
                 } else {
-                    // Try to parse as v2
-                    match serde_json::from_value::<AlertConfig>(json_value) {
-                        Ok(alert) => alert,
+                    // No version field, assume v1 and migrate
+                    warn!("Found alert without version field, assuming v1 and migrating");
+                    match AlertConfig::migrate_from_v1(&json_value, tenant).await {
+                        Ok(migrated) => migrated,
                         Err(e) => {
-                            error!("Failed to parse v2 alert: {e}");
+                            error!("Failed to migrate alert without version: {e}");
                             continue;
                         }
                     }
+                };
+
+                // ensure that alert config's tenant is correctly set
+                alert.tenant_id.clone_from(tenant);
+
+                let alert: Box<dyn AlertTrait> = match &alert.alert_type {
+                    AlertType::Threshold => {
+                        Box::new(ThresholdAlert::from(alert)) as Box<dyn AlertTrait>
+                    }
+                    AlertType::Anomaly(_) => {
+                        return Err(anyhow::Error::msg(
+                            AlertError::NotPresentInOSS("anomaly").to_string(),
+                        ));
+                    }
+                    AlertType::Forecast(_) => {
+                        return Err(anyhow::Error::msg(
+                            AlertError::NotPresentInOSS("forecast").to_string(),
+                        ));
+                    }
+                };
+
+                // Create alert task iff alert's state is not paused
+                if alert.get_state().eq(&AlertState::Disabled) {
+                    map.entry(tenant_id.clone())
+                        .or_default()
+                        .insert(*alert.get_id(), alert);
+                    continue;
                 }
-            } else {
-                // No version field, assume v1 and migrate
-                warn!("Found alert without version field, assuming v1 and migrating");
-                match AlertConfig::migrate_from_v1(&json_value).await {
-                    Ok(migrated) => migrated,
+
+                match self.sender.send(AlertTask::Create(alert.clone_box())).await {
+                    Ok(_) => {}
                     Err(e) => {
-                        error!("Failed to migrate alert without version: {e}");
-                        continue;
-                    }
-                }
-            };
-
-            let alert: Box<dyn AlertTrait> = match &alert.alert_type {
-                AlertType::Threshold => {
-                    Box::new(ThresholdAlert::from(alert)) as Box<dyn AlertTrait>
-                }
-                AlertType::Anomaly(_) => {
-                    return Err(anyhow::Error::msg(
-                        AlertError::NotPresentInOSS("anomaly").to_string(),
-                    ));
-                }
-                AlertType::Forecast(_) => {
-                    return Err(anyhow::Error::msg(
-                        AlertError::NotPresentInOSS("forecast").to_string(),
-                    ));
-                }
-            };
-
-            // Create alert task iff alert's state is not paused
-            if alert.get_state().eq(&AlertState::Disabled) {
-                map.insert(*alert.get_id(), alert);
-                continue;
-            }
-
-            match self.sender.send(AlertTask::Create(alert.clone_box())).await {
-                Ok(_) => {}
-                Err(e) => {
-                    warn!("Failed to create alert task: {e}\nRetrying...");
-                    // Retry sending the task
-                    match self.sender.send(AlertTask::Create(alert.clone_box())).await {
-                        Ok(_) => {}
-                        Err(e) => {
-                            error!("Failed to create alert task: {e}");
-                            continue;
+                        warn!("Failed to create alert task: {e}\nRetrying...");
+                        // Retry sending the task
+                        match self.sender.send(AlertTask::Create(alert.clone_box())).await {
+                            Ok(_) => {}
+                            Err(e) => {
+                                error!("Failed to create alert task: {e}");
+                                continue;
+                            }
                         }
                     }
-                }
-            };
-
-            map.insert(*alert.get_id(), alert);
+                };
+                map.entry(tenant_id.clone())
+                    .or_default()
+                    .insert(*alert.get_id(), alert);
+            }
         }
-
         Ok(())
     }
 
@@ -1127,13 +1149,23 @@ impl AlertManagerTrait for Alerts {
         session: SessionKey,
         tags: Vec<String>,
     ) -> Result<Vec<AlertConfig>, AlertError> {
+        let tenant_id = get_tenant_id_from_key(&session);
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         // First, collect all alerts without performing auth checks to avoid holding the lock
         let all_alerts: Vec<AlertConfig> = {
             let alerts_guard = self.alerts.read().await;
-            alerts_guard
-                .values()
-                .map(|alert| alert.to_alert_config())
-                .collect()
+            if let Some(alerts) = alerts_guard.get(tenant) {
+                alerts
+                    .values()
+                    .map(|alert| alert.to_alert_config())
+                    .collect()
+            } else {
+                vec![]
+            }
+            // alerts_guard
+            //     .values()
+            //     .map(|alert| alert.to_alert_config())
+            //     .collect()
         };
         // Lock is released here, now perform expensive auth checks
 
@@ -1189,9 +1221,16 @@ impl AlertManagerTrait for Alerts {
     }
 
     /// Returns a single alert that the user has access to (based on query auth)
-    async fn get_alert_by_id(&self, id: Ulid) -> Result<Box<dyn AlertTrait>, AlertError> {
+    async fn get_alert_by_id(
+        &self,
+        id: Ulid,
+        tenant_id: &Option<String>,
+    ) -> Result<Box<dyn AlertTrait>, AlertError> {
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let read_access = self.alerts.read().await;
-        if let Some(alert) = read_access.get(&id) {
+        if let Some(alerts) = read_access.get(tenant)
+            && let Some(alert) = alerts.get(&id)
+        {
             Ok(alert.clone_box())
         } else {
             Err(AlertError::CustomError(format!(
@@ -1202,9 +1241,12 @@ impl AlertManagerTrait for Alerts {
 
     /// Update the in-mem vector of alerts
     async fn update(&self, alert: &dyn AlertTrait) {
+        let tenant = alert.get_tenant_id().as_deref().unwrap_or(DEFAULT_TENANT);
         self.alerts
             .write()
             .await
+            .entry(tenant.to_owned())
+            .or_default()
             .insert(*alert.get_id(), alert.clone_box());
     }
 
@@ -1214,10 +1256,14 @@ impl AlertManagerTrait for Alerts {
         alert_id: Ulid,
         new_state: AlertState,
         trigger_notif: Option<String>,
+        tenant_id: &Option<String>,
     ) -> Result<(), AlertError> {
         let (mut alert, should_delete_task, should_create_task) = {
             let read_access = self.alerts.read().await;
-            let alert = if let Some(alert) = read_access.get(&alert_id) {
+            let alert = if let Some(alerts) =
+                read_access.get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+                && let Some(alert) = alerts.get(&alert_id)
+            {
                 match &alert.get_alert_type() {
                     AlertType::Threshold => Box::new(ThresholdAlert::from(alert.to_alert_config()))
                         as Box<dyn AlertTrait>,
@@ -1233,6 +1279,22 @@ impl AlertManagerTrait for Alerts {
                     "No alert found for the given ID- {alert_id}"
                 )));
             };
+            // let alert = if let Some(alert) = read_access.get(&alert_id) {
+            //     match &alert.get_alert_type() {
+            //         AlertType::Threshold => Box::new(ThresholdAlert::from(alert.to_alert_config()))
+            //             as Box<dyn AlertTrait>,
+            //         AlertType::Anomaly(_) => {
+            //             return Err(AlertError::NotPresentInOSS("anomaly"));
+            //         }
+            //         AlertType::Forecast(_) => {
+            //             return Err(AlertError::NotPresentInOSS("forecast"));
+            //         }
+            //     }
+            // } else {
+            //     return Err(AlertError::CustomError(format!(
+            //         "No alert found for the given ID- {alert_id}"
+            //     )));
+            // };
 
             let current_state = *alert.get_state();
             let should_delete_task =
@@ -1268,7 +1330,12 @@ impl AlertManagerTrait for Alerts {
         // Finally, update the in-memory state with a brief write lock
         {
             let mut write_access = self.alerts.write().await;
-            write_access.insert(*alert.get_id(), alert.clone_box());
+
+            let tenant = alert.get_tenant_id().as_deref().unwrap_or(DEFAULT_TENANT);
+            if let Some(alerts) = write_access.get_mut(tenant) {
+                alerts.insert(*alert.get_id(), alert.clone_box());
+            }
+            // write_access.insert(*alert.get_id(), alert.clone_box());
         }
 
         Ok(())
@@ -1279,10 +1346,14 @@ impl AlertManagerTrait for Alerts {
         &self,
         alert_id: Ulid,
         new_notification_state: NotificationState,
+        tenant_id: &Option<String>,
     ) -> Result<(), AlertError> {
         // read and modify alert
         let mut write_access = self.alerts.write().await;
-        let mut alert: Box<dyn AlertTrait> = if let Some(alert) = write_access.get(&alert_id) {
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let mut alert: Box<dyn AlertTrait> = if let Some(alerts) = write_access.get(tenant)
+            && let Some(alert) = alerts.get(&alert_id)
+        {
             match &alert.get_alert_type() {
                 AlertType::Threshold => {
                     Box::new(ThresholdAlert::from(alert.to_alert_config())) as Box<dyn AlertTrait>
@@ -1303,26 +1374,39 @@ impl AlertManagerTrait for Alerts {
         alert
             .update_notification_state(new_notification_state)
             .await?;
-        write_access.insert(*alert.get_id(), alert.clone_box());
+        if let Some(alerts) = write_access.get_mut(tenant) {
+            alerts.insert(*alert.get_id(), alert.clone_box());
+        }
 
         Ok(())
     }
 
     /// Remove alert and scheduled task from disk and memory
-    async fn delete(&self, alert_id: Ulid) -> Result<(), AlertError> {
-        if self.alerts.write().await.remove(&alert_id).is_some() {
+    async fn delete(&self, alert_id: Ulid, tenant_id: &Option<String>) -> Result<(), AlertError> {
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        if let Some(alerts) = self.alerts.write().await.get_mut(tenant)
+            && alerts.remove(&alert_id).is_some()
+        {
             trace!("removed alert from memory");
         } else {
             warn!("Alert ID- {alert_id} not found in memory!");
         }
+
         Ok(())
     }
 
     /// Get state of alert using alert_id
-    async fn get_state(&self, alert_id: Ulid) -> Result<AlertState, AlertError> {
+    async fn get_state(
+        &self,
+        alert_id: Ulid,
+        tenant_id: &Option<String>,
+    ) -> Result<AlertState, AlertError> {
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let read_access = self.alerts.read().await;
 
-        if let Some(alert) = read_access.get(&alert_id) {
+        if let Some(alerts) = read_access.get(tenant)
+            && let Some(alert) = alerts.get(&alert_id)
+        {
             Ok(*alert.get_state())
         } else {
             let msg = format!("No alert present for ID- {alert_id}");
@@ -1351,21 +1435,35 @@ impl AlertManagerTrait for Alerts {
 
     /// List tags from all alerts
     /// This function returns a list of unique tags from all alerts
-    async fn list_tags(&self) -> Vec<String> {
-        let alerts = self.alerts.read().await;
-        let mut tags = alerts
-            .iter()
-            .filter_map(|(_, alert)| alert.get_tags().as_ref())
-            .flat_map(|t| t.iter().cloned())
-            .collect::<Vec<String>>();
+    async fn list_tags(&self, tenant_id: &Option<String>) -> Vec<String> {
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        // let alerts = self.alerts.read().await;
+        let mut tags = if let Some(alerts) = self.alerts.read().await.get(tenant) {
+            alerts
+                .iter()
+                .filter_map(|(_, alert)| alert.get_tags().as_ref())
+                .flat_map(|t| t.iter().cloned())
+                .collect::<Vec<String>>()
+        } else {
+            vec![]
+        };
         tags.sort();
         tags.dedup();
         tags
     }
 
-    async fn get_all_alerts(&self) -> HashMap<Ulid, Box<dyn AlertTrait>> {
-        let alerts = self.alerts.read().await;
-        alerts.iter().map(|(k, v)| (*k, v.clone_box())).collect()
+    async fn get_all_alerts(
+        &self,
+        tenant_id: &Option<String>,
+    ) -> HashMap<Ulid, Box<dyn AlertTrait>> {
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        if let Some(alerts) = self.alerts.read().await.get(tenant) {
+            alerts.iter().map(|(k, v)| (*k, v.clone_box())).collect()
+        } else {
+            HashMap::new()
+        }
+        // let alerts = self.alerts.read().await;
+        // alerts.iter().map(|(k, v)| (*k, v.clone_box())).collect()
     }
 }
 

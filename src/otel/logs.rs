@@ -138,7 +138,7 @@ pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
 
 /// this function flattens the `ScopeLogs` object
 /// and returns a `Vec` of `Map` of the flattened json
-fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<Map<String, Value>> {
+fn flatten_scope_log(scope_log: &ScopeLogs, tenant_id: &str) -> Vec<Map<String, Value>> {
     let mut vec_scope_log_json = Vec::new();
     let mut scope_log_json = Map::new();
     if let Some(scope) = &scope_log.scope {
@@ -166,7 +166,7 @@ fn flatten_scope_log(scope_log: &ScopeLogs) -> Vec<Map<String, Value>> {
     }
 
     let date = chrono::Utc::now().date_naive().to_string();
-    increment_logs_collected_by_date(scope_log.log_records.len() as u64, &date);
+    increment_logs_collected_by_date(scope_log.log_records.len() as u64, &date, tenant_id);
 
     vec_scope_log_json
 }
@@ -177,6 +177,7 @@ fn process_resource_logs<T>(
     get_resource: fn(&T) -> Option<&opentelemetry_proto::tonic::resource::v1::Resource>,
     get_scope_logs: fn(&T) -> &[ScopeLogs],
     get_schema_url: fn(&T) -> &str,
+    tenant_id: &str,
 ) -> Vec<Value>
 where
     T: std::fmt::Debug,
@@ -199,7 +200,7 @@ where
         let scope_logs = get_scope_logs(resource_log);
 
         for scope_log in scope_logs {
-            vec_resource_logs_json.extend(flatten_scope_log(scope_log));
+            vec_resource_logs_json.extend(flatten_scope_log(scope_log, tenant_id));
         }
 
         resource_log_json.insert(
@@ -216,22 +217,24 @@ where
     vec_otel_json
 }
 
-pub fn flatten_otel_protobuf(message: &ExportLogsServiceRequest) -> Vec<Value> {
+pub fn flatten_otel_protobuf(message: &ExportLogsServiceRequest, tenant_id: &str) -> Vec<Value> {
     process_resource_logs(
         &message.resource_logs,
         |record| record.resource.as_ref(),
         |record| &record.scope_logs,
         |record| &record.schema_url,
+        tenant_id,
     )
 }
 
 /// this function performs the custom flattening of the otel logs
 /// and returns a `Vec` of `Value::Object` of the flattened json
-pub fn flatten_otel_logs(message: &LogsData) -> Vec<Value> {
+pub fn flatten_otel_logs(message: &LogsData, tenant_id: &str) -> Vec<Value> {
     process_resource_logs(
         &message.resource_logs,
         |record| record.resource.as_ref(),
         |record| &record.scope_logs,
         |record| &record.schema_url,
+        tenant_id,
     )
 }

@@ -19,59 +19,73 @@
 use std::collections::HashSet;
 
 use actix_web::{
-    HttpResponse, Responder,
+    HttpRequest, HttpResponse, Responder,
     web::{self, Json},
 };
 
 use crate::{
     handlers::http::{
-        cluster::sync_role_update_with_ingestors,
+        cluster::sync_role_update,
         modal::utils::rbac_utils::{get_metadata, put_metadata},
         role::RoleError,
     },
+    parseable::DEFAULT_TENANT,
     rbac::{
         map::{mut_roles, mut_sessions, read_user_groups, users},
         role::model::DefaultPrivilege,
     },
+    utils::get_tenant_id_from_request,
     validator,
 };
 
 // Handler for PUT /api/v1/role/{name}
 // Creates a new role or update existing one
 pub async fn put(
+    req: HttpRequest,
     name: web::Path<String>,
     Json(privileges): Json<Vec<DefaultPrivilege>>,
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
+    let tenant_id = get_tenant_id_from_request(&req);
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     // validate the role name
     validator::user_role_name(&name).map_err(RoleError::ValidationError)?;
-    let mut metadata = get_metadata().await?;
+    let mut metadata = get_metadata(&tenant_id).await?;
     metadata.roles.insert(name.clone(), privileges.clone());
 
-    put_metadata(&metadata).await?;
-    mut_roles().insert(name.clone(), privileges.clone());
+    put_metadata(&metadata, &tenant_id).await?;
+    mut_roles()
+        .entry(tenant.to_owned())
+        .or_default()
+        .insert(name.clone(), privileges.clone());
+    // mut_roles().insert(name.clone(), privileges.clone());
 
     // refresh the sessions of all users using this role
     // for this, iterate over all user_groups and users and create a hashset of users
     let mut session_refresh_users: HashSet<String> = HashSet::new();
-    for user_group in read_user_groups().values() {
-        if user_group.roles.contains(&name) {
-            session_refresh_users.extend(user_group.users.iter().map(|u| u.userid().to_string()));
+    if let Some(groups) = read_user_groups().get(tenant) {
+        for user_group in groups.values() {
+            if user_group.roles.contains(&name) {
+                session_refresh_users
+                    .extend(user_group.users.iter().map(|u| u.userid().to_string()));
+            }
         }
     }
 
     // iterate over all users to see if they have this role
-    for user in users().values() {
-        if user.roles.contains(&name) {
-            session_refresh_users.insert(user.userid().to_string());
+    if let Some(users) = users().get(tenant) {
+        for user in users.values() {
+            if user.roles.contains(&name) {
+                session_refresh_users.insert(user.userid().to_string());
+            }
         }
     }
 
     for userid in session_refresh_users {
-        mut_sessions().remove_user(&userid);
+        mut_sessions().remove_user(&userid, tenant);
     }
 
-    sync_role_update_with_ingestors(name.clone(), privileges.clone()).await?;
+    sync_role_update(name.clone(), privileges.clone(), &tenant_id).await?;
 
     Ok(HttpResponse::Ok().finish())
 }

@@ -16,9 +16,6 @@
  *
  */
 
-use actix_web::http::header::HeaderMap;
-use tracing::warn;
-
 use crate::{
     event::format::LogSource,
     handlers::{
@@ -28,6 +25,8 @@ use crate::{
     },
     storage::StreamType,
 };
+use actix_web::http::header::HeaderMap;
+use tracing::warn;
 
 #[derive(Debug, Default)]
 pub struct PutStreamHeaders {

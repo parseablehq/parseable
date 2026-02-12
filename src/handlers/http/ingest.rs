@@ -43,6 +43,7 @@ use crate::otel::metrics::OTEL_METRICS_KNOWN_FIELD_LIST;
 use crate::otel::traces::OTEL_TRACES_KNOWN_FIELD_LIST;
 use crate::parseable::{PARSEABLE, StreamNotFound};
 use crate::storage::{ObjectStorageError, StreamType};
+use crate::utils::get_tenant_id_from_request;
 use crate::utils::header_parsing::ParseHeaderError;
 use crate::utils::json::{flatten::JsonFlattenError, strict::StrictValue};
 
@@ -61,9 +62,9 @@ pub async fn ingest(
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
-
+    let tenant_id = get_tenant_id_from_request(&req);
     let stream_name = stream_name.to_str().unwrap().to_owned();
-    let internal_stream_names = PARSEABLE.streams.list_internal_streams();
+    let internal_stream_names = PARSEABLE.streams.list_internal_streams(&tenant_id);
     if internal_stream_names.contains(&stream_name) {
         return Err(PostError::InternalStream(stream_name));
     }
@@ -118,7 +119,8 @@ pub async fn ingest(
             None,
             vec![log_source_entry.clone()],
             telemetry_type,
-            None,
+            &tenant_id,
+            None
         )
         .await
         .map_err(|e| {
@@ -128,13 +130,13 @@ pub async fn ingest(
 
     //if stream exists, fetch the stream log source
     //return error if the stream log source is otel traces or otel metrics or otel logs
-    validate_stream_for_ingestion(&stream_name, &log_source).map_err(|e| {
+    validate_stream_for_ingestion(&stream_name, &log_source, &tenant_id).map_err(|e| {
         error!("Ingestion failed for stream {stream_name}: {e}");
         e
     })?;
 
     PARSEABLE
-        .add_update_log_source(&stream_name, log_source_entry)
+        .add_update_log_source(&stream_name, log_source_entry, &tenant_id)
         .await
         .map_err(|e| {
             error!("Ingestion failed for stream {stream_name}: {e}");
@@ -148,6 +150,7 @@ pub async fn ingest(
         &p_custom_fields,
         None,
         telemetry_type,
+        &tenant_id,
     )
     .await
     {
@@ -158,7 +161,11 @@ pub async fn ingest(
     Ok(HttpResponse::Ok().finish())
 }
 
-pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<(), PostError> {
+pub async fn ingest_internal_stream(
+    stream_name: String,
+    body: Bytes,
+    tenant_id: &Option<String>,
+) -> Result<(), PostError> {
     let size: usize = body.len();
     let json: StrictValue = match serde_json::from_slice(&body) {
         Ok(v) => v,
@@ -167,7 +174,9 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             return Err(PostError::SerdeError(e));
         }
     };
-    let schema = PARSEABLE.get_stream(&stream_name)?.get_schema_raw();
+    let schema = PARSEABLE
+        .get_stream(&stream_name, tenant_id)?
+        .get_schema_raw();
     let mut p_custom_fields = HashMap::new();
     p_custom_fields.insert(USER_AGENT_KEY.to_string(), "parseable".to_string());
     p_custom_fields.insert(FORMAT_KEY.to_string(), LogSource::Json.to_string());
@@ -184,6 +193,7 @@ pub async fn ingest_internal_stream(stream_name: String, body: Bytes) -> Result<
             StreamType::Internal,
             &p_custom_fields,
             TelemetryType::Logs,
+            tenant_id,
         )?
         .process()?;
 
@@ -220,6 +230,7 @@ pub async fn setup_otel_stream(
         known_fields.iter().map(|&s| s.to_string()).collect(),
     );
 
+    let tenant_id = get_tenant_id_from_request(req);
     PARSEABLE
         .create_stream_if_not_exists(
             &stream_name,
@@ -227,12 +238,13 @@ pub async fn setup_otel_stream(
             None,
             vec![log_source_entry.clone()],
             telemetry_type,
-            None,
+            &tenant_id,
+            None
         )
         .await?;
     let mut time_partition = None;
     // Validate stream compatibility
-    if let Ok(stream) = PARSEABLE.get_stream(&stream_name) {
+    if let Ok(stream) = PARSEABLE.get_stream(&stream_name, &tenant_id) {
         match log_source {
             LogSource::OtelLogs => {
                 // For logs, reject if stream is metrics or traces
@@ -262,7 +274,7 @@ pub async fn setup_otel_stream(
     }
 
     PARSEABLE
-        .add_update_log_source(&stream_name, log_source_entry.clone())
+        .add_update_log_source(&stream_name, log_source_entry.clone(), &tenant_id)
         .await?;
 
     Ok((stream_name, log_source, log_source_entry, time_partition))
@@ -284,6 +296,7 @@ async fn process_otel_content(
         .and_then(|h| h.to_str().ok())
     {
         Some(content_type) => {
+            let tenant_id = get_tenant_id_from_request(req);
             if content_type == CONTENT_TYPE_JSON {
                 let json: serde_json::Value = match serde_json::from_slice(&body) {
                     Ok(v) => v,
@@ -301,6 +314,7 @@ async fn process_otel_content(
                     &p_custom_fields,
                     None,
                     telemetry_type,
+                    &tenant_id,
                 )
                 .await
                 {
@@ -424,18 +438,18 @@ pub async fn post_event(
     Json(json): Json<StrictValue>,
 ) -> Result<HttpResponse, PostError> {
     let stream_name = stream_name.into_inner();
-
-    let internal_stream_names = PARSEABLE.streams.list_internal_streams();
+    let tenant_id = get_tenant_id_from_request(&req);
+    let internal_stream_names = PARSEABLE.streams.list_internal_streams(&tenant_id);
     if internal_stream_names.contains(&stream_name) {
         return Err(PostError::InternalStream(stream_name));
     }
-    if !PARSEABLE.streams.contains(&stream_name) {
+    if !PARSEABLE.streams.contains(&stream_name, &tenant_id) {
         // For distributed deployments, if the stream not found in memory map,
-        //check if it exists in the storage
-        //create stream and schema from storage
+        // check if it exists in the storage
+        // create stream and schema from storage
         if PARSEABLE.options.mode != Mode::All {
             match PARSEABLE
-                .create_stream_and_schema_from_storage(&stream_name)
+                .create_stream_and_schema_from_storage(&stream_name, &tenant_id)
                 .await
             {
                 Ok(true) => {}
@@ -479,9 +493,9 @@ pub async fn post_event(
         _ => {}
     }
 
-    //if stream exists, fetch the stream log source
-    //return error if the stream log source is otel traces or otel metrics or otel logs
-    if let Err(e) = validate_stream_for_ingestion(&stream_name, &log_source) {
+    // if stream exists, fetch the stream log source
+    // return error if the stream log source is otel traces or otel metrics or otel logs
+    if let Err(e) = validate_stream_for_ingestion(&stream_name, &log_source, &tenant_id) {
         error!("Ingestion failed for stream {stream_name}: {e}");
         return Err(e);
     }
@@ -493,6 +507,7 @@ pub async fn post_event(
         &p_custom_fields,
         None,
         TelemetryType::Logs,
+        &tenant_id,
     )
     .await
     {
@@ -518,6 +533,7 @@ pub async fn push_logs_unchecked(
         custom_partition_values: HashMap::new(), // should be an empty map for unchecked push
         stream_type: StreamType::UserDefined,
         telemetry_type: TelemetryType::Logs,
+        tenant_id: None,
     };
     unchecked_event.process_unchecked()?;
 

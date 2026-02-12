@@ -145,11 +145,19 @@ pub struct ConsumerRecord {
     pub partition: i32,
     pub offset: i64,
     pub timestamp: Option<i64>,
-    //pub headers: Option<HashMap<String, Option<String>>>,
+    pub tenant_id: Option<String>, // pub headers: Option<HashMap<String, Option<String>>>,
 }
 
 impl ConsumerRecord {
     pub fn from_borrowed_msg(msg: BorrowedMessage) -> Self {
+        let tenant_id = if let Some(headers) = extract_headers(&msg)
+            && let Some(tenant_id) = headers.get("tenant")
+        {
+            tenant_id.clone()
+        } else {
+            None
+        };
+
         Self {
             key: msg.key().map(|k| k.to_vec()),
             payload: msg.payload().map(|p| p.to_vec()),
@@ -157,7 +165,7 @@ impl ConsumerRecord {
             partition: msg.partition(),
             offset: msg.offset(),
             timestamp: msg.timestamp().to_millis(),
-            //headers: extract_headers(&msg),
+            tenant_id, // headers: extract_headers(&msg),
         }
     }
 

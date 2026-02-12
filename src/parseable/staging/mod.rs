@@ -17,6 +17,8 @@
  *
  */
 
+use crate::{parseable::StreamNotFound, tenants::TenantNotFound};
+
 pub mod reader;
 pub mod writer;
 
@@ -30,8 +32,10 @@ pub enum StagingError {
     ObjectStorage(#[from] std::io::Error),
     #[error("Could not generate parquet file")]
     Create,
-    #[error("Could not find stream {0}")]
-    NotFound(String),
+    #[error("{0}")]
+    StreamNotFound(#[from] StreamNotFound),
+    #[error("{0}")]
+    TenantNotFound(#[from] TenantNotFound),
     // #[error("Metadata Error: {0}")]
     // Metadata(#[from] MetadataError),
 }

@@ -35,6 +35,12 @@ pub enum ParseHeaderError {
     MissingStreamName,
     #[error("Log source not found in header [x-p-log-source]")]
     MissingLogSource,
+    #[error("Tenant id not found in header [tenant]")]
+    MissingTenantId,
+    #[error("Invalid tenant id found in header [tenant]")]
+    InvalidTenantId,
+    #[error("Unexpected header found- {0}")]
+    UnexpectedHeader(String),
 }
 
 impl ResponseError for ParseHeaderError {

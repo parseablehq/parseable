@@ -18,7 +18,7 @@
 
 use std::{collections::HashMap, fmt::Display};
 
-use actix_web::Either;
+use actix_web::{Either, http::header::HeaderMap};
 use arrow_array::{Array, Float64Array, Int64Array, RecordBatch};
 use datafusion::{
     logical_expr::{Literal, LogicalPlan},
@@ -75,12 +75,14 @@ pub fn extract_time_range(eval_config: &super::EvalConfig) -> Result<TimeRange, 
 
 /// Execute the alert query based on the current mode and return structured group results
 pub async fn execute_alert_query(
+    auth_token: Option<HeaderMap>,
     query: &str,
     time_range: &TimeRange,
+    tenant_id: &Option<String>,
 ) -> Result<AlertQueryResult, AlertError> {
     match PARSEABLE.options.mode {
-        Mode::All | Mode::Query => execute_local_query(query, time_range).await,
-        Mode::Prism => execute_remote_query(query, time_range).await,
+        Mode::All | Mode::Query => execute_local_query(query, time_range, tenant_id).await,
+        Mode::Prism => execute_remote_query(auth_token, query, time_range, tenant_id).await,
         _ => Err(AlertError::CustomError(format!(
             "Unsupported mode '{:?}' for alert evaluation",
             PARSEABLE.options.mode
@@ -92,11 +94,12 @@ pub async fn execute_alert_query(
 async fn execute_local_query(
     query: &str,
     time_range: &TimeRange,
+    tenant_id: &Option<String>,
 ) -> Result<AlertQueryResult, AlertError> {
-    let session_state = QUERY_SESSION.state();
+    let session_state = QUERY_SESSION.get_ctx().state();
 
     let tables = resolve_stream_names(query)?;
-    create_streams_for_distributed(tables.clone())
+    create_streams_for_distributed(tables.clone(), tenant_id)
         .await
         .map_err(|err| AlertError::CustomError(format!("Failed to create streams: {err}")))?;
 
@@ -107,7 +110,7 @@ async fn execute_local_query(
         filter_tag: None,
     };
 
-    let (records, _) = execute(query, false)
+    let (records, _) = execute(query, false, tenant_id)
         .await
         .map_err(|err| AlertError::CustomError(format!("Failed to execute query: {err}")))?;
 
@@ -125,10 +128,12 @@ async fn execute_local_query(
 
 /// Execute alert query remotely (Prism mode)
 async fn execute_remote_query(
+    auth_token: Option<HeaderMap>,
     query: &str,
     time_range: &TimeRange,
+    tenant_id: &Option<String>,
 ) -> Result<AlertQueryResult, AlertError> {
-    let session_state = QUERY_SESSION.state();
+    let session_state = QUERY_SESSION.get_ctx().state();
     let raw_logical_plan = session_state.create_logical_plan(query).await?;
 
     let query_request = Query {
@@ -141,7 +146,7 @@ async fn execute_remote_query(
         filter_tags: None,
     };
 
-    let (result_value, _) = send_query_request(&query_request)
+    let (result_value, _) = send_query_request(auth_token, &query_request, tenant_id)
         .await
         .map_err(|err| AlertError::CustomError(format!("Failed to send query request: {err}")))?;
 
@@ -280,19 +285,34 @@ async fn update_alert_state(
     // Now perform the state update
     if let Some(msg) = message {
         alerts
-            .update_state(*alert.get_id(), AlertState::Triggered, Some(msg))
+            .update_state(
+                *alert.get_id(),
+                AlertState::Triggered,
+                Some(msg),
+                alert.get_tenant_id(),
+            )
             .await
     } else if alerts
-        .get_state(*alert.get_id())
+        .get_state(*alert.get_id(), alert.get_tenant_id())
         .await?
         .eq(&AlertState::Triggered)
     {
         alerts
-            .update_state(*alert.get_id(), AlertState::NotTriggered, Some("".into()))
+            .update_state(
+                *alert.get_id(),
+                AlertState::NotTriggered,
+                Some("".into()),
+                alert.get_tenant_id(),
+            )
             .await
     } else {
         alerts
-            .update_state(*alert.get_id(), AlertState::NotTriggered, None)
+            .update_state(
+                *alert.get_id(),
+                AlertState::NotTriggered,
+                None,
+                alert.get_tenant_id(),
+            )
             .await
     }
 }

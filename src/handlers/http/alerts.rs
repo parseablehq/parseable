@@ -29,7 +29,7 @@ use crate::{
     },
     metastore::metastore_traits::MetastoreObject,
     parseable::PARSEABLE,
-    utils::{actix::extract_session_key_from_req, user_auth_for_query},
+    utils::{actix::extract_session_key_from_req, get_tenant_id_from_request, user_auth_for_query},
 };
 use actix_web::{
     HttpRequest, Responder,
@@ -248,7 +248,8 @@ pub async fn post(
     req: HttpRequest,
     Json(alert): Json<AlertRequest>,
 ) -> Result<impl Responder, AlertError> {
-    let mut alert: AlertConfig = alert.into().await?;
+    let tenant_id = get_tenant_id_from_request(&req);
+    let mut alert: AlertConfig = alert.into(tenant_id.clone()).await?;
 
     if alert.notification_config.interval > alert.get_eval_frequency() {
         return Err(AlertError::ValidationFailure(
@@ -308,14 +309,14 @@ pub async fn post(
     // update persistent storage first
     PARSEABLE
         .metastore
-        .put_alert(&alert.to_alert_config())
+        .put_alert(&alert.to_alert_config(), &tenant_id)
         .await?;
 
     // create initial alert state entry (default to NotTriggered)
     let state_entry = AlertStateEntry::new(*alert.get_id(), AlertState::NotTriggered);
     PARSEABLE
         .metastore
-        .put_alert_state(&state_entry as &dyn MetastoreObject)
+        .put_alert_state(&state_entry as &dyn MetastoreObject, &tenant_id)
         .await?;
 
     // update in memory
@@ -331,7 +332,7 @@ pub async fn post(
 pub async fn get(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Responder, AlertError> {
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
-
+    let tenant_id = get_tenant_id_from_request(&req);
     let guard = ALERTS.read().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -339,7 +340,7 @@ pub async fn get(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Responde
         return Err(AlertError::CustomError("No AlertManager set".into()));
     };
 
-    let alert = alerts.get_alert_by_id(alert_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
     // validate that the user has access to the tables mentioned in the query
     user_auth_for_query(&session_key, alert.get_query()).await?;
 
@@ -351,7 +352,7 @@ pub async fn get(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Responde
 pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Responder, AlertError> {
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
-
+    let tenant_id = get_tenant_id_from_request(&req);
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -359,22 +360,25 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
         return Err(AlertError::CustomError("No AlertManager set".into()));
     };
 
-    let alert = alerts.get_alert_by_id(alert_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
 
     // validate that the user has access to the tables mentioned in the query
     user_auth_for_query(&session_key, alert.get_query()).await?;
 
-    PARSEABLE.metastore.delete_alert(&*alert).await?;
+    PARSEABLE
+        .metastore
+        .delete_alert(&*alert, &tenant_id)
+        .await?;
 
     // delete the associated alert state
     let state_to_delete = AlertStateEntry::new(alert_id, AlertState::NotTriggered); // state doesn't matter for deletion
     PARSEABLE
         .metastore
-        .delete_alert_state(&state_to_delete as &dyn MetastoreObject)
+        .delete_alert_state(&state_to_delete as &dyn MetastoreObject, &tenant_id)
         .await?;
 
     // delete from memory
-    alerts.delete(alert_id).await?;
+    alerts.delete(alert_id, &tenant_id).await?;
 
     // delete the scheduled task
     alerts.delete_task(alert_id).await?;
@@ -392,7 +396,7 @@ pub async fn update_notification_state(
 ) -> Result<impl Responder, AlertError> {
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
-
+    let tenant_id = get_tenant_id_from_request(&req);
     let new_notification_state = match new_notification_state.state.as_str() {
         "notify" => NotificationState::Notify,
         "indefinite" => NotificationState::Mute("indefinite".into()),
@@ -428,14 +432,14 @@ pub async fn update_notification_state(
     };
 
     // check if alert id exists in map
-    let alert = alerts.get_alert_by_id(alert_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
     // validate that the user has access to the tables mentioned in the query
     user_auth_for_query(&session_key, alert.get_query()).await?;
 
     alerts
-        .update_notification_state(alert_id, new_notification_state)
+        .update_notification_state(alert_id, new_notification_state, &tenant_id)
         .await?;
-    let alert = alerts.get_alert_by_id(alert_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
 
     Ok(web::Json(alert.to_alert_config().to_response()))
 }
@@ -449,7 +453,7 @@ pub async fn disable_alert(
 ) -> Result<impl Responder, AlertError> {
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
-
+    let tenant_id = get_tenant_id_from_request(&req);
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -458,14 +462,14 @@ pub async fn disable_alert(
     };
 
     // check if alert id exists in map
-    let alert = alerts.get_alert_by_id(alert_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
     // validate that the user has access to the tables mentioned in the query
     user_auth_for_query(&session_key, alert.get_query()).await?;
 
     alerts
-        .update_state(alert_id, AlertState::Disabled, Some("".into()))
+        .update_state(alert_id, AlertState::Disabled, Some("".into()), &tenant_id)
         .await?;
-    let alert = alerts.get_alert_by_id(alert_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
 
     Ok(web::Json(alert.to_alert_config().to_response()))
 }
@@ -479,7 +483,7 @@ pub async fn enable_alert(
 ) -> Result<impl Responder, AlertError> {
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
-
+    let tenant_id = get_tenant_id_from_request(&req);
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -488,7 +492,7 @@ pub async fn enable_alert(
     };
 
     // check if alert id exists in map
-    let alert = alerts.get_alert_by_id(alert_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
 
     // only run if alert is disabled
     if alert.get_state().ne(&AlertState::Disabled) {
@@ -501,9 +505,14 @@ pub async fn enable_alert(
     user_auth_for_query(&session_key, alert.get_query()).await?;
 
     alerts
-        .update_state(alert_id, AlertState::NotTriggered, Some("".into()))
+        .update_state(
+            alert_id,
+            AlertState::NotTriggered,
+            Some("".into()),
+            &tenant_id,
+        )
         .await?;
-    let alert = alerts.get_alert_by_id(alert_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
 
     Ok(web::Json(alert.to_alert_config().to_response()))
 }
@@ -518,7 +527,7 @@ pub async fn modify_alert(
 ) -> Result<impl Responder, AlertError> {
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
-
+    let tenant_id = get_tenant_id_from_request(&req);
     // Get alerts manager reference without holding the global lock
     let alerts = {
         let guard = ALERTS.read().await;
@@ -530,10 +539,10 @@ pub async fn modify_alert(
     };
 
     // Validate and prepare the new alert
-    let alert = alerts.get_alert_by_id(alert_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
     user_auth_for_query(&session_key, alert.get_query()).await?;
 
-    let mut new_config = alert_request.into().await?;
+    let mut new_config = alert_request.into(tenant_id.clone()).await?;
     if &new_config.alert_type != alert.get_alert_type() {
         return Err(AlertError::InvalidAlertModifyRequest);
     }
@@ -577,13 +586,13 @@ pub async fn modify_alert(
     // Perform I/O operations
     PARSEABLE
         .metastore
-        .put_alert(&new_alert.to_alert_config())
+        .put_alert(&new_alert.to_alert_config(), &tenant_id)
         .await?;
 
     let is_disabled = new_alert.get_state().eq(&AlertState::Disabled);
     // Now perform the atomic operations
     alerts.delete_task(alert_id).await?;
-    alerts.delete(alert_id).await?;
+    alerts.delete(alert_id, &tenant_id).await?;
     alerts.update(&*new_alert).await;
 
     // only restart the task if the state was not set to disabled
@@ -602,7 +611,7 @@ pub async fn evaluate_alert(
 ) -> Result<impl Responder, AlertError> {
     let session_key = extract_session_key_from_req(&req)?;
     let alert_id = alert_id.into_inner();
-
+    let tenant_id = get_tenant_id_from_request(&req);
     let guard = ALERTS.write().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
@@ -610,7 +619,7 @@ pub async fn evaluate_alert(
         return Err(AlertError::CustomError("No AlertManager set".into()));
     };
 
-    let alert = alerts.get_alert_by_id(alert_id).await?;
+    let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
 
     user_auth_for_query(&session_key, alert.get_query()).await?;
 
@@ -625,13 +634,14 @@ pub async fn evaluate_alert(
     Ok(Json(config))
 }
 
-pub async fn list_tags() -> Result<impl Responder, AlertError> {
+pub async fn list_tags(req: HttpRequest) -> Result<impl Responder, AlertError> {
     let guard = ALERTS.read().await;
     let alerts = if let Some(alerts) = guard.as_ref() {
         alerts
     } else {
         return Err(AlertError::CustomError("No AlertManager set".into()));
     };
-    let tags = alerts.list_tags().await;
+    let tenant_id = get_tenant_id_from_request(&req);
+    let tags = alerts.list_tags(&tenant_id).await;
     Ok(web::Json(tags))
 }

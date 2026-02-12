@@ -18,34 +18,38 @@
 
 use std::collections::HashSet;
 
-use actix_web::{HttpResponse, Responder, web};
+use actix_web::{HttpRequest, HttpResponse, Responder, web};
 
 use crate::{
     handlers::http::{
         cluster::{
-            sync_password_reset_with_ingestors, sync_user_creation_with_ingestors,
+            sync_password_reset_with_ingestors, sync_user_creation,
             sync_user_deletion_with_ingestors, sync_users_with_roles_with_ingestors,
         },
         modal::utils::rbac_utils::{get_metadata, put_metadata},
         rbac::{RBACError, UPDATE_LOCK},
     },
+    parseable::DEFAULT_TENANT,
     rbac::{
         Users,
         map::{roles, users, write_user_groups},
         user::{self, UserType},
     },
+    utils::get_tenant_id_from_request,
     validator,
 };
 
 // Handler for POST /api/v1/user/{username}
 // Creates a new user by username if it does not exists
 pub async fn post_user(
+    req: HttpRequest,
     username: web::Path<String>,
     body: Option<web::Json<serde_json::Value>>,
 ) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
+    let tenant_id = get_tenant_id_from_request(&req);
     validator::user_role_name(&username)?;
-    let mut metadata = get_metadata().await?;
+    let mut metadata = get_metadata(&tenant_id).await?;
 
     let user_roles: HashSet<String> = if let Some(body) = body {
         serde_json::from_value(body.into_inner())?
@@ -55,7 +59,9 @@ pub async fn post_user(
 
     let mut non_existent_roles = Vec::new();
     for role in &user_roles {
-        if !roles().contains_key(role) {
+        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+            && !tenant_roles.contains_key(role)
+        {
             non_existent_roles.push(role.clone());
         }
     }
@@ -63,7 +69,7 @@ pub async fn post_user(
         return Err(RBACError::RolesDoNotExist(non_existent_roles));
     }
     let _guard = UPDATE_LOCK.lock().await;
-    if Users.contains(&username)
+    if Users.contains(&username, &tenant_id)
         || metadata
             .users
             .iter()
@@ -72,53 +78,56 @@ pub async fn post_user(
         return Err(RBACError::UserExists(username));
     }
 
-    let (user, password) = user::User::new_basic(username.clone());
-
+    let (mut user, password) = user::User::new_basic(username.clone(), tenant_id.clone(), false);
+    // add user roles
+    user.roles.clone_from(&user_roles);
     metadata.users.push(user.clone());
 
-    put_metadata(&metadata).await?;
-    let created_role = user_roles.clone();
+    put_metadata(&metadata, &tenant_id).await?;
+    // let created_role = user_roles.clone();
     Users.put_user(user.clone());
 
-    sync_user_creation_with_ingestors(user, &Some(user_roles)).await?;
-    if !created_role.is_empty() {
-        add_roles_to_user(
-            web::Path::<String>::from(username.clone()),
-            web::Json(created_role),
-        )
-        .await?;
-    }
+    sync_user_creation(user, &None, &tenant_id).await?;
 
     Ok(password)
 }
 
 // Handler for DELETE /api/v1/user/{userid}
-pub async fn delete_user(userid: web::Path<String>) -> Result<impl Responder, RBACError> {
+pub async fn delete_user(
+    req: HttpRequest,
+    userid: web::Path<String>,
+) -> Result<impl Responder, RBACError> {
     let userid = userid.into_inner();
-
+    let tenant_id = get_tenant_id_from_request(&req);
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     let _guard = UPDATE_LOCK.lock().await;
-    // fail this request if the user does not exists
-    if !Users.contains(&userid) {
+    // fail this request if the user does not exist
+    if !Users.contains(&userid, &tenant_id) {
         return Err(RBACError::UserDoesNotExist);
     };
 
     // find username by userid, for native users, username is userid, for oauth users, we need to look up
-    let username = if let Some(user) = users().get(&userid) {
+    let username = if let Some(users) = users().get(tenant)
+        && let Some(user) = users.get(&userid)
+    {
         user.username_by_userid()
     } else {
         return Err(RBACError::UserDoesNotExist);
     };
 
     // delete from parseable.json first
-    let mut metadata = get_metadata().await?;
+    let mut metadata = get_metadata(&tenant_id).await?;
     metadata.users.retain(|user| user.userid() != userid);
 
     // also delete from user groups
-    let user_groups = Users.get_user_groups(&userid);
+    let user_groups = Users.get_user_groups(&userid, &tenant_id);
     let mut groups_to_update = Vec::new();
+
     for user_group in user_groups {
-        if let Some(ug) = write_user_groups().get_mut(&user_group)
-            && let Some(user) = users().get(&userid)
+        if let Some(groups) = write_user_groups().get_mut(tenant)
+            && let Some(ug) = groups.get_mut(&user_group)
+            && let Some(users) = users().get(tenant)
+            && let Some(user) = users.get(&userid)
         {
             let userid = match &user.ty {
                 UserType::Native(basic) => basic.username.clone(),
@@ -144,29 +153,33 @@ pub async fn delete_user(userid: web::Path<String>) -> Result<impl Responder, RB
             metadata.user_groups.push(updated_group.clone());
         }
     }
-    put_metadata(&metadata).await?;
+    put_metadata(&metadata, &tenant_id).await?;
 
-    sync_user_deletion_with_ingestors(&userid).await?;
+    sync_user_deletion_with_ingestors(&req, &userid, &tenant_id).await?;
 
     // update in mem table
-    Users.delete_user(&userid);
+    Users.delete_user(&userid, &tenant_id);
     Ok(HttpResponse::Ok().json(format!("deleted user: {username}")))
 }
 
 // Handler PATCH /user/{userid}/role/add => Add roles to a user
 pub async fn add_roles_to_user(
+    req: HttpRequest,
     userid: web::Path<String>,
     roles_to_add: web::Json<HashSet<String>>,
 ) -> Result<String, RBACError> {
     let userid = userid.into_inner();
     let roles_to_add = roles_to_add.into_inner();
-
-    if !Users.contains(&userid) {
+    let tenant_id = get_tenant_id_from_request(&req);
+    if !Users.contains(&userid, &tenant_id) {
         return Err(RBACError::UserDoesNotExist);
     };
 
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     // find username by userid, for native users, username is userid, for oauth users, we need to look up
-    let username = if let Some(user) = users().get(&userid) {
+    let username = if let Some(users) = users().get(tenant)
+        && let Some(user) = users.get(&userid)
+    {
         user.username_by_userid()
     } else {
         return Err(RBACError::UserDoesNotExist);
@@ -176,7 +189,9 @@ pub async fn add_roles_to_user(
 
     // check if the role exists
     roles_to_add.iter().for_each(|r| {
-        if roles().get(r).is_none() {
+        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+            && tenant_roles.get(r).is_none()
+        {
             non_existent_roles.push(r.clone());
         }
     });
@@ -186,7 +201,7 @@ pub async fn add_roles_to_user(
     }
 
     // update parseable.json first
-    let mut metadata = get_metadata().await?;
+    let mut metadata = get_metadata(&tenant_id).await?;
     if let Some(user) = metadata
         .users
         .iter_mut()
@@ -198,31 +213,35 @@ pub async fn add_roles_to_user(
         return Err(RBACError::UserDoesNotExist);
     }
 
-    put_metadata(&metadata).await?;
+    put_metadata(&metadata, &tenant_id).await?;
     // update in mem table
-    Users.add_roles(&userid.clone(), roles_to_add.clone());
+    Users.add_roles(&userid.clone(), roles_to_add.clone(), &tenant_id);
 
-    sync_users_with_roles_with_ingestors(&userid, &roles_to_add, "add").await?;
+    sync_users_with_roles_with_ingestors(&req, &userid, &roles_to_add, "add", &tenant_id).await?;
 
     Ok(format!("Roles updated successfully for {username}"))
 }
 
 // Handler PATCH /user/{userid}/role/remove => Remove roles from a user
 pub async fn remove_roles_from_user(
+    req: HttpRequest,
     userid: web::Path<String>,
     roles_to_remove: web::Json<HashSet<String>>,
 ) -> Result<impl Responder, RBACError> {
     let userid = userid.into_inner();
     let roles_to_remove = roles_to_remove.into_inner();
-
+    let tenant_id = get_tenant_id_from_request(&req);
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     let _guard = UPDATE_LOCK.lock().await;
 
-    if !Users.contains(&userid) {
+    if !Users.contains(&userid, &tenant_id) {
         return Err(RBACError::UserDoesNotExist);
     };
 
     // find username by userid, for native users, username is userid, for oauth users, we need to look up
-    let username = if let Some(user) = users().get(&userid) {
+    let username = if let Some(users) = users().get(tenant)
+        && let Some(user) = users.get(&userid)
+    {
         user.username_by_userid()
     } else {
         return Err(RBACError::UserDoesNotExist);
@@ -232,7 +251,9 @@ pub async fn remove_roles_from_user(
 
     // check if the role exists
     roles_to_remove.iter().for_each(|r| {
-        if roles().get(r).is_none() {
+        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+            && tenant_roles.get(r).is_none()
+        {
             non_existent_roles.push(r.clone());
         }
     });
@@ -242,7 +263,7 @@ pub async fn remove_roles_from_user(
     }
 
     // check for role not present with user
-    let user_roles: HashSet<String> = HashSet::from_iter(Users.get_role(&userid));
+    let user_roles: HashSet<String> = HashSet::from_iter(Users.get_role(&userid, &tenant_id));
     let roles_not_with_user: HashSet<String> =
         HashSet::from_iter(roles_to_remove.difference(&user_roles).cloned());
     if !roles_not_with_user.is_empty() {
@@ -252,7 +273,7 @@ pub async fn remove_roles_from_user(
     }
 
     // update parseable.json first
-    let mut metadata = get_metadata().await?;
+    let mut metadata = get_metadata(&tenant_id).await?;
     if let Some(user) = metadata
         .users
         .iter_mut()
@@ -266,22 +287,27 @@ pub async fn remove_roles_from_user(
         return Err(RBACError::UserDoesNotExist);
     }
 
-    put_metadata(&metadata).await?;
+    put_metadata(&metadata, &tenant_id).await?;
     // update in mem table
-    Users.remove_roles(&userid.clone(), roles_to_remove.clone());
+    Users.remove_roles(&userid.clone(), roles_to_remove.clone(), &tenant_id);
 
-    sync_users_with_roles_with_ingestors(&userid, &roles_to_remove, "remove").await?;
+    sync_users_with_roles_with_ingestors(&req, &userid, &roles_to_remove, "remove", &tenant_id)
+        .await?;
 
     Ok(HttpResponse::Ok().json(format!("Roles updated successfully for {username}")))
 }
 
 // Handler for POST /api/v1/user/{username}/generate-new-password
 // Resets password for the user to a newly generated one and returns it
-pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Responder, RBACError> {
+pub async fn post_gen_password(
+    req: HttpRequest,
+    username: web::Path<String>,
+) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
     let mut new_password = String::default();
     let mut new_hash = String::default();
-    let mut metadata = get_metadata().await?;
+    let tenant_id = get_tenant_id_from_request(&req);
+    let mut metadata = get_metadata(&tenant_id).await?;
 
     let _guard = UPDATE_LOCK.lock().await;
     let user::PassCode { password, hash } = user::Basic::gen_new_password();
@@ -300,10 +326,10 @@ pub async fn post_gen_password(username: web::Path<String>) -> Result<impl Respo
     } else {
         return Err(RBACError::UserDoesNotExist);
     }
-    put_metadata(&metadata).await?;
-    Users.change_password_hash(&username, &new_hash);
+    put_metadata(&metadata, &tenant_id).await?;
+    Users.change_password_hash(&username, &new_hash, &tenant_id);
 
-    sync_password_reset_with_ingestors(&username).await?;
+    sync_password_reset_with_ingestors(req, &username).await?;
 
     Ok(new_password)
 }

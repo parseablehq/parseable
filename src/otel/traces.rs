@@ -67,7 +67,7 @@ pub const OTEL_TRACES_KNOWN_FIELD_LIST: [&str; 32] = [
 ];
 /// this function flattens the `ScopeSpans` object
 /// and returns a `Vec` of `Map` of the flattened json
-fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<Map<String, Value>> {
+fn flatten_scope_span(scope_span: &ScopeSpans, tenant_id: &str) -> Vec<Map<String, Value>> {
     let mut vec_scope_span_json = Vec::new();
     let mut scope_span_json = Map::new();
     for span in &scope_span.spans {
@@ -76,7 +76,7 @@ fn flatten_scope_span(scope_span: &ScopeSpans) -> Vec<Map<String, Value>> {
     }
 
     let date = chrono::Utc::now().date_naive().to_string();
-    increment_traces_collected_by_date(scope_span.spans.len() as u64, &date);
+    increment_traces_collected_by_date(scope_span.spans.len() as u64, &date, tenant_id);
 
     if let Some(scope) = &scope_span.scope {
         scope_span_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
@@ -113,6 +113,7 @@ fn process_resource_spans<T>(
     get_resource: fn(&T) -> Option<&opentelemetry_proto::tonic::resource::v1::Resource>,
     get_scope_spans: fn(&T) -> &[ScopeSpans],
     get_schema_url: fn(&T) -> &str,
+    tenant_id: &str,
 ) -> Vec<Value>
 where
     T: std::fmt::Debug,
@@ -134,7 +135,7 @@ where
         // Process scope spans
         let mut vec_resource_spans_json = Vec::new();
         for scope_span in get_scope_spans(resource_span) {
-            let scope_span_json = flatten_scope_span(scope_span);
+            let scope_span_json = flatten_scope_span(scope_span, tenant_id);
             vec_resource_spans_json.extend(scope_span_json);
         }
 
@@ -155,23 +156,28 @@ where
 }
 
 /// Flattens OpenTelemetry traces from protobuf format
-pub fn flatten_otel_traces_protobuf(message: &ExportTraceServiceRequest) -> Vec<Value> {
+pub fn flatten_otel_traces_protobuf(
+    message: &ExportTraceServiceRequest,
+    tenant_id: &str,
+) -> Vec<Value> {
     process_resource_spans(
         &message.resource_spans,
         |rs| rs.resource.as_ref(),
         |rs| &rs.scope_spans,
         |rs| &rs.schema_url,
+        tenant_id,
     )
 }
 
 /// this function performs the custom flattening of the otel traces event
 /// and returns a `Vec` of `Value::Object` of the flattened json
-pub fn flatten_otel_traces(message: &TracesData) -> Vec<Value> {
+pub fn flatten_otel_traces(message: &TracesData, tenant_id: &str) -> Vec<Value> {
     process_resource_spans(
         &message.resource_spans,
         |rs| rs.resource.as_ref(),
         |rs| &rs.scope_spans,
         |rs| &rs.schema_url,
+        tenant_id,
     )
 }
 
@@ -428,6 +434,8 @@ pub fn insert_links_attributes(map: &mut Map<String, Value>, attributes: &[KeyVa
 
 #[cfg(test)]
 mod tests {
+    use crate::parseable::DEFAULT_TENANT;
+
     use super::*;
     use opentelemetry_proto::tonic::common::v1::{AnyValue, EntityRef, KeyValue};
     use opentelemetry_proto::tonic::resource::v1::Resource;
@@ -913,7 +921,7 @@ mod tests {
             }],
         };
 
-        let result = flatten_otel_traces(&traces_data);
+        let result = flatten_otel_traces(&traces_data, DEFAULT_TENANT);
 
         assert_eq!(result.len(), 1, "Should have one flattened record");
 

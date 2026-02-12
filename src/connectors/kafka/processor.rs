@@ -50,6 +50,11 @@ impl ParseableSinkProcessor {
             .first()
             .map(|r| r.topic.as_str())
             .unwrap_or_default();
+        let tenant_id = if let Some(r) = records.first() {
+            &r.tenant_id
+        } else {
+            &None
+        };
         let log_source_entry = LogSourceEntry::default();
         PARSEABLE
             .create_stream_if_not_exists(
@@ -58,11 +63,11 @@ impl ParseableSinkProcessor {
                 None,
                 vec![log_source_entry],
                 TelemetryType::default(),
-                None,
+                tenant_id,
             )
             .await?;
 
-        let stream = PARSEABLE.get_stream(stream_name)?;
+        let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
         let schema = stream.get_schema_raw();
         let time_partition = stream.get_time_partition();
         let custom_partition = stream.get_custom_partition();
@@ -93,6 +98,7 @@ impl ParseableSinkProcessor {
             StreamType::UserDefined,
             &p_custom_fields,
             TelemetryType::Logs,
+            tenant_id,
         )?;
 
         Ok(p_event)

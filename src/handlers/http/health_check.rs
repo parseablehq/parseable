@@ -18,6 +18,7 @@
 
 use std::sync::Arc;
 
+use actix_web::HttpRequest;
 use actix_web::http::StatusCode;
 use actix_web::{
     HttpResponse,
@@ -31,6 +32,7 @@ use once_cell::sync::Lazy;
 use tokio::{sync::Mutex, task::JoinSet};
 use tracing::{error, info};
 
+use crate::utils::get_tenant_id_from_request;
 use crate::{parseable::PARSEABLE, storage::object_storage::sync_all_streams};
 
 // Create a global variable to store signal status
@@ -112,9 +114,16 @@ async fn perform_object_store_sync() {
     }
 }
 
-pub async fn readiness() -> HttpResponse {
+pub async fn readiness(req: HttpRequest) -> HttpResponse {
+    let tenant_id = get_tenant_id_from_request(&req);
     // Check the object store connection
-    if PARSEABLE.storage.get_object_store().check().await.is_ok() {
+    if PARSEABLE
+        .storage
+        .get_object_store()
+        .check(&tenant_id)
+        .await
+        .is_ok()
+    {
         HttpResponse::new(StatusCode::OK)
     } else {
         HttpResponse::new(StatusCode::SERVICE_UNAVAILABLE)

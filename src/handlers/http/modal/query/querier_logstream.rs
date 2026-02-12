@@ -48,18 +48,22 @@ use crate::{
     parseable::{PARSEABLE, StreamNotFound},
     stats,
     storage::{ObjectStoreFormat, StreamType},
+    utils::get_tenant_id_from_request,
 };
 const STATS_DATE_QUERY_PARAM: &str = "date";
 
-pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamError> {
+pub async fn delete(
+    req: HttpRequest,
+    stream_name: Path<String>,
+) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
-
+    let tenant_id = get_tenant_id_from_request(&req);
     // if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if !PARSEABLE.streams.contains(&stream_name)
+    if !PARSEABLE.streams.contains(&stream_name, &tenant_id)
         && !PARSEABLE
-            .create_stream_and_schema_from_storage(&stream_name)
+            .create_stream_and_schema_from_storage(&stream_name, &tenant_id)
             .await
             .unwrap_or(false)
     {
@@ -68,8 +72,8 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
 
     let objectstore = PARSEABLE.storage.get_object_store();
     // Delete from storage
-    objectstore.delete_stream(&stream_name).await?;
-    let stream_dir = PARSEABLE.get_or_create_stream(&stream_name);
+    objectstore.delete_stream(&stream_name, &tenant_id).await?;
+    let stream_dir = PARSEABLE.get_or_create_stream(&stream_name, &tenant_id);
     if let Err(err) = fs::remove_dir_all(&stream_dir.data_path) {
         warn!(
             "failed to delete local data for stream {} with error {err}. Clean {} manually",
@@ -79,17 +83,20 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     }
 
     if let Some(hot_tier_manager) = HotTierManager::global()
-        && hot_tier_manager.check_stream_hot_tier_exists(&stream_name)
+        && hot_tier_manager.check_stream_hot_tier_exists(&stream_name, &tenant_id)
     {
-        hot_tier_manager.delete_hot_tier(&stream_name).await?;
+        hot_tier_manager
+            .delete_hot_tier(&stream_name, &tenant_id)
+            .await?;
     }
 
-    let ingestor_metadata: Vec<NodeMetadata> = cluster::get_node_info(NodeType::Ingestor)
-        .await
-        .map_err(|err| {
-            error!("Fatal: failed to get ingestor info: {:?}", err);
-            err
-        })?;
+    let ingestor_metadata: Vec<NodeMetadata> =
+        cluster::get_node_info(NodeType::Ingestor, &tenant_id)
+            .await
+            .map_err(|err| {
+                error!("Fatal: failed to get ingestor info: {:?}", err);
+                err
+            })?;
 
     for ingestor in ingestor_metadata {
         let url = format!(
@@ -104,8 +111,8 @@ pub async fn delete(stream_name: Path<String>) -> Result<impl Responder, StreamE
     }
 
     // Delete from memory
-    PARSEABLE.streams.delete(&stream_name);
-    stats::delete_stats(&stream_name, "json")
+    PARSEABLE.streams.delete(&stream_name, &tenant_id);
+    stats::delete_stats(&stream_name, "json", &tenant_id)
         .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
 
     Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
@@ -117,9 +124,10 @@ pub async fn put_stream(
     body: Bytes,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
+    let tenant_id = get_tenant_id_from_request(&req);
     let _guard = CREATE_STREAM_LOCK.lock().await;
     let headers = PARSEABLE
-        .create_update_stream(req.headers(), &body, &stream_name)
+        .create_update_stream(req.headers(), &body, &stream_name, &tenant_id)
         .await?;
 
     let is_update = if let Some(val) = headers.get(UPDATE_STREAM_KEY) {
@@ -128,7 +136,7 @@ pub async fn put_stream(
         false
     };
 
-    sync_streams_with_ingestors(headers, body, &stream_name).await?;
+    sync_streams_with_ingestors(headers, body, &stream_name, &tenant_id).await?;
 
     if is_update {
         Ok(("Log stream updated", StatusCode::OK))
@@ -142,12 +150,13 @@ pub async fn get_stats(
     stream_name: Path<String>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = stream_name.into_inner();
+    let tenant_id = get_tenant_id_from_request(&req);
     // if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
-    if !PARSEABLE.streams.contains(&stream_name)
+    if !PARSEABLE.streams.contains(&stream_name, &tenant_id)
         && !PARSEABLE
-            .create_stream_and_schema_from_storage(&stream_name)
+            .create_stream_and_schema_from_storage(&stream_name, &tenant_id)
             .await
             .unwrap_or(false)
     {
@@ -165,7 +174,7 @@ pub async fn get_stats(
         if !date_value.is_empty() {
             let obs = PARSEABLE
                 .metastore
-                .get_all_stream_jsons(&stream_name, None)
+                .get_all_stream_jsons(&stream_name, None, &tenant_id)
                 .await?;
 
             let mut stream_jsons = Vec::new();
@@ -188,14 +197,14 @@ pub async fn get_stats(
         }
     }
 
-    let stats = stats::get_current_stats(&stream_name, "json")
+    let stats = stats::get_current_stats(&stream_name, "json", &tenant_id)
         .ok_or_else(|| StreamNotFound(stream_name.clone()))?;
 
     let ingestor_stats = if PARSEABLE
-        .get_stream(&stream_name)
+        .get_stream(&stream_name, &tenant_id)
         .is_ok_and(|stream| stream.get_stream_type() == StreamType::UserDefined)
     {
-        Some(fetch_stats_from_ingestors(&stream_name).await?)
+        Some(fetch_stats_from_ingestors(&stream_name, &tenant_id).await?)
     } else {
         None
     };

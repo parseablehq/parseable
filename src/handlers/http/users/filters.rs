@@ -22,7 +22,9 @@ use crate::{
     parseable::PARSEABLE,
     storage::ObjectStorageError,
     users::filters::{CURRENT_FILTER_VERSION, FILTERS, Filter},
-    utils::{actix::extract_session_key_from_req, get_hash, get_user_from_request, is_admin},
+    utils::{
+        actix::extract_session_key_from_req, get_hash, get_user_and_tenant_from_request, is_admin,
+    },
 };
 use actix_web::http::StatusCode;
 use actix_web::{
@@ -44,11 +46,11 @@ pub async fn get(
     req: HttpRequest,
     filter_id: Path<String>,
 ) -> Result<impl Responder, FiltersError> {
-    let user_id = get_user_from_request(&req)?;
+    let (user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
     let filter_id = filter_id.into_inner();
     let is_admin = is_admin(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
     if let Some(filter) = FILTERS
-        .get_filter(&filter_id, &get_hash(&user_id), is_admin)
+        .get_filter(&filter_id, &get_hash(&user_id), is_admin, &tenant_id)
         .await
     {
         return Ok((web::Json(filter), StatusCode::OK));
@@ -63,15 +65,14 @@ pub async fn post(
     req: HttpRequest,
     Json(mut filter): Json<Filter>,
 ) -> Result<impl Responder, FiltersError> {
-    let mut user_id = get_user_from_request(&req)?;
+    let (mut user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
     user_id = get_hash(&user_id);
     let filter_id = Ulid::new().to_string();
     filter.filter_id = Some(filter_id.clone());
     filter.user_id = Some(user_id.clone());
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
-
-    PARSEABLE.metastore.put_filter(&filter).await?;
-    FILTERS.update(&filter).await;
+    PARSEABLE.metastore.put_filter(&filter, &tenant_id).await?;
+    FILTERS.update(&filter, &tenant_id).await;
 
     Ok((web::Json(filter), StatusCode::OK))
 }
@@ -81,13 +82,13 @@ pub async fn update(
     filter_id: Path<String>,
     Json(mut filter): Json<Filter>,
 ) -> Result<impl Responder, FiltersError> {
-    let mut user_id = get_user_from_request(&req)?;
+    let (mut user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
     user_id = get_hash(&user_id);
     let filter_id = filter_id.into_inner();
     let is_admin = is_admin(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
 
     if FILTERS
-        .get_filter(&filter_id, &user_id, is_admin)
+        .get_filter(&filter_id, &user_id, is_admin, &tenant_id)
         .await
         .is_none()
     {
@@ -99,8 +100,8 @@ pub async fn update(
     filter.user_id = Some(user_id.clone());
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
 
-    PARSEABLE.metastore.put_filter(&filter).await?;
-    FILTERS.update(&filter).await;
+    PARSEABLE.metastore.put_filter(&filter, &tenant_id).await?;
+    FILTERS.update(&filter, &tenant_id).await;
 
     Ok((web::Json(filter), StatusCode::OK))
 }
@@ -109,19 +110,22 @@ pub async fn delete(
     req: HttpRequest,
     filter_id: Path<String>,
 ) -> Result<HttpResponse, FiltersError> {
-    let mut user_id = get_user_from_request(&req)?;
+    let (mut user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
     user_id = get_hash(&user_id);
     let filter_id = filter_id.into_inner();
     let is_admin = is_admin(&req).map_err(|e| FiltersError::Custom(e.to_string()))?;
     let filter = FILTERS
-        .get_filter(&filter_id, &user_id, is_admin)
+        .get_filter(&filter_id, &user_id, is_admin, &tenant_id)
         .await
         .ok_or(FiltersError::Metadata(
             "Filter does not exist or user is not authorized",
         ))?;
 
-    PARSEABLE.metastore.delete_filter(&filter).await?;
-    FILTERS.delete_filter(&filter_id).await;
+    PARSEABLE
+        .metastore
+        .delete_filter(&filter, &tenant_id)
+        .await?;
+    FILTERS.delete_filter(&filter_id, &tenant_id).await;
 
     Ok(HttpResponse::Ok().finish())
 }

@@ -120,7 +120,7 @@ impl ParseableServer for Server {
         //TODO: removed file migration
         //deprecated support for deployments < v1.0.0
         let mut parseable_json = PARSEABLE.validate_storage().await?;
-        migration::run_metadata_migration(&PARSEABLE, &mut parseable_json).await?;
+        migration::run_metadata_migration(&PARSEABLE, &mut parseable_json, &None).await?;
 
         Ok(parseable_json)
     }
