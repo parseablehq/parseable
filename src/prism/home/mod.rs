@@ -25,7 +25,7 @@ use crate::{
     alerts::{ALERTS, AlertError, AlertState},
     correlation::{CORRELATIONS, CorrelationError},
     event::format::{LogSource, LogSourceEntry},
-    handlers::{TelemetryType, http::logstream::error::StreamError},
+    handlers::{DatasetTag, TelemetryType, http::logstream::error::StreamError},
     metastore::MetastoreError,
     parseable::PARSEABLE,
     rbac::{
@@ -37,17 +37,17 @@ use crate::{
     users::{dashboards::DASHBOARDS, filters::FILTERS},
 };
 
-type StreamMetadataResponse = Result<
-    (
-        String,
-        Vec<ObjectStoreFormat>,
-        TelemetryType,
-        Option<String>,
-        LogSource,
-        bool,
-    ),
-    PrismHomeError,
->;
+struct StreamMetadata {
+    stream: String,
+    metadata: Vec<ObjectStoreFormat>,
+    dataset_type: TelemetryType,
+    time_partition: Option<String>,
+    dataset_format: LogSource,
+    ingestion: bool,
+    tag: Option<DatasetTag>,
+}
+
+type StreamMetadataResponse = Result<StreamMetadata, PrismHomeError>;
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,6 +58,8 @@ pub struct DataSet {
     time_partition: Option<String>,
     dataset_format: LogSource,
     ingestion: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tag: Option<DatasetTag>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -126,10 +128,11 @@ pub async fn generate_home_response(
 
     for result in stream_metadata_results {
         match result {
-            Ok((stream, metadata, dataset_type, time_partition, dataset_format, ingestion)) => {
+            Ok(sm) => {
                 // Skip internal streams if the flag is false
                 if !include_internal
-                    && metadata
+                    && sm
+                        .metadata
                         .iter()
                         .all(|m| m.stream_type == StreamType::Internal)
                 {
@@ -137,11 +140,12 @@ pub async fn generate_home_response(
                 }
 
                 datasets.push(DataSet {
-                    title: stream,
-                    dataset_type,
-                    time_partition,
-                    dataset_format,
-                    ingestion,
+                    title: sm.stream,
+                    dataset_type: sm.dataset_type,
+                    time_partition: sm.time_partition,
+                    dataset_format: sm.dataset_format,
+                    ingestion: sm.ingestion,
+                    tag: sm.tag,
                 });
             }
             Err(e) => {
@@ -189,19 +193,7 @@ pub async fn generate_home_response(
     })
 }
 
-async fn get_stream_metadata(
-    stream: String,
-) -> Result<
-    (
-        String,
-        Vec<ObjectStoreFormat>,
-        TelemetryType,
-        Option<String>,
-        LogSource,
-        bool,
-    ),
-    PrismHomeError,
-> {
+async fn get_stream_metadata(stream: String) -> StreamMetadataResponse {
     let obs = PARSEABLE
         .metastore
         .get_all_stream_jsons(&stream, None)
@@ -237,15 +229,17 @@ async fn get_stream_metadata(
     let ingested = stream_jsons
         .iter()
         .any(|s| s.stats.current_stats.events > 0);
+    let dataset_tag = stream_jsons[0].dataset_tag;
 
-    Ok((
+    Ok(StreamMetadata {
         stream,
-        stream_jsons,
+        metadata: stream_jsons,
         dataset_type,
         time_partition,
         dataset_format,
-        ingested,
-    ))
+        ingestion: ingested,
+        tag: dataset_tag,
+    })
 }
 
 pub async fn generate_home_search_response(
