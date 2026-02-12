@@ -120,6 +120,7 @@ pub async fn ingest(
             vec![log_source_entry.clone()],
             telemetry_type,
             &tenant_id,
+            None
         )
         .await
         .map_err(|e| {
@@ -238,6 +239,7 @@ pub async fn setup_otel_stream(
             vec![log_source_entry.clone()],
             telemetry_type,
             &tenant_id,
+            None
         )
         .await?;
     let mut time_partition = None;

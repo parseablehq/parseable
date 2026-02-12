@@ -19,13 +19,14 @@
 use crate::{
     event::format::LogSource,
     handlers::{
-        CUSTOM_PARTITION_KEY, LOG_SOURCE_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY,
-        TELEMETRY_TYPE_KEY, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY, TelemetryType,
-        UPDATE_STREAM_KEY,
+        CUSTOM_PARTITION_KEY, DATASET_TAG_KEY, DatasetTag, LOG_SOURCE_KEY, STATIC_SCHEMA_FLAG,
+        STREAM_TYPE_KEY, TELEMETRY_TYPE_KEY, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY,
+        TelemetryType, UPDATE_STREAM_KEY,
     },
     storage::StreamType,
 };
 use actix_web::http::header::HeaderMap;
+use tracing::warn;
 
 #[derive(Debug, Default)]
 pub struct PutStreamHeaders {
@@ -37,6 +38,7 @@ pub struct PutStreamHeaders {
     pub stream_type: StreamType,
     pub log_source: LogSource,
     pub telemetry_type: TelemetryType,
+    pub dataset_tag: Option<DatasetTag>,
 }
 
 impl From<&HeaderMap> for PutStreamHeaders {
@@ -70,6 +72,16 @@ impl From<&HeaderMap> for PutStreamHeaders {
                 .get(TELEMETRY_TYPE_KEY)
                 .and_then(|v| v.to_str().ok())
                 .map_or(TelemetryType::Logs, TelemetryType::from),
+            dataset_tag: headers
+                .get(DATASET_TAG_KEY)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| match DatasetTag::try_from(v) {
+                    Ok(tag) => Some(tag),
+                    Err(err) => {
+                        warn!("Invalid dataset tag '{v}': {err}");
+                        None
+                    }
+                }),
         }
     }
 }
