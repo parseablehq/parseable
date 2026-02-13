@@ -786,7 +786,7 @@ mod tests {
         assert!(
             json::Event::new(json, Utc::now())
                 .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
-                .is_err()
+                .is_ok() // schema will have new field called b_int64 and the original b will be ignored since it has type mismatch
         );
     }
 
