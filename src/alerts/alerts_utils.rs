@@ -96,8 +96,12 @@ async fn execute_local_query(
     time_range: &TimeRange,
     tenant_id: &Option<String>,
 ) -> Result<AlertQueryResult, AlertError> {
-    let session_state = QUERY_SESSION.get_ctx().state();
-
+    let mut session_state = QUERY_SESSION.get_ctx().state();
+    session_state
+        .config_mut()
+        .options_mut()
+        .catalog
+        .default_schema = tenant_id.as_deref().unwrap_or("public").to_owned();
     let tables = resolve_stream_names(query)?;
     create_streams_for_distributed(tables.clone(), tenant_id)
         .await
@@ -133,7 +137,12 @@ async fn execute_remote_query(
     time_range: &TimeRange,
     tenant_id: &Option<String>,
 ) -> Result<AlertQueryResult, AlertError> {
-    let session_state = QUERY_SESSION.get_ctx().state();
+    let mut session_state = QUERY_SESSION.get_ctx().state();
+    session_state
+        .config_mut()
+        .options_mut()
+        .catalog
+        .default_schema = tenant_id.as_deref().unwrap_or("public").to_owned();
     let raw_logical_plan = session_state.create_logical_plan(query).await?;
 
     let query_request = Query {

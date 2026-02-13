@@ -876,7 +876,12 @@ impl ObjectStorage for S3 {
         stream_name: &str,
         tenant_id: &Option<String>,
     ) -> Result<(), ObjectStorageError> {
-        self._delete_prefix(stream_name, tenant_id).await?;
+        let prefix = if let Some(tenant) = tenant_id.as_ref() {
+            &format!("{tenant}/{stream_name}")
+        } else {
+            stream_name
+        };
+        self._delete_prefix(prefix, tenant_id).await?;
 
         Ok(())
     }
