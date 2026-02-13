@@ -473,7 +473,7 @@ impl Parseable {
                     vec![log_source_entry.clone()],
                     TelemetryType::Logs,
                     &tenant_id,
-                    None
+                    None,
                 )
                 .await;
 
@@ -512,6 +512,7 @@ impl Parseable {
     }
 
     // Check if the stream exists and create a new stream if doesn't exist
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_stream_if_not_exists(
         &self,
         stream_name: &str,
@@ -1045,14 +1046,15 @@ impl Parseable {
             return Err(anyhow::Error::msg("P_MULTI_TENANCY is set to false"));
         }
 
-        if self.tenants.read().unwrap().contains(&tenant_id) {
+        let mut tenants = self.tenants.write().unwrap();
+        if tenants.contains(&tenant_id) {
             return Err(anyhow::Error::msg(format!(
                 "Tenant with id- {tenant_id} already exists"
             )));
-        } else {
-            self.tenants.write().unwrap().push(tenant_id.clone());
-            TENANT_METADATA.insert_tenant(tenant_id, tenant_meta);
         }
+        tenants.push(tenant_id.clone());
+        drop(tenants);
+        TENANT_METADATA.insert_tenant(tenant_id, tenant_meta);
 
         Ok(())
     }
@@ -1120,6 +1122,9 @@ impl Parseable {
         // delete resources
 
         // delete from in-mem
+        if let Ok(mut tenants) = self.tenants.write() {
+            tenants.retain(|t| t != tenant_id);
+        }
         TENANT_METADATA.delete_tenant(tenant_id);
         Ok(())
     }
@@ -1154,7 +1159,9 @@ impl Parseable {
             }
         }
 
-        if let Ok(mut t) = self.tenants.write() {
+        if let Ok(mut t) = self.tenants.write()
+            && is_multi_tenant
+        {
             t.extend(dirs);
             Ok(Some(()))
         } else {

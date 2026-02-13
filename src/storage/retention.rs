@@ -109,7 +109,13 @@ pub struct Task {
 }
 
 impl Task {
-    pub fn new(description: String, days: u32) -> Self {
+    pub fn new(description: String, mut days: u32) -> Self {
+        if days.eq(&0) {
+            days = 7;
+            tracing::warn!(
+                "Using default 7 days for retention since an invalid value of 0 was provided by the user"
+            );
+        }
         let days = NonZeroU32::new(days).unwrap();
         Self {
             description,

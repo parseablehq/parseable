@@ -27,7 +27,7 @@ use crate::{
     event::format::{LogSource, LogSourceEntry},
     handlers::{TelemetryType, http::logstream::error::StreamError},
     metastore::MetastoreError,
-    parseable::PARSEABLE,
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::{
         Users,
         map::{SessionKey, users},
@@ -155,7 +155,10 @@ pub async fn generate_home_response(
 
     // Generate checklist and count triggered alerts
     let data_ingested = datasets.iter().any(|d| d.ingestion);
-    let user_count = users().len();
+    let user_count = users()
+        .get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+        .map(|m| m.len())
+        .unwrap_or(0);
     let user_added = user_count > 1; // more than just the default admin user
 
     // Calculate triggered alerts count

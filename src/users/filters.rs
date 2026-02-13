@@ -43,6 +43,7 @@ pub struct Filter {
     pub filter_id: Option<String>,
     pub query: FilterQuery,
     pub time_filter: Option<TimeFilter>,
+    pub tenant_id: Option<String>,
     /// all other fields are variable and can be added as needed
     #[serde(flatten)]
     pub other_fields: Option<serde_json::Map<String, Value>>,
@@ -54,6 +55,7 @@ impl MetastoreObject for Filter {
             self.user_id.as_ref().unwrap(),
             &self.stream_name,
             &format!("{}.json", self.filter_id.as_ref().unwrap()),
+            &self.tenant_id,
         )
         .to_string()
     }
@@ -127,10 +129,10 @@ impl Filters {
 
     pub async fn update(&self, filter: &Filter, tenant_id: &Option<String>) {
         let mut s = self.0.write().await;
-        if let Some(filters) = s.get_mut(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT)) {
-            filters.retain(|f| f.filter_id != filter.filter_id);
-            filters.push(filter.clone());
-        }
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT).to_owned();
+        let filters = s.entry(tenant).or_default();
+        filters.retain(|f| f.filter_id != filter.filter_id);
+        filters.push(filter.clone());
     }
 
     pub async fn delete_filter(&self, filter_id: &str, tenant_id: &Option<String>) {
@@ -196,7 +198,7 @@ impl Filters {
     }
 }
 
-pub fn migrate_v1_v2(mut filter_meta: Value) -> Value {
+pub fn migrate_v1_v2(mut filter_meta: Value, tenant_id: &Option<String>) -> Value {
     let filter_meta_map = filter_meta.as_object_mut().unwrap();
     let user_id = filter_meta_map.get("user_id").unwrap().clone();
     let str_user_id = user_id.as_str().unwrap();
@@ -206,6 +208,9 @@ pub fn migrate_v1_v2(mut filter_meta: Value) -> Value {
         "version".to_owned(),
         Value::String(CURRENT_FILTER_VERSION.into()),
     );
+    if let Some(tenant) = tenant_id {
+        filter_meta_map.insert("tenant_id".to_owned(), Value::String(tenant.to_owned()));
+    }
 
     filter_meta
 }

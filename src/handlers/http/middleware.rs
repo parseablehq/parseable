@@ -168,7 +168,7 @@ where
         // if action is Ingest and multi-tenancy is on, then request MUST have tenant id
         // else check for the presence of tenant id using other details
 
-        // an optional error to track the presence of CORRECTtenant header in case of ingestion
+        // an optional error to track the presence of CORRECT tenant header in case of ingestion
         let mut header_error = None;
         let user_and_tenant_id: Result<(Result<String, RBACError>, Option<String>), RBACError> =
             if PARSEABLE.options.is_multi_tenant() {
@@ -203,14 +203,11 @@ where
                             HeaderValue::from_str(tid).unwrap(),
                         );
                         t = tenant;
+                    } else {
+                        // remove the header if already present
+                        req.headers_mut().remove("tenant");
                     }
                     t
-                    // else {
-                    //     header_error = Some(actix_web::Error::from(PostError::Header(
-                    //         crate::utils::header_parsing::ParseHeaderError::InvalidTenantId,
-                    //     )));
-                    //     None
-                    // }
                 };
                 let userid = get_user_from_request(req.request());
                 Ok((userid, tenant))

@@ -514,9 +514,9 @@ impl Metastore for ObjectStoreMetastore {
 
     /// Fetch all dashboards
     async fn get_dashboards(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError> {
-        let mut dashboards = HashMap::new();
+        let mut dashboards: HashMap<String, Vec<Bytes>> = HashMap::new();
         let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
-        for mut tenant in base_paths {
+        for tenant in base_paths {
             let tenant_id = &Some(tenant.clone());
             let users_dir = RelativePathBuf::from_iter([&tenant, USERS_ROOT_DIR]);
             for user in self
@@ -533,11 +533,16 @@ impl Metastore for ObjectStoreMetastore {
                         tenant_id,
                     )
                     .await?;
-                if tenant.is_empty() {
-                    tenant.clone_from(&DEFAULT_TENANT.to_string());
-                }
-                dashboards.insert(tenant.to_owned(), dashboard_bytes);
-                // dashboards.extend(dashboard_bytes);
+
+                let tenant_key = if tenant.is_empty() {
+                    DEFAULT_TENANT.to_string()
+                } else {
+                    tenant.clone()
+                };
+                dashboards
+                    .entry(tenant_key)
+                    .or_default()
+                    .extend(dashboard_bytes);
             }
         }
 
@@ -690,9 +695,21 @@ impl Metastore for ObjectStoreMetastore {
 
                             if version == Some("v1") {
                                 // delete older version of the filter
-                                self.storage.delete_object(&filters_path, tenant_id).await?;
+                                // get filter id to delete
+                                let filterid = meta
+                                    .get("filter_id")
+                                    .and_then(|filter_id| filter_id.as_str());
+                                if let Some(filterid) = filterid {
+                                    self.storage
+                                        .delete_object(
+                                            &filters_path.join(format!("{filterid}.json")),
+                                            tenant_id,
+                                        )
+                                        .await?;
+                                }
+                                // self.storage.delete_object(&filters_path, tenant_id).await?;
 
-                                filter_value = migrate_v1_v2(filter_value);
+                                filter_value = migrate_v1_v2(filter_value, tenant_id);
                                 let user_id = filter_value
                                     .as_object()
                                     .unwrap()
@@ -717,6 +734,7 @@ impl Metastore for ObjectStoreMetastore {
                                         user_id,
                                         stream_name,
                                         &format!("{filter_id}.json"),
+                                        tenant_id,
                                     );
                                     let filter_bytes = to_bytes(&filter_value);
                                     self.storage
@@ -933,7 +951,11 @@ impl Metastore for ObjectStoreMetastore {
             .collect::<Vec<_>>();
 
         for date in dates {
-            let date_path = object_store::path::Path::from(format!("{}/{}", stream_name, &date));
+            let date_path = if let Some(tenant) = tenant_id {
+                object_store::path::Path::from(format!("{}/{}/{}", tenant, stream_name, &date))
+            } else {
+                object_store::path::Path::from(format!("{}/{}", stream_name, &date))
+            };
             let resp = self.storage.list_with_delimiter(Some(date_path)).await?;
 
             let manifest_paths: Vec<String> = resp

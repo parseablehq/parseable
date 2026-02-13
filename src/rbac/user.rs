@@ -349,7 +349,9 @@ impl UserGroup {
     pub fn validate(&self, tenant_id: &Option<String>) -> Result<(), RBACError> {
         let valid_name = is_valid_group_name(&self.name);
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        if read_user_groups().contains_key(&self.name) {
+        if let Some(tenant_ug) = read_user_groups().get(tenant)
+            && tenant_ug.contains_key(&self.name)
+        {
             return Err(RBACError::UserGroupExists(self.name.clone()));
         }
         let mut non_existent_roles = Vec::new();
@@ -361,6 +363,8 @@ impl UserGroup {
                         non_existent_roles.push(role.clone());
                     }
                 }
+            } else {
+                non_existent_roles.extend(self.roles.iter().cloned());
             }
         }
         let mut non_existent_users = Vec::new();
@@ -372,6 +376,8 @@ impl UserGroup {
                         non_existent_users.push(group_user.userid().to_string());
                     }
                 }
+            } else {
+                non_existent_users.extend(self.users.iter().map(|u| u.userid().to_string()));
             }
         }
 
@@ -496,12 +502,4 @@ impl UserGroup {
 
         self.remove_users(users_to_remove)
     }
-
-    // pub async fn update_in_metadata(&self, tenant_id: &Option<String>) -> Result<(), RBACError> {
-    //     let mut metadata = get_metadata(tenant_id).await?;
-    //     metadata.user_groups.retain(|x| x.name != self.name);
-    //     metadata.user_groups.push(self.clone());
-    //     put_metadata(&metadata).await?;
-    //     Ok(())
-    // }
 }

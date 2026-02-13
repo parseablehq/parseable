@@ -139,9 +139,11 @@ impl Correlations {
             .await?;
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         // Update in memory
-        if let Some(corrs) = self.write().await.get_mut(tenant) {
-            corrs.insert(correlation.id.to_owned(), correlation.clone());
-        }
+        self.write()
+            .await
+            .entry(tenant.to_string())
+            .or_default()
+            .insert(correlation.id.to_owned(), correlation.clone());
 
         Ok(correlation)
     }
@@ -208,7 +210,11 @@ impl Correlations {
             .await?;
 
         // Delete from memory
-        self.write().await.remove(&correlation.id);
+        self.write()
+            .await
+            .entry(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT).to_owned())
+            .or_default()
+            .remove(&correlation.id);
 
         Ok(())
     }

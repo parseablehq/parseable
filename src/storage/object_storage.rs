@@ -1236,8 +1236,19 @@ pub fn stream_json_path(stream_name: &str, tenant_id: &Option<String>) -> Relati
 
 /// if filter_id is an empty str it should not append it to the rel path
 #[inline(always)]
-pub fn filter_path(user_id: &str, stream_name: &str, filter_file_name: &str) -> RelativePathBuf {
+pub fn filter_path(
+    user_id: &str,
+    stream_name: &str,
+    filter_file_name: &str,
+    tenant_id: &Option<String>,
+) -> RelativePathBuf {
+    let root = if let Some(tenant) = tenant_id.as_ref() {
+        tenant
+    } else {
+        ""
+    };
     RelativePathBuf::from_iter([
+        root,
         USERS_ROOT_DIR,
         user_id,
         FILTER_DIR,
