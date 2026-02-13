@@ -34,6 +34,7 @@ use std::{
 use tracing::error;
 
 use super::EventFormat;
+use super::{detect_schema_conflicts, rename_conflicting_fields_in_json};
 use crate::{
     handlers::TelemetryType, metadata::SchemaVersion, storage::StreamType, utils::arrow::get_field,
 };
@@ -81,13 +82,36 @@ impl EventFormat for Event {
         // Reject event if renaming would cause a key collision
         let value_arr = rename_json_keys(value_arr)?;
 
+        // First, infer raw schema from incoming event to detect type conflicts
+        // IMPORTANT: Detect conflicts BEFORE update_field_type_in_schema, because
+        // update_field_type_in_schema may override types (e.g., force Utf8 to Timestamp
+        // if existing schema has Timestamp), which would hide the actual conflict.
+        let raw_inferred_schema = infer_json_schema_from_iterator(value_arr.iter().map(Ok))
+            .map_err(|err| anyhow!("Could not infer schema for this event due to err {:?}", err))?;
+
+        // Detect schema conflicts using raw inferred schema vs existing stream schema
+        // Pass the actual values and schema_version to check if values can be coerced to existing types
+        let conflicts = detect_schema_conflicts(
+            &raw_inferred_schema,
+            stream_schema,
+            &value_arr,
+            schema_version,
+        );
+
+        // If there are conflicts, rename the fields in JSON values
+        let value_arr = if !conflicts.is_empty() {
+            rename_conflicting_fields_in_json(value_arr, &conflicts)
+        } else {
+            value_arr
+        };
+
         // collect all the keys from all the json objects in the request body
         let fields =
             collect_keys(value_arr.iter()).expect("fields can be collected from array of objects");
 
         let mut is_first = false;
-        let schema = match derive_arrow_schema(stream_schema, fields) {
-            Ok(schema) => schema,
+        let (value_arr, schema) = match derive_arrow_schema(stream_schema, fields) {
+            Ok(schema) => (value_arr, schema),
             Err(_) => {
                 let mut infer_schema = infer_json_schema_from_iterator(value_arr.iter().map(Ok))
                     .map_err(|err| {
@@ -106,13 +130,14 @@ impl EventFormat for Event {
                     infer_schema.clone(),
                 ]).map_err(|err| anyhow!("Could not merge schema of this event with that of the existing stream. {:?}", err))?;
                 is_first = true;
-                infer_schema
+                let schema = infer_schema
                     .fields
                     .iter()
                     .filter(|field| !field.data_type().is_null())
                     .cloned()
                     .sorted_by(|a, b| a.name().cmp(b.name()))
-                    .collect()
+                    .collect();
+                (value_arr, schema)
             }
         };
 
