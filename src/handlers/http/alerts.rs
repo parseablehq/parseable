@@ -313,7 +313,8 @@ pub async fn post(
         .await?;
 
     // create initial alert state entry (default to NotTriggered)
-    let state_entry = AlertStateEntry::new(*alert.get_id(), AlertState::NotTriggered);
+    let state_entry =
+        AlertStateEntry::new(*alert.get_id(), AlertState::NotTriggered, tenant_id.clone());
     PARSEABLE
         .metastore
         .put_alert_state(&state_entry as &dyn MetastoreObject, &tenant_id)
@@ -371,7 +372,8 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
         .await?;
 
     // delete the associated alert state
-    let state_to_delete = AlertStateEntry::new(alert_id, AlertState::NotTriggered); // state doesn't matter for deletion
+    let state_to_delete =
+        AlertStateEntry::new(alert_id, AlertState::NotTriggered, tenant_id.clone()); // state doesn't matter for deletion
     PARSEABLE
         .metastore
         .delete_alert_state(&state_to_delete as &dyn MetastoreObject, &tenant_id)

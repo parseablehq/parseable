@@ -731,8 +731,16 @@ impl AlertConfig {
 }
 
 /// Check if a query is an aggregate query that returns a single value without executing it
-pub async fn get_number_of_agg_exprs(query: &str) -> Result<usize, AlertError> {
-    let session_state = QUERY_SESSION.get_ctx().state();
+pub async fn get_number_of_agg_exprs(
+    query: &str,
+    tenant_id: &Option<String>,
+) -> Result<usize, AlertError> {
+    let mut session_state = QUERY_SESSION.get_ctx().state();
+    session_state
+        .config_mut()
+        .options_mut()
+        .catalog
+        .default_schema = tenant_id.as_deref().unwrap_or("public").to_owned();
 
     // Parse the query into a logical plan
     let logical_plan = session_state
@@ -745,8 +753,16 @@ pub async fn get_number_of_agg_exprs(query: &str) -> Result<usize, AlertError> {
 }
 
 /// Extract the projection which deals with aggregation
-pub async fn get_aggregate_projection(query: &str) -> Result<String, AlertError> {
-    let session_state = QUERY_SESSION.get_ctx().state();
+pub async fn get_aggregate_projection(
+    query: &str,
+    tenant_id: &Option<String>,
+) -> Result<String, AlertError> {
+    let mut session_state = QUERY_SESSION.get_ctx().state();
+    session_state
+        .config_mut()
+        .options_mut()
+        .catalog
+        .default_schema = tenant_id.as_deref().unwrap_or("public").to_owned();
 
     // Parse the query into a logical plan
     let logical_plan = session_state

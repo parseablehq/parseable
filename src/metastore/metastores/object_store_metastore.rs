@@ -346,7 +346,7 @@ impl Metastore for ObjectStoreMetastore {
         alert_id: &Ulid,
         tenant_id: &Option<String>,
     ) -> Result<Option<AlertStateEntry>, MetastoreError> {
-        let path = alert_state_json_path(*alert_id);
+        let path = alert_state_json_path(*alert_id, tenant_id);
         match self.storage.get_object(&path, tenant_id).await {
             Ok(bytes) => {
                 if let Ok(entry) = serde_json::from_slice::<AlertStateEntry>(&bytes) {
@@ -370,7 +370,7 @@ impl Metastore for ObjectStoreMetastore {
             message: e.to_string(),
             flow: "put_alert_state".into(),
         })?;
-        let path = alert_state_json_path(id);
+        let path = alert_state_json_path(id, tenant_id);
 
         // Parse the new state entry from the MetastoreObject
         let new_state_entry: AlertStateEntry = serde_json::from_slice(&to_bytes(obj))?;
@@ -404,7 +404,7 @@ impl Metastore for ObjectStoreMetastore {
         }
 
         // Create and save new entry (either file didn't exist or parsing failed)
-        let new_entry = AlertStateEntry::new(id, new_state);
+        let new_entry = AlertStateEntry::new(id, new_state, tenant_id.clone());
         let new_bytes = serde_json::to_vec(&new_entry).map_err(MetastoreError::JsonParseError)?;
 
         self.storage

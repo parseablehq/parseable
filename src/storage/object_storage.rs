@@ -1279,8 +1279,14 @@ pub fn alert_json_path(alert_id: Ulid, tenant_id: &Option<String>) -> RelativePa
 
 /// TODO: Needs to be updated for distributed mode
 #[inline(always)]
-pub fn target_json_path(target_id: &Ulid) -> RelativePathBuf {
+pub fn target_json_path(target_id: &Ulid, tenant_id: &Option<String>) -> RelativePathBuf {
+    let root = if let Some(tenant) = tenant_id.as_ref() {
+        tenant
+    } else {
+        ""
+    };
     RelativePathBuf::from_iter([
+        root,
         SETTINGS_ROOT_DIRECTORY,
         TARGETS_ROOT_DIRECTORY,
         &format!("{target_id}.json"),
@@ -1290,8 +1296,14 @@ pub fn target_json_path(target_id: &Ulid) -> RelativePathBuf {
 /// Constructs the path for storing alert state JSON files
 /// Format: ".alerts/alert_state_{alert_id}.json"
 #[inline(always)]
-pub fn alert_state_json_path(alert_id: Ulid) -> RelativePathBuf {
+pub fn alert_state_json_path(alert_id: Ulid, tenant_id: &Option<String>) -> RelativePathBuf {
+    let root = if let Some(tenant) = tenant_id.as_ref() {
+        tenant
+    } else {
+        ""
+    };
     RelativePathBuf::from_iter([
+        root,
         ALERTS_ROOT_DIRECTORY,
         &format!("alert_state_{alert_id}.json"),
     ])

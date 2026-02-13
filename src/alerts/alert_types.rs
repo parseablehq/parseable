@@ -188,7 +188,7 @@ impl AlertTrait for ThresholdAlert {
         user_auth_for_query(session_key, &self.query).await?;
 
         // validate that the alert query is valid and can be evaluated
-        let num_aggrs = get_number_of_agg_exprs(&self.query).await?;
+        let num_aggrs = get_number_of_agg_exprs(&self.query, &self.tenant_id).await?;
         if num_aggrs != 1 {
             return Err(AlertError::InvalidAlertQuery(format!(
                 "Found {num_aggrs} aggregate expressions, only 1 allowed"
@@ -235,7 +235,7 @@ impl AlertTrait for ThresholdAlert {
                 .metastore
                 .put_alert(&self.to_alert_config(), &self.tenant_id)
                 .await?;
-            let state_entry = AlertStateEntry::new(self.id, self.state);
+            let state_entry = AlertStateEntry::new(self.id, self.state, self.tenant_id.clone());
             PARSEABLE
                 .metastore
                 .put_alert_state(&state_entry as &dyn MetastoreObject, &self.tenant_id)
@@ -275,7 +275,7 @@ impl AlertTrait for ThresholdAlert {
             .metastore
             .put_alert(&self.to_alert_config(), &self.tenant_id)
             .await?;
-        let state_entry = AlertStateEntry::new(self.id, self.state);
+        let state_entry = AlertStateEntry::new(self.id, self.state, self.tenant_id.clone());
 
         PARSEABLE
             .metastore

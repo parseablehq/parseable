@@ -772,6 +772,7 @@ pub struct AlertStateEntry {
     /// The unique identifier for the alert
     pub alert_id: Ulid,
     pub states: Vec<StateTransition>,
+    pub tenant_id: Option<String>,
 }
 
 impl StateTransition {
@@ -786,10 +787,11 @@ impl StateTransition {
 
 impl AlertStateEntry {
     /// Creates a new alert state entry with an initial state
-    pub fn new(alert_id: Ulid, initial_state: AlertState) -> Self {
+    pub fn new(alert_id: Ulid, initial_state: AlertState, tenant_id: Option<String>) -> Self {
         Self {
             alert_id,
             states: vec![StateTransition::new(initial_state)],
+            tenant_id,
         }
     }
 
@@ -881,7 +883,7 @@ impl MetastoreObject for AlertStateEntry {
     }
 
     fn get_object_path(&self) -> String {
-        alert_state_json_path(self.alert_id).to_string()
+        alert_state_json_path(self.alert_id, &self.tenant_id).to_string()
     }
 }
 

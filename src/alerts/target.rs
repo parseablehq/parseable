@@ -388,7 +388,7 @@ impl Target {
 
 impl MetastoreObject for Target {
     fn get_object_path(&self) -> String {
-        target_json_path(&self.id).to_string()
+        target_json_path(&self.id, &self.tenant).to_string()
     }
 
     fn get_object_id(&self) -> String {
