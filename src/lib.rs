@@ -55,9 +55,15 @@ use std::time::Duration;
 
 // Public re-exports of crates being used in enterprise
 pub use datafusion;
+pub use datafusion_proto;
 pub use handlers::http::modal::{
     ParseableServer, ingest_server::IngestServer, query_server::QueryServer, server::Server,
 };
+// pub use ballista_core;
+pub use ballista_executor;
+pub use ballista_scheduler;
+pub use ballista;
+
 use once_cell::sync::Lazy;
 pub use opentelemetry_proto;
 use parseable::PARSEABLE;
