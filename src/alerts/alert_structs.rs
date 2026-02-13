@@ -760,6 +760,10 @@ pub struct StateTransition {
     pub state: AlertState,
     /// Timestamp when this state was set/updated
     pub last_updated_at: DateTime<Utc>,
+    /// The previous alert state before this transition, if any
+    pub previous_alert_state: Option<AlertState>,
+    /// Duration in seconds
+    pub previous_state_duration: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -771,10 +775,20 @@ pub struct AlertStateEntry {
 
 impl StateTransition {
     /// Creates a new state transition with the current timestamp
-    pub fn new(state: AlertState) -> Self {
+    pub fn new(
+        state: AlertState,
+        previous_alert_state: Option<AlertState>,
+        previous_alert_time: Option<DateTime<Utc>>,
+    ) -> Self {
+        let now = Utc::now();
+        // calculate duration if previous alert time is provided
+        let previous_state_duration =
+            previous_alert_time.map(|alert_time| (now - alert_time).num_seconds());
         Self {
             state,
-            last_updated_at: Utc::now(),
+            last_updated_at: now,
+            previous_alert_state,
+            previous_state_duration,
         }
     }
 }
@@ -784,7 +798,7 @@ impl AlertStateEntry {
     pub fn new(alert_id: Ulid, initial_state: AlertState) -> Self {
         Self {
             alert_id,
-            states: vec![StateTransition::new(initial_state)],
+            states: vec![StateTransition::new(initial_state, None, None)],
         }
     }
 
@@ -795,7 +809,11 @@ impl AlertStateEntry {
             Some(last_transition) => {
                 if last_transition.state != new_state {
                     // State changed - add new transition
-                    self.states.push(StateTransition::new(new_state));
+                    self.states.push(StateTransition::new(
+                        new_state,
+                        Some(last_transition.state),
+                        Some(last_transition.last_updated_at),
+                    ));
                     true
                 } else {
                     // If state hasn't changed, do nothing - preserve the original timestamp
@@ -804,7 +822,8 @@ impl AlertStateEntry {
             }
             None => {
                 // No previous states - add the first one
-                self.states.push(StateTransition::new(new_state));
+                self.states
+                    .push(StateTransition::new(new_state, None, None));
                 true
             }
         }
