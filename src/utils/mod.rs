@@ -38,6 +38,7 @@ use crate::rbac::role::{Action, ParseableResourceType, Permission};
 use crate::rbac::user::User;
 use actix::extract_session_key_from_req;
 use actix_web::dev::ServiceRequest;
+use actix_web::http::header::HeaderMap;
 use actix_web::{FromRequest, HttpRequest};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
@@ -171,6 +172,7 @@ pub async fn user_auth_for_datasets(
                     Some(ParseableResourceType::Stream(stream)),
                 ) => {
                     if !PARSEABLE.check_or_load_stream(stream, tenant_id).await {
+                        tracing::warn!("unable to find stream");
                         return Err(actix_web::error::ErrorUnauthorized(format!(
                             "Stream not found: {table_name}"
                         )));
@@ -187,6 +189,10 @@ pub async fn user_auth_for_datasets(
                     if stream == table_name || stream == "*" || is_internal {
                         authorized = true;
                     }
+                }
+                // global query role
+                Permission::Resource(Action::Query, None) => {
+                    authorized = true;
                 }
                 Permission::Resource(action, Some(ParseableResourceType::All))
                     if ![
@@ -237,17 +243,25 @@ pub fn is_admin(req: &HttpRequest) -> Result<bool, anyhow::Error> {
     Ok(false)
 }
 
-pub fn create_intracluster_auth_headermap(req: &HttpRequest) -> reqwest::header::HeaderMap {
+pub fn create_intracluster_auth_headermap(
+    req: &HeaderMap,
+    node_token: &str,
+) -> reqwest::header::HeaderMap {
     let mut map = reqwest::header::HeaderMap::new();
-    if let Some(auth) = req.headers().get(actix_web::http::header::AUTHORIZATION) {
+    if let Some(auth) = req.get(actix_web::http::header::AUTHORIZATION) {
         map.insert(
             reqwest::header::AUTHORIZATION,
             reqwest::header::HeaderValue::from_bytes(auth.as_bytes()).unwrap(),
         );
-    } else if let Some(auth) = req.headers().get(actix_web::http::header::COOKIE) {
+    } else if let Some(auth) = req.get(actix_web::http::header::COOKIE) {
         map.insert(
             reqwest::header::COOKIE,
             reqwest::header::HeaderValue::from_bytes(auth.as_bytes()).unwrap(),
+        );
+    } else {
+        map.insert(
+            reqwest::header::AUTHORIZATION,
+            reqwest::header::HeaderValue::from_str(node_token).unwrap(),
         );
     }
     map

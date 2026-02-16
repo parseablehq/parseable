@@ -87,7 +87,7 @@ pub async fn post_user(
     // let created_role = user_roles.clone();
     Users.put_user(user.clone());
 
-    sync_user_creation(user, &None, &tenant_id).await?;
+    sync_user_creation(&req, user, &None, &tenant_id).await?;
 
     Ok(password)
 }

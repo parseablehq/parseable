@@ -67,11 +67,14 @@ pub struct Dashboard {
     pub is_favorite: Option<bool>, // whether the dashboard is marked as favorite, default is false
     dashboard_type: Option<DashboardType>,
     pub tiles: Option<Vec<Tile>>,
+    pub tenant_id: Option<String>,
 }
 
 impl MetastoreObject for Dashboard {
     fn get_object_path(&self) -> String {
+        let root = self.tenant_id.as_deref().unwrap_or("");
         RelativePathBuf::from_iter([
+            root,
             USERS_ROOT_DIR,
             self.author.as_ref().unwrap(),
             DASHBOARDS_DIR,

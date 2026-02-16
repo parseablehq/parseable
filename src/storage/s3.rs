@@ -464,10 +464,14 @@ impl S3 {
         stream: &str,
         tenant_id: &Option<String>,
     ) -> Result<Vec<String>, ObjectStorageError> {
-        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let (prefix, tenant_str) = if let Some(tenant) = tenant_id {
+            (format!("{}/{}/", tenant, stream), tenant.as_str())
+        } else {
+            (format!("{}/", stream), DEFAULT_TENANT)
+        };
         let resp: Result<object_store::ListResult, object_store::Error> = self
             .client
-            .list_with_delimiter(Some(&(stream.into())))
+            .list_with_delimiter(Some(&(prefix.as_str().into())))
             .await;
         increment_object_store_calls_by_date(
             "LIST",
@@ -494,7 +498,7 @@ impl S3 {
         // return prefixes at the root level
         let dates: Vec<_> = common_prefixes
             .iter()
-            .filter_map(|path| path.as_ref().strip_prefix(&format!("{stream}/")))
+            .filter_map(|path| path.as_ref().strip_prefix(&prefix))
             .map(String::from)
             .collect();
 
@@ -986,9 +990,15 @@ impl ObjectStorage for S3 {
         date: &str,
         tenant_id: &Option<String>,
     ) -> Result<Vec<String>, ObjectStorageError> {
-        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        let pre = object_store::path::Path::from(format!("{}/{}/", stream_name, date));
-        let resp = self.client.list_with_delimiter(Some(&pre)).await?;
+        let (pre, tenant_str) = if let Some(tenant) = tenant_id {
+            (format!("{tenant}/{stream_name}/{date}/"), tenant.as_str())
+        } else {
+            (format!("{stream_name}/{date}/"), DEFAULT_TENANT)
+        };
+        let resp = self
+            .client
+            .list_with_delimiter(Some(&object_store::path::Path::from(pre.as_str())))
+            .await?;
         increment_files_scanned_in_object_store_calls_by_date(
             "LIST",
             resp.common_prefixes.len() as u64,
@@ -1006,8 +1016,7 @@ impl ObjectStorage for S3 {
             .iter()
             .filter_map(|path| {
                 let path_str = path.as_ref();
-                if let Some(stripped) = path_str.strip_prefix(&format!("{}/{}/", stream_name, date))
-                {
+                if let Some(stripped) = path_str.strip_prefix(&pre) {
                     // Remove trailing slash if present, otherwise use as is
                     let clean_path = stripped.strip_suffix('/').unwrap_or(stripped);
                     Some(clean_path.to_string())
@@ -1028,9 +1037,18 @@ impl ObjectStorage for S3 {
         hour: &str,
         tenant_id: &Option<String>,
     ) -> Result<Vec<String>, ObjectStorageError> {
-        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        let pre = object_store::path::Path::from(format!("{}/{}/{}/", stream_name, date, hour));
-        let resp = self.client.list_with_delimiter(Some(&pre)).await?;
+        let (pre, tenant_str) = if let Some(tenant) = tenant_id {
+            (
+                format!("{tenant}/{stream_name}/{date}/{hour}/"),
+                tenant.as_str(),
+            )
+        } else {
+            (format!("{stream_name}/{date}/{hour}/"), DEFAULT_TENANT)
+        };
+        let resp = self
+            .client
+            .list_with_delimiter(Some(&object_store::path::Path::from(pre.as_str())))
+            .await?;
         increment_files_scanned_in_object_store_calls_by_date(
             "LIST",
             resp.common_prefixes.len() as u64,
@@ -1047,9 +1065,7 @@ impl ObjectStorage for S3 {
             .iter()
             .filter_map(|path| {
                 let path_str = path.as_ref();
-                if let Some(stripped) =
-                    path_str.strip_prefix(&format!("{}/{}/{}/", stream_name, date, hour))
-                {
+                if let Some(stripped) = path_str.strip_prefix(&pre) {
                     // Remove trailing slash if present, otherwise use as is
                     let clean_path = stripped.strip_suffix('/').unwrap_or(stripped);
                     Some(clean_path.to_string())

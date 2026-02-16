@@ -414,7 +414,6 @@ pub async fn sync_streams_with_ingestors(
                 let res = INTRA_CLUSTER_CLIENT
                     .put(url)
                     .headers(headers)
-                    .header(header::AUTHORIZATION, &ingestor.token)
                     .body(body)
                     .send()
                     .await
@@ -518,9 +517,8 @@ pub async fn sync_users_with_roles_with_ingestors(
     })?;
 
     let userid = userid.to_owned();
-
+    let headers = req.headers().clone();
     let op = operation.to_string();
-    let headermap = create_intracluster_auth_headermap(req);
     for_each_live_node(tenant_id, move |ingestor| {
         let url = format!(
             "{}{}/user/{}/role/sync/{}",
@@ -531,7 +529,7 @@ pub async fn sync_users_with_roles_with_ingestors(
         );
 
         let role_data = role_data.clone();
-        let headermap = headermap.clone();
+        let headermap = create_intracluster_auth_headermap(&headers, &ingestor.token);
         async move {
             let res = INTRA_CLUSTER_CLIENT
                 .patch(url)
@@ -570,7 +568,7 @@ pub async fn sync_user_deletion_with_ingestors(
     tenant_id: &Option<String>,
 ) -> Result<(), RBACError> {
     let userid = userid.to_owned();
-    let headermap = create_intracluster_auth_headermap(req);
+    let headers = req.headers().clone();
     for_each_live_node(tenant_id, move |ingestor| {
         let url = format!(
             "{}{}/user/{}/sync",
@@ -578,7 +576,7 @@ pub async fn sync_user_deletion_with_ingestors(
             base_path_without_preceding_slash(),
             userid
         );
-        let headermap = headermap.clone();
+        let headermap = create_intracluster_auth_headermap(&headers, &ingestor.token);
         async move {
             let res = INTRA_CLUSTER_CLIENT
                 .delete(url)
@@ -610,6 +608,7 @@ pub async fn sync_user_deletion_with_ingestors(
 
 // forward the create user request to all ingestors and queriers to keep them in sync
 pub async fn sync_user_creation(
+    req: &HttpRequest,
     user: User,
     role: &Option<HashSet<String>>,
     tenant_id: &Option<String>,
@@ -627,7 +626,7 @@ pub async fn sync_user_creation(
     })?;
 
     let userid = userid.to_string();
-
+    let headers = req.headers().clone();
     for_each_live_node(tenant_id, move |node| {
         let url = format!(
             "{}{}/user/{}/sync",
@@ -635,13 +634,13 @@ pub async fn sync_user_creation(
             base_path_without_preceding_slash(),
             userid
         );
-
+        let headermap = create_intracluster_auth_headermap(&headers, &node.token);
         let user_data = user_data.clone();
 
         async move {
             let res = INTRA_CLUSTER_CLIENT
                 .post(url)
-                .header(header::AUTHORIZATION, &node.token)
+                .headers(headermap)
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(user_data)
                 .send()
