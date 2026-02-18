@@ -360,7 +360,7 @@ pub struct Options {
     #[arg(
         long,
         env = "P_CPU_THRESHOLD",
-        default_value = "80.0",
+        default_value = "100.0",
         value_parser = validation::validate_percentage,
         help = "CPU utilization threshold percentage (0.0-100.0) for resource monitoring"
     )]
@@ -369,7 +369,7 @@ pub struct Options {
     #[arg(
         long,
         env = "P_MEMORY_THRESHOLD",
-        default_value = "80.0",
+        default_value = "100.0",
         value_parser = validation::validate_percentage,
         help = "Memory utilization threshold percentage (0.0-100.0) for resource monitoring"
     )]
