@@ -369,10 +369,13 @@ impl UserGroup {
         }
         let mut non_existent_users = Vec::new();
         if !self.users.is_empty() {
-            // validate that the users exist
+            // validate that the users exist and no protected user is included
             if let Some(users) = users().get(tenant) {
                 for group_user in &self.users {
-                    if !users.contains_key(group_user.userid()) {
+                    if let Some(user) = users.get(group_user.userid())
+                        && !user.protected
+                        && user.tenant.eq(tenant_id)
+                    {
                         non_existent_users.push(group_user.userid().to_string());
                     }
                 }
@@ -398,6 +401,16 @@ impl UserGroup {
                 },
             )))
         } else {
+            // check if any role is being used by a protected user
+            for name in &self.roles {
+                while let Some(users) = users().get(tenant) {
+                    for user in users.values() {
+                        if user.roles.contains(name) && user.protected {
+                            return Err(RBACError::ProtectedRole);
+                        }
+                    }
+                }
+            }
             Ok(())
         }
     }
@@ -408,6 +421,15 @@ impl UserGroup {
     pub fn add_roles(&mut self, roles: HashSet<String>, tenant_id: &str) -> Result<(), RBACError> {
         if roles.is_empty() {
             return Ok(());
+        }
+        for name in &roles {
+            while let Some(users) = users().get(tenant_id) {
+                for user in users.values() {
+                    if user.roles.contains(name) && user.protected {
+                        return Err(RBACError::ProtectedRole);
+                    }
+                }
+            }
         }
         self.roles.extend(roles);
         // also refresh all user sessions

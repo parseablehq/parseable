@@ -50,6 +50,15 @@ pub async fn put(
     let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     // validate the role name
     validator::user_role_name(&name).map_err(RoleError::ValidationError)?;
+
+    // iterate to find if a protected user has this role
+    if let Some(users) = users().get(tenant) {
+        for user in users.values() {
+            if user.roles.contains(&name) && user.protected {
+                return Err(RoleError::RoleInUse);
+            }
+        }
+    }
     let mut metadata = get_metadata(&tenant_id).await?;
     metadata.roles.insert(name.clone(), privileges.clone());
 

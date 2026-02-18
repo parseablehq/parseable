@@ -91,6 +91,14 @@ impl Users {
         // users().get(userid).map(|user| user.is_oauth())
     }
 
+    pub fn is_protected(&self, userid: &str, tenant_id: &Option<String>) -> Option<bool> {
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        users()
+            .get(tenant_id)
+            .filter(|users| users.get(userid).is_some())
+            .map(|users| users.get(userid).unwrap().protected)
+    }
+
     pub fn collect_user<T: for<'a> From<&'a User> + 'static>(
         &self,
         tenant_id: &Option<String>,

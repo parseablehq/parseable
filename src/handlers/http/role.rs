@@ -45,8 +45,18 @@ pub async fn put(
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     // validate the role name
     validator::user_role_name(&name).map_err(RoleError::ValidationError)?;
+
+    // iterate to find if a protected user has this role
+    if let Some(users) = users().get(tenant) {
+        for user in users.values() {
+            if user.roles.contains(&name) && user.protected {
+                return Err(RoleError::ProtectedRole);
+            }
+        }
+    }
 
     let mut metadata = get_metadata(&tenant_id).await?;
     metadata.roles.insert(name.clone(), privileges.clone());
@@ -225,6 +235,8 @@ pub enum RoleError {
     ObjectStorageError(#[from] ObjectStorageError),
     #[error("Cannot perform this operation as role is assigned to an existing user.")]
     RoleInUse,
+    #[error("Cannot perform this operation as role is assigned to a protected user.")]
+    ProtectedRole,
     #[error("Error: {0}")]
     Anyhow(#[from] anyhow::Error),
     #[error("{0}")]
@@ -240,6 +252,7 @@ impl actix_web::ResponseError for RoleError {
         match self {
             Self::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::RoleInUse => StatusCode::BAD_REQUEST,
+            Self::ProtectedRole => StatusCode::BAD_REQUEST,
             Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::SerdeError(_) => StatusCode::BAD_REQUEST,
             Self::Network(_) => StatusCode::BAD_GATEWAY,

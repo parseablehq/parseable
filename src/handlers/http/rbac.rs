@@ -172,6 +172,12 @@ pub async fn post_gen_password(
 ) -> Result<impl Responder, RBACError> {
     let username = username.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    // fail this request if the user is protected
+    if let Some(p) = Users.is_protected(&username, &tenant_id)
+        && p
+    {
+        return Err(RBACError::ProtectedUser);
+    }
     let mut new_password = String::default();
     let mut new_hash = String::default();
     let mut metadata = get_metadata(&tenant_id).await?;
@@ -271,6 +277,12 @@ pub async fn delete_user(
             "User: {userid} should not be a part of any groups"
         )));
     }
+    // fail this request if the user is protected
+    if let Some(p) = Users.is_protected(&userid, &tenant_id)
+        && p
+    {
+        return Err(RBACError::ProtectedUser);
+    }
     // fail this request if the user does not exists
     if !Users.contains(&userid, &tenant_id) {
         return Err(RBACError::UserDoesNotExist);
@@ -305,12 +317,32 @@ pub async fn add_roles_to_user(
     let userid = userid.into_inner();
     let roles_to_add = roles_to_add.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     if !Users.contains(&userid, &tenant_id) {
         return Err(RBACError::UserDoesNotExist);
     };
 
+    // fail this request if the user is protected
+    if let Some(p) = Users.is_protected(&userid, &tenant_id)
+        && p
+    {
+        return Err(RBACError::ProtectedUser);
+    }
+
+    // fail this request if the role is a protected role
+    // iterate to find if a protected user has this role
+    if let Some(users) = users().get(tenant_str) {
+        for user in users.values() {
+            for name in &roles_to_add {
+                if user.roles.contains(name) && user.protected {
+                    return Err(RBACError::ProtectedRole);
+                }
+            }
+        }
+    }
+
     // find username by userid, for native users, username is userid, for oauth users, we need to look up
-    let username = if let Some(users) = users().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+    let username = if let Some(users) = users().get(tenant_str)
         && let Some(user) = users.get(&userid)
     {
         user.username_by_userid()
@@ -322,7 +354,7 @@ pub async fn add_roles_to_user(
 
     // check if the role exists
     for role in &roles_to_add {
-        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+        if let Some(tenant_roles) = roles().get(tenant_str)
             && !tenant_roles.contains_key(role)
         {
             non_existent_roles.push(role.clone());
@@ -365,6 +397,13 @@ pub async fn remove_roles_from_user(
     if !Users.contains(&userid, &tenant_id) {
         return Err(RBACError::UserDoesNotExist);
     };
+
+    // fail this request if the user is protected
+    if let Some(p) = Users.is_protected(&userid, &tenant_id)
+        && p
+    {
+        return Err(RBACError::ProtectedUser);
+    }
 
     // find username by userid, for native users, username is userid, for oauth users, we need to look up
     let username = if let Some(users) = users().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
@@ -439,6 +478,10 @@ pub enum RBACError {
     UserExists(String),
     #[error("User does not exist")]
     UserDoesNotExist,
+    #[error("User is protected")]
+    ProtectedUser,
+    #[error("Role is protected")]
+    ProtectedRole,
     #[error("{0}")]
     SerdeError(#[from] serde_json::Error),
     #[error("Failed to connect to storage: {0}")]
@@ -475,6 +518,8 @@ impl actix_web::ResponseError for RBACError {
     fn status_code(&self) -> StatusCode {
         match self {
             Self::UserExists(_) => StatusCode::BAD_REQUEST,
+            Self::ProtectedUser => StatusCode::BAD_REQUEST,
+            Self::ProtectedRole => StatusCode::BAD_REQUEST,
             Self::UserDoesNotExist => StatusCode::NOT_FOUND,
             Self::SerdeError(_) => StatusCode::BAD_REQUEST,
             Self::ValidationError(_) => StatusCode::BAD_REQUEST,
