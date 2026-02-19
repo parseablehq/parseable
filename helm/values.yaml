@@ -1,7 +1,7 @@
 parseable:
   image:
     repository: parseable/parseable
-    tag: "v2.5.7"
+    tag: "v2.5.13"
     pullPolicy: Always
   ## object store can be local-store, s3-store, blob-store or gcs-store.
   store: local-store
