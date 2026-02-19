@@ -16,6 +16,7 @@
  *
  */
 
+pub mod genai;
 pub mod logs;
 pub mod metrics;
 pub mod otel_utils;

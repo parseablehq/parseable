@@ -1,0 +1,10 @@
+{
+  "my-custom-model": {
+    "input": 0.000005,
+    "output": 0.000015
+  },
+  "my-finetuned-gpt4o": {
+    "input": 0.000003,
+    "output": 0.000012
+  }
+}

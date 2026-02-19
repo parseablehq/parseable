@@ -32,13 +32,18 @@ use crate::{
         format::{EventFormat, LogSource, json},
     },
     handlers::{
-        EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY, TelemetryType,
+        DatasetTag, EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY, TelemetryType,
         http::{
             ingest::PostError,
             kinesis::{Message, flatten_kinesis_logs},
         },
     },
-    otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
+    otel::{
+        genai::{coerce_genai_field_types, enrich_genai_record},
+        logs::flatten_otel_logs,
+        metrics::flatten_otel_metrics,
+        traces::flatten_otel_traces,
+    },
     parseable::PARSEABLE,
     storage::StreamType,
     utils::json::{convert_array_to_object, flatten::convert_to_array},
@@ -93,7 +98,23 @@ pub async fn flatten_and_push_logs(
         LogSource::OtelTraces => {
             //custom flattening required for otel traces
             let traces: TracesData = serde_json::from_value(json)?;
-            for record in flatten_otel_traces(&traces) {
+
+            // Check if this stream has the agent-observability dataset tag
+            let is_genai = PARSEABLE
+                .get_stream(stream_name)
+                .ok()
+                .and_then(|s| s.get_dataset_tag())
+                == Some(DatasetTag::AgentObservability);
+
+            for mut record in flatten_otel_traces(&traces) {
+                // Apply GenAI type coercion and cost enrichment for agent-observability streams
+                if is_genai {
+                    if let Some(obj) = record.as_object_mut() {
+                        coerce_genai_field_types(obj);
+                        enrich_genai_record(obj);
+                    }
+                }
+
                 push_logs(
                     stream_name,
                     record,
