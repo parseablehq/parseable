@@ -32,12 +32,13 @@ use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
 use crate::event::{self, FORMAT_KEY, USER_AGENT_KEY};
 use crate::handlers::http::modal::utils::ingest_utils::validate_stream_for_ingestion;
 use crate::handlers::{
-    CONTENT_TYPE_JSON, CONTENT_TYPE_PROTOBUF, EXTRACT_LOG_KEY, LOG_SOURCE_KEY,
-    STREAM_NAME_HEADER_KEY, TELEMETRY_TYPE_KEY, TelemetryType,
+    CONTENT_TYPE_JSON, CONTENT_TYPE_PROTOBUF, DATASET_TAG_KEY, DatasetTag, EXTRACT_LOG_KEY,
+    LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY, TELEMETRY_TYPE_KEY, TelemetryType,
 };
 use crate::metadata::SchemaVersion;
 use crate::metastore::MetastoreError;
 use crate::option::Mode;
+use crate::otel::genai::GENAI_KNOWN_FIELD_LIST;
 use crate::otel::logs::OTEL_LOG_KNOWN_FIELD_LIST;
 use crate::otel::metrics::OTEL_METRICS_KNOWN_FIELD_LIST;
 use crate::otel::traces::OTEL_TRACES_KNOWN_FIELD_LIST;
@@ -215,10 +216,24 @@ pub async fn setup_otel_stream(
 
     let stream_name = stream_name.to_str().unwrap().to_owned();
 
-    let log_source_entry = LogSourceEntry::new(
-        log_source.clone(),
-        known_fields.iter().map(|&s| s.to_string()).collect(),
-    );
+    // Parse dataset tag from X-P-Dataset-Tag header
+    let dataset_tag = req
+        .headers()
+        .get(DATASET_TAG_KEY)
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| DatasetTag::try_from(s).ok());
+
+    // Build known fields set — include GenAI fields when dataset tag is agent-observability
+    let mut all_known_fields: std::collections::HashSet<String> =
+        known_fields.iter().map(|&s| s.to_string()).collect();
+
+    if dataset_tag == Some(DatasetTag::AgentObservability) {
+        for &(field_name, _) in GENAI_KNOWN_FIELD_LIST {
+            all_known_fields.insert(field_name.to_string());
+        }
+    }
+
+    let log_source_entry = LogSourceEntry::new(log_source.clone(), all_known_fields);
 
     PARSEABLE
         .create_stream_if_not_exists(
@@ -227,7 +242,7 @@ pub async fn setup_otel_stream(
             None,
             vec![log_source_entry.clone()],
             telemetry_type,
-            None,
+            dataset_tag,
         )
         .await?;
     let mut time_partition = None;

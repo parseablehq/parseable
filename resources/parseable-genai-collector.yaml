@@ -1,0 +1,44 @@
+# Parseable GenAI Agent Observability - OTel Collector Config
+#
+# This is the canonical OTel Collector configuration for sending
+# GenAI/LLM agent traces to Parseable. Fill in the 3 variables below.
+#
+# Usage:
+#   1. Replace ${PARSEABLE_URL}, ${PARSEABLE_AUTH}, and ${STREAM_NAME}
+#      with your values (or set them as environment variables).
+#   2. Run: otelcol --config parseable-genai-collector.yaml
+#
+# Environment variable examples:
+#   export PARSEABLE_URL=http://localhost:8000
+#   export PARSEABLE_AUTH=$(echo -n 'admin:admin' | base64)
+#   export STREAM_NAME=genai-traces
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 256
+
+exporters:
+  otlphttp/parseable:
+    endpoint: ${PARSEABLE_URL}           # e.g., http://localhost:8000
+    encoding: json
+    headers:
+      Authorization: "Basic ${PARSEABLE_AUTH}"  # base64(username:password)
+      X-P-Stream: "${STREAM_NAME}"              # default: genai-traces
+      X-P-Log-Source: "otel-traces"
+      X-P-Dataset-Tag: "agent-observability"
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlphttp/parseable]
