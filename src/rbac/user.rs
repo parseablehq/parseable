@@ -32,7 +32,10 @@ use rand::{
 use crate::{
     handlers::http::rbac::{InvalidUserGroupError, RBACError},
     parseable::{DEFAULT_TENANT, PARSEABLE},
-    rbac::map::{mut_sessions, read_user_groups, roles, users},
+    rbac::{
+        map::{mut_sessions, read_user_groups, roles, users},
+        role::model::RoleType,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -370,12 +373,15 @@ impl UserGroup {
         let mut non_existent_users = Vec::new();
         if !self.users.is_empty() {
             // validate that the users exist and no protected user is included
-            if let Some(users) = users().get(tenant) {
+            if let Some(tenant_users) = users().get(tenant) {
                 for group_user in &self.users {
-                    if let Some(user) = users.get(group_user.userid())
+                    tracing::warn!(group_user=?group_user);
+                    if let Some(user) = tenant_users.get(group_user.userid())
                         && !user.protected
                         && user.tenant.eq(tenant_id)
                     {
+                        // user is alright
+                    } else {
                         non_existent_users.push(group_user.userid().to_string());
                     }
                 }
@@ -402,13 +408,12 @@ impl UserGroup {
             )))
         } else {
             // check if any role is being used by a protected user
-            for name in &self.roles {
-                while let Some(users) = users().get(tenant) {
-                    for user in users.values() {
-                        if user.roles.contains(name) && user.protected {
+            if let Some(tenant_roles) = roles().get(tenant) {
+                for name in &self.roles {
+                    if let Some(role) = tenant_roles.get(name)
+                        && role.role_type().eq(&RoleType::Internal) {
                             return Err(RBACError::ProtectedRole);
                         }
-                    }
                 }
             }
             Ok(())
@@ -418,20 +423,24 @@ impl UserGroup {
         UserGroup { name, roles, users }
     }
 
-    pub fn add_roles(&mut self, roles: HashSet<String>, tenant_id: &str) -> Result<(), RBACError> {
-        if roles.is_empty() {
+    pub fn add_roles(
+        &mut self,
+        roles_to_add: HashSet<String>,
+        tenant_id: &str,
+    ) -> Result<(), RBACError> {
+        if roles_to_add.is_empty() {
             return Ok(());
         }
-        for name in &roles {
-            while let Some(users) = users().get(tenant_id) {
-                for user in users.values() {
-                    if user.roles.contains(name) && user.protected {
-                        return Err(RBACError::ProtectedRole);
-                    }
+        if let Some(tenant_roles) = roles().get(tenant_id) {
+            for role in &roles_to_add {
+                if let Some(role) = tenant_roles.get(role)
+                    && role.role_type().eq(&RoleType::Internal)
+                {
+                    return Err(RBACError::ProtectedRole);
                 }
             }
         }
-        self.roles.extend(roles);
+        self.roles.extend(roles_to_add);
         // also refresh all user sessions
         for group_user in &self.users {
             mut_sessions().remove_user(group_user.userid(), tenant_id);

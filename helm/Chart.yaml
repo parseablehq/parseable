@@ -2,8 +2,8 @@ apiVersion: v2
 name: parseable
 description: Parseable Helm chart - Predictive, unified observability — faster resolution, fewer escalations, happier customers.
 type: application
-version: 2.5.7
-appVersion: "v2.5.7"
+version: 2.5.13
+appVersion: "v2.5.13"
 icon: "https://raw.githubusercontent.com/parseablehq/.github/main/images/new-logo.svg"
 
 maintainers:

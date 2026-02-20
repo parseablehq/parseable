@@ -181,7 +181,7 @@ impl RoleBuilder {
 // we can put same model in the backend
 // user -> Vec<DefaultRoles>
 pub mod model {
-    use serde::{Deserialize, de};
+    use serde::{Deserialize, Serialize, Serializer, de};
     use serde_json::Value;
 
     use crate::rbac::role::ParseableResourceType;
@@ -203,6 +203,14 @@ pub mod model {
         Reader {
             resource: Option<ParseableResourceType>,
         },
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct RoleUI(pub Role);
+    impl Serialize for RoleUI {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            self.0.actions.serialize(serializer)
+        }
     }
 
     #[derive(Debug, Default, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq)]

@@ -34,7 +34,7 @@ use url::Url;
 use crate::parseable::DEFAULT_TENANT;
 use crate::rbac::map::{mut_sessions, mut_users, read_user_groups, roles, sessions, users};
 use crate::rbac::role::Action;
-use crate::rbac::role::model::Role;
+use crate::rbac::role::model::RoleUI;
 use crate::rbac::user::User;
 use crate::utils::get_tenant_id_from_key;
 
@@ -105,7 +105,16 @@ impl Users {
     ) -> Vec<T> {
         let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         match users().get(tenant_id) {
-            Some(users) => users.values().map(|user| user.into()).collect_vec(),
+            Some(users) => users
+                .values()
+                .filter_map(|user| {
+                    if user.protected {
+                        None
+                    } else {
+                        Some(user.into())
+                    }
+                })
+                .collect_vec(),
             None => vec![],
         }
     }
@@ -352,9 +361,9 @@ pub struct UsersPrism {
     // picture only if oauth
     pub picture: Option<Url>,
     // roles given directly to the user
-    pub roles: HashMap<String, Role>,
+    pub roles: HashMap<String, RoleUI>,
     // roles inherited by the user from their usergroups
-    pub group_roles: HashMap<String, HashMap<String, Role>>,
+    pub group_roles: HashMap<String, HashMap<String, RoleUI>>,
     // user groups
     pub user_groups: HashSet<String>,
 }

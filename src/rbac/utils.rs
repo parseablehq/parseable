@@ -21,7 +21,7 @@ use url::Url;
 
 use crate::{
     parseable::{DEFAULT_TENANT, PARSEABLE},
-    rbac::{map::read_user_groups, role::model::Role},
+    rbac::{map::read_user_groups, role::model::RoleUI},
 };
 
 use super::{
@@ -46,7 +46,7 @@ pub fn to_prism_user(user: &User) -> UsersPrism {
             )
         }
     };
-    let direct_roles: HashMap<String, Role> = Users
+    let direct_roles: HashMap<String, RoleUI> = Users
         .get_role(id, &user.tenant)
         .iter()
         .filter_map(|role_name| {
@@ -61,19 +61,19 @@ pub fn to_prism_user(user: &User) -> UsersPrism {
                 // .get(role_name)
                 .map(|roles| {
                     let role = roles.get(role_name).unwrap();
-                    (role_name.to_owned(), role.clone())
+                    (role_name.to_owned(), RoleUI(role.clone()))
                 })
         })
         .collect();
 
-    let mut group_roles: HashMap<String, HashMap<String, Role>> = HashMap::new();
+    let mut group_roles: HashMap<String, HashMap<String, RoleUI>> = HashMap::new();
     let mut user_groups = HashSet::new();
     // user might be part of some user groups, fetch the roles from there as well
     for user_group in Users.get_user_groups(user.userid(), &user.tenant) {
         if let Some(groups) = read_user_groups().get(tenant_id)
             && let Some(group) = groups.get(&user_group)
         {
-            let ug_roles: HashMap<String, Role> = group
+            let ug_roles: HashMap<String, RoleUI> = group
                 .roles
                 .iter()
                 .filter_map(|role_name| {
@@ -82,7 +82,7 @@ pub fn to_prism_user(user: &User) -> UsersPrism {
                         .filter(|roles| roles.get(role_name).is_some())
                         .map(|roles| {
                             let role = roles.get(role_name).unwrap();
-                            (role_name.to_owned(), role.clone())
+                            (role_name.to_owned(), RoleUI(role.clone()))
                         })
                 })
                 .collect();

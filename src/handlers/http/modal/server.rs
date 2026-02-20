@@ -577,12 +577,14 @@ impl Server {
             .service(resource("/logout").route(web::get().to(oidc::logout)))
             .service(resource("/code").route(web::get().to(oidc::reply_login)))
     }
-
+    // get list of roles
+    pub fn get_roles_webscope() -> Scope {
+        web::scope("/roles")
+            .service(web::resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
+    }
     // get the role webscope
     pub fn get_user_role_webscope() -> Scope {
         web::scope("/role")
-            // GET Role List
-            .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
             .service(
                 // PUT and GET Default Role
                 resource("/default")

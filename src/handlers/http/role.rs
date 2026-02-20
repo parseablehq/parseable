@@ -16,7 +16,7 @@
  *
  */
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use actix_web::http::StatusCode;
 use actix_web::{
@@ -26,7 +26,7 @@ use actix_web::{
 };
 
 use crate::rbac::map::roles;
-use crate::rbac::role::model::{Role, RoleType};
+use crate::rbac::role::model::{Role, RoleType, RoleUI};
 use crate::{
     parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::map::{DEFAULT_ROLE, mut_roles, mut_sessions, read_user_groups, users},
@@ -109,18 +109,13 @@ pub async fn get(req: HttpRequest, name: web::Path<String>) -> Result<impl Respo
 pub async fn list(req: HttpRequest) -> Result<impl Responder, RoleError> {
     let tenant_id = get_tenant_id_from_request(&req);
     let metadata = get_metadata(&tenant_id).await?;
-    let roles: Vec<String> = metadata
-        .roles
-        .iter()
-        .filter_map(|(k, r)| {
-            if r.role_type().eq(&RoleType::User) {
-                Some(k)
-            } else {
-                None
-            }
-        })
-        .cloned()
-        .collect();
+    let mut roles = HashMap::new();
+    for (k, r) in metadata.roles.into_iter() {
+        if !r.role_type().eq(&RoleType::Internal) {
+            roles.insert(k, RoleUI(r));
+        }
+    }
+
     Ok(web::Json(roles))
 }
 

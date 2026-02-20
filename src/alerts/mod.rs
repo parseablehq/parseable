@@ -642,11 +642,14 @@ impl AlertConfig {
                     state: self.state,
                     name: self.title.clone(),
                 }),
+                tenant_id: self.tenant_id.clone(),
             })
             && !broadcast_to.is_empty()
             && let Some(handler) = SSE_HANDLER.get()
         {
-            handler.broadcast(msg, Some(&broadcast_to)).await;
+            handler
+                .broadcast(msg, Some(&broadcast_to), &self.tenant_id)
+                .await;
         }
 
         Ok(())
