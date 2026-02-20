@@ -31,7 +31,7 @@ use crate::{
     option::Mode,
     parseable::{JOIN_COMMUNITY, PARSEABLE},
     rbac::{
-        role::model::DefaultPrivilege,
+        role::model::Role,
         user::{User, UserGroup},
     },
     storage::{ObjectStorageError, object_storage::parseable_json_path},
@@ -65,7 +65,7 @@ pub struct StorageMetadata {
     pub streams: Vec<String>,
     pub server_mode: Mode,
     #[serde(default)]
-    pub roles: HashMap<String, Vec<DefaultPrivilege>>,
+    pub roles: HashMap<String, Role>,
     #[serde(default)]
     pub default_role: Option<String>,
     pub suspended_services: Option<HashSet<Service>>,

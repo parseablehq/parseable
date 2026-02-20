@@ -68,6 +68,7 @@ pub async fn run_metadata_migration(
                 metadata = metadata_migration::v4_v5(metadata);
                 metadata = metadata_migration::v5_v6(metadata);
                 metadata = metadata_migration::v6_v7(metadata);
+                metadata = metadata_migration::v7_v8(metadata);
                 metadata = metadata_migration::remove_querier_metadata(metadata);
                 let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
                 *parseable_json = Some(_metadata);
@@ -79,6 +80,7 @@ pub async fn run_metadata_migration(
                 metadata = metadata_migration::v4_v5(metadata);
                 metadata = metadata_migration::v5_v6(metadata);
                 metadata = metadata_migration::v6_v7(metadata);
+                metadata = metadata_migration::v7_v8(metadata);
                 metadata = metadata_migration::remove_querier_metadata(metadata);
                 let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
                 *parseable_json = Some(_metadata);
@@ -89,6 +91,7 @@ pub async fn run_metadata_migration(
                 metadata = metadata_migration::v4_v5(metadata);
                 metadata = metadata_migration::v5_v6(metadata);
                 metadata = metadata_migration::v6_v7(metadata);
+                metadata = metadata_migration::v7_v8(metadata);
                 metadata = metadata_migration::remove_querier_metadata(metadata);
                 let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
                 *parseable_json = Some(_metadata);
@@ -98,6 +101,7 @@ pub async fn run_metadata_migration(
                 let mut metadata = metadata_migration::v4_v5(storage_metadata);
                 metadata = metadata_migration::v5_v6(metadata);
                 metadata = metadata_migration::v6_v7(metadata);
+                metadata = metadata_migration::v7_v8(metadata);
                 metadata = metadata_migration::remove_querier_metadata(metadata);
                 let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
                 *parseable_json = Some(_metadata);
@@ -106,12 +110,20 @@ pub async fn run_metadata_migration(
             Some("v5") => {
                 let mut metadata = metadata_migration::v5_v6(storage_metadata);
                 metadata = metadata_migration::v6_v7(metadata);
+                metadata = metadata_migration::v7_v8(metadata);
                 let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
                 *parseable_json = Some(_metadata);
                 put_remote_metadata(metadata, tenant_id).await?;
             }
             Some("v6") => {
-                let metadata = metadata_migration::v6_v7(storage_metadata);
+                let mut metadata = metadata_migration::v6_v7(storage_metadata);
+                metadata = metadata_migration::v7_v8(metadata);
+                let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
+                *parseable_json = Some(_metadata);
+                put_remote_metadata(metadata, tenant_id).await?;
+            }
+            Some("v7") => {
+                let metadata = metadata_migration::v7_v8(storage_metadata);
                 let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
                 *parseable_json = Some(_metadata);
                 put_remote_metadata(metadata, tenant_id).await?;
@@ -140,24 +152,49 @@ fn migrate_staging(
         Some("v1") => {
             let mut metadata = metadata_migration::v1_v3(staging_metadata);
             metadata = metadata_migration::v3_v4(metadata);
+            metadata = metadata_migration::v4_v5(metadata);
+            metadata = metadata_migration::v5_v6(metadata);
+            metadata = metadata_migration::v6_v7(metadata);
+            metadata = metadata_migration::v7_v8(metadata);
             put_staging_metadata(config, &metadata, tenant_id)?;
         }
         Some("v2") => {
             let mut metadata = metadata_migration::v2_v3(staging_metadata);
             metadata = metadata_migration::v3_v4(metadata);
+            metadata = metadata_migration::v4_v5(metadata);
+            metadata = metadata_migration::v5_v6(metadata);
+            metadata = metadata_migration::v6_v7(metadata);
+            metadata = metadata_migration::v7_v8(metadata);
             put_staging_metadata(config, &metadata, tenant_id)?;
         }
         Some("v3") => {
-            let metadata = metadata_migration::v3_v4(staging_metadata);
+            let mut metadata = metadata_migration::v3_v4(staging_metadata);
+            metadata = metadata_migration::v4_v5(metadata);
+            metadata = metadata_migration::v5_v6(metadata);
+            metadata = metadata_migration::v6_v7(metadata);
+            metadata = metadata_migration::v7_v8(metadata);
             put_staging_metadata(config, &metadata, tenant_id)?;
         }
         Some("v4") => {
-            let metadata = metadata_migration::v4_v5(staging_metadata);
-            let metadata = metadata_migration::v5_v6(metadata);
+            let mut metadata = metadata_migration::v4_v5(staging_metadata);
+            metadata = metadata_migration::v5_v6(metadata);
+            metadata = metadata_migration::v6_v7(metadata);
+            metadata = metadata_migration::v7_v8(metadata);
             put_staging_metadata(config, &metadata, tenant_id)?;
         }
         Some("v5") => {
-            let metadata = metadata_migration::v5_v6(staging_metadata);
+            let mut metadata = metadata_migration::v5_v6(staging_metadata);
+            metadata = metadata_migration::v6_v7(metadata);
+            metadata = metadata_migration::v7_v8(metadata);
+            put_staging_metadata(config, &metadata, tenant_id)?;
+        }
+        Some("v6") => {
+            let mut metadata = metadata_migration::v6_v7(staging_metadata);
+            metadata = metadata_migration::v7_v8(metadata);
+            put_staging_metadata(config, &metadata, tenant_id)?;
+        }
+        Some("v7") => {
+            let metadata = metadata_migration::v7_v8(staging_metadata);
             put_staging_metadata(config, &metadata, tenant_id)?;
         }
         _ => (),

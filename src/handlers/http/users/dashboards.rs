@@ -97,7 +97,7 @@ pub async fn create_dashboard(
         return Err(DashboardError::Metadata("Title must be provided"));
     }
     let (user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
-    dashboard.tenant_id = tenant_id.clone();
+    dashboard.tenant_id.clone_from(&tenant_id);
     let user_id = get_hash(&user_id);
 
     DASHBOARDS

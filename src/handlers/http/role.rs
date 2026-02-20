@@ -25,12 +25,11 @@ use actix_web::{
     web::{self, Json},
 };
 
+use crate::rbac::map::roles;
+use crate::rbac::role::model::{Role, RoleType};
 use crate::{
     parseable::{DEFAULT_TENANT, PARSEABLE},
-    rbac::{
-        map::{DEFAULT_ROLE, mut_roles, mut_sessions, read_user_groups, users},
-        role::model::DefaultPrivilege,
-    },
+    rbac::map::{DEFAULT_ROLE, mut_roles, mut_sessions, read_user_groups, users},
     storage::{self, ObjectStorageError, StorageMetadata},
     utils::get_tenant_id_from_request,
     validator::{self, error::UsernameValidationError},
@@ -41,25 +40,20 @@ use crate::{
 pub async fn put(
     req: HttpRequest,
     name: web::Path<String>,
-    Json(privileges): Json<Vec<DefaultPrivilege>>,
+    Json(role): Json<Role>,
 ) -> Result<impl Responder, RoleError> {
+    // internal role manipulation not allowed
+    if role.role_type().eq(&RoleType::Internal) {
+        return Err(RoleError::ProtectedRole);
+    }
     let name = name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+
     // validate the role name
     validator::user_role_name(&name).map_err(RoleError::ValidationError)?;
 
-    // iterate to find if a protected user has this role
-    if let Some(users) = users().get(tenant) {
-        for user in users.values() {
-            if user.roles.contains(&name) && user.protected {
-                return Err(RoleError::ProtectedRole);
-            }
-        }
-    }
-
     let mut metadata = get_metadata(&tenant_id).await?;
-    metadata.roles.insert(name.clone(), privileges.clone());
+    metadata.roles.insert(name.clone(), role.clone());
 
     put_metadata(&metadata, &tenant_id).await?;
 
@@ -67,8 +61,7 @@ pub async fn put(
     mut_roles()
         .entry(tenant_id.to_owned())
         .or_default()
-        .insert(name.clone(), privileges.clone());
-    // mut_roles().insert(name.clone(), privileges.clone());
+        .insert(name.clone(), role.clone());
 
     // refresh the sessions of all users using this role
     // for this, iterate over all user_groups and users and create a hashset of users
@@ -104,8 +97,11 @@ pub async fn get(req: HttpRequest, name: web::Path<String>) -> Result<impl Respo
     let name = name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     let metadata = get_metadata(&tenant_id).await?;
-    let privileges = metadata.roles.get(&name).cloned().unwrap_or_default();
-    Ok(web::Json(privileges))
+    let role = metadata.roles.get(&name).cloned().unwrap_or_default();
+    if role.role_type().eq(&RoleType::Internal) {
+        return Err(RoleError::ProtectedRole);
+    }
+    Ok(web::Json(role))
 }
 
 // Handler for GET /api/v1/role
@@ -113,16 +109,18 @@ pub async fn get(req: HttpRequest, name: web::Path<String>) -> Result<impl Respo
 pub async fn list(req: HttpRequest) -> Result<impl Responder, RoleError> {
     let tenant_id = get_tenant_id_from_request(&req);
     let metadata = get_metadata(&tenant_id).await?;
-    let roles: Vec<String> = metadata.roles.keys().cloned().collect();
-    Ok(web::Json(roles))
-}
-
-// Handler for GET /api/v1/roles
-// Fetch all roles in the system
-pub async fn list_roles(req: HttpRequest) -> Result<impl Responder, RoleError> {
-    let tenant_id = get_tenant_id_from_request(&req);
-    let metadata = get_metadata(&tenant_id).await?;
-    let roles = metadata.roles.clone();
+    let roles: Vec<String> = metadata
+        .roles
+        .iter()
+        .filter_map(|(k, r)| {
+            if r.role_type().eq(&RoleType::User) {
+                Some(k)
+            } else {
+                None
+            }
+        })
+        .cloned()
+        .collect();
     Ok(web::Json(roles))
 }
 
@@ -134,6 +132,14 @@ pub async fn delete(
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    if let Some(tenant_roles) = roles().get(tenant)
+        && let Some(role) = tenant_roles.get(&name)
+        && role.role_type().eq(&RoleType::Internal)
+    {
+        return Err(RoleError::ProtectedRole);
+    }
+
     // check if the role is being used by any user or group
     let mut metadata = get_metadata(&tenant_id).await?;
     if metadata.users.iter().any(|user| user.roles.contains(&name)) {
@@ -149,9 +155,8 @@ pub async fn delete(
     metadata.roles.remove(&name);
     put_metadata(&metadata, &tenant_id).await?;
 
-    let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     mut_roles()
-        .entry(tenant_id.to_owned())
+        .entry(tenant.to_owned())
         .or_default()
         .remove(&name);
     // mut_roles().remove(&name);

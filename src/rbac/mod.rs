@@ -28,13 +28,13 @@ use actix_web::http::header::{HeaderName, HeaderValue};
 use chrono::{DateTime, Duration, TimeDelta, Utc};
 use itertools::Itertools;
 use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
-use role::model::DefaultPrivilege;
 use serde::Serialize;
 use url::Url;
 
 use crate::parseable::DEFAULT_TENANT;
 use crate::rbac::map::{mut_sessions, mut_users, read_user_groups, roles, sessions, users};
 use crate::rbac::role::Action;
+use crate::rbac::role::model::Role;
 use crate::rbac::user::User;
 use crate::utils::get_tenant_id_from_key;
 
@@ -193,7 +193,7 @@ impl Users {
                     if let Some(roles) = roles().get(&tenant_id)
                         && let Some(privilege_list) = roles.get(role)
                     {
-                        for privelege in privilege_list {
+                        for privelege in privilege_list.privileges() {
                             permissions.extend(RoleBuilder::from(privelege).build());
                         }
                     }
@@ -352,9 +352,9 @@ pub struct UsersPrism {
     // picture only if oauth
     pub picture: Option<Url>,
     // roles given directly to the user
-    pub roles: HashMap<String, Vec<DefaultPrivilege>>,
+    pub roles: HashMap<String, Role>,
     // roles inherited by the user from their usergroups
-    pub group_roles: HashMap<String, HashMap<String, Vec<DefaultPrivilege>>>,
+    pub group_roles: HashMap<String, HashMap<String, Role>>,
     // user groups
     pub user_groups: HashSet<String>,
 }
@@ -366,7 +366,7 @@ pub fn roles_to_permission(roles: Vec<String>, tenant_id: &str) -> Vec<Permissio
         if let Some(roles) = role_map.get(tenant_id)
             && let Some(privilege_list) = roles.get(role)
         {
-            for privs in privilege_list {
+            for privs in privilege_list.privileges() {
                 perms.extend(RoleBuilder::from(privs).build())
             }
         } else {

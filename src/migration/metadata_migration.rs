@@ -19,7 +19,10 @@
 use rand::distributions::DistString;
 use serde_json::{Map, Value as JsonValue, json};
 
-use crate::parseable::PARSEABLE;
+use crate::{
+    parseable::PARSEABLE,
+    rbac::role::model::{DefaultPrivilege, Role},
+};
 
 /*
 v1
@@ -211,6 +214,23 @@ pub fn v6_v7(mut storage_metadata: JsonValue) -> JsonValue {
             .unwrap()
             .entry("protected")
             .or_insert(JsonValue::Bool(false));
+    }
+
+    storage_metadata
+}
+
+// migrate roles
+pub fn v7_v8(mut storage_metadata: JsonValue) -> JsonValue {
+    let metadata = storage_metadata.as_object_mut().unwrap();
+    metadata.remove_entry("version");
+    metadata.insert("version".to_string(), JsonValue::String("v8".to_string()));
+
+    let roles = metadata.get_mut("roles").unwrap().as_object_mut().unwrap();
+    for (_, role) in roles.iter_mut() {
+        *role = serde_json::to_value(Role::create_user_role(
+            serde_json::from_value::<Vec<DefaultPrivilege>>(role.clone()).unwrap(),
+        ))
+        .unwrap();
     }
 
     storage_metadata

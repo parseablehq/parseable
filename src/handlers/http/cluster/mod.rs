@@ -46,7 +46,7 @@ use crate::handlers::http::query::{Query, QueryError, TIME_ELAPSED_HEADER};
 use crate::metrics::prom_utils::Metrics;
 use crate::option::Mode;
 use crate::parseable::PARSEABLE;
-use crate::rbac::role::model::DefaultPrivilege;
+use crate::rbac::role::model::Role;
 use crate::rbac::user::User;
 use crate::stats::Stats;
 use crate::storage::{ObjectStorageError, ObjectStoreFormat};
@@ -714,7 +714,7 @@ pub async fn sync_password_reset_with_ingestors(
 // forward the put role request to all ingestors and queriers to keep them in sync
 pub async fn sync_role_update(
     name: String,
-    privileges: Vec<DefaultPrivilege>,
+    role: Role,
     tenant_id: &Option<String>,
 ) -> Result<(), RoleError> {
     let tenant = tenant_id.to_owned();
@@ -726,7 +726,7 @@ pub async fn sync_role_update(
             name
         );
 
-        let privileges = privileges.clone();
+        let role = role.clone();
 
         let tenant_id = tenant.clone();
         async move {
@@ -734,7 +734,7 @@ pub async fn sync_role_update(
                 .put(url)
                 .header(header::AUTHORIZATION, &node.token)
                 .header(header::CONTENT_TYPE, "application/json")
-                .json(&SyncRole::new(privileges, tenant_id.clone()))
+                .json(&SyncRole::new(role, tenant_id.clone()))
                 .send()
                 .await
                 .map_err(|err| {

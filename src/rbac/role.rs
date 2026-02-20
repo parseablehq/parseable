@@ -181,6 +181,9 @@ impl RoleBuilder {
 // we can put same model in the backend
 // user -> Vec<DefaultRoles>
 pub mod model {
+    use serde::{Deserialize, de};
+    use serde_json::Value;
+
     use crate::rbac::role::ParseableResourceType;
 
     use super::{Action, RoleBuilder};
@@ -200,6 +203,83 @@ pub mod model {
         Reader {
             resource: Option<ParseableResourceType>,
         },
+    }
+
+    #[derive(Debug, Default, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq)]
+    #[serde(rename_all = "camelCase")]
+    pub enum RoleType {
+        #[default]
+        User,
+        Internal,
+    }
+
+    #[derive(Debug, serde::Serialize, Clone, PartialEq, Eq, Default)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Role {
+        actions: Vec<DefaultPrivilege>,
+        role_type: RoleType,
+    }
+
+    impl Role {
+        pub fn create_user_role(actions: Vec<DefaultPrivilege>) -> Self {
+            Self {
+                actions,
+                role_type: RoleType::User,
+            }
+        }
+
+        pub fn create_internal_role(actions: Vec<DefaultPrivilege>) -> Self {
+            Self {
+                actions,
+                role_type: RoleType::Internal,
+            }
+        }
+
+        pub fn privileges(&self) -> &Vec<DefaultPrivilege> {
+            &self.actions
+        }
+
+        pub fn role_type(&self) -> &RoleType {
+            &self.role_type
+        }
+
+        pub fn append_privileges(&mut self, new_actions: &[DefaultPrivilege]) {
+            self.actions.extend_from_slice(new_actions);
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Role {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let value = Value::deserialize(deserializer)?;
+
+            match value {
+                Value::Array(_) => {
+                    let actions =
+                        Vec::<DefaultPrivilege>::deserialize(value).map_err(de::Error::custom)?;
+                    Ok(Role {
+                        actions,
+                        role_type: RoleType::User,
+                    })
+                }
+                Value::Object(ref obj) => {
+                    let actions = obj
+                        .get("actions")
+                        .ok_or_else(|| de::Error::missing_field("actions"))?;
+                    let actions =
+                        Vec::<DefaultPrivilege>::deserialize(actions).map_err(de::Error::custom)?;
+
+                    let role_type = obj
+                        .get("roleType")
+                        .ok_or_else(|| de::Error::missing_field("roleType"))?;
+                    let role_type = RoleType::deserialize(role_type).map_err(de::Error::custom)?;
+                    Ok(Role { actions, role_type })
+                }
+                _ => Err(de::Error::custom("expected an array or an object")),
+            }
+        }
     }
 
     impl From<&DefaultPrivilege> for RoleBuilder {

@@ -170,59 +170,7 @@ where
 
         // an optional error to track the presence of CORRECT tenant header in case of ingestion
         let mut header_error = None;
-        let user_and_tenant_id: Result<(Result<String, RBACError>, Option<String>), RBACError> =
-            if PARSEABLE.options.is_multi_tenant() {
-                // if ingestion then tenant MUST be present and should not be DEFAULT_TENANT
-                let tenant = if self.action.eq(&Action::Ingest) {
-                    if let Some(tenant) = req.headers().get("tenant")
-                        && let Ok(tenant) = tenant.to_str()
-                    {
-                        if tenant.eq(DEFAULT_TENANT) {
-                            header_error = Some(actix_web::Error::from(PostError::Header(
-                                crate::utils::header_parsing::ParseHeaderError::InvalidTenantId,
-                            )));
-                        }
-                        Some(tenant.to_owned())
-                    } else {
-                        // tenant header is not present, error out
-                        header_error = Some(actix_web::Error::from(PostError::Header(
-                            crate::utils::header_parsing::ParseHeaderError::MissingTenantId,
-                        )));
-                        None
-                    }
-                } else if self.action.eq(&Action::SuperAdmin) || self.action.eq(&Action::Login) {
-                    None
-                } else {
-                    // tenant header should not be present, modify request to add
-                    let mut t = None;
-                    if let Ok((_, tenant)) = get_user_and_tenant_from_request(req.request())
-                        && let Some(tid) = tenant.as_ref()
-                    {
-                        req.headers_mut().insert(
-                            HeaderName::from_static("tenant"),
-                            HeaderValue::from_str(tid).unwrap(),
-                        );
-                        t = tenant;
-                    } else {
-                        // remove the header if already present
-                        req.headers_mut().remove("tenant");
-                    }
-                    t
-                };
-                let userid = get_user_from_request(req.request());
-                Ok((userid, tenant))
-            } else {
-                // not multi-tenant, tenant header should NOT be present
-                if req.headers().get("tenant").is_some() {
-                    header_error = Some(actix_web::Error::from(PostError::Header(
-                        crate::utils::header_parsing::ParseHeaderError::UnexpectedHeader(
-                            "tenant".into(),
-                        ),
-                    )));
-                }
-                let userid = get_user_from_request(req.request());
-                Ok((userid, None))
-            };
+        let user_and_tenant_id = get_user_and_tenant(&self.action, &mut req, &mut header_error);
 
         let key: Result<SessionKey, Error> = extract_session_key(&mut req);
 
@@ -277,6 +225,64 @@ where
 
             fut.await
         })
+    }
+}
+
+#[inline]
+fn get_user_and_tenant(
+    action: &Action,
+    request: &mut ServiceRequest,
+    header_error: &mut Option<Error>,
+) -> Result<(Result<String, RBACError>, Option<String>), RBACError> {
+    if PARSEABLE.options.is_multi_tenant() {
+        // if ingestion then tenant MUST be present and should not be DEFAULT_TENANT
+        let tenant = if action.eq(&Action::Ingest) {
+            if let Some(tenant) = request.headers().get("tenant")
+                && let Ok(tenant) = tenant.to_str()
+            {
+                if tenant.eq(DEFAULT_TENANT) {
+                    *header_error = Some(actix_web::Error::from(PostError::Header(
+                        crate::utils::header_parsing::ParseHeaderError::InvalidTenantId,
+                    )));
+                }
+                Some(tenant.to_owned())
+            } else {
+                // tenant header is not present, error out
+                *header_error = Some(actix_web::Error::from(PostError::Header(
+                    crate::utils::header_parsing::ParseHeaderError::MissingTenantId,
+                )));
+                None
+            }
+        } else if action.eq(&Action::SuperAdmin) || action.eq(&Action::Login) {
+            None
+        } else {
+            // tenant header should not be present, modify request to add
+            let mut t = None;
+            if let Ok((_, tenant)) = get_user_and_tenant_from_request(request.request())
+                && let Some(tid) = tenant.as_ref()
+            {
+                request.headers_mut().insert(
+                    HeaderName::from_static("tenant"),
+                    HeaderValue::from_str(tid).unwrap(),
+                );
+                t = tenant;
+            } else {
+                // remove the header if already present
+                request.headers_mut().remove("tenant");
+            }
+            t
+        };
+        let userid = get_user_from_request(request.request());
+        Ok((userid, tenant))
+    } else {
+        // not multi-tenant, tenant header should NOT be present
+        if request.headers().get("tenant").is_some() {
+            *header_error = Some(actix_web::Error::from(PostError::Header(
+                crate::utils::header_parsing::ParseHeaderError::UnexpectedHeader("tenant".into()),
+            )));
+        }
+        let userid = get_user_from_request(request.request());
+        Ok((userid, None))
     }
 }
 

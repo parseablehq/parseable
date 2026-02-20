@@ -23,7 +23,7 @@ use crate::{
     rbac::{
         self, Users,
         map::{read_user_groups, roles, users},
-        role::model::DefaultPrivilege,
+        role::model::Role,
         user::{self, UserType},
         utils::to_prism_user,
     },
@@ -81,7 +81,16 @@ pub async fn list_users_prism(req: HttpRequest) -> impl Responder {
     let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     // get all users
     let prism_users = match rbac::map::users().get(tenant_id) {
-        Some(users) => users.values().map(to_prism_user).collect_vec(),
+        Some(users) => users
+            .values()
+            .filter_map(|u| {
+                if u.protected {
+                    None
+                } else {
+                    Some(to_prism_user(u))
+                }
+            })
+            .collect_vec(),
         None => vec![],
     };
     web::Json(prism_users)
@@ -98,6 +107,7 @@ pub async fn get_prism_user(
     let users = rbac::map::users();
     if let Some(users) = users.get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
         && let Some(user) = users.get(&username)
+        && !user.protected
     {
         // Create UsersPrism for the found user only
         let prism_user = to_prism_user(user);
@@ -216,8 +226,13 @@ pub async fn get_role(
     let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     if !Users.contains(&userid, &tenant_id) {
         return Err(RBACError::UserDoesNotExist);
+    }
+    if let Some(p) = Users.is_protected(&userid, &tenant_id)
+        && p
+    {
+        return Err(RBACError::ProtectedUser);
     };
-    let direct_roles: HashMap<String, Vec<DefaultPrivilege>> = Users
+    let direct_roles: HashMap<String, Role> = Users
         .get_role(&userid, &tenant_id)
         .iter()
         .filter_map(|role_name| {
@@ -228,19 +243,16 @@ pub async fn get_role(
             } else {
                 None
             }
-            // roles()
-            //     .get(role_name)
-            //     .map(|role| (role_name.to_owned(), role.clone()))
         })
         .collect();
 
-    let mut group_roles: HashMap<String, HashMap<String, Vec<DefaultPrivilege>>> = HashMap::new();
+    let mut group_roles: HashMap<String, HashMap<String, Role>> = HashMap::new();
     // user might be part of some user groups, fetch the roles from there as well
     for user_group in Users.get_user_groups(&userid, &tenant_id) {
         if let Some(groups) = read_user_groups().get(tenant)
             && let Some(group) = groups.get(&user_group)
         {
-            let ug_roles: HashMap<String, Vec<DefaultPrivilege>> = group
+            let ug_roles: HashMap<String, Role> = group
                 .roles
                 .iter()
                 .filter_map(|role_name| {
@@ -567,6 +579,6 @@ impl actix_web::ResponseError for RBACError {
 #[serde(rename = "camelCase")]
 pub struct RolesResponse {
     #[serde(rename = "roles")]
-    pub direct_roles: HashMap<String, Vec<DefaultPrivilege>>,
-    pub group_roles: HashMap<String, HashMap<String, Vec<DefaultPrivilege>>>,
+    pub direct_roles: HashMap<String, Role>,
+    pub group_roles: HashMap<String, HashMap<String, Role>>,
 }

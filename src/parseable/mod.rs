@@ -70,7 +70,7 @@ use crate::{
     option::Mode,
     rbac::{
         Users,
-        map::{mut_roles, mut_users},
+        map::{mut_roles, mut_users, write_user_groups},
     },
     static_schema::{StaticSchema, convert_static_schema_to_arrow_schema},
     storage::{
@@ -1097,29 +1097,25 @@ impl Parseable {
         Ok(())
     }
 
-    pub fn delete_tenant(&self, tenant_id: &str) -> Result<(), anyhow::Error> {
-        // let mut metadata = get_metadata(&Some(tenant_id.to_owned())).await?;
+    pub async fn delete_tenant(&self, tenant_id: &str) -> Result<(), anyhow::Error> {
         // delete users and sessions
         let users = mut_users().remove(tenant_id);
         if let Some(users) = users {
             for (userid, user) in users {
-                // metadata
-                //     .users
-                //     .retain(|u| u.tenant.eq(&Some(tenant_id.to_owned())));
-
                 Users.delete_user(&userid, &user.tenant);
             }
         }
 
         // delete roles
         mut_roles().remove(tenant_id);
-        // if let Some(roles) = mut_roles().remove(tenant_id) {
-        //     for (role, _) in roles {
-        //         // metadata.roles.retain(|r, _| !role.eq(r));
-        //     }
-        // }
 
-        // delete resources
+        // delete user group
+        write_user_groups().remove(tenant_id);
+
+        // delete streams
+        if let Ok(mut streams) = PARSEABLE.streams.write() {
+            streams.remove(tenant_id);
+        }
 
         // delete from in-mem
         if let Ok(mut tenants) = self.tenants.write() {

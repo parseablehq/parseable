@@ -1414,13 +1414,19 @@ mod tests {
             None,
             &None,
         );
+        let hostname = hostname::get()
+            .unwrap_or_else(|_| std::ffi::OsString::from(&Ulid::new().to_string()))
+            .into_string()
+            .unwrap_or_else(|_| Ulid::new().to_string())
+            .matches(|c: char| c.is_alphanumeric() || c == '-' || c == '_')
+            .collect::<String>();
 
         let expected = format!(
             "{stream_hash}.date={}.hour={:02}.minute={}.{}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
-            hostname::get().unwrap().into_string().unwrap()
+            hostname
         );
 
         let generated =
@@ -1449,13 +1455,19 @@ mod tests {
             None,
             &None,
         );
+        let hostname = hostname::get()
+            .unwrap_or_else(|_| std::ffi::OsString::from(&Ulid::new().to_string()))
+            .into_string()
+            .unwrap_or_else(|_| Ulid::new().to_string())
+            .matches(|c: char| c.is_alphanumeric() || c == '-' || c == '_')
+            .collect::<String>();
 
         let expected = format!(
             "{stream_hash}.date={}.hour={:02}.minute={}.key1=value1.key2=value2.{}.data.{ARROW_FILE_EXTENSION}",
             parsed_timestamp.date(),
             parsed_timestamp.hour(),
             Minute::from(parsed_timestamp).to_slot(OBJECT_STORE_DATA_GRANULARITY),
-            hostname::get().unwrap().into_string().unwrap()
+            hostname
         );
 
         let generated =
@@ -1482,14 +1494,16 @@ mod tests {
         .convert_disk_files_to_parquet(None, None, false, false, &None)?;
         assert!(result.is_none());
         // Verify metrics were set to 0
-        let staging_files = metrics::STAGING_FILES.with_label_values(&[&stream]).get();
+        let staging_files = metrics::STAGING_FILES
+            .with_label_values(&[&stream, DEFAULT_TENANT])
+            .get();
         assert_eq!(staging_files, 0);
         let storage_size_arrows = metrics::STORAGE_SIZE
-            .with_label_values(&["staging", &stream, "arrows"])
+            .with_label_values(&["staging", &stream, "arrows", "tenant_id"])
             .get();
         assert_eq!(storage_size_arrows, 0);
         let storage_size_parquet = metrics::STORAGE_SIZE
-            .with_label_values(&["staging", &stream, "parquet"])
+            .with_label_values(&["staging", &stream, "parquet", "tenant_id"])
             .get();
         assert_eq!(storage_size_parquet, 0);
         Ok(())
@@ -1789,9 +1803,14 @@ mod tests {
         let ingestor_id = Some("new_ingestor".to_owned());
 
         // Assert the stream doesn't exist already
-        let guard = streams.read().expect("Failed to acquire read lock");
+        let mut guard = streams.write().expect("Failed to acquire read lock");
         assert_eq!(guard.len(), 0);
-        assert!(!guard.get(DEFAULT_TENANT).unwrap().contains_key(stream_name));
+        assert!(
+            !guard
+                .entry(DEFAULT_TENANT.to_string())
+                .or_default()
+                .contains_key(stream_name)
+        );
         drop(guard);
 
         // Call get_or_create with a new stream_name

@@ -32,7 +32,7 @@ use crate::{
     parseable::DEFAULT_TENANT,
     rbac::{
         map::{mut_roles, mut_sessions, read_user_groups, users},
-        role::model::DefaultPrivilege,
+        role::model::{Role, RoleType},
     },
     utils::get_tenant_id_from_request,
     validator,
@@ -43,7 +43,7 @@ use crate::{
 pub async fn put(
     req: HttpRequest,
     name: web::Path<String>,
-    Json(privileges): Json<Vec<DefaultPrivilege>>,
+    Json(body): Json<Role>,
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
@@ -51,23 +51,38 @@ pub async fn put(
     // validate the role name
     validator::user_role_name(&name).map_err(RoleError::ValidationError)?;
 
-    // iterate to find if a protected user has this role
-    if let Some(users) = users().get(tenant) {
-        for user in users.values() {
-            if user.roles.contains(&name) && user.protected {
-                return Err(RoleError::RoleInUse);
-            }
+    // if role exists, then it should not be an internal role
+    let role = if let Some(tenant_roles) = mut_roles().get_mut(tenant)
+        && let Some(role) = tenant_roles.get_mut(&name)
+    {
+        if role.role_type().eq(&RoleType::Internal) {
+            return Err(RoleError::ProtectedRole);
+        } else {
+            // role exists and is not internal, can proceed with modification
+            role.append_privileges(body.privileges());
+            role.clone()
         }
-    }
+    } else {
+        body
+    };
+
+    // // iterate to find if a protected user has this role
+    // if let Some(users) = users().get(tenant) {
+    //     for user in users.values() {
+    //         if user.roles.contains(&name) && user.protected {
+    //             return Err(RoleError::RoleInUse);
+    //         }
+    //     }
+    // }
+
     let mut metadata = get_metadata(&tenant_id).await?;
-    metadata.roles.insert(name.clone(), privileges.clone());
+    metadata.roles.insert(name.clone(), role.clone());
 
     put_metadata(&metadata, &tenant_id).await?;
     mut_roles()
         .entry(tenant.to_owned())
         .or_default()
-        .insert(name.clone(), privileges.clone());
-    // mut_roles().insert(name.clone(), privileges.clone());
+        .insert(name.clone(), role.clone());
 
     // refresh the sessions of all users using this role
     // for this, iterate over all user_groups and users and create a hashset of users
@@ -94,7 +109,7 @@ pub async fn put(
         mut_sessions().remove_user(&userid, tenant);
     }
 
-    sync_role_update(name.clone(), privileges.clone(), &tenant_id).await?;
+    sync_role_update(name.clone(), role, &tenant_id).await?;
 
     Ok(HttpResponse::Ok().finish())
 }

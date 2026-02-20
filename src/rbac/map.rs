@@ -18,6 +18,7 @@
 
 use crate::parseable::DEFAULT_TENANT;
 use crate::rbac::role::ParseableResourceType;
+use crate::rbac::role::model::Role;
 use crate::rbac::user::{User, UserGroup};
 use crate::{parseable::PARSEABLE, storage::StorageMetadata};
 use std::collections::HashMap;
@@ -37,7 +38,7 @@ use parking_lot::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use serde::{Deserialize, Serialize};
 
-pub type Roles = HashMap<String, HashMap<String, Vec<DefaultPrivilege>>>;
+pub type Roles = HashMap<String, HashMap<String, Role>>;
 
 pub static USERS: OnceCell<RwLock<Users>> = OnceCell::new();
 pub static ROLES: OnceCell<RwLock<Roles>> = OnceCell::new();
@@ -107,17 +108,15 @@ pub fn init(metadata: &StorageMetadata) {
 
     DEFAULT_ROLE
         .write()
-        // .unwrap()
         .insert(DEFAULT_TENANT.to_owned(), metadata.default_role.clone());
-
-    // DEFAULT_ROLE
-    //     .lock()
-    //     .unwrap()
-    //     .clone_from(&metadata.default_role);
 
     let admin_privilege = DefaultPrivilege::SuperAdmin;
     let admin_permissions = RoleBuilder::from(&admin_privilege).build();
-    roles.insert("super-admin".to_string(), vec![admin_privilege]);
+    roles.insert(
+        "super-admin".to_string(),
+        Role::create_user_role(vec![admin_privilege]),
+    );
+    // roles.insert("super-admin".to_string(), vec![admin_privilege]);
 
     let mut users = Users::from(users);
     let admin = user::get_super_admin_user();
@@ -475,6 +474,7 @@ fn aggregate_group_permissions(username: &str, tenant_id: &String) -> HashSet<Pe
 
     let user = if let Some(tenant_users) = users().get(tenant_id)
         && let Some(user) = tenant_users.get(username)
+        && !user.protected
     {
         user.to_owned()
     } else {
@@ -493,10 +493,10 @@ fn aggregate_group_permissions(username: &str, tenant_id: &String) -> HashSet<Pe
             && let Some(group) = groups.get(group_name)
         {
             for role_name in group.roles.iter() {
-                let privileges = if let Some(roles) = roles().get(tenant_id)
-                    && let Some(privileges) = roles.get(role_name)
+                let roles = if let Some(tenant_roles) = roles().get(tenant_id)
+                    && let Some(role) = tenant_roles.get(role_name)
                 {
-                    privileges.clone()
+                    role.clone()
                 } else {
                     continue;
                 };
@@ -504,8 +504,8 @@ fn aggregate_group_permissions(username: &str, tenant_id: &String) -> HashSet<Pe
                 //     continue;
                 // };
 
-                for privilege in privileges {
-                    group_perms.extend(RoleBuilder::from(&privilege).build());
+                for role in roles.privileges() {
+                    group_perms.extend(RoleBuilder::from(role).build());
                 }
             }
         } else {

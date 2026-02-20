@@ -94,7 +94,6 @@ impl ParseableServer for Server {
                     .service(Self::get_llm_webscope())
                     .service(Self::get_oauth_webscope())
                     .service(Self::get_user_role_webscope())
-                    .service(Self::get_roles_webscope())
                     .service(Self::get_counts_webscope().wrap(from_fn(
                         resource_check::check_resource_utilization_middleware,
                     )))
@@ -577,13 +576,6 @@ impl Server {
             .service(resource("/login").route(web::get().to(oidc::login)))
             .service(resource("/logout").route(web::get().to(oidc::logout)))
             .service(resource("/code").route(web::get().to(oidc::reply_login)))
-    }
-
-    // get list of roles
-    pub fn get_roles_webscope() -> Scope {
-        web::scope("/roles").service(
-            web::resource("").route(web::get().to(role::list_roles).authorize(Action::ListRole)),
-        )
     }
 
     // get the role webscope
