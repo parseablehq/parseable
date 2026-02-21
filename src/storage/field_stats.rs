@@ -154,7 +154,8 @@ pub async fn calculate_field_stats(
             vec![log_source_entry],
             TelemetryType::Logs,
             tenant_id,
-            None,
+            vec![],
+            vec![],
         )
         .await?;
     let vec_json = apply_generic_flattening_for_partition(
