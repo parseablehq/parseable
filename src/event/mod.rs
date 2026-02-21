@@ -58,7 +58,7 @@ pub struct Event {
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
-    pub fn process(self) -> Result<(), EventError> {
+    pub async fn process(self) -> Result<(), EventError> {
         let mut key = get_schema_key(&self.rb.schema().fields);
         if self.time_partition.is_some() {
             let parsed_timestamp_to_min = self.parsed_timestamp.format("%Y%m%dT%H%M").to_string();
@@ -75,13 +75,14 @@ impl Event {
             commit_schema(&self.stream_name, self.rb.schema())?;
         }
 
+        // Await async push - memtable push is awaited, disk write is fire-and-forget
         PARSEABLE.get_or_create_stream(&self.stream_name).push(
             &key,
             &self.rb,
             self.parsed_timestamp,
             &self.custom_partition_values,
             self.stream_type,
-        )?;
+        ).await?;
 
         update_stats(
             &self.stream_name,
@@ -101,16 +102,17 @@ impl Event {
         Ok(())
     }
 
-    pub fn process_unchecked(&self) -> Result<(), EventError> {
+    pub async fn process_unchecked(&self) -> Result<(), EventError> {
         let key = get_schema_key(&self.rb.schema().fields);
 
+        // Await async push
         PARSEABLE.get_or_create_stream(&self.stream_name).push(
             &key,
             &self.rb,
             self.parsed_timestamp,
             &self.custom_partition_values,
             self.stream_type,
-        )?;
+        ).await?;
 
         Ok(())
     }
