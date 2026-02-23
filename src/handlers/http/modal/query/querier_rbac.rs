@@ -59,9 +59,12 @@ pub async fn post_user(
 
     let mut non_existent_roles = Vec::new();
     for role in &user_roles {
-        if let Some(tenant_roles) = roles().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-            && !tenant_roles.contains_key(role)
-        {
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let role_exists = roles()
+            .get(tenant)
+            .map(|tenant_roles| tenant_roles.contains_key(role))
+            .unwrap_or(false);
+        if !role_exists {
             non_existent_roles.push(role.clone());
         }
     }

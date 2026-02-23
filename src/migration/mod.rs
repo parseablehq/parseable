@@ -45,6 +45,73 @@ fn get_version(metadata: &serde_json::Value) -> Option<&str> {
         .and_then(|version| version.as_str())
 }
 
+fn get_version_number(metadata: &serde_json::Value) -> Option<u8> {
+    get_version(metadata).and_then(|version| version.strip_prefix('v')?.parse().ok())
+}
+
+fn apply_metadata_migrations(
+    mut metadata: Value,
+    migrations: &[fn(Value) -> Value],
+    start_idx: usize,
+) -> Value {
+    for migration in migrations.iter().skip(start_idx) {
+        metadata = migration(metadata);
+    }
+    metadata
+}
+
+fn migrate_storage_metadata(storage_metadata: Value) -> (Value, bool) {
+    let Some(version) = get_version_number(&storage_metadata) else {
+        return (
+            metadata_migration::remove_querier_metadata(storage_metadata),
+            false,
+        );
+    };
+
+    if !(1..=7).contains(&version) {
+        return (
+            metadata_migration::remove_querier_metadata(storage_metadata),
+            false,
+        );
+    }
+
+    let mut metadata = storage_metadata;
+    let migration_start_idx = match version {
+        1 => {
+            metadata = metadata_migration::v1_v3(metadata);
+            0
+        }
+        2 => {
+            metadata = metadata_migration::v2_v3(metadata);
+            0
+        }
+        3 => 0,
+        4 => 1,
+        5 => 2,
+        6 => 3,
+        7 => 4,
+        _ => unreachable!(),
+    };
+
+    metadata = apply_metadata_migrations(
+        metadata,
+        &[
+            metadata_migration::v3_v4,
+            metadata_migration::v4_v5,
+            metadata_migration::v5_v6,
+            metadata_migration::v6_v7,
+            metadata_migration::v7_v8,
+        ],
+        migration_start_idx,
+    );
+
+    if version <= 4 {
+        metadata = metadata_migration::remove_querier_metadata(metadata);
+    }
+
+    (metadata, true)
+}
+
 /// Migrate the metdata from v1 or v2 to v3
 /// This is a one time migration
 pub async fn run_metadata_migration(
@@ -52,87 +119,19 @@ pub async fn run_metadata_migration(
     parseable_json: &mut Option<Bytes>,
     tenant_id: &Option<String>,
 ) -> anyhow::Result<()> {
-    let mut storage_metadata: Option<Value> = None;
-    if parseable_json.is_some() {
-        storage_metadata = serde_json::from_slice(parseable_json.as_ref().unwrap())
-            .expect("parseable config is valid json");
-    }
+    let storage_metadata: Option<Value> = parseable_json
+        .as_ref()
+        .map(|value| serde_json::from_slice(value).expect("parseable config is valid json"));
     let staging_metadata = get_staging_metadata(config)?;
 
     // if storage metadata is none do nothing
     if let Some(storage_metadata) = storage_metadata {
-        match get_version(&storage_metadata) {
-            Some("v1") => {
-                let mut metadata = metadata_migration::v1_v3(storage_metadata);
-                metadata = metadata_migration::v3_v4(metadata);
-                metadata = metadata_migration::v4_v5(metadata);
-                metadata = metadata_migration::v5_v6(metadata);
-                metadata = metadata_migration::v6_v7(metadata);
-                metadata = metadata_migration::v7_v8(metadata);
-                metadata = metadata_migration::remove_querier_metadata(metadata);
-                let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
-                *parseable_json = Some(_metadata);
-                put_remote_metadata(metadata, tenant_id).await?;
-            }
-            Some("v2") => {
-                let mut metadata = metadata_migration::v2_v3(storage_metadata);
-                metadata = metadata_migration::v3_v4(metadata);
-                metadata = metadata_migration::v4_v5(metadata);
-                metadata = metadata_migration::v5_v6(metadata);
-                metadata = metadata_migration::v6_v7(metadata);
-                metadata = metadata_migration::v7_v8(metadata);
-                metadata = metadata_migration::remove_querier_metadata(metadata);
-                let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
-                *parseable_json = Some(_metadata);
-                put_remote_metadata(metadata, tenant_id).await?;
-            }
-            Some("v3") => {
-                let mut metadata = metadata_migration::v3_v4(storage_metadata);
-                metadata = metadata_migration::v4_v5(metadata);
-                metadata = metadata_migration::v5_v6(metadata);
-                metadata = metadata_migration::v6_v7(metadata);
-                metadata = metadata_migration::v7_v8(metadata);
-                metadata = metadata_migration::remove_querier_metadata(metadata);
-                let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
-                *parseable_json = Some(_metadata);
-                put_remote_metadata(metadata, tenant_id).await?;
-            }
-            Some("v4") => {
-                let mut metadata = metadata_migration::v4_v5(storage_metadata);
-                metadata = metadata_migration::v5_v6(metadata);
-                metadata = metadata_migration::v6_v7(metadata);
-                metadata = metadata_migration::v7_v8(metadata);
-                metadata = metadata_migration::remove_querier_metadata(metadata);
-                let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
-                *parseable_json = Some(_metadata);
-                put_remote_metadata(metadata, tenant_id).await?;
-            }
-            Some("v5") => {
-                let mut metadata = metadata_migration::v5_v6(storage_metadata);
-                metadata = metadata_migration::v6_v7(metadata);
-                metadata = metadata_migration::v7_v8(metadata);
-                let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
-                *parseable_json = Some(_metadata);
-                put_remote_metadata(metadata, tenant_id).await?;
-            }
-            Some("v6") => {
-                let mut metadata = metadata_migration::v6_v7(storage_metadata);
-                metadata = metadata_migration::v7_v8(metadata);
-                let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
-                *parseable_json = Some(_metadata);
-                put_remote_metadata(metadata, tenant_id).await?;
-            }
-            Some("v7") => {
-                let metadata = metadata_migration::v7_v8(storage_metadata);
-                let _metadata: Bytes = serde_json::to_vec(&metadata)?.into();
-                *parseable_json = Some(_metadata);
-                put_remote_metadata(metadata, tenant_id).await?;
-            }
-            _ => {
-                let metadata = metadata_migration::remove_querier_metadata(storage_metadata);
-                put_remote_metadata(metadata, tenant_id).await?;
-            }
+        let (metadata, should_update_parseable_json) = migrate_storage_metadata(storage_metadata);
+        if should_update_parseable_json {
+            let metadata_bytes: Bytes = serde_json::to_vec(&metadata)?.into();
+            *parseable_json = Some(metadata_bytes);
         }
+        put_remote_metadata(metadata, tenant_id).await?;
     }
 
     // if staging metadata is none do nothing

@@ -327,7 +327,7 @@ impl Parseable {
     ///
     /// if the server doesn't have traces of multi-tenancy AND is started without the flag, then proceed
     /// otherwise fail with error
-    pub async fn validate_multi_tenancy(&self) -> Result<Option<()>, anyhow::Error> {
+    pub async fn validate_multi_tenancy(&self) -> Result<(), anyhow::Error> {
         self.load_tenants().await
     }
 
@@ -1125,7 +1125,7 @@ impl Parseable {
         Ok(())
     }
 
-    async fn load_tenants(&self) -> Result<Option<()>, anyhow::Error> {
+    async fn load_tenants(&self) -> Result<(), anyhow::Error> {
         let is_multi_tenant = self.options.is_multi_tenant();
 
         let obj_store = self.storage().get_object_store();
@@ -1155,13 +1155,15 @@ impl Parseable {
             }
         }
 
-        if let Ok(mut t) = self.tenants.write()
-            && is_multi_tenant
-        {
+        if is_multi_tenant {
+            let mut t = self
+                .tenants
+                .write()
+                .expect("Unable to write to in-memory tenant map");
             t.extend(dirs);
-            Ok(Some(()))
+            Ok(())
         } else {
-            Ok(None)
+            Ok(())
         }
     }
 

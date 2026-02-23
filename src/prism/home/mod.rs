@@ -252,10 +252,13 @@ pub async fn generate_home_search_response(
 ) -> Result<HomeSearchResponse, PrismHomeError> {
     let mut resources = Vec::new();
     let tenant_id = &get_tenant_id_from_key(key);
+    let (user_id, _) = Users
+        .get_userid_from_session(key)
+        .expect("Should be a valid user session");
     let (alert_titles, correlation_titles, dashboard_titles, filter_titles, stream_titles) = tokio::join!(
         get_alert_titles(key, query_value),
         get_correlation_titles(key, query_value),
-        get_dashboard_titles(query_value, tenant_id),
+        get_dashboard_titles(user_id, query_value, tenant_id),
         get_filter_titles(key, query_value),
         get_stream_titles(key, tenant_id)
     );
@@ -364,9 +367,11 @@ async fn get_correlation_titles(
 }
 
 async fn get_dashboard_titles(
+    user_id: String,
     query_value: &str,
     tenant_id: &Option<String>,
 ) -> Result<Vec<Resource>, PrismHomeError> {
+    let user_id = Some(user_id);
     let dashboard_titles = DASHBOARDS
         .list_dashboards(0, tenant_id)
         .await
@@ -376,6 +381,7 @@ async fn get_dashboard_titles(
             let dashboard_id = dashboard_id.to_string();
             if dashboard.title.to_lowercase().contains(query_value)
                 || dashboard_id.to_lowercase().contains(query_value)
+                    && dashboard.author.eq(&user_id)
             {
                 Some(Resource {
                     id: dashboard_id,

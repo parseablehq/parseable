@@ -411,9 +411,10 @@ impl UserGroup {
             if let Some(tenant_roles) = roles().get(tenant) {
                 for name in &self.roles {
                     if let Some(role) = tenant_roles.get(name)
-                        && role.role_type().eq(&RoleType::Internal) {
-                            return Err(RBACError::ProtectedRole);
-                        }
+                        && role.role_type().eq(&RoleType::Internal)
+                    {
+                        return Err(RBACError::ProtectedRole);
+                    }
                 }
             }
             Ok(())
