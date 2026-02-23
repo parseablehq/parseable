@@ -31,7 +31,7 @@ use futures_util::future::LocalBoxFuture;
 use crate::{
     handlers::{
         AUTHORIZATION_KEY, KINESIS_COMMON_ATTRIBUTES_KEY, LOG_SOURCE_KEY, LOG_SOURCE_KINESIS,
-        STREAM_NAME_HEADER_KEY,
+        STREAM_NAME_HEADER_KEY, TENANT_ID,
         http::{ingest::PostError, modal::OIDC_CLIENT, rbac::RBACError},
     },
     option::Mode,
@@ -237,7 +237,7 @@ fn get_user_and_tenant(
     if PARSEABLE.options.is_multi_tenant() {
         // if ingestion then tenant MUST be present and should not be DEFAULT_TENANT
         let tenant = if action.eq(&Action::Ingest) {
-            if let Some(tenant) = request.headers().get("tenant")
+            if let Some(tenant) = request.headers().get(TENANT_ID)
                 && let Ok(tenant) = tenant.to_str()
             {
                 if tenant.eq(DEFAULT_TENANT) {
@@ -262,13 +262,13 @@ fn get_user_and_tenant(
                 && let Some(tid) = tenant.as_ref()
             {
                 request.headers_mut().insert(
-                    HeaderName::from_static("tenant"),
+                    HeaderName::from_static(TENANT_ID),
                     HeaderValue::from_str(tid).unwrap(),
                 );
                 t = tenant;
             } else {
                 // remove the header if already present
-                request.headers_mut().remove("tenant");
+                request.headers_mut().remove(TENANT_ID);
             }
             t
         };
@@ -276,9 +276,9 @@ fn get_user_and_tenant(
         Ok((userid, tenant))
     } else {
         // not multi-tenant, tenant header should NOT be present
-        if request.headers().get("tenant").is_some() {
+        if request.headers().get(TENANT_ID).is_some() {
             *header_error = Some(actix_web::Error::from(PostError::Header(
-                crate::utils::header_parsing::ParseHeaderError::UnexpectedHeader("tenant".into()),
+                crate::utils::header_parsing::ParseHeaderError::UnexpectedHeader(TENANT_ID.into()),
             )));
         }
         let userid = get_user_from_request(request.request());
@@ -381,7 +381,7 @@ pub async fn refresh_token(
 
 #[inline(always)]
 pub fn check_suspension(req: &HttpRequest, action: Action) -> rbac::Response {
-    if let Some(tenant) = req.headers().get("tenant")
+    if let Some(tenant) = req.headers().get(TENANT_ID)
         && let Ok(tenant) = tenant.to_str()
     {
         if let Ok(Some(suspension)) = TENANT_METADATA.is_action_suspended(tenant, &action) {

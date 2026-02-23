@@ -16,6 +16,7 @@
  *
  */
 
+use crate::handlers::TENANT_ID;
 use crate::parseable::DEFAULT_TENANT;
 use crate::rbac::role::ParseableResourceType;
 use crate::rbac::role::model::Role;
@@ -429,7 +430,7 @@ impl Sessions {
     pub fn mutate_request_with_tenant(&self, key: &SessionKey, req: &mut ServiceRequest) {
         if let Some((_, tenant, _)) = self.active_sessions.get(key) {
             req.headers_mut().insert(
-                HeaderName::from_static("tenant"),
+                HeaderName::from_static(TENANT_ID),
                 HeaderValue::from_bytes(tenant.as_bytes()).unwrap(),
             );
         }

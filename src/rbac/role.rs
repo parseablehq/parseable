@@ -256,10 +256,6 @@ pub mod model {
                 .iter()
                 .any(|p| p.eq(&DefaultPrivilege::SuperAdmin))
         }
-
-        pub fn append_privileges(&mut self, new_actions: &[DefaultPrivilege]) {
-            self.actions.extend_from_slice(new_actions);
-        }
     }
 
     impl<'de> Deserialize<'de> for Role {

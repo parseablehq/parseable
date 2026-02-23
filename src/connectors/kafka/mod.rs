@@ -17,6 +17,7 @@
  */
 
 use crate::connectors::kafka::config::KafkaConfig;
+use crate::handlers::TENANT_ID;
 use derive_more::Constructor;
 use rdkafka::client::OAuthToken;
 use rdkafka::consumer::{ConsumerContext, Rebalance};
@@ -151,7 +152,7 @@ pub struct ConsumerRecord {
 impl ConsumerRecord {
     pub fn from_borrowed_msg(msg: BorrowedMessage) -> Self {
         let tenant_id = if let Some(headers) = extract_headers(&msg)
-            && let Some(tenant_id) = headers.get("tenant")
+            && let Some(tenant_id) = headers.get(TENANT_ID)
         {
             tenant_id.clone()
         } else {

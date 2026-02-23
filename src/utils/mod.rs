@@ -27,6 +27,7 @@ pub mod uid;
 pub mod update;
 
 use crate::INTRA_CLUSTER_CLIENT;
+use crate::handlers::TENANT_ID;
 use crate::handlers::http::base_path_without_preceding_slash;
 use crate::handlers::http::cluster::for_each_live_node;
 use crate::handlers::http::rbac::RBACError;
@@ -118,7 +119,7 @@ pub fn get_user_and_tenant_from_request(
 
 pub fn get_tenant_id_from_request(req: &HttpRequest) -> Option<String> {
     req.headers()
-        .get("tenant")
+        .get(TENANT_ID)
         .map(|tenant_value| tenant_value.to_str().unwrap().to_owned())
 }
 

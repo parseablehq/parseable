@@ -59,7 +59,7 @@ pub async fn put(
             return Err(RoleError::ProtectedRole);
         } else {
             // role exists and is not internal, can proceed with modification
-            role.append_privileges(body.privileges());
+            *role = body;
             role.clone()
         }
     } else {

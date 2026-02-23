@@ -31,6 +31,7 @@ use rayon::iter::{IntoParallelRefIterator, ParallelBridge, ParallelIterator};
 use serde::Serialize;
 use url::Url;
 
+use crate::handlers::TENANT_ID;
 use crate::parseable::DEFAULT_TENANT;
 use crate::rbac::map::{mut_sessions, mut_users, read_user_groups, roles, sessions, users};
 use crate::rbac::role::Action;
@@ -318,7 +319,7 @@ impl Users {
                 .is_some()
         }) {
             req.headers_mut().insert(
-                HeaderName::from_static("tenant"),
+                HeaderName::from_static(TENANT_ID),
                 HeaderValue::from_bytes(tenant.as_bytes()).unwrap(),
             );
         };
