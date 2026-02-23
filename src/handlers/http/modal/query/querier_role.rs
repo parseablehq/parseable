@@ -66,14 +66,9 @@ pub async fn put(
         body
     };
 
-    // // iterate to find if a protected user has this role
-    // if let Some(users) = users().get(tenant) {
-    //     for user in users.values() {
-    //         if user.roles.contains(&name) && user.protected {
-    //             return Err(RoleError::RoleInUse);
-    //         }
-    //     }
-    // }
+    if role.deny_super_admin() {
+        return Err(RoleError::SuperAdminPrivilege);
+    }
 
     let mut metadata = get_metadata(&tenant_id).await?;
     metadata.roles.insert(name.clone(), role.clone());

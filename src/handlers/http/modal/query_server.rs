@@ -68,6 +68,7 @@ impl ParseableServer for QueryServer {
                     .service(Server::get_filters_webscope())
                     .service(Server::get_llm_webscope())
                     .service(Server::get_oauth_webscope())
+                    .service(Server::get_roles_webscope())
                     .service(Self::get_user_role_webscope())
                     .service(Server::get_counts_webscope().wrap(from_fn(
                         resource_check::check_resource_utilization_middleware,

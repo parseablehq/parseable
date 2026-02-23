@@ -46,6 +46,9 @@ pub async fn put(
     if role.role_type().eq(&RoleType::Internal) {
         return Err(RoleError::ProtectedRole);
     }
+    if role.deny_super_admin() {
+        return Err(RoleError::SuperAdminPrivilege);
+    }
     let name = name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
 
@@ -245,6 +248,8 @@ pub enum RoleError {
     Network(#[from] reqwest::Error),
     #[error("Validation Error: {0}")]
     ValidationError(#[from] UsernameValidationError),
+    #[error("Cannot create a role with superadmin privilege.")]
+    SuperAdminPrivilege,
 }
 
 impl actix_web::ResponseError for RoleError {
@@ -252,6 +257,7 @@ impl actix_web::ResponseError for RoleError {
         match self {
             Self::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::RoleInUse => StatusCode::BAD_REQUEST,
+            Self::SuperAdminPrivilege => StatusCode::BAD_REQUEST,
             Self::ProtectedRole => StatusCode::BAD_REQUEST,
             Self::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::SerdeError(_) => StatusCode::BAD_REQUEST,

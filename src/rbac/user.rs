@@ -191,7 +191,7 @@ pub fn get_super_admin_user() -> User {
         roles: ["super-admin".to_string()].into(),
         user_groups: HashSet::new(),
         tenant: None,
-        protected: true,
+        protected: false,
     }
 }
 

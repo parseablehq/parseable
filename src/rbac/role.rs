@@ -251,6 +251,12 @@ pub mod model {
             &self.role_type
         }
 
+        pub fn deny_super_admin(&self) -> bool {
+            self.actions
+                .iter()
+                .any(|p| p.eq(&DefaultPrivilege::SuperAdmin))
+        }
+
         pub fn append_privileges(&mut self, new_actions: &[DefaultPrivilege]) {
             self.actions.extend_from_slice(new_actions);
         }

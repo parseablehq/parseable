@@ -95,7 +95,7 @@ services:
         max_attempts: 3
 
   kafka-0:
-    image: docker.io/bitnami/kafka:3.9
+    image: docker.io/bitnamilegacy/kafka:latest
     ports:
       - "9092:9092"
       - "11001:11001"
@@ -116,7 +116,7 @@ services:
       - KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
       - KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR=2
     volumes:
-      - kafka_0_data:/bitnami/kafka
+      - kafka_0_data:/bitnamilegacy/kafka
     networks:
       - parseable-internal
     healthcheck:
@@ -149,7 +149,7 @@ services:
   kafka-log-generator:
     build:
       context: ./scripts
-      dockerfile: Dockerfile.debug
+      dockerfile: Dockerfile
     environment:
       - KAFKA_BROKERS=kafka-0:9092
       - KAFKA_TOPIC=test-logs-stream
