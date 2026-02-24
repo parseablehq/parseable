@@ -60,6 +60,7 @@ pub enum Action {
     ListClusterMetrics,
     DeleteNode,
     All,
+    SuperAdmin,
     GetAnalytics,
     ListDashboard,
     GetDashboard,
@@ -90,7 +91,7 @@ pub enum ParseableResourceType {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Permission {
     Unit(Action),
-    Resource(Action, ParseableResourceType),
+    Resource(Action, Option<ParseableResourceType>),
     SelfUser,
 }
 
@@ -166,7 +167,8 @@ impl RoleBuilder {
                 | Action::GetStats
                 | Action::GetRetention
                 | Action::PutRetention
-                | Action::All => Permission::Resource(action, self.resource_type.clone().unwrap()),
+                | Action::All
+                | Action::SuperAdmin => Permission::Resource(action, self.resource_type.clone()),
             };
             perms.push(perm);
         }
@@ -179,6 +181,9 @@ impl RoleBuilder {
 // we can put same model in the backend
 // user -> Vec<DefaultRoles>
 pub mod model {
+    use serde::{Deserialize, Serialize, Serializer, de};
+    use serde_json::Value;
+
     use crate::rbac::role::ParseableResourceType;
 
     use super::{Action, RoleBuilder};
@@ -186,28 +191,138 @@ pub mod model {
     #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, Hash)]
     #[serde(tag = "privilege", rename_all = "lowercase")]
     pub enum DefaultPrivilege {
+        SuperAdmin,
         Admin,
         Editor,
-        Writer { resource: ParseableResourceType },
-        Ingestor { resource: ParseableResourceType },
-        Reader { resource: ParseableResourceType },
+        Writer {
+            resource: ParseableResourceType,
+        },
+        Ingestor {
+            resource: Option<ParseableResourceType>,
+        },
+        Reader {
+            resource: Option<ParseableResourceType>,
+        },
+    }
+
+    #[derive(Debug, Clone)]
+    pub struct RoleUI(pub Role);
+    impl Serialize for RoleUI {
+        fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            self.0.actions.serialize(serializer)
+        }
+    }
+
+    #[derive(Debug, Default, serde::Serialize, serde::Deserialize, Clone, PartialEq, Eq)]
+    #[serde(rename_all = "camelCase")]
+    pub enum RoleType {
+        #[default]
+        User,
+        Internal,
+    }
+
+    #[derive(Debug, serde::Serialize, Clone, PartialEq, Eq, Default)]
+    #[serde(rename_all = "camelCase")]
+    pub struct Role {
+        actions: Vec<DefaultPrivilege>,
+        role_type: RoleType,
+    }
+
+    impl Role {
+        pub fn create_user_role(actions: Vec<DefaultPrivilege>) -> Self {
+            Self {
+                actions,
+                role_type: RoleType::User,
+            }
+        }
+
+        pub fn create_internal_role(actions: Vec<DefaultPrivilege>) -> Self {
+            Self {
+                actions,
+                role_type: RoleType::Internal,
+            }
+        }
+
+        pub fn privileges(&self) -> &Vec<DefaultPrivilege> {
+            &self.actions
+        }
+
+        pub fn role_type(&self) -> &RoleType {
+            &self.role_type
+        }
+
+        pub fn deny_super_admin(&self) -> bool {
+            self.actions
+                .iter()
+                .any(|p| p.eq(&DefaultPrivilege::SuperAdmin))
+        }
+    }
+
+    impl<'de> Deserialize<'de> for Role {
+        fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            let value = Value::deserialize(deserializer)?;
+
+            match value {
+                Value::Array(_) => {
+                    let actions =
+                        Vec::<DefaultPrivilege>::deserialize(value).map_err(de::Error::custom)?;
+                    Ok(Role {
+                        actions,
+                        role_type: RoleType::User,
+                    })
+                }
+                Value::Object(ref obj) => {
+                    let actions = obj
+                        .get("actions")
+                        .ok_or_else(|| de::Error::missing_field("actions"))?;
+                    let actions =
+                        Vec::<DefaultPrivilege>::deserialize(actions).map_err(de::Error::custom)?;
+
+                    let role_type = obj
+                        .get("roleType")
+                        .ok_or_else(|| de::Error::missing_field("roleType"))?;
+                    let role_type = RoleType::deserialize(role_type).map_err(de::Error::custom)?;
+                    Ok(Role { actions, role_type })
+                }
+                _ => Err(de::Error::custom("expected an array or an object")),
+            }
+        }
     }
 
     impl From<&DefaultPrivilege> for RoleBuilder {
         fn from(value: &DefaultPrivilege) -> Self {
             match value {
+                DefaultPrivilege::SuperAdmin => super_admin_perm_builder(),
                 DefaultPrivilege::Admin => admin_perm_builder(),
                 DefaultPrivilege::Editor => editor_perm_builder(),
                 DefaultPrivilege::Writer { resource } => {
                     writer_perm_builder().with_resource(resource.to_owned())
                 }
                 DefaultPrivilege::Reader { resource } => {
-                    reader_perm_builder().with_resource(resource.to_owned())
+                    if let Some(resource) = resource.as_ref() {
+                        reader_perm_builder().with_resource(resource.to_owned())
+                    } else {
+                        reader_perm_builder()
+                    }
                 }
                 DefaultPrivilege::Ingestor { resource } => {
-                    ingest_perm_builder().with_resource(resource.to_owned())
+                    if let Some(resource) = resource.as_ref() {
+                        ingest_perm_builder().with_resource(resource.to_owned())
+                    } else {
+                        ingest_perm_builder()
+                    }
                 }
             }
+        }
+    }
+
+    fn super_admin_perm_builder() -> RoleBuilder {
+        RoleBuilder {
+            actions: vec![Action::SuperAdmin],
+            resource_type: Some(ParseableResourceType::All),
         }
     }
 

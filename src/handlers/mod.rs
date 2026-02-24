@@ -36,6 +36,7 @@ pub const UPDATE_STREAM_KEY: &str = "x-p-update-stream";
 pub const STREAM_TYPE_KEY: &str = "x-p-stream-type";
 pub const TELEMETRY_TYPE_KEY: &str = "x-p-telemetry-type";
 pub const DATASET_TAG_KEY: &str = "x-p-dataset-tag";
+pub const TENANT_ID: &str = "x-p-tenant";
 const COOKIE_AGE_DAYS: usize = 7;
 const SESSION_COOKIE_NAME: &str = "session";
 const USER_COOKIE_NAME: &str = "username";

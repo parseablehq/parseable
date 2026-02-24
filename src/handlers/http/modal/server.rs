@@ -94,7 +94,6 @@ impl ParseableServer for Server {
                     .service(Self::get_llm_webscope())
                     .service(Self::get_oauth_webscope())
                     .service(Self::get_user_role_webscope())
-                    .service(Self::get_roles_webscope())
                     .service(Self::get_counts_webscope().wrap(from_fn(
                         resource_check::check_resource_utilization_middleware,
                     )))
@@ -120,7 +119,7 @@ impl ParseableServer for Server {
         //TODO: removed file migration
         //deprecated support for deployments < v1.0.0
         let mut parseable_json = PARSEABLE.validate_storage().await?;
-        migration::run_metadata_migration(&PARSEABLE, &mut parseable_json).await?;
+        migration::run_metadata_migration(&PARSEABLE, &mut parseable_json, &None).await?;
 
         Ok(parseable_json)
     }
@@ -578,19 +577,14 @@ impl Server {
             .service(resource("/logout").route(web::get().to(oidc::logout)))
             .service(resource("/code").route(web::get().to(oidc::reply_login)))
     }
-
     // get list of roles
     pub fn get_roles_webscope() -> Scope {
-        web::scope("/roles").service(
-            web::resource("").route(web::get().to(role::list_roles).authorize(Action::ListRole)),
-        )
+        web::scope("/roles")
+            .service(web::resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
     }
-
     // get the role webscope
     pub fn get_user_role_webscope() -> Scope {
         web::scope("/role")
-            // GET Role List
-            .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
             .service(
                 // PUT and GET Default Role
                 resource("/default")

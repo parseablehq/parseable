@@ -47,10 +47,10 @@ mod static_schema;
 mod stats;
 pub mod storage;
 pub mod sync;
+pub mod tenants;
 pub mod users;
 pub mod utils;
 pub mod validator;
-
 use std::time::Duration;
 
 // Public re-exports of crates being used in enterprise
@@ -59,6 +59,7 @@ pub use handlers::http::modal::{
     ParseableServer, ingest_server::IngestServer, query_server::QueryServer, server::Server,
 };
 use once_cell::sync::Lazy;
+pub use openid;
 pub use opentelemetry_proto;
 use parseable::PARSEABLE;
 use reqwest::{Client, ClientBuilder};

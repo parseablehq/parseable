@@ -27,7 +27,7 @@ use crate::{
     event::format::{LogSource, LogSourceEntry},
     handlers::{DatasetTag, TelemetryType, http::logstream::error::StreamError},
     metastore::MetastoreError,
-    parseable::PARSEABLE,
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::{
         Users,
         map::{SessionKey, users},
@@ -35,6 +35,7 @@ use crate::{
     },
     storage::{ObjectStorageError, ObjectStoreFormat, StreamType},
     users::{dashboards::DASHBOARDS, filters::FILTERS},
+    utils::get_tenant_id_from_key,
 };
 
 struct StreamMetadata {
@@ -104,8 +105,9 @@ pub async fn generate_home_response(
     key: &SessionKey,
     include_internal: bool,
 ) -> Result<HomeResponse, PrismHomeError> {
+    let tenant_id = &get_tenant_id_from_key(key);
     // Execute these operations concurrently
-    let all_streams = PARSEABLE.metastore.list_streams().await?;
+    let all_streams = PARSEABLE.metastore.list_streams(tenant_id).await?;
 
     let stream_titles: Vec<String> = all_streams
         .iter()
@@ -120,7 +122,7 @@ pub async fn generate_home_response(
     // Process stream metadata concurrently
     let stream_metadata_futures = stream_titles
         .iter()
-        .map(|stream| get_stream_metadata(stream.clone()));
+        .map(|stream| get_stream_metadata(stream.clone(), tenant_id));
     let stream_metadata_results: Vec<StreamMetadataResponse> =
         futures::future::join_all(stream_metadata_futures).await;
 
@@ -157,7 +159,10 @@ pub async fn generate_home_response(
 
     // Generate checklist and count triggered alerts
     let data_ingested = datasets.iter().any(|d| d.ingestion);
-    let user_count = users().len();
+    let user_count = users()
+        .get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+        .map(|m| m.len())
+        .unwrap_or(0);
     let user_added = user_count > 1; // more than just the default admin user
 
     // Calculate triggered alerts count
@@ -193,12 +198,11 @@ pub async fn generate_home_response(
     })
 }
 
-async fn get_stream_metadata(stream: String) -> StreamMetadataResponse {
+async fn get_stream_metadata(stream: String, tenant_id: &Option<String>) -> StreamMetadataResponse {
     let obs = PARSEABLE
         .metastore
-        .get_all_stream_jsons(&stream, None)
+        .get_all_stream_jsons(&stream, None, tenant_id)
         .await?;
-
     let mut stream_jsons = Vec::new();
     for ob in obs {
         let stream_metadata: ObjectStoreFormat = match serde_json::from_slice(&ob) {
@@ -247,12 +251,16 @@ pub async fn generate_home_search_response(
     query_value: &str,
 ) -> Result<HomeSearchResponse, PrismHomeError> {
     let mut resources = Vec::new();
+    let tenant_id = &get_tenant_id_from_key(key);
+    let (user_id, _) = Users
+        .get_userid_from_session(key)
+        .expect("Should be a valid user session");
     let (alert_titles, correlation_titles, dashboard_titles, filter_titles, stream_titles) = tokio::join!(
         get_alert_titles(key, query_value),
         get_correlation_titles(key, query_value),
-        get_dashboard_titles(query_value),
+        get_dashboard_titles(user_id, query_value, tenant_id),
         get_filter_titles(key, query_value),
-        get_stream_titles(key)
+        get_stream_titles(key, tenant_id)
     );
 
     let alerts = alert_titles?;
@@ -278,10 +286,13 @@ pub async fn generate_home_search_response(
 }
 
 // Helper functions to split the work
-async fn get_stream_titles(key: &SessionKey) -> Result<Vec<String>, PrismHomeError> {
+async fn get_stream_titles(
+    key: &SessionKey,
+    tenant_id: &Option<String>,
+) -> Result<Vec<String>, PrismHomeError> {
     let stream_titles: Vec<String> = PARSEABLE
         .metastore
-        .list_streams()
+        .list_streams(tenant_id)
         .await
         .map_err(|e| PrismHomeError::Anyhow(anyhow::Error::new(e)))?
         .into_iter()
@@ -355,9 +366,14 @@ async fn get_correlation_titles(
     Ok(correlations)
 }
 
-async fn get_dashboard_titles(query_value: &str) -> Result<Vec<Resource>, PrismHomeError> {
+async fn get_dashboard_titles(
+    user_id: String,
+    query_value: &str,
+    tenant_id: &Option<String>,
+) -> Result<Vec<Resource>, PrismHomeError> {
+    let user_id = Some(user_id);
     let dashboard_titles = DASHBOARDS
-        .list_dashboards(0)
+        .list_dashboards(0, tenant_id)
         .await
         .iter()
         .filter_map(|dashboard| {
@@ -365,6 +381,7 @@ async fn get_dashboard_titles(query_value: &str) -> Result<Vec<Resource>, PrismH
             let dashboard_id = dashboard_id.to_string();
             if dashboard.title.to_lowercase().contains(query_value)
                 || dashboard_id.to_lowercase().contains(query_value)
+                    && dashboard.author.eq(&user_id)
             {
                 Some(Resource {
                     id: dashboard_id,
