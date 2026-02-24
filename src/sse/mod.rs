@@ -33,7 +33,10 @@ use tokio_stream::wrappers::ReceiverStream;
 use ulid::Ulid;
 
 use crate::{
-    alerts::AlertState, rbac::map::SessionKey, utils::actix::extract_session_key_from_req,
+    alerts::AlertState,
+    parseable::DEFAULT_TENANT,
+    rbac::map::SessionKey,
+    utils::{actix::extract_session_key_from_req, get_tenant_id_from_request},
 };
 
 pub static SSE_HANDLER: OnceCell<Arc<Broadcaster>> = OnceCell::new();
@@ -45,7 +48,7 @@ pub struct Broadcaster {
 #[derive(Debug, Clone, Default)]
 struct BroadcasterInner {
     // hashmap to map sse session to prism ui session
-    clients: HashMap<Ulid, Vec<mpsc::Sender<sse::Event>>>,
+    clients: HashMap<String, HashMap<Ulid, Vec<mpsc::Sender<sse::Event>>>>,
 }
 
 impl Broadcaster {
@@ -77,38 +80,45 @@ impl Broadcaster {
     async fn remove_stale_clients(&self) {
         let sse_inner = self.inner.read().await.clients.clone();
 
-        let mut ok_sessions = HashMap::new();
+        for (tenant, tenant_clients) in sse_inner.iter() {
+            let mut ok_sessions = HashMap::new();
 
-        for (session, clients) in sse_inner.iter() {
-            let mut ok_clients = Vec::new();
-            for client in clients {
-                if client
-                    .send(sse::Event::Comment("ping".into()))
-                    .await
-                    .is_ok()
-                {
-                    ok_clients.push(client.clone())
+            for (session, clients) in tenant_clients {
+                let mut ok_clients = Vec::new();
+                for client in clients {
+                    if client
+                        .send(sse::Event::Comment("ping".into()))
+                        .await
+                        .is_ok()
+                    {
+                        ok_clients.push(client.clone())
+                    }
                 }
+                ok_sessions.insert(*session, ok_clients);
             }
-            ok_sessions.insert(*session, ok_clients);
-        }
 
-        self.inner.write().await.clients = ok_sessions;
+            if let Some(sessions) = self.inner.write().await.clients.get_mut(tenant) {
+                *sessions = ok_sessions;
+            }
+        }
     }
 
     /// Registers client with broadcaster, returning an SSE response body.
     pub async fn new_client(
         &self,
         session: &Ulid,
+        tenant_id: &Option<String>,
     ) -> Sse<InfallibleStream<ReceiverStream<sse::Event>>> {
         let (tx, rx) = mpsc::channel(10);
-
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let _ = tx.send(sse::Data::new("connected").into()).await;
 
         self.inner
             .write()
             .await
             .clients
+            .entry(tenant.to_owned())
+            .or_default()
             .entry(*session)
             .or_default()
             .push(tx);
@@ -116,28 +126,36 @@ impl Broadcaster {
         Sse::from_infallible_receiver(rx)
     }
 
-    pub async fn fetch_sessions(&self) -> Vec<Ulid> {
+    pub async fn fetch_sessions(&self, tenant_id: &Option<String>) -> Vec<Ulid> {
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         self.inner
             .read()
             .await
             .clients
-            .keys()
-            .cloned()
-            .collect_vec()
+            .get(tenant)
+            .map_or(vec![], |v| v.keys().cloned().collect_vec())
     }
 
     /// Broadcasts `msg`
     ///
     /// If sessions is None, then broadcast to all
-    pub async fn broadcast(&self, msg: &str, sessions: Option<&[Ulid]>) {
-        let clients = self.inner.read().await.clients.clone();
-        if clients.is_empty() {
-            return;
-        }
+    pub async fn broadcast(
+        &self,
+        msg: &str,
+        sessions: Option<&[Ulid]>,
+        tenant_id: &Option<String>,
+    ) {
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let tenant_clients =
+            if let Some(tenant_clients) = self.inner.read().await.clients.get(tenant) {
+                tenant_clients.clone()
+            } else {
+                return;
+            };
 
         let send_futures = if let Some(sessions) = sessions {
             let mut futures = vec![];
-            for (session, clients) in clients.iter() {
+            for (session, clients) in tenant_clients.iter() {
                 if sessions.contains(session) {
                     clients
                         .iter()
@@ -148,7 +166,7 @@ impl Broadcaster {
         } else {
             // broadcast
             let mut futures = vec![];
-            for (_, clients) in clients.iter() {
+            for (_, clients) in tenant_clients.iter() {
                 clients
                     .iter()
                     .for_each(|client| futures.push(client.send(sse::Data::new(msg).into())));
@@ -165,6 +183,7 @@ impl Broadcaster {
 pub async fn register_sse_client(
     req: HttpRequest,
 ) -> Result<Sse<InfallibleStream<ReceiverStream<sse::Event>>>, actix_web::Error> {
+    let tenant_id = get_tenant_id_from_request(&req);
     let session = extract_session_key_from_req(&req).unwrap();
     let sessionid = match session {
         SessionKey::SessionId(ulid) => ulid,
@@ -176,7 +195,7 @@ pub async fn register_sse_client(
     };
     Ok(SSE_HANDLER
         .get_or_init(Broadcaster::create)
-        .new_client(&sessionid)
+        .new_client(&sessionid, &tenant_id)
         .await)
 }
 
@@ -186,6 +205,7 @@ pub async fn register_sse_client(
 pub struct SSEEvent {
     pub criticality: Criticality,
     pub message: Message,
+    pub tenant_id: Option<String>,
 }
 
 #[derive(Serialize, Debug, Deserialize)]

@@ -22,20 +22,27 @@ use crate::event::format::LogSource;
 use crate::event::format::LogSourceEntry;
 use crate::event::format::json;
 use crate::handlers::TelemetryType;
+use crate::handlers::http::cluster::send_query_request;
 use crate::handlers::http::ingest::PostError;
 use crate::handlers::http::query::Query;
 use crate::handlers::http::query::QueryError;
 use crate::handlers::http::query::query;
 use crate::metadata::SchemaVersion;
+use crate::option::Mode;
 use crate::parseable::PARSEABLE;
 use crate::query::QUERY_SESSION_STATE;
 use crate::storage::ObjectStorageError;
 use crate::storage::StreamType;
+use crate::tenants::TENANT_METADATA;
+use crate::utils::get_tenant_id_from_request;
 use crate::utils::json::apply_generic_flattening_for_partition;
 use actix_web::HttpRequest;
 use actix_web::HttpResponse;
 use actix_web::Responder;
 use actix_web::body::MessageBody;
+use actix_web::http::header::HeaderMap;
+use actix_web::http::header::HeaderName;
+use actix_web::http::header::HeaderValue;
 use actix_web::web::Json;
 use arrow_array::Array;
 use arrow_array::BinaryArray;
@@ -64,6 +71,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Debug;
 use std::path::Path;
+use tracing::error;
 use tracing::trace;
 use tracing::warn;
 use ulid::Ulid;
@@ -100,6 +108,7 @@ pub async fn calculate_field_stats(
     parquet_path: &Path,
     schema: &Schema,
     max_field_statistics: usize,
+    tenant_id: &Option<String>,
 ) -> Result<bool, PostError> {
     //create datetime from timestamp present in parquet path
     let parquet_ts = extract_datetime_from_parquet_path_regex(parquet_path).map_err(|e| {
@@ -109,7 +118,9 @@ pub async fn calculate_field_stats(
         ))
     })?;
     let field_stats = {
-        let ctx = SessionContext::new_with_state(QUERY_SESSION_STATE.clone());
+        let session_state = QUERY_SESSION_STATE.clone();
+
+        let ctx = SessionContext::new_with_state(session_state);
         let table_name = Ulid::new().to_string();
         ctx.register_parquet(
             &table_name,
@@ -142,6 +153,7 @@ pub async fn calculate_field_stats(
             Some(&DATASET_STATS_CUSTOM_PARTITION.to_string()),
             vec![log_source_entry],
             TelemetryType::Logs,
+            tenant_id,
             None,
         )
         .await?;
@@ -156,7 +168,7 @@ pub async fn calculate_field_stats(
     for json in vec_json {
         let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
         let schema = PARSEABLE
-            .get_stream(DATASET_STATS_STREAM_NAME)?
+            .get_stream(DATASET_STATS_STREAM_NAME, tenant_id)?
             .get_schema_raw();
         json::Event {
             json,
@@ -173,6 +185,7 @@ pub async fn calculate_field_stats(
             StreamType::Internal,
             &p_custom_fields,
             TelemetryType::Logs,
+            tenant_id,
         )?
         .process()?;
     }
@@ -512,7 +525,7 @@ pub async fn get_dataset_stats(
 ) -> Result<impl Responder, QueryError> {
     let offset = dataset_stats_request.offset.unwrap_or(0);
     let limit = dataset_stats_request.limit.unwrap_or(5);
-
+    let tenant_id = get_tenant_id_from_request(&req);
     let sql = if dataset_stats_request.fields.is_empty() {
         build_stats_sql(&dataset_stats_request.dataset_name, None, offset, limit)
     } else {
@@ -535,17 +548,46 @@ pub async fn get_dataset_stats(
         send_null: false,
     };
 
-    let response = query(req, query_request).await?;
-    let body_bytes = response.into_body().try_into_bytes().map_err(|_| {
-        QueryError::CustomError("error in converting response to bytes".to_string())
-    })?;
+    let rows: Vec<QueryRow> = match &PARSEABLE.options.mode {
+        Mode::Query | Mode::All => {
+            let response = query(req, query_request).await?;
+            let body_bytes = response.into_body().try_into_bytes().map_err(|_| {
+                QueryError::CustomError("error in converting response to bytes".to_string())
+            })?;
 
-    let body_str = std::str::from_utf8(&body_bytes).map_err(|_| {
-        QueryError::CustomError("error in converting response bytes to string".to_string())
-    })?;
-
-    let rows: Vec<QueryRow> =
-        serde_json::from_str(body_str).map_err(|e| QueryError::CustomError(e.to_string()))?;
+            let body_str = std::str::from_utf8(&body_bytes).map_err(|_| {
+                QueryError::CustomError("error in converting response bytes to string".to_string())
+            })?;
+            serde_json::from_str(body_str).map_err(|e| QueryError::CustomError(e.to_string()))?
+        }
+        Mode::Prism => {
+            let auth = if let Some(tenant) = tenant_id.as_ref()
+                && let Some(header) = TENANT_METADATA.get_global_query_auth(tenant)
+            {
+                let mut map = HeaderMap::new();
+                map.insert(
+                    HeaderName::from_static("authorization"),
+                    HeaderValue::from_str(&header).unwrap(),
+                );
+                Some(map)
+            } else {
+                None
+            };
+            let response = match send_query_request(auth, &query_request, &tenant_id).await {
+                Ok((query_response, _)) => query_response,
+                Err(err) => {
+                    error!("{:?}", err);
+                    return Err(err);
+                }
+            };
+            serde_json::from_value(response).map_err(|e| QueryError::CustomError(e.to_string()))?
+        }
+        _ => {
+            return Err(QueryError::CustomError(
+                "Dataset Stats not allowed on this server mode".into(),
+            ));
+        }
+    };
 
     let field_stats = transform_query_results(rows)?;
     let response = HttpResponse::Ok().json(field_stats);

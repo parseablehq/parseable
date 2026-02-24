@@ -182,6 +182,7 @@ impl EventFormat for Event {
         stream_type: StreamType,
         p_custom_fields: &HashMap<String, String>,
         telemetry_type: TelemetryType,
+        tenant_id: &Option<String>,
     ) -> Result<super::Event, anyhow::Error> {
         let custom_partition_values = match custom_partitions.as_ref() {
             Some(custom_partition) => {
@@ -215,6 +216,7 @@ impl EventFormat for Event {
             custom_partition_values,
             stream_type,
             telemetry_type,
+            tenant_id: tenant_id.to_owned(),
         })
     }
 }

@@ -20,10 +20,10 @@
 use std::future::{Ready, ready};
 
 use actix_web::{
-    Error, HttpMessage, Route,
+    Error, HttpMessage, HttpRequest, Route,
     dev::{Service, ServiceRequest, ServiceResponse, Transform, forward_ready},
     error::{ErrorBadRequest, ErrorForbidden, ErrorUnauthorized},
-    http::header::{self, HeaderName},
+    http::header::{self, HeaderName, HeaderValue},
 };
 use chrono::{Duration, Utc};
 use futures_util::future::LocalBoxFuture;
@@ -31,17 +31,18 @@ use futures_util::future::LocalBoxFuture;
 use crate::{
     handlers::{
         AUTHORIZATION_KEY, KINESIS_COMMON_ATTRIBUTES_KEY, LOG_SOURCE_KEY, LOG_SOURCE_KINESIS,
-        STREAM_NAME_HEADER_KEY,
-        http::{modal::OIDC_CLIENT, rbac::RBACError},
+        STREAM_NAME_HEADER_KEY, TENANT_ID,
+        http::{ingest::PostError, modal::OIDC_CLIENT, rbac::RBACError},
     },
     option::Mode,
-    parseable::PARSEABLE,
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::{
         EXPIRY_DURATION,
         map::{SessionKey, mut_sessions, mut_users, sessions, users},
         roles_to_permission, user,
     },
-    utils::get_user_from_request,
+    tenants::TENANT_METADATA,
+    utils::{get_user_and_tenant_from_request, get_user_from_request},
 };
 use crate::{
     rbac::Users,
@@ -163,14 +164,30 @@ where
                 header::HeaderValue::from_static(LOG_SOURCE_KINESIS),
             );
         }
-
         /* ## Section end */
+        // if action is Ingest and multi-tenancy is on, then request MUST have tenant id
+        // else check for the presence of tenant id using other details
+
+        // an optional error to track the presence of CORRECT tenant header in case of ingestion
+        let mut header_error = None;
+        let user_and_tenant_id = get_user_and_tenant(&self.action, &mut req, &mut header_error);
+
+        let key: Result<SessionKey, Error> = extract_session_key(&mut req);
+
+        // if action is ingestion, check if tenant is correct for basic auth user
+        if self.action.eq(&Action::Ingest)
+            && let Ok(key) = &key
+            && let SessionKey::BasicAuth { username, password } = &key
+            && let Ok((_, tenant)) = &user_and_tenant_id
+            && let Some(tenant) = tenant.as_ref()
+            && !Users.validate_basic_user_tenant_id(username, password, tenant)
+        {
+            header_error = Some(actix_web::Error::from(PostError::Header(
+                crate::utils::header_parsing::ParseHeaderError::InvalidTenantId,
+            )));
+        }
 
         let auth_result: Result<_, Error> = (self.auth_method)(&mut req, self.action);
-
-        let http_req = req.request().clone();
-        let key: Result<SessionKey, Error> = extract_session_key(&mut req);
-        let userid: Result<String, RBACError> = get_user_from_request(&http_req);
 
         let fut = self.service.call(req);
         Box::pin(async move {
@@ -180,86 +197,13 @@ where
                 ));
             };
 
+            if let Some(err) = header_error {
+                return Err(err);
+            }
+
             // if session is expired, refresh token
             if sessions().is_session_expired(&key) {
-                let oidc_client = OIDC_CLIENT.get();
-
-                if let Some(client) = oidc_client
-                    && let Ok(userid) = userid
-                {
-                    let bearer_to_refresh = {
-                        if let Some(user) = users().get(&userid) {
-                            match &user.ty {
-                                user::UserType::OAuth(oauth) if oauth.bearer.is_some() => {
-                                    Some(oauth.clone())
-                                }
-                                _ => None,
-                            }
-                        } else {
-                            None
-                        }
-                    };
-
-                    if let Some(oauth_data) = bearer_to_refresh {
-                        let refreshed_token = match client
-                            .read()
-                            .await
-                            .client()
-                            .refresh_token(&oauth_data, Some(PARSEABLE.options.scope.as_str()))
-                            .await
-                        {
-                            Ok(bearer) => bearer,
-                            Err(e) => {
-                                tracing::error!("client refresh_token call failed- {e}");
-                                // remove user session
-                                Users.remove_session(&key);
-                                return Err(ErrorUnauthorized(
-                                    "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
-                                ));
-                            }
-                        };
-
-                        let expires_in =
-                            if let Some(expires_in) = refreshed_token.expires_in.as_ref() {
-                                if *expires_in > u32::MAX.into() {
-                                    EXPIRY_DURATION
-                                } else {
-                                    let v = i64::from(*expires_in as u32);
-                                    Duration::seconds(v)
-                                }
-                            } else {
-                                EXPIRY_DURATION
-                            };
-
-                        let user_roles = {
-                            let mut users_guard = mut_users();
-                            if let Some(user) = users_guard.get_mut(&userid) {
-                                if let user::UserType::OAuth(oauth) = &mut user.ty {
-                                    oauth.bearer = Some(refreshed_token);
-                                }
-                                user.roles().to_vec()
-                            } else {
-                                return Err(ErrorUnauthorized(
-                                    "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
-                                ));
-                            }
-                        };
-
-                        mut_sessions().track_new(
-                            userid.clone(),
-                            key.clone(),
-                            Utc::now() + expires_in,
-                            roles_to_permission(user_roles),
-                        );
-                    } else if let Some(user) = users().get(&userid) {
-                        mut_sessions().track_new(
-                            userid.clone(),
-                            key.clone(),
-                            Utc::now() + EXPIRY_DURATION,
-                            roles_to_permission(user.roles()),
-                        );
-                    }
-                }
+                refresh_token(user_and_tenant_id, &key).await?;
             }
 
             match auth_result? {
@@ -273,6 +217,9 @@ where
                         "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
                     ));
                 }
+                rbac::Response::Suspended(msg) => {
+                    return Err(ErrorBadRequest(msg));
+                }
                 _ => {}
             }
 
@@ -281,7 +228,176 @@ where
     }
 }
 
+#[inline]
+fn get_user_and_tenant(
+    action: &Action,
+    request: &mut ServiceRequest,
+    header_error: &mut Option<Error>,
+) -> Result<(Result<String, RBACError>, Option<String>), RBACError> {
+    if PARSEABLE.options.is_multi_tenant() {
+        // if ingestion then tenant MUST be present and should not be DEFAULT_TENANT
+        let tenant = if action.eq(&Action::Ingest) {
+            if let Some(tenant) = request.headers().get(TENANT_ID)
+                && let Ok(tenant) = tenant.to_str()
+            {
+                if tenant.eq(DEFAULT_TENANT) {
+                    *header_error = Some(actix_web::Error::from(PostError::Header(
+                        crate::utils::header_parsing::ParseHeaderError::InvalidTenantId,
+                    )));
+                }
+                Some(tenant.to_owned())
+            } else {
+                // tenant header is not present, error out
+                *header_error = Some(actix_web::Error::from(PostError::Header(
+                    crate::utils::header_parsing::ParseHeaderError::MissingTenantId,
+                )));
+                None
+            }
+        } else if action.eq(&Action::SuperAdmin) || action.eq(&Action::Login) {
+            None
+        } else {
+            // tenant header should not be present, modify request to add
+            let mut t = None;
+            if let Ok((_, tenant)) = get_user_and_tenant_from_request(request.request())
+                && let Some(tid) = tenant.as_ref()
+            {
+                request.headers_mut().insert(
+                    HeaderName::from_static(TENANT_ID),
+                    HeaderValue::from_str(tid).unwrap(),
+                );
+                t = tenant;
+            } else {
+                // remove the header if already present
+                request.headers_mut().remove(TENANT_ID);
+            }
+            t
+        };
+        let userid = get_user_from_request(request.request());
+        Ok((userid, tenant))
+    } else {
+        // not multi-tenant, tenant header should NOT be present
+        if request.headers().get(TENANT_ID).is_some() {
+            *header_error = Some(actix_web::Error::from(PostError::Header(
+                crate::utils::header_parsing::ParseHeaderError::UnexpectedHeader(TENANT_ID.into()),
+            )));
+        }
+        let userid = get_user_from_request(request.request());
+        Ok((userid, None))
+    }
+}
+
+#[inline]
+pub async fn refresh_token(
+    user_and_tenant_id: Result<(Result<String, RBACError>, Option<String>), RBACError>,
+    key: &SessionKey,
+) -> Result<(), Error> {
+    let oidc_client = OIDC_CLIENT.get();
+
+    if let Some(client) = oidc_client
+        && let Ok((userid, tenant_id)) = user_and_tenant_id
+        && let Ok(userid) = userid
+    {
+        let bearer_to_refresh = {
+            if let Some(users) = users().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+                && let Some(user) = users.get(&userid)
+            {
+                match &user.ty {
+                    user::UserType::OAuth(oauth) if oauth.bearer.is_some() => Some(oauth.clone()),
+                    _ => None,
+                }
+            } else {
+                None
+            }
+        };
+
+        if let Some(oauth_data) = bearer_to_refresh {
+            let refreshed_token = match client
+                .read()
+                .await
+                .client()
+                .refresh_token(&oauth_data, Some(PARSEABLE.options.scope.as_str()))
+                .await
+            {
+                Ok(bearer) => bearer,
+                Err(e) => {
+                    tracing::error!("client refresh_token call failed- {e}");
+                    // remove user session
+                    Users.remove_session(key);
+                    return Err(ErrorUnauthorized(
+                        "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
+                    ));
+                }
+            };
+
+            let expires_in = if let Some(expires_in) = refreshed_token.expires_in.as_ref() {
+                if *expires_in > u32::MAX.into() {
+                    EXPIRY_DURATION
+                } else {
+                    let v = i64::from(*expires_in as u32);
+                    Duration::seconds(v)
+                }
+            } else {
+                EXPIRY_DURATION
+            };
+
+            let user_roles = {
+                let mut users_guard = mut_users();
+                if let Some(users) =
+                    users_guard.get_mut(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+                    && let Some(user) = users.get_mut(&userid)
+                {
+                    if let user::UserType::OAuth(oauth) = &mut user.ty {
+                        oauth.bearer = Some(refreshed_token);
+                    }
+                    user.roles().to_vec()
+                } else {
+                    return Err(ErrorUnauthorized(
+                        "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
+                    ));
+                }
+            };
+
+            mut_sessions().track_new(
+                userid.clone(),
+                key.clone(),
+                Utc::now() + expires_in,
+                roles_to_permission(user_roles, tenant_id.as_deref().unwrap_or(DEFAULT_TENANT)),
+                &tenant_id,
+            );
+        } else if let Some(users) = users().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+            && let Some(user) = users.get(&userid)
+        {
+            mut_sessions().track_new(
+                userid.clone(),
+                key.clone(),
+                Utc::now() + EXPIRY_DURATION,
+                roles_to_permission(user.roles(), tenant_id.as_deref().unwrap_or(DEFAULT_TENANT)),
+                &tenant_id,
+            );
+        }
+    }
+    Ok(())
+}
+
+#[inline(always)]
+pub fn check_suspension(req: &HttpRequest, action: Action) -> rbac::Response {
+    if let Some(tenant) = req.headers().get(TENANT_ID)
+        && let Ok(tenant) = tenant.to_str()
+    {
+        if let Ok(Some(suspension)) = TENANT_METADATA.is_action_suspended(tenant, &action) {
+            return rbac::Response::Suspended(suspension);
+        } else {
+            // tenant does not exist
+        }
+    }
+    rbac::Response::Authorized
+}
+
 pub fn auth_no_context(req: &mut ServiceRequest, action: Action) -> Result<rbac::Response, Error> {
+    // check if tenant is suspended
+    if let rbac::Response::Suspended(msg) = check_suspension(req.request(), action) {
+        return Ok(rbac::Response::Suspended(msg));
+    }
     let creds = extract_session_key(req);
     creds.map(|key| Users.authorize(key, action, None, None))
 }
@@ -290,6 +406,10 @@ pub fn auth_resource_context(
     req: &mut ServiceRequest,
     action: Action,
 ) -> Result<rbac::Response, Error> {
+    // check if tenant is suspended
+    if let rbac::Response::Suspended(msg) = check_suspension(req.request(), action) {
+        return Ok(rbac::Response::Suspended(msg));
+    }
     let creds = extract_session_key(req);
     let usergroup = req.match_info().get("usergroup");
     let llmid = req.match_info().get("llmid");
@@ -312,6 +432,10 @@ pub fn auth_user_context(
     req: &mut ServiceRequest,
     action: Action,
 ) -> Result<rbac::Response, Error> {
+    // check if tenant is suspended
+    if let rbac::Response::Suspended(msg) = check_suspension(req.request(), action) {
+        return Ok(rbac::Response::Suspended(msg));
+    }
     let creds = extract_session_key(req);
     let user = req.match_info().get("username");
     creds.map(|key| Users.authorize(key, action, None, user))

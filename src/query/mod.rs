@@ -50,8 +50,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::ops::Bound;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 use sysinfo::System;
 use tokio::runtime::Runtime;
@@ -69,12 +69,12 @@ use crate::event::DEFAULT_TIMESTAMP_KEY;
 use crate::handlers::http::query::QueryError;
 use crate::metrics::increment_bytes_scanned_in_query_by_date;
 use crate::option::Mode;
-use crate::parseable::PARSEABLE;
+use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
 use crate::storage::{ObjectStorageProvider, ObjectStoreFormat};
 use crate::utils::time::TimeRange;
 
-pub static QUERY_SESSION: Lazy<SessionContext> =
-    Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
+// pub static QUERY_SESSION: Lazy<SessionContext> =
+//     Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
 
 pub static QUERY_SESSION_STATE: Lazy<SessionState> =
     Lazy::new(|| Query::create_session_state(PARSEABLE.storage()));
@@ -83,11 +83,49 @@ pub static QUERY_SESSION_STATE: Lazy<SessionState> =
 pub static QUERY_RUNTIME: Lazy<Runtime> =
     Lazy::new(|| Runtime::new().expect("Runtime should be constructible"));
 
+pub static QUERY_SESSION: Lazy<InMemorySessionContext> = Lazy::new(|| {
+    let ctx = Query::create_session_context(PARSEABLE.storage());
+    InMemorySessionContext {
+        session_context: Arc::new(RwLock::new(ctx)),
+    }
+});
+
+pub struct InMemorySessionContext {
+    session_context: Arc<RwLock<SessionContext>>,
+}
+
+impl InMemorySessionContext {
+    pub fn get_ctx(&self) -> SessionContext {
+        let ctx = self
+            .session_context
+            .read()
+            .expect("SessionContext should be readable");
+        ctx.clone()
+    }
+
+    pub fn add_schema(&self, tenant_id: &str) {
+        self.session_context
+            .write()
+            .expect("SessionContext should be writeable")
+            .catalog("datafusion")
+            .expect("Default catalog should be available")
+            .register_schema(
+                tenant_id,
+                Arc::new(GlobalSchemaProvider {
+                    storage: PARSEABLE.storage().get_object_store(),
+                    tenant_id: Some(tenant_id.to_owned()),
+                }),
+            )
+            .expect("Should be able to register new schema");
+    }
+}
+
 /// This function executes a query on the dedicated runtime, ensuring that the query is not isolated to a single thread/CPU
 /// at a time and has access to the entire thread pool, enabling better concurrent processing, and thus quicker results.
 pub async fn execute(
     query: Query,
     is_streaming: bool,
+    tenant_id: &Option<String>,
 ) -> Result<
     (
         Either<
@@ -115,8 +153,9 @@ pub async fn execute(
     ),
     ExecuteError,
 > {
+    let id = tenant_id.clone();
     QUERY_RUNTIME
-        .spawn(async move { query.execute(is_streaming).await })
+        .spawn(async move { query.execute(is_streaming, &id).await })
         .await
         .expect("The Join should have been successful")
 }
@@ -134,18 +173,34 @@ impl Query {
     pub fn create_session_context(storage: Arc<dyn ObjectStorageProvider>) -> SessionContext {
         let state = Self::create_session_state(storage.clone());
 
-        let schema_provider = Arc::new(GlobalSchemaProvider {
-            storage: storage.get_object_store(),
-        });
-        state
+        let catalog = state
             .catalog_list()
             .catalog(&state.config_options().catalog.default_catalog)
-            .expect("default catalog is provided by datafusion")
-            .register_schema(
+            .expect("default catalog is provided by datafusion");
+
+        // create one schema for each tenant
+        if PARSEABLE.options.is_multi_tenant() {
+            // register multiple schemas
+            if let Some(tenants) = PARSEABLE.list_tenants() {
+                for t in tenants.iter() {
+                    let schema_provider = Arc::new(GlobalSchemaProvider {
+                        storage: storage.get_object_store(),
+                        tenant_id: Some(t.clone()),
+                    });
+                    let _ = catalog.register_schema(t, schema_provider);
+                }
+            }
+        } else {
+            // register just one schema
+            let schema_provider = Arc::new(GlobalSchemaProvider {
+                storage: storage.get_object_store(),
+                tenant_id: None,
+            });
+            let _ = catalog.register_schema(
                 &state.config_options().catalog.default_schema,
                 schema_provider,
-            )
-            .unwrap();
+            );
+        }
 
         SessionContext::new_with_state(state)
     }
@@ -209,6 +264,7 @@ impl Query {
     pub async fn execute(
         &self,
         is_streaming: bool,
+        tenant_id: &Option<String>,
     ) -> Result<
         (
             Either<
@@ -237,9 +293,10 @@ impl Query {
         ExecuteError,
     > {
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan())
+            .get_ctx()
+            .execute_logical_plan(self.final_logical_plan(tenant_id))
             .await?;
-
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let fields = df
             .schema()
             .fields()
@@ -253,12 +310,13 @@ impl Query {
         }
 
         let plan = QUERY_SESSION
+            .get_ctx()
             .state()
             .create_physical_plan(df.logical_plan())
             .await?;
 
         let results = if !is_streaming {
-            let task_ctx = QUERY_SESSION.task_ctx();
+            let task_ctx = QUERY_SESSION.get_ctx().task_ctx();
 
             let batches = collect_partitioned(plan.clone(), task_ctx.clone())
                 .await?
@@ -270,11 +328,11 @@ impl Query {
 
             // Track billing metrics for query scan
             let current_date = chrono::Utc::now().date_naive().to_string();
-            increment_bytes_scanned_in_query_by_date(actual_io_bytes, &current_date);
+            increment_bytes_scanned_in_query_by_date(actual_io_bytes, &current_date, tenant);
 
             Either::Left(batches)
         } else {
-            let task_ctx = QUERY_SESSION.task_ctx();
+            let task_ctx = QUERY_SESSION.get_ctx().task_ctx();
 
             let output_partitions = plan.output_partitioning().partition_count();
 
@@ -286,7 +344,8 @@ impl Query {
             let streams = execute_stream_partitioned(plan.clone(), task_ctx.clone())?
                 .into_iter()
                 .map(|s| {
-                    let wrapped = PartitionedMetricMonitor::new(s, monitor_state.clone());
+                    let wrapped =
+                        PartitionedMetricMonitor::new(s, monitor_state.clone(), tenant_id.clone());
                     Box::pin(wrapped) as SendableRecordBatchStream
                 })
                 .collect_vec();
@@ -300,16 +359,20 @@ impl Query {
         Ok((results, fields))
     }
 
-    pub async fn get_dataframe(&self) -> Result<DataFrame, ExecuteError> {
+    pub async fn get_dataframe(
+        &self,
+        tenant_id: &Option<String>,
+    ) -> Result<DataFrame, ExecuteError> {
         let df = QUERY_SESSION
-            .execute_logical_plan(self.final_logical_plan())
+            .get_ctx()
+            .execute_logical_plan(self.final_logical_plan(tenant_id))
             .await?;
 
         Ok(df)
     }
 
     /// return logical plan with all time filters applied through
-    fn final_logical_plan(&self) -> LogicalPlan {
+    fn final_logical_plan(&self, tenant_id: &Option<String>) -> LogicalPlan {
         // see https://github.com/apache/arrow-datafusion/pull/8400
         // this can be eliminated in later version of datafusion but with slight caveat
         // transform cannot modify stringified plans by itself
@@ -321,6 +384,7 @@ impl Query {
                     plan.plan.as_ref().clone(),
                     self.time_range.start.naive_utc(),
                     self.time_range.end.naive_utc(),
+                    tenant_id,
                 );
                 LogicalPlan::Explain(Explain {
                     explain_format: plan.explain_format,
@@ -340,6 +404,7 @@ impl Query {
                     x,
                     self.time_range.start.naive_utc(),
                     self.time_range.end.naive_utc(),
+                    tenant_id,
                 )
                 .data
             }
@@ -450,16 +515,18 @@ impl CountsRequest {
     /// This function is supposed to read maninfest files for the given stream,
     /// get the sum of `num_rows` between the `startTime` and `endTime`,
     /// divide that by number of bins and return in a manner acceptable for the console
-    pub async fn get_bin_density(&self) -> Result<Vec<CountsRecord>, QueryError> {
+    pub async fn get_bin_density(
+        &self,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<CountsRecord>, QueryError> {
         let time_partition = PARSEABLE
-            .get_stream(&self.stream)
+            .get_stream(&self.stream, tenant_id)
             .map_err(|err| anyhow::Error::msg(err.to_string()))?
             .get_time_partition()
             .unwrap_or_else(|| DEFAULT_TIMESTAMP_KEY.to_owned());
-
         // get time range
         let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
-        let all_manifest_files = get_manifest_list(&self.stream, &time_range).await?;
+        let all_manifest_files = get_manifest_list(&self.stream, &time_range, tenant_id).await?;
         // get bounds
         let counts = self.get_bounds(&time_range);
 
@@ -644,12 +711,13 @@ pub fn resolve_stream_names(sql: &str) -> Result<Vec<String>, anyhow::Error> {
 pub async fn get_manifest_list(
     stream_name: &str,
     time_range: &TimeRange,
+    tenant_id: &Option<String>,
 ) -> Result<Vec<Manifest>, QueryError> {
     // get object store
     let object_store_format: ObjectStoreFormat = serde_json::from_slice(
         &PARSEABLE
             .metastore
-            .get_stream_json(stream_name, false)
+            .get_stream_json(stream_name, false, tenant_id)
             .await?,
     )?;
 
@@ -660,7 +728,7 @@ pub async fn get_manifest_list(
     if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
         let obs = PARSEABLE
             .metastore
-            .get_all_stream_jsons(stream_name, None)
+            .get_all_stream_jsons(stream_name, None, tenant_id)
             .await;
         if let Ok(obs) = obs {
             for ob in obs {
@@ -691,6 +759,7 @@ pub async fn get_manifest_list(
                 manifest_item.time_lower_bound,
                 manifest_item.time_upper_bound,
                 Some(manifest_item.manifest_path.clone()),
+                tenant_id,
             )
             .await?;
         let manifest = manifest_opt.ok_or_else(|| {
@@ -711,13 +780,14 @@ fn transform(
     plan: LogicalPlan,
     start_time: NaiveDateTime,
     end_time: NaiveDateTime,
+    tenant_id: &Option<String>,
 ) -> Transformed<LogicalPlan> {
     plan.transform_up_with_subqueries(&|plan| {
         match plan {
             LogicalPlan::TableScan(table) => {
                 // Get the specific time partition for this stream
                 let time_partition = PARSEABLE
-                    .get_stream(&table.table_name.to_string())
+                    .get_stream(&table.table_name.to_string(), tenant_id)
                     .ok()
                     .and_then(|stream| stream.get_time_partition());
 
@@ -863,16 +933,23 @@ pub struct PartitionedMetricMonitor {
     inner: SendableRecordBatchStream,
     /// State of the streams
     state: Arc<MonitorState>,
-    // Ensure we only emit metrics once even if polled after completion/error
+    /// Ensure we only emit metrics once even if polled after completion/error
     is_finished: bool,
+    /// tenant id
+    tenant_id: Option<String>,
 }
 
 impl PartitionedMetricMonitor {
-    fn new(inner: SendableRecordBatchStream, state: Arc<MonitorState>) -> Self {
+    fn new(
+        inner: SendableRecordBatchStream,
+        state: Arc<MonitorState>,
+        tenant_id: Option<String>,
+    ) -> Self {
         Self {
             inner,
             state,
             is_finished: false,
+            tenant_id,
         }
     }
 }
@@ -922,7 +999,11 @@ impl PartitionedMetricMonitor {
         if prev_count == 1 {
             let bytes = get_total_bytes_scanned(&self.state.plan);
             let current_date = chrono::Utc::now().date_naive().to_string();
-            increment_bytes_scanned_in_query_by_date(bytes, &current_date);
+            increment_bytes_scanned_in_query_by_date(
+                bytes,
+                &current_date,
+                self.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
+            );
         }
     }
 }
