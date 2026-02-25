@@ -73,17 +73,3 @@ jobs:
 
       - name: Generate coverage report
         run: cargo llvm-cov report --lcov --output-path coverage.lcov
-
-      - name: Upload Coverage Report
-        uses: coverallsapp/github-action@v2.2.3
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          file: ./coverage.lcov
-          parallel: true
-          flag-name: run-${{ matrix.os }}-cargo
-
-      - name: Finish Coverage Report
-        uses: coverallsapp/github-action@v2.2.3
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          parallel-finished: true
