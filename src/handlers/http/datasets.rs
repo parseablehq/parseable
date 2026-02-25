@@ -112,77 +112,56 @@ pub async fn get_datasets_by_tag(path: web::Path<String>) -> Result<HttpResponse
 }
 
 #[derive(Debug, Deserialize)]
-pub struct PutTagsBody {
-    pub tags: Vec<DatasetTag>,
+pub struct PutDatasetMetadataBody {
+    pub tags: Option<Vec<DatasetTag>>,
+    pub labels: Option<Vec<String>>,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct PutLabelsBody {
-    pub labels: Vec<String>,
-}
-
-/// PUT /api/v1/datasets/{name}/tags
-/// Replaces the dataset's tags with the provided list.
-pub async fn put_dataset_tags(
+/// PUT /api/v1/datasets/{name}
+/// Replaces the dataset's tags and/or labels.
+/// Only fields present in the body are updated; absent fields are left unchanged.
+pub async fn put_dataset_metadata(
     path: web::Path<String>,
-    body: web::Json<PutTagsBody>,
+    body: web::Json<PutDatasetMetadataBody>,
 ) -> Result<HttpResponse, DatasetsError> {
     let dataset_name = path.into_inner();
-    let new_tags: Vec<DatasetTag> = body
-        .into_inner()
-        .tags
-        .into_iter()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
+    let body = body.into_inner();
 
     let stream = PARSEABLE
         .get_stream(&dataset_name)
         .map_err(|_| DatasetsError::DatasetNotFound(dataset_name.clone()))?;
 
-    // Update storage first, then in-memory
-    let storage = PARSEABLE.storage.get_object_store();
-    let existing_labels = stream.get_dataset_labels();
-    storage
-        .update_dataset_tags_and_labels_in_stream(&dataset_name, &new_tags, &existing_labels)
-        .await
-        .map_err(DatasetsError::Storage)?;
-
-    stream.set_dataset_tags(new_tags.clone());
-
-    Ok(HttpResponse::Ok().json(serde_json::json!({ "tags": new_tags })))
-}
-
-/// PUT /api/v1/datasets/{name}/labels
-/// Replaces the dataset's labels with the provided list.
-pub async fn put_dataset_labels(
-    path: web::Path<String>,
-    body: web::Json<PutLabelsBody>,
-) -> Result<HttpResponse, DatasetsError> {
-    let dataset_name = path.into_inner();
-    let new_labels: Vec<String> = body
-        .into_inner()
-        .labels
-        .into_iter()
-        .collect::<HashSet<_>>()
-        .into_iter()
-        .collect();
-
-    let stream = PARSEABLE
-        .get_stream(&dataset_name)
-        .map_err(|_| DatasetsError::DatasetNotFound(dataset_name.clone()))?;
+    let final_tags = match body.tags {
+        Some(tags) => tags
+            .into_iter()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect(),
+        None => stream.get_dataset_tags(),
+    };
+    let final_labels = match body.labels {
+        Some(labels) => labels
+            .into_iter()
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect(),
+        None => stream.get_dataset_labels(),
+    };
 
     // Update storage first, then in-memory
     let storage = PARSEABLE.storage.get_object_store();
-    let existing_tags = stream.get_dataset_tags();
     storage
-        .update_dataset_tags_and_labels_in_stream(&dataset_name, &existing_tags, &new_labels)
+        .update_dataset_tags_and_labels_in_stream(&dataset_name, &final_tags, &final_labels)
         .await
         .map_err(DatasetsError::Storage)?;
 
-    stream.set_dataset_labels(new_labels.clone());
+    stream.set_dataset_tags(final_tags.clone());
+    stream.set_dataset_labels(final_labels.clone());
 
-    Ok(HttpResponse::Ok().json(serde_json::json!({ "labels": new_labels })))
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "tags": final_tags,
+        "labels": final_labels,
+    })))
 }
 
 #[derive(Debug, thiserror::Error)]
