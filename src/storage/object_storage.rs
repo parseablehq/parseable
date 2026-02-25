@@ -501,11 +501,12 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         stream_name: &str,
         tags: &[DatasetTag],
         labels: &[String],
+        tenant_id: &Option<String>,
     ) -> Result<(), ObjectStorageError> {
         let mut format: ObjectStoreFormat = serde_json::from_slice(
             &PARSEABLE
                 .metastore
-                .get_stream_json(stream_name, false)
+                .get_stream_json(stream_name, false, tenant_id)
                 .await
                 .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
         )?;
@@ -513,7 +514,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         format.dataset_labels = labels.to_owned();
         PARSEABLE
             .metastore
-            .put_stream_json(&format, stream_name)
+            .put_stream_json(&format, stream_name, tenant_id)
             .await
             .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
