@@ -110,8 +110,7 @@ fn category_from_body(body_str: &str) -> &'static str {
     LOG_CATEGORIES
         .iter()
         .find(|(pattern, _)| contains_ignore_ascii_case(body_str, pattern))
-        .map(|(_, label)| *label)
-        .unwrap_or("UNSPECIFIED")
+        .map_or("UNSPECIFIED", |(_, label)| *label)
 }
 
 /// this function flattens the `LogRecord` object
@@ -175,11 +174,13 @@ pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
         }
     }
 
+    insert_attributes(&mut log_record_json, &log_record.attributes);
+
+    // Insert after attributes so a client-sent "p_log_category" cannot override
     log_record_json.insert(
         "p_log_category".to_string(),
         Value::String(log_category.unwrap_or("UNSPECIFIED").to_string()),
     );
-    insert_attributes(&mut log_record_json, &log_record.attributes);
     log_record_json.insert(
         "log_record_dropped_attributes_count".to_string(),
         Value::Number(log_record.dropped_attributes_count.into()),
