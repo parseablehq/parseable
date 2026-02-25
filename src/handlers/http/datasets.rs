@@ -19,9 +19,10 @@
 use std::collections::HashSet;
 
 use actix_web::http::StatusCode;
-use actix_web::{HttpResponse, web};
+use actix_web::{HttpRequest, HttpResponse, web};
 use serde::{Deserialize, Serialize};
 
+use crate::utils::get_tenant_id_from_request;
 use crate::{
     handlers::DatasetTag,
     parseable::PARSEABLE,
@@ -39,12 +40,13 @@ struct CorrelatedDataset {
 /// GET /api/v1/datasets/{name}/correlated
 /// Returns all datasets sharing at least one tag or label with the named dataset.
 pub async fn get_correlated_datasets(
+    req: HttpRequest,
     path: web::Path<String>,
 ) -> Result<HttpResponse, DatasetsError> {
     let dataset_name = path.into_inner();
-
+    let tenant_id = get_tenant_id_from_request(&req);
     let stream = PARSEABLE
-        .get_stream(&dataset_name)
+        .get_stream(&dataset_name, &tenant_id)
         .map_err(|_| DatasetsError::DatasetNotFound(dataset_name.clone()))?;
 
     let target_tags: HashSet<DatasetTag> = stream.get_dataset_tags().into_iter().collect();
@@ -54,14 +56,14 @@ pub async fn get_correlated_datasets(
         return Ok(HttpResponse::Ok().json(Vec::<CorrelatedDataset>::new()));
     }
 
-    let all_streams = PARSEABLE.streams.list();
+    let all_streams = PARSEABLE.streams.list(&tenant_id);
     let mut correlated = Vec::new();
 
     for name in all_streams {
         if name == dataset_name {
             continue;
         }
-        if let Ok(s) = PARSEABLE.get_stream(&name) {
+        if let Ok(s) = PARSEABLE.get_stream(&name, &tenant_id) {
             // Skip internal streams
             if s.get_stream_type() == StreamType::Internal {
                 continue;
@@ -89,16 +91,20 @@ pub async fn get_correlated_datasets(
 
 /// GET /api/v1/datasets/tags/{tag}
 /// Returns all datasets that have the specified tag.
-pub async fn get_datasets_by_tag(path: web::Path<String>) -> Result<HttpResponse, DatasetsError> {
+pub async fn get_datasets_by_tag(
+    req: HttpRequest,
+    path: web::Path<String>,
+) -> Result<HttpResponse, DatasetsError> {
+    let tenant_id = get_tenant_id_from_request(&req);
     let tag_str = path.into_inner();
     let tag =
         DatasetTag::try_from(tag_str.as_str()).map_err(|_| DatasetsError::InvalidTag(tag_str))?;
 
-    let all_streams = PARSEABLE.streams.list();
+    let all_streams = PARSEABLE.streams.list(&tenant_id);
     let mut matching = Vec::new();
 
     for name in all_streams {
-        if let Ok(s) = PARSEABLE.get_stream(&name) {
+        if let Ok(s) = PARSEABLE.get_stream(&name, &tenant_id) {
             if s.get_stream_type() == StreamType::Internal {
                 continue;
             }
@@ -121,14 +127,16 @@ pub struct PutDatasetMetadataBody {
 /// Replaces the dataset's tags and/or labels.
 /// Only fields present in the body are updated; absent fields are left unchanged.
 pub async fn put_dataset_metadata(
+    req: HttpRequest,
     path: web::Path<String>,
     body: web::Json<PutDatasetMetadataBody>,
 ) -> Result<HttpResponse, DatasetsError> {
     let dataset_name = path.into_inner();
     let body = body.into_inner();
+    let tenant_id = get_tenant_id_from_request(&req);
 
     let stream = PARSEABLE
-        .get_stream(&dataset_name)
+        .get_stream(&dataset_name, &tenant_id)
         .map_err(|_| DatasetsError::DatasetNotFound(dataset_name.clone()))?;
 
     let final_tags = match body.tags {
@@ -151,7 +159,12 @@ pub async fn put_dataset_metadata(
     // Update storage first, then in-memory
     let storage = PARSEABLE.storage.get_object_store();
     storage
-        .update_dataset_tags_and_labels_in_stream(&dataset_name, &final_tags, &final_labels)
+        .update_dataset_tags_and_labels_in_stream(
+            &dataset_name,
+            &final_tags,
+            &final_labels,
+            &tenant_id,
+        )
         .await
         .map_err(DatasetsError::Storage)?;
 

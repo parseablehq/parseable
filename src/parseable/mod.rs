@@ -475,7 +475,8 @@ impl Parseable {
                     vec![log_source_entry.clone()],
                     TelemetryType::Logs,
                     &tenant_id,
-                    None,
+                    vec![],
+                    vec![]
                 )
                 .await;
 
