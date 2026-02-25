@@ -100,14 +100,14 @@ impl ParseableServer for Server {
                     .service(Self::get_alerts_webscope())
                     .service(Self::get_targets_webscope())
                     .service(Self::get_metrics_webscope())
-                    .service(Self::get_demo_data_webscope())
+                    .service(Self::get_demo_data_webscope()),
             )
             .service(
                 web::scope(&prism_base_path())
                     .service(Server::get_prism_home())
                     .service(Server::get_prism_logstream())
                     .service(Server::get_prism_datasets())
-                    .service(Self::get_dataset_stats_webscope())
+                    .service(Self::get_dataset_stats_webscope()),
             )
             .service(Self::get_ingest_otel_factory().wrap(from_fn(
                 resource_check::check_resource_utilization_middleware,
