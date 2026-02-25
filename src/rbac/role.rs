@@ -321,7 +321,7 @@ pub mod model {
 
     fn super_admin_perm_builder() -> RoleBuilder {
         RoleBuilder {
-            actions: vec![Action::SuperAdmin],
+            actions: vec![Action::SuperAdmin, Action::All],
             resource_type: Some(ParseableResourceType::All),
         }
     }

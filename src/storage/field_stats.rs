@@ -640,7 +640,10 @@ pub fn build_stats_sql(
                 .iter()
                 .map(|f| format!("'{}'", f.replace('\'', "''")))
                 .collect();
-            format!("AND  rv.field_name IN ({})", quoted_fields.join(", "))
+            format!(
+                "AND  field_stats_field_name IN ({})",
+                quoted_fields.join(", ")
+            )
         } else {
             String::default()
         }

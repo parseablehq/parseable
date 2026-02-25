@@ -267,7 +267,7 @@ fn verify_dataset_fields_count(
     let dataset_fields_warn_threshold = 0.8 * PARSEABLE.options.dataset_fields_allowed_limit as f64;
     // Check if the fields count exceeds the warn threshold
     if fields_count > dataset_fields_warn_threshold as usize {
-        tracing::warn!(
+        tracing::trace!(
             "Dataset {0} has {1} fields, which exceeds the warning threshold of {2}. Ingestion will not be possible after reaching {3} fields. We recommend creating a new dataset.",
             stream_name,
             fields_count,
