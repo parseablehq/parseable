@@ -3734,6 +3734,7 @@ dependencies = [
  "once_cell",
  "openid",
  "opentelemetry-proto",
+ "parking_lot",
  "parquet",
  "path-clean",
  "prometheus",

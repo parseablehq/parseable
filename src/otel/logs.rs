@@ -28,7 +28,7 @@ use opentelemetry_proto::tonic::logs::v1::SeverityNumber;
 use serde_json::Map;
 use serde_json::Value;
 
-pub const OTEL_LOG_KNOWN_FIELD_LIST: [&str; 16] = [
+pub const OTEL_LOG_KNOWN_FIELD_LIST: [&str; 17] = [
     "scope_name",
     "scope_version",
     "scope_log_schema_url",
@@ -45,6 +45,7 @@ pub const OTEL_LOG_KNOWN_FIELD_LIST: [&str; 16] = [
     "span_id",
     "trace_id",
     "event_name",
+    "p_log_category",
 ];
 /// otel log event has severity number
 /// there is a mapping of severity number to severity text provided in proto
@@ -70,6 +71,49 @@ fn flatten_severity(severity_number: i32) -> Map<String, Value> {
     severity_json
 }
 
+/// Maps OTel severity_number (0–24) to a log category.
+/// See https://opentelemetry.io/docs/specs/otel/logs/data-model/#severity-fields
+fn category_from_severity(severity_number: i32) -> Option<&'static str> {
+    match severity_number {
+        1..=4 => Some("TRACE"),
+        5..=8 => Some("DEBUG"),
+        9..=12 => Some("INFO"),
+        13..=16 => Some("WARN"),
+        17..=20 => Some("ERROR"),
+        21..=24 => Some("FATAL"),
+        _ => None, // 0 (Unspecified) or out of range
+    }
+}
+
+/// Fallback: case-insensitive partial match on the body string.
+/// Categories are ordered from most severe to least severe so the highest severity are checked first.
+const LOG_CATEGORIES: &[(&str, &str)] = &[
+    ("critical", "FATAL"),
+    ("fatal", "FATAL"),
+    ("error", "ERROR"),
+    ("warning", "WARN"),
+    ("warn", "WARN"),
+    ("info", "INFO"),
+    ("debug", "DEBUG"),
+    ("trace", "TRACE"),
+    ("verbose", "TRACE"),
+];
+
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+fn category_from_body(body_str: &str) -> &'static str {
+    LOG_CATEGORIES
+        .iter()
+        .find(|(pattern, _)| contains_ignore_ascii_case(body_str, pattern))
+        .map(|(_, label)| *label)
+        .unwrap_or("UNSPECIFIED")
+}
+
 /// this function flattens the `LogRecord` object
 /// and returns a `Map` of the flattened json
 /// this function is called recursively for each log record object in the otel logs
@@ -89,6 +133,9 @@ pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
     );
 
     log_record_json.extend(flatten_severity(log_record.severity_number));
+
+    // Primary: derive category from severity_number
+    let mut log_category = category_from_severity(log_record.severity_number);
 
     if log_record.body.is_some() {
         let body = &log_record.body;
@@ -113,7 +160,25 @@ pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
                 }
             }
         }
+
+        // Fallback: scan body only when severity_number is unset
+        if log_category.is_none() {
+            let body_str: String = body_json
+                .values()
+                .map(|v| match v {
+                    Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            log_category = Some(category_from_body(&body_str));
+        }
     }
+
+    log_record_json.insert(
+        "p_log_category".to_string(),
+        Value::String(log_category.unwrap_or("UNSPECIFIED").to_string()),
+    );
     insert_attributes(&mut log_record_json, &log_record.attributes);
     log_record_json.insert(
         "log_record_dropped_attributes_count".to_string(),
