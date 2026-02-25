@@ -220,15 +220,9 @@ impl Server {
                     .authorize_for_resource(Action::GetStreamInfo),
             )
             .route(
-                "/{name}/tags",
+                "/{name}",
                 web::put()
-                    .to(http::datasets::put_dataset_tags)
-                    .authorize_for_resource(Action::CreateStream),
-            )
-            .route(
-                "/{name}/labels",
-                web::put()
-                    .to(http::datasets::put_dataset_labels)
+                    .to(http::datasets::put_dataset_metadata)
                     .authorize_for_resource(Action::CreateStream),
             )
     }
