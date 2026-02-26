@@ -173,7 +173,6 @@ pub async fn user_auth_for_datasets(
                     Some(ParseableResourceType::Stream(stream)),
                 ) => {
                     if !PARSEABLE.check_or_load_stream(stream, tenant_id).await {
-                        tracing::warn!("unable to find stream");
                         return Err(actix_web::error::ErrorUnauthorized(format!(
                             "Stream not found: {table_name}"
                         )));
@@ -254,11 +253,14 @@ pub fn create_intracluster_auth_headermap(
             reqwest::header::AUTHORIZATION,
             reqwest::header::HeaderValue::from_bytes(auth.as_bytes()).unwrap(),
         );
-    } else if let Some(auth) = req.get(actix_web::http::header::COOKIE) {
-        map.insert(
-            reqwest::header::COOKIE,
-            reqwest::header::HeaderValue::from_bytes(auth.as_bytes()).unwrap(),
-        );
+    } else if req.contains_key(actix_web::http::header::COOKIE) {
+        // multiple cookies
+        for cookie in req.get_all(actix_web::http::header::COOKIE) {
+            map.insert(
+                reqwest::header::COOKIE,
+                reqwest::header::HeaderValue::from_bytes(cookie.as_bytes()).unwrap(),
+            );
+        }
     } else {
         map.insert(
             reqwest::header::AUTHORIZATION,
@@ -294,6 +296,36 @@ pub async fn login_sync(
                         "sessionCookie": _session,
                         "user": _user,
                         "expiry": _expiry
+                    }
+                ))
+                .send()
+                .await?;
+            Ok::<(), anyhow::Error>(())
+        }
+    })
+    .await
+}
+
+pub async fn logout_sync(
+    session: SessionKey,
+    tenant_id: &Option<String>,
+) -> Result<(), anyhow::Error> {
+    for_each_live_node(tenant_id, move |node| {
+        let url = format!(
+            "{}{}/o/logout/sync",
+            node.domain_name,
+            base_path_without_preceding_slash(),
+        );
+        let _session = session.clone();
+
+        async move {
+            INTRA_CLUSTER_CLIENT
+                .post(url)
+                .header(header::AUTHORIZATION, node.token)
+                .header(header::CONTENT_TYPE, "application/json")
+                .json(&json!(
+                    {
+                        "sessionKey": _session
                     }
                 ))
                 .send()

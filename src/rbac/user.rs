@@ -376,7 +376,6 @@ impl UserGroup {
             // validate that the users exist and no protected user is included
             if let Some(tenant_users) = users().get(tenant) {
                 for group_user in &self.users {
-                    tracing::warn!(group_user=?group_user);
                     if let Some(user) = tenant_users.get(group_user.userid())
                         && !user.protected
                         && user.tenant.eq(tenant_id)
