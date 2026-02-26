@@ -640,7 +640,10 @@ pub fn build_stats_sql(
                 .iter()
                 .map(|f| format!("'{}'", f.replace('\'', "''")))
                 .collect();
-            format!("AND  rv.field_name IN ({})", quoted_fields.join(", "))
+            format!(
+                "AND  field_stats_field_name IN ({})",
+                quoted_fields.join(", ")
+            )
         } else {
             String::default()
         }
@@ -654,53 +657,65 @@ pub fn build_stats_sql(
     let rn_end = offset + limit;
 
     format!(
-        "WITH field_totals AS (
-            SELECT 
-                field_stats_field_name,
-                SUM(field_stats_count) as total_field_count
-            FROM (
-                SELECT DISTINCT 
-                    p_timestamp,
-                    field_stats_field_name,
-                    field_stats_count
-                FROM {DATASET_STATS_STREAM_NAME}
-                WHERE dataset_name = '{dataset_name}'
-            ) deduped
-            GROUP BY field_stats_field_name
-            ),
-            ranked_values AS (
-                SELECT 
-                    field_stats_field_name as field_name,
-                    field_stats_distinct_stats_distinct_value as distinct_value,
-                    SUM(field_stats_distinct_stats_count) as distinct_value_count,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY field_stats_field_name 
-                        ORDER BY SUM(field_stats_distinct_stats_count) DESC
-                    ) as rn
-                FROM {DATASET_STATS_STREAM_NAME}
-                WHERE dataset_name = '{dataset_name}'
-                AND field_stats_distinct_stats_distinct_value IS NOT NULL
-                GROUP BY field_stats_field_name, field_stats_distinct_stats_distinct_value
-            ),
-            field_distinct_counts AS (
-                SELECT 
-                    field_name,
-                    COUNT(*) as distinct_count
-                FROM ranked_values
-                GROUP BY field_name
-            )
-            SELECT 
-                rv.field_name,
-                ft.total_field_count as field_count,
-                fdc.distinct_count,
-                rv.distinct_value,
-                rv.distinct_value_count
-            FROM ranked_values rv
-            JOIN field_totals ft ON rv.field_name = ft.field_stats_field_name
-            JOIN field_distinct_counts fdc ON rv.field_name = fdc.field_name
-            WHERE rv.rn > {rn_start} AND rv.rn <= {rn_end}
-                {fields_filter} 
-            ORDER BY rv.field_name, rv.distinct_value_count DESC"
+        "WITH
+  ranked_values AS (
+    SELECT
+      field_stats_field_name AS field_name,
+      field_stats_distinct_stats_distinct_value AS distinct_value,
+      SUM(field_stats_distinct_stats_count) AS distinct_value_count,
+      ROW_NUMBER() OVER (
+        PARTITION BY
+          field_stats_field_name
+        ORDER BY
+          SUM(field_stats_distinct_stats_count) DESC,
+          field_stats_distinct_stats_distinct_value ASC
+      ) AS rn,
+      COUNT(*) OVER (
+        PARTITION BY
+          field_stats_field_name
+      ) AS distinct_count
+    FROM
+      {DATASET_STATS_STREAM_NAME}
+    WHERE
+      dataset_name = '{dataset_name}'
+      AND field_stats_distinct_stats_distinct_value IS NOT NULL
+      {fields_filter}
+    GROUP BY
+      field_stats_field_name,
+      field_stats_distinct_stats_distinct_value
+  ),
+  top_values AS (
+    SELECT
+      *
+    FROM
+      ranked_values
+    WHERE
+      rn > {rn_start}
+      AND rn <= {rn_end}
+  ),
+  field_totals AS (
+    SELECT
+      field_stats_field_name,
+      SUM(field_stats_count) AS total_field_count
+    FROM
+      {DATASET_STATS_STREAM_NAME}
+    WHERE
+      dataset_name = '{dataset_name}'
+    GROUP BY
+      field_stats_field_name
+  )
+SELECT
+  tv.field_name,
+  ft.total_field_count AS field_count,
+  tv.distinct_count,
+  tv.distinct_value,
+  tv.distinct_value_count
+FROM
+  top_values tv
+  JOIN field_totals ft ON tv.field_name = ft.field_stats_field_name
+ORDER BY
+  tv.field_name,
+  tv.distinct_value_count DESC"
     )
 }
 #[cfg(test)]

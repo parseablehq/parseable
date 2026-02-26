@@ -52,6 +52,7 @@ pub struct User {
     pub roles: HashSet<String>,
     pub user_groups: HashSet<String>,
     pub tenant: Option<String>,
+    #[serde(default)]
     pub protected: bool,
 }
 
