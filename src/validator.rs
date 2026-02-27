@@ -72,6 +72,8 @@ pub fn stream_name(
 
 static RESERVED_NAMES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
     [
+        "super-admin",
+        "superadmin",
         "admin",
         "user",
         "role",

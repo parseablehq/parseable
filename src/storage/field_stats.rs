@@ -34,7 +34,9 @@ use crate::query::QUERY_SESSION_STATE;
 use crate::storage::ObjectStorageError;
 use crate::storage::StreamType;
 use crate::tenants::TENANT_METADATA;
+use crate::utils::create_intracluster_auth_headermap;
 use crate::utils::get_tenant_id_from_request;
+use crate::utils::get_user_from_request;
 use crate::utils::json::apply_generic_flattening_for_partition;
 use actix_web::HttpRequest;
 use actix_web::HttpResponse;
@@ -571,7 +573,21 @@ pub async fn get_dataset_stats(
                 );
                 Some(map)
             } else {
-                None
+                let auth = create_intracluster_auth_headermap(
+                    req.headers(),
+                    "",
+                    &get_user_from_request(&req).unwrap(),
+                );
+                let mut map = HeaderMap::new();
+
+                for (key, value) in auth.iter() {
+                    if let Ok(name) = HeaderName::from_bytes(key.as_str().as_bytes())
+                        && let Ok(val) = HeaderValue::from_bytes(value.as_bytes())
+                    {
+                        map.insert(name, val);
+                    }
+                }
+                Some(map)
             };
             let response = match send_query_request(auth, &query_request, &tenant_id).await {
                 Ok((query_response, _)) => query_response,

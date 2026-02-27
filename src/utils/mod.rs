@@ -26,26 +26,21 @@ pub mod time;
 pub mod uid;
 pub mod update;
 
-use crate::INTRA_CLUSTER_CLIENT;
 use crate::handlers::TENANT_ID;
-use crate::handlers::http::base_path_without_preceding_slash;
-use crate::handlers::http::cluster::for_each_live_node;
+use crate::handlers::http::middleware::{CLUSTER_SECRET, CLUSTER_SECRET_HEADER};
 use crate::handlers::http::rbac::RBACError;
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
 use crate::query::resolve_stream_names;
 use crate::rbac::Users;
 use crate::rbac::map::{SessionKey, sessions};
 use crate::rbac::role::{Action, ParseableResourceType, Permission};
-use crate::rbac::user::User;
 use actix::extract_session_key_from_req;
 use actix_web::dev::ServiceRequest;
 use actix_web::http::header::HeaderMap;
 use actix_web::{FromRequest, HttpRequest};
 use actix_web_httpauth::extractors::basic::BasicAuth;
-use chrono::{Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
-use http::header;
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use regex::Regex;
-use serde_json::json;
 use sha2::{Digest, Sha256};
 
 pub fn get_node_id() -> String {
@@ -173,7 +168,6 @@ pub async fn user_auth_for_datasets(
                     Some(ParseableResourceType::Stream(stream)),
                 ) => {
                     if !PARSEABLE.check_or_load_stream(stream, tenant_id).await {
-                        tracing::warn!("unable to find stream");
                         return Err(actix_web::error::ErrorUnauthorized(format!(
                             "Stream not found: {table_name}"
                         )));
@@ -247,18 +241,40 @@ pub fn is_admin(req: &HttpRequest) -> Result<bool, anyhow::Error> {
 pub fn create_intracluster_auth_headermap(
     req: &HeaderMap,
     node_token: &str,
+    userid: &str,
 ) -> reqwest::header::HeaderMap {
     let mut map = reqwest::header::HeaderMap::new();
-    if let Some(auth) = req.get(actix_web::http::header::AUTHORIZATION) {
+    let tenant_id = req
+        .get(TENANT_ID)
+        .map(|tenant_value| tenant_value.to_str().unwrap().to_owned());
+    if let Some((_, hash)) = CLUSTER_SECRET.get() {
+        // also insert server secret along with other required headers for query forwarding
+        map.insert(
+            reqwest::header::HeaderName::from_static(CLUSTER_SECRET_HEADER),
+            reqwest::header::HeaderValue::from_str(hash).unwrap(),
+        );
+        map.insert(
+            reqwest::header::HeaderName::from_static("intra-cluster-tenant"),
+            reqwest::header::HeaderValue::from_str(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+                .unwrap(),
+        );
+        map.insert(
+            reqwest::header::HeaderName::from_static("intra-cluster-userid"),
+            reqwest::header::HeaderValue::from_str(userid).unwrap(),
+        );
+    } else if let Some(auth) = req.get(actix_web::http::header::AUTHORIZATION) {
         map.insert(
             reqwest::header::AUTHORIZATION,
             reqwest::header::HeaderValue::from_bytes(auth.as_bytes()).unwrap(),
         );
-    } else if let Some(auth) = req.get(actix_web::http::header::COOKIE) {
-        map.insert(
-            reqwest::header::COOKIE,
-            reqwest::header::HeaderValue::from_bytes(auth.as_bytes()).unwrap(),
-        );
+    } else if req.contains_key(actix_web::http::header::COOKIE) {
+        // multiple cookies
+        for cookie in req.get_all(actix_web::http::header::COOKIE) {
+            map.insert(
+                reqwest::header::COOKIE,
+                reqwest::header::HeaderValue::from_bytes(cookie.as_bytes()).unwrap(),
+            );
+        }
     } else {
         map.insert(
             reqwest::header::AUTHORIZATION,
@@ -266,40 +282,4 @@ pub fn create_intracluster_auth_headermap(
         );
     }
     map
-}
-
-pub async fn login_sync(
-    session: String,
-    user: User,
-    expiry: Duration,
-    tenant_id: &Option<String>,
-) -> Result<(), anyhow::Error> {
-    for_each_live_node(tenant_id, move |node| {
-        let url = format!(
-            "{}{}/o/login/sync",
-            node.domain_name,
-            base_path_without_preceding_slash(),
-        );
-        let _session = session.clone();
-        let _user = user.clone();
-        let _expiry = expiry;
-
-        async move {
-            INTRA_CLUSTER_CLIENT
-                .post(url)
-                .header(header::AUTHORIZATION, node.token)
-                .header(header::CONTENT_TYPE, "application/json")
-                .json(&json!(
-                    {
-                        "sessionCookie": _session,
-                        "user": _user,
-                        "expiry": _expiry
-                    }
-                ))
-                .send()
-                .await?;
-            Ok::<(), anyhow::Error>(())
-        }
-    })
-    .await
 }

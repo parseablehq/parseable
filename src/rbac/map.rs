@@ -115,9 +115,8 @@ pub fn init(metadata: &StorageMetadata) {
     let admin_permissions = RoleBuilder::from(&admin_privilege).build();
     roles.insert(
         "super-admin".to_string(),
-        Role::create_user_role(vec![admin_privilege]),
+        Role::create_internal_role(vec![admin_privilege]),
     );
-    // roles.insert("super-admin".to_string(), vec![admin_privilege]);
 
     let mut users = Users::from(users);
     let admin = user::get_super_admin_user();
@@ -129,15 +128,6 @@ pub fn init(metadata: &StorageMetadata) {
         password: PARSEABLE.options.password.clone(),
     };
     let mut sessions = Sessions::default();
-    // sessions.track_new(
-    //     admin_username.clone(),
-    //     SessionKey::BasicAuth {
-    //         username: PARSEABLE.options.username.clone(),
-    //         password: PARSEABLE.options.password.clone(),
-    //     },
-    //     chrono::DateTime::<Utc>::MAX_UTC,
-    //     admin_permissions,
-    // );
 
     PARSEABLE
         .streams
