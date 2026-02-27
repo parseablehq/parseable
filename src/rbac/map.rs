@@ -304,23 +304,6 @@ impl Sessions {
         sessions.retain(|(_, expiry)| expiry < &now);
     }
 
-    #[inline(always)]
-    pub fn remove_all_expired_sessions(&mut self, tenant_id: &str) {
-        let now = Utc::now();
-        if let Some(user_sessions) = self.user_sessions.get_mut(tenant_id) {
-            for (_, sessions) in user_sessions.iter_mut() {
-                sessions.retain(|(s, t)| {
-                    if now > *t {
-                        self.active_sessions.remove(s);
-                        true
-                    } else {
-                        false
-                    }
-                });
-            }
-        }
-    }
-
     // get permission related to this session
     pub fn get(&self, key: &SessionKey) -> Option<&Vec<Permission>> {
         self.active_sessions.get(key).map(|(_, _, perms)| perms)

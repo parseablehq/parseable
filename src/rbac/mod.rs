@@ -225,9 +225,6 @@ impl Users {
         let tenant_id = &user.tenant;
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
-        // remove stale sessions
-        mut_sessions().remove_all_expired_sessions(tenant);
-
         mut_sessions().track_new(
             user.userid().to_owned(),
             session,

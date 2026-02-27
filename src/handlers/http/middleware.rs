@@ -448,7 +448,7 @@ pub fn auth_user_context(
         return Ok(rbac::Response::Suspended(msg));
     }
     let creds = extract_session_key(req);
-    let user = req.match_info().get("username");
+    let user = req.match_info().get("userid");
     creds.map(|key| Users.authorize(key, action, None, user))
 }
 
@@ -545,7 +545,7 @@ where
     forward_ready!(service);
 
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
-        let err = if let Some((_, hash)) = CLUSTER_SECRET.get() {
+        let (err, id) = if let Some((secret, _)) = CLUSTER_SECRET.get() {
             if let Some(header) = req.headers().get(CLUSTER_SECRET_HEADER)
                 && let Some(tenant) = req.headers().get("intra-cluster-tenant")
                 && let Some(userid) = req.headers().get("intra-cluster-userid")
@@ -556,7 +556,7 @@ where
                 // validate the incoming header value
                 let parsed_hash = PasswordHash::new(incoming_secret).unwrap();
                 if Argon2::default()
-                    .verify_password(hash.as_bytes(), &parsed_hash)
+                    .verify_password(secret.as_bytes(), &parsed_hash)
                     .is_ok()
                 {
                     // create a user session (how to remove that later?)
@@ -565,7 +565,7 @@ where
                     } else {
                         Some(tenant.to_owned())
                     };
-                    if let Some(user) = Users.get_user(userid, &tenant_id) {
+                    let id = if let Some(user) = Users.get_user(userid, &tenant_id) {
                         let id = Ulid::new();
                         req.headers_mut().insert(
                             header::COOKIE,
@@ -574,18 +574,27 @@ where
                         let session = SessionKey::SessionId(id);
                         req.extensions_mut().insert(session.clone());
                         Users.new_session(&user, session, TimeDelta::seconds(20));
-                    }
-                    None
+                        Some(id)
+                    } else {
+                        None
+                    };
+                    (None, id)
                 } else {
-                    Some("Incoming intra-cluster request validation failed")
+                    (
+                        Some("Incoming intra-cluster request validation failed"),
+                        None,
+                    )
                 }
             } else {
-                Some(
-                    "Incoming intra-cluster request doesn't contain the proper header or the server was started without P_CLUSTER_SECRET",
+                (
+                    Some(
+                        "Incoming intra-cluster request doesn't contain the proper header or the server was started without P_CLUSTER_SECRET",
+                    ),
+                    None,
                 )
             }
         } else {
-            None
+            (None, None)
         };
 
         let fut = self.service.call(req);
@@ -594,7 +603,11 @@ where
             if let Some(err) = err {
                 return Err(ErrorUnauthorized(err));
             }
-            fut.await
+            let res = fut.await;
+            if let Some(id) = id {
+                mut_sessions().remove_session(&SessionKey::SessionId(id));
+            }
+            res
         })
     }
 }
