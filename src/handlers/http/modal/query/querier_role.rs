@@ -104,7 +104,7 @@ pub async fn put(
         mut_sessions().remove_user(&userid, tenant);
     }
 
-    sync_role_update(name.clone(), role, &tenant_id).await?;
+    sync_role_update(&req, name.clone(), role, &tenant_id).await?;
 
     Ok(HttpResponse::Ok().finish())
 }

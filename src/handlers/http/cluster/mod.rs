@@ -19,6 +19,8 @@
 pub mod utils;
 use actix_web::http::StatusCode;
 use actix_web::http::header::HeaderMap;
+use base64::Engine;
+use base64::prelude::BASE64_STANDARD;
 use futures::{StreamExt, future, stream};
 use http::header;
 use lazy_static::lazy_static;
@@ -50,7 +52,9 @@ use crate::rbac::role::model::Role;
 use crate::rbac::user::User;
 use crate::stats::Stats;
 use crate::storage::{ObjectStorageError, ObjectStoreFormat};
-use crate::utils::{create_intracluster_auth_headermap, get_tenant_id_from_request};
+use crate::utils::{
+    create_intracluster_auth_headermap, get_tenant_id_from_request, get_user_from_request,
+};
 
 use super::base_path_without_preceding_slash;
 use super::ingest::PostError;
@@ -529,7 +533,7 @@ pub async fn sync_users_with_roles_with_ingestors(
         );
 
         let role_data = role_data.clone();
-        let headermap = create_intracluster_auth_headermap(&headers, &ingestor.token);
+        let headermap = create_intracluster_auth_headermap(&headers, &ingestor.token, &userid);
         async move {
             let res = INTRA_CLUSTER_CLIENT
                 .patch(url)
@@ -576,7 +580,7 @@ pub async fn sync_user_deletion_with_ingestors(
             base_path_without_preceding_slash(),
             userid
         );
-        let headermap = create_intracluster_auth_headermap(&headers, &ingestor.token);
+        let headermap = create_intracluster_auth_headermap(&headers, &ingestor.token, &userid);
         async move {
             let res = INTRA_CLUSTER_CLIENT
                 .delete(url)
@@ -634,7 +638,7 @@ pub async fn sync_user_creation(
             base_path_without_preceding_slash(),
             userid
         );
-        let headermap = create_intracluster_auth_headermap(&headers, &node.token);
+        let headermap = create_intracluster_auth_headermap(&headers, &node.token, &userid);
         let user_data = user_data.clone();
 
         async move {
@@ -672,20 +676,21 @@ pub async fn sync_password_reset_with_ingestors(
     req: HttpRequest,
     username: &str,
 ) -> Result<(), RBACError> {
-    let username = username.to_owned();
+    let userid = username.to_owned();
     let tenant_id = get_tenant_id_from_request(&req);
+    let headers = req.headers().clone();
     for_each_live_node(&tenant_id, move |ingestor| {
         let url = format!(
             "{}{}/user/{}/generate-new-password/sync",
             ingestor.domain_name,
             base_path_without_preceding_slash(),
-            username
+            userid
         );
-
+        let headermap = create_intracluster_auth_headermap(&headers, &ingestor.token, &userid);
         async move {
             let res = INTRA_CLUSTER_CLIENT
                 .post(url)
-                .header(header::AUTHORIZATION, &ingestor.token)
+                .headers(headermap)
                 .header(header::CONTENT_TYPE, "application/json")
                 .send()
                 .await
@@ -713,11 +718,14 @@ pub async fn sync_password_reset_with_ingestors(
 
 // forward the put role request to all ingestors and queriers to keep them in sync
 pub async fn sync_role_update(
+    req: &HttpRequest,
     name: String,
     role: Role,
     tenant_id: &Option<String>,
 ) -> Result<(), RoleError> {
     let tenant = tenant_id.to_owned();
+    let userid = get_user_from_request(req).unwrap();
+    let headers = req.headers().clone();
     for_each_live_node(tenant_id, move |node| {
         let url = format!(
             "{}{}/role/{}/sync",
@@ -727,12 +735,12 @@ pub async fn sync_role_update(
         );
 
         let role = role.clone();
-
+        let headermap = create_intracluster_auth_headermap(&headers, &node.token, &userid);
         let tenant_id = tenant.clone();
         async move {
             let res = INTRA_CLUSTER_CLIENT
                 .put(url)
-                .header(header::AUTHORIZATION, &node.token)
+                .headers(headermap)
                 .header(header::CONTENT_TYPE, "application/json")
                 .json(&SyncRole::new(role, tenant_id.clone()))
                 .send()
@@ -1904,7 +1912,6 @@ pub async fn send_query_request(
     let mut map = reqwest::header::HeaderMap::new();
 
     if let Some(auth) = auth_token {
-        // always basic auth
         for (key, value) in auth.iter() {
             if let Ok(name) = reqwest::header::HeaderName::from_bytes(key.as_str().as_bytes())
                 && let Ok(val) = reqwest::header::HeaderValue::from_bytes(value.as_bytes())
@@ -1918,6 +1925,16 @@ pub async fn send_query_request(
             reqwest::header::HeaderValue::from_str(&querier.token).unwrap(),
         );
     };
+    if map.get("intra-cluster-userid").is_none() {
+        let token: Vec<&str> = querier.token().split(' ').collect();
+        let decode = BASE64_STANDARD.decode(token[1]).unwrap();
+        let user = String::from_utf8(decode).unwrap();
+        let user = user.split_once(':').unwrap();
+        map.insert(
+            reqwest::header::HeaderName::from_static("intra-cluster-userid"),
+            reqwest::header::HeaderValue::from_str(user.0).unwrap(),
+        );
+    }
     let res = match INTRA_CLUSTER_CLIENT
         .post(uri)
         .timeout(Duration::from_secs(300))

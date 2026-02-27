@@ -18,7 +18,7 @@
 */
 
 use actix_web::{
-    Error, FromRequest, HttpRequest,
+    Error, FromRequest, HttpMessage, HttpRequest,
     dev::ServiceRequest,
     error::{ErrorUnauthorized, ErrorUnprocessableEntity},
 };
@@ -39,6 +39,8 @@ pub fn extract_session_key(req: &mut ServiceRequest) -> Result<SessionKey, Error
 
     if let Ok(basic) = basic {
         Ok(basic)
+    } else if let Some(session) = req.extensions().get::<SessionKey>() {
+        Ok(session.clone())
     } else if let Some(cookie) = req.cookie("session") {
         let ulid = ulid::Ulid::from_string(cookie.value())
             .map_err(|_| ErrorUnprocessableEntity("Cookie is tampered with or invalid"))?;
@@ -61,6 +63,8 @@ pub fn extract_session_key_from_req(req: &HttpRequest) -> Result<SessionKey, Err
 
     if let Ok(basic) = basic {
         Ok(basic)
+    } else if let Some(session) = req.extensions().get::<SessionKey>() {
+        Ok(session.clone())
     } else if let Some(cookie) = req.cookie("session") {
         let ulid = ulid::Ulid::from_string(cookie.value())
             .map_err(|_| ErrorUnprocessableEntity("Cookie is tampered with or invalid"))?;

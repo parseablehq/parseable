@@ -25,8 +25,11 @@ use actix_web::{
     error::{ErrorBadRequest, ErrorForbidden, ErrorUnauthorized},
     http::header::{self, HeaderName, HeaderValue},
 };
-use chrono::{Duration, Utc};
+use argon2::{Argon2, PasswordHash, PasswordVerifier};
+use chrono::{Duration, TimeDelta, Utc};
 use futures_util::future::LocalBoxFuture;
+use once_cell::sync::OnceCell;
+use ulid::Ulid;
 
 use crate::{
     handlers::{
@@ -51,6 +54,9 @@ use crate::{
 };
 
 use serde::{Deserialize, Serialize};
+
+pub const CLUSTER_SECRET_HEADER: &str = "x-p-cluster-secret";
+pub static CLUSTER_SECRET: OnceCell<(String, String)> = OnceCell::new();
 
 #[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -398,7 +404,12 @@ pub fn auth_no_context(req: &mut ServiceRequest, action: Action) -> Result<rbac:
     if let rbac::Response::Suspended(msg) = check_suspension(req.request(), action) {
         return Ok(rbac::Response::Suspended(msg));
     }
-    let creds = extract_session_key(req);
+    let creds = if let Some(session) = req.extensions().get::<SessionKey>() {
+        Ok(session.clone())
+    } else {
+        extract_session_key(req)
+    };
+    // let creds = extract_session_key(req);
     creds.map(|key| Users.authorize(key, action, None, None))
 }
 
@@ -481,13 +492,107 @@ where
     forward_ready!(service);
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        let username = req.match_info().get("username").unwrap_or("");
+        let username = req.match_info().get("userid").unwrap_or("");
         let is_root = username == PARSEABLE.options.username;
         let fut = self.service.call(req);
 
         Box::pin(async move {
             if is_root {
                 return Err(ErrorBadRequest("Cannot call this API for root admin user"));
+            }
+            fut.await
+        })
+    }
+}
+
+// The credentials set in the env vars (P_USERNAME & P_PASSWORD) are treated
+// as root credentials. Any other user is not allowed to modify or delete
+// the root user. Deny request if username is same as username
+// from env variable P_USERNAME.
+pub struct IntraClusterRequest;
+
+impl<S, B> Transform<S, ServiceRequest> for IntraClusterRequest
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
+    S::Future: 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type InitError = ();
+    type Transform = IntraClusterRequestMiddleware<S>;
+    type Future = Ready<Result<Self::Transform, Self::InitError>>;
+
+    fn new_transform(&self, service: S) -> Self::Future {
+        ready(Ok(IntraClusterRequestMiddleware { service }))
+    }
+}
+
+pub struct IntraClusterRequestMiddleware<S> {
+    service: S,
+}
+
+impl<S, B> Service<ServiceRequest> for IntraClusterRequestMiddleware<S>
+where
+    S: Service<ServiceRequest, Response = ServiceResponse<B>, Error = Error>,
+    S::Future: 'static,
+    B: 'static,
+{
+    type Response = ServiceResponse<B>;
+    type Error = Error;
+    type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    forward_ready!(service);
+
+    fn call(&self, mut req: ServiceRequest) -> Self::Future {
+        let err = if let Some((_, hash)) = CLUSTER_SECRET.get() {
+            if let Some(header) = req.headers().get(CLUSTER_SECRET_HEADER)
+                && let Some(tenant) = req.headers().get("intra-cluster-tenant")
+                && let Some(userid) = req.headers().get("intra-cluster-userid")
+                && let Ok(incoming_secret) = header.to_str()
+                && let Ok(tenant) = tenant.to_str()
+                && let Ok(userid) = userid.to_str()
+            {
+                // validate the incoming header value
+                let parsed_hash = PasswordHash::new(incoming_secret).unwrap();
+                if Argon2::default()
+                    .verify_password(hash.as_bytes(), &parsed_hash)
+                    .is_ok()
+                {
+                    // create a user session (how to remove that later?)
+                    let tenant_id = if tenant.eq(DEFAULT_TENANT) {
+                        None
+                    } else {
+                        Some(tenant.to_owned())
+                    };
+                    if let Some(user) = Users.get_user(userid, &tenant_id) {
+                        let id = Ulid::new();
+                        req.headers_mut().insert(
+                            header::COOKIE,
+                            HeaderValue::from_str(&format!("session={}", id)).unwrap(),
+                        );
+                        let session = SessionKey::SessionId(id);
+                        req.extensions_mut().insert(session.clone());
+                        Users.new_session(&user, session, TimeDelta::seconds(20));
+                    }
+                    None
+                } else {
+                    Some("Incoming intra-cluster request validation failed")
+                }
+            } else {
+                Some(
+                    "Incoming intra-cluster request doesn't contain the proper header or the server was started without P_CLUSTER_SECRET",
+                )
+            }
+        } else {
+            None
+        };
+
+        let fut = self.service.call(req);
+
+        Box::pin(async move {
+            if let Some(err) = err {
+                return Err(ErrorUnauthorized(err));
             }
             fut.await
         })

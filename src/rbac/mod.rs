@@ -224,6 +224,10 @@ impl Users {
     pub fn new_session(&self, user: &User, session: SessionKey, expires_in: TimeDelta) {
         let tenant_id = &user.tenant;
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+
+        // remove stale sessions
+        mut_sessions().remove_all_expired_sessions(tenant);
+
         mut_sessions().track_new(
             user.userid().to_owned(),
             session,

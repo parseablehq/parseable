@@ -33,7 +33,6 @@ use tokio::sync::RwLock;
 use ulid::Ulid;
 use url::Url;
 
-use crate::utils::{login_sync, logout_sync};
 use crate::{
     handlers::{
         COOKIE_AGE_DAYS, SESSION_COOKIE_NAME, USER_COOKIE_NAME, USER_ID_COOKIE_NAME,
@@ -124,9 +123,6 @@ pub async fn login(
                     SessionKey::BasicAuth { username, password },
                     EXPIRY_DURATION,
                 );
-                let _session = session_cookie.value().to_owned();
-                let _user = user.clone();
-                let _ = login_sync(_session, _user, EXPIRY_DURATION, &tenant_id).await;
 
                 Ok(redirect_to_client(
                     query.redirect.as_str(),
@@ -176,16 +172,14 @@ pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> 
         None
     };
 
-    let res = match (user, logout_endpoint) {
+    match (user, logout_endpoint) {
         (Some(username), Some(logout_endpoint))
             if Users.is_oauth(&username, &tenant_id).unwrap_or_default() =>
         {
             redirect_to_oidc_logout(logout_endpoint, &query.redirect)
         }
         _ => redirect_to_client(query.redirect.as_str(), None),
-    };
-    let _ = logout_sync(session, &tenant_id).await;
-    res
+    }
 }
 
 /// Handler for code callback

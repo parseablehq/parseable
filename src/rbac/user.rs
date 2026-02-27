@@ -122,6 +122,10 @@ impl User {
         matches!(self.ty, UserType::OAuth(_))
     }
 
+    pub fn is_super_admin(&self) -> bool {
+        self.roles.contains("super-admin")
+    }
+
     pub fn roles(&self) -> Vec<String> {
         self.roles.iter().cloned().collect()
     }
@@ -161,7 +165,7 @@ pub fn verify(password_hash: &str, password: &str) -> bool {
 
 // generate a one way hash for password to be stored in metadata file
 // ref https://github.com/P-H-C/phc-string-format/blob/master/phc-sf-spec.md
-fn gen_hash(password: &str) -> String {
+pub fn gen_hash(password: &str) -> String {
     let mut bytes = [0u8; 32];
     let r = &mut OsRng;
     r.fill_bytes(&mut bytes);
@@ -361,9 +365,13 @@ impl UserGroup {
         let mut non_existent_roles = Vec::new();
         if !self.roles.is_empty() {
             // validate that the roles exist
+            // can't add internal roles to a group
             if let Some(tenant_roles) = roles().get(tenant) {
                 for role in &self.roles {
-                    if !tenant_roles.contains_key(role) {
+                    if let Some(role) = tenant_roles.get(role)
+                        && role.role_type().eq(&RoleType::User)
+                    {
+                    } else {
                         non_existent_roles.push(role.clone());
                     }
                 }
