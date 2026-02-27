@@ -181,7 +181,11 @@ impl QueryServer {
                 // PUT, GET, DELETE Roles
                 resource("/{name}")
                     .route(web::put().to(querier_role::put).authorize(Action::PutRole))
-                    .route(web::delete().to(role::delete).authorize(Action::DeleteRole))
+                    .route(
+                        web::delete()
+                            .to(querier_role::delete)
+                            .authorize(Action::DeleteRole),
+                    )
                     .route(web::get().to(role::get).authorize(Action::GetRole)),
             )
     }
@@ -195,8 +199,8 @@ impl QueryServer {
                     .route(web::get().to(rbac::list_users).authorize(Action::ListUser)),
             )
             .service(
-                web::resource("/{username}")
-                    // POST /user/{username} => Create a new user
+                web::resource("/{userid}")
+                    // POST /user/{userid} => Create a new user
                     .route(
                         web::post()
                             .to(querier_rbac::post_user)
@@ -222,7 +226,7 @@ impl QueryServer {
                     // PATCH /user/{userid}/role/add => Add roles to a user
                     .route(
                         web::patch()
-                            .to(rbac::add_roles_to_user)
+                            .to(querier_rbac::add_roles_to_user)
                             .authorize(Action::PutUserRoles)
                             .wrap(DisAllowRootUser),
                     ),
@@ -232,14 +236,14 @@ impl QueryServer {
                     // PATCH /user/{userid}/role/remove => Remove roles from a user
                     .route(
                         web::patch()
-                            .to(rbac::remove_roles_from_user)
+                            .to(querier_rbac::remove_roles_from_user)
                             .authorize(Action::PutUserRoles)
                             .wrap(DisAllowRootUser),
                     ),
             )
             .service(
-                web::resource("/{username}/generate-new-password")
-                    // POST /user/{username}/generate-new-password => reset password for this user
+                web::resource("/{userid}/generate-new-password")
+                    // POST /user/{userid}/generate-new-password => reset password for this user
                     .route(
                         web::post()
                             .to(querier_rbac::post_gen_password)

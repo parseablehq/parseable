@@ -64,10 +64,57 @@ pub async fn put(
         .entry(tenant_id.clone())
         .or_default()
         .insert(name.clone(), sync_req.privileges);
-    // mut_roles().insert(name.clone(), privileges);
 
     // refresh the sessions of all users using this role
     // for this, iterate over all user_groups and users and create a hashset of users
+    let mut session_refresh_users: HashSet<String> = HashSet::new();
+    if let Some(groups) = read_user_groups().get(&tenant_id) {
+        for user_group in groups.values() {
+            if user_group.roles.contains(&name) {
+                session_refresh_users
+                    .extend(user_group.users.iter().map(|u| u.userid().to_string()));
+            }
+        }
+    }
+
+    // iterate over all users to see if they have this role
+    if let Some(users) = users().get(&tenant_id) {
+        for user in users.values() {
+            if user.roles.contains(&name) {
+                session_refresh_users.insert(user.userid().to_string());
+            }
+        }
+    }
+
+    for userid in session_refresh_users {
+        mut_sessions().remove_user(&userid, &tenant_id);
+    }
+
+    Ok(HttpResponse::Ok().finish())
+}
+
+// Handler for DELETE /api/v1/role/{name}
+// Deletes the role
+pub async fn delete(
+    req: HttpRequest,
+    name: web::Path<String>,
+) -> Result<impl Responder, RoleError> {
+    let name = name.into_inner();
+    let req_tenant_id = get_tenant_id_from_request(&req);
+
+    let mut metadata = get_metadata(&req_tenant_id).await?;
+    metadata.roles.remove(&name);
+
+    let _ = storage::put_staging_metadata(&metadata, &req_tenant_id);
+    let tenant_id = req_tenant_id
+        .as_deref()
+        .unwrap_or(DEFAULT_TENANT)
+        .to_owned();
+    mut_roles()
+        .entry(tenant_id.clone())
+        .or_default()
+        .remove(&name);
+
     let mut session_refresh_users: HashSet<String> = HashSet::new();
     if let Some(groups) = read_user_groups().get(&tenant_id) {
         for user_group in groups.values() {

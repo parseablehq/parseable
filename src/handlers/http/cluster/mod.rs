@@ -523,6 +523,7 @@ pub async fn sync_users_with_roles_with_ingestors(
     let userid = userid.to_owned();
     let headers = req.headers().clone();
     let op = operation.to_string();
+    let caller_userid = get_user_from_request(req).unwrap();
     for_each_live_node(tenant_id, move |ingestor| {
         let url = format!(
             "{}{}/user/{}/role/sync/{}",
@@ -533,7 +534,8 @@ pub async fn sync_users_with_roles_with_ingestors(
         );
 
         let role_data = role_data.clone();
-        let headermap = create_intracluster_auth_headermap(&headers, &ingestor.token, &userid);
+        let headermap =
+            create_intracluster_auth_headermap(&headers, &ingestor.token, &caller_userid);
         async move {
             let res = INTRA_CLUSTER_CLIENT
                 .patch(url)
@@ -572,6 +574,7 @@ pub async fn sync_user_deletion_with_ingestors(
     tenant_id: &Option<String>,
 ) -> Result<(), RBACError> {
     let userid = userid.to_owned();
+    let caller_userid = get_user_from_request(req).unwrap();
     let headers = req.headers().clone();
     for_each_live_node(tenant_id, move |ingestor| {
         let url = format!(
@@ -580,7 +583,8 @@ pub async fn sync_user_deletion_with_ingestors(
             base_path_without_preceding_slash(),
             userid
         );
-        let headermap = create_intracluster_auth_headermap(&headers, &ingestor.token, &userid);
+        let headermap =
+            create_intracluster_auth_headermap(&headers, &ingestor.token, &caller_userid);
         async move {
             let res = INTRA_CLUSTER_CLIENT
                 .delete(url)
@@ -629,6 +633,7 @@ pub async fn sync_user_creation(
         RBACError::SerdeError(err)
     })?;
 
+    let caller_userid = get_user_from_request(req)?;
     let userid = userid.to_string();
     let headers = req.headers().clone();
     for_each_live_node(tenant_id, move |node| {
@@ -638,7 +643,7 @@ pub async fn sync_user_creation(
             base_path_without_preceding_slash(),
             userid
         );
-        let headermap = create_intracluster_auth_headermap(&headers, &node.token, &userid);
+        let headermap = create_intracluster_auth_headermap(&headers, &node.token, &caller_userid);
         let user_data = user_data.clone();
 
         async move {
@@ -678,6 +683,7 @@ pub async fn sync_password_reset_with_ingestors(
 ) -> Result<(), RBACError> {
     let userid = username.to_owned();
     let tenant_id = get_tenant_id_from_request(&req);
+    let caller_userid = get_user_from_request(&req).unwrap();
     let headers = req.headers().clone();
     for_each_live_node(&tenant_id, move |ingestor| {
         let url = format!(
@@ -686,7 +692,8 @@ pub async fn sync_password_reset_with_ingestors(
             base_path_without_preceding_slash(),
             userid
         );
-        let headermap = create_intracluster_auth_headermap(&headers, &ingestor.token, &userid);
+        let headermap =
+            create_intracluster_auth_headermap(&headers, &ingestor.token, &caller_userid);
         async move {
             let res = INTRA_CLUSTER_CLIENT
                 .post(url)
@@ -743,6 +750,52 @@ pub async fn sync_role_update(
                 .headers(headermap)
                 .header(header::CONTENT_TYPE, "application/json")
                 .json(&SyncRole::new(role, tenant_id.clone()))
+                .send()
+                .await
+                .map_err(|err| {
+                    error!(
+                        "Fatal: failed to forward request to node: {}\n Error: {:?}",
+                        node.domain_name, err
+                    );
+                    RoleError::Network(err)
+                })?;
+
+            if !res.status().is_success() {
+                error!(
+                    "failed to forward request to node: {}\nResponse Returned: {:?}",
+                    node.domain_name,
+                    res.text().await
+                );
+            }
+
+            Ok(())
+        }
+    })
+    .await
+}
+
+// forward the put role request to all ingestors and queriers to keep them in sync
+pub async fn sync_role_delete(
+    req: &HttpRequest,
+    name: String,
+    tenant_id: &Option<String>,
+) -> Result<(), RoleError> {
+    let userid = get_user_from_request(req).unwrap();
+    let headers = req.headers().clone();
+    for_each_live_node(tenant_id, move |node| {
+        let url = format!(
+            "{}{}/role/{}/sync",
+            node.domain_name,
+            base_path_without_preceding_slash(),
+            name
+        );
+
+        let headermap = create_intracluster_auth_headermap(&headers, &node.token, &userid);
+        async move {
+            let res = INTRA_CLUSTER_CLIENT
+                .delete(url)
+                .headers(headermap)
+                .header(header::CONTENT_TYPE, "application/json")
                 .send()
                 .await
                 .map_err(|err| {

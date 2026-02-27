@@ -185,8 +185,8 @@ impl IngestServer {
     pub fn get_user_webscope() -> Scope {
         web::scope("/user")
             .service(
-                web::resource("/{username}/sync")
-                    // POST /user/{username}/sync => Sync creation of a new user
+                web::resource("/{userid}/sync")
+                    // POST /user/{userid}/sync => Sync creation of a new user
                     .route(
                         web::post()
                             .to(ingestor_rbac::post_user)
@@ -225,8 +225,8 @@ impl IngestServer {
                     ),
             )
             .service(
-                web::resource("/{username}/generate-new-password/sync")
-                    // POST /user/{username}/generate-new-password => reset password for this user
+                web::resource("/{userid}/generate-new-password/sync")
+                    // POST /user/{userid}/generate-new-password => reset password for this user
                     .route(
                         web::post()
                             .to(ingestor_rbac::post_gen_password)
