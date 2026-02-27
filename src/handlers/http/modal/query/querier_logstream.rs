@@ -31,6 +31,9 @@ use tracing::{error, warn};
 
 pub static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
 
+use crate::handlers::http::middleware::{CLUSTER_SECRET, CLUSTER_SECRET_HEADER};
+use crate::parseable::DEFAULT_TENANT;
+use crate::utils::get_user_from_request;
 use crate::{
     handlers::{
         UPDATE_STREAM_KEY,
@@ -126,7 +129,7 @@ pub async fn put_stream(
     let stream_name = stream_name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     let _guard = CREATE_STREAM_LOCK.lock().await;
-    let headers = PARSEABLE
+    let mut headers = PARSEABLE
         .create_update_stream(req.headers(), &body, &stream_name, &tenant_id)
         .await?;
 
@@ -136,6 +139,24 @@ pub async fn put_stream(
         false
     };
 
+    if let Some((_, hash)) = CLUSTER_SECRET.get() {
+        let userid = get_user_from_request(&req).unwrap();
+        headers.insert(
+            actix_web::http::header::HeaderName::from_static(CLUSTER_SECRET_HEADER),
+            actix_web::http::header::HeaderValue::from_str(hash).unwrap(),
+        );
+        headers.insert(
+            actix_web::http::header::HeaderName::from_static("intra-cluster-tenant"),
+            actix_web::http::header::HeaderValue::from_str(
+                tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
+            )
+            .unwrap(),
+        );
+        headers.insert(
+            actix_web::http::header::HeaderName::from_static("intra-cluster-userid"),
+            actix_web::http::header::HeaderValue::from_str(&userid).unwrap(),
+        );
+    }
     sync_streams_with_ingestors(headers, body, &stream_name, &tenant_id).await?;
 
     if is_update {

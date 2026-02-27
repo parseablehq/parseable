@@ -57,6 +57,7 @@ use crate::{
             cluster::{PMETA_STREAM_NAME, sync_streams_with_ingestors},
             ingest::PostError,
             logstream::error::{CreateStreamError, StreamError},
+            middleware::{CLUSTER_SECRET, CLUSTER_SECRET_HEADER},
             modal::{
                 ingest_server::INGESTOR_META,
                 utils::{logstream_utils::PutStreamHeaders, rbac_utils::get_metadata},
@@ -493,6 +494,17 @@ impl Parseable {
                 HeaderValue::from_str(&StreamType::Internal.to_string()).unwrap(),
             );
             header_map.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+
+            if let Some((_, hash)) = CLUSTER_SECRET.get() {
+                header_map.insert(
+                    HeaderName::from_static(CLUSTER_SECRET_HEADER),
+                    HeaderValue::from_str(hash).unwrap(),
+                );
+                header_map.insert(
+                    HeaderName::from_static("intra-cluster-tenant"),
+                    HeaderValue::from_str(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT)).unwrap(),
+                );
+            }
 
             // Sync only the streams that were created successfully
             if matches!(internal_stream_result, Ok(false))
