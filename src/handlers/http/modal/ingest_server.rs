@@ -30,6 +30,7 @@ use serde_json::Value;
 use tokio::sync::OnceCell;
 use tokio::sync::oneshot;
 
+use crate::handlers::http::middleware::IntraClusterRequest;
 use crate::handlers::http::modal::NodeType;
 use crate::sync::sync_start;
 use crate::{
@@ -172,26 +173,32 @@ impl IngestServer {
                     .route(web::get().to(role::get).authorize(Action::GetRole)),
             )
             .service(
-                web::resource("/{name}/sync")
-                    .route(web::put().to(ingestor_role::put).authorize(Action::PutRole)), // .route(web::delete().to(ingestor_role::delete).authorize(Action::DeleteRole)),
+                web::resource("/{name}/sync").route(
+                    web::put()
+                        .to(ingestor_role::put)
+                        .authorize(Action::PutRole)
+                        .wrap(IntraClusterRequest),
+                ), // .route(web::delete().to(ingestor_role::delete).authorize(Action::DeleteRole)),
             )
     }
     // get the user webscope
     pub fn get_user_webscope() -> Scope {
         web::scope("/user")
             .service(
-                web::resource("/{username}/sync")
-                    // POST /user/{username}/sync => Sync creation of a new user
+                web::resource("/{userid}/sync")
+                    // POST /user/{userid}/sync => Sync creation of a new user
                     .route(
                         web::post()
                             .to(ingestor_rbac::post_user)
-                            .authorize(Action::PutUser),
+                            .authorize(Action::PutUser)
+                            .wrap(IntraClusterRequest),
                     )
                     // DELETE /user/{userid} => Sync deletion of a user
                     .route(
                         web::delete()
                             .to(ingestor_rbac::delete_user)
-                            .authorize(Action::DeleteUser),
+                            .authorize(Action::DeleteUser)
+                            .wrap(IntraClusterRequest),
                     )
                     .wrap(DisAllowRootUser),
             )
@@ -202,7 +209,8 @@ impl IngestServer {
                         web::patch()
                             .to(ingestor_rbac::add_roles_to_user)
                             .authorize(Action::PutUserRoles)
-                            .wrap(DisAllowRootUser),
+                            .wrap(DisAllowRootUser)
+                            .wrap(IntraClusterRequest),
                     ),
             )
             .service(
@@ -212,17 +220,19 @@ impl IngestServer {
                         web::patch()
                             .to(ingestor_rbac::remove_roles_from_user)
                             .authorize(Action::PutUserRoles)
-                            .wrap(DisAllowRootUser),
+                            .wrap(DisAllowRootUser)
+                            .wrap(IntraClusterRequest),
                     ),
             )
             .service(
-                web::resource("/{username}/generate-new-password/sync")
-                    // POST /user/{username}/generate-new-password => reset password for this user
+                web::resource("/{userid}/generate-new-password/sync")
+                    // POST /user/{userid}/generate-new-password => reset password for this user
                     .route(
                         web::post()
                             .to(ingestor_rbac::post_gen_password)
                             .authorize(Action::PutUser)
-                            .wrap(DisAllowRootUser),
+                            .wrap(DisAllowRootUser)
+                            .wrap(IntraClusterRequest),
                     ),
             )
     }
@@ -247,13 +257,15 @@ impl IngestServer {
                         .route(
                             web::delete()
                                 .to(ingestor_logstream::delete)
-                                .authorize(Action::DeleteStream),
+                                .authorize(Action::DeleteStream)
+                                .wrap(IntraClusterRequest),
                         )
                         // PUT "/logstream/{logstream}/sync" ==> Sync creation of a new log stream
                         .route(
                             web::put()
                                 .to(ingestor_logstream::put_stream)
-                                .authorize_for_resource(Action::CreateStream),
+                                .authorize_for_resource(Action::CreateStream)
+                                .wrap(IntraClusterRequest),
                         ),
                 )
                 .service(

@@ -18,7 +18,7 @@
 
 use std::{str::FromStr, time::Duration};
 
-use actix_web::http::header::{HeaderMap, HeaderName, HeaderValue};
+use actix_web::http::header::{HeaderName, HeaderValue};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use tonic::async_trait;
@@ -36,9 +36,12 @@ use crate::{
         get_number_of_agg_exprs,
         target::{self, NotificationConfig},
     },
-    handlers::http::query::create_streams_for_distributed,
+    handlers::http::{
+        middleware::{CLUSTER_SECRET, CLUSTER_SECRET_HEADER},
+        query::create_streams_for_distributed,
+    },
     metastore::metastore_traits::MetastoreObject,
-    parseable::PARSEABLE,
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     query::resolve_stream_names,
     rbac::map::SessionKey,
     storage::object_storage::alert_json_path,
@@ -87,18 +90,29 @@ impl MetastoreObject for ThresholdAlert {
 impl AlertTrait for ThresholdAlert {
     async fn eval_alert(&self) -> Result<Option<String>, AlertError> {
         let time_range = extract_time_range(&self.eval_config)?;
-        let auth = if let Some(tenant) = self.tenant_id.as_ref()
-            && let Some(header) = TENANT_METADATA.get_global_query_auth(tenant)
-        {
-            let mut map = HeaderMap::new();
+
+        let tenant = self.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let auth = if let Some((_, hash)) = CLUSTER_SECRET.get() {
+            let mut map = actix_web::http::header::HeaderMap::new();
+            if let Some(header) = TENANT_METADATA.get_global_query_auth(tenant) {
+                map.insert(
+                    HeaderName::from_static("authorization"),
+                    HeaderValue::from_str(&header).unwrap(),
+                );
+            }
             map.insert(
-                HeaderName::from_static("authorization"),
-                HeaderValue::from_str(&header).unwrap(),
+                HeaderName::from_static(CLUSTER_SECRET_HEADER),
+                HeaderValue::from_str(hash).unwrap(),
+            );
+            map.insert(
+                HeaderName::from_static("intra-cluster-tenant"),
+                HeaderValue::from_str(tenant).unwrap(),
             );
             Some(map)
         } else {
             None
         };
+
         let query_result =
             execute_alert_query(auth, self.get_query(), &time_range, &self.tenant_id).await?;
 

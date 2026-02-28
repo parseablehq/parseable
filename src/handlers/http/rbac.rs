@@ -96,17 +96,17 @@ pub async fn list_users_prism(req: HttpRequest) -> impl Responder {
     web::Json(prism_users)
 }
 
-/// Function for GET /users/{username}
+/// Function for GET /users/{userid}
 pub async fn get_prism_user(
     req: HttpRequest,
-    username: Path<String>,
+    userid: Path<String>,
 ) -> Result<impl Responder, RBACError> {
-    let username = username.into_inner();
+    let userid = userid.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     // First check if the user exists
     let users = rbac::map::users();
     if let Some(users) = users.get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-        && let Some(user) = users.get(&username)
+        && let Some(user) = users.get(&userid)
         && !user.protected
     {
         // Create UsersPrism for the found user only
@@ -117,16 +117,16 @@ pub async fn get_prism_user(
     }
 }
 
-// Handler for POST /api/v1/user/{username}
-// Creates a new user by username if it does not exists
+// Handler for POST /api/v1/user/{userid}
+// Creates a new user by userid if it does not exists
 pub async fn post_user(
     req: HttpRequest,
-    username: web::Path<String>,
+    userid: web::Path<String>,
     body: Option<web::Json<serde_json::Value>>,
 ) -> Result<impl Responder, RBACError> {
-    let username = username.into_inner();
+    let userid = userid.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    validator::user_role_name(&username)?;
+    validator::user_role_name(&userid)?;
     let mut metadata = get_metadata(&tenant_id).await?;
 
     let user_roles: HashSet<String> = if let Some(body) = body {
@@ -147,16 +147,16 @@ pub async fn post_user(
         return Err(RBACError::RolesDoNotExist(non_existent_roles));
     }
     let _guard = UPDATE_LOCK.lock().await;
-    if Users.contains(&username, &tenant_id)
+    if Users.contains(&userid, &tenant_id)
         || metadata.users.iter().any(|user| match &user.ty {
-            UserType::Native(basic) => basic.username == username,
+            UserType::Native(basic) => basic.username == userid,
             UserType::OAuth(_) => false, // OAuth users should be created differently
         })
     {
-        return Err(RBACError::UserExists(username));
+        return Err(RBACError::UserExists(userid));
     }
 
-    let (user, password) = user::User::new_basic(username.clone(), tenant_id.clone(), false);
+    let (user, password) = user::User::new_basic(userid.clone(), tenant_id.clone(), false);
 
     metadata.users.push(user.clone());
 
@@ -166,7 +166,7 @@ pub async fn post_user(
     if !created_role.is_empty() {
         add_roles_to_user(
             req,
-            web::Path::<String>::from(username.clone()),
+            web::Path::<String>::from(userid.clone()),
             web::Json(created_role),
         )
         .await?;
@@ -174,16 +174,16 @@ pub async fn post_user(
     Ok(password)
 }
 
-// Handler for POST /api/v1/user/{username}/generate-new-password
+// Handler for POST /api/v1/user/{userid}/generate-new-password
 // Resets password for the user to a newly generated one and returns it
 pub async fn post_gen_password(
     req: HttpRequest,
-    username: web::Path<String>,
+    userid: web::Path<String>,
 ) -> Result<impl Responder, RBACError> {
-    let username = username.into_inner();
+    let userid = userid.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     // fail this request if the user is protected
-    if let Some(p) = Users.is_protected(&username, &tenant_id)
+    if let Some(p) = Users.is_protected(&userid, &tenant_id)
         && p
     {
         return Err(RBACError::ProtectedUser);
@@ -203,14 +203,14 @@ pub async fn post_gen_password(
             user::UserType::Native(ref mut user) => Some(user),
             _ => None,
         })
-        .find(|user| user.username == username)
+        .find(|user| user.username == userid)
     {
         user.password_hash.clone_from(&hash);
     } else {
         return Err(RBACError::UserDoesNotExist);
     }
     put_metadata(&metadata, &tenant_id).await?;
-    Users.change_password_hash(&username, &new_hash, &tenant_id);
+    Users.change_password_hash(&userid, &new_hash, &tenant_id);
 
     Ok(new_password)
 }

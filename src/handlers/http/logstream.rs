@@ -51,9 +51,9 @@ use tracing::warn;
 
 pub async fn delete(
     req: HttpRequest,
-    stream_name: Path<String>,
+    logstream: Path<String>,
 ) -> Result<impl Responder, StreamError> {
-    let stream_name = stream_name.into_inner();
+    let stream_name = logstream.into_inner();
     // Error out if stream doesn't exist in memory, or in the case of query node, in storage as well
     let tenant_id = get_tenant_id_from_request(&req);
     if !PARSEABLE
@@ -173,9 +173,9 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
 
 pub async fn get_schema(
     req: HttpRequest,
-    stream_name: Path<String>,
+    logstream: Path<String>,
 ) -> Result<impl Responder, StreamError> {
-    let stream_name = stream_name.into_inner();
+    let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     // Ensure parseable is aware of stream in distributed mode
     if !PARSEABLE
@@ -200,10 +200,10 @@ pub async fn get_schema(
 
 pub async fn put_stream(
     req: HttpRequest,
-    stream_name: Path<String>,
+    logstream: Path<String>,
     body: Bytes,
 ) -> Result<impl Responder, StreamError> {
-    let stream_name = stream_name.into_inner();
+    let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
 
     PARSEABLE
@@ -300,9 +300,9 @@ pub async fn get_stats_date(
 
 pub async fn get_stats(
     req: HttpRequest,
-    stream_name: Path<String>,
+    logstream: Path<String>,
 ) -> Result<impl Responder, StreamError> {
-    let stream_name = stream_name.into_inner();
+    let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     // For query mode, if the stream not found in memory map,
     //check if it exists in the storage
@@ -365,9 +365,9 @@ pub async fn get_stats(
 
 pub async fn get_stream_info(
     req: HttpRequest,
-    stream_name: Path<String>,
+    logstream: Path<String>,
 ) -> Result<impl Responder, StreamError> {
-    let stream_name = stream_name.into_inner();
+    let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     // For query mode, if the stream not found in memory map,
     //check if it exists in the storage
@@ -415,10 +415,10 @@ pub async fn get_stream_info(
 
 pub async fn put_stream_hot_tier(
     req: HttpRequest,
-    stream_name: Path<String>,
+    logstream: Path<String>,
     Json(mut hottier): Json<StreamHotTier>,
 ) -> Result<impl Responder, StreamError> {
-    let stream_name = stream_name.into_inner();
+    let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     // For query mode, if the stream not found in memory map,
     //check if it exists in the storage
@@ -478,9 +478,9 @@ pub async fn put_stream_hot_tier(
 
 pub async fn get_stream_hot_tier(
     req: HttpRequest,
-    stream_name: Path<String>,
+    logstream: Path<String>,
 ) -> Result<impl Responder, StreamError> {
-    let stream_name = stream_name.into_inner();
+    let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     // For query mode, if the stream not found in memory map,
     //check if it exists in the storage
@@ -504,9 +504,9 @@ pub async fn get_stream_hot_tier(
 
 pub async fn delete_stream_hot_tier(
     req: HttpRequest,
-    stream_name: Path<String>,
+    logstream: Path<String>,
 ) -> Result<impl Responder, StreamError> {
-    let stream_name = stream_name.into_inner();
+    let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     // For query mode, if the stream not found in memory map,
     //check if it exists in the storage

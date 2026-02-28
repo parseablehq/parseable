@@ -407,6 +407,14 @@ pub struct Options {
     )]
     pub querier_endpoint: String,
 
+    #[arg(
+        long,
+        env = "P_PRISM_ENDPOINT",
+        default_value = "",
+        help = "URL to connect to the prism node. Default is the address of the server"
+    )]
+    pub prism_endpoint: String,
+
     #[command(flatten)]
     pub oidc: Option<OidcConfig>,
 
@@ -593,6 +601,7 @@ impl Options {
             Mode::Ingest => self.get_endpoint(&self.ingestor_endpoint, "P_INGESTOR_ENDPOINT"),
             Mode::Index => self.get_endpoint(&self.indexer_endpoint, "P_INDEXER_ENDPOINT"),
             Mode::Query => self.get_endpoint(&self.querier_endpoint, "P_QUERIER_ENDPOINT"),
+            Mode::Prism => self.get_endpoint(&self.prism_endpoint, "P_PRISM_ENDPOINT"),
             _ => return self.build_url(&self.address),
         };
 

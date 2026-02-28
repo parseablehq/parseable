@@ -35,14 +35,14 @@ use crate::{
     utils::get_tenant_id_from_request,
 };
 
-// Handler for POST /api/v1/user/{username}
+// Handler for POST /api/v1/user/{userid}
 // Creates a new user by username if it does not exists
 pub async fn post_user(
     req: HttpRequest,
-    username: web::Path<String>,
+    userid: web::Path<String>,
     body: Option<web::Json<serde_json::Value>>,
 ) -> Result<HttpResponse, RBACError> {
-    let username = username.into_inner();
+    let username = userid.into_inner();
 
     if let Some(body) = body {
         let user: ParseableUser = serde_json::from_value(body.into_inner())?;
@@ -198,13 +198,13 @@ pub async fn remove_roles_from_user(
     Ok(HttpResponse::Ok().status(StatusCode::OK).finish())
 }
 
-// Handler for POST /api/v1/user/{username}/generate-new-password
+// Handler for POST /api/v1/user/{userid}/generate-new-password
 // Resets password for the user to a newly generated one and returns it
 pub async fn post_gen_password(
     req: HttpRequest,
-    username: web::Path<String>,
+    userid: web::Path<String>,
 ) -> Result<HttpResponse, RBACError> {
-    let username = username.into_inner();
+    let username = userid.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     let mut new_hash = String::default();
     let mut metadata = get_metadata(&tenant_id).await?;

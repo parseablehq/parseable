@@ -26,6 +26,7 @@ use crate::handlers::http::base_path;
 use crate::handlers::http::demo_data::get_demo_data;
 use crate::handlers::http::health_check;
 use crate::handlers::http::max_event_payload_size;
+use crate::handlers::http::middleware::IntraClusterRequest;
 use crate::handlers::http::modal::initialize_hot_tier_metadata_on_startup;
 use crate::handlers::http::prism_base_path;
 use crate::handlers::http::query;
@@ -436,7 +437,12 @@ impl Server {
     // get the query factory
     // POST "/query" ==> Get results of the SQL query passed in request body
     pub fn get_query_factory() -> Resource {
-        web::resource("/query").route(web::post().to(query::query).authorize(Action::Query))
+        web::resource("/query").route(
+            web::post()
+                .to(query::query)
+                .authorize(Action::Query)
+                .wrap(IntraClusterRequest),
+        )
     }
 
     // get the logstream web scope
@@ -535,7 +541,8 @@ impl Server {
                             .route(
                                 web::get()
                                     .to(logstream::get_stream_hot_tier)
-                                    .authorize_for_resource(Action::GetHotTierEnabled),
+                                    .authorize_for_resource(Action::GetHotTierEnabled)
+                                    .wrap(IntraClusterRequest),
                             )
                             .route(
                                 web::delete()
@@ -632,7 +639,7 @@ impl Server {
                     ),
             )
             .service(
-                web::resource("/{username}").route(
+                web::resource("/{userid}").route(
                     web::get()
                         .to(http::rbac::get_prism_user)
                         .authorize_for_user(Action::GetUserRoles),
@@ -653,14 +660,14 @@ impl Server {
                     ),
             )
             .service(
-                web::resource("/{username}")
-                    // POST /user/{username} => Create a new user
+                web::resource("/{userid}")
+                    // POST /user/{userid} => Create a new user
                     .route(
                         web::post()
                             .to(http::rbac::post_user)
                             .authorize(Action::PutUser),
                     )
-                    // DELETE /user/{username} => Delete a user
+                    // DELETE /user/{userid} => Delete a user
                     .route(
                         web::delete()
                             .to(http::rbac::delete_user)
@@ -669,15 +676,15 @@ impl Server {
                     .wrap(DisAllowRootUser),
             )
             .service(
-                web::resource("/{username}/role").route(
+                web::resource("/{userid}/role").route(
                     web::get()
                         .to(http::rbac::get_role)
                         .authorize_for_user(Action::GetUserRoles),
                 ),
             )
             .service(
-                web::resource("/{username}/role/add")
-                    // PATCH /user/{username}/role/add => Add roles to a user
+                web::resource("/{userid}/role/add")
+                    // PATCH /user/{userid}/role/add => Add roles to a user
                     .route(
                         web::patch()
                             .to(http::rbac::add_roles_to_user)
@@ -686,8 +693,8 @@ impl Server {
                     ),
             )
             .service(
-                web::resource("/{username}/role/remove")
-                    // PATCH /user/{username}/role/remove => Remove roles from a user
+                web::resource("/{userid}/role/remove")
+                    // PATCH /user/{userid}/role/remove => Remove roles from a user
                     .route(
                         web::patch()
                             .to(http::rbac::remove_roles_from_user)
@@ -696,8 +703,8 @@ impl Server {
                     ),
             )
             .service(
-                web::resource("/{username}/generate-new-password")
-                    // POST /user/{username}/generate-new-password => reset password for this user
+                web::resource("/{userid}/generate-new-password")
+                    // POST /user/{userid}/generate-new-password => reset password for this user
                     .route(
                         web::post()
                             .to(http::rbac::post_gen_password)

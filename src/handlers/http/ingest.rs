@@ -436,10 +436,10 @@ pub async fn handle_otel_traces_ingestion(
 // fails if the logstream does not exist
 pub async fn post_event(
     req: HttpRequest,
-    stream_name: Path<String>,
+    logstream: Path<String>,
     Json(json): Json<StrictValue>,
 ) -> Result<HttpResponse, PostError> {
-    let stream_name = stream_name.into_inner();
+    let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     let internal_stream_names = PARSEABLE.streams.list_internal_streams(&tenant_id);
     if internal_stream_names.contains(&stream_name) {
