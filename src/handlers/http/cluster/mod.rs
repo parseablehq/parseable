@@ -412,7 +412,14 @@ pub async fn sync_streams_with_ingestors(
                 base_path_without_preceding_slash(),
                 stream_name
             );
-            let headers = reqwest_headers_clone.clone();
+            let mut headers = reqwest_headers_clone.clone();
+
+            if !headers.contains_key("intra-cluster-userid") {
+                headers.insert(
+                    reqwest::header::HeaderName::from_static("intra-cluster-userid"),
+                    reqwest::header::HeaderValue::from_str(&PARSEABLE.options.username).unwrap(),
+                );
+            }
             let body = body_clone.clone();
             async move {
                 let res = INTRA_CLUSTER_CLIENT
