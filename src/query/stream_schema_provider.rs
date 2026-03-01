@@ -629,16 +629,17 @@ impl TableProvider for StandardTableProvider {
             .await?;
         }
         if manifest_files.is_empty() {
-            QUERY_CACHE_HIT.with_label_values(&[&self.stream]).inc();
+            QUERY_CACHE_HIT
+                .with_label_values(&[
+                    &self.stream,
+                    self.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
+                ])
+                .inc();
             return self.final_plan(execution_plans, projection);
         }
 
         let (partitioned_files, statistics) = self.partitioned_files(manifest_files);
-        // let object_store_url = if let Some(tenant_id) = self.tenant_id.as_ref() {
-        //     glob_storage.store_url().join(tenant_id).unwrap()
-        // } else {
-        //     glob_storage.store_url()
-        // };
+
         let object_store_url = glob_storage.store_url();
 
         self.create_parquet_physical_plan(
