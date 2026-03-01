@@ -105,8 +105,7 @@ impl HotTierManager {
         for tenant_id in tenants {
             for stream in PARSEABLE.streams.list(&tenant_id) {
                 if self.check_stream_hot_tier_exists(&stream, &tenant_id)
-                    && stream != current_stream
-                    && tenant_id != *current_tenant_id
+                    && !(stream == current_stream && tenant_id == *current_tenant_id)
                 {
                     let stream_hot_tier = self.get_hot_tier(&stream, &tenant_id).await?;
                     total_hot_tier_size += &stream_hot_tier.size;
@@ -213,13 +212,17 @@ impl HotTierManager {
         if !self.check_stream_hot_tier_exists(stream, tenant_id) {
             return Err(HotTierValidationError::NotFound(stream.to_owned()).into());
         }
-        let path = self.hot_tier_path.join(stream);
+        let path = if let Some(tenant_id) = tenant_id.as_ref() {
+            self.hot_tier_path.join(tenant_id).join(stream)
+        } else {
+            self.hot_tier_path.join(stream)
+        };
         fs::remove_dir_all(path).await?;
 
         Ok(())
     }
 
-    ///put the hot tier metadata file for the stream
+    /// put the hot tier metadata file for the stream
     /// set the updated_date_range in the hot tier metadata file
     pub async fn put_hot_tier(
         &self,
@@ -239,10 +242,6 @@ impl HotTierManager {
         stream: &str,
         tenant_id: &Option<String>,
     ) -> Result<object_store::path::Path, HotTierError> {
-        // let path = self
-        //     .hot_tier_path
-        //     .join(stream)
-        //     .join(STREAM_HOT_TIER_FILENAME);
         let path = if let Some(tenant_id) = tenant_id.as_ref() {
             self.hot_tier_path
                 .join(tenant_id)
@@ -258,7 +257,7 @@ impl HotTierManager {
         Ok(path)
     }
 
-    ///schedule the download of the hot tier files from S3 every minute
+    /// schedule the download of the hot tier files from S3 every minute
     pub fn download_from_s3<'a>(&'a self) -> Result<(), HotTierError>
     where
         'a: 'static,
@@ -282,7 +281,7 @@ impl HotTierManager {
         Ok(())
     }
 
-    ///sync the hot tier files from S3 to the hot tier directory for all streams
+    /// sync the hot tier files from S3 to the hot tier directory for all streams
     async fn sync_hot_tier(&self) -> Result<(), HotTierError> {
         // Before syncing, check if pstats stream was created and needs hot tier
         if let Err(e) = self.create_pstats_hot_tier().await {
