@@ -594,12 +594,17 @@ impl HotTierManager {
 
     ///check if the hot tier metadata file exists for the stream
     pub fn check_stream_hot_tier_exists(&self, stream: &str, tenant_id: &Option<String>) -> bool {
-        // let path = self
-        //     .hot_tier_path
-        //     .join(stream)
-        //     .join(STREAM_HOT_TIER_FILENAME);
-        let path = self.hot_tier_file_path(stream, tenant_id).unwrap();
-        PathBuf::from(path.to_string()).exists()
+        let path = if let Some(tenant_id) = tenant_id.as_ref() {
+            self.hot_tier_path
+                .join(tenant_id)
+                .join(stream)
+                .join(STREAM_HOT_TIER_FILENAME)
+        } else {
+            self.hot_tier_path
+                .join(stream)
+                .join(STREAM_HOT_TIER_FILENAME)
+        };
+        path.exists()
     }
 
     ///delete the parquet file from the hot tier directory for the stream
