@@ -555,22 +555,23 @@ impl HotTierManager {
         &self,
         manifest_files: &mut Vec<File>,
     ) -> Result<Vec<File>, HotTierError> {
-        // Instead of reading all hot tier manifests from disk (expensive I/O on every query),
-        // check which query-relevant files exist locally in the hot tier directory.
+        // Check which query-relevant files exist locally in the hot tier directory.
         let mut hot_tier_files = Vec::new();
+        let mut remaining = Vec::with_capacity(manifest_files.len());
 
-        manifest_files.retain(|file| {
+        for file in manifest_files.drain(..) {
             let hot_tier_path = self.hot_tier_path.join(&file.file_path);
-            if hot_tier_path.exists()
-                && let Ok(meta) = std::fs::metadata(&hot_tier_path)
+            if let Ok(meta) = fs::metadata(&hot_tier_path).await
                 && meta.len() == file.file_size
             {
-                hot_tier_files.push(file.clone());
-                false
-            } else {
-                true
+                hot_tier_files.push(file);
+                continue;
             }
-        });
+
+            remaining.push(file);
+        }
+
+        *manifest_files = remaining;
 
         // Sort both lists in descending order by file path.
         hot_tier_files.sort_unstable_by(|a, b| b.file_path.cmp(&a.file_path));
