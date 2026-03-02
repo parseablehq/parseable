@@ -293,7 +293,9 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         let inner = self.inner.list(prefix);
         let res = StreamMetricWrapper {
             time,
-            labels: ["LIST", "200"],
+            provider: self.provider.clone(),
+            method: "LIST",
+            status: "200",
             inner,
         };
         Box::pin(res)
@@ -308,7 +310,9 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         let inner = self.inner.list_with_offset(prefix, offset);
         let res = StreamMetricWrapper {
             time,
-            labels: ["LIST_OFFSET", "200"],
+            provider: self.provider.clone(),
+            method: "LIST_OFFSET",
+            status: "200",
             inner,
         };
 
@@ -396,13 +400,15 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
     }
 }
 
-struct StreamMetricWrapper<'a, const N: usize, T> {
+struct StreamMetricWrapper<'a, T> {
     time: time::Instant,
-    labels: [&'static str; N],
+    provider: String,
+    method: &'static str,
+    status: &'static str,
     inner: BoxStream<'a, T>,
 }
 
-impl<T, const N: usize> Stream for StreamMetricWrapper<'_, N, T> {
+impl<T> Stream for StreamMetricWrapper<'_, T> {
     type Item = T;
 
     fn poll_next(
@@ -412,7 +418,7 @@ impl<T, const N: usize> Stream for StreamMetricWrapper<'_, N, T> {
         match self.inner.poll_next_unpin(cx) {
             t @ Poll::Ready(None) => {
                 STORAGE_REQUEST_RESPONSE_TIME
-                    .with_label_values(&self.labels)
+                    .with_label_values(&[&self.provider, self.method, self.status])
                     .observe(self.time.elapsed().as_secs_f64());
                 t
             }
