@@ -537,7 +537,9 @@ pub async fn remove_manifest_from_snapshot(
         let stream_name_clone = stream_name.to_string();
         let dates_clone = dates.clone();
 
-        for_each_live_node(tenant_id, move |ingestor| {
+        // only ingestors' snapshots contain the manifest paths, so we need to send the retention cleanup request to all ingestors
+        // querier does not have /retention/cleanup endpoint, but it does not need to receive the request since it does not have the manifest paths in its snapshot
+        let _ = for_each_live_node(tenant_id, move |ingestor| {
             let stream_name = stream_name_clone.clone();
             let dates = dates_clone.clone();
             async move {
@@ -552,7 +554,8 @@ pub async fn remove_manifest_from_snapshot(
                 Ok::<(), ObjectStorageError>(())
             }
         })
-        .await?;
+        .await
+        .map_err(|e| tracing::error!("{e}"));
     }
 
     Ok(())
