@@ -18,7 +18,9 @@
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
+    num::NonZeroUsize,
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use actix_web::http::StatusCode;
@@ -26,6 +28,8 @@ use arrow_schema::Schema;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use lru::LruCache;
+use parking_lot::Mutex;
 use relative_path::RelativePathBuf;
 use tonic::async_trait;
 use tracing::warn;
@@ -59,10 +63,58 @@ use crate::{
     users::filters::{Filter, migrate_v1_v2},
 };
 
+/// Default manifest LRU cache capacity
+const MANIFEST_CACHE_SIZE: usize = 512;
+/// Default stream JSON cache TTL
+const STREAM_JSON_CACHE_TTL: Duration = Duration::from_secs(300); // 5 minutes
+
+/// Cached entry with a TTL
+#[derive(Debug, Clone)]
+struct CachedEntry<T> {
+    value: T,
+    inserted_at: Instant,
+}
+
+impl<T> CachedEntry<T> {
+    fn new(value: T) -> Self {
+        Self {
+            value,
+            inserted_at: Instant::now(),
+        }
+    }
+
+    fn is_expired(&self, ttl: Duration) -> bool {
+        self.inserted_at.elapsed() > ttl
+    }
+}
+
 /// Using PARSEABLE's storage as a metastore (default)
-#[derive(Debug)]
 pub struct ObjectStoreMetastore {
     pub storage: Arc<dyn ObjectStorage>,
+    /// LRU cache for manifest files, keyed by manifest path
+    manifest_cache: Mutex<LruCache<String, Manifest>>,
+    /// Cache for stream JSON files with TTL, keyed by (stream_name, tenant_id)
+    stream_json_cache: Mutex<HashMap<String, CachedEntry<Bytes>>>,
+}
+
+impl std::fmt::Debug for ObjectStoreMetastore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ObjectStoreMetastore")
+            .field("storage", &self.storage)
+            .finish()
+    }
+}
+
+impl ObjectStoreMetastore {
+    pub fn new(storage: Arc<dyn ObjectStorage>) -> Self {
+        Self {
+            storage,
+            manifest_cache: Mutex::new(LruCache::new(
+                NonZeroUsize::new(MANIFEST_CACHE_SIZE).unwrap(),
+            )),
+            stream_json_cache: Mutex::new(HashMap::new()),
+        }
+    }
 }
 
 #[async_trait]
@@ -869,7 +921,27 @@ impl Metastore for ObjectStoreMetastore {
         } else {
             stream_json_path(stream_name, tenant_id)
         };
-        Ok(self.storage.get_object(&path, tenant_id).await?)
+
+        let cache_key = path.to_string();
+
+        // Check stream JSON cache (with TTL)
+        {
+            let cache = self.stream_json_cache.lock();
+            if let Some(entry) = cache.get(&cache_key)
+                && !entry.is_expired(STREAM_JSON_CACHE_TTL)
+            {
+                return Ok(entry.value.clone());
+            }
+        }
+
+        let bytes = self.storage.get_object(&path, tenant_id).await?;
+
+        // Cache the result
+        self.stream_json_cache
+            .lock()
+            .insert(cache_key, CachedEntry::new(bytes.clone()));
+
+        Ok(bytes)
     }
 
     /// Fetch all `ObjectStoreFormat` present in a stream folder
@@ -922,10 +994,17 @@ impl Metastore for ObjectStoreMetastore {
     ) -> Result<(), MetastoreError> {
         let path = stream_json_path(stream_name, tenant_id);
 
-        Ok(self
-            .storage
-            .put_object(&path, to_bytes(obj), tenant_id)
-            .await?)
+        let bytes = to_bytes(obj);
+        self.storage
+            .put_object(&path, bytes.clone(), tenant_id)
+            .await?;
+
+        // Update the stream JSON cache with the new value
+        self.stream_json_cache
+            .lock()
+            .insert(path.to_string(), CachedEntry::new(bytes));
+
+        Ok(())
     }
 
     /// Fetch all `Manifest` files
@@ -980,7 +1059,7 @@ impl Metastore for ObjectStoreMetastore {
         Ok(result_file_list)
     }
 
-    /// Fetch a specific `Manifest` file
+    /// Fetch a specific `Manifest` file (with LRU cache)
     async fn get_manifest(
         &self,
         stream_name: &str,
@@ -996,26 +1075,24 @@ impl Metastore for ObjectStoreMetastore {
                 manifest_path(path.as_str())
             }
         };
+
+        let cache_key = path.to_string();
+
+        // Check LRU cache first
+        if let Some(cached) = self.manifest_cache.lock().get(&cache_key) {
+            return Ok(Some(cached.clone()));
+        }
+
         match self.storage.get_object(&path, tenant_id).await {
             Ok(bytes) => {
-                let manifest = serde_json::from_slice(&bytes)?;
+                let manifest: Manifest = serde_json::from_slice(&bytes)?;
+                // Insert into LRU cache
+                self.manifest_cache.lock().put(cache_key, manifest.clone());
                 Ok(Some(manifest))
             }
             Err(ObjectStorageError::NoSuchKey(_)) => Ok(None),
             Err(err) => Err(MetastoreError::ObjectStorageError(err)),
         }
-        // let path = partition_path(stream_name, lower_bound, upper_bound);
-        // // // need a 'ends with `manifest.json` condition here'
-        // // let obs = self
-        // //     .storage
-        // //     .get_objects(
-        // //         path,
-        // //         Box::new(|file_name| file_name.ends_with("manifest.json")),
-        // //     )
-        // //     .await?;
-        // warn!(partition_path=?path);
-        // let path = manifest_path(path.as_str());
-        // warn!(manifest_path=?path);
     }
 
     /// Get the path for a specific `Manifest` file
@@ -1045,10 +1122,17 @@ impl Metastore for ObjectStoreMetastore {
         let path = partition_path(stream_name, lower_bound, upper_bound, tenant_id)
             .join(&manifest_file_name);
 
-        Ok(self
-            .storage
-            .put_object(&path, to_bytes(obj), tenant_id)
-            .await?)
+        let bytes = to_bytes(obj);
+        self.storage
+            .put_object(&path, bytes.clone(), tenant_id)
+            .await?;
+
+        // Update the manifest cache with the newly written manifest
+        if let Ok(manifest) = serde_json::from_slice::<Manifest>(&bytes) {
+            self.manifest_cache.lock().put(path.to_string(), manifest);
+        }
+
+        Ok(())
     }
 
     async fn delete_manifest(
@@ -1061,6 +1145,10 @@ impl Metastore for ObjectStoreMetastore {
         let manifest_file_name = manifest_path("").to_string();
         let path = partition_path(stream_name, lower_bound, upper_bound, tenant_id)
             .join(&manifest_file_name);
+
+        // Remove from manifest cache
+        self.manifest_cache.lock().pop(&path.to_string());
+
         Ok(self.storage.delete_object(&path, tenant_id).await?)
     }
 

@@ -40,34 +40,33 @@ impl Default for Snapshot {
 
 impl super::Snapshot for Snapshot {
     fn manifests(&self, time_predicates: &[PartialTimeFilter]) -> Vec<ManifestItem> {
-        let mut manifests = self.manifest_list.clone();
-        for predicate in time_predicates {
-            match predicate {
-                PartialTimeFilter::Low(Bound::Included(time)) => manifests.retain(|item| {
-                    let time = time.and_utc();
-                    item.time_upper_bound >= time
-                }),
-                PartialTimeFilter::Low(Bound::Excluded(time)) => manifests.retain(|item| {
-                    let time = time.and_utc();
-                    item.time_upper_bound > time
-                }),
-                PartialTimeFilter::High(Bound::Included(time)) => manifests.retain(|item| {
-                    let time = time.and_utc();
-                    item.time_lower_bound <= time
-                }),
-                PartialTimeFilter::High(Bound::Excluded(time)) => manifests.retain(|item| {
-                    let time = time.and_utc();
-                    item.time_lower_bound < time
-                }),
-                PartialTimeFilter::Eq(time) => manifests.retain(|item| {
-                    let time = time.and_utc();
-                    item.time_lower_bound <= time && time <= item.time_upper_bound
-                }),
-                _ => (),
-            }
-        }
-
-        manifests
+        // Avoid cloning the entire manifest list upfront; instead filter by reference
+        // and only clone items that match all predicates.
+        self.manifest_list
+            .iter()
+            .filter(|item| {
+                time_predicates.iter().all(|predicate| match predicate {
+                    PartialTimeFilter::Low(Bound::Included(time)) => {
+                        item.time_upper_bound >= time.and_utc()
+                    }
+                    PartialTimeFilter::Low(Bound::Excluded(time)) => {
+                        item.time_upper_bound > time.and_utc()
+                    }
+                    PartialTimeFilter::High(Bound::Included(time)) => {
+                        item.time_lower_bound <= time.and_utc()
+                    }
+                    PartialTimeFilter::High(Bound::Excluded(time)) => {
+                        item.time_lower_bound < time.and_utc()
+                    }
+                    PartialTimeFilter::Eq(time) => {
+                        let time = time.and_utc();
+                        item.time_lower_bound <= time && time <= item.time_upper_bound
+                    }
+                    _ => true,
+                })
+            })
+            .cloned()
+            .collect()
     }
 }
 

@@ -166,6 +166,7 @@ prost = "0.13.1"
 dashmap = "6.1.0"
 parking_lot = "0.12.5"
 indexmap = { version = "2.13.0", features = ["serde"] }
+lru = "0.16.3"
 
 [build-dependencies]
 cargo_toml = "0.21"

@@ -460,8 +460,18 @@ pub async fn create_streams_for_distributed(
     if PARSEABLE.options.mode != Mode::Query && PARSEABLE.options.mode != Mode::Prism {
         return Ok(());
     }
+    // Skip streams already loaded in memory — avoids redundant S3 list_streams + metadata calls
+    let streams_to_create: Vec<_> = streams
+        .into_iter()
+        .filter(|stream_name| PARSEABLE.get_stream(stream_name, tenant_id).is_err())
+        .collect();
+
+    if streams_to_create.is_empty() {
+        return Ok(());
+    }
+
     let mut join_set = JoinSet::new();
-    for stream_name in streams {
+    for stream_name in streams_to_create {
         let id = tenant_id.to_owned();
         join_set.spawn(async move {
             let result = PARSEABLE

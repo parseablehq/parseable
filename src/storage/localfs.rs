@@ -288,10 +288,11 @@ impl ObjectStorage for LocalFS {
             }
         };
 
-        let mut res = Vec::new();
+        // Phase 1: Collect matching file paths from directory listing
+        let mut matching_paths = Vec::new();
         let mut files_scanned = 0;
         while let Some(entry) = entries.next_entry().await? {
-            let path = entry
+            let name = entry
                 .path()
                 .file_name()
                 .ok_or(ObjectStorageError::NoSuchKey(
@@ -302,32 +303,8 @@ impl ObjectStorage for LocalFS {
                 .to_owned();
 
             files_scanned += 1;
-            let ingestor_file = filter_func(path);
-
-            if !ingestor_file {
-                continue;
-            }
-
-            let file_result = fs::read(entry.path()).await;
-            match file_result {
-                Ok(file) => {
-                    // Record total files scanned
-                    increment_files_scanned_in_object_store_calls_by_date(
-                        "GET",
-                        1,
-                        &Utc::now().date_naive().to_string(),
-                        tenant_str,
-                    );
-                    increment_object_store_calls_by_date(
-                        "GET",
-                        &Utc::now().date_naive().to_string(),
-                        tenant_str,
-                    );
-                    res.push(file.into());
-                }
-                Err(err) => {
-                    return Err(err.into());
-                }
+            if filter_func(name) {
+                matching_paths.push(entry.path());
             }
         }
 
@@ -342,6 +319,32 @@ impl ObjectStorage for LocalFS {
             &Utc::now().date_naive().to_string(),
             tenant_str,
         );
+
+        // Phase 2: Read all matching files concurrently
+        let tenant_str_owned = tenant_str.to_owned();
+        let res: Vec<Bytes> = matching_paths
+            .into_iter()
+            .map(|path| {
+                let tenant = tenant_str_owned.clone();
+                async move {
+                    let file = fs::read(&path).await.map_err(ObjectStorageError::from)?;
+                    increment_files_scanned_in_object_store_calls_by_date(
+                        "GET",
+                        1,
+                        &Utc::now().date_naive().to_string(),
+                        &tenant,
+                    );
+                    increment_object_store_calls_by_date(
+                        "GET",
+                        &Utc::now().date_naive().to_string(),
+                        &tenant,
+                    );
+                    Ok::<Bytes, ObjectStorageError>(file.into())
+                }
+            })
+            .collect::<FuturesUnordered<_>>()
+            .try_collect()
+            .await?;
 
         Ok(res)
     }
