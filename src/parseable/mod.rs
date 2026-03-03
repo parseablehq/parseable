@@ -119,9 +119,7 @@ pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| match Cli::parse().storage 
         }
 
         // for now create a metastore without using a CLI arg
-        let metastore = ObjectStoreMetastore {
-            storage: args.storage.construct_client(),
-        };
+        let metastore = ObjectStoreMetastore::new(args.storage.construct_client());
 
         Parseable::new(
             args.options,
@@ -133,9 +131,7 @@ pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| match Cli::parse().storage 
     }
     StorageOptions::S3(args) => {
         // for now create a metastore without using a CLI arg
-        let metastore = ObjectStoreMetastore {
-            storage: args.storage.construct_client(),
-        };
+        let metastore = ObjectStoreMetastore::new(args.storage.construct_client());
         Parseable::new(
             args.options,
             #[cfg(feature = "kafka")]
@@ -146,9 +142,7 @@ pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| match Cli::parse().storage 
     }
     StorageOptions::Blob(args) => {
         // for now create a metastore without using a CLI arg
-        let metastore = ObjectStoreMetastore {
-            storage: args.storage.construct_client(),
-        };
+        let metastore = ObjectStoreMetastore::new(args.storage.construct_client());
         Parseable::new(
             args.options,
             #[cfg(feature = "kafka")]
@@ -159,9 +153,7 @@ pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| match Cli::parse().storage 
     }
     StorageOptions::Gcs(args) => {
         // for now create a metastore without using a CLI arg
-        let metastore = ObjectStoreMetastore {
-            storage: args.storage.construct_client(),
-        };
+        let metastore = ObjectStoreMetastore::new(args.storage.construct_client());
         Parseable::new(
             args.options,
             #[cfg(feature = "kafka")]

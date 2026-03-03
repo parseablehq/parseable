@@ -22,6 +22,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use dashmap::{DashMap, DashSet};
+
 use crate::{
     catalog::manifest::{File, Manifest},
     handlers::http::cluster::PMETA_STREAM_NAME,
@@ -67,6 +69,12 @@ pub struct StreamHotTier {
 pub struct HotTierManager {
     filesystem: LocalFileSystem,
     hot_tier_path: &'static Path,
+    /// In-memory index of files present in hot tier: file_path -> file_size.
+    /// Avoids per-file filesystem stat calls during query.
+    cached_files: DashMap<String, u64>,
+    /// Tracks which streams have hot tier enabled (key: "tenant/stream" or "stream").
+    /// Avoids blocking filesystem stat calls in async context on every query.
+    enabled_streams: DashSet<String>,
 }
 
 impl HotTierManager {
@@ -75,6 +83,8 @@ impl HotTierManager {
         HotTierManager {
             filesystem: LocalFileSystem::new(),
             hot_tier_path,
+            cached_files: DashMap::new(),
+            enabled_streams: DashSet::new(),
         }
     }
 
@@ -213,12 +223,23 @@ impl HotTierManager {
         if !self.check_stream_hot_tier_exists(stream, tenant_id) {
             return Err(HotTierValidationError::NotFound(stream.to_owned()).into());
         }
+        // Build the prefix to match index entries for this stream
+        let prefix = if let Some(tenant_id) = tenant_id.as_ref() {
+            format!("{tenant_id}/{stream}/")
+        } else {
+            format!("{stream}/")
+        };
+        // Remove all cached entries for this stream from the in-memory index
+        self.cached_files.retain(|k, _| !k.starts_with(&prefix));
+
         let path = if let Some(tenant_id) = tenant_id.as_ref() {
             self.hot_tier_path.join(tenant_id).join(stream)
         } else {
             self.hot_tier_path.join(stream)
         };
         fs::remove_dir_all(path).await?;
+        self.enabled_streams
+            .remove(&Self::stream_key(stream, tenant_id));
 
         Ok(())
     }
@@ -234,6 +255,8 @@ impl HotTierManager {
         let path = self.hot_tier_file_path(stream, tenant_id)?;
         let bytes = serde_json::to_vec(&hot_tier)?.into();
         self.filesystem.put(&path, bytes).await?;
+        self.enabled_streams
+            .insert(Self::stream_key(stream, tenant_id));
         Ok(())
     }
 
@@ -263,6 +286,47 @@ impl HotTierManager {
     where
         'a: 'static,
     {
+        // Populate the in-memory cache from existing hot tier files on disk.
+        // Runs in a blocking thread pool task to avoid stalling the async runtime.
+        // Queries arriving before this completes will simply not find files in the
+        // cache and fall through to remote storage (same behavior as before caching).
+        let hot_tier_path = self.hot_tier_path;
+        let cached_files = &self.cached_files;
+        let enabled_streams = &self.enabled_streams;
+        drop(tokio::task::spawn_blocking(move || {
+            fn walk_dir(
+                dir: &Path,
+                hot_tier_root: &Path,
+                index: &DashMap<String, u64>,
+                streams: &DashSet<String>,
+            ) {
+                let entries = match std::fs::read_dir(dir) {
+                    Ok(entries) => entries,
+                    Err(_) => return,
+                };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        walk_dir(&path, hot_tier_root, index, streams);
+                    } else if path.extension().is_some_and(|ext| ext == "parquet")
+                        && let Ok(meta) = entry.metadata()
+                        && let Ok(rel) = path.strip_prefix(hot_tier_root)
+                    {
+                        index.insert(rel.to_string_lossy().into_owned(), meta.len());
+                    } else if path
+                        .file_name()
+                        .is_some_and(|n| n == STREAM_HOT_TIER_FILENAME)
+                        && let Ok(rel) = path.strip_prefix(hot_tier_root)
+                        && let Some(stream_dir) = rel.parent()
+                    {
+                        // Register "tenant/stream" or "stream" in the enabled set
+                        streams.insert(stream_dir.to_string_lossy().into_owned());
+                    }
+                }
+            }
+            walk_dir(hot_tier_path, hot_tier_path, cached_files, enabled_streams);
+        }));
+
         let mut scheduler = AsyncScheduler::new();
         scheduler
             .every(HOT_TIER_SYNC_DURATION)
@@ -444,6 +508,9 @@ impl HotTierManager {
             .get_object(&parquet_file_path, tenant_id)
             .await?;
         file.write_all(&parquet_data).await?;
+        // Update the in-memory index with the newly downloaded file
+        self.cached_files
+            .insert(parquet_file.file_path.clone(), parquet_file.file_size);
         *parquet_file_size += parquet_file.file_size;
         stream_hot_tier.used_size = *parquet_file_size;
 
@@ -550,32 +617,28 @@ impl HotTierManager {
         }
     }
 
-    /// Returns the list of manifest files present in hot tier directory for the stream
+    /// Returns the list of manifest files present in hot tier directory for the stream.
+    /// Uses the in-memory index for O(1) lookups per file instead of filesystem stat calls.
     pub async fn get_hot_tier_manifest_files(
         &self,
         manifest_files: &mut Vec<File>,
     ) -> Result<Vec<File>, HotTierError> {
-        // Check which query-relevant files exist locally in the hot tier directory.
         let mut hot_tier_files = Vec::new();
         let mut remaining = Vec::with_capacity(manifest_files.len());
 
         for file in manifest_files.drain(..) {
-            let hot_tier_path = self.hot_tier_path.join(&file.file_path);
-            if let Ok(meta) = fs::metadata(&hot_tier_path).await
-                && meta.len() == file.file_size
+            if self
+                .cached_files
+                .get(&file.file_path)
+                .is_some_and(|size| *size == file.file_size)
             {
                 hot_tier_files.push(file);
-                continue;
+            } else {
+                remaining.push(file);
             }
-
-            remaining.push(file);
         }
 
         *manifest_files = remaining;
-
-        // Sort both lists in descending order by file path.
-        hot_tier_files.sort_unstable_by(|a, b| b.file_path.cmp(&a.file_path));
-        manifest_files.sort_unstable_by(|a, b| b.file_path.cmp(&a.file_path));
 
         Ok(hot_tier_files)
     }
@@ -612,19 +675,21 @@ impl HotTierManager {
         Ok(hot_tier_parquet_files)
     }
 
-    ///check if the hot tier metadata file exists for the stream
-    pub fn check_stream_hot_tier_exists(&self, stream: &str, tenant_id: &Option<String>) -> bool {
-        let path = if let Some(tenant_id) = tenant_id.as_ref() {
-            self.hot_tier_path
-                .join(tenant_id)
-                .join(stream)
-                .join(STREAM_HOT_TIER_FILENAME)
+    /// Key for the enabled_streams set: "tenant/stream" or "stream".
+    fn stream_key(stream: &str, tenant_id: &Option<String>) -> String {
+        if let Some(tenant_id) = tenant_id.as_ref() {
+            format!("{tenant_id}/{stream}")
         } else {
-            self.hot_tier_path
-                .join(stream)
-                .join(STREAM_HOT_TIER_FILENAME)
-        };
-        path.exists()
+            stream.to_owned()
+        }
+    }
+
+    /// Check if the hot tier is enabled for the stream.
+    /// Uses the in-memory set populated at startup and kept in sync
+    /// by put_hot_tier / delete_hot_tier, avoiding blocking I/O.
+    pub fn check_stream_hot_tier_exists(&self, stream: &str, tenant_id: &Option<String>) -> bool {
+        self.enabled_streams
+            .contains(&Self::stream_key(stream, tenant_id))
     }
 
     ///delete the parquet file from the hot tier directory for the stream
@@ -685,6 +750,9 @@ impl HotTierManager {
                             path_to_delete.parent().unwrap().to_path_buf(),
                         )
                         .await?;
+
+                        // Remove deleted file from in-memory index
+                        self.cached_files.remove(&file_to_delete.file_path);
 
                         stream_hot_tier.used_size -= file_size;
                         stream_hot_tier.available_size += file_size;

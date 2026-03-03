@@ -721,10 +721,10 @@ impl ObjectStorage for S3 {
 
         let mut list_stream = self.client.list(Some(&prefix));
 
-        let mut res = vec![];
+        // Phase 1: Collect matching paths from listing
+        let mut matching_paths = vec![];
         let mut files_scanned = 0;
 
-        // Note: We track each streaming list item retrieval
         while let Some(meta_result) = list_stream.next().await {
             let meta = match meta_result {
                 Ok(meta) => meta,
@@ -734,21 +734,13 @@ impl ObjectStorage for S3 {
             };
 
             files_scanned += 1;
-            let ingestor_file = filter_func(meta.location.filename().unwrap().to_string());
-
-            if !ingestor_file {
-                continue;
+            if filter_func(meta.location.filename().unwrap().to_string()) {
+                let path = RelativePathBuf::from_path(meta.location.as_ref())
+                    .map_err(ObjectStorageError::PathError)?;
+                matching_paths.push(path);
             }
-
-            let byts = self
-                .get_object(
-                    RelativePath::from_path(meta.location.as_ref())
-                        .map_err(ObjectStorageError::PathError)?,
-                    tenant_id,
-                )
-                .await?;
-            res.push(byts);
         }
+
         // Record total files scanned
         increment_files_scanned_in_object_store_calls_by_date(
             "LIST",
@@ -761,6 +753,18 @@ impl ObjectStorage for S3 {
             &Utc::now().date_naive().to_string(),
             tenant_str,
         );
+
+        // Phase 2: Fetch all matching objects concurrently
+        let res: Vec<Bytes> = matching_paths
+            .into_iter()
+            .map(|path| {
+                let tenant_id = tenant_id.clone();
+                async move { self.get_object(&path, &tenant_id).await }
+            })
+            .collect::<FuturesUnordered<_>>()
+            .try_collect()
+            .await?;
+
         Ok(res)
     }
 

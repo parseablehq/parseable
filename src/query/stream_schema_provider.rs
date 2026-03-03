@@ -44,7 +44,7 @@ use datafusion::{
     prelude::Expr,
     scalar::ScalarValue,
 };
-use futures_util::TryFutureExt;
+use futures_util::{TryFutureExt, future::join_all};
 use itertools::Itertools;
 
 use crate::{
@@ -391,17 +391,20 @@ impl StandardTableProvider {
             let pf = PartitionedFile::new(file_path, file.file_size);
             partitioned_files[index].push(pf);
 
-            columns.into_iter().for_each(|col| {
-                column_statistics
-                    .entry(col.name)
-                    .and_modify(|x| {
-                        if let Some((stats, col_stats)) = x.as_ref().cloned().zip(col.stats.clone())
+            for col in columns {
+                match column_statistics.entry(col.name) {
+                    std::collections::hash_map::Entry::Occupied(mut entry) => {
+                        if let (Some(existing), Some(new_stats)) =
+                            (entry.get_mut().take(), col.stats)
                         {
-                            *x = Some(stats.update(col_stats));
+                            *entry.get_mut() = Some(existing.update(new_stats));
                         }
-                    })
-                    .or_insert_with(|| col.stats.as_ref().cloned());
-            });
+                    }
+                    std::collections::hash_map::Entry::Vacant(entry) => {
+                        entry.insert(col.stats);
+                    }
+                }
+            }
             count += num_rows;
         }
         let statistics = self
@@ -450,29 +453,41 @@ async fn collect_from_snapshot(
     stream_name: &str,
     tenant_id: &Option<String>,
 ) -> Result<Vec<File>, DataFusionError> {
-    let mut manifest_files = Vec::new();
+    let manifest_items = snapshot.manifests(time_filters);
 
-    for manifest_item in snapshot.manifests(time_filters) {
-        let manifest_opt = PARSEABLE
-            .metastore
-            .get_manifest(
-                stream_name,
-                manifest_item.time_lower_bound,
-                manifest_item.time_upper_bound,
-                Some(manifest_item.manifest_path),
-                tenant_id,
-            )
-            .await
-            .map_err(|e| DataFusionError::Plan(e.to_string()))?;
-        if let Some(manifest) = manifest_opt {
-            manifest_files.push(manifest);
-        } else {
-            tracing::warn!(
-                "Manifest missing for stream={} [{:?} - {:?}]",
-                stream_name,
-                manifest_item.time_lower_bound,
-                manifest_item.time_upper_bound
-            );
+    // Fetch all manifests concurrently instead of sequentially
+    let manifest_futures: Vec<_> = manifest_items
+        .into_iter()
+        .map(|item| async move {
+            let result = PARSEABLE
+                .metastore
+                .get_manifest(
+                    stream_name,
+                    item.time_lower_bound,
+                    item.time_upper_bound,
+                    Some(item.manifest_path),
+                    tenant_id,
+                )
+                .await;
+            (result, item.time_lower_bound, item.time_upper_bound)
+        })
+        .collect();
+
+    let results = join_all(manifest_futures).await;
+
+    let mut manifest_files = Vec::with_capacity(results.len());
+    for (result, lower, upper) in results {
+        match result {
+            Ok(Some(manifest)) => manifest_files.push(manifest),
+            Ok(None) => {
+                tracing::warn!(
+                    "Manifest missing for stream={} [{:?} - {:?}]",
+                    stream_name,
+                    lower,
+                    upper
+                );
+            }
+            Err(e) => return Err(DataFusionError::Plan(e.to_string())),
         }
     }
 
@@ -481,26 +496,20 @@ async fn collect_from_snapshot(
         .flat_map(|file| file.files)
         .rev()
         .collect();
-    for filter in filters {
-        manifest_files.retain(|file| !file.can_be_pruned(filter))
-    }
-    if let Some(limit) = limit {
-        let limit = limit as u64;
-        let mut curr_limit = 0;
-        let mut pos = None;
 
-        for (index, file) in manifest_files.iter().enumerate() {
-            curr_limit += file.num_rows();
-            if curr_limit >= limit {
-                pos = Some(index);
-                break;
-            }
+    // Single-pass: evaluate all filters per file and accumulate rows for limit.
+    let limit_rows = limit.map(|l| l as u64);
+    let mut curr_rows = 0u64;
+    manifest_files.retain(|file| {
+        if limit_rows.is_some_and(|l| curr_rows >= l) {
+            return false;
         }
-
-        if let Some(pos) = pos {
-            manifest_files.truncate(pos + 1);
+        if filters.iter().any(|f| file.can_be_pruned(f)) {
+            return false;
         }
-    }
+        curr_rows += file.num_rows();
+        true
+    });
 
     Ok(manifest_files)
 }
@@ -529,16 +538,43 @@ impl TableProvider for StandardTableProvider {
         let mut execution_plans = vec![];
         let glob_storage = PARSEABLE.storage.get_object_store();
 
-        let object_store_format: ObjectStoreFormat = serde_json::from_slice(
-            &PARSEABLE
-                .metastore
-                .get_stream_json(&self.stream, false, &self.tenant_id)
-                .await
-                .map_err(|e| DataFusionError::Plan(e.to_string()))?,
-        )
-        .map_err(|e| DataFusionError::Plan(e.to_string()))?;
+        // In Query/Prism mode, get_all_stream_jsons already includes the base
+        // stream.json, so we extract time_partition and snapshot from it directly
+        // instead of making a separate get_stream_json call.
+        let (time_partition, merged_snapshot) =
+            if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
+                let obs = PARSEABLE
+                    .metastore
+                    .get_all_stream_jsons(&self.stream, None, &self.tenant_id)
+                    .await;
+                let mut time_partition = None;
+                let mut snapshot = Snapshot::default();
+                if let Ok(obs) = obs {
+                    for ob in obs {
+                        if let Ok(osf) = serde_json::from_slice::<ObjectStoreFormat>(&ob) {
+                            if time_partition.is_none() {
+                                time_partition = osf.time_partition;
+                            }
+                            snapshot.manifest_list.extend(osf.snapshot.manifest_list);
+                        }
+                    }
+                }
+                (time_partition, snapshot)
+            } else {
+                let object_store_format: ObjectStoreFormat = serde_json::from_slice(
+                    &PARSEABLE
+                        .metastore
+                        .get_stream_json(&self.stream, false, &self.tenant_id)
+                        .await
+                        .map_err(|e| DataFusionError::Plan(e.to_string()))?,
+                )
+                .map_err(|e| DataFusionError::Plan(e.to_string()))?;
+                (
+                    object_store_format.time_partition,
+                    object_store_format.snapshot,
+                )
+            };
 
-        let time_partition = object_store_format.time_partition;
         let mut time_filters = extract_primary_filter(filters, &time_partition);
         if is_within_staging_window(&time_filters) {
             self.get_staging_execution_plan(
@@ -551,27 +587,6 @@ impl TableProvider for StandardTableProvider {
             )
             .await?;
         };
-        let mut merged_snapshot = Snapshot::default();
-        if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
-            let obs = PARSEABLE
-                .metastore
-                .get_all_stream_jsons(&self.stream, None, &self.tenant_id)
-                .await;
-            if let Ok(obs) = obs {
-                for ob in obs {
-                    if let Ok(object_store_format) =
-                        serde_json::from_slice::<ObjectStoreFormat>(&ob)
-                    {
-                        let snapshot = object_store_format.snapshot;
-                        for manifest in snapshot.manifest_list {
-                            merged_snapshot.manifest_list.push(manifest);
-                        }
-                    }
-                }
-            }
-        } else {
-            merged_snapshot = object_store_format.snapshot;
-        }
 
         // Is query timerange is overlapping with older data.
         // if true, then get listing table time filters and execution plan separately
