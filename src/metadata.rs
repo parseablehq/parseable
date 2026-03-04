@@ -93,7 +93,8 @@ pub struct LogStreamMetadata {
     pub stream_type: StreamType,
     pub log_source: Vec<LogSourceEntry>,
     pub telemetry_type: TelemetryType,
-    pub dataset_tag: Option<DatasetTag>,
+    pub dataset_tags: Vec<DatasetTag>,
+    pub dataset_labels: Vec<String>,
 }
 
 impl LogStreamMetadata {
@@ -109,7 +110,8 @@ impl LogStreamMetadata {
         schema_version: SchemaVersion,
         log_source: Vec<LogSourceEntry>,
         telemetry_type: TelemetryType,
-        dataset_tag: Option<DatasetTag>,
+        dataset_tags: Vec<DatasetTag>,
+        dataset_labels: Vec<String>,
     ) -> Self {
         LogStreamMetadata {
             created_at: if created_at.is_empty() {
@@ -134,7 +136,8 @@ impl LogStreamMetadata {
             schema_version,
             log_source,
             telemetry_type,
-            dataset_tag,
+            dataset_tags,
+            dataset_labels,
             ..Default::default()
         }
     }

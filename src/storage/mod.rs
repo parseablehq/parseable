@@ -131,8 +131,10 @@ pub struct ObjectStoreFormat {
     pub log_source: Vec<LogSourceEntry>,
     #[serde(default)]
     pub telemetry_type: TelemetryType,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dataset_tag: Option<DatasetTag>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dataset_tags: Vec<DatasetTag>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dataset_labels: Vec<String>,
 }
 
 impl MetastoreObject for ObjectStoreFormat {
@@ -173,8 +175,10 @@ pub struct StreamInfo {
     pub telemetry_type: TelemetryType,
     #[serde(default)]
     pub hot_tier_enabled: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dataset_tag: Option<DatasetTag>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dataset_tags: Vec<DatasetTag>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dataset_labels: Vec<String>,
 }
 
 impl StreamInfo {
@@ -197,7 +201,8 @@ impl StreamInfo {
             log_source: metadata.log_source.clone(),
             telemetry_type: metadata.telemetry_type,
             hot_tier_enabled: metadata.hot_tier_enabled,
-            dataset_tag: metadata.dataset_tag,
+            dataset_tags: metadata.dataset_tags.clone(),
+            dataset_labels: metadata.dataset_labels.clone(),
         }
     }
 }
@@ -279,7 +284,8 @@ impl Default for ObjectStoreFormat {
             hot_tier: None,
             log_source: vec![LogSourceEntry::default()],
             telemetry_type: TelemetryType::Logs,
-            dataset_tag: None,
+            dataset_tags: Vec::new(),
+            dataset_labels: Vec::new(),
         }
     }
 }

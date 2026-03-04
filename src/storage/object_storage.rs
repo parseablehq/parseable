@@ -45,6 +45,7 @@ use ulid::Ulid;
 use crate::catalog::{self, snapshot::Snapshot};
 use crate::event::format::LogSource;
 use crate::event::format::LogSourceEntry;
+use crate::handlers::DatasetTag;
 use crate::handlers::http::fetch_schema;
 use crate::handlers::http::modal::ingest_server::INGESTOR_EXPECT;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
@@ -486,6 +487,31 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
         )?;
         format.log_source = log_source.to_owned();
+        PARSEABLE
+            .metastore
+            .put_stream_json(&format, stream_name, tenant_id)
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
+
+        Ok(())
+    }
+
+    async fn update_dataset_tags_and_labels_in_stream(
+        &self,
+        stream_name: &str,
+        tags: &[DatasetTag],
+        labels: &[String],
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError> {
+        let mut format: ObjectStoreFormat = serde_json::from_slice(
+            &PARSEABLE
+                .metastore
+                .get_stream_json(stream_name, false, tenant_id)
+                .await
+                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
+        )?;
+        format.dataset_tags = tags.to_owned();
+        format.dataset_labels = labels.to_owned();
         PARSEABLE
             .metastore
             .put_stream_json(&format, stream_name, tenant_id)

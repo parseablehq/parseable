@@ -199,14 +199,33 @@ impl Server {
     }
 
     pub fn get_prism_datasets() -> Scope {
-        web::scope("/datasets").route(
-            "",
-            web::post()
-                .to(http::prism_logstream::post_datasets)
-                .authorize_for_resource(Action::GetStreamInfo)
-                .authorize_for_resource(Action::GetStats)
-                .authorize_for_resource(Action::GetRetention),
-        )
+        web::scope("/datasets")
+            .route(
+                "",
+                web::post()
+                    .to(http::prism_logstream::post_datasets)
+                    .authorize_for_resource(Action::GetStreamInfo)
+                    .authorize_for_resource(Action::GetStats)
+                    .authorize_for_resource(Action::GetRetention),
+            )
+            .route(
+                "/tags/{tag}",
+                web::get()
+                    .to(http::datasets::get_datasets_by_tag)
+                    .authorize_for_resource(Action::GetStreamInfo),
+            )
+            .route(
+                "/{name}/correlated",
+                web::get()
+                    .to(http::datasets::get_correlated_datasets)
+                    .authorize_for_resource(Action::GetStreamInfo),
+            )
+            .route(
+                "/{name}",
+                web::put()
+                    .to(http::datasets::put_dataset_metadata)
+                    .authorize_for_resource(Action::CreateStream),
+            )
     }
 
     pub fn get_demo_data_webscope() -> Scope {
