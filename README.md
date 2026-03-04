@@ -17,7 +17,14 @@
 
 </div>
 
-Parseable is a full stack observability platform built to ingest, analyze and extract insights from all types of telemetry (MELT) data. You can run Parseable on your local machine, in the cloud, or as a managed service. To experience Parseable UI, checkout [demo.parseable.com ↗︎](https://demo.parseable.com/login).
+Parseable is a full stack observability platform built to ingest, analyze and extract insights from all types of telemetry (MELT) data. You can run Parseable on your local machine, in the cloud, or use [Parseable Cloud](https://app.parseable.com) — the fully managed service. To experience Parseable UI, checkout [demo.parseable.com ↗︎](https://demo.parseable.com/login).
+
+<div align="center">
+<h3>
+  <a href="https://app.parseable.com">Try Parseable Cloud — Start Free ↗︎</a>
+</h3>
+<p><i>The fastest way to get started. No infrastructure to manage.</i></p>
+</div>
 
 <div align="center">
   <a href="http://www.youtube.com/watch?feature=player_embedded&v=gYn3pFAfrVA" target="_blank">
@@ -102,6 +109,17 @@ This section elaborates available options to run Parseable in production or deve
 - [Role based access control ↗︎](https://www.parseable.com/docs/features/rbac)
 - [OAuth2 support ↗︎](https://www.parseable.com/docs/features/oepnid)
 - [OpenTelemetry support ↗︎](https://www.parseable.com/docs/OpenTelemetry/logs)
+
+## Adopters :handshake:
+
+Organizations using Parseable in production. Add yours by submitting a PR to [USERS.md](USERS.md).
+
+<!-- ADOPTERS:START -->
+| Organization | Description of Use |
+| --- | --- |
+| [HireXL](https://www.hirexl.in/) | Frontend application logging |
+| [Elfsquad](https://elfsquad.io) | Centralized application/infrastructure logging |
+<!-- ADOPTERS:END -->
 
 ## Verify images :writing_hand:
 

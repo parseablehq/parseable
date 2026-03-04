@@ -1,0 +1,68 @@
+name: Sync Adopters to README
+
+on:
+  push:
+    branches: [main]
+    paths: [USERS.md]
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract adopters and update README
+        run: |
+          python3 - <<'SCRIPT'
+          import re
+
+          # Read USERS.md and extract Organization + Description columns
+          with open("USERS.md") as f:
+              lines = f.read().strip().split("\n")
+
+          rows = []
+          for line in lines:
+              if not line.startswith("|"):
+                  continue
+              parts = [p.strip() for p in line.split("|")]
+              # parts: ['', org, contact, desc, '']
+              if len(parts) < 4:
+                  continue
+              org = parts[1]
+              if org == "Organization" or org.startswith("---") or org.startswith("--"):
+                  continue
+              desc = parts[3]
+              rows.append(f"| {org} | {desc} |")
+
+          table = "| Organization | Description of Use |\n| --- | --- |\n" + "\n".join(rows)
+
+          # Replace content between markers in README.md
+          with open("README.md") as f:
+              readme = f.read()
+
+          readme = re.sub(
+              r"(<!-- ADOPTERS:START -->\n).*?(\n<!-- ADOPTERS:END -->)",
+              rf"\g<1>{table}\g<2>",
+              readme,
+              flags=re.DOTALL,
+          )
+
+          with open("README.md", "w") as f:
+              f.write(readme)
+          SCRIPT
+
+      - name: Check for changes
+        id: diff
+        run: git diff --quiet README.md || echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push
+        if: steps.diff.outputs.changed == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git commit -m "docs: sync adopters from USERS.md to README"
+          git push
