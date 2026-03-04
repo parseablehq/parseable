@@ -320,7 +320,6 @@ pub async fn refresh_token(
             let refreshed_token = match client
                 .read()
                 .await
-                .client()
                 .refresh_token(&oauth_data, Some(PARSEABLE.options.scope.as_str()))
                 .await
             {

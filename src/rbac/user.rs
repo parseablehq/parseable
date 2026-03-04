@@ -253,6 +253,20 @@ impl From<openid::Userinfo> for UserInfo {
     }
 }
 
+impl From<crate::oauth::ProviderUserInfo> for UserInfo {
+    fn from(info: crate::oauth::ProviderUserInfo) -> Self {
+        UserInfo {
+            sub: info.sub,
+            name: info.name,
+            preferred_username: info.preferred_username,
+            picture: info.picture.as_deref().and_then(|s| s.parse().ok()),
+            email: info.email,
+            gender: None,
+            updated_at: None,
+        }
+    }
+}
+
 /// Represents a user in a UserGroup - simplified structure for both user types
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct GroupUser {
