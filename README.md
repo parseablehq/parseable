@@ -17,7 +17,7 @@
 
 </div>
 
-Parseable is a full stack observability platform built to ingest, analyze and extract insights from all types of telemetry (MELT) data. You can run Parseable on your local machine, in the cloud, or use [Parseable Cloud](https://app.parseable.com) — the fully managed service. To experience Parseable UI, checkout [demo.parseable.com ↗︎](https://demo.parseable.com/login).
+Parseable is a full-stack observability platform built to ingest, analyze and extract insights from all types of telemetry (MELT) data. You can run Parseable on your local machine, in the cloud, or use [Parseable Cloud](https://app.parseable.com) — the fully managed service. To experience Parseable UI, checkout [demo.parseable.com ↗︎](https://demo.parseable.com/login).
 
 <div align="center">
 <h3>

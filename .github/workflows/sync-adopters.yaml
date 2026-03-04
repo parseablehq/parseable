@@ -23,6 +23,9 @@ jobs:
           with open("USERS.md") as f:
               lines = f.read().strip().split("\n")
 
+          def esc_cell(value: str) -> str:
+              return value.replace("\n", " ").replace("|", r"\|").strip()
+
           rows = []
           for line in lines:
               if not line.startswith("|"):
@@ -35,7 +38,7 @@ jobs:
               if org == "Organization" or org.startswith("---") or org.startswith("--"):
                   continue
               desc = parts[3]
-              rows.append(f"| {org} | {desc} |")
+              rows.append(f"| {esc_cell(org)} | {esc_cell(desc)} |")
 
           table = "| Organization | Description of Use |\n| --- | --- |\n" + "\n".join(rows)
 
@@ -43,12 +46,15 @@ jobs:
           with open("README.md") as f:
               readme = f.read()
 
-          readme = re.sub(
+          pattern = re.compile(
               r"(<!-- ADOPTERS:START -->\n).*?(\n<!-- ADOPTERS:END -->)",
-              rf"\g<1>{table}\g<2>",
-              readme,
               flags=re.DOTALL,
           )
+          readme, replaced = pattern.subn(
+              rf"\g<1>{table}\g<2>", readme, count=1
+          )
+          if replaced != 1:
+              raise SystemExit("Expected exactly one ADOPTERS block in README.md")
 
           with open("README.md", "w") as f:
               f.write(readme)
