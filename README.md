@@ -112,7 +112,7 @@ This section elaborates available options to run Parseable in production or deve
 
 ## Adopters :handshake:
 
-Organizations using Parseable in production. Add yours by submitting a PR to [USERS.md](USERS.md).
+Organizations using Parseable in production. [Add yours here](https://github.com/parseablehq/parseable/issues/new?template=add-adopter.yml) — no fork needed!
 
 <!-- ADOPTERS:START -->
 | Organization | Description of Use |

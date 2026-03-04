@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Slack Community
+    url: https://logg.ing/community
+    about: Join the Parseable Slack community for questions and discussions
+  - name: Documentation
+    url: https://www.parseable.com/docs
+    about: Check our documentation for guides and references
