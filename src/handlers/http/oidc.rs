@@ -296,18 +296,35 @@ pub async fn reply_login(
     let id = Ulid::new();
     Users.new_session(&user, SessionKey::SessionId(id), expires_in);
 
-    let redirect_url = login_query
-        .state
-        .clone()
-        .unwrap_or_else(|| PARSEABLE.options.address.to_string());
-    Ok(redirect_to_client(
-        &redirect_url,
-        [
-            cookie_session(id),
-            cookie_username(&username),
-            cookie_userid(&user_id),
-        ],
-    ))
+    let cookies = [
+        cookie_session(id),
+        cookie_username(&username),
+        cookie_userid(&user_id),
+    ];
+
+    // If the request is an XHR/fetch call (e.g. from the SPA frontend),
+    // return 200 with cookies instead of a 301 redirect to avoid CORS issues.
+    let is_xhr = req.headers().contains_key("x-p-tenant")
+        || req
+            .headers()
+            .get("accept")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("application/json"));
+
+    if is_xhr {
+        let mut response = HttpResponse::Ok();
+        for cookie in cookies {
+            response.cookie(cookie);
+        }
+        Ok(response.finish())
+    } else {
+        let redirect_url = login_query
+            .state
+            .clone()
+            .unwrap_or_else(|| PARSEABLE.options.address.to_string());
+
+        Ok(redirect_to_client(&redirect_url, cookies))
+    }
 }
 
 fn find_existing_user(user_info: &user::UserInfo, tenant_id: Option<String>) -> Option<User> {
