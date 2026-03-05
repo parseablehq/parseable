@@ -254,7 +254,7 @@ pub async fn reply_login(
     //     HashSet::new()
     // };
 
-    let existing_user = find_existing_user(&user_info, tenant_id);
+    let existing_user = find_existing_user(&user_info, tenant_id.clone());
     let mut final_roles = match existing_user {
         Some(ref user) => {
             // For existing users: keep existing roles + add new valid OIDC roles
