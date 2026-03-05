@@ -69,9 +69,18 @@ jobs:
               ref: 'main'
             });
             const usersContent = Buffer.from(fileData.content, 'base64').toString('utf-8');
-            const orgNameLower = orgName.toLowerCase();
+            const orgNameLower = orgName.toLowerCase().trim();
 
-            if (usersContent.toLowerCase().includes(orgNameLower)) {
+            // Parse existing org names from USERS.md for exact match
+            const existingOrgs = usersContent.split('\n')
+              .filter(line => line.startsWith('|'))
+              .map(line => {
+                const match = line.match(/\|\s*\[([^\]]+)\]/);
+                return match ? match[1].toLowerCase().trim() : null;
+              })
+              .filter(Boolean);
+
+            if (existingOrgs.includes(orgNameLower)) {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -93,15 +102,20 @@ jobs:
               return;
             }
 
+            // Sanitize user input for markdown table
+            const sanitize = (str) => str.replace(/\|/g, '\\|').replace(/\n/g, ' ').trim();
+
             // Build contact link
-            let contactCell = contact;
+            let contactCell = sanitize(contact);
             if (contact.startsWith('@')) {
-              const handle = contact.substring(1);
+              const handle = contact.substring(1).trim();
               contactCell = `[@${handle}](https://github.com/${handle})`;
             }
 
             // Append new row to USERS.md
-            const newRow = `| [${orgName}](${orgUrl}) | ${contactCell} | ${description} |`;
+            const safeDesc = sanitize(description);
+            const safeOrgName = sanitize(orgName);
+            const newRow = `| [${safeOrgName}](${orgUrl}) | ${contactCell} | ${safeDesc} |`;
             const updatedContent = usersContent.trimEnd() + '\n' + newRow + '\n';
 
             // Create branch
