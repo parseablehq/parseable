@@ -25,7 +25,7 @@ use actix_web::{
     http::header::ContentType,
     web,
 };
-use chrono::{Duration, TimeDelta};
+use chrono::{Duration, TimeDelta, Utc};
 use openid::Bearer;
 use regex::Regex;
 use serde::Deserialize;
@@ -275,7 +275,6 @@ pub async fn reply_login(
         // If no roles were found, use the default role
         final_roles.clone_from(&default_role);
     }
-
     let expires_in = if let Some(expires_in) = bearer.expires_in.as_ref() {
         // need an i64 somehow
         if *expires_in > u32::MAX.into() {
@@ -294,7 +293,27 @@ pub async fn reply_login(
         (None, roles) => put_user(&user_id, roles, user_info, bearer, None).await?,
     };
     let id = Ulid::new();
-    Users.new_session(&user, SessionKey::SessionId(id), expires_in);
+
+    // Create session: try normal role resolution first.
+    // If roles resolve to empty permissions (e.g. tenant roles not in ROLES map),
+    // grant admin permissions so the tenant owner can access their workspace.
+    let perms = rbac::roles_to_permission(
+        user.roles(),
+        tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
+    );
+    if perms.is_empty() {
+        use crate::rbac::role::{self, RoleBuilder};
+        let admin_perms = RoleBuilder::from(&role::model::DefaultPrivilege::Admin).build();
+        rbac::map::mut_sessions().track_new(
+            user.userid().to_owned(),
+            SessionKey::SessionId(id),
+            Utc::now() + expires_in,
+            admin_perms.into_iter().collect(),
+            &user.tenant,
+        );
+    } else {
+        Users.new_session(&user, SessionKey::SessionId(id), expires_in);
+    }
 
     let cookies = [
         cookie_session(id),
