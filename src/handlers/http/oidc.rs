@@ -316,7 +316,11 @@ pub async fn reply_login(
         for cookie in cookies {
             response.cookie(cookie);
         }
-        Ok(response.finish())
+        Ok(response.json(serde_json::json!({
+            "session": id.to_string(),
+            "username": username,
+            "user_id": user_id,
+        })))
     } else {
         let redirect_url = login_query
             .state
@@ -399,7 +403,8 @@ fn redirect_no_oauth_setup(mut url: Url) -> HttpResponse {
 pub fn cookie_session(id: Ulid) -> Cookie<'static> {
     Cookie::build(SESSION_COOKIE_NAME, id.to_string())
         .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
-        .same_site(SameSite::Strict)
+        .same_site(SameSite::None)
+        .secure(true)
         .path("/")
         .finish()
 }
@@ -407,7 +412,8 @@ pub fn cookie_session(id: Ulid) -> Cookie<'static> {
 pub fn cookie_username(username: &str) -> Cookie<'static> {
     Cookie::build(USER_COOKIE_NAME, username.to_string())
         .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
-        .same_site(SameSite::Strict)
+        .same_site(SameSite::None)
+        .secure(true)
         .path("/")
         .finish()
 }
@@ -415,7 +421,8 @@ pub fn cookie_username(username: &str) -> Cookie<'static> {
 pub fn cookie_userid(user_id: &str) -> Cookie<'static> {
     Cookie::build(USER_ID_COOKIE_NAME, user_id.to_string())
         .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
-        .same_site(SameSite::Strict)
+        .same_site(SameSite::None)
+        .secure(true)
         .path("/")
         .finish()
 }
