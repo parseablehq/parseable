@@ -13,11 +13,18 @@
 [![Docs](https://img.shields.io/badge/stable%20docs-parseable.com%2Fdocs-brightgreen?style=flat&color=%2373DC8C&label=Docs)](https://logg.ing/docs)
 [![Build](https://img.shields.io/github/checks-status/parseablehq/parseable/main?style=flat&color=%2373DC8C&label=Checks)](https://github.com/parseablehq/parseable/actions)
 
-[Key Concepts](https://www.parseable.com/docs/key-concepts) | [Features](https://www.parseable.com/docs/features/alerts) | [Documentation](https://www.parseable.com/docs) | [Demo](https://demo.parseable.com/login) | [FAQ](https://www.parseable.com/docs/key-concepts/data-model#faq)
+[Key Concepts](https://www.parseable.com/docs/key-concepts) | [Features](https://www.parseable.com/docs/features/alerts) | [Documentation](https://www.parseable.com/docs) | [Demo](https://app.parseable.com) | [FAQ](https://www.parseable.com/docs/key-concepts/data-model#faq)
 
 </div>
 
-Parseable is a full stack observability platform built to ingest, analyze and extract insights from all types of telemetry (MELT) data. You can run Parseable on your local machine, in the cloud, or as a managed service. To experience Parseable UI, checkout [demo.parseable.com ↗︎](https://demo.parseable.com/login).
+Parseable is a full-stack observability platform built to ingest, analyze and extract insights from all types of telemetry (MELT) data. You can run Parseable on your local machine, in the cloud, or use [Parseable Cloud](https://app.parseable.com) — the fully managed service. To experience Parseable UI, checkout [app.parseable.com ↗︎](https://app.parseable.com).
+
+<div align="center">
+<h3>
+  <a href="https://app.parseable.com">Try Parseable Cloud — Start Free ↗︎</a>
+</h3>
+<p><i>The fastest way to get started. No infrastructure to manage.</i></p>
+</div>
 
 <div align="center">
   <a href="http://www.youtube.com/watch?feature=player_embedded&v=gYn3pFAfrVA" target="_blank">
@@ -102,6 +109,17 @@ This section elaborates available options to run Parseable in production or deve
 - [Role based access control ↗︎](https://www.parseable.com/docs/features/rbac)
 - [OAuth2 support ↗︎](https://www.parseable.com/docs/features/oepnid)
 - [OpenTelemetry support ↗︎](https://www.parseable.com/docs/OpenTelemetry/logs)
+
+## Adopters :handshake:
+
+Organizations using Parseable in production. [Add yours here](https://github.com/parseablehq/parseable/issues/new?template=add-adopter.yml) — no fork needed!
+
+<!-- ADOPTERS:START -->
+| Organization | Description of Use |
+| --- | --- |
+| [HireXL](https://www.hirexl.in/) | Frontend application logging |
+| [Elfsquad](https://elfsquad.io) | Centralized application/infrastructure logging |
+<!-- ADOPTERS:END -->
 
 ## Verify images :writing_hand:
 

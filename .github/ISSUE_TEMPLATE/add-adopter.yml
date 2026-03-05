@@ -1,0 +1,54 @@
+name: "Add Adopter"
+description: "Add your organization to the Parseable adopters list"
+title: "Add adopter: "
+labels: ["new-adopter"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for using Parseable! Fill out the form below to add your organization to our adopters list.
+        A PR will be created automatically — no fork needed.
+
+  - type: input
+    id: org_name
+    attributes:
+      label: Organization Name
+      description: "The name of your organization"
+      placeholder: "Acme Corp"
+    validations:
+      required: true
+
+  - type: input
+    id: org_url
+    attributes:
+      label: Organization URL
+      description: "Your organization's website"
+      placeholder: "https://example.com"
+    validations:
+      required: true
+
+  - type: input
+    id: contact
+    attributes:
+      label: Contact
+      description: "GitHub @handle or name of the contact person"
+      placeholder: "@username"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description of Use
+      description: "How does your organization use Parseable?"
+      placeholder: "We use Parseable for centralized logging of our microservices..."
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmation
+    attributes:
+      label: Confirmation
+      options:
+        - label: "I am authorized to represent this organization"
+          required: true
