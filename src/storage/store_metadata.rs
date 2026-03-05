@@ -70,6 +70,14 @@ pub struct StorageMetadata {
     pub default_role: Option<String>,
     pub suspended_services: Option<HashSet<Service>>,
     pub global_query_auth: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub customer_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
 }
 
 impl Default for StorageMetadata {
@@ -88,6 +96,10 @@ impl Default for StorageMetadata {
             default_role: None,
             suspended_services: None,
             global_query_auth: None,
+            customer_name: None,
+            start_date: None,
+            end_date: None,
+            plan: None,
         }
     }
 }
