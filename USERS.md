@@ -10,3 +10,4 @@ If you're using Parseable in your organization, please add your company name to 
 | ------------ | ------- | ------------------ |
 | [HireXL](https://www.hirexl.in/) | [@A4abs](https://github.com/A4abs) | Frontend application logging |
 | [Elfsquad](https://elfsquad.io) | [Stan van Rooy](https://github.com/stanvanrooy) | Centralized application/infrastructure logging |
+| [Parseable Inc](https://parseable.com) | nitisht | Testing |
