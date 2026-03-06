@@ -47,7 +47,7 @@ use crate::handlers::http::modal::ingest::SyncRole;
 use crate::handlers::http::query::{Query, QueryError, TIME_ELAPSED_HEADER};
 use crate::metrics::prom_utils::Metrics;
 use crate::option::Mode;
-use crate::parseable::PARSEABLE;
+use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
 use crate::rbac::role::model::Role;
 use crate::rbac::user::User;
 use crate::stats::Stats;
@@ -1398,7 +1398,7 @@ fn extract_billing_metrics_from_samples(
             let tenant_id = sample
                 .labels
                 .get("tenant_id")
-                .filter(|t| *t != "DEFAULT_TENANT")
+                .filter(|t| *t != DEFAULT_TENANT)
                 .map(|t| t.to_string());
 
             let collector = collectors.entry(tenant_id.clone()).or_insert_with(|| {
