@@ -25,7 +25,7 @@ use std::{
 use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Utc;
-use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
+use datafusion::{config::{ConfigExtension, ExtensionOptions}, datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
 use fs_extra::file::CopyOptions;
 use futures::{TryStreamExt, stream::FuturesUnordered};
 use object_store::{ListResult, ObjectMeta, buffered::BufReader};
@@ -68,6 +68,32 @@ pub struct FSConfig {
         value_parser = validation::canonicalize_path
     )]
     pub root: PathBuf,
+}
+
+impl ConfigExtension for FSConfig {
+    const PREFIX: &'static str = "drive";
+}
+
+impl ExtensionOptions for FSConfig {
+    fn as_any(&self) -> &dyn std::any::Any {
+        todo!()
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        todo!()
+    }
+
+    fn cloned(&self) -> Box<dyn ExtensionOptions> {
+        todo!()
+    }
+
+    fn set(&mut self, _key: &str, _value: &str) -> datafusion::error::Result<()> {
+        todo!()
+    }
+
+    fn entries(&self) -> Vec<datafusion::config::ConfigEntry> {
+        todo!()
+    }
 }
 
 impl ObjectStorageProvider for FSConfig {

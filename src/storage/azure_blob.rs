@@ -30,11 +30,10 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Utc;
 use datafusion::{
-    datasource::listing::ListingTableUrl,
-    execution::{
+    config::{ConfigExtension, ExtensionOptions}, datasource::listing::ListingTableUrl, execution::{
         object_store::{DefaultObjectStoreRegistry, ObjectStoreRegistry, ObjectStoreUrl},
         runtime_env::RuntimeEnvBuilder,
-    },
+    }
 };
 use futures::{StreamExt, TryStreamExt, stream::FuturesUnordered};
 use object_store::{
@@ -198,6 +197,32 @@ impl ObjectStorageProvider for AzureBlobConfig {
 
     fn get_endpoint(&self) -> String {
         self.endpoint_url.clone()
+    }
+}
+
+impl ConfigExtension for AzureBlobConfig {
+    const PREFIX: &'static str = "blob-store";
+}
+
+impl ExtensionOptions for AzureBlobConfig {
+    fn as_any(&self) -> &dyn std::any::Any {
+        todo!()
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        todo!()
+    }
+
+    fn cloned(&self) -> Box<dyn ExtensionOptions> {
+        todo!()
+    }
+
+    fn set(&mut self, _key: &str, _value: &str) -> datafusion::error::Result<()> {
+        todo!()
+    }
+
+    fn entries(&self) -> Vec<datafusion::config::ConfigEntry> {
+        todo!()
     }
 }
 

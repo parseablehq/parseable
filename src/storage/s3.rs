@@ -22,8 +22,7 @@ use std::{
     path::Path,
     str::FromStr,
     sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
+        Arc, atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -32,6 +31,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::Utc;
 use datafusion::{
+    common::config_err,
+    config::{ConfigExtension, ExtensionOptions},
     datasource::listing::ListingTableUrl,
     execution::{
         object_store::{DefaultObjectStoreRegistry, ObjectStoreRegistry, ObjectStoreUrl},
@@ -232,7 +233,7 @@ impl Display for ObjectEncryptionAlgorithm {
 }
 
 impl S3Config {
-    fn get_default_builder(&self) -> AmazonS3Builder {
+    pub fn get_default_builder(&self) -> AmazonS3Builder {
         let mut client_options = ClientOptions::default()
             .with_allow_http(true)
             .with_connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
@@ -328,6 +329,68 @@ impl ObjectStorageProvider for S3Config {
 
     fn get_endpoint(&self) -> String {
         format!("{}/{}", self.endpoint_url, self.bucket_name)
+    }
+}
+
+impl ConfigExtension for S3Config {
+    const PREFIX: &'static str = "s3";
+}
+
+impl ExtensionOptions for S3Config {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+
+    fn cloned(&self) -> Box<dyn ExtensionOptions> {
+        Box::new(self.clone())
+    }
+
+    fn set(&mut self, key: &str, value: &str) -> datafusion::error::Result<()> {
+        tracing::warn!("set config, key:{key},  value:{value}");
+        match key {
+            "access_key_id" => {
+                self.access_key_id = Some(value.into());
+                // let mut c = self.config.write();
+                // c.access_key_id.set(key, value)?;
+            }
+            "secret_access_key" => {
+                self.secret_key = Some(value.into());
+                // let mut c = self.config.write();
+                // c.secret_access_key.set(key, value)?;
+            }
+            "session_token" => {
+                // let mut c = self.config.write();
+                // c.session_token.set(key, value)?;
+            }
+            "region" => {
+                self.region = value.into();
+                // let mut c = self.config.write();
+                // c.region.set(key, value)?;
+            }
+            "endpoint" => {
+                self.endpoint_url = value.into();
+                // let mut c = self.config.write();
+                // c.endpoint.set(key, value)?;
+            }
+            "allow_http" => {
+                self.skip_tls = true;
+                // let mut c = self.config.write();
+                // c.allow_http.set(key, value)?;
+            }
+            _ => {
+                tracing::warn!("Config value {key} cant be set to {value}");
+                return config_err!("Config value \"{}\" not found in S3Options", key);
+            }
+        }
+        Ok(())
+    }
+
+    fn entries(&self) -> Vec<datafusion::config::ConfigEntry> {
+        vec![]
     }
 }
 

@@ -20,6 +20,7 @@ arrow-json = "57.1.0"
 arrow-schema = { version = "57.1.0", features = ["serde"] }
 arrow-select = "57.1.0"
 datafusion = "51.0.0"
+datafusion-proto = "51.0.0"
 object_store = { version = "0.12.4", features = [
     "cloud",
     "aws",
@@ -27,6 +28,10 @@ object_store = { version = "0.12.4", features = [
     "gcp",
 ] }
 parquet = "57.1.0"
+# ballista-core = "51.0.0"
+ballista-scheduler = "51.0.0"
+ballista-executor = "51.0.0"
+ballista = {version = "51.0.0"}
 
 # Web server and HTTP-related
 actix-cors = "0.7.0"
