@@ -275,6 +275,21 @@ pub async fn reply_login(
         // If no roles were found, use the default role
         final_roles.clone_from(&default_role);
     }
+    // If still no roles, look for a native user with the same email
+    // and inherit their roles (e.g. tenant owner logging in via OAuth)
+    if final_roles.is_empty() {
+        if let Some(email) = &user_info.email {
+            for u in &metadata.users {
+                if matches!(u.ty, UserType::Native(_))
+                    && u.userid() == email.as_str()
+                    && !u.roles.is_empty()
+                {
+                    final_roles.clone_from(&u.roles);
+                    break;
+                }
+            }
+        }
+    }
     let expires_in = if let Some(expires_in) = bearer.expires_in.as_ref() {
         // need an i64 somehow
         if *expires_in > u32::MAX.into() {
@@ -289,8 +304,7 @@ pub async fn reply_login(
 
     let user = match (existing_user, final_roles) {
         (Some(user), roles) => update_user_if_changed(user, roles, user_info, bearer).await?,
-        // LET TENANT BE NONE FOR NOW!!!
-        (None, roles) => put_user(&user_id, roles, user_info, bearer, None).await?,
+        (None, roles) => put_user(&user_id, roles, user_info, bearer, tenant_id.clone()).await?,
     };
     let id = Ulid::new();
 
