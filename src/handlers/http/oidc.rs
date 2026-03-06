@@ -25,7 +25,7 @@ use actix_web::{
     http::header::ContentType,
     web,
 };
-use chrono::TimeDelta;
+use chrono::{Duration, TimeDelta};
 use openid::Bearer;
 use regex::Regex;
 use serde::Deserialize;
@@ -275,23 +275,38 @@ pub async fn reply_login(
     // If still no roles, look for a native user with the same email
     // and inherit their roles (e.g. tenant owner logging in via OAuth)
     if final_roles.is_empty()
-        && let Some(email) = &user_info.email {
-            for u in &metadata.users {
-                if matches!(u.ty, UserType::Native(_))
-                    && u.userid() == email.as_str()
-                    && !u.roles.is_empty()
-                {
-                    final_roles.clone_from(&u.roles);
-                    break;
-                }
+        && let Some(email) = &user_info.email
+    {
+        for u in &metadata.users {
+            if matches!(u.ty, UserType::Native(_))
+                && u.userid() == email.as_str()
+                && !u.roles.is_empty()
+            {
+                final_roles.clone_from(&u.roles);
+                break;
             }
         }
+    }
 
-    match (existing_user, final_roles) {
+    let expires_in = if let Some(expires_in) = bearer.expires_in.as_ref() {
+        // need an i64 somehow
+        if *expires_in > u32::MAX.into() {
+            EXPIRY_DURATION
+        } else {
+            let v = i64::from(*expires_in as u32);
+            Duration::seconds(v)
+        }
+    } else {
+        EXPIRY_DURATION
+    };
+
+    let user = match (existing_user, final_roles) {
         (Some(user), roles) => update_user_if_changed(user, roles, user_info, bearer).await?,
         (None, roles) => put_user(&user_id, roles, user_info, bearer, tenant_id.clone()).await?,
     };
+
     let id = Ulid::new();
+    Users.new_session(&user, SessionKey::SessionId(id), expires_in);
 
     let cookies = [
         cookie_session(id),
