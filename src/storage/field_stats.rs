@@ -24,11 +24,14 @@ use crate::event::format::json;
 use crate::handlers::TelemetryType;
 use crate::handlers::http::cluster::send_query_request;
 use crate::handlers::http::ingest::PostError;
+use crate::handlers::http::middleware::CLUSTER_SECRET;
+use crate::handlers::http::middleware::CLUSTER_SECRET_HEADER;
 use crate::handlers::http::query::Query;
 use crate::handlers::http::query::QueryError;
 use crate::handlers::http::query::query;
 use crate::metadata::SchemaVersion;
 use crate::option::Mode;
+use crate::parseable::DEFAULT_TENANT;
 use crate::parseable::PARSEABLE;
 use crate::query::QUERY_SESSION_STATE;
 use crate::storage::ObjectStorageError;
@@ -563,13 +566,27 @@ pub async fn get_dataset_stats(
             serde_json::from_str(body_str).map_err(|e| QueryError::CustomError(e.to_string()))?
         }
         Mode::Prism => {
-            let auth = if let Some(tenant) = tenant_id.as_ref()
-                && let Some(header) = TENANT_METADATA.get_global_query_auth(tenant)
-            {
-                let mut map = HeaderMap::new();
+            let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+            let auth = if let Some((_, hash)) = CLUSTER_SECRET.get() {
+                let mut map = actix_web::http::header::HeaderMap::new();
+                if let Some(header) = TENANT_METADATA.get_global_query_auth(tenant) {
+                    map.insert(
+                        HeaderName::from_static("authorization"),
+                        HeaderValue::from_str(&header).unwrap(),
+                    );
+                }
+                let userid = get_user_from_request(&req).unwrap();
                 map.insert(
-                    HeaderName::from_static("authorization"),
-                    HeaderValue::from_str(&header).unwrap(),
+                    HeaderName::from_static(CLUSTER_SECRET_HEADER),
+                    HeaderValue::from_str(hash).unwrap(),
+                );
+                map.insert(
+                    HeaderName::from_static("intra-cluster-tenant"),
+                    HeaderValue::from_str(tenant).unwrap(),
+                );
+                map.insert(
+                    HeaderName::from_static("intra-cluster-userid"),
+                    HeaderValue::from_str(&userid).unwrap(),
                 );
                 Some(map)
             } else {
@@ -589,6 +606,7 @@ pub async fn get_dataset_stats(
                 }
                 Some(map)
             };
+
             let response = match send_query_request(auth, &query_request, &tenant_id).await {
                 Ok((query_response, _)) => query_response,
                 Err(err) => {
