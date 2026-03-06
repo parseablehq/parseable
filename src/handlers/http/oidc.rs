@@ -25,7 +25,7 @@ use actix_web::{
     http::header::ContentType,
     web,
 };
-use chrono::{Duration, TimeDelta, Utc};
+use chrono::TimeDelta;
 use openid::Bearer;
 use regex::Regex;
 use serde::Deserialize;
@@ -212,12 +212,15 @@ pub async fn reply_login(
         }
     };
 
-    let username = user_info
+    let Some(username) = user_info
         .name
         .clone()
         .or_else(|| user_info.email.clone())
         .or_else(|| user_info.sub.clone())
-        .expect("OAuth provider did not return a usable identifier (name, email or sub)");
+    else {
+        tracing::error!("OAuth provider did not return a usable identifier (name, email or sub)");
+        return Err(OIDCError::Unauthorized);
+    };
     let user_id = match user_info.sub.clone() {
         Some(id) => id,
         None => {
@@ -240,7 +243,6 @@ pub async fn reply_login(
 
     let default_role = if let Some(role) = DEFAULT_ROLE
         .read()
-        // .unwrap()
         .get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
         && let Some(role) = role
     {
@@ -248,11 +250,6 @@ pub async fn reply_login(
     } else {
         HashSet::new()
     };
-    // let default_role = if let Some(default_role) = DEFAULT_ROLE.lock().unwrap().clone() {
-    //     HashSet::from([default_role])
-    // } else {
-    //     HashSet::new()
-    // };
 
     let existing_user = find_existing_user(&user_info, tenant_id.clone());
     let mut final_roles = match existing_user {
@@ -277,8 +274,8 @@ pub async fn reply_login(
     }
     // If still no roles, look for a native user with the same email
     // and inherit their roles (e.g. tenant owner logging in via OAuth)
-    if final_roles.is_empty() {
-        if let Some(email) = &user_info.email {
+    if final_roles.is_empty()
+        && let Some(email) = &user_info.email {
             for u in &metadata.users {
                 if matches!(u.ty, UserType::Native(_))
                     && u.userid() == email.as_str()
@@ -289,45 +286,12 @@ pub async fn reply_login(
                 }
             }
         }
-    }
-    let expires_in = if let Some(expires_in) = bearer.expires_in.as_ref() {
-        // need an i64 somehow
-        if *expires_in > u32::MAX.into() {
-            EXPIRY_DURATION
-        } else {
-            let v = i64::from(*expires_in as u32);
-            Duration::seconds(v)
-        }
-    } else {
-        EXPIRY_DURATION
-    };
 
-    let user = match (existing_user, final_roles) {
+    match (existing_user, final_roles) {
         (Some(user), roles) => update_user_if_changed(user, roles, user_info, bearer).await?,
         (None, roles) => put_user(&user_id, roles, user_info, bearer, tenant_id.clone()).await?,
     };
     let id = Ulid::new();
-
-    // Create session: try normal role resolution first.
-    // If roles resolve to empty permissions (e.g. tenant roles not in ROLES map),
-    // grant admin permissions so the tenant owner can access their workspace.
-    let perms = rbac::roles_to_permission(
-        user.roles(),
-        tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
-    );
-    if perms.is_empty() {
-        use crate::rbac::role::{self, RoleBuilder};
-        let admin_perms = RoleBuilder::from(&role::model::DefaultPrivilege::Admin).build();
-        rbac::map::mut_sessions().track_new(
-            user.userid().to_owned(),
-            SessionKey::SessionId(id),
-            Utc::now() + expires_in,
-            admin_perms.into_iter().collect(),
-            &user.tenant,
-        );
-    } else {
-        Users.new_session(&user, SessionKey::SessionId(id), expires_in);
-    }
 
     let cookies = [
         cookie_session(id),
