@@ -3,6 +3,7 @@ use std::{
     collections::{HashMap, HashSet},
 };
 
+use actix_web::http::header::HeaderMap;
 use async_trait::async_trait;
 use openid::Bearer;
 use url::Url;
@@ -34,6 +35,7 @@ pub trait OAuthProvider: Send + Sync + Any {
         &self,
         oauth: &OAuth,
         scope: Option<&str>,
+        headers: HeaderMap,
     ) -> Result<Bearer, anyhow::Error>;
 
     /// Return the provider's logout / end-session URL, if one exists.
