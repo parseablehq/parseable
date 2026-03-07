@@ -1,3 +1,4 @@
+use actix_web::http::header::HeaderMap;
 use async_trait::async_trait;
 use openid::{Bearer, Options, Token};
 use url::Url;
@@ -119,6 +120,7 @@ impl OAuthProvider for GlobalClient {
         &self,
         oauth: &OAuth,
         scope: Option<&str>,
+        _headers: HeaderMap,
     ) -> Result<Bearer, anyhow::Error> {
         // Box the clone so we can pass it to the openid client.
         let boxed: Box<OAuth> = Box::new(oauth.clone());
