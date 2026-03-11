@@ -116,8 +116,7 @@ pub async fn login(
             let nonce = store_oauth_nonce(&redirect);
 
             let scope = PARSEABLE.options.scope.to_string();
-            let mut auth_url: String =
-                client.read().await.auth_url(&scope, Some(nonce)).into();
+            let mut auth_url: String = client.read().await.auth_url(&scope, Some(nonce)).into();
 
             auth_url.push_str("&access_type=offline&prompt=consent");
             return Ok(HttpResponse::TemporaryRedirect()
@@ -220,121 +219,45 @@ pub async fn reply_login(
     req: HttpRequest,
     login_query: web::Query<Login>,
 ) -> Result<HttpResponse, OIDCError> {
-    let oidc_client = if let Some(oidc_client) = OIDC_CLIENT.get() {
-        oidc_client
-    } else {
-        return Err(OIDCError::Unauthorized);
-    };
+    let oidc_client = OIDC_CLIENT.get().ok_or(OIDCError::Unauthorized)?;
     let tenant_id = get_tenant_id_from_request(&req);
 
-    let OAuthSession {
-        bearer,
-        claims,
-        userinfo: user_info,
-    } = match oidc_client
+    let session = oidc_client
         .write()
         .await
         .exchange_code(&login_query.code)
         .await
-    {
-        Ok(session) => session,
-        Err(e) => {
+        .map_err(|e| {
             tracing::error!("reply_login exchange_code failed: {e}");
-            return Ok(HttpResponse::Unauthorized().finish());
-        }
-    };
+            OIDCError::Unauthorized
+        })?;
 
-    let Some(username) = user_info
-        .name
-        .clone()
-        .or_else(|| user_info.email.clone())
-        .or_else(|| user_info.sub.clone())
-    else {
-        tracing::error!("OAuth provider did not return a usable identifier (name, email or sub)");
-        return Err(OIDCError::Unauthorized);
-    };
-    let user_id = match user_info.sub.clone() {
-        Some(id) => id,
-        None => {
-            tracing::error!("OAuth provider did not return a sub");
-            return Err(OIDCError::Unauthorized);
-        }
-    };
-    let user_info: user::UserInfo = user_info.into();
-    let group = claims.groups.clone();
+    let (username, user_id, user_info) = extract_identity(&session)?;
     let metadata = get_metadata(&tenant_id).await?;
-
-    // Find which OIDC groups match existing roles in Parseable
-    let mut valid_oidc_roles = HashSet::new();
-    for role in metadata.roles.iter() {
-        let role_name = role.0;
-        if group.contains(role_name) {
-            valid_oidc_roles.insert(role_name.clone());
-        }
-    }
-
-    let default_role = if let Some(role) = DEFAULT_ROLE
-        .read()
-        .get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-        && let Some(role) = role
-    {
-        HashSet::from([role.to_owned()])
-    } else {
-        HashSet::new()
-    };
-
     let existing_user = find_existing_user(&user_info, tenant_id.clone());
-    let mut final_roles = match existing_user {
-        Some(ref user) => {
-            // For existing users: keep existing roles + add new valid OIDC roles
-            let mut roles = user.roles.clone();
-            roles.extend(valid_oidc_roles); // Add new matching roles
-            roles
-        }
-        None => {
-            // For new users: use valid OIDC roles, fallback to default if none
-            if valid_oidc_roles.is_empty() {
-                default_role.clone()
-            } else {
-                valid_oidc_roles
-            }
-        }
-    };
-    if final_roles.is_empty() {
-        // If no roles were found, use the default role
-        final_roles.clone_from(&default_role);
-    }
-    // If still no roles, look for a native user with the same email
-    // and inherit their roles (e.g. tenant owner logging in via OAuth)
-    if final_roles.is_empty()
-        && let Some(email) = &user_info.email
-    {
-        for u in &metadata.users {
-            if matches!(u.ty, UserType::Native(_))
-                && u.userid() == email.as_str()
-                && !u.roles.is_empty()
-            {
-                final_roles.clone_from(&u.roles);
-                break;
-            }
-        }
-    }
+    let final_roles = resolve_roles(
+        &session.claims.groups,
+        &metadata,
+        &user_info,
+        &tenant_id,
+        existing_user.as_ref(),
+    );
 
-    let expires_in = if let Some(expires_in) = bearer.expires_in.as_ref() {
-        // need an i64 somehow
-        if *expires_in > u32::MAX.into() {
-            EXPIRY_DURATION
-        } else {
-            let v = i64::from(*expires_in as u32);
-            Duration::seconds(v)
-        }
-    } else {
-        EXPIRY_DURATION
-    };
-
+    let expires_in = bearer_expiry(&session.bearer);
     let user = match (existing_user, final_roles) {
-        (Some(user), roles) => update_user_if_changed(user, roles, user_info, bearer).await?,
-        (None, roles) => put_user(&user_id, roles, user_info, bearer, tenant_id.clone()).await?,
+        (Some(user), roles) => {
+            update_user_if_changed(user, roles, user_info, session.bearer).await?
+        }
+        (None, roles) => {
+            put_user(
+                &user_id,
+                roles,
+                user_info,
+                session.bearer,
+                tenant_id.clone(),
+            )
+            .await?
+        }
     };
 
     let id = Ulid::new();
@@ -346,8 +269,104 @@ pub async fn reply_login(
         cookie_userid(&user_id),
     ];
 
-    // If the request is an XHR/fetch call (e.g. from the SPA frontend),
-    // return 200 with cookies instead of a 301 redirect to avoid CORS issues.
+    Ok(build_login_response(
+        &req,
+        &login_query,
+        cookies,
+        id,
+        &username,
+        &user_id,
+    ))
+}
+
+/// Extract username, user_id, and UserInfo from the OAuth session.
+fn extract_identity(session: &OAuthSession) -> Result<(String, String, user::UserInfo), OIDCError> {
+    let user_info = &session.userinfo;
+    let username = user_info
+        .name
+        .clone()
+        .or_else(|| user_info.email.clone())
+        .or_else(|| user_info.sub.clone())
+        .ok_or_else(|| {
+            tracing::error!(
+                "OAuth provider did not return a usable identifier (name, email or sub)"
+            );
+            OIDCError::Unauthorized
+        })?;
+    let user_id = user_info.sub.clone().ok_or_else(|| {
+        tracing::error!("OAuth provider did not return a sub");
+        OIDCError::Unauthorized
+    })?;
+    Ok((username, user_id, user_info.clone().into()))
+}
+
+/// Determine the final set of roles for the user.
+fn resolve_roles(
+    groups: &HashSet<String>,
+    metadata: &StorageMetadata,
+    user_info: &user::UserInfo,
+    tenant_id: &Option<String>,
+    existing_user: Option<&User>,
+) -> HashSet<String> {
+    let valid_oidc_roles: HashSet<String> = metadata
+        .roles
+        .keys()
+        .filter(|role_name| groups.contains(*role_name))
+        .cloned()
+        .collect();
+
+    let default_role = DEFAULT_ROLE
+        .read()
+        .get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+        .and_then(|r| r.clone())
+        .map(|r| HashSet::from([r]))
+        .unwrap_or_default();
+
+    let mut roles = match existing_user {
+        Some(user) => {
+            let mut roles = user.roles.clone();
+            roles.extend(valid_oidc_roles);
+            roles
+        }
+        None if !valid_oidc_roles.is_empty() => valid_oidc_roles,
+        None => default_role.clone(),
+    };
+
+    if roles.is_empty() {
+        roles.clone_from(&default_role);
+    }
+
+    // Inherit roles from a native user with the same email (e.g. tenant owner via OAuth)
+    if roles.is_empty()
+        && let Some(email) = &user_info.email
+            && let Some(native) = metadata.users.iter().find(|u| {
+                matches!(u.ty, UserType::Native(_))
+                    && u.userid() == email.as_str()
+                    && !u.roles.is_empty()
+            }) {
+                roles.clone_from(&native.roles);
+            }
+
+    roles
+}
+
+/// Compute session expiry from the bearer token.
+fn bearer_expiry(bearer: &Bearer) -> TimeDelta {
+    match bearer.expires_in.as_ref() {
+        Some(&exp) if exp <= u32::MAX.into() => Duration::seconds(i64::from(exp as u32)),
+        _ => EXPIRY_DURATION,
+    }
+}
+
+/// Build the HTTP response for the login callback (XHR JSON or redirect).
+fn build_login_response(
+    req: &HttpRequest,
+    login_query: &web::Query<Login>,
+    cookies: [Cookie<'static>; 3],
+    session_id: Ulid,
+    username: &str,
+    user_id: &str,
+) -> HttpResponse {
     let is_xhr = req.headers().contains_key("x-p-tenant")
         || req
             .headers()
@@ -361,20 +380,19 @@ pub async fn reply_login(
         for cookie in cookies {
             response.cookie(cookie);
         }
-        Ok(response.json(serde_json::json!({
-            "session": id.to_string(),
+        response.json(serde_json::json!({
+            "session": session_id.to_string(),
             "username": username,
             "user_id": user_id,
-        })))
+        }))
     } else {
-        // The state parameter is a nonce; resolve it to the original redirect URL.
         let redirect_url = login_query
             .state
             .as_deref()
             .and_then(consume_oauth_nonce)
             .unwrap_or_else(|| PARSEABLE.options.address.to_string());
 
-        Ok(redirect_to_client(&redirect_url, cookies))
+        redirect_to_client(&redirect_url, cookies)
     }
 }
 
