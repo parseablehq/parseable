@@ -35,6 +35,7 @@ use crate::{
     rbac::{
         map::{mut_sessions, read_user_groups, roles, users},
         role::model::RoleType,
+        roles_to_permission,
     },
 };
 
@@ -464,9 +465,15 @@ impl UserGroup {
             }
         }
         self.roles.extend(roles_to_add);
-        // also refresh all user sessions
+        // refresh permissions for all user sessions in this group
+        let mut sessions = mut_sessions();
         for group_user in &self.users {
-            mut_sessions().remove_user(group_user.userid(), tenant_id);
+            if let Some(tenant_users) = users().get(tenant_id)
+                && let Some(user) = tenant_users.get(group_user.userid())
+            {
+                let new_perms = roles_to_permission(user.roles(), tenant_id);
+                sessions.refresh_user_permissions(group_user.userid(), tenant_id, new_perms);
+            }
         }
         Ok(())
     }
@@ -476,12 +483,17 @@ impl UserGroup {
             return Ok(());
         }
         self.users.extend(users.clone());
-        // also refresh all user sessions
+        // refresh permissions for newly added user sessions
+        let mut sessions = mut_sessions();
+        let all_users = super::map::users();
         for group_user in &users {
-            mut_sessions().remove_user(
-                group_user.userid(),
-                group_user.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
-            );
+            let tid = group_user.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+            if let Some(tenant_users) = all_users.get(tid)
+                && let Some(user) = tenant_users.get(group_user.userid())
+            {
+                let new_perms = roles_to_permission(user.roles(), tid);
+                sessions.refresh_user_permissions(group_user.userid(), tid, new_perms);
+            }
         }
         Ok(())
     }
@@ -498,12 +510,16 @@ impl UserGroup {
         }
         self.roles.clone_from(&new_roles);
 
-        // also refresh all user sessions
+        // refresh permissions for all user sessions in this group
+        let mut sessions = mut_sessions();
         for group_user in &self.users {
-            mut_sessions().remove_user(
-                group_user.userid(),
-                group_user.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
-            );
+            let tid = group_user.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+            if let Some(tenant_users) = users().get(tid)
+                && let Some(user) = tenant_users.get(group_user.userid())
+            {
+                let new_perms = roles_to_permission(user.roles(), tid);
+                sessions.refresh_user_permissions(group_user.userid(), tid, new_perms);
+            }
         }
         Ok(())
     }
@@ -517,12 +533,17 @@ impl UserGroup {
         if removed_users.is_empty() {
             return Ok(());
         }
-        // also refresh all user sessions
+        // refresh permissions for removed user sessions
+        let mut sessions = mut_sessions();
+        let all_users = super::map::users();
         for group_user in &removed_users {
-            mut_sessions().remove_user(
-                group_user.userid(),
-                group_user.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
-            );
+            let tid = group_user.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+            if let Some(tenant_users) = all_users.get(tid)
+                && let Some(user) = tenant_users.get(group_user.userid())
+            {
+                let new_perms = roles_to_permission(user.roles(), tid);
+                sessions.refresh_user_permissions(group_user.userid(), tid, new_perms);
+            }
         }
         self.users.clone_from(&new_users);
 

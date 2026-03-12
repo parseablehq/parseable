@@ -163,7 +163,8 @@ impl Users {
             && let Some(user) = users.get_mut(userid)
         {
             user.roles.extend(roles);
-            mut_sessions().remove_user(userid, tenant_id)
+            let new_perms = roles_to_permission(user.roles(), tenant_id);
+            mut_sessions().refresh_user_permissions(userid, tenant_id, new_perms);
         };
     }
 
@@ -174,7 +175,8 @@ impl Users {
         {
             let diff = HashSet::from_iter(user.roles.difference(&roles).cloned());
             user.roles = diff;
-            mut_sessions().remove_user(userid, tenant_id)
+            let new_perms = roles_to_permission(user.roles(), tenant_id);
+            mut_sessions().refresh_user_permissions(userid, tenant_id, new_perms);
         };
     }
 

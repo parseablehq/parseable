@@ -277,6 +277,24 @@ impl Sessions {
         }
     }
 
+    // refresh permissions for all sessions belonging to a user
+    pub fn refresh_user_permissions(
+        &mut self,
+        username: &str,
+        tenant_id: &str,
+        new_permissions: Vec<Permission>,
+    ) {
+        if let Some(tenant_sessions) = self.user_sessions.get(tenant_id)
+            && let Some(sessions) = tenant_sessions.get(username)
+        {
+            for (key, _) in sessions {
+                if let Some((_, _, perms)) = self.active_sessions.get_mut(key) {
+                    *perms = new_permissions.clone();
+                }
+            }
+        }
+    }
+
     // remove sessions related to a user
     pub fn remove_user(&mut self, username: &str, tenant_id: &str) {
         let sessions = if let Some(tenant_sessions) = self.user_sessions.get_mut(tenant_id) {
