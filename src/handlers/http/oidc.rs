@@ -17,6 +17,7 @@
  */
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use actix_web::http::StatusCode;
 use actix_web::{
@@ -25,6 +26,14 @@ use actix_web::{
     http::header::ContentType,
     web,
 };
+
+/// When set to true, cookies use SameSite::None + Secure (required for Clerk OAuth).
+/// Enterprise sets this when P_CLERK_SECRET is configured.
+static COOKIE_REQUIRE_CROSS_SITE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_cookie_cross_site(enabled: bool) {
+    COOKIE_REQUIRE_CROSS_SITE.store(enabled, Ordering::Relaxed);
+}
 use chrono::{Duration, TimeDelta};
 use openid::Bearer;
 use regex::Regex;
@@ -433,31 +442,30 @@ fn redirect_no_oauth_setup(mut url: Url) -> HttpResponse {
     response.finish()
 }
 
-pub fn cookie_session(id: Ulid) -> Cookie<'static> {
-    Cookie::build(SESSION_COOKIE_NAME, id.to_string())
+fn build_cookie(name: &str, value: String) -> Cookie<'static> {
+    let mut cookie = Cookie::build(name.to_string(), value)
         .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
-        .same_site(SameSite::None)
-        .secure(true)
-        .path("/")
-        .finish()
+        .path("/".to_string());
+
+    if COOKIE_REQUIRE_CROSS_SITE.load(Ordering::Relaxed) {
+        cookie = cookie.same_site(SameSite::None).secure(true);
+    } else {
+        cookie = cookie.same_site(SameSite::Lax);
+    }
+
+    cookie.finish()
+}
+
+pub fn cookie_session(id: Ulid) -> Cookie<'static> {
+    build_cookie(SESSION_COOKIE_NAME, id.to_string())
 }
 
 pub fn cookie_username(username: &str) -> Cookie<'static> {
-    Cookie::build(USER_COOKIE_NAME, username.to_string())
-        .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
-        .same_site(SameSite::None)
-        .secure(true)
-        .path("/")
-        .finish()
+    build_cookie(USER_COOKIE_NAME, username.to_string())
 }
 
 pub fn cookie_userid(user_id: &str) -> Cookie<'static> {
-    Cookie::build(USER_ID_COOKIE_NAME, user_id.to_string())
-        .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
-        .same_site(SameSite::None)
-        .secure(true)
-        .path("/")
-        .finish()
+    build_cookie(USER_ID_COOKIE_NAME, user_id.to_string())
 }
 
 // put new user in metadata if does not exit
