@@ -472,7 +472,7 @@ impl UserGroup {
                 && let Some(user) = tenant_users.get(group_user.userid())
             {
                 let new_perms = roles_to_permission(user.roles(), tenant_id);
-                sessions.refresh_user_permissions(group_user.userid(), tenant_id, new_perms);
+                sessions.refresh_user_permissions(group_user.userid(), tenant_id, &new_perms);
             }
         }
         Ok(())
@@ -492,7 +492,7 @@ impl UserGroup {
                 && let Some(user) = tenant_users.get(group_user.userid())
             {
                 let new_perms = roles_to_permission(user.roles(), tid);
-                sessions.refresh_user_permissions(group_user.userid(), tid, new_perms);
+                sessions.refresh_user_permissions(group_user.userid(), tid, &new_perms);
             }
         }
         Ok(())
@@ -518,7 +518,7 @@ impl UserGroup {
                 && let Some(user) = tenant_users.get(group_user.userid())
             {
                 let new_perms = roles_to_permission(user.roles(), tid);
-                sessions.refresh_user_permissions(group_user.userid(), tid, new_perms);
+                sessions.refresh_user_permissions(group_user.userid(), tid, &new_perms);
             }
         }
         Ok(())
@@ -542,7 +542,7 @@ impl UserGroup {
                 && let Some(user) = tenant_users.get(group_user.userid())
             {
                 let new_perms = roles_to_permission(user.roles(), tid);
-                sessions.refresh_user_permissions(group_user.userid(), tid, new_perms);
+                sessions.refresh_user_permissions(group_user.userid(), tid, &new_perms);
             }
         }
         self.users.clone_from(&new_users);

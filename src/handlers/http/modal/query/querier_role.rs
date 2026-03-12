@@ -111,7 +111,7 @@ pub async fn put(
                 && let Some(user) = tenant_users.get(userid)
             {
                 let new_perms = roles_to_permission(user.roles(), tenant);
-                sessions.refresh_user_permissions(userid, tenant, new_perms);
+                sessions.refresh_user_permissions(userid, tenant, &new_perms);
             }
         }
     }
@@ -191,7 +191,7 @@ pub async fn delete(
                 && let Some(user) = tenant_users.get(userid)
             {
                 let new_perms = roles_to_permission(user.roles(), tenant);
-                sessions.refresh_user_permissions(userid, tenant, new_perms);
+                sessions.refresh_user_permissions(userid, tenant, &new_perms);
             }
         }
     }

@@ -282,14 +282,15 @@ impl Sessions {
         &mut self,
         username: &str,
         tenant_id: &str,
-        new_permissions: Vec<Permission>,
+        new_permissions: &[Permission],
     ) {
         if let Some(tenant_sessions) = self.user_sessions.get(tenant_id)
             && let Some(sessions) = tenant_sessions.get(username)
         {
-            for (key, _) in sessions {
-                if let Some((_, _, perms)) = self.active_sessions.get_mut(key) {
-                    *perms = new_permissions.clone();
+            let keys: Vec<_> = sessions.iter().map(|(key, _)| key.clone()).collect();
+            for key in keys {
+                if let Some((_, _, perms)) = self.active_sessions.get_mut(&key) {
+                    *perms = new_permissions.to_vec();
                 }
             }
         }
