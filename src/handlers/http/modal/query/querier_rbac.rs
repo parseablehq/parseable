@@ -29,12 +29,13 @@ use crate::{
         modal::utils::rbac_utils::{get_metadata, put_metadata},
         rbac::{RBACError, UPDATE_LOCK},
     },
-    parseable::DEFAULT_TENANT,
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::{
         Users,
         map::{roles, users, write_user_groups},
         user::{self, UserType},
     },
+    tenants::TENANT_METADATA,
     utils::{get_tenant_id_from_request, get_user_from_request},
     validator,
 };
@@ -290,6 +291,23 @@ pub async fn remove_roles_from_user(
         return Err(RBACError::RolesNotAssigned(Vec::from_iter(
             roles_not_with_user,
         )));
+    }
+
+    // In multi-tenant, prevent removing the admin role from the tenant owner
+    if PARSEABLE.options.is_multi_tenant()
+        && roles_to_remove.contains("admin")
+        && let Some(tid) = tenant_id.as_deref()
+    {
+        let is_owner = TENANT_METADATA
+            .get_tenant_meta(tid)
+            .and_then(|meta| meta.owner)
+            .map(|owner| owner == userid)
+            .unwrap_or(false);
+        if is_owner {
+            return Err(RBACError::InvalidDeletionRequest(
+                "Cannot remove the admin role from the tenant owner".to_string(),
+            ));
+        }
     }
 
     // update parseable.json first
