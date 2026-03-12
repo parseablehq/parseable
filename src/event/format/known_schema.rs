@@ -515,6 +515,348 @@ mod tests {
     }
 
     #[test]
+    fn test_boomi_container_log() {
+        let processor = EventProcessor::new(FORMATS_JSON);
+        let schema = processor
+            .schema_definitions
+            .get("boomi_container_log")
+            .unwrap();
+
+        let test_logs = vec![
+            // INFO - process scheduling
+            (
+                "Dec 21, 2023 12:00:00 AM UTC INFO [com.boomi.process.ProcessListener%ProcessRunner run] Skipping execution of process Main:PDM9000ToMarxLogicPartsDataProc [alstomtransport-BFJG449], schedules are paused.",
+                "Dec 21, 2023 12:00:00 AM UTC",
+                "INFO",
+                "com.boomi.process.ProcessListener%ProcessRunner run",
+                "Skipping execution of process Main:PDM9000ToMarxLogicPartsDataProc [alstomtransport-BFJG449], schedules are paused.",
+            ),
+            // INFO - connector operation
+            (
+                "Jan 15, 2024 01:03:36 AM UTC INFO [com.boomi.connector.databaseconnector.get.StandardGetOperation] Values appended for prepared statement. Parameters: 5.",
+                "Jan 15, 2024 01:03:36 AM UTC",
+                "INFO",
+                "com.boomi.connector.databaseconnector.get.StandardGetOperation",
+                "Values appended for prepared statement. Parameters: 5.",
+            ),
+            // WARNING - notify shape
+            (
+                "Dec 21, 2023 12:00:14 AM UTC WARNING [com.boomi.process.shape.NotifyShape appendMessage] Notify Shape message size exceeded.",
+                "Dec 21, 2023 12:00:14 AM UTC",
+                "WARNING",
+                "com.boomi.process.shape.NotifyShape appendMessage",
+                "Notify Shape message size exceeded.",
+            ),
+            // SEVERE - OOM error
+            (
+                "Jan 15, 2024 12:00:00 AM UTC SEVERE [com.boomi.container.ContainerController start] Failed to start container [acme-corp-PROD01]. java.lang.OutOfMemoryError: Java heap space",
+                "Jan 15, 2024 12:00:00 AM UTC",
+                "SEVERE",
+                "com.boomi.container.ContainerController start",
+                "Failed to start container [acme-corp-PROD01]. java.lang.OutOfMemoryError: Java heap space",
+            ),
+            // INFO - startup with version details
+            (
+                "Jan 15, 2024 12:00:00 AM UTC INFO [com.boomi.container.ContainerController start] Atom [acme-corp-PROD01] starting. Version: 24.01.2. JVM: OpenJDK 11.0.21. OS: Linux 5.15.0-91-generic amd64.",
+                "Jan 15, 2024 12:00:00 AM UTC",
+                "INFO",
+                "com.boomi.container.ContainerController start",
+                "Atom [acme-corp-PROD01] starting. Version: 24.01.2. JVM: OpenJDK 11.0.21. OS: Linux 5.15.0-91-generic amd64.",
+            ),
+            // WARNING - TryCatch with special characters in body
+            (
+                "Jan 15, 2024 01:08:37 AM UTC WARNING [com.boomi.process.shape.TryCatchShape handleError] Caught exception in Try/Catch for process Main:ErrorNotificationHandler: java.lang.NumberFormatException: For input string: \"N/A\"",
+                "Jan 15, 2024 01:08:37 AM UTC",
+                "WARNING",
+                "com.boomi.process.shape.TryCatchShape handleError",
+                "Caught exception in Try/Catch for process Main:ErrorNotificationHandler: java.lang.NumberFormatException: For input string: \"N/A\"",
+            ),
+        ];
+
+        for (i, (log_text, expected_ts, expected_level, expected_logger, expected_body)) in
+            test_logs.iter().enumerate()
+        {
+            let mut obj = Map::new();
+            let log_field = "raw_log";
+            obj.insert(log_field.to_string(), Value::String(log_text.to_string()));
+
+            let result = schema.check_or_extract(&mut obj, Some(log_field));
+            assert!(
+                result.is_some(),
+                "Failed to extract fields from boomi container log {}: {}",
+                i + 1,
+                log_text
+            );
+
+            assert_eq!(
+                obj.get("timestamp").unwrap().as_str().unwrap(),
+                *expected_ts,
+                "Timestamp mismatch for log {}",
+                i + 1
+            );
+            assert_eq!(
+                obj.get("level").unwrap().as_str().unwrap(),
+                *expected_level,
+                "Level mismatch for log {}",
+                i + 1
+            );
+            assert_eq!(
+                obj.get("logger").unwrap().as_str().unwrap(),
+                *expected_logger,
+                "Logger mismatch for log {}",
+                i + 1
+            );
+            assert_eq!(
+                obj.get("body").unwrap().as_str().unwrap(),
+                *expected_body,
+                "Body mismatch for log {}",
+                i + 1
+            );
+        }
+    }
+
+    #[test]
+    fn test_boomi_container_log_no_match() {
+        let processor = EventProcessor::new(FORMATS_JSON);
+        let schema = processor
+            .schema_definitions
+            .get("boomi_container_log")
+            .unwrap();
+
+        let invalid_logs = vec![
+            "This is not a Boomi log line",
+            "2024-01-15T01:03:36Z INFO [some.logger] Not Boomi timestamp format",
+            "Jan 15, 2024 01:03:36 AM UTC DEBUG [com.boomi.test] Debug is not a valid Boomi level",
+        ];
+
+        for (i, log_text) in invalid_logs.iter().enumerate() {
+            let mut obj = Map::new();
+            obj.insert("raw_log".to_string(), Value::String(log_text.to_string()));
+
+            let result = schema.check_or_extract(&mut obj, Some("raw_log"));
+            assert!(
+                result.is_none(),
+                "Should not match invalid log {}: {}",
+                i + 1,
+                log_text
+            );
+        }
+    }
+
+    #[test]
+    fn test_boomi_webserver_log() {
+        let processor = EventProcessor::new(FORMATS_JSON);
+        let schema = processor
+            .schema_definitions
+            .get("boomi_webserver_log")
+            .unwrap();
+
+        let test_logs = vec![
+            // Standard POST with 200
+            (
+                r#"192.168.1.200 - - [15/Jan/2024:00:00:55 +0000] "POST /ws/rest/v1/invoices HTTP/1.1" 200 481480 "-" "python-requests/2.31.0" 10530ms"#,
+                "192.168.1.200",
+                "POST",
+                "/ws/rest/v1/invoices",
+                "HTTP/1.1",
+                "200",
+                "481480",
+                "python-requests/2.31.0",
+                "10530",
+            ),
+            // GET with 400 error
+            (
+                r#"10.0.1.45 - - [15/Jan/2024:00:04:36 +0000] "GET /ws/rest/v1/edi/850 HTTP/1.1" 400 840 "-" "curl/8.1.2" 14225ms"#,
+                "10.0.1.45",
+                "GET",
+                "/ws/rest/v1/edi/850",
+                "HTTP/1.1",
+                "400",
+                "840",
+                "curl/8.1.2",
+                "14225",
+            ),
+            // GET with 500 error
+            (
+                r#"172.16.0.88 - - [15/Jan/2024:00:59:04 +0000] "GET /ws/rest/v1/edi/850 HTTP/1.1" 500 369 "-" "Apache-HttpClient/4.5.13" 4620ms"#,
+                "172.16.0.88",
+                "GET",
+                "/ws/rest/v1/edi/850",
+                "HTTP/1.1",
+                "500",
+                "369",
+                "Apache-HttpClient/4.5.13",
+                "4620",
+            ),
+            // PUT with SAP user agent
+            (
+                r#"10.0.1.102 - - [15/Jan/2024:00:28:40 +0000] "PUT /ws/rest/v1/products HTTP/1.1" 200 77663 "-" "SAP-NetWeaver/7.50" 1003ms"#,
+                "10.0.1.102",
+                "PUT",
+                "/ws/rest/v1/products",
+                "HTTP/1.1",
+                "200",
+                "77663",
+                "SAP-NetWeaver/7.50",
+                "1003",
+            ),
+            // DELETE with Salesforce user agent
+            (
+                r#"172.16.0.15 - - [15/Jan/2024:01:08:39 +0000] "DELETE /ws/rest/v1/orders HTTP/1.1" 400 1302 "-" "Salesforce/1.0" 24919ms"#,
+                "172.16.0.15",
+                "DELETE",
+                "/ws/rest/v1/orders",
+                "HTTP/1.1",
+                "400",
+                "1302",
+                "Salesforce/1.0",
+                "24919",
+            ),
+        ];
+
+        for (
+            i,
+            (
+                log_text,
+                expected_ip,
+                expected_method,
+                expected_path,
+                expected_version,
+                expected_status,
+                expected_bytes,
+                expected_ua,
+                expected_duration,
+            ),
+        ) in test_logs.iter().enumerate()
+        {
+            let mut obj = Map::new();
+            let log_field = "raw_log";
+            obj.insert(log_field.to_string(), Value::String(log_text.to_string()));
+
+            let result = schema.check_or_extract(&mut obj, Some(log_field));
+            assert!(
+                result.is_some(),
+                "Failed to extract fields from boomi webserver log {}: {}",
+                i + 1,
+                log_text
+            );
+
+            assert_eq!(
+                obj.get("c_ip").unwrap().as_str().unwrap(),
+                *expected_ip,
+                "IP mismatch for log {}",
+                i + 1
+            );
+            assert_eq!(
+                obj.get("cs_method").unwrap().as_str().unwrap(),
+                *expected_method,
+                "Method mismatch for log {}",
+                i + 1
+            );
+            assert_eq!(
+                obj.get("cs_uri_stem").unwrap().as_str().unwrap(),
+                *expected_path,
+                "Path mismatch for log {}",
+                i + 1
+            );
+            assert_eq!(
+                obj.get("cs_version").unwrap().as_str().unwrap(),
+                *expected_version,
+                "HTTP version mismatch for log {}",
+                i + 1
+            );
+            assert_eq!(
+                obj.get("sc_status").unwrap().as_str().unwrap(),
+                *expected_status,
+                "Status mismatch for log {}",
+                i + 1
+            );
+            assert_eq!(
+                obj.get("sc_bytes").unwrap().as_str().unwrap(),
+                *expected_bytes,
+                "Bytes mismatch for log {}",
+                i + 1
+            );
+            assert_eq!(
+                obj.get("cs_user_agent").unwrap().as_str().unwrap(),
+                *expected_ua,
+                "User agent mismatch for log {}",
+                i + 1
+            );
+            assert_eq!(
+                obj.get("duration").unwrap().as_str().unwrap(),
+                *expected_duration,
+                "Duration mismatch for log {}",
+                i + 1
+            );
+        }
+    }
+
+    #[test]
+    fn test_boomi_webserver_log_no_match() {
+        let processor = EventProcessor::new(FORMATS_JSON);
+        let schema = processor
+            .schema_definitions
+            .get("boomi_webserver_log")
+            .unwrap();
+
+        let invalid_logs = vec![
+            "This is not a web server log",
+            // Missing duration suffix
+            r#"192.168.1.200 - - [15/Jan/2024:00:00:55 +0000] "POST /ws/rest/v1/invoices HTTP/1.1" 200 481480 "-" "python-requests/2.31.0""#,
+        ];
+
+        for (i, log_text) in invalid_logs.iter().enumerate() {
+            let mut obj = Map::new();
+            obj.insert("raw_log".to_string(), Value::String(log_text.to_string()));
+
+            let result = schema.check_or_extract(&mut obj, Some("raw_log"));
+            assert!(
+                result.is_none(),
+                "Should not match invalid log {}: {}",
+                i + 1,
+                log_text
+            );
+        }
+    }
+
+    #[test]
+    fn test_boomi_container_log_fields_already_exist() {
+        let processor = EventProcessor::new(FORMATS_JSON);
+        let schema = processor
+            .schema_definitions
+            .get("boomi_container_log")
+            .unwrap();
+
+        let mut obj = Map::new();
+        obj.insert(
+            "timestamp".to_string(),
+            Value::String("Jan 15, 2024 01:03:36 AM UTC".to_string()),
+        );
+        obj.insert("level".to_string(), Value::String("INFO".to_string()));
+        obj.insert(
+            "logger".to_string(),
+            Value::String("com.boomi.container.ContainerController".to_string()),
+        );
+        obj.insert(
+            "body".to_string(),
+            Value::String("Atom started successfully.".to_string()),
+        );
+
+        let result = schema.check_or_extract(&mut obj, None);
+        assert!(
+            result.is_some(),
+            "Should return Some when all fields already exist"
+        );
+
+        // Verify original values weren't changed
+        assert_eq!(
+            obj.get("body").unwrap().as_str().unwrap(),
+            "Atom started successfully."
+        );
+    }
+
+    #[test]
     fn test_parseable_server_logs() {
         let processor = EventProcessor::new(FORMATS_JSON);
         let schema = processor
