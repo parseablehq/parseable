@@ -1515,5 +1515,41 @@
         ]
       }
     ]
+  },
+  {
+    "name": "boomi_container_log",
+    "regex": [
+      {
+        "pattern": "^(?P<timestamp>\\w{3} \\d{1,2}, \\d{4} \\d{2}:\\d{2}:\\d{2} [AP]M \\w+) (?P<level>INFO|WARNING|SEVERE) \\[(?P<logger>[^\\]]+)\\] (?P<body>.*)",
+        "fields": [
+          "timestamp",
+          "level",
+          "logger",
+          "body"
+        ]
+      }
+    ]
+  },
+  {
+    "name": "boomi_webserver_log",
+    "regex": [
+      {
+        "pattern": "^(?P<c_ip>[\\w\\.:\\-]+)\\s+\\S+\\s+(?:-|(?P<cs_username>\\S+))\\s+\\[(?P<timestamp>[^\\]]+)\\]\\s+\"(?:\\-|(?P<cs_method>\\w+) (?P<cs_uri_stem>[^ \\?]+)(?:\\?(?P<cs_uri_query>[^ ]*))? (?P<cs_version>[\\w/\\.]+))\"\\s+(?P<sc_status>\\d+)\\s+(?P<sc_bytes>\\d+|-)\\s+\"(?:-|(?P<cs_referer>[^\"]*))\"\\s+\"(?:-|(?P<cs_user_agent>[^\"]+))\"\\s+(?P<duration>\\d+)ms",
+        "fields": [
+          "c_ip",
+          "cs_username",
+          "timestamp",
+          "cs_method",
+          "cs_uri_stem",
+          "cs_uri_query",
+          "cs_version",
+          "sc_status",
+          "sc_bytes",
+          "cs_referer",
+          "cs_user_agent",
+          "duration"
+        ]
+      }
+    ]
   }
 ]
