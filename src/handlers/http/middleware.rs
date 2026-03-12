@@ -23,7 +23,7 @@ use actix_web::{
     Error, HttpMessage, HttpRequest, Route,
     dev::{Service, ServiceRequest, ServiceResponse, Transform, forward_ready},
     error::{ErrorBadRequest, ErrorForbidden, ErrorUnauthorized},
-    http::header::{self, HeaderName, HeaderValue},
+    http::header::{self, HeaderMap, HeaderName, HeaderValue},
 };
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use chrono::{Duration, TimeDelta, Utc};
@@ -194,7 +194,7 @@ where
         }
 
         let auth_result: Result<_, Error> = (self.auth_method)(&mut req, self.action);
-
+        let headers = req.headers().clone();
         let fut = self.service.call(req);
         Box::pin(async move {
             let Ok(key) = key else {
@@ -209,7 +209,7 @@ where
 
             // if session is expired, refresh token
             if sessions().is_session_expired(&key) {
-                refresh_token(user_and_tenant_id, &key).await?;
+                refresh_token(user_and_tenant_id, &key, headers).await?;
             }
 
             match auth_result? {
@@ -296,6 +296,7 @@ fn get_user_and_tenant(
 pub async fn refresh_token(
     user_and_tenant_id: Result<(Result<String, RBACError>, Option<String>), RBACError>,
     key: &SessionKey,
+    headers: HeaderMap,
 ) -> Result<(), Error> {
     let oidc_client = OIDC_CLIENT.get();
 
@@ -320,8 +321,7 @@ pub async fn refresh_token(
             let refreshed_token = match client
                 .read()
                 .await
-                .client()
-                .refresh_token(&oauth_data, Some(PARSEABLE.options.scope.as_str()))
+                .refresh_token(&oauth_data, Some(PARSEABLE.options.scope.as_str()), headers)
                 .await
             {
                 Ok(bearer) => bearer,
@@ -571,6 +571,10 @@ where
                             header::COOKIE,
                             HeaderValue::from_str(&format!("session={}", id)).unwrap(),
                         );
+
+                        // remove basic auth header
+                        req.headers_mut().remove(header::AUTHORIZATION);
+
                         let session = SessionKey::SessionId(id);
                         req.extensions_mut().insert(session.clone());
                         Users.new_session(&user, session, TimeDelta::seconds(20));

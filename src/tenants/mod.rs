@@ -90,16 +90,16 @@ impl TenantMetadata {
         }
     }
 
-    pub fn suspend_service(&self, tenant_id: &str, service: Service) {
+    pub fn suspend_service(&self, tenant_id: &str, service: &Service) {
         if let Some(mut tenant) = self.tenants.get_mut(tenant_id) {
-            tenant.suspended_services.insert(service);
+            tenant.suspended_services.insert(service.clone());
             tenant.meta.suspended_services = Some(tenant.suspended_services.clone());
         }
     }
 
-    pub fn resume_service(&self, tenant_id: &str, service: Service) {
+    pub fn resume_service(&self, tenant_id: &str, service: &Service) {
         if let Some(mut tenant) = self.tenants.get_mut(tenant_id) {
-            tenant.suspended_services.remove(&service);
+            tenant.suspended_services.remove(service);
             tenant.meta.suspended_services = if tenant.suspended_services.is_empty() {
                 None
             } else {

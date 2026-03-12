@@ -52,9 +52,7 @@ use crate::rbac::role::model::Role;
 use crate::rbac::user::User;
 use crate::stats::Stats;
 use crate::storage::{ObjectStorageError, ObjectStoreFormat};
-use crate::utils::{
-    create_intracluster_auth_headermap, get_tenant_id_from_request, get_user_from_request,
-};
+use crate::utils::{create_intracluster_auth_headermap, get_tenant_id_from_request};
 
 use super::base_path_without_preceding_slash;
 use super::ingest::PostError;
@@ -523,6 +521,7 @@ pub async fn sync_users_with_roles_with_ingestors(
     role: &HashSet<String>,
     operation: &str,
     tenant_id: &Option<String>,
+    caller_userid: &str,
 ) -> Result<(), RBACError> {
     match operation {
         "add" | "remove" => {}
@@ -537,7 +536,7 @@ pub async fn sync_users_with_roles_with_ingestors(
     let userid = userid.to_owned();
     let headers = req.headers().clone();
     let op = operation.to_string();
-    let caller_userid = get_user_from_request(req).unwrap();
+    let caller_userid = caller_userid.to_owned();
     for_each_live_node(tenant_id, move |ingestor| {
         let url = format!(
             "{}{}/user/{}/role/sync/{}",
@@ -586,9 +585,10 @@ pub async fn sync_user_deletion_with_ingestors(
     req: &HttpRequest,
     userid: &str,
     tenant_id: &Option<String>,
+    caller_userid: &str,
 ) -> Result<(), RBACError> {
     let userid = userid.to_owned();
-    let caller_userid = get_user_from_request(req).unwrap();
+    let caller_userid = caller_userid.to_owned();
     let headers = req.headers().clone();
     for_each_live_node(tenant_id, move |ingestor| {
         let url = format!(
@@ -634,6 +634,7 @@ pub async fn sync_user_creation(
     user: User,
     role: &Option<HashSet<String>>,
     tenant_id: &Option<String>,
+    caller_userid: &str,
 ) -> Result<(), RBACError> {
     let mut user = user.clone();
 
@@ -647,7 +648,7 @@ pub async fn sync_user_creation(
         RBACError::SerdeError(err)
     })?;
 
-    let caller_userid = get_user_from_request(req)?;
+    let caller_userid = caller_userid.to_owned();
     let userid = userid.to_string();
     let headers = req.headers().clone();
     for_each_live_node(tenant_id, move |node| {
@@ -694,10 +695,11 @@ pub async fn sync_user_creation(
 pub async fn sync_password_reset_with_ingestors(
     req: HttpRequest,
     username: &str,
+    caller_userid: &str,
 ) -> Result<(), RBACError> {
     let userid = username.to_owned();
     let tenant_id = get_tenant_id_from_request(&req);
-    let caller_userid = get_user_from_request(&req).unwrap();
+    let caller_userid = caller_userid.to_owned();
     let headers = req.headers().clone();
     for_each_live_node(&tenant_id, move |ingestor| {
         let url = format!(
@@ -743,9 +745,10 @@ pub async fn sync_role_update(
     name: String,
     role: Role,
     tenant_id: &Option<String>,
+    caller_userid: &str,
 ) -> Result<(), RoleError> {
     let tenant = tenant_id.to_owned();
-    let userid = get_user_from_request(req).unwrap();
+    let userid = caller_userid.to_owned();
     let headers = req.headers().clone();
     for_each_live_node(tenant_id, move |node| {
         let url = format!(
@@ -793,8 +796,9 @@ pub async fn sync_role_delete(
     req: &HttpRequest,
     name: String,
     tenant_id: &Option<String>,
+    caller_userid: &str,
 ) -> Result<(), RoleError> {
-    let userid = get_user_from_request(req).unwrap();
+    let userid = caller_userid.to_owned();
     let headers = req.headers().clone();
     for_each_live_node(tenant_id, move |node| {
         let url = format!(

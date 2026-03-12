@@ -33,8 +33,9 @@ use crate::{
     rbac::{
         map::{mut_roles, mut_sessions, read_user_groups, roles, users},
         role::model::{Role, RoleType},
+        roles_to_permission,
     },
-    utils::get_tenant_id_from_request,
+    utils::{get_tenant_id_from_request, get_user_from_request},
     validator,
 };
 
@@ -48,6 +49,9 @@ pub async fn put(
     let name = name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    // extract caller userid early, before any session mutations
+    let caller_userid =
+        get_user_from_request(&req).map_err(|e| RoleError::Anyhow(anyhow::anyhow!("{e}")))?;
     // validate the role name
     validator::user_role_name(&name).map_err(RoleError::ValidationError)?;
 
@@ -100,11 +104,21 @@ pub async fn put(
         }
     }
 
-    for userid in session_refresh_users {
-        mut_sessions().remove_user(&userid, tenant);
+    {
+        let mut sessions = mut_sessions();
+        for userid in &session_refresh_users {
+            if let Some(tenant_users) = users().get(tenant)
+                && let Some(user) = tenant_users.get(userid)
+            {
+                let new_perms = roles_to_permission(user.roles(), tenant);
+                sessions.refresh_user_permissions(userid, tenant, &new_perms);
+            }
+        }
     }
 
-    sync_role_update(&req, name.clone(), role, &tenant_id).await?;
+    if let Err(e) = sync_role_update(&req, name.clone(), role, &tenant_id, &caller_userid).await {
+        tracing::error!("Failed to sync role update to cluster nodes: {e}");
+    }
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -118,6 +132,9 @@ pub async fn delete(
     let name = name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    // extract caller userid early, before any session mutations
+    let caller_userid =
+        get_user_from_request(&req).map_err(|e| RoleError::Anyhow(anyhow::anyhow!("{e}")))?;
     if let Some(tenant_roles) = roles().get(tenant)
         && let Some(role) = tenant_roles.get(&name)
         && role.role_type().eq(&RoleType::Internal)
@@ -167,11 +184,21 @@ pub async fn delete(
         }
     }
 
-    for userid in session_refresh_users {
-        mut_sessions().remove_user(&userid, tenant);
+    {
+        let mut sessions = mut_sessions();
+        for userid in &session_refresh_users {
+            if let Some(tenant_users) = users().get(tenant)
+                && let Some(user) = tenant_users.get(userid)
+            {
+                let new_perms = roles_to_permission(user.roles(), tenant);
+                sessions.refresh_user_permissions(userid, tenant, &new_perms);
+            }
+        }
     }
 
-    sync_role_delete(&req, name.clone(), &tenant_id).await?;
+    if let Err(e) = sync_role_delete(&req, name.clone(), &tenant_id, &caller_userid).await {
+        tracing::error!("Failed to sync role deletion to cluster nodes: {e}");
+    }
 
     Ok(HttpResponse::Ok().finish())
 }

@@ -78,6 +78,8 @@ pub struct StorageMetadata {
     pub end_date: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 impl Default for StorageMetadata {
@@ -100,6 +102,7 @@ impl Default for StorageMetadata {
             start_date: None,
             end_date: None,
             plan: None,
+            owner: None,
         }
     }
 }
