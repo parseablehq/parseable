@@ -537,7 +537,7 @@ pub async fn sync_users_with_roles_with_ingestors(
     let userid = userid.to_owned();
     let headers = req.headers().clone();
     let op = operation.to_string();
-    let caller_userid = get_user_from_request(req).unwrap();
+    let caller_userid = get_user_from_request(req)?;
     for_each_live_node(tenant_id, move |ingestor| {
         let url = format!(
             "{}{}/user/{}/role/sync/{}",
@@ -588,7 +588,7 @@ pub async fn sync_user_deletion_with_ingestors(
     tenant_id: &Option<String>,
 ) -> Result<(), RBACError> {
     let userid = userid.to_owned();
-    let caller_userid = get_user_from_request(req).unwrap();
+    let caller_userid = get_user_from_request(req)?;
     let headers = req.headers().clone();
     for_each_live_node(tenant_id, move |ingestor| {
         let url = format!(
@@ -697,7 +697,7 @@ pub async fn sync_password_reset_with_ingestors(
 ) -> Result<(), RBACError> {
     let userid = username.to_owned();
     let tenant_id = get_tenant_id_from_request(&req);
-    let caller_userid = get_user_from_request(&req).unwrap();
+    let caller_userid = get_user_from_request(&req)?;
     let headers = req.headers().clone();
     for_each_live_node(&tenant_id, move |ingestor| {
         let url = format!(
@@ -745,7 +745,8 @@ pub async fn sync_role_update(
     tenant_id: &Option<String>,
 ) -> Result<(), RoleError> {
     let tenant = tenant_id.to_owned();
-    let userid = get_user_from_request(req).unwrap();
+    let userid =
+        get_user_from_request(req).map_err(|e| RoleError::Anyhow(anyhow::anyhow!("{e}")))?;
     let headers = req.headers().clone();
     for_each_live_node(tenant_id, move |node| {
         let url = format!(
@@ -794,7 +795,8 @@ pub async fn sync_role_delete(
     name: String,
     tenant_id: &Option<String>,
 ) -> Result<(), RoleError> {
-    let userid = get_user_from_request(req).unwrap();
+    let userid =
+        get_user_from_request(req).map_err(|e| RoleError::Anyhow(anyhow::anyhow!("{e}")))?;
     let headers = req.headers().clone();
     for_each_live_node(tenant_id, move |node| {
         let url = format!(

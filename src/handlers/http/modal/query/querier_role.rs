@@ -104,7 +104,9 @@ pub async fn put(
         mut_sessions().remove_user(&userid, tenant);
     }
 
-    sync_role_update(&req, name.clone(), role, &tenant_id).await?;
+    if let Err(e) = sync_role_update(&req, name.clone(), role, &tenant_id).await {
+        tracing::error!("Failed to sync role update to cluster nodes: {e}");
+    }
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -171,7 +173,9 @@ pub async fn delete(
         mut_sessions().remove_user(&userid, tenant);
     }
 
-    sync_role_delete(&req, name.clone(), &tenant_id).await?;
+    if let Err(e) = sync_role_delete(&req, name.clone(), &tenant_id).await {
+        tracing::error!("Failed to sync role deletion to cluster nodes: {e}");
+    }
 
     Ok(HttpResponse::Ok().finish())
 }

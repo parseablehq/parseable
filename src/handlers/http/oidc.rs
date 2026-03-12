@@ -17,8 +17,6 @@
  */
 
 use std::collections::HashSet;
-use std::sync::LazyLock;
-use std::time::Instant;
 
 use actix_web::http::StatusCode;
 use actix_web::{
@@ -28,9 +26,7 @@ use actix_web::{
     web,
 };
 use chrono::{Duration, TimeDelta};
-use dashmap::DashMap;
 use openid::Bearer;
-use rand::distributions::{Alphanumeric, DistString};
 use regex::Regex;
 use serde::Deserialize;
 use ulid::Ulid;
@@ -53,31 +49,6 @@ use crate::{
         actix::extract_session_key_from_req, get_tenant_id_from_key, get_tenant_id_from_request,
     },
 };
-
-/// In-memory store mapping OAuth state nonces to redirect URLs.
-/// Entries expire after 10 minutes to prevent stale nonces.
-const OAUTH_NONCE_TTL: std::time::Duration = std::time::Duration::from_secs(600);
-static OAUTH_NONCE_STORE: LazyLock<DashMap<String, (String, Instant)>> =
-    LazyLock::new(DashMap::new);
-
-/// Generate a cryptographic nonce, store it with the redirect URL, and return the nonce.
-fn store_oauth_nonce(redirect: &str) -> String {
-    // Evict expired entries opportunistically
-    OAUTH_NONCE_STORE.retain(|_, (_, created)| created.elapsed() < OAUTH_NONCE_TTL);
-    let nonce = Alphanumeric.sample_string(&mut rand::thread_rng(), 32);
-    OAUTH_NONCE_STORE.insert(nonce.clone(), (redirect.to_string(), Instant::now()));
-    nonce
-}
-
-/// Look up and consume a nonce, returning the associated redirect URL if valid.
-fn consume_oauth_nonce(nonce: &str) -> Option<String> {
-    let (_, (redirect, created)) = OAUTH_NONCE_STORE.remove(nonce)?;
-    if created.elapsed() < OAUTH_NONCE_TTL {
-        Some(redirect)
-    } else {
-        None
-    }
-}
 
 /// Struct representing query params returned from oidc provider
 #[derive(Deserialize, Debug)]
@@ -113,10 +84,9 @@ pub async fn login(
         (None, None) => return Ok(redirect_no_oauth_setup(query.redirect.clone())),
         (None, Some(client)) => {
             let redirect = query.into_inner().redirect.to_string();
-            let nonce = store_oauth_nonce(&redirect);
 
             let scope = PARSEABLE.options.scope.to_string();
-            let mut auth_url: String = client.read().await.auth_url(&scope, Some(nonce)).into();
+            let mut auth_url: String = client.read().await.auth_url(&scope, Some(redirect)).into();
 
             auth_url.push_str("&access_type=offline&prompt=consent");
             return Ok(HttpResponse::TemporaryRedirect()
@@ -169,12 +139,11 @@ pub async fn login(
                 Users.remove_session(&key);
                 if let Some(oidc_client) = oidc_client {
                     let redirect = query.into_inner().redirect.to_string();
-                    let nonce = store_oauth_nonce(&redirect);
                     let scope = PARSEABLE.options.scope.to_string();
                     let mut auth_url: String = oidc_client
                         .read()
                         .await
-                        .auth_url(&scope, Some(nonce))
+                        .auth_url(&scope, Some(redirect))
                         .into();
                     auth_url.push_str("&access_type=offline&prompt=consent");
                     HttpResponse::TemporaryRedirect()
@@ -339,13 +308,14 @@ fn resolve_roles(
     // Inherit roles from a native user with the same email (e.g. tenant owner via OAuth)
     if roles.is_empty()
         && let Some(email) = &user_info.email
-            && let Some(native) = metadata.users.iter().find(|u| {
-                matches!(u.ty, UserType::Native(_))
-                    && u.userid() == email.as_str()
-                    && !u.roles.is_empty()
-            }) {
-                roles.clone_from(&native.roles);
-            }
+        && let Some(native) = metadata.users.iter().find(|u| {
+            matches!(u.ty, UserType::Native(_))
+                && u.userid() == email.as_str()
+                && !u.roles.is_empty()
+        })
+    {
+        roles.clone_from(&native.roles);
+    }
 
     roles
 }
@@ -376,7 +346,6 @@ fn build_login_response(
 
     if is_xhr {
         let mut response = HttpResponse::Ok();
-        response.insert_header((actix_web::http::header::CACHE_CONTROL, "no-store"));
         for cookie in cookies {
             response.cookie(cookie);
         }
@@ -388,8 +357,7 @@ fn build_login_response(
     } else {
         let redirect_url = login_query
             .state
-            .as_deref()
-            .and_then(consume_oauth_nonce)
+            .clone()
             .unwrap_or_else(|| PARSEABLE.options.address.to_string());
 
         redirect_to_client(&redirect_url, cookies)
