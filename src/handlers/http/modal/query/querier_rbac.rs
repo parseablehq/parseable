@@ -35,7 +35,7 @@ use crate::{
         map::{roles, users, write_user_groups},
         user::{self, UserType},
     },
-    utils::get_tenant_id_from_request,
+    utils::{get_tenant_id_from_request, get_user_from_request},
     validator,
 };
 
@@ -48,6 +48,7 @@ pub async fn post_user(
 ) -> Result<impl Responder, RBACError> {
     let username = userid.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    let caller_userid = get_user_from_request(&req)?;
     validator::user_role_name(&username)?;
     let mut metadata = get_metadata(&tenant_id).await?;
 
@@ -90,7 +91,7 @@ pub async fn post_user(
     // let created_role = user_roles.clone();
     Users.put_user(user.clone());
 
-    sync_user_creation(&req, user, &None, &tenant_id).await?;
+    sync_user_creation(&req, user, &None, &tenant_id, &caller_userid).await?;
 
     Ok(password)
 }
@@ -102,6 +103,7 @@ pub async fn delete_user(
 ) -> Result<impl Responder, RBACError> {
     let userid = userid.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    let caller_userid = get_user_from_request(&req)?;
     let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     let _guard = UPDATE_LOCK.lock().await;
     // fail this request if the user does not exist
@@ -158,7 +160,7 @@ pub async fn delete_user(
     }
     put_metadata(&metadata, &tenant_id).await?;
 
-    sync_user_deletion_with_ingestors(&req, &userid, &tenant_id).await?;
+    sync_user_deletion_with_ingestors(&req, &userid, &tenant_id, &caller_userid).await?;
 
     // update in mem table
     Users.delete_user(&userid, &tenant_id);
@@ -174,6 +176,7 @@ pub async fn add_roles_to_user(
     let userid = userid.into_inner();
     let roles_to_add = roles_to_add.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    let caller_userid = get_user_from_request(&req)?;
     if !Users.contains(&userid, &tenant_id) {
         return Err(RBACError::UserDoesNotExist);
     };
@@ -217,10 +220,23 @@ pub async fn add_roles_to_user(
     }
 
     put_metadata(&metadata, &tenant_id).await?;
-    // update in mem table
-    Users.add_roles(&userid.clone(), roles_to_add.clone(), &tenant_id);
 
-    sync_users_with_roles_with_ingestors(&req, &userid, &roles_to_add, "add", &tenant_id).await?;
+    // sync to other nodes before updating in-memory (which invalidates sessions)
+    if let Err(e) = sync_users_with_roles_with_ingestors(
+        &req,
+        &userid,
+        &roles_to_add,
+        "add",
+        &tenant_id,
+        &caller_userid,
+    )
+    .await
+    {
+        tracing::error!("Failed to sync role addition to cluster nodes: {e}");
+    }
+
+    // update in mem table (this invalidates the user's session)
+    Users.add_roles(&userid.clone(), roles_to_add.clone(), &tenant_id);
 
     Ok(format!("Roles updated successfully for {username}"))
 }
@@ -234,6 +250,7 @@ pub async fn remove_roles_from_user(
     let userid = userid.into_inner();
     let roles_to_remove = roles_to_remove.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    let caller_userid = get_user_from_request(&req)?;
     let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     let _guard = UPDATE_LOCK.lock().await;
 
@@ -291,11 +308,23 @@ pub async fn remove_roles_from_user(
     }
 
     put_metadata(&metadata, &tenant_id).await?;
-    // update in mem table
-    Users.remove_roles(&userid.clone(), roles_to_remove.clone(), &tenant_id);
 
-    sync_users_with_roles_with_ingestors(&req, &userid, &roles_to_remove, "remove", &tenant_id)
-        .await?;
+    // sync to other nodes before updating in-memory (which invalidates sessions)
+    if let Err(e) = sync_users_with_roles_with_ingestors(
+        &req,
+        &userid,
+        &roles_to_remove,
+        "remove",
+        &tenant_id,
+        &caller_userid,
+    )
+    .await
+    {
+        tracing::error!("Failed to sync role removal to cluster nodes: {e}");
+    }
+
+    // update in mem table (this invalidates the user's session)
+    Users.remove_roles(&userid.clone(), roles_to_remove.clone(), &tenant_id);
 
     Ok(HttpResponse::Ok().json(format!("Roles updated successfully for {username}")))
 }
@@ -310,6 +339,7 @@ pub async fn post_gen_password(
     let mut new_password = String::default();
     let mut new_hash = String::default();
     let tenant_id = get_tenant_id_from_request(&req);
+    let caller_userid = get_user_from_request(&req)?;
     let mut metadata = get_metadata(&tenant_id).await?;
 
     let _guard = UPDATE_LOCK.lock().await;
@@ -332,7 +362,7 @@ pub async fn post_gen_password(
     put_metadata(&metadata, &tenant_id).await?;
     Users.change_password_hash(&username, &new_hash, &tenant_id);
 
-    sync_password_reset_with_ingestors(req, &username).await?;
+    sync_password_reset_with_ingestors(req, &username, &caller_userid).await?;
 
     Ok(new_password)
 }

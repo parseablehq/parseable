@@ -34,7 +34,7 @@ use crate::{
         map::{mut_roles, mut_sessions, read_user_groups, roles, users},
         role::model::{Role, RoleType},
     },
-    utils::get_tenant_id_from_request,
+    utils::{get_tenant_id_from_request, get_user_from_request},
     validator,
 };
 
@@ -48,6 +48,9 @@ pub async fn put(
     let name = name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    // extract caller userid early, before any session mutations
+    let caller_userid =
+        get_user_from_request(&req).map_err(|e| RoleError::Anyhow(anyhow::anyhow!("{e}")))?;
     // validate the role name
     validator::user_role_name(&name).map_err(RoleError::ValidationError)?;
 
@@ -104,7 +107,7 @@ pub async fn put(
         mut_sessions().remove_user(&userid, tenant);
     }
 
-    if let Err(e) = sync_role_update(&req, name.clone(), role, &tenant_id).await {
+    if let Err(e) = sync_role_update(&req, name.clone(), role, &tenant_id, &caller_userid).await {
         tracing::error!("Failed to sync role update to cluster nodes: {e}");
     }
 
@@ -120,6 +123,9 @@ pub async fn delete(
     let name = name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    // extract caller userid early, before any session mutations
+    let caller_userid =
+        get_user_from_request(&req).map_err(|e| RoleError::Anyhow(anyhow::anyhow!("{e}")))?;
     if let Some(tenant_roles) = roles().get(tenant)
         && let Some(role) = tenant_roles.get(&name)
         && role.role_type().eq(&RoleType::Internal)
@@ -173,7 +179,7 @@ pub async fn delete(
         mut_sessions().remove_user(&userid, tenant);
     }
 
-    if let Err(e) = sync_role_delete(&req, name.clone(), &tenant_id).await {
+    if let Err(e) = sync_role_delete(&req, name.clone(), &tenant_id, &caller_userid).await {
         tracing::error!("Failed to sync role deletion to cluster nodes: {e}");
     }
 
