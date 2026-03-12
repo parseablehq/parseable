@@ -472,10 +472,10 @@ pub async fn put_user(
     // If the userid matches the super admin (P_USERNAME), return the existing
     // Native user as-is. This prevents overwriting the super admin with an
     // OAuth user while still allowing OAuth login to create a session.
-    if userid == PARSEABLE.options.username {
-        if let Some(user) = Users.get_user(userid, &tenant) {
-            return Ok(user);
-        }
+    if userid == PARSEABLE.options.username
+        && let Some(user) = Users.get_user(userid, &tenant)
+    {
+        return Ok(user);
     }
 
     let mut metadata = get_metadata(&tenant).await?;
