@@ -45,7 +45,8 @@ struct StreamMetadata {
     time_partition: Option<String>,
     dataset_format: LogSource,
     ingestion: bool,
-    tag: Option<DatasetTag>,
+    tags: Vec<DatasetTag>,
+    labels: Vec<String>,
 }
 
 type StreamMetadataResponse = Result<StreamMetadata, PrismHomeError>;
@@ -59,8 +60,10 @@ pub struct DataSet {
     time_partition: Option<String>,
     dataset_format: LogSource,
     ingestion: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tag: Option<DatasetTag>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<DatasetTag>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    labels: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -147,7 +150,8 @@ pub async fn generate_home_response(
                     time_partition: sm.time_partition,
                     dataset_format: sm.dataset_format,
                     ingestion: sm.ingestion,
-                    tag: sm.tag,
+                    tags: sm.tags,
+                    labels: sm.labels,
                 });
             }
             Err(e) => {
@@ -233,7 +237,8 @@ async fn get_stream_metadata(stream: String, tenant_id: &Option<String>) -> Stre
     let ingested = stream_jsons
         .iter()
         .any(|s| s.stats.current_stats.events > 0);
-    let dataset_tag = stream_jsons[0].dataset_tag;
+    let dataset_tags = stream_jsons[0].dataset_tags.clone();
+    let dataset_labels = stream_jsons[0].dataset_labels.clone();
 
     Ok(StreamMetadata {
         stream,
@@ -242,7 +247,8 @@ async fn get_stream_metadata(stream: String, tenant_id: &Option<String>) -> Stre
         time_partition,
         dataset_format,
         ingestion: ingested,
-        tag: dataset_tag,
+        tags: dataset_tags,
+        labels: dataset_labels,
     })
 }
 

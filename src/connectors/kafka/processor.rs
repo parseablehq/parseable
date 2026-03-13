@@ -64,7 +64,8 @@ impl ParseableSinkProcessor {
                 vec![log_source_entry],
                 TelemetryType::default(),
                 tenant_id,
-                None,
+                vec![],
+                vec![],
             )
             .await?;
 
