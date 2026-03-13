@@ -30,7 +30,7 @@ parquet = "57.1.0"
 
 # Web server and HTTP-related
 actix-cors = "0.7.0"
-actix-web-lab = "0.24.3"
+actix-web-lab = "0.26.0"
 actix-web = { version = "4.9.0", features = ["rustls-0_23"] }
 actix-web-httpauth = "0.8"
 actix-web-prometheus = { version = "0.1", default-features = false }
@@ -184,7 +184,7 @@ temp-dir = "0.1.14"
 
 [package.metadata.parseable_ui]
 assets-url = "https://parseable-prism-build.s3.us-east-2.amazonaws.com/v2.5.14/build.zip"
-assets-sha1 = "de42d79d38c4a7327d20be542950344800d426a8"
+assets-sha1 = "7b3d1a6bea288585183cbc8233af4da91d768853"
 
 [features]
 debug = []

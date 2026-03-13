@@ -165,7 +165,7 @@ pub async fn generate_home_response(
     let data_ingested = datasets.iter().any(|d| d.ingestion);
     let user_count = users()
         .get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-        .map(|m| m.len())
+        .map(|m| m.values().filter(|u| !u.protected).count())
         .unwrap_or(0);
     let user_added = user_count > 1; // more than just the default admin user
 

@@ -1083,18 +1083,18 @@ impl Parseable {
 
     pub async fn suspend_tenant_service(
         &self,
-        tenant_id: String,
-        service: Service,
+        tenant_id: &str,
+        service: &Service,
     ) -> Result<(), anyhow::Error> {
-        TENANT_METADATA.suspend_service(&tenant_id, service.clone());
+        TENANT_METADATA.suspend_service(tenant_id, service);
 
         // write to disk
-        let tenant_id = &Some(tenant_id);
+        let tenant_id = &Some(tenant_id.to_owned());
         let mut meta = get_metadata(tenant_id).await?;
         if let Some(sus) = meta.suspended_services.as_mut() {
-            sus.insert(service);
+            sus.insert(service.clone());
         } else {
-            meta.suspended_services = Some(HashSet::from_iter([service]));
+            meta.suspended_services = Some(HashSet::from_iter([service.clone()]));
         }
 
         put_remote_metadata(&meta, tenant_id).await?;
@@ -1103,16 +1103,16 @@ impl Parseable {
 
     pub async fn resume_tenant_service(
         &self,
-        tenant_id: String,
-        service: Service,
+        tenant_id: &str,
+        service: &Service,
     ) -> Result<(), anyhow::Error> {
-        TENANT_METADATA.resume_service(&tenant_id, service.clone());
+        TENANT_METADATA.resume_service(tenant_id, service);
 
         // write to disk
-        let tenant_id = &Some(tenant_id);
+        let tenant_id = &Some(tenant_id.to_owned());
         let mut meta = get_metadata(tenant_id).await?;
         if let Some(sus) = meta.suspended_services.as_mut() {
-            sus.remove(&service);
+            sus.remove(service);
         }
 
         put_remote_metadata(&meta, tenant_id).await?;

@@ -95,6 +95,7 @@ impl ParseableServer for Server {
                     .service(Self::get_llm_webscope())
                     .service(Self::get_oauth_webscope())
                     .service(Self::get_user_role_webscope())
+                    .service(Self::get_roles_webscope())
                     .service(Self::get_counts_webscope().wrap(from_fn(
                         resource_check::check_resource_utilization_middleware,
                     )))

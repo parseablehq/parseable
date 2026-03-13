@@ -59,6 +59,29 @@ impl TenantMetadata {
         );
     }
 
+    pub fn get_tenant_meta(&self, tenant_id: &str) -> Option<StorageMetadata> {
+        self.tenants.get(tenant_id).map(|t| t.meta.clone())
+    }
+
+    pub fn update_tenant_meta(
+        &self,
+        tenant_id: &str,
+        customer_name: Option<String>,
+        start_date: Option<String>,
+        end_date: Option<String>,
+        plan: Option<String>,
+    ) -> bool {
+        if let Some(mut tenant) = self.tenants.get_mut(tenant_id) {
+            tenant.meta.customer_name = customer_name;
+            tenant.meta.start_date = start_date;
+            tenant.meta.end_date = end_date;
+            tenant.meta.plan = plan;
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn get_global_query_auth(&self, tenant_id: &str) -> Option<String> {
         if let Some(tenant) = self.tenants.get(tenant_id) {
             tenant.meta.global_query_auth.clone()
@@ -67,16 +90,16 @@ impl TenantMetadata {
         }
     }
 
-    pub fn suspend_service(&self, tenant_id: &str, service: Service) {
+    pub fn suspend_service(&self, tenant_id: &str, service: &Service) {
         if let Some(mut tenant) = self.tenants.get_mut(tenant_id) {
-            tenant.suspended_services.insert(service);
+            tenant.suspended_services.insert(service.clone());
             tenant.meta.suspended_services = Some(tenant.suspended_services.clone());
         }
     }
 
-    pub fn resume_service(&self, tenant_id: &str, service: Service) {
+    pub fn resume_service(&self, tenant_id: &str, service: &Service) {
         if let Some(mut tenant) = self.tenants.get_mut(tenant_id) {
-            tenant.suspended_services.remove(&service);
+            tenant.suspended_services.remove(service);
             tenant.meta.suspended_services = if tenant.suspended_services.is_empty() {
                 None
             } else {

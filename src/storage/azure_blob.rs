@@ -16,15 +16,7 @@
  *
  */
 
-use std::{
-    collections::HashSet,
-    path::Path,
-    sync::{
-        Arc,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::Duration,
-};
+use std::{collections::HashSet, path::Path, sync::Arc, time::Duration};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -271,50 +263,49 @@ impl BlobStore {
         tenant_id: &Option<String>,
     ) -> Result<(), ObjectStorageError> {
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        let files_scanned = Arc::new(AtomicU64::new(0));
-        let files_deleted = Arc::new(AtomicU64::new(0));
+
+        // List all objects under the prefix
         let object_stream = self.client.list(Some(&(key.into())));
         increment_object_store_calls_by_date("LIST", &Utc::now().date_naive().to_string(), tenant);
 
-        object_stream
-            .for_each_concurrent(None, |x| async {
-                files_scanned.fetch_add(1, Ordering::Relaxed);
+        // Map listed objects to their locations for delete_stream
+        let locations_stream = object_stream.map(|result| result.map(|obj| obj.location));
 
-                match x {
-                    Ok(obj) => {
-                        files_deleted.fetch_add(1, Ordering::Relaxed);
-                        let delete_resp = self.client.delete(&obj.location).await;
-                        increment_object_store_calls_by_date(
-                            "DELETE",
-                            &Utc::now().date_naive().to_string(),
-                            tenant,
-                        );
-                        if delete_resp.is_err() {
-                            error!(
-                                "Failed to delete object during delete stream: {:?}",
-                                delete_resp
-                            );
-                        }
-                    }
-                    Err(err) => {
-                        error!("Failed to fetch object during delete stream: {:?}", err);
-                    }
-                };
-            })
-            .await;
+        // Use delete_stream which batches deletes via the bulk delete API
+        let mut delete_results = self.client.delete_stream(Box::pin(locations_stream));
 
+        let mut files_deleted: u64 = 0;
+        let mut failed_deletes: u64 = 0;
+        while let Some(result) = delete_results.next().await {
+            match result {
+                Ok(_) => files_deleted += 1,
+                Err(err) => {
+                    failed_deletes += 1;
+                    error!("Failed to delete object during prefix deletion: {:?}", err);
+                }
+            }
+        }
+
+        let total_files = files_deleted + failed_deletes;
         increment_files_scanned_in_object_store_calls_by_date(
             "LIST",
-            files_scanned.load(Ordering::Relaxed),
+            total_files,
             &Utc::now().date_naive().to_string(),
             tenant,
         );
         increment_files_scanned_in_object_store_calls_by_date(
             "DELETE",
-            files_deleted.load(Ordering::Relaxed),
+            files_deleted,
             &Utc::now().date_naive().to_string(),
             tenant,
         );
+
+        if failed_deletes > 0 {
+            return Err(ObjectStorageError::UnhandledError(
+                anyhow::anyhow!("Failed to delete {failed_deletes} out of {total_files} objects under prefix '{key}'").into(),
+            ));
+        }
+
         Ok(())
     }
 

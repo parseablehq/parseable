@@ -16,7 +16,8 @@
  *
  */
 
-use std::{collections::HashSet, sync::Arc};
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use actix_web::http::StatusCode;
 use actix_web::{
@@ -25,23 +26,27 @@ use actix_web::{
     http::header::ContentType,
     web,
 };
+
+/// When set to true, cookies use SameSite::None + Secure (required for Clerk OAuth).
+/// Enterprise sets this when P_CLERK_SECRET is configured.
+static COOKIE_REQUIRE_CROSS_SITE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_cookie_cross_site(enabled: bool) {
+    COOKIE_REQUIRE_CROSS_SITE.store(enabled, Ordering::Relaxed);
+}
 use chrono::{Duration, TimeDelta};
-use openid::{Bearer, Options, Token, Userinfo};
+use openid::Bearer;
 use regex::Regex;
 use serde::Deserialize;
-use tokio::sync::RwLock;
 use ulid::Ulid;
 use url::Url;
 
 use crate::{
     handlers::{
         COOKIE_AGE_DAYS, SESSION_COOKIE_NAME, USER_COOKIE_NAME, USER_ID_COOKIE_NAME,
-        http::{
-            API_BASE_PATH, API_VERSION,
-            modal::{GlobalClient, OIDC_CLIENT},
-        },
+        http::modal::OIDC_CLIENT,
     },
-    oidc::{Claims, DiscoveredClient},
+    oauth::OAuthSession,
     parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::{
         self, EXPIRY_DURATION, Users,
@@ -87,11 +92,15 @@ pub async fn login(
     let (session_key, oidc_client) = match (session_key, oidc_client) {
         (None, None) => return Ok(redirect_no_oauth_setup(query.redirect.clone())),
         (None, Some(client)) => {
-            return Ok(redirect_to_oidc(
-                query,
-                client.read().await.client(),
-                PARSEABLE.options.scope.to_string().as_str(),
-            ));
+            let redirect = query.into_inner().redirect.to_string();
+
+            let scope = PARSEABLE.options.scope.to_string();
+            let mut auth_url: String = client.read().await.auth_url(&scope, Some(redirect)).into();
+
+            auth_url.push_str("&access_type=offline&prompt=consent");
+            return Ok(HttpResponse::TemporaryRedirect()
+                .insert_header((actix_web::http::header::LOCATION, auth_url))
+                .finish());
         }
         (Some(session_key), client) => (session_key, client),
     };
@@ -138,11 +147,17 @@ pub async fn login(
             } else {
                 Users.remove_session(&key);
                 if let Some(oidc_client) = oidc_client {
-                    redirect_to_oidc(
-                        query,
-                        oidc_client.read().await.client(),
-                        PARSEABLE.options.scope.to_string().as_str(),
-                    )
+                    let redirect = query.into_inner().redirect.to_string();
+                    let scope = PARSEABLE.options.scope.to_string();
+                    let mut auth_url: String = oidc_client
+                        .read()
+                        .await
+                        .auth_url(&scope, Some(redirect))
+                        .into();
+                    auth_url.push_str("&access_type=offline&prompt=consent");
+                    HttpResponse::TemporaryRedirect()
+                        .insert_header((actix_web::http::header::LOCATION, auth_url))
+                        .finish()
                 } else {
                     redirect_to_client(query.redirect.as_str(), None)
                 }
@@ -161,13 +176,7 @@ pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> 
     let tenant_id = get_tenant_id_from_key(&session);
     let user = Users.remove_session(&session);
     let logout_endpoint = if let Some(client) = oidc_client {
-        client
-            .read()
-            .await
-            .client()
-            .config()
-            .end_session_endpoint
-            .clone()
+        client.read().await.logout_url()
     } else {
         None
     };
@@ -188,127 +197,180 @@ pub async fn reply_login(
     req: HttpRequest,
     login_query: web::Query<Login>,
 ) -> Result<HttpResponse, OIDCError> {
-    let oidc_client = if let Some(oidc_client) = OIDC_CLIENT.get() {
-        oidc_client
-    } else {
-        return Err(OIDCError::Unauthorized);
-    };
+    let oidc_client = OIDC_CLIENT.get().ok_or(OIDCError::Unauthorized)?;
     let tenant_id = get_tenant_id_from_request(&req);
 
-    let (mut claims, user_info, bearer) = match request_token(oidc_client, &login_query).await {
-        Ok(v) => v,
-        Err(e) => {
-            tracing::error!("reply_login call failed- {e}");
-            return Ok(HttpResponse::Unauthorized().finish());
+    let session = oidc_client
+        .write()
+        .await
+        .exchange_code(&login_query.code)
+        .await
+        .map_err(|e| {
+            tracing::error!("reply_login exchange_code failed: {e}");
+            OIDCError::Unauthorized
+        })?;
+
+    let (username, user_id, user_info) = extract_identity(&session)?;
+    let metadata = get_metadata(&tenant_id).await?;
+    let existing_user = find_existing_user(&user_info, tenant_id.clone());
+    let final_roles = resolve_roles(
+        &session.claims.groups,
+        &metadata,
+        &user_info,
+        &tenant_id,
+        existing_user.as_ref(),
+    );
+
+    let expires_in = bearer_expiry(&session.bearer);
+    let user = match (existing_user, final_roles) {
+        (Some(user), roles) => {
+            update_user_if_changed(user, roles, user_info, session.bearer).await?
+        }
+        (None, roles) => {
+            put_user(
+                &user_id,
+                roles,
+                user_info,
+                session.bearer,
+                tenant_id.clone(),
+            )
+            .await?
         }
     };
+
+    let id = Ulid::new();
+    Users.new_session(&user, SessionKey::SessionId(id), expires_in);
+
+    let cookies = [
+        cookie_session(id),
+        cookie_username(&username),
+        cookie_userid(&user_id),
+    ];
+
+    Ok(build_login_response(
+        &req,
+        &login_query,
+        cookies,
+        id,
+        &username,
+        &user_id,
+    ))
+}
+
+/// Extract username, user_id, and UserInfo from the OAuth session.
+fn extract_identity(session: &OAuthSession) -> Result<(String, String, user::UserInfo), OIDCError> {
+    let user_info = &session.userinfo;
     let username = user_info
         .name
         .clone()
         .or_else(|| user_info.email.clone())
         .or_else(|| user_info.sub.clone())
-        .expect("OIDC provider did not return a usable identifier (name, email or sub)");
-    let user_id = match user_info.sub.clone() {
-        Some(id) => id,
-        None => {
-            tracing::error!("OIDC provider did not return a sub");
-            return Err(OIDCError::Unauthorized);
-        }
-    };
-    let user_info: user::UserInfo = user_info.into();
+        .ok_or_else(|| {
+            tracing::error!(
+                "OAuth provider did not return a usable identifier (name, email or sub)"
+            );
+            OIDCError::Unauthorized
+        })?;
+    let user_id = user_info.sub.clone().ok_or_else(|| {
+        tracing::error!("OAuth provider did not return a sub");
+        OIDCError::Unauthorized
+    })?;
+    Ok((username, user_id, user_info.clone().into()))
+}
 
-    // if provider has group A, and parseable as has role A
-    // then user will automatically get assigned role A
-    // else, the default oidc role (inside parseable) will get assigned
-    let group: HashSet<String> = claims
-        .other
-        .remove("groups")
-        .map(serde_json::from_value)
-        .transpose()?
-        .unwrap_or_default();
-    let metadata = get_metadata(&tenant_id).await?;
+/// Determine the final set of roles for the user.
+fn resolve_roles(
+    groups: &HashSet<String>,
+    metadata: &StorageMetadata,
+    user_info: &user::UserInfo,
+    tenant_id: &Option<String>,
+    existing_user: Option<&User>,
+) -> HashSet<String> {
+    let valid_oidc_roles: HashSet<String> = metadata
+        .roles
+        .keys()
+        .filter(|role_name| groups.contains(*role_name))
+        .cloned()
+        .collect();
 
-    // Find which OIDC groups match existing roles in Parseable
-    let mut valid_oidc_roles = HashSet::new();
-    for role in metadata.roles.iter() {
-        let role_name = role.0;
-        if group.contains(role_name) {
-            valid_oidc_roles.insert(role_name.clone());
-        }
-    }
-
-    let default_role = if let Some(role) = DEFAULT_ROLE
+    let default_role = DEFAULT_ROLE
         .read()
-        // .unwrap()
         .get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-        && let Some(role) = role
-    {
-        HashSet::from([role.to_owned()])
-    } else {
-        HashSet::new()
-    };
-    // let default_role = if let Some(default_role) = DEFAULT_ROLE.lock().unwrap().clone() {
-    //     HashSet::from([default_role])
-    // } else {
-    //     HashSet::new()
-    // };
+        .and_then(|r| r.clone())
+        .map(|r| HashSet::from([r]))
+        .unwrap_or_default();
 
-    let existing_user = find_existing_user(&user_info, tenant_id);
-    let mut final_roles = match existing_user {
-        Some(ref user) => {
-            // For existing users: keep existing roles + add new valid OIDC roles
+    let mut roles = match existing_user {
+        Some(user) => {
             let mut roles = user.roles.clone();
-            roles.extend(valid_oidc_roles); // Add new matching roles
+            roles.extend(valid_oidc_roles);
             roles
         }
-        None => {
-            // For new users: use valid OIDC roles, fallback to default if none
-            if valid_oidc_roles.is_empty() {
-                default_role.clone()
-            } else {
-                valid_oidc_roles
-            }
-        }
+        None if !valid_oidc_roles.is_empty() => valid_oidc_roles,
+        None => default_role.clone(),
     };
-    if final_roles.is_empty() {
-        // If no roles were found, use the default role
-        final_roles.clone_from(&default_role);
+
+    if roles.is_empty() {
+        roles.clone_from(&default_role);
     }
 
-    let expires_in = if let Some(expires_in) = bearer.expires_in.as_ref() {
-        // need an i64 somehow
-        if *expires_in > u32::MAX.into() {
-            EXPIRY_DURATION
-        } else {
-            let v = i64::from(*expires_in as u32);
-            Duration::seconds(v)
+    // Inherit roles from a native user with the same email (e.g. tenant owner via OAuth)
+    if roles.is_empty()
+        && let Some(email) = &user_info.email
+        && let Some(native) = metadata.users.iter().find(|u| {
+            matches!(u.ty, UserType::Native(_))
+                && u.userid() == email.as_str()
+                && !u.roles.is_empty()
+        })
+    {
+        roles.clone_from(&native.roles);
+    }
+
+    roles
+}
+
+/// Compute session expiry from the bearer token.
+fn bearer_expiry(bearer: &Bearer) -> TimeDelta {
+    match bearer.expires_in.as_ref() {
+        Some(&exp) if exp <= u32::MAX.into() => Duration::seconds(i64::from(exp as u32)),
+        _ => EXPIRY_DURATION,
+    }
+}
+
+/// Build the HTTP response for the login callback (XHR JSON or redirect).
+fn build_login_response(
+    req: &HttpRequest,
+    login_query: &web::Query<Login>,
+    cookies: [Cookie<'static>; 3],
+    session_id: Ulid,
+    username: &str,
+    user_id: &str,
+) -> HttpResponse {
+    let is_xhr = req.headers().contains_key("x-p-tenant")
+        || req
+            .headers()
+            .get("accept")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("application/json"));
+
+    if is_xhr {
+        let mut response = HttpResponse::Ok();
+        for cookie in cookies {
+            response.cookie(cookie);
         }
+        response.json(serde_json::json!({
+            "session": session_id.to_string(),
+            "username": username,
+            "user_id": user_id,
+        }))
     } else {
-        EXPIRY_DURATION
-    };
+        let redirect_url = login_query
+            .state
+            .clone()
+            .unwrap_or_else(|| PARSEABLE.options.address.to_string());
 
-    let user = match (existing_user, final_roles) {
-        (Some(user), roles) => update_user_if_changed(user, roles, user_info, bearer).await?,
-        // LET TENANT BE NONE FOR NOW!!!
-        (None, roles) => put_user(&user_id, roles, user_info, bearer, None).await?,
-    };
-    let id = Ulid::new();
-
-    Users.new_session(&user, SessionKey::SessionId(id), expires_in);
-
-    let redirect_url = login_query
-        .state
-        .clone()
-        .unwrap_or_else(|| PARSEABLE.options.address.to_string());
-
-    Ok(redirect_to_client(
-        &redirect_url,
-        [
-            cookie_session(id),
-            cookie_username(&username),
-            cookie_userid(&user_id),
-        ],
-    ))
+        redirect_to_client(&redirect_url, cookies)
+    }
 }
 
 fn find_existing_user(user_info: &user::UserInfo, tenant_id: Option<String>) -> Option<User> {
@@ -347,24 +409,6 @@ fn exchange_basic_for_cookie(
     cookie_session(id)
 }
 
-fn redirect_to_oidc(
-    query: web::Query<RedirectAfterLogin>,
-    oidc_client: &DiscoveredClient,
-    scope: &str,
-) -> HttpResponse {
-    let redirect = query.into_inner().redirect.to_string();
-    let auth_url = oidc_client.auth_url(&Options {
-        scope: Some(scope.to_string()),
-        state: Some(redirect),
-        ..Default::default()
-    });
-    let mut url: String = auth_url.into();
-    url.push_str("&access_type=offline&prompt=consent");
-    HttpResponse::TemporaryRedirect()
-        .insert_header((actix_web::http::header::LOCATION, url))
-        .finish()
-}
-
 fn redirect_to_oidc_logout(mut logout_endpoint: Url, redirect: &Url) -> HttpResponse {
     logout_endpoint.set_query(Some(&format!("post_logout_redirect_uri={redirect}")));
     HttpResponse::TemporaryRedirect()
@@ -398,73 +442,30 @@ fn redirect_no_oauth_setup(mut url: Url) -> HttpResponse {
     response.finish()
 }
 
-pub fn cookie_session(id: Ulid) -> Cookie<'static> {
-    Cookie::build(SESSION_COOKIE_NAME, id.to_string())
+fn build_cookie(name: &str, value: String) -> Cookie<'static> {
+    let mut cookie = Cookie::build(name.to_string(), value)
         .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
-        .same_site(SameSite::Strict)
-        .path("/")
-        .finish()
+        .path("/".to_string());
+
+    if COOKIE_REQUIRE_CROSS_SITE.load(Ordering::Relaxed) {
+        cookie = cookie.same_site(SameSite::None).secure(true);
+    } else {
+        cookie = cookie.same_site(SameSite::Lax);
+    }
+
+    cookie.finish()
+}
+
+pub fn cookie_session(id: Ulid) -> Cookie<'static> {
+    build_cookie(SESSION_COOKIE_NAME, id.to_string())
 }
 
 pub fn cookie_username(username: &str) -> Cookie<'static> {
-    Cookie::build(USER_COOKIE_NAME, username.to_string())
-        .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
-        .same_site(SameSite::Strict)
-        .path("/")
-        .finish()
+    build_cookie(USER_COOKIE_NAME, username.to_string())
 }
 
 pub fn cookie_userid(user_id: &str) -> Cookie<'static> {
-    Cookie::build(USER_ID_COOKIE_NAME, user_id.to_string())
-        .max_age(time::Duration::days(COOKIE_AGE_DAYS as i64))
-        .same_site(SameSite::Strict)
-        .path("/")
-        .finish()
-}
-
-pub async fn request_token(
-    oidc_client: &Arc<RwLock<GlobalClient>>,
-    login_query: &Login,
-) -> anyhow::Result<(Claims, Userinfo, Bearer)> {
-    let old_client = oidc_client.read().await.client().clone();
-    let mut token: Token<Claims> = old_client.request_token(&login_query.code).await?.into();
-
-    let id_token = if let Some(token) = token.id_token.as_mut() {
-        token
-    } else {
-        return Err(anyhow::anyhow!("No id_token provided"));
-    };
-
-    if let Err(e) = old_client.decode_token(id_token) {
-        tracing::error!("error while decoding the id_token- {e}");
-        let new_client = PARSEABLE
-            .options
-            .openid()
-            .unwrap()
-            .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
-            .await?;
-
-        // Reuse the already-obtained token, just decode with new client's JWKS
-        new_client.decode_token(id_token)?;
-        new_client.validate_token(id_token, None, None)?;
-        let claims = id_token.payload().expect("payload is decoded").clone();
-
-        let userinfo = new_client.request_userinfo(&token).await?;
-        let bearer = token.bearer;
-
-        // replace old client with new one
-        drop(old_client);
-
-        oidc_client.write().await.set(new_client);
-        return Ok((claims, userinfo, bearer));
-    }
-
-    old_client.validate_token(id_token, None, None)?;
-    let claims = id_token.payload().expect("payload is decoded").clone();
-
-    let userinfo = old_client.request_userinfo(&token).await?;
-    let bearer = token.bearer;
-    Ok((claims, userinfo, bearer))
+    build_cookie(USER_ID_COOKIE_NAME, user_id.to_string())
 }
 
 // put new user in metadata if does not exit
@@ -476,6 +477,15 @@ pub async fn put_user(
     bearer: Bearer,
     tenant: Option<String>,
 ) -> Result<User, ObjectStorageError> {
+    // If the userid matches the super admin (P_USERNAME), return the existing
+    // Native user as-is. This prevents overwriting the super admin with an
+    // OAuth user while still allowing OAuth login to create a session.
+    if userid == PARSEABLE.options.username
+        && let Some(user) = Users.get_user(userid, &tenant)
+    {
+        return Ok(user);
+    }
+
     let mut metadata = get_metadata(&tenant).await?;
 
     let mut user = metadata

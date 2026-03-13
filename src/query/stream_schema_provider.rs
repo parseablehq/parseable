@@ -202,11 +202,11 @@ impl StandardTableProvider {
         time_partition: Option<String>,
     ) -> Result<(), DataFusionError> {
         let hot_tier_files = hot_tier_manager
-            .get_hot_tier_manifest_files(&self.stream, manifest_files)
+            .get_hot_tier_manifest_files(manifest_files)
             .await
             .map_err(|err| DataFusionError::External(Box::new(err)))?;
 
-        let hot_tier_files = hot_tier_files
+        let hot_tier_files: Vec<File> = hot_tier_files
             .into_iter()
             .map(|mut file| {
                 let path = PARSEABLE
@@ -221,11 +221,7 @@ impl StandardTableProvider {
             .collect();
 
         let (partitioned_files, statistics) = self.partitioned_files(hot_tier_files);
-        // let object_store_url = if let Some(tenant_id) = self.tenant_id.as_ref() {
-        //     &format!("file:///{tenant_id}/")
-        // } else {
-        //     "file:///"
-        // };
+
         let object_store_url = "file:///";
         self.create_parquet_physical_plan(
             execution_plans,
@@ -629,16 +625,17 @@ impl TableProvider for StandardTableProvider {
             .await?;
         }
         if manifest_files.is_empty() {
-            QUERY_CACHE_HIT.with_label_values(&[&self.stream]).inc();
+            QUERY_CACHE_HIT
+                .with_label_values(&[
+                    &self.stream,
+                    self.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
+                ])
+                .inc();
             return self.final_plan(execution_plans, projection);
         }
 
         let (partitioned_files, statistics) = self.partitioned_files(manifest_files);
-        // let object_store_url = if let Some(tenant_id) = self.tenant_id.as_ref() {
-        //     glob_storage.store_url().join(tenant_id).unwrap()
-        // } else {
-        //     glob_storage.store_url()
-        // };
+
         let object_store_url = glob_storage.store_url();
 
         self.create_parquet_physical_plan(

@@ -105,8 +105,7 @@ impl HotTierManager {
         for tenant_id in tenants {
             for stream in PARSEABLE.streams.list(&tenant_id) {
                 if self.check_stream_hot_tier_exists(&stream, &tenant_id)
-                    && stream != current_stream
-                    && tenant_id != *current_tenant_id
+                    && !(stream == current_stream && tenant_id == *current_tenant_id)
                 {
                     let stream_hot_tier = self.get_hot_tier(&stream, &tenant_id).await?;
                     total_hot_tier_size += &stream_hot_tier.size;
@@ -200,7 +199,8 @@ impl HotTierManager {
             .await?;
 
         let mut stream_hot_tier: StreamHotTier = serde_json::from_slice(&bytes)?;
-        stream_hot_tier.oldest_date_time_entry = self.get_oldest_date_time_entry(stream).await?;
+        stream_hot_tier.oldest_date_time_entry =
+            self.get_oldest_date_time_entry(stream, tenant_id).await?;
 
         Ok(stream_hot_tier)
     }
@@ -213,13 +213,17 @@ impl HotTierManager {
         if !self.check_stream_hot_tier_exists(stream, tenant_id) {
             return Err(HotTierValidationError::NotFound(stream.to_owned()).into());
         }
-        let path = self.hot_tier_path.join(stream);
+        let path = if let Some(tenant_id) = tenant_id.as_ref() {
+            self.hot_tier_path.join(tenant_id).join(stream)
+        } else {
+            self.hot_tier_path.join(stream)
+        };
         fs::remove_dir_all(path).await?;
 
         Ok(())
     }
 
-    ///put the hot tier metadata file for the stream
+    /// put the hot tier metadata file for the stream
     /// set the updated_date_range in the hot tier metadata file
     pub async fn put_hot_tier(
         &self,
@@ -239,10 +243,6 @@ impl HotTierManager {
         stream: &str,
         tenant_id: &Option<String>,
     ) -> Result<object_store::path::Path, HotTierError> {
-        // let path = self
-        //     .hot_tier_path
-        //     .join(stream)
-        //     .join(STREAM_HOT_TIER_FILENAME);
         let path = if let Some(tenant_id) = tenant_id.as_ref() {
             self.hot_tier_path
                 .join(tenant_id)
@@ -258,7 +258,7 @@ impl HotTierManager {
         Ok(path)
     }
 
-    ///schedule the download of the hot tier files from S3 every minute
+    /// schedule the download of the hot tier files from S3 every minute
     pub fn download_from_s3<'a>(&'a self) -> Result<(), HotTierError>
     where
         'a: 'static,
@@ -282,7 +282,7 @@ impl HotTierManager {
         Ok(())
     }
 
-    ///sync the hot tier files from S3 to the hot tier directory for all streams
+    /// sync the hot tier files from S3 to the hot tier directory for all streams
     async fn sync_hot_tier(&self) -> Result<(), HotTierError> {
         // Before syncing, check if pstats stream was created and needs hot tier
         if let Err(e) = self.create_pstats_hot_tier().await {
@@ -451,7 +451,7 @@ impl HotTierManager {
         self.put_hot_tier(stream, &mut stream_hot_tier, tenant_id)
             .await?;
         file_processed = true;
-        let path = self.get_stream_path_for_date(stream, &date);
+        let path = self.get_stream_path_for_date(stream, &date, tenant_id);
         let mut hot_tier_manifest = HotTierManager::get_hot_tier_manifest_from_path(path).await?;
         hot_tier_manifest.files.push(parquet_file.clone());
         hot_tier_manifest
@@ -459,7 +459,7 @@ impl HotTierManager {
             .sort_by_key(|file| file.file_path.clone());
         // write the manifest file to the hot tier directory
         let manifest_path = self
-            .get_stream_path_for_date(stream, &date)
+            .get_stream_path_for_date(stream, &date, tenant_id)
             .join("hottier.manifest.json");
         fs::create_dir_all(manifest_path.parent().unwrap()).await?;
         fs::write(manifest_path, serde_json::to_vec(&hot_tier_manifest)?).await?;
@@ -468,9 +468,18 @@ impl HotTierManager {
     }
 
     ///fetch the list of dates available in the hot tier directory for the stream and sort them
-    pub async fn fetch_hot_tier_dates(&self, stream: &str) -> Result<Vec<NaiveDate>, HotTierError> {
+    pub async fn fetch_hot_tier_dates(
+        &self,
+        stream: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Vec<NaiveDate>, HotTierError> {
         let mut date_list = Vec::new();
-        let path = self.hot_tier_path.join(stream);
+        let path = if let Some(tenant) = tenant_id.as_ref() {
+            self.hot_tier_path.join(tenant).join(stream)
+        } else {
+            self.hot_tier_path.join(stream)
+        };
+        // let path = self.hot_tier_path.join(stream);
         if !path.exists() {
             return Ok(date_list);
         }
@@ -525,37 +534,47 @@ impl HotTierManager {
     }
 
     /// get hot tier path for the stream and date
-    pub fn get_stream_path_for_date(&self, stream: &str, date: &NaiveDate) -> PathBuf {
-        self.hot_tier_path.join(stream).join(format!("date={date}"))
+    pub fn get_stream_path_for_date(
+        &self,
+        stream: &str,
+        date: &NaiveDate,
+        tenant_id: &Option<String>,
+    ) -> PathBuf {
+        if let Some(tenant) = tenant_id.as_ref() {
+            self.hot_tier_path
+                .join(tenant)
+                .join(stream)
+                .join(format!("date={date}"))
+        } else {
+            self.hot_tier_path.join(stream).join(format!("date={date}"))
+        }
     }
 
     /// Returns the list of manifest files present in hot tier directory for the stream
     pub async fn get_hot_tier_manifest_files(
         &self,
-        stream: &str,
         manifest_files: &mut Vec<File>,
     ) -> Result<Vec<File>, HotTierError> {
-        // Fetch the list of hot tier parquet files for the given stream.
-        let mut hot_tier_files = self.get_hot_tier_parquet_files(stream).await?;
+        // Check which query-relevant files exist locally in the hot tier directory.
+        let mut hot_tier_files = Vec::new();
+        let mut remaining = Vec::with_capacity(manifest_files.len());
 
-        // Retain only the files in `hot_tier_files` that also exist in `manifest_files`.
-        hot_tier_files.retain(|file| {
-            manifest_files
-                .iter()
-                .any(|manifest_file| manifest_file.file_path.eq(&file.file_path))
-        });
+        for file in manifest_files.drain(..) {
+            let hot_tier_path = self.hot_tier_path.join(&file.file_path);
+            if let Ok(meta) = fs::metadata(&hot_tier_path).await
+                && meta.len() == file.file_size
+            {
+                hot_tier_files.push(file);
+                continue;
+            }
 
-        // Sort `hot_tier_files` in descending order by file path.
+            remaining.push(file);
+        }
+
+        *manifest_files = remaining;
+
+        // Sort both lists in descending order by file path.
         hot_tier_files.sort_unstable_by(|a, b| b.file_path.cmp(&a.file_path));
-
-        // Update `manifest_files` to exclude files that are present in the filtered `hot_tier_files`.
-        manifest_files.retain(|manifest_file| {
-            hot_tier_files
-                .iter()
-                .all(|file| !file.file_path.eq(&manifest_file.file_path))
-        });
-
-        // Sort `manifest_files` in descending order by file path.
         manifest_files.sort_unstable_by(|a, b| b.file_path.cmp(&a.file_path));
 
         Ok(hot_tier_files)
@@ -565,16 +584,17 @@ impl HotTierManager {
     pub async fn get_hot_tier_parquet_files(
         &self,
         stream: &str,
+        tenant_id: &Option<String>,
     ) -> Result<Vec<File>, HotTierError> {
         // Fetch list of dates for the given stream
-        let date_list = self.fetch_hot_tier_dates(stream).await?;
+        let date_list = self.fetch_hot_tier_dates(stream, tenant_id).await?;
 
         // Create an unordered iter of futures to async collect files
         let mut tasks = FuturesUnordered::new();
 
         // For each date, fetch the manifest and extract parquet files
         for date in date_list {
-            let path = self.get_stream_path_for_date(stream, &date);
+            let path = self.get_stream_path_for_date(stream, &date, tenant_id);
             tasks.push(async move {
                 HotTierManager::get_hot_tier_manifest_from_path(path)
                     .await
@@ -594,12 +614,17 @@ impl HotTierManager {
 
     ///check if the hot tier metadata file exists for the stream
     pub fn check_stream_hot_tier_exists(&self, stream: &str, tenant_id: &Option<String>) -> bool {
-        // let path = self
-        //     .hot_tier_path
-        //     .join(stream)
-        //     .join(STREAM_HOT_TIER_FILENAME);
-        let path = self.hot_tier_file_path(stream, tenant_id).unwrap();
-        PathBuf::from(path.to_string()).exists()
+        let path = if let Some(tenant_id) = tenant_id.as_ref() {
+            self.hot_tier_path
+                .join(tenant_id)
+                .join(stream)
+                .join(STREAM_HOT_TIER_FILENAME)
+        } else {
+            self.hot_tier_path
+                .join(stream)
+                .join(STREAM_HOT_TIER_FILENAME)
+        };
+        path.exists()
     }
 
     ///delete the parquet file from the hot tier directory for the stream
@@ -617,9 +642,9 @@ impl HotTierManager {
         tenant_id: &Option<String>,
     ) -> Result<bool, HotTierError> {
         let mut delete_successful = false;
-        let dates = self.fetch_hot_tier_dates(stream).await?;
+        let dates = self.fetch_hot_tier_dates(stream, tenant_id).await?;
         'loop_dates: for date in dates {
-            let path = self.get_stream_path_for_date(stream, &date);
+            let path = self.get_stream_path_for_date(stream, &date, tenant_id);
             if !path.exists() {
                 continue;
             }
@@ -708,14 +733,15 @@ impl HotTierManager {
     pub async fn get_oldest_date_time_entry(
         &self,
         stream: &str,
+        tenant_id: &Option<String>,
     ) -> Result<Option<String>, HotTierError> {
-        let date_list = self.fetch_hot_tier_dates(stream).await?;
+        let date_list = self.fetch_hot_tier_dates(stream, tenant_id).await?;
         if date_list.is_empty() {
             return Ok(None);
         }
 
         for date in date_list {
-            let path = self.get_stream_path_for_date(stream, &date);
+            let path = self.get_stream_path_for_date(stream, &date, tenant_id);
             let hours_dir = ReadDirStream::new(fs::read_dir(&path).await?);
             let mut hours: Vec<DirEntry> = hours_dir.try_collect().await?;
             hours.retain(|entry| {

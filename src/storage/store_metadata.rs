@@ -43,7 +43,7 @@ use super::PARSEABLE_METADATA_FILE_NAME;
 
 // Expose some static variables for internal usage
 pub static STORAGE_METADATA: OnceCell<StaticStorageMetadata> = OnceCell::new();
-pub const CURRENT_STORAGE_METADATA_VERSION: &str = "v6";
+pub const CURRENT_STORAGE_METADATA_VERSION: &str = "v8";
 // For use in global static
 #[derive(Debug, PartialEq, Eq)]
 pub struct StaticStorageMetadata {
@@ -70,6 +70,16 @@ pub struct StorageMetadata {
     pub default_role: Option<String>,
     pub suspended_services: Option<HashSet<Service>>,
     pub global_query_auth: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub customer_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
 }
 
 impl Default for StorageMetadata {
@@ -88,6 +98,11 @@ impl Default for StorageMetadata {
             default_role: None,
             suspended_services: None,
             global_query_auth: None,
+            customer_name: None,
+            start_date: None,
+            end_date: None,
+            plan: None,
+            owner: None,
         }
     }
 }

@@ -1,0 +1,165 @@
+name: Add Adopter
+
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  add-adopter:
+    if: contains(github.event.issue.labels.*.name, 'new-adopter')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Parse issue and create PR
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const issue = context.payload.issue;
+            const body = issue.body || '';
+
+            // Parse structured fields from issue body
+            function parseField(body, heading) {
+              const regex = new RegExp(`### ${heading}\\s*\\n\\s*([\\s\\S]*?)(?=\\n### |$)`);
+              const match = body.match(regex);
+              return match ? match[1].trim() : '';
+            }
+
+            const orgName = parseField(body, 'Organization Name');
+            const orgUrl = parseField(body, 'Organization URL');
+            const contact = parseField(body, 'Contact');
+            const description = parseField(body, 'Description of Use');
+
+            // Validate fields
+            const errors = [];
+            if (!orgName) errors.push('- **Organization Name** is missing');
+            if (!orgUrl) errors.push('- **Organization URL** is missing');
+            if (!orgUrl.startsWith('https://')) errors.push('- **Organization URL** must start with `https://`');
+            if (!contact) errors.push('- **Contact** is missing');
+            if (!description) errors.push('- **Description of Use** is missing');
+
+            if (errors.length > 0) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `👋 Thanks for your interest in being listed as a Parseable adopter!\n\nUnfortunately, there were some issues with your submission:\n\n${errors.join('\n')}\n\nPlease close this issue and [open a new one](https://github.com/${context.repo.owner}/${context.repo.repo}/issues/new?template=add-adopter.yml) with the corrected information.`
+              });
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: ['invalid']
+              });
+              return;
+            }
+
+            // Read USERS.md and check for duplicates
+            const { data: fileData } = await github.rest.repos.getContent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: 'USERS.md',
+              ref: 'main'
+            });
+            const usersContent = Buffer.from(fileData.content, 'base64').toString('utf-8');
+            const orgNameLower = orgName.toLowerCase().trim();
+
+            // Parse existing org names from USERS.md for exact match
+            const existingOrgs = usersContent.split('\n')
+              .filter(line => line.startsWith('|'))
+              .map(line => {
+                const match = line.match(/\|\s*\[([^\]]+)\]/);
+                return match ? match[1].toLowerCase().trim() : null;
+              })
+              .filter(Boolean);
+
+            if (existingOrgs.includes(orgNameLower)) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `👋 Thanks for your interest!\n\nIt looks like **${orgName}** is already listed in our adopters list. If you need to update the existing entry, please open a PR directly.\n\nClosing this issue as duplicate.`
+              });
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                labels: ['duplicate']
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed'
+              });
+              return;
+            }
+
+            // Sanitize user input for markdown table
+            const sanitize = (str) => str.replace(/\|/g, '\\|').replace(/\n/g, ' ').trim();
+
+            // Build contact link
+            let contactCell = sanitize(contact);
+            if (contact.startsWith('@')) {
+              const handle = contact.substring(1).trim();
+              contactCell = `[@${handle}](https://github.com/${handle})`;
+            }
+
+            // Append new row to USERS.md
+            const safeDesc = sanitize(description);
+            const safeOrgName = sanitize(orgName);
+            const newRow = `| [${safeOrgName}](${orgUrl}) | ${contactCell} | ${safeDesc} |`;
+            const updatedContent = usersContent.trimEnd() + '\n' + newRow + '\n';
+
+            // Create branch
+            const slug = orgName.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+            const branchName = `adopter/add-${slug}-${issue.number}`;
+
+            const { data: ref } = await github.rest.git.getRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: 'heads/main'
+            });
+
+            await github.rest.git.createRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `refs/heads/${branchName}`,
+              sha: ref.object.sha
+            });
+
+            // Commit updated USERS.md
+            await github.rest.repos.createOrUpdateFileContents({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: 'USERS.md',
+              message: `Add ${orgName} to adopters list`,
+              content: Buffer.from(updatedContent).toString('base64'),
+              sha: fileData.sha,
+              branch: branchName
+            });
+
+            // Create PR
+            const { data: pr } = await github.rest.pulls.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Add ${orgName} to adopters list`,
+              head: branchName,
+              base: 'main',
+              body: `## New Adopter\n\n| Field | Value |\n|-------|-------|\n| **Organization** | [${orgName}](${orgUrl}) |\n| **Contact** | ${contactCell} |\n| **Description** | ${description} |\n\nCloses #${issue.number}`
+            });
+
+            // Comment on issue
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: issue.number,
+              body: `PR created: ${pr.html_url}\n\nA maintainer will review and merge it shortly. Thanks for using Parseable!`
+            });

@@ -44,7 +44,7 @@ pub async fn put(
     let name = name.into_inner();
     let req_tenant_id = get_tenant_id_from_request(&req);
     let req_tenant = req_tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-    if req_tenant.ne(DEFAULT_TENANT) && (req_tenant_id.eq(&sync_req.tenant_id)) {
+    if req_tenant.ne(DEFAULT_TENANT) && (req_tenant_id.ne(&sync_req.tenant_id)) {
         return Err(RoleError::Anyhow(anyhow::Error::msg(
             "non super-admin user trying to create role for another tenant",
         )));

@@ -26,7 +26,6 @@ use base64::{Engine, prelude::BASE64_STANDARD};
 use bytes::Bytes;
 use futures::future;
 use once_cell::sync::OnceCell;
-use openid::Discovered;
 use relative_path::RelativePathBuf;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -40,7 +39,7 @@ use crate::{
     correlation::CORRELATIONS,
     hottier::{HotTierManager, StreamHotTier},
     metastore::metastore_traits::MetastoreObject,
-    oidc::{Claims, DiscoveredClient},
+    oauth::{OAuthProvider, connect_oidc},
     option::Mode,
     parseable::{DEFAULT_TENANT, PARSEABLE},
     storage::{ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY},
@@ -48,7 +47,7 @@ use crate::{
     utils::get_node_id,
 };
 
-use super::{API_BASE_PATH, API_VERSION, cross_origin_config, health_check, resource_check};
+use super::{cross_origin_config, health_check, resource_check};
 
 pub mod ingest;
 pub mod ingest_server;
@@ -58,28 +57,7 @@ pub mod server;
 pub mod ssl_acceptor;
 pub mod utils;
 
-pub type OpenIdClient = Arc<openid::Client<Discovered, Claims>>;
-
-pub static OIDC_CLIENT: OnceCell<Arc<RwLock<GlobalClient>>> = OnceCell::new();
-
-#[derive(Debug)]
-pub struct GlobalClient {
-    client: DiscoveredClient,
-}
-
-impl GlobalClient {
-    pub fn set(&mut self, client: DiscoveredClient) {
-        self.client = client;
-    }
-
-    pub fn client(&self) -> &DiscoveredClient {
-        &self.client
-    }
-
-    pub fn new(client: DiscoveredClient) -> Self {
-        Self { client }
-    }
-}
+pub static OIDC_CLIENT: OnceCell<Arc<RwLock<Box<dyn OAuthProvider>>>> = OnceCell::new();
 
 // to be decided on what the Default version should be
 pub const DEFAULT_VERSION: &str = "v4";
@@ -114,10 +92,9 @@ pub trait ParseableServer {
         Self: Sized,
     {
         if let Some(config) = oidc_client {
-            let client = config
-                .connect(&format!("{API_BASE_PATH}/{API_VERSION}/o/code"))
-                .await?;
-            OIDC_CLIENT.get_or_init(|| Arc::new(RwLock::new(GlobalClient::new(client))));
+            let gc = connect_oidc(config).await?;
+            OIDC_CLIENT
+                .get_or_init(|| Arc::new(RwLock::new(Box::new(gc) as Box<dyn OAuthProvider>)));
         }
 
         // get the ssl stuff

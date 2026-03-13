@@ -47,14 +47,12 @@ use crate::handlers::http::modal::ingest::SyncRole;
 use crate::handlers::http::query::{Query, QueryError, TIME_ELAPSED_HEADER};
 use crate::metrics::prom_utils::Metrics;
 use crate::option::Mode;
-use crate::parseable::PARSEABLE;
+use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
 use crate::rbac::role::model::Role;
 use crate::rbac::user::User;
 use crate::stats::Stats;
 use crate::storage::{ObjectStorageError, ObjectStoreFormat};
-use crate::utils::{
-    create_intracluster_auth_headermap, get_tenant_id_from_request, get_user_from_request,
-};
+use crate::utils::{create_intracluster_auth_headermap, get_tenant_id_from_request};
 
 use super::base_path_without_preceding_slash;
 use super::ingest::PostError;
@@ -85,6 +83,8 @@ pub struct BillingMetricEvent {
     pub provider: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tenant_id: Option<String>,
     pub event_type: String,
     pub event_time: chrono::NaiveDateTime,
 }
@@ -92,6 +92,7 @@ pub struct BillingMetricEvent {
 // Internal structure for collecting metrics from prometheus
 #[derive(Debug, Default)]
 struct BillingMetricsCollector {
+    pub tenant_id: Option<String>,
     pub node_address: String,
     pub node_type: String,
     pub total_events_ingested_by_date: HashMap<String, u64>,
@@ -116,8 +117,9 @@ struct BillingMetricsCollector {
 }
 
 impl BillingMetricsCollector {
-    pub fn new(node_address: String, node_type: String) -> Self {
+    pub fn new(node_address: String, node_type: String, tenant_id: Option<String>) -> Self {
         Self {
+            tenant_id,
             node_address,
             node_type,
             event_time: Utc::now().naive_utc(),
@@ -153,6 +155,7 @@ impl BillingMetricsCollector {
                         method: None,
                         provider: None,
                         model: None,
+                        tenant_id: self.tenant_id.clone(),
                         event_type: "billing-metrics".to_string(),
                         event_time: self.event_time,
                     });
@@ -282,6 +285,7 @@ impl BillingMetricsCollector {
                                 method: Some(method.clone()),
                                 provider: None,
                                 model: None,
+                                tenant_id: self.tenant_id.clone(),
                                 event_type: "billing-metrics".to_string(),
                                 event_time: self.event_time,
                             });
@@ -320,6 +324,7 @@ impl BillingMetricsCollector {
                                     method: None,
                                     provider: Some(provider.clone()),
                                     model: Some(model.clone()),
+                                    tenant_id: self.tenant_id.clone(),
                                     event_type: "billing-metrics".to_string(),
                                     event_time: self.event_time,
                                 });
@@ -516,6 +521,7 @@ pub async fn sync_users_with_roles_with_ingestors(
     role: &HashSet<String>,
     operation: &str,
     tenant_id: &Option<String>,
+    caller_userid: &str,
 ) -> Result<(), RBACError> {
     match operation {
         "add" | "remove" => {}
@@ -530,7 +536,7 @@ pub async fn sync_users_with_roles_with_ingestors(
     let userid = userid.to_owned();
     let headers = req.headers().clone();
     let op = operation.to_string();
-    let caller_userid = get_user_from_request(req).unwrap();
+    let caller_userid = caller_userid.to_owned();
     for_each_live_node(tenant_id, move |ingestor| {
         let url = format!(
             "{}{}/user/{}/role/sync/{}",
@@ -579,9 +585,10 @@ pub async fn sync_user_deletion_with_ingestors(
     req: &HttpRequest,
     userid: &str,
     tenant_id: &Option<String>,
+    caller_userid: &str,
 ) -> Result<(), RBACError> {
     let userid = userid.to_owned();
-    let caller_userid = get_user_from_request(req).unwrap();
+    let caller_userid = caller_userid.to_owned();
     let headers = req.headers().clone();
     for_each_live_node(tenant_id, move |ingestor| {
         let url = format!(
@@ -627,6 +634,7 @@ pub async fn sync_user_creation(
     user: User,
     role: &Option<HashSet<String>>,
     tenant_id: &Option<String>,
+    caller_userid: &str,
 ) -> Result<(), RBACError> {
     let mut user = user.clone();
 
@@ -640,7 +648,7 @@ pub async fn sync_user_creation(
         RBACError::SerdeError(err)
     })?;
 
-    let caller_userid = get_user_from_request(req)?;
+    let caller_userid = caller_userid.to_owned();
     let userid = userid.to_string();
     let headers = req.headers().clone();
     for_each_live_node(tenant_id, move |node| {
@@ -687,10 +695,11 @@ pub async fn sync_user_creation(
 pub async fn sync_password_reset_with_ingestors(
     req: HttpRequest,
     username: &str,
+    caller_userid: &str,
 ) -> Result<(), RBACError> {
     let userid = username.to_owned();
     let tenant_id = get_tenant_id_from_request(&req);
-    let caller_userid = get_user_from_request(&req).unwrap();
+    let caller_userid = caller_userid.to_owned();
     let headers = req.headers().clone();
     for_each_live_node(&tenant_id, move |ingestor| {
         let url = format!(
@@ -736,9 +745,10 @@ pub async fn sync_role_update(
     name: String,
     role: Role,
     tenant_id: &Option<String>,
+    caller_userid: &str,
 ) -> Result<(), RoleError> {
     let tenant = tenant_id.to_owned();
-    let userid = get_user_from_request(req).unwrap();
+    let userid = caller_userid.to_owned();
     let headers = req.headers().clone();
     for_each_live_node(tenant_id, move |node| {
         let url = format!(
@@ -786,8 +796,9 @@ pub async fn sync_role_delete(
     req: &HttpRequest,
     name: String,
     tenant_id: &Option<String>,
+    caller_userid: &str,
 ) -> Result<(), RoleError> {
-    let userid = get_user_from_request(req).unwrap();
+    let userid = caller_userid.to_owned();
     let headers = req.headers().clone();
     for_each_live_node(tenant_id, move |node| {
         let url = format!(
@@ -1382,16 +1393,31 @@ fn extract_billing_metrics_from_samples(
     node_address: String,
     node_type: String,
 ) -> Vec<BillingMetricEvent> {
-    let mut collector = BillingMetricsCollector::new(node_address, node_type);
+    // Group samples by tenant_id so each tenant gets its own collector
+    let mut collectors: HashMap<Option<String>, BillingMetricsCollector> = HashMap::new();
 
     for sample in samples {
         if let prometheus_parse::Value::Counter(val) = sample.value {
-            process_sample(&mut collector, &sample, val);
+            // Extract tenant_id from labels; treat "DEFAULT_TENANT" or absent as None (single-tenant compat)
+            let tenant_id = sample
+                .labels
+                .get("tenant_id")
+                .filter(|t| *t != DEFAULT_TENANT)
+                .map(|t| t.to_string());
+
+            let collector = collectors.entry(tenant_id.clone()).or_insert_with(|| {
+                BillingMetricsCollector::new(node_address.clone(), node_type.clone(), tenant_id)
+            });
+
+            process_sample(collector, &sample, val);
         }
     }
 
-    // Convert to flattened events, excluding empty collections
-    collector.into_events()
+    // Convert all collectors to flattened events
+    collectors
+        .into_values()
+        .flat_map(|c| c.into_events())
+        .collect()
 }
 
 /// Process a single prometheus sample and update the collector

@@ -23,7 +23,7 @@ use actix_web::{
     Error, HttpMessage, HttpRequest, Route,
     dev::{Service, ServiceRequest, ServiceResponse, Transform, forward_ready},
     error::{ErrorBadRequest, ErrorForbidden, ErrorUnauthorized},
-    http::header::{self, HeaderName, HeaderValue},
+    http::header::{self, HeaderMap, HeaderName, HeaderValue},
 };
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
 use chrono::{Duration, TimeDelta, Utc};
@@ -152,18 +152,21 @@ where
         For requests made from other clients, no change.
 
         ## Section start */
-        if let Some(kinesis_common_attributes) =
-            req.request().headers().get(KINESIS_COMMON_ATTRIBUTES_KEY)
+        if self.action.eq(&Action::Ingest)
+            && let Some(kinesis_common_attributes) =
+                req.request().headers().get(KINESIS_COMMON_ATTRIBUTES_KEY)
+            && let Ok(attribute_value) = kinesis_common_attributes.to_str()
+            && let Ok(message) = serde_json::from_str::<Message>(attribute_value)
+            && let Ok(auth_value) =
+                header::HeaderValue::from_str(&message.common_attributes.authorization)
+            && let Ok(stream_name_key) =
+                header::HeaderValue::from_str(&message.common_attributes.x_p_stream)
         {
-            let attribute_value: &str = kinesis_common_attributes.to_str().unwrap();
-            let message: Message = serde_json::from_str(attribute_value).unwrap();
-            req.headers_mut().insert(
-                HeaderName::from_static(AUTHORIZATION_KEY),
-                header::HeaderValue::from_str(&message.common_attributes.authorization).unwrap(),
-            );
+            req.headers_mut()
+                .insert(HeaderName::from_static(AUTHORIZATION_KEY), auth_value);
             req.headers_mut().insert(
                 HeaderName::from_static(STREAM_NAME_HEADER_KEY),
-                header::HeaderValue::from_str(&message.common_attributes.x_p_stream).unwrap(),
+                stream_name_key,
             );
             req.headers_mut().insert(
                 HeaderName::from_static(LOG_SOURCE_KEY),
@@ -194,7 +197,7 @@ where
         }
 
         let auth_result: Result<_, Error> = (self.auth_method)(&mut req, self.action);
-
+        let headers = req.headers().clone();
         let fut = self.service.call(req);
         Box::pin(async move {
             let Ok(key) = key else {
@@ -209,7 +212,7 @@ where
 
             // if session is expired, refresh token
             if sessions().is_session_expired(&key) {
-                refresh_token(user_and_tenant_id, &key).await?;
+                refresh_token(user_and_tenant_id, &key, headers).await?;
             }
 
             match auth_result? {
@@ -296,6 +299,7 @@ fn get_user_and_tenant(
 pub async fn refresh_token(
     user_and_tenant_id: Result<(Result<String, RBACError>, Option<String>), RBACError>,
     key: &SessionKey,
+    headers: HeaderMap,
 ) -> Result<(), Error> {
     let oidc_client = OIDC_CLIENT.get();
 
@@ -320,8 +324,7 @@ pub async fn refresh_token(
             let refreshed_token = match client
                 .read()
                 .await
-                .client()
-                .refresh_token(&oauth_data, Some(PARSEABLE.options.scope.as_str()))
+                .refresh_token(&oauth_data, Some(PARSEABLE.options.scope.as_str()), headers)
                 .await
             {
                 Ok(bearer) => bearer,
@@ -571,6 +574,10 @@ where
                             header::COOKIE,
                             HeaderValue::from_str(&format!("session={}", id)).unwrap(),
                         );
+
+                        // remove basic auth header
+                        req.headers_mut().remove(header::AUTHORIZATION);
+
                         let session = SessionKey::SessionId(id);
                         req.extensions_mut().insert(session.clone());
                         Users.new_session(&user, session, TimeDelta::seconds(20));
