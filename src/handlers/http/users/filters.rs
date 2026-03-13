@@ -71,6 +71,7 @@ pub async fn post(
     filter.filter_id = Some(filter_id.clone());
     filter.user_id = Some(user_id.clone());
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
+    filter.tenant_id.clone_from(&tenant_id);
     PARSEABLE.metastore.put_filter(&filter, &tenant_id).await?;
     FILTERS.update(&filter, &tenant_id).await;
 
@@ -99,6 +100,7 @@ pub async fn update(
     filter.filter_id = Some(filter_id.clone());
     filter.user_id = Some(user_id.clone());
     filter.version = Some(CURRENT_FILTER_VERSION.to_string());
+    filter.tenant_id.clone_from(&tenant_id);
 
     PARSEABLE.metastore.put_filter(&filter, &tenant_id).await?;
     FILTERS.update(&filter, &tenant_id).await;

@@ -92,7 +92,9 @@ pub async fn post_user(
     // let created_role = user_roles.clone();
     Users.put_user(user.clone());
 
-    sync_user_creation(&req, user, &None, &tenant_id, &caller_userid).await?;
+    if let Err(e) = sync_user_creation(&req, user, &None, &tenant_id, &caller_userid).await {
+        tracing::error!("{e}");
+    };
 
     Ok(password)
 }
@@ -161,7 +163,11 @@ pub async fn delete_user(
     }
     put_metadata(&metadata, &tenant_id).await?;
 
-    sync_user_deletion_with_ingestors(&req, &userid, &tenant_id, &caller_userid).await?;
+    if let Err(e) =
+        sync_user_deletion_with_ingestors(&req, &userid, &tenant_id, &caller_userid).await
+    {
+        tracing::error!("{e}");
+    };
 
     // update in mem table
     Users.delete_user(&userid, &tenant_id);
@@ -380,7 +386,9 @@ pub async fn post_gen_password(
     put_metadata(&metadata, &tenant_id).await?;
     Users.change_password_hash(&username, &new_hash, &tenant_id);
 
-    sync_password_reset_with_ingestors(req, &username, &caller_userid).await?;
+    if let Err(e) = sync_password_reset_with_ingestors(req, &username, &caller_userid).await {
+        tracing::error!("{e}");
+    };
 
     Ok(new_password)
 }
