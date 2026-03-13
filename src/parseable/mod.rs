@@ -1148,8 +1148,10 @@ impl Parseable {
             .filter(|d| !d.starts_with("."))
             .collect();
 
+        let mut recognized_tenants = vec![];
+
         // validate the possible presence of tenant storage metadata
-        for tenant_id in dirs.iter() {
+        for tenant_id in dirs.into_iter() {
             if let Some(meta) = PARSEABLE
                 .metastore
                 .get_parseable_metadata(&Some(tenant_id.clone()))
@@ -1159,11 +1161,23 @@ impl Parseable {
                 let metadata: StorageMetadata = serde_json::from_slice(&meta)?;
 
                 TENANT_METADATA.insert_tenant(tenant_id.clone(), metadata.clone());
+                recognized_tenants.push(tenant_id);
             } else if !is_multi_tenant {
             } else {
-                return Err(anyhow::Error::msg(format!(
-                    "Found invalid tenant directory with multi-tenant mode- {tenant_id}.\nExiting."
-                )));
+                // found an invalid multi-tenant directory, delete
+                tracing::warn!(
+                    "Found invalid tenant directory with multi-tenant mode- {tenant_id}.\nDeleting."
+                );
+
+                // delete from storage
+                if let Err(e) = obj_store
+                    .delete_prefix(&RelativePathBuf::from_iter([&tenant_id]), &None)
+                    .await
+                {
+                    tracing::error!(
+                        "Unable to delete invalid directory- {tenant_id} with error-\n{e}"
+                    );
+                };
             }
         }
 
@@ -1172,7 +1186,7 @@ impl Parseable {
                 .tenants
                 .write()
                 .expect("Unable to write to in-memory tenant map");
-            t.extend(dirs);
+            t.extend(recognized_tenants);
             Ok(())
         } else {
             Ok(())

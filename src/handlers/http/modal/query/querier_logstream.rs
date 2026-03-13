@@ -157,7 +157,9 @@ pub async fn put_stream(
             actix_web::http::header::HeaderValue::from_str(&userid).unwrap(),
         );
     }
-    sync_streams_with_ingestors(headers, body, &stream_name, &tenant_id).await?;
+    if let Err(e) = sync_streams_with_ingestors(headers, body, &stream_name, &tenant_id).await {
+        tracing::error!("{e}");
+    };
 
     if is_update {
         Ok(("Log stream updated", StatusCode::OK))
