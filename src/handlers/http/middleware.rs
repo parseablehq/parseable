@@ -152,18 +152,21 @@ where
         For requests made from other clients, no change.
 
         ## Section start */
-        if let Some(kinesis_common_attributes) =
-            req.request().headers().get(KINESIS_COMMON_ATTRIBUTES_KEY)
+        if self.action.eq(&Action::Ingest)
+            && let Some(kinesis_common_attributes) =
+                req.request().headers().get(KINESIS_COMMON_ATTRIBUTES_KEY)
+            && let Ok(attribute_value) = kinesis_common_attributes.to_str()
+            && let Ok(message) = serde_json::from_str::<Message>(attribute_value)
+            && let Ok(auth_value) =
+                header::HeaderValue::from_str(&message.common_attributes.authorization)
+            && let Ok(stream_name_key) =
+                header::HeaderValue::from_str(&message.common_attributes.x_p_stream)
         {
-            let attribute_value: &str = kinesis_common_attributes.to_str().unwrap();
-            let message: Message = serde_json::from_str(attribute_value).unwrap();
-            req.headers_mut().insert(
-                HeaderName::from_static(AUTHORIZATION_KEY),
-                header::HeaderValue::from_str(&message.common_attributes.authorization).unwrap(),
-            );
+            req.headers_mut()
+                .insert(HeaderName::from_static(AUTHORIZATION_KEY), auth_value);
             req.headers_mut().insert(
                 HeaderName::from_static(STREAM_NAME_HEADER_KEY),
-                header::HeaderValue::from_str(&message.common_attributes.x_p_stream).unwrap(),
+                stream_name_key,
             );
             req.headers_mut().insert(
                 HeaderName::from_static(LOG_SOURCE_KEY),

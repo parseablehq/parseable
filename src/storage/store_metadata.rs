@@ -43,7 +43,7 @@ use super::PARSEABLE_METADATA_FILE_NAME;
 
 // Expose some static variables for internal usage
 pub static STORAGE_METADATA: OnceCell<StaticStorageMetadata> = OnceCell::new();
-pub const CURRENT_STORAGE_METADATA_VERSION: &str = "v6";
+pub const CURRENT_STORAGE_METADATA_VERSION: &str = "v8";
 // For use in global static
 #[derive(Debug, PartialEq, Eq)]
 pub struct StaticStorageMetadata {
