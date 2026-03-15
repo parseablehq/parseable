@@ -434,7 +434,9 @@ fn value_compatible_with_type(
                         || chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f").is_ok()
                         || chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").is_ok()
                 }
-                Value::Number(_) => true,
+                // Arrow JSON decoder with coerce_primitive(false) cannot decode
+                // a JSON number into a Timestamp field — it expects a string.
+                Value::Number(_) => false,
                 _ => false,
             }
         }
