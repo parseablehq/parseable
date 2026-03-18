@@ -40,7 +40,7 @@ use crate::{
     rbac::{Users, map::SessionKey, role::Action},
     stats,
     storage::{StreamInfo, StreamType, retention::Retention},
-    utils::{get_tenant_id_from_key, time::TimeParseError},
+    utils::time::TimeParseError,
 };
 
 #[derive(Serialize)]
@@ -231,8 +231,8 @@ impl PrismDatasetRequest {
     pub async fn get_datasets(
         mut self,
         key: SessionKey,
+        tenant_id: Option<String>,
     ) -> Result<Vec<PrismDatasetResponse>, PrismLogstreamError> {
-        let tenant_id = get_tenant_id_from_key(&key);
         if self.streams.is_empty() {
             self.streams = PARSEABLE.streams.list(&tenant_id);
         }

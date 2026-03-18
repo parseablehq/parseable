@@ -43,10 +43,11 @@ pub async fn post_datasets(
     req: HttpRequest,
 ) -> Result<impl Responder, PrismLogstreamError> {
     let session_key = extract_session_key_from_req(&req)?;
+    let tenant_id = get_tenant_id_from_request(&req);
     let dataset = dataset_req
         .map(|Json(r)| r)
         .unwrap_or_default()
-        .get_datasets(session_key)
+        .get_datasets(session_key, tenant_id)
         .await?;
 
     Ok(web::Json(dataset))
