@@ -48,7 +48,7 @@ struct CorrelatedDataset {
     shared_labels: Vec<String>,
 }
 
-/// GET /api/v1/datasets/{name}/correlated
+/// GET /api/v1/datasets/correlated/{name}
 /// Returns all datasets sharing at least one tag or label with the named dataset.
 /// Results are filtered to only include datasets the caller is authorized to read.
 pub async fn get_correlated_datasets(

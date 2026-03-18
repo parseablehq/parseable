@@ -210,15 +210,15 @@ impl Server {
                     .authorize_for_resource(Action::GetRetention),
             )
             .route(
-                "/tags/{tag}",
+                "/correlated/{name}",
                 web::get()
-                    .to(http::datasets::get_datasets_by_tag)
+                    .to(http::datasets::get_correlated_datasets)
                     .authorize(Action::GetStreamInfo),
             )
             .route(
-                "/{name}/correlated",
+                "/tags/{tag}",
                 web::get()
-                    .to(http::datasets::get_correlated_datasets)
+                    .to(http::datasets::get_datasets_by_tag)
                     .authorize(Action::GetStreamInfo),
             )
             .route(
