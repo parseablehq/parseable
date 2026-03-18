@@ -213,13 +213,13 @@ impl Server {
                 "/tags/{tag}",
                 web::get()
                     .to(http::datasets::get_datasets_by_tag)
-                    .authorize_for_resource(Action::GetStreamInfo),
+                    .authorize(Action::GetStreamInfo),
             )
             .route(
                 "/{name}/correlated",
                 web::get()
                     .to(http::datasets::get_correlated_datasets)
-                    .authorize_for_resource(Action::GetStreamInfo),
+                    .authorize(Action::GetStreamInfo),
             )
             .route(
                 "/{name}",

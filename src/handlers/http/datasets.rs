@@ -22,12 +22,23 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, web};
 use serde::{Deserialize, Serialize};
 
+use crate::rbac::{self, Users, role::Action};
+use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::get_tenant_id_from_request;
 use crate::{
     handlers::DatasetTag,
     parseable::PARSEABLE,
     storage::{ObjectStorageError, StreamType},
 };
+
+/// Check if the caller is authorized to read a specific stream.
+fn can_access_stream(req: &HttpRequest, stream_name: &str) -> bool {
+    let Ok(key) = extract_session_key_from_req(req) else {
+        return false;
+    };
+    Users.authorize(key, Action::GetStreamInfo, Some(stream_name), None)
+        == rbac::Response::Authorized
+}
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,12 +50,19 @@ struct CorrelatedDataset {
 
 /// GET /api/v1/datasets/{name}/correlated
 /// Returns all datasets sharing at least one tag or label with the named dataset.
+/// Results are filtered to only include datasets the caller is authorized to read.
 pub async fn get_correlated_datasets(
     req: HttpRequest,
     path: web::Path<String>,
 ) -> Result<HttpResponse, DatasetsError> {
     let dataset_name = path.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+
+    // Authorize caller for the seed dataset
+    if !can_access_stream(&req, &dataset_name) {
+        return Err(DatasetsError::DatasetNotFound(dataset_name));
+    }
+
     let stream = PARSEABLE
         .get_stream(&dataset_name, &tenant_id)
         .map_err(|_| DatasetsError::DatasetNotFound(dataset_name.clone()))?;
@@ -61,6 +79,10 @@ pub async fn get_correlated_datasets(
 
     for name in all_streams {
         if name == dataset_name {
+            continue;
+        }
+        // Filter out datasets the caller cannot read
+        if !can_access_stream(&req, &name) {
             continue;
         }
         if let Ok(s) = PARSEABLE.get_stream(&name, &tenant_id) {
@@ -91,6 +113,7 @@ pub async fn get_correlated_datasets(
 
 /// GET /api/v1/datasets/tags/{tag}
 /// Returns all datasets that have the specified tag.
+/// Results are filtered to only include datasets the caller is authorized to read.
 pub async fn get_datasets_by_tag(
     req: HttpRequest,
     path: web::Path<String>,
@@ -104,6 +127,10 @@ pub async fn get_datasets_by_tag(
     let mut matching = Vec::new();
 
     for name in all_streams {
+        // Filter out datasets the caller cannot read
+        if !can_access_stream(&req, &name) {
+            continue;
+        }
         if let Ok(s) = PARSEABLE.get_stream(&name, &tenant_id) {
             if s.get_stream_type() == StreamType::Internal {
                 continue;

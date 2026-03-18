@@ -92,10 +92,10 @@ impl Display for TelemetryType {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum DatasetTag {
-    AgentMonitoring,
-    K8sMonitoring,
+    AgentObservability,
+    K8sObservability,
     DatabaseObservability,
-    ApplicationMonitoring,
+    APM,
     ServiceMap,
 }
 
@@ -104,13 +104,13 @@ impl TryFrom<&str> for DatasetTag {
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         match s.to_lowercase().as_str() {
-            "agent-monitoring" => Ok(DatasetTag::AgentMonitoring),
-            "k8s-monitoring" => Ok(DatasetTag::K8sMonitoring),
+            "agent-observability" => Ok(DatasetTag::AgentObservability),
+            "k8s-observability" => Ok(DatasetTag::K8sObservability),
             "database-observability" => Ok(DatasetTag::DatabaseObservability),
-            "application-monitoring" => Ok(DatasetTag::ApplicationMonitoring),
+            "apm" => Ok(DatasetTag::APM),
             "service-map" => Ok(DatasetTag::ServiceMap),
             _ => Err(
-                "Invalid dataset tag. Supported values: agent-monitoring, k8s-monitoring, database-observability, application-monitoring, service-map",
+                "Invalid dataset tag. Supported values: agent-observability, k8s-observability, database-observability, apm, service-map",
             ),
         }
     }
@@ -119,10 +119,10 @@ impl TryFrom<&str> for DatasetTag {
 impl Display for DatasetTag {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            DatasetTag::AgentMonitoring => "agent-monitoring",
-            DatasetTag::K8sMonitoring => "k8s-monitoring",
+            DatasetTag::AgentObservability => "agent-observability",
+            DatasetTag::K8sObservability => "k8s-observability",
             DatasetTag::DatabaseObservability => "database-observability",
-            DatasetTag::ApplicationMonitoring => "application-monitoring",
+            DatasetTag::APM => "apm",
             DatasetTag::ServiceMap => "service-map",
         })
     }

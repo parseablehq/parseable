@@ -477,7 +477,7 @@ impl Parseable {
                     TelemetryType::Logs,
                     &tenant_id,
                     vec![],
-                    vec![]
+                    vec![],
                 )
                 .await;
 

@@ -32,7 +32,7 @@ use crate::event::format::{self, EventFormat, LogSource, LogSourceEntry};
 use crate::event::{self, FORMAT_KEY, USER_AGENT_KEY};
 use crate::handlers::http::modal::utils::ingest_utils::validate_stream_for_ingestion;
 use crate::handlers::{
-    CONTENT_TYPE_JSON, CONTENT_TYPE_PROTOBUF, EXTRACT_LOG_KEY, LOG_SOURCE_KEY,
+    CONTENT_TYPE_JSON, CONTENT_TYPE_PROTOBUF, DatasetTag, EXTRACT_LOG_KEY, LOG_SOURCE_KEY,
     STREAM_NAME_HEADER_KEY, TELEMETRY_TYPE_KEY, TelemetryType,
 };
 use crate::metadata::SchemaVersion;
@@ -207,6 +207,8 @@ pub async fn setup_otel_stream(
     expected_log_source: LogSource,
     known_fields: &[&str],
     telemetry_type: TelemetryType,
+    dataset_tags: Vec<DatasetTag>,
+    dataset_labels: Vec<String>,
 ) -> Result<(String, LogSource, LogSourceEntry, Option<String>), PostError> {
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
@@ -240,8 +242,8 @@ pub async fn setup_otel_stream(
             vec![log_source_entry.clone()],
             telemetry_type,
             &tenant_id,
-            vec![],
-            vec![],
+            dataset_tags,
+            dataset_labels,
         )
         .await?;
     let mut time_partition = None;
@@ -364,6 +366,8 @@ pub async fn handle_otel_logs_ingestion(
         LogSource::OtelLogs,
         &OTEL_LOG_KNOWN_FIELD_LIST,
         TelemetryType::Logs,
+        vec![],
+        vec![],
     )
     .await
     .map_err(|e| {
@@ -388,6 +392,8 @@ pub async fn handle_otel_metrics_ingestion(
         LogSource::OtelMetrics,
         &OTEL_METRICS_KNOWN_FIELD_LIST,
         TelemetryType::Metrics,
+        vec![],
+        vec![],
     )
     .await
     .map_err(|e| {
@@ -419,6 +425,8 @@ pub async fn handle_otel_traces_ingestion(
         LogSource::OtelTraces,
         &OTEL_TRACES_KNOWN_FIELD_LIST,
         TelemetryType::Traces,
+        vec![],
+        vec![],
     )
     .await
     .map_err(|e| {
