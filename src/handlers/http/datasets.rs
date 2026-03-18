@@ -22,6 +22,7 @@ use actix_web::http::StatusCode;
 use actix_web::{HttpRequest, HttpResponse, web};
 use serde::{Deserialize, Serialize};
 
+use crate::event::format::LogSource;
 use crate::rbac::{self, Users, role::Action};
 use crate::utils::actix::extract_session_key_from_req;
 use crate::utils::get_tenant_id_from_request;
@@ -44,6 +45,7 @@ fn can_access_stream(req: &HttpRequest, stream_name: &str) -> bool {
 #[serde(rename_all = "camelCase")]
 struct CorrelatedDataset {
     name: String,
+    log_source: LogSource,
     shared_tags: Vec<DatasetTag>,
     shared_labels: Vec<String>,
 }
@@ -99,8 +101,14 @@ pub async fn get_correlated_datasets(
                 target_labels.intersection(&s_labels).cloned().collect();
 
             if !shared_tags.is_empty() || !shared_labels.is_empty() {
+                let log_source = s
+                    .get_log_source()
+                    .first()
+                    .map(|entry| entry.log_source_format.clone())
+                    .unwrap_or_default();
                 correlated.push(CorrelatedDataset {
                     name,
+                    log_source,
                     shared_tags,
                     shared_labels,
                 });
@@ -109,6 +117,13 @@ pub async fn get_correlated_datasets(
     }
 
     Ok(HttpResponse::Ok().json(correlated))
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TaggedDataset {
+    name: String,
+    log_source: LogSource,
 }
 
 /// GET /api/v1/datasets/tags/{tag}
@@ -136,7 +151,12 @@ pub async fn get_datasets_by_tag(
                 continue;
             }
             if s.get_dataset_tags().contains(&tag) {
-                matching.push(name);
+                let log_source = s
+                    .get_log_source()
+                    .first()
+                    .map(|entry| entry.log_source_format.clone())
+                    .unwrap_or_default();
+                matching.push(TaggedDataset { name, log_source });
             }
         }
     }
