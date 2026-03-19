@@ -189,6 +189,16 @@ pub async fn put_dataset_metadata(
     let body = body.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
 
+    // Explicit per-dataset RBAC check — the middleware cannot extract the
+    // `{name}` path param (it looks for `logstream`), so we must verify here.
+    let session_key = extract_session_key_from_req(&req)
+        .map_err(|_| DatasetsError::DatasetNotFound(dataset_name.clone()))?;
+    if Users.authorize(session_key, Action::CreateStream, Some(&dataset_name), None)
+        != rbac::Response::Authorized
+    {
+        return Err(DatasetsError::Unauthorized(dataset_name));
+    }
+
     if !PARSEABLE
         .check_or_load_stream(&dataset_name, &tenant_id)
         .await
@@ -242,6 +252,8 @@ pub async fn put_dataset_metadata(
 pub enum DatasetsError {
     #[error("Dataset not found: {0}")]
     DatasetNotFound(String),
+    #[error("Unauthorized access to dataset: {0}")]
+    Unauthorized(String),
     #[error("Invalid tag: {0}")]
     InvalidTag(String),
     #[error("Storage error: {0}")]
@@ -252,6 +264,7 @@ impl actix_web::ResponseError for DatasetsError {
     fn status_code(&self) -> StatusCode {
         match self {
             DatasetsError::DatasetNotFound(_) => StatusCode::NOT_FOUND,
+            DatasetsError::Unauthorized(_) => StatusCode::FORBIDDEN,
             DatasetsError::InvalidTag(_) => StatusCode::BAD_REQUEST,
             DatasetsError::Storage(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
