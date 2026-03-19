@@ -65,6 +65,13 @@ pub async fn get_correlated_datasets(
         return Err(DatasetsError::DatasetNotFound(dataset_name));
     }
 
+    if !PARSEABLE
+        .check_or_load_stream(&dataset_name, &tenant_id)
+        .await
+    {
+        return Err(DatasetsError::DatasetNotFound(dataset_name));
+    }
+
     let stream = PARSEABLE
         .get_stream(&dataset_name, &tenant_id)
         .map_err(|_| DatasetsError::DatasetNotFound(dataset_name.clone()))?;
@@ -181,6 +188,13 @@ pub async fn put_dataset_metadata(
     let dataset_name = path.into_inner();
     let body = body.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+
+    if !PARSEABLE
+        .check_or_load_stream(&dataset_name, &tenant_id)
+        .await
+    {
+        return Err(DatasetsError::DatasetNotFound(dataset_name));
+    }
 
     let stream = PARSEABLE
         .get_stream(&dataset_name, &tenant_id)
