@@ -1486,7 +1486,28 @@ impl AlertManagerTrait for Alerts {
     }
 
     async fn delete_all_for_tenant(&self, tenant_id: &str) {
-        self.alerts.write().await.remove(tenant_id);
+        let tenant = if tenant_id.is_empty() {
+            DEFAULT_TENANT
+        } else {
+            tenant_id
+        };
+
+        let alert_ids: Vec<Ulid> = {
+            let read_access = self.alerts.read().await;
+            if let Some(alerts) = read_access.get(tenant) {
+                alerts.keys().copied().collect()
+            } else {
+                return;
+            }
+        };
+
+        for alert_id in &alert_ids {
+            if let Err(e) = self.sender.send(AlertTask::Delete(*alert_id)).await {
+                warn!("Failed to cancel alert task {alert_id} for tenant {tenant}: {e}");
+            }
+        }
+
+        self.alerts.write().await.remove(tenant);
     }
 }
 
