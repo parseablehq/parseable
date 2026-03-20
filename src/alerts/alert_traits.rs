@@ -119,6 +119,7 @@ pub trait AlertManagerTrait: Send + Sync {
         &self,
         tenant_id: &Option<String>,
     ) -> HashMap<Ulid, Box<dyn AlertTrait>>;
+    async fn delete_all_for_tenant(&self, tenant_id: &str);
 }
 
 #[async_trait]

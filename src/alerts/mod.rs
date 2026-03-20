@@ -1484,6 +1484,10 @@ impl AlertManagerTrait for Alerts {
         // let alerts = self.alerts.read().await;
         // alerts.iter().map(|(k, v)| (*k, v.clone_box())).collect()
     }
+
+    async fn delete_all_for_tenant(&self, tenant_id: &str) {
+        self.alerts.write().await.remove(tenant_id);
+    }
 }
 
 // TODO: add RBAC
