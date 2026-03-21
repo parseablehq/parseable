@@ -1031,4 +1031,129 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn test_flatten_events_empty_slice() {
+        // flatten_events on an empty slice must return an empty Vec —
+        // the caller (flatten_span_record) relies on this to detect
+        // "no events" and fall back to a single span-only record.
+        let result = flatten_events(&[], 1640995200000000000);
+        assert!(
+            result.is_empty(),
+            "flatten_events on an empty slice should return an empty Vec"
+        );
+    }
+
+    #[test]
+    fn test_flatten_links_empty_slice() {
+        // flatten_links on an empty slice must return an empty Vec —
+        // the caller (flatten_span_record) relies on this to detect
+        // "no links" and fall back to a single span-only record.
+        let result = flatten_links(&[]);
+        assert!(
+            result.is_empty(),
+            "flatten_links on an empty slice should return an empty Vec"
+        );
+    }
+
+    #[test]
+    fn test_flatten_span_record_events_only_no_links() {
+        // A span with events but no links should produce one record per event,
+        // each enriched with all span-level fields.
+        let span = Span {
+            trace_id: sample_trace_id(),
+            span_id: sample_span_id(),
+            trace_state: "".to_string(),
+            parent_span_id: vec![],
+            flags: 0,
+            name: "events-only-span".to_string(),
+            kind: 1,
+            start_time_unix_nano: 1640995200000000000,
+            end_time_unix_nano: 1640995201000000000,
+            attributes: vec![],
+            dropped_attributes_count: 0,
+            events: vec![
+                Event {
+                    time_unix_nano: 1640995200100000000,
+                    name: "evt-a".to_string(),
+                    attributes: vec![],
+                    dropped_attributes_count: 0,
+                },
+                Event {
+                    time_unix_nano: 1640995200200000000,
+                    name: "evt-b".to_string(),
+                    attributes: vec![],
+                    dropped_attributes_count: 0,
+                },
+            ],
+            dropped_events_count: 0,
+            links: vec![],
+            dropped_links_count: 0,
+            status: None,
+        };
+
+        let result = flatten_span_record(&span);
+
+        assert_eq!(result.len(), 2, "One record per event when links are empty");
+        assert_eq!(
+            result[0].get("event_name").unwrap(),
+            &Value::String("evt-a".to_string()),
+        );
+        assert_eq!(
+            result[1].get("event_name").unwrap(),
+            &Value::String("evt-b".to_string()),
+        );
+        // Each event record must also carry the span-level fields.
+        for record in &result {
+            assert_eq!(
+                record.get("span_name").unwrap(),
+                &Value::String("events-only-span".to_string()),
+                "Event records must be enriched with span fields"
+            );
+        }
+    }
+
+    #[test]
+    fn test_flatten_span_record_links_only_no_events() {
+        // A span with links but no events should produce one record per link,
+        // each enriched with all span-level fields.
+        let span = Span {
+            trace_id: sample_trace_id(),
+            span_id: sample_span_id(),
+            trace_state: "".to_string(),
+            parent_span_id: vec![],
+            flags: 0,
+            name: "links-only-span".to_string(),
+            kind: 3,
+            start_time_unix_nano: 1640995200000000000,
+            end_time_unix_nano: 1640995201000000000,
+            attributes: vec![],
+            dropped_attributes_count: 0,
+            events: vec![],
+            dropped_events_count: 0,
+            links: vec![Link {
+                trace_id: sample_trace_id(),
+                span_id: sample_span_id(),
+                trace_state: "".to_string(),
+                attributes: vec![],
+                dropped_attributes_count: 0,
+                flags: 0,
+            }],
+            dropped_links_count: 0,
+            status: None,
+        };
+
+        let result = flatten_span_record(&span);
+
+        assert_eq!(result.len(), 1, "One record per link when events are empty");
+        assert!(
+            result[0].contains_key("link_trace_id"),
+            "Link record must contain link fields"
+        );
+        assert_eq!(
+            result[0].get("span_name").unwrap(),
+            &Value::String("links-only-span".to_string()),
+            "Link records must be enriched with span fields"
+        );
+    }
 }
