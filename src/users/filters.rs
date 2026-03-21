@@ -164,6 +164,10 @@ impl Filters {
         }
     }
 
+    pub async fn delete_tenant(&self, tenant_id: &str) {
+        self.0.write().await.remove(tenant_id);
+    }
+
     pub async fn list_filters(&self, key: &SessionKey) -> Vec<Filter> {
         let read = self.0.read().await;
         let tenant_id = get_tenant_id_from_key(key);

@@ -118,6 +118,17 @@ impl InMemorySessionContext {
             )
             .expect("Should be able to register new schema");
     }
+
+    pub fn remove_schema(&self, tenant_id: &str) {
+        if let Some(catalog) = self
+            .session_context
+            .write()
+            .expect("SessionContext should be writeable")
+            .catalog("datafusion")
+        {
+            let _ = catalog.deregister_schema(tenant_id, true);
+        }
+    }
 }
 
 /// This function executes a query on the dedicated runtime, ensuring that the query is not isolated to a single thread/CPU

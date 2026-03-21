@@ -505,6 +505,10 @@ impl Dashboards {
         }
     }
 
+    pub async fn delete_tenant(&self, tenant_id: &str) {
+        self.0.write().await.remove(tenant_id);
+    }
+
     /// Ensure the user is the owner of the dashboard
     /// This function is called when updating or deleting a dashboard
     /// check if the user is the owner of the dashboard
