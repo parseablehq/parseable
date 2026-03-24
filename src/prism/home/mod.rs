@@ -237,8 +237,16 @@ async fn get_stream_metadata(stream: String, tenant_id: &Option<String>) -> Stre
     let ingested = stream_jsons
         .iter()
         .any(|s| s.stats.current_stats.events > 0);
-    let dataset_tags = stream_jsons[0].dataset_tags.clone();
-    let dataset_labels = stream_jsons[0].dataset_labels.clone();
+    let dataset_tags = stream_jsons
+        .iter()
+        .flat_map(|s| s.dataset_tags.clone())
+        .unique_by(|t| *t)
+        .collect_vec();
+    let dataset_labels = stream_jsons
+        .iter()
+        .flat_map(|s| s.dataset_labels.clone())
+        .unique_by(|l| l.clone())
+        .collect_vec();
 
     Ok(StreamMetadata {
         stream,

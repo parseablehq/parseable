@@ -21,6 +21,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
+use itertools::Itertools;
 use object_store::ListResult;
 use object_store::ObjectMeta;
 use object_store::buffered::BufReader;
@@ -754,6 +755,18 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 stats: FullStats::default(),
                 snapshot: Snapshot::default(),
                 log_source: merged_log_sources,
+                dataset_tags: stream_metadata_obs
+                    .iter()
+                    .filter_map(|bytes| serde_json::from_slice::<ObjectStoreFormat>(bytes).ok())
+                    .flat_map(|meta| meta.dataset_tags)
+                    .unique()
+                    .collect(),
+                dataset_labels: stream_metadata_obs
+                    .iter()
+                    .filter_map(|bytes| serde_json::from_slice::<ObjectStoreFormat>(bytes).ok())
+                    .flat_map(|meta| meta.dataset_labels)
+                    .unique()
+                    .collect(),
                 ..stream_ob_metadata
             };
 
