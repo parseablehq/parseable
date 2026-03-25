@@ -32,7 +32,6 @@ pub mod about;
 pub mod alerts;
 pub mod cluster;
 pub mod correlation;
-pub mod datasets;
 pub mod demo_data;
 pub mod health_check;
 pub mod ingest;
