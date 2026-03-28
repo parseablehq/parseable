@@ -21,6 +21,7 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use datafusion::{datasource::listing::ListingTableUrl, execution::runtime_env::RuntimeEnvBuilder};
+use itertools::Itertools;
 use object_store::ListResult;
 use object_store::ObjectMeta;
 use object_store::buffered::BufReader;
@@ -45,6 +46,7 @@ use ulid::Ulid;
 use crate::catalog::{self, snapshot::Snapshot};
 use crate::event::format::LogSource;
 use crate::event::format::LogSourceEntry;
+use crate::handlers::DatasetTag;
 use crate::handlers::http::fetch_schema;
 use crate::handlers::http::modal::ingest_server::INGESTOR_EXPECT;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
@@ -495,6 +497,31 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         Ok(())
     }
 
+    async fn update_dataset_tags_and_labels_in_stream(
+        &self,
+        stream_name: &str,
+        tags: &[DatasetTag],
+        labels: &[String],
+        tenant_id: &Option<String>,
+    ) -> Result<(), ObjectStorageError> {
+        let mut format: ObjectStoreFormat = serde_json::from_slice(
+            &PARSEABLE
+                .metastore
+                .get_stream_json(stream_name, false, tenant_id)
+                .await
+                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
+        )?;
+        format.dataset_tags = tags.to_owned();
+        format.dataset_labels = labels.to_owned();
+        PARSEABLE
+            .metastore
+            .put_stream_json(&format, stream_name, tenant_id)
+            .await
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
+
+        Ok(())
+    }
+
     /// Updates the first event timestamp in the object store for the specified stream.
     ///
     /// This function retrieves the current object-store format for the given stream,
@@ -728,6 +755,18 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 stats: FullStats::default(),
                 snapshot: Snapshot::default(),
                 log_source: merged_log_sources,
+                dataset_tags: stream_metadata_obs
+                    .iter()
+                    .filter_map(|bytes| serde_json::from_slice::<ObjectStoreFormat>(bytes).ok())
+                    .flat_map(|meta| meta.dataset_tags)
+                    .unique()
+                    .collect(),
+                dataset_labels: stream_metadata_obs
+                    .iter()
+                    .filter_map(|bytes| serde_json::from_slice::<ObjectStoreFormat>(bytes).ok())
+                    .flat_map(|meta| meta.dataset_labels)
+                    .unique()
+                    .collect(),
                 ..stream_ob_metadata
             };
 

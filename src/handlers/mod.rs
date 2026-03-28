@@ -16,9 +16,11 @@
  *
  */
 
+use std::collections::HashSet;
 use std::fmt::Display;
 
 use serde::{Deserialize, Serialize};
+use tracing::warn;
 
 pub mod airplane;
 pub mod http;
@@ -36,6 +38,8 @@ pub const UPDATE_STREAM_KEY: &str = "x-p-update-stream";
 pub const STREAM_TYPE_KEY: &str = "x-p-stream-type";
 pub const TELEMETRY_TYPE_KEY: &str = "x-p-telemetry-type";
 pub const DATASET_TAG_KEY: &str = "x-p-dataset-tag";
+pub const DATASET_TAGS_KEY: &str = "x-p-dataset-tags";
+pub const DATASET_LABELS_KEY: &str = "x-p-dataset-labels";
 pub const TENANT_ID: &str = "x-p-tenant";
 const COOKIE_AGE_DAYS: usize = 7;
 const SESSION_COOKIE_NAME: &str = "session";
@@ -85,12 +89,14 @@ impl Display for TelemetryType {
 }
 
 /// Tag for categorizing datasets/streams by observability domain
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "kebab-case")]
 pub enum DatasetTag {
     AgentObservability,
     K8sObservability,
     DatabaseObservability,
+    APM,
+    ServiceMap,
 }
 
 impl TryFrom<&str> for DatasetTag {
@@ -101,8 +107,10 @@ impl TryFrom<&str> for DatasetTag {
             "agent-observability" => Ok(DatasetTag::AgentObservability),
             "k8s-observability" => Ok(DatasetTag::K8sObservability),
             "database-observability" => Ok(DatasetTag::DatabaseObservability),
+            "apm" => Ok(DatasetTag::APM),
+            "service-map" => Ok(DatasetTag::ServiceMap),
             _ => Err(
-                "Invalid dataset tag. Supported values: agent-observability, k8s-observability, database-observability",
+                "Invalid dataset tag. Supported values: agent-observability, k8s-observability, database-observability, apm, service-map",
             ),
         }
     }
@@ -114,6 +122,40 @@ impl Display for DatasetTag {
             DatasetTag::AgentObservability => "agent-observability",
             DatasetTag::K8sObservability => "k8s-observability",
             DatasetTag::DatabaseObservability => "database-observability",
+            DatasetTag::APM => "apm",
+            DatasetTag::ServiceMap => "service-map",
         })
     }
+}
+
+pub fn parse_dataset_tags(header_value: &str) -> Vec<DatasetTag> {
+    header_value
+        .split(',')
+        .filter_map(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                match DatasetTag::try_from(trimmed) {
+                    Ok(tag) => Some(tag),
+                    Err(err) => {
+                        warn!("Invalid dataset tag '{trimmed}': {err}");
+                        None
+                    }
+                }
+            }
+        })
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+pub fn parse_dataset_labels(header_value: &str) -> Vec<String> {
+    header_value
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect()
 }

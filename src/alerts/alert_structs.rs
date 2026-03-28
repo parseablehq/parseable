@@ -191,49 +191,52 @@ pub struct ConditionConfig {
 #[serde(rename_all = "camelCase")]
 pub struct Conditions {
     pub operator: Option<LogicalOperator>,
+    #[serde(default)]
     pub condition_config: Vec<ConditionConfig>,
+    /// Nested condition groups for complex logic like (A OR B) AND (C OR D)
+    pub groups: Option<Vec<Conditions>>,
 }
 
 impl Conditions {
+    fn format_condition(cond: &ConditionConfig) -> String {
+        match cond.value.as_ref().filter(|v| !v.is_empty()) {
+            Some(val) => format!("{} {} {}", cond.column, cond.operator, val),
+            None => format!("{} {}", cond.column, cond.operator),
+        }
+    }
+
     pub fn generate_filter_message(&self) -> String {
-        match &self.operator {
-            Some(op) => match op {
-                LogicalOperator::And | LogicalOperator::Or => {
-                    let expr1 = &self.condition_config[0];
-                    let expr2 = &self.condition_config[1];
-                    let expr1_msg = if expr1.value.as_ref().is_some_and(|v| !v.is_empty()) {
-                        format!(
-                            "{} {} {}",
-                            expr1.column,
-                            expr1.operator,
-                            expr1.value.as_ref().unwrap()
-                        )
-                    } else {
-                        format!("{} {}", expr1.column, expr1.operator)
-                    };
+        let op = self.operator.as_ref().unwrap_or(&LogicalOperator::And);
+        let separator = format!(" {op} ");
 
-                    let expr2_msg = if expr2.value.as_ref().is_some_and(|v| !v.is_empty()) {
-                        format!(
-                            "{} {} {}",
-                            expr2.column,
-                            expr2.operator,
-                            expr2.value.as_ref().unwrap()
-                        )
-                    } else {
-                        format!("{} {}", expr2.column, expr2.operator)
-                    };
+        // Format inline condition_config entries
+        let condition_parts: Vec<String> = self
+            .condition_config
+            .iter()
+            .map(Self::format_condition)
+            .collect();
 
-                    format!("[{expr1_msg} {op} {expr2_msg}]")
-                }
-            },
-            None => {
-                let expr = &self.condition_config[0];
-                if let Some(val) = &expr.value {
-                    format!("{} {} {}", expr.column, expr.operator, val)
-                } else {
-                    format!("{} {}", expr.column, expr.operator)
-                }
-            }
+        // Format nested groups recursively, skipping empty ones
+        let group_parts: Vec<String> = self
+            .groups
+            .as_deref()
+            .unwrap_or_default()
+            .iter()
+            .map(|g| g.generate_filter_message())
+            .filter(|msg| !msg.is_empty())
+            .map(|msg| format!("({msg})"))
+            .collect();
+
+        let all_parts: Vec<&str> = condition_parts
+            .iter()
+            .chain(group_parts.iter())
+            .map(|s| s.as_str())
+            .collect();
+
+        match all_parts.len() {
+            0 => String::default(),
+            1 => all_parts[0].to_string(),
+            _ => format!("[{}]", all_parts.join(&separator)),
         }
     }
 }

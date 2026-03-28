@@ -963,8 +963,28 @@ impl Stream {
         self.metadata.read().expect(LOCK_EXPECT).log_source.clone()
     }
 
-    pub fn get_dataset_tag(&self) -> Option<DatasetTag> {
-        self.metadata.read().expect(LOCK_EXPECT).dataset_tag
+    pub fn get_dataset_tags(&self) -> Vec<DatasetTag> {
+        self.metadata
+            .read()
+            .expect(LOCK_EXPECT)
+            .dataset_tags
+            .clone()
+    }
+
+    pub fn get_dataset_labels(&self) -> Vec<String> {
+        self.metadata
+            .read()
+            .expect(LOCK_EXPECT)
+            .dataset_labels
+            .clone()
+    }
+
+    pub fn set_dataset_tags(&self, tags: Vec<DatasetTag>) {
+        self.metadata.write().expect(LOCK_EXPECT).dataset_tags = tags;
+    }
+
+    pub fn set_dataset_labels(&self, labels: Vec<String>) {
+        self.metadata.write().expect(LOCK_EXPECT).dataset_labels = labels;
     }
 
     pub fn add_log_source(&self, log_source: LogSourceEntry) {
