@@ -191,7 +191,10 @@ pub struct ConditionConfig {
 #[serde(rename_all = "camelCase")]
 pub struct Conditions {
     pub operator: Option<LogicalOperator>,
+    #[serde(default)]
     pub condition_config: Vec<ConditionConfig>,
+    /// Nested condition groups for complex logic like (A OR B) AND (C OR D)
+    pub groups: Option<Vec<Conditions>>,
 }
 
 impl Conditions {

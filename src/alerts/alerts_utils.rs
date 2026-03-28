@@ -388,21 +388,39 @@ fn extract_group_results(records: Vec<RecordBatch>, plan: LogicalPlan) -> AlertQ
 }
 
 pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
-    match &where_clause.operator {
-        Some(op) => match op {
-            &LogicalOperator::And => {
-                let mut exprs = vec![];
-                for condition in &where_clause.condition_config {
-                    exprs.push(condition_to_expr(condition)?);
-                }
-                Ok(exprs.join(" AND "))
-            }
-            _ => Err(String::from("Invalid option 'or', only 'and' is supported")),
-        },
-        _ => Err(String::from(
-            "Invalid option 'null', only 'and' is supported",
-        )),
+    let op = where_clause
+        .operator
+        .as_ref()
+        .ok_or_else(|| String::from("operator is required in conditions"))?;
+
+    let joiner = match op {
+        LogicalOperator::And => " AND ",
+        LogicalOperator::Or => " OR ",
+    };
+
+    let mut exprs = vec![];
+
+    // Process flat condition_config entries
+    for condition in &where_clause.condition_config {
+        exprs.push(condition_to_expr(condition)?);
     }
+
+    // Process nested groups recursively
+    if let Some(groups) = &where_clause.groups {
+        for group in groups {
+            let group_expr = get_filter_string(group)?;
+            // Wrap each group in parentheses to preserve precedence
+            exprs.push(format!("({group_expr})"));
+        }
+    }
+
+    if exprs.is_empty() {
+        return Err(String::from(
+            "conditions must have at least one condition or group",
+        ));
+    }
+
+    Ok(exprs.join(joiner))
 }
 
 fn condition_to_expr(condition: &ConditionConfig) -> Result<String, String> {
