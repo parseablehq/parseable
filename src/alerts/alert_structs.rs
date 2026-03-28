@@ -216,13 +216,15 @@ impl Conditions {
             .map(Self::format_condition)
             .collect();
 
-        // Format nested groups recursively
+        // Format nested groups recursively, skipping empty ones
         let group_parts: Vec<String> = self
             .groups
             .as_deref()
             .unwrap_or_default()
             .iter()
-            .map(|g| format!("({})", g.generate_filter_message()))
+            .map(|g| g.generate_filter_message())
+            .filter(|msg| !msg.is_empty())
+            .map(|msg| format!("({msg})"))
             .collect();
 
         let all_parts: Vec<&str> = condition_parts
