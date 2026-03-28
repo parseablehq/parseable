@@ -232,7 +232,7 @@ impl Conditions {
             .collect();
 
         match all_parts.len() {
-            0 => String::new(),
+            0 => String::default(),
             1 => all_parts[0].to_string(),
             _ => format!("[{}]", all_parts.join(&separator)),
         }
