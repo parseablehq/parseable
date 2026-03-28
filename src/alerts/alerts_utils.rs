@@ -391,7 +391,7 @@ pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
     let op = where_clause
         .operator
         .as_ref()
-        .ok_or_else(|| String::from("operator is required in conditions"))?;
+        .unwrap_or(&LogicalOperator::And);
 
     let joiner = match op {
         LogicalOperator::And => " AND ",
