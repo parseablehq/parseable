@@ -38,7 +38,7 @@ use itertools::Itertools;
 use serde::de::{DeserializeOwned, Error};
 use serde_json::error::Error as SerdeError;
 use serde_json::{Value as JsonValue, to_vec};
-use tracing::{error, warn};
+use tracing::{error, instrument, warn};
 use url::Url;
 use utils::{IngestionStats, QueriedStats, StorageStats, check_liveness, to_url_string};
 
@@ -998,8 +998,10 @@ pub async fn send_retention_cleanup_request(
 }
 
 /// Fetches cluster information for all nodes (ingestor, indexer, querier and prism)
+#[instrument(name = "get_cluster_info", skip(req), fields(tenant_id = tracing::field::Empty), err)]
 pub async fn get_cluster_info(req: HttpRequest) -> Result<impl Responder, StreamError> {
     let tenant_id = &get_tenant_id_from_request(&req);
+    tracing::Span::current().record("tenant_id", tenant_id.as_deref().unwrap_or("none"));
     // Get querier, ingestor and indexer metadata concurrently
     let (prism_result, querier_result, ingestor_result, indexer_result) = future::join4(
         get_node_info(NodeType::Prism, tenant_id),
@@ -1062,6 +1064,7 @@ pub async fn get_cluster_info(req: HttpRequest) -> Result<impl Responder, Stream
 /// Fetches info for a single node
 /// call the about endpoint of the node
 /// construct the ClusterInfo struct and return it
+#[instrument(name = "fetch_node_info", skip(node), fields(node.domain = node.domain_name(), node.node_type = ?node.node_type(), node.reachable = tracing::field::Empty), err)]
 async fn fetch_node_info<T: Metadata>(node: &T) -> Result<utils::ClusterInfo, StreamError> {
     let uri = Url::parse(&format!(
         "{}{}/about",
@@ -1109,6 +1112,7 @@ async fn fetch_node_info<T: Metadata>(node: &T) -> Result<utils::ClusterInfo, St
             resp.unwrap_err().status().map(|s| s.to_string()),
         )
     };
+    tracing::Span::current().record("node.reachable", reachable);
 
     Ok(utils::ClusterInfo::new(
         node.domain_name(),
@@ -1122,6 +1126,7 @@ async fn fetch_node_info<T: Metadata>(node: &T) -> Result<utils::ClusterInfo, St
 }
 
 /// Fetches info for multiple nodes in parallel
+#[instrument(name = "fetch_nodes_info", skip(nodes), fields(node_count = nodes.len()), err)]
 async fn fetch_nodes_info<T: Metadata>(
     nodes: Vec<T>,
 ) -> Result<Vec<utils::ClusterInfo>, StreamError> {
@@ -1157,6 +1162,7 @@ pub async fn get_cluster_metrics(req: HttpRequest) -> Result<impl Responder, Pos
 /// get node info for a specific node type
 /// this is used to get the node info for ingestor, indexer, querier and prism
 /// it will return the metadata for all nodes of that type
+#[instrument(name = "get_node_info", skip(tenant_id), fields(node_type = ?node_type), err)]
 pub async fn get_node_info<T: Metadata + DeserializeOwned>(
     node_type: NodeType,
     tenant_id: &Option<String>,
