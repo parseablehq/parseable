@@ -48,6 +48,7 @@ mod static_schema;
 mod stats;
 pub mod storage;
 pub mod sync;
+pub mod telemetry;
 pub mod tenants;
 pub mod users;
 pub mod utils;

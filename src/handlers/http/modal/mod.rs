@@ -32,6 +32,7 @@ use serde_json::{Map, Value};
 use ssl_acceptor::get_ssl_acceptor;
 use tokio::sync::{RwLock, oneshot};
 use tracing::{error, info, warn};
+use tracing_actix_web::TracingLogger;
 
 use crate::{
     alerts::{ALERTS, get_alert_manager, target::TARGETS},
@@ -111,6 +112,7 @@ pub trait ParseableServer {
         // fn that creates the app
         let create_app_fn = move || {
             App::new()
+                .wrap(TracingLogger::default())
                 .wrap(prometheus.clone())
                 .configure(|config| Self::configure_routes(config))
                 .wrap(from_fn(health_check::check_shutdown_middleware))

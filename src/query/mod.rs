@@ -48,6 +48,7 @@ use itertools::Itertools;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::ops::Bound;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -55,6 +56,8 @@ use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 use sysinfo::System;
 use tokio::runtime::Runtime;
+use tracing::Instrument;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
@@ -133,6 +136,11 @@ impl InMemorySessionContext {
 
 /// This function executes a query on the dedicated runtime, ensuring that the query is not isolated to a single thread/CPU
 /// at a time and has access to the entire thread pool, enabling better concurrent processing, and thus quicker results.
+#[tracing::instrument(
+    name = "datafusion.dispatch",
+    skip(query, tenant_id),
+    fields(is_streaming)
+)]
 pub async fn execute(
     query: Query,
     is_streaming: bool,
@@ -165,8 +173,37 @@ pub async fn execute(
     ExecuteError,
 > {
     let id = tenant_id.clone();
+
+    // Serialize the current OTel context before crossing the QUERY_RUNTIME boundary.
+    // QUERY_RUNTIME is a separate tokio::runtime::Runtime on its own OS thread pool.
+    // Thread-local OTel context is NOT inherited by tasks spawned onto a different runtime.
+    let mut trace_cx: HashMap<String, String> = HashMap::new();
+    opentelemetry::global::get_text_map_propagator(|prop| {
+        prop.inject_context(&opentelemetry::Context::current(), &mut trace_cx);
+    });
+
     QUERY_RUNTIME
-        .spawn(async move { query.execute(is_streaming, &id).await })
+        .spawn(async move {
+            // Extract and restore the W3C context inside QUERY_RUNTIME.
+            // `opentelemetry::ContextGuard` is `!Send`, so we must NOT hold it
+            // across an `.await`. Instead we create a `tracing::Span` (which IS
+            // `Send`), link it to the propagated parent via `set_parent`, and
+            // instrument the query call so its span appears as a child of
+            // `datafusion.dispatch` in the trace view.
+            let parent_cx =
+                opentelemetry::global::get_text_map_propagator(|prop| prop.extract(&trace_cx));
+            let span = tracing::info_span!(
+                "datafusion.execute",
+                is_streaming = is_streaming,
+                tenant = tracing::field::Empty,
+            );
+            let _ = span.set_parent(parent_cx);
+            span.record(
+                "tenant",
+                tracing::field::display(id.as_deref().unwrap_or(DEFAULT_TENANT)),
+            );
+            query.execute(is_streaming, &id).instrument(span).await
+        })
         .await
         .expect("The Join should have been successful")
 }
@@ -526,6 +563,11 @@ impl CountsRequest {
     /// This function is supposed to read maninfest files for the given stream,
     /// get the sum of `num_rows` between the `startTime` and `endTime`,
     /// divide that by number of bins and return in a manner acceptable for the console
+    #[tracing::instrument(
+        name = "query.bin_density",
+        skip(self, tenant_id),
+        fields(stream = %self.stream, num_bins = self.num_bins.unwrap_or(1))
+    )]
     pub async fn get_bin_density(
         &self,
         tenant_id: &Option<String>,
@@ -719,6 +761,11 @@ pub fn resolve_stream_names(sql: &str) -> Result<Vec<String>, anyhow::Error> {
     Ok(tables)
 }
 
+#[tracing::instrument(
+    name = "catalog.manifest_list",
+    skip(time_range, tenant_id),
+    fields(stream_name)
+)]
 pub async fn get_manifest_list(
     stream_name: &str,
     time_range: &TimeRange,

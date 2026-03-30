@@ -41,6 +41,7 @@ use itertools::Itertools;
 use serde::Serialize;
 use serde_json::json;
 use tokio::sync::Mutex;
+use tracing::instrument;
 
 use super::modal::utils::rbac_utils::{get_metadata, put_metadata};
 
@@ -69,8 +70,10 @@ impl From<&user::User> for User {
 
 // Handler for GET /api/v1/user
 // returns list of all registered users
+#[tracing::instrument(name = "list_users", skip(req), fields(tenant_id = tracing::field::Empty))]
 pub async fn list_users(req: HttpRequest) -> impl Responder {
     let tenant_id = get_tenant_id_from_request(&req);
+    tracing::Span::current().record("tenant_id", tenant_id.as_deref().unwrap_or("default"));
     web::Json(Users.collect_user::<User>(&tenant_id))
 }
 
@@ -217,12 +220,19 @@ pub async fn post_gen_password(
 
 // Handler for GET /api/v1/user/{userid}/role
 // returns role for a user if that user exists
+#[instrument(
+    name = "get_role",
+    skip(req, userid),
+    fields(user_id = tracing::field::Empty, tenant_id = tracing::field::Empty)
+)]
 pub async fn get_role(
     req: HttpRequest,
     userid: web::Path<String>,
 ) -> Result<impl Responder, RBACError> {
     let userid = userid.into_inner();
+    tracing::Span::current().record("user_id", &userid);
     let tenant_id = get_tenant_id_from_request(&req);
+    tracing::Span::current().record("tenant_id", tenant_id.as_deref().unwrap_or("default"));
     let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     if !Users.contains(&userid, &tenant_id) {
         return Err(RBACError::UserDoesNotExist);

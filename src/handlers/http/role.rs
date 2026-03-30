@@ -109,8 +109,14 @@ pub async fn get(req: HttpRequest, name: web::Path<String>) -> Result<impl Respo
 
 // Handler for GET /api/v1/role
 // Fetch all roles in the system
+#[tracing::instrument(
+    name = "role.list",
+    skip(req),
+    fields(tenant_id = tracing::field::Empty)
+)]
 pub async fn list(req: HttpRequest) -> Result<impl Responder, RoleError> {
     let tenant_id = get_tenant_id_from_request(&req);
+    tracing::Span::current().record("tenant_id", tenant_id.as_deref().unwrap_or("none"));
     let metadata = get_metadata(&tenant_id).await?;
     let mut roles = HashMap::new();
     for (k, r) in metadata.roles.into_iter() {
@@ -186,9 +192,15 @@ pub async fn put_default(
 
 // Handler for GET /api/v1/role/default
 // Delete existing role
+#[tracing::instrument(
+    name = "role.get_default",
+    skip(req),
+    fields(tenant_id = tracing::field::Empty)
+)]
 pub async fn get_default(req: HttpRequest) -> Result<impl Responder, RoleError> {
     let tenant_id = get_tenant_id_from_request(&req);
     let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    tracing::Span::current().record("tenant_id", tenant_id);
     let res = if let Some(role) = DEFAULT_ROLE
         .read()
         // .unwrap()
@@ -211,6 +223,10 @@ pub async fn get_default(req: HttpRequest) -> Result<impl Responder, RoleError> 
     Ok(web::Json(res))
 }
 
+#[tracing::instrument(
+    name = "role.get_metadata",
+    fields(tenant_id = ?tenant_id)
+)]
 async fn get_metadata(
     tenant_id: &Option<String>,
 ) -> Result<crate::storage::StorageMetadata, ObjectStorageError> {

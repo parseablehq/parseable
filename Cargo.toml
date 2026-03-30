@@ -46,7 +46,7 @@ tonic = { version = "0.14.1", features = [
 ] }
 tonic-prost = "0.14.1"
 tonic-web = "0.14.1"
-tower-http = { version = "0.6.1", features = ["cors"] }
+tower-http = { version = "0.6.1", features = ["cors", "trace"] }
 url = "2.4.0"
 
 # Connectors dependencies
@@ -108,6 +108,11 @@ prometheus = { version = "0.13.4", default-features = false, features = ["proces
 prometheus-parse = "0.2.5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
+opentelemetry = { git = "https://github.com/parmesant/opentelemetry-rust/", rev = "45fb828769e6ade96d56ca1f5fa14cf0986a5341", features = ["trace"] }
+opentelemetry_sdk = { git = "https://github.com/parmesant/opentelemetry-rust/", rev = "45fb828769e6ade96d56ca1f5fa14cf0986a5341", features = ["trace", "rt-tokio"] }
+opentelemetry-otlp = { git = "https://github.com/parmesant/opentelemetry-rust/", rev = "45fb828769e6ade96d56ca1f5fa14cf0986a5341", features = ["trace", "grpc-tonic", "http-json", "http-proto"] }
+tracing-opentelemetry = "0.32"
+tracing-actix-web = "0.7"
 
 # Time and Date
 chrono = "0.4"
@@ -196,6 +201,10 @@ kafka = [
     "sasl2-sys",
     "sasl2-sys/vendored",
 ]
+
+[patch.crates-io]
+opentelemetry = { git = "https://github.com/parmesant/opentelemetry-rust/", rev = "45fb828769e6ade96d56ca1f5fa14cf0986a5341" }
+opentelemetry_sdk = { git = "https://github.com/parmesant/opentelemetry-rust/", rev = "45fb828769e6ade96d56ca1f5fa14cf0986a5341" }
 
 [profile.release-lto]
 inherits = "release"

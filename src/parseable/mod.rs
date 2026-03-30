@@ -248,6 +248,11 @@ impl Parseable {
     /// Checks for the stream in memory, or loads it from storage when in distributed mode
     /// return true if stream exists in memory or loaded from storage
     /// return false if stream doesn't exist in memory and not loaded from storage
+    #[tracing::instrument(
+        name = "parseable.check_or_load_stream",
+        skip(self, tenant_id),
+        fields(stream_name)
+    )]
     pub async fn check_or_load_stream(
         &self,
         stream_name: &str,
@@ -370,6 +375,11 @@ impl Parseable {
     /// list all streams from storage
     /// if stream exists in storage, create stream and schema from storage
     /// and add it to the memory map
+    #[tracing::instrument(
+        name = "storage.hydrate_stream",
+        skip(self, tenant_id),
+        fields(stream_name)
+    )]
     pub async fn create_stream_and_schema_from_storage(
         &self,
         stream_name: &str,

@@ -213,6 +213,7 @@ pub async fn put_stream(
     Ok(("Log stream created", StatusCode::OK))
 }
 
+#[tracing::instrument(name = "http.get_retention", skip(req), fields(stream_name = %stream_name), err)]
 pub async fn get_retention(
     req: HttpRequest,
     stream_name: Path<String>,
