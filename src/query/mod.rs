@@ -688,7 +688,7 @@ impl CountsRequest {
             .unwrap_or_default();
 
         let group_clause = if group_by_cols.is_empty() {
-            String::new()
+            String::default()
         } else {
             format!(", {}", group_by_cols.join(", "))
         };
