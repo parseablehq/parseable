@@ -681,15 +681,27 @@ impl CountsRequest {
             )
         };
 
+        let group_by_cols = count_conditions
+            .group_by
+            .as_ref()
+            .map(|cols| cols.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        let group_clause = if group_by_cols.is_empty() {
+            String::new()
+        } else {
+            format!(", {}", group_by_cols.join(", "))
+        };
+
         let query = if let Some(conditions) = &count_conditions.conditions {
             let f = get_filter_string(conditions).map_err(QueryError::CustomError)?;
             format!(
-                "SELECT {date_bin}, COUNT(*) as count FROM \"{table_name}\" WHERE {} GROUP BY {end_time_col_name},{start_time_col_name} ORDER BY {end_time_col_name}",
+                "SELECT {date_bin}{group_clause}, COUNT(*) as count FROM \"{table_name}\" WHERE {} GROUP BY {end_time_col_name},{start_time_col_name}{group_clause} ORDER BY {end_time_col_name}{group_clause}",
                 f
             )
         } else {
             format!(
-                "SELECT {date_bin}, COUNT(*) as count FROM \"{table_name}\" GROUP BY {end_time_col_name},{start_time_col_name} ORDER BY {end_time_col_name}",
+                "SELECT {date_bin}{group_clause}, COUNT(*) as count FROM \"{table_name}\" GROUP BY {end_time_col_name},{start_time_col_name}{group_clause} ORDER BY {end_time_col_name}{group_clause}",
             )
         };
         Ok(query)
