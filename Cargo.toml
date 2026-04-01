@@ -97,7 +97,7 @@ tokio-util = { version = "0.7" }
 # ] }
 
 # add custom branch with fix until it gets merged
-opentelemetry-proto = { git = "https://github.com/open-telemetry/opentelemetry-rust/", branch = "main", features = [
+opentelemetry-proto = { git = "https://github.com/open-telemetry/opentelemetry-rust/", rev = "b096b70b2ffe9beb65a716cf47d5e5db80a9e930", features = [
     "gen-tonic",
     "with-serde",
     "logs",
