@@ -114,7 +114,7 @@ pub trait ParseableServer {
                 .wrap(prometheus.clone())
                 .configure(|config| Self::configure_routes(config))
                 .wrap(from_fn(health_check::check_shutdown_middleware))
-                .wrap(actix_web::middleware::Logger::default())
+                .wrap(tracing_actix_web::TracingLogger::default())
                 .wrap(actix_web::middleware::Compress::default())
                 .wrap(cross_origin_config())
         };

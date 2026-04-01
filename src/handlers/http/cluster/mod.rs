@@ -1970,6 +1970,10 @@ pub async fn mark_querier_available(domain_name: &str) {
     }
 }
 
+#[tracing::instrument(
+    name = "send_query_request",
+    skip(auth_token, query_request, tenant_id)
+)]
 pub async fn send_query_request(
     auth_token: Option<HeaderMap>,
     query_request: &Query,

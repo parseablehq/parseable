@@ -525,6 +525,7 @@ pub struct QueryRow {
 /// API handler to get the field stats for a dataset
 /// If `fields` is empty, stats for all fields will be returned
 /// If `fields` is provided, stats for those fields will be returned
+#[tracing::instrument(name = "get_dataset_stats", skip(req, dataset_stats_request), fields(otel.kind = "server"))]
 pub async fn get_dataset_stats(
     req: HttpRequest,
     dataset_stats_request: Json<DataSetStatsRequest>,

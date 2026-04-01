@@ -55,6 +55,8 @@ use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 use sysinfo::System;
 use tokio::runtime::Runtime;
+use tracing::Instrument;
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
@@ -75,6 +77,25 @@ use crate::utils::time::TimeRange;
 
 // pub static QUERY_SESSION: Lazy<SessionContext> =
 //     Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
+
+pub type RB = Either<
+    Vec<RecordBatch>,
+    Pin<
+        Box<
+            RecordBatchStreamAdapter<
+                select_all::SelectAll<
+                    Pin<
+                        Box<
+                            dyn RecordBatchStream<
+                                    Item = Result<RecordBatch, datafusion::error::DataFusionError>,
+                                > + Send,
+                        >,
+                    >,
+                >,
+            >,
+        >,
+    >,
+>;
 
 pub static QUERY_SESSION_STATE: Lazy<SessionState> =
     Lazy::new(|| Query::create_session_state(PARSEABLE.storage()));
@@ -133,40 +154,35 @@ impl InMemorySessionContext {
 
 /// This function executes a query on the dedicated runtime, ensuring that the query is not isolated to a single thread/CPU
 /// at a time and has access to the entire thread pool, enabling better concurrent processing, and thus quicker results.
+#[tracing::instrument(name = "query.execute", skip_all, fields(streaming = is_streaming))]
 pub async fn execute(
     query: Query,
     is_streaming: bool,
     tenant_id: &Option<String>,
-) -> Result<
-    (
-        Either<
-            Vec<RecordBatch>,
-            Pin<
-                Box<
-                    RecordBatchStreamAdapter<
-                        select_all::SelectAll<
-                            Pin<
-                                Box<
-                                    dyn RecordBatchStream<
-                                            Item = Result<
-                                                RecordBatch,
-                                                datafusion::error::DataFusionError,
-                                            >,
-                                        > + Send,
-                                >,
-                            >,
-                        >,
-                    >,
-                >,
-            >,
-        >,
-        Vec<String>,
-    ),
-    ExecuteError,
-> {
+) -> Result<(RB, Vec<String>), ExecuteError> {
     let id = tenant_id.clone();
+
+    // W3C TraceContext propagation across QUERY_RUNTIME (separate OS-thread runtime).
+    // tracing::Span alone does NOT carry OTel context across OS threads.
+    let mut trace_ctx = std::collections::HashMap::new();
+    let cx = tracing::Span::current().context();
+    opentelemetry::global::get_text_map_propagator(|propagator| {
+        propagator.inject_context(&cx, &mut trace_ctx);
+    });
+
     QUERY_RUNTIME
-        .spawn(async move { query.execute(is_streaming, &id).await })
+        .spawn(async move {
+            // Extract the propagated context on the QUERY_RUNTIME thread
+            let parent_cx = opentelemetry::global::get_text_map_propagator(|propagator| {
+                propagator.extract(&trace_ctx)
+            });
+            let span = tracing::info_span!("query.runtime_execute", streaming = is_streaming);
+            let _ = span.set_parent(parent_cx);
+
+            async move { query.execute(is_streaming, &id).await }
+                .instrument(span)
+                .await
+        })
         .await
         .expect("The Join should have been successful")
 }
@@ -272,37 +288,12 @@ impl Query {
     /// this function returns the result of the query
     /// if streaming is true, it returns a stream
     /// if streaming is false, it returns a vector of record batches
+    #[tracing::instrument(name = "query.datafusion_execute", skip_all, fields(streaming = is_streaming))]
     pub async fn execute(
         &self,
         is_streaming: bool,
         tenant_id: &Option<String>,
-    ) -> Result<
-        (
-            Either<
-                Vec<RecordBatch>,
-                Pin<
-                    Box<
-                        RecordBatchStreamAdapter<
-                            select_all::SelectAll<
-                                Pin<
-                                    Box<
-                                        dyn RecordBatchStream<
-                                                Item = Result<
-                                                    RecordBatch,
-                                                    datafusion::error::DataFusionError,
-                                                >,
-                                            > + Send,
-                                    >,
-                                >,
-                            >,
-                        >,
-                    >,
-                >,
-            >,
-            Vec<String>,
-        ),
-        ExecuteError,
-    > {
+    ) -> Result<(RB, Vec<String>), ExecuteError> {
         let df = QUERY_SESSION
             .get_ctx()
             .execute_logical_plan(self.final_logical_plan(tenant_id))
@@ -526,6 +517,7 @@ impl CountsRequest {
     /// This function is supposed to read maninfest files for the given stream,
     /// get the sum of `num_rows` between the `startTime` and `endTime`,
     /// divide that by number of bins and return in a manner acceptable for the console
+    #[tracing::instrument(name = "get_bin_density", skip_all, fields(stream = %self.stream))]
     pub async fn get_bin_density(
         &self,
         tenant_id: &Option<String>,
@@ -731,6 +723,7 @@ pub fn resolve_stream_names(sql: &str) -> Result<Vec<String>, anyhow::Error> {
     Ok(tables)
 }
 
+#[tracing::instrument(name = "get_manifest_list", skip(time_range, tenant_id), fields(stream = %stream_name))]
 pub async fn get_manifest_list(
     stream_name: &str,
     time_range: &TimeRange,

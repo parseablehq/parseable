@@ -107,7 +107,14 @@ opentelemetry-proto = { git = "https://github.com/open-telemetry/opentelemetry-r
 prometheus = { version = "0.13.4", default-features = false, features = ["process"] }
 prometheus-parse = "0.2.5"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "time", "registry"] }
+tracing-opentelemetry = "0.32"
+tracing-actix-web = "0.7"
+
+# OpenTelemetry tracing
+opentelemetry = { git = "https://github.com/open-telemetry/opentelemetry-rust/", rev = "b096b70b2ffe9beb65a716cf47d5e5db80a9e930" }
+opentelemetry_sdk = { git = "https://github.com/open-telemetry/opentelemetry-rust/", rev = "b096b70b2ffe9beb65a716cf47d5e5db80a9e930", features = ["rt-tokio"] }
+opentelemetry-otlp = { git = "https://github.com/open-telemetry/opentelemetry-rust/", rev = "b096b70b2ffe9beb65a716cf47d5e5db80a9e930", features = ["grpc-tonic", "http-proto", "http-json"] }
 
 # Time and Date
 chrono = "0.4"
@@ -201,3 +208,7 @@ kafka = [
 inherits = "release"
 lto = "fat"
 codegen-units = 1
+
+[patch.crates-io]
+opentelemetry = { git = "https://github.com/open-telemetry/opentelemetry-rust/", rev = "b096b70b2ffe9beb65a716cf47d5e5db80a9e930" }
+opentelemetry_sdk = { git = "https://github.com/open-telemetry/opentelemetry-rust/", rev = "b096b70b2ffe9beb65a716cf47d5e5db80a9e930" }

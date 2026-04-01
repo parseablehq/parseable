@@ -17,11 +17,13 @@ use std::process::exit;
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+use opentelemetry::trace::TracerProvider as _;
+use opentelemetry_sdk::trace::SdkTracerProvider;
 #[cfg(feature = "kafka")]
 use parseable::connectors;
 use parseable::{
     IngestServer, ParseableServer, QueryServer, Server, banner, metrics, option::Mode,
-    parseable::PARSEABLE, rbac, storage,
+    parseable::PARSEABLE, rbac, storage, telemetry,
 };
 use tokio::signal::ctrl_c;
 use tokio::sync::oneshot;
@@ -33,7 +35,7 @@ use tracing_subscriber::{EnvFilter, Registry, fmt};
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
-    init_logger();
+    let tracer_provider = init_logger();
     // Install the rustls crypto provider before any TLS operations.
     // This is required for rustls 0.23+ which needs an explicit crypto provider.
     // If the installation fails, log a warning but continue execution.
@@ -95,10 +97,14 @@ async fn main() -> anyhow::Result<()> {
         parseable_server.await?;
     }
 
+    if let Some(provider) = tracer_provider {
+        let _ = provider.shutdown();
+    }
+
     Ok(())
 }
 
-pub fn init_logger() {
+pub fn init_logger() -> Option<SdkTracerProvider> {
     let filter_layer = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         let default_level = if cfg!(debug_assertions) {
             Level::DEBUG
@@ -116,10 +122,20 @@ pub fn init_logger() {
         .with_target(true)
         .compact();
 
+    let otel_provider = telemetry::init_otel_tracer();
+
+    let otel_layer = otel_provider.as_ref().map(|provider| {
+        let tracer = provider.tracer("parseable");
+        tracing_opentelemetry::layer().with_tracer(tracer)
+    });
+
     Registry::default()
         .with(filter_layer)
         .with(fmt_layer)
+        .with(otel_layer)
         .init();
+
+    otel_provider
 }
 
 #[cfg(windows)]
