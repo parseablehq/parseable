@@ -416,7 +416,7 @@ fn format_arrow_value(array: &dyn Array, idx: usize) -> String {
             |arr: &TimestampMillisecondArray| {
                 let timestamp = arr.value(idx);
                 chrono::DateTime::from_timestamp_millis(timestamp)
-                    .map(|dt| dt.to_string())
+                    .map(|dt| dt.naive_utc().format("%Y-%m-%dT%H:%M:%S%.3f").to_string())
                     .unwrap_or_else(|| "INVALID_TIMESTAMP".to_string())
             }
         ),
