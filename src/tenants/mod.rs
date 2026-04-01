@@ -133,6 +133,13 @@ impl TenantMetadata {
         }
     }
 
+    pub fn is_workspace_suspended(&self, tenant_id: &str) -> bool {
+        self.tenants
+            .get(tenant_id)
+            .map(|t| t.suspended_services.contains(&Service::Workspace))
+            .unwrap_or(false)
+    }
+
     pub fn get_tenants(&self) -> Vec<(String, StorageMetadata)> {
         self.tenants
             .iter()

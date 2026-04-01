@@ -27,6 +27,7 @@ use crate::{
     handlers::http::cluster::PMETA_STREAM_NAME,
     parseable::PARSEABLE,
     storage::{ObjectStorageError, field_stats::DATASET_STATS_STREAM_NAME},
+    tenants::TENANT_METADATA,
     utils::{extract_datetime, human_size::bytes_to_human_size},
     validator::error::HotTierValidationError,
 };
@@ -787,6 +788,13 @@ impl HotTierManager {
         };
 
         for tenant_id in tenants {
+            // Skip suspended tenants — their hot tier directories are cleaned up on suspension
+            if let Some(tid) = tenant_id.as_ref()
+                && TENANT_METADATA.is_workspace_suspended(tid)
+            {
+                continue;
+            }
+
             if !self.check_stream_hot_tier_exists(PMETA_STREAM_NAME, &tenant_id) {
                 let mut stream_hot_tier = StreamHotTier {
                     version: Some(CURRENT_HOT_TIER_VERSION.to_string()),
@@ -810,6 +818,13 @@ impl HotTierManager {
             vec![None]
         };
         for tenant_id in tenants {
+            // Skip suspended tenants — their hot tier directories are cleaned up on suspension
+            if let Some(tid) = tenant_id.as_ref()
+                && TENANT_METADATA.is_workspace_suspended(tid)
+            {
+                continue;
+            }
+
             // Check if pstats hot tier already exists
             if !self.check_stream_hot_tier_exists(DATASET_STATS_STREAM_NAME, &tenant_id) {
                 // Check if pstats stream exists in storage by attempting to load it
