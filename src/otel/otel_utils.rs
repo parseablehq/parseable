@@ -66,6 +66,11 @@ pub fn collect_json_from_value(key: &String, value: OtelValue) -> Map<String, Va
                 Value::String(String::from_utf8_lossy(&bytes_val).to_string()),
             );
         }
+        OtelValue::StringValueStrindex(str_index) => {
+            tracing::warn!(
+                "StringValueStrindex is not supported in key-value lists, index: {str_index}"
+            );
+        }
     }
 
     value_json
@@ -101,6 +106,11 @@ fn collect_json_from_array_value(array_value: &ArrayValue) -> Value {
                     // Recursively collect JSON from nested key-value lists
                     let nested_json = collect_json_from_key_value_list(kv_list.clone());
                     json_array.push(Value::Object(nested_json));
+                }
+                OtelValue::StringValueStrindex(str_index) => {
+                    tracing::warn!(
+                        "StringValueStrindex is not supported in array values, index: {str_index}"
+                    );
                 }
             }
         }

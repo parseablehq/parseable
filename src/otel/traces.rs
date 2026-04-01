@@ -463,6 +463,7 @@ mod tests {
                         ),
                     ),
                 }),
+                key_strindex: 0,
             },
             KeyValue {
                 key: "http.method".to_string(),
@@ -473,6 +474,7 @@ mod tests {
                         ),
                     ),
                 }),
+                key_strindex: 0,
             },
         ]
     }
@@ -871,12 +873,13 @@ mod tests {
         let traces_data = TracesData {
             resource_spans: vec![ResourceSpans {
                 resource: Some(Resource {
-                    attributes: vec![KeyValue {
-                        key: "deployment.environment".to_string(),
-                        value: Some(AnyValue {
-                            value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue("production".to_string())),
-                        }),
-                    }],
+                        attributes: vec![KeyValue {
+                            key: "deployment.environment".to_string(),
+                            value: Some(AnyValue {
+                                value: Some(opentelemetry_proto::tonic::common::v1::any_value::Value::StringValue("production".to_string())),
+                            }),
+                            key_strindex: 0,
+                        }],
                     dropped_attributes_count: 0,
                     entity_refs: vec![
                         EntityRef{
