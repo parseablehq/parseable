@@ -389,7 +389,9 @@ impl Sessions {
                                     }
                                 }
                             } else if resource_type.is_none()
-                                && (action.eq(&Action::Ingest) || action.eq(&Action::Query))
+                                && (action.eq(&Action::Ingest)
+                                    || action.eq(&Action::Query)
+                                    || action.eq(&Action::ListStream))
                             {
                                 // flow for global-ingestion / global-query
                                 let ok_resource =
