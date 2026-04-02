@@ -47,6 +47,11 @@ struct EnvPrompt {
 /// The caller is responsible for persisting these to `.parseable.env`
 /// only after clap validation succeeds (via [`save_collected_envs`]).
 pub fn prompt_missing_envs() -> Vec<(String, String)> {
+    // Bail out for help/version flags so clap can handle them directly.
+    if is_help_or_version_request() {
+        return vec![];
+    }
+
     let subcommand = match detect_storage_subcommand() {
         Some(cmd) => cmd,
         None => return vec![],
@@ -138,6 +143,8 @@ pub fn prompt_missing_envs() -> Vec<(String, String)> {
 
 /// Persists interactively-collected env vars to `.parseable.env`.
 /// Should only be called after clap validation succeeds.
+/// Persistence is best-effort — a read-only working directory will
+/// produce a warning but not prevent the server from starting.
 pub fn save_collected_envs(collected: &[(String, String)]) {
     if collected.is_empty() {
         return;
@@ -147,16 +154,23 @@ pub fn save_collected_envs(collected: &[(String, String)]) {
         .iter()
         .map(|(k, v)| (k.as_str(), v.clone()))
         .collect();
-    save_env_file(&pairs);
 
-    let env_path = env_file_path();
-    println!();
-    println!("  Configuration saved to {}", env_path.display());
-    println!("  These values will be loaded automatically on next startup.");
-    println!();
-    println!("  To set these in your current shell, run:");
-    println!("    source {}", env_path.display());
-    println!();
+    match save_env_file(&pairs) {
+        Ok(()) => {
+            let env_path = env_file_path();
+            println!();
+            println!("  Configuration saved to {}", env_path.display());
+            println!("  These values will be loaded automatically on next startup.");
+            println!();
+            println!("  To set these in your current shell, run:");
+            println!("    source {}", env_path.display());
+            println!();
+        }
+        Err(err) => {
+            eprintln!("  Warning: could not persist interactive configuration: {err}");
+            eprintln!("  The server will continue, but values won't be saved for next startup.");
+        }
+    }
 }
 
 /// Returns the path to the `.parseable.env` file in the current directory.
@@ -193,16 +207,19 @@ fn load_env_file() {
         if let Some((key, value)) = line.split_once('=') {
             let key = key.trim();
             let value = value.trim();
-            // Strip surrounding quotes if present
+            // Strip surrounding quotes and decode shell-escaped single quotes.
+            // save_env_file writes: export KEY='val'\''ue' for values containing '
+            // so after stripping outer quotes we must reverse the '\'' escape.
             let value = value
                 .strip_prefix('\'')
                 .and_then(|v| v.strip_suffix('\''))
                 .or_else(|| value.strip_prefix('"').and_then(|v| v.strip_suffix('"')))
                 .unwrap_or(value);
+            let value = value.replace("'\\''", "'");
             // Only set if not already set in the environment (explicit env takes precedence)
             if std::env::var(key).is_err() {
                 // SAFETY: Single-threaded startup, no other threads running.
-                unsafe { std::env::set_var(key, value) };
+                unsafe { std::env::set_var(key, &value) };
             }
         }
     }
@@ -210,7 +227,9 @@ fn load_env_file() {
 
 /// Appends collected env vars to `.parseable.env`.
 /// If the file already exists, new values are appended (avoiding duplicates).
-fn save_env_file(collected: &[(&str, String)]) {
+/// Returns an error instead of panicking so callers can treat persistence
+/// as best-effort.
+fn save_env_file(collected: &[(&str, String)]) -> io::Result<()> {
     let path = env_file_path();
 
     // Read existing keys to avoid duplicates
@@ -232,28 +251,15 @@ fn save_env_file(collected: &[(&str, String)]) {
         })
         .unwrap_or_default();
 
+    let mut opts = std::fs::OpenOptions::new();
+    opts.create(true).append(true);
     #[cfg(unix)]
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600) // Owner read/write only
-        .open(&path)
-        .expect("Failed to open .parseable.env for writing");
+    opts.mode(0o600);
+    let mut file = opts.open(&path)?;
 
-    #[cfg(not(unix))]
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .expect("Failed to open .parseable.env for writing");
-
-    // Fallback: ensure permissions are set after opening on Unix-like platforms
     #[cfg(unix)]
     if let Err(e) = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)) {
-        eprintln!(
-            "Warning: Could not set restrictive permissions on .parseable.env: {}",
-            e
-        );
+        eprintln!("  Warning: Could not set restrictive permissions on .parseable.env: {e}");
     }
 
     for (key, value) in collected {
@@ -262,8 +268,19 @@ fn save_env_file(collected: &[(&str, String)]) {
         }
         // Escape single quotes and wrap in single quotes for shell safety
         let escaped = value.replace('\'', "'\\''");
-        writeln!(file, "export {key}='{escaped}'").expect("Failed to write to .parseable.env");
+        writeln!(file, "export {key}='{escaped}'")?;
     }
+
+    Ok(())
+}
+
+/// Returns true if the user passed a help or version flag anywhere in argv.
+/// Covers: `-h`, `--help`, `-V`, `--version`, and subcommand-specific help
+/// like `parseable s3-store --help`.
+fn is_help_or_version_request() -> bool {
+    std::env::args()
+        .skip(1)
+        .any(|arg| matches!(arg.as_str(), "-h" | "--help" | "-V" | "--version" | "help"))
 }
 
 /// Detects which storage subcommand was passed (e.g. "s3-store", "blob-store").
@@ -452,7 +469,8 @@ fn get_kafka_prompts() -> Vec<EnvPrompt> {
     ];
 
     // Check security protocol for additional requirements
-    let protocol = std::env::var("P_KAFKA_SECURITY_PROTOCOL")
+    const KAFKA_SECURITY_PROTOCOL_ENV: &str = "P_KAFKA_SECURITY_PROTOCOL";
+    let protocol = std::env::var(KAFKA_SECURITY_PROTOCOL_ENV)
         .unwrap_or_default()
         .to_uppercase();
 
@@ -516,7 +534,7 @@ fn prompt_line(prompt: &str) -> String {
     print!("{prompt}");
     io::stdout().flush().expect("Failed to flush stdout");
 
-    let mut input = String::new();
+    let mut input = String::default();
     io::stdin()
         .read_line(&mut input)
         .expect("Failed to read input");
@@ -535,7 +553,7 @@ fn prompt_secret(prompt: &str) -> String {
 
     terminal::enable_raw_mode().expect("Failed to enable raw mode");
 
-    let mut input = String::new();
+    let mut input = String::default();
     loop {
         if let Ok(Event::Key(key_event)) = event::read() {
             match key_event.code {
