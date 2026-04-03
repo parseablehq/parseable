@@ -117,7 +117,7 @@ pub async fn get_records_and_fields(
     Ok((Some(records), Some(fields)))
 }
 
-#[tracing::instrument(name = "query", skip(req, query_request), fields(otel.kind = "server", query.sql = %query_request.query, query.streaming = query_request.streaming))]
+#[tracing::instrument(name = "query", skip(req, query_request), fields(otel.kind = "server", query.sql = %query_request.query, query.streaming = query_request.streaming, query.start_time = query_request.start_time, query.end_time = query_request.end_time))]
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
     let mut session_state = QUERY_SESSION.get_ctx().state();
     let time_range =
@@ -497,8 +497,18 @@ pub async fn create_streams_for_distributed(
     }
 
     while let Some(result) = join_set.join_next().await {
-        if let Err(join_error) = result {
-            warn!("Task join error: {}", join_error);
+        match result {
+            Err(join_error) => {
+                warn!("Task join error: {}", join_error);
+            }
+            Ok((stream_name, Err(e))) => {
+                return Err(QueryError::Anyhow(anyhow::anyhow!(
+                    "Failed to create stream '{}': {}",
+                    stream_name,
+                    e
+                )));
+            }
+            Ok((_, Ok(_))) => {}
         }
     }
 

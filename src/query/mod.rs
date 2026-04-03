@@ -78,7 +78,8 @@ use crate::utils::time::TimeRange;
 // pub static QUERY_SESSION: Lazy<SessionContext> =
 //     Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
 
-pub type RB = Either<
+/// Takes care of both streaming and non-streaming query flows
+pub type QueryResult = Either<
     Vec<RecordBatch>,
     Pin<
         Box<
@@ -159,7 +160,7 @@ pub async fn execute(
     query: Query,
     is_streaming: bool,
     tenant_id: &Option<String>,
-) -> Result<(RB, Vec<String>), ExecuteError> {
+) -> Result<(QueryResult, Vec<String>), ExecuteError> {
     let id = tenant_id.clone();
 
     // W3C TraceContext propagation across QUERY_RUNTIME (separate OS-thread runtime).
@@ -293,7 +294,7 @@ impl Query {
         &self,
         is_streaming: bool,
         tenant_id: &Option<String>,
-    ) -> Result<(RB, Vec<String>), ExecuteError> {
+    ) -> Result<(QueryResult, Vec<String>), ExecuteError> {
         let df = QUERY_SESSION
             .get_ctx()
             .execute_logical_plan(self.final_logical_plan(tenant_id))

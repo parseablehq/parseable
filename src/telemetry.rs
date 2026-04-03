@@ -25,6 +25,9 @@ use opentelemetry_sdk::{
     trace::{BatchSpanProcessor, SdkTracerProvider},
 };
 
+const EXPORTER_OTLP_ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
+const EXPORTER_OTLP_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
+
 /// Initialise an OTLP tracer provider.
 ///
 /// **Required env var:**
@@ -48,10 +51,10 @@ use opentelemetry_sdk::{
 pub fn init_otel_tracer() -> Option<SdkTracerProvider> {
     // Only used to decide whether OTEL is enabled; the SDK reads it again
     // from env to build the exporter (which also appends /v1/traces for HTTP).
-    std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT").ok()?;
+    std::env::var(EXPORTER_OTLP_ENDPOINT).ok()?;
 
     let protocol =
-        std::env::var("OTEL_EXPORTER_OTLP_PROTOCOL").unwrap_or_else(|_| "http/json".to_string());
+        std::env::var(EXPORTER_OTLP_PROTOCOL).unwrap_or_else(|_| "http/json".to_string());
 
     // Build the exporter using the SDK's env-var-aware builders.
     // We intentionally do NOT call .with_endpoint() / .with_headers() /
@@ -69,10 +72,18 @@ pub fn init_otel_tracer() -> Option<SdkTracerProvider> {
         // ── HTTP/JSON (default) ──────────────────────────────────────────────
         // Default when OTEL_EXPORTER_OTLP_PROTOCOL is unset.
         // Required for Parseable OSS — it only accepts application/json.
-        _ => SpanExporter::builder()
+        "http/json" => SpanExporter::builder()
             .with_http()
             .with_protocol(Protocol::HttpJson)
             .build(),
+        other => {
+            tracing::warn!(
+                "Unknown OTEL_EXPORTER_OTLP_PROTOCOL value '{}'; disabling OTEL tracing. \
+                 Supported values: grpc, http/protobuf, http/json",
+                other
+            );
+            return None;
+        }
     };
 
     let exporter = exporter

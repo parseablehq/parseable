@@ -31,7 +31,9 @@ use tracing::Level;
 use tracing::{info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, Registry, fmt};
+use tracing_subscriber::{EnvFilter, Layer, Registry, fmt};
+
+const OTEL_TRACE_LEVEL: &str = "OTEL_TRACE_LEVEL";
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
@@ -105,14 +107,14 @@ async fn main() -> anyhow::Result<()> {
 }
 
 pub fn init_logger() -> Option<SdkTracerProvider> {
-    let filter_layer = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-        let default_level = if cfg!(debug_assertions) {
-            Level::DEBUG
-        } else {
-            Level::WARN
-        };
-        EnvFilter::new(default_level.to_string())
-    });
+    let default_level = if cfg!(debug_assertions) {
+        Level::DEBUG
+    } else {
+        Level::WARN
+    };
+
+    let fmt_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(default_level.to_string()));
 
     let fmt_layer = fmt::layer()
         .with_thread_names(true)
@@ -120,20 +122,20 @@ pub fn init_logger() -> Option<SdkTracerProvider> {
         .with_line_number(true)
         .with_timer(tracing_subscriber::fmt::time::UtcTime::rfc_3339())
         .with_target(true)
-        .compact();
+        .compact()
+        .with_filter(fmt_filter.clone());
 
     let otel_provider = telemetry::init_otel_tracer();
 
     let otel_layer = otel_provider.as_ref().map(|provider| {
+        let otel_filter = EnvFilter::try_from_env(OTEL_TRACE_LEVEL).unwrap_or(fmt_filter);
         let tracer = provider.tracer("parseable");
-        tracing_opentelemetry::layer().with_tracer(tracer)
+        tracing_opentelemetry::layer()
+            .with_tracer(tracer)
+            .with_filter(otel_filter)
     });
 
-    Registry::default()
-        .with(filter_layer)
-        .with(fmt_layer)
-        .with(otel_layer)
-        .init();
+    Registry::default().with(fmt_layer).with(otel_layer).init();
 
     otel_provider
 }
