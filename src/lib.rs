@@ -29,6 +29,7 @@ pub mod enterprise;
 pub mod event;
 pub mod handlers;
 pub mod hottier;
+mod interactive;
 mod livetail;
 mod metadata;
 pub mod metastore;
