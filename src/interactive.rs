@@ -240,9 +240,11 @@ fn get_env_prompts(subcommand: &str) -> Vec<EnvPrompt> {
     prompts
 }
 
+const MODE_ENV: &str = "P_MODE";
+
 /// Detects the server mode from the `P_MODE` env var or the `--mode` CLI arg.
 fn detect_mode() -> Option<String> {
-    if let Ok(mode) = std::env::var("P_MODE") {
+    if let Ok(mode) = std::env::var(MODE_ENV) {
         let mode = mode.to_lowercase();
         if mode != "all" {
             return Some(mode);
@@ -252,11 +254,13 @@ fn detect_mode() -> Option<String> {
 
     let args: Vec<String> = std::env::args().collect();
     for (i, arg) in args.iter().enumerate() {
-        if arg == "--mode" {
-            return args.get(i + 1).map(|v| v.to_lowercase());
-        }
-        if let Some(value) = arg.strip_prefix("--mode=") {
-            return Some(value.to_lowercase());
+        let value = if arg == "--mode" {
+            args.get(i + 1).map(|v| v.to_lowercase())
+        } else {
+            arg.strip_prefix("--mode=").map(|v| v.to_lowercase())
+        };
+        if let Some(mode) = value {
+            return (mode != "all").then_some(mode);
         }
     }
 
@@ -528,7 +532,7 @@ pub fn prompt_enterprise_envs() -> Vec<(String, String)> {
     // or the interactive prompt above), so mode-specific prompts resolve correctly.
     let mode_prompts = get_enterprise_mode_prompts();
     if !mode_prompts.is_empty() {
-        let mode = detect_mode().unwrap_or_default();
+        let mode = detect_mode().unwrap_or_else(|| "unknown".to_string());
         collect_prompts(
             &mode_prompts,
             is_interactive,
