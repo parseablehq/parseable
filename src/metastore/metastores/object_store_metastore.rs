@@ -789,66 +789,6 @@ impl Metastore for ObjectStoreMetastore {
             .await?)
     }
 
-    /// Get all correlations
-    async fn get_correlations(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError> {
-        let mut correlations = HashMap::new();
-        let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
-        for mut tenant in base_paths {
-            let tenant_id = &Some(tenant.clone());
-            let mut corrs = Vec::new();
-            let users_dir = RelativePathBuf::from_iter([&tenant, USERS_ROOT_DIR]);
-            for user in self
-                .storage
-                .list_dirs_relative(&users_dir, tenant_id)
-                .await?
-            {
-                let correlations_path = users_dir.join(&user).join("correlations");
-                let correlation_bytes = self
-                    .storage
-                    .get_objects(
-                        Some(&correlations_path),
-                        Box::new(|file_name| file_name.ends_with(".json")),
-                        tenant_id,
-                    )
-                    .await?;
-
-                corrs.extend(correlation_bytes);
-            }
-            if tenant.is_empty() {
-                tenant.clone_from(&DEFAULT_TENANT.to_string());
-            }
-            correlations.insert(tenant, corrs);
-        }
-        Ok(correlations)
-    }
-
-    /// Save a correlation
-    async fn put_correlation(
-        &self,
-        obj: &dyn MetastoreObject,
-        tenant_id: &Option<String>,
-    ) -> Result<(), MetastoreError> {
-        let path = obj.get_object_path();
-        Ok(self
-            .storage
-            .put_object(&RelativePathBuf::from(path), to_bytes(obj), tenant_id)
-            .await?)
-    }
-
-    /// Delete a correlation
-    async fn delete_correlation(
-        &self,
-        obj: &dyn MetastoreObject,
-        tenant_id: &Option<String>,
-    ) -> Result<(), MetastoreError> {
-        let path = obj.get_object_path();
-
-        Ok(self
-            .storage
-            .delete_object(&RelativePathBuf::from(path), tenant_id)
-            .await?)
-    }
-
     /// Fetch an `ObjectStoreFormat` file
     ///
     /// If `get_base` is true, get the one at the base of the stream directory else depends on Mode

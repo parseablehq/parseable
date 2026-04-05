@@ -36,7 +36,6 @@ use tracing::{error, info, warn};
 use crate::{
     alerts::{ALERTS, get_alert_manager, target::TARGETS},
     cli::Options,
-    correlation::CORRELATIONS,
     hottier::{HotTierManager, StreamHotTier},
     metastore::metastore_traits::MetastoreObject,
     oauth::{OAuthProvider, connect_oidc},
@@ -169,34 +168,22 @@ pub trait ParseableServer {
 
 pub async fn load_on_init() -> anyhow::Result<()> {
     // Run all loading operations concurrently
-    let (correlations_result, filters_result, dashboards_result, alerts_result, targets_result) =
-        future::join5(
-            async {
-                CORRELATIONS
-                    .load()
-                    .await
-                    .context("Failed to load correlations")
-            },
-            async { FILTERS.load().await.context("Failed to load filters") },
-            async { DASHBOARDS.load().await.context("Failed to load dashboards") },
-            async {
-                get_alert_manager().await;
-                let guard = ALERTS.write().await;
-                let alerts = if let Some(alerts) = guard.as_ref() {
-                    alerts
-                } else {
-                    return Err(anyhow::Error::msg("No AlertManager set"));
-                };
-                alerts.load().await
-            },
-            async { TARGETS.load().await.context("Failed to load targets") },
-        )
-        .await;
-
-    // Handle errors from each operation
-    if let Err(e) = correlations_result {
-        error!("{e}");
-    }
+    let (filters_result, dashboards_result, alerts_result, targets_result) = future::join4(
+        async { FILTERS.load().await.context("Failed to load filters") },
+        async { DASHBOARDS.load().await.context("Failed to load dashboards") },
+        async {
+            get_alert_manager().await;
+            let guard = ALERTS.write().await;
+            let alerts = if let Some(alerts) = guard.as_ref() {
+                alerts
+            } else {
+                return Err(anyhow::Error::msg("No AlertManager set"));
+            };
+            alerts.load().await
+        },
+        async { TARGETS.load().await.context("Failed to load targets") },
+    )
+    .await;
 
     if let Err(err) = filters_result {
         error!("{err}");

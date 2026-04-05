@@ -206,19 +206,6 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError>;
 
-    /// correlations
-    async fn get_correlations(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError>;
-    async fn put_correlation(
-        &self,
-        obj: &dyn MetastoreObject,
-        tenant_id: &Option<String>,
-    ) -> Result<(), MetastoreError>;
-    async fn delete_correlation(
-        &self,
-        obj: &dyn MetastoreObject,
-        tenant_id: &Option<String>,
-    ) -> Result<(), MetastoreError>;
-
     /// stream metadata
     /// `get_base` when set to true, will fetch the stream.json present at the base of
     /// the stream (independent of Mode of server)

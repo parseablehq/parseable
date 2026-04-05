@@ -54,7 +54,6 @@ impl ParseableServer for QueryServer {
         config
             .service(
                 web::scope(&base_path())
-                    .service(Server::get_correlation_webscope())
                     .service(Server::get_query_factory().wrap(from_fn(
                         resource_check::check_resource_utilization_middleware,
                     )))

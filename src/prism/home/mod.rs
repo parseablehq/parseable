@@ -23,7 +23,6 @@ use tracing::error;
 
 use crate::{
     alerts::{ALERTS, AlertError, AlertState},
-    correlation::{CORRELATIONS, CorrelationError},
     event::format::{LogSource, LogSourceEntry},
     handlers::{DatasetTag, TelemetryType, http::logstream::error::StreamError},
     metastore::MetastoreError,
@@ -86,7 +85,6 @@ pub struct HomeResponse {
 #[derive(Debug, Serialize)]
 pub enum ResourceType {
     Alert,
-    Correlation,
     Dashboard,
     Filter,
     DataSet,
@@ -269,9 +267,8 @@ pub async fn generate_home_search_response(
     let (user_id, _) = Users
         .get_userid_from_session(key)
         .expect("Should be a valid user session");
-    let (alert_titles, correlation_titles, dashboard_titles, filter_titles, stream_titles) = tokio::join!(
+    let (alert_titles, dashboard_titles, filter_titles, stream_titles) = tokio::join!(
         get_alert_titles(key, query_value),
-        get_correlation_titles(key, query_value),
         get_dashboard_titles(user_id, query_value, tenant_id),
         get_filter_titles(key, query_value),
         get_stream_titles(key, tenant_id)
@@ -279,8 +276,6 @@ pub async fn generate_home_search_response(
 
     let alerts = alert_titles?;
     resources.extend(alerts);
-    let correlations = correlation_titles?;
-    resources.extend(correlations);
     let dashboards = dashboard_titles?;
     resources.extend(dashboards);
     let filters = filter_titles?;
@@ -354,32 +349,6 @@ async fn get_alert_titles(
     Ok(alerts)
 }
 
-async fn get_correlation_titles(
-    key: &SessionKey,
-    query_value: &str,
-) -> Result<Vec<Resource>, PrismHomeError> {
-    let correlations = CORRELATIONS
-        .list_correlations(key)
-        .await?
-        .iter()
-        .filter_map(|correlation| {
-            if correlation.title.to_lowercase().contains(query_value)
-                || correlation.id.to_lowercase().contains(query_value)
-            {
-                Some(Resource {
-                    id: correlation.id.to_string(),
-                    name: correlation.title.clone(),
-                    resource_type: ResourceType::Correlation,
-                })
-            } else {
-                None
-            }
-        })
-        .collect_vec();
-
-    Ok(correlations)
-}
-
 async fn get_dashboard_titles(
     user_id: String,
     query_value: &str,
@@ -443,8 +412,6 @@ pub enum PrismHomeError {
     Anyhow(#[from] anyhow::Error),
     #[error("AlertError: {0}")]
     AlertError(#[from] AlertError),
-    #[error("CorrelationError: {0}")]
-    CorrelationError(#[from] CorrelationError),
     #[error("StreamError: {0}")]
     StreamError(#[from] StreamError),
     #[error("ObjectStorageError: {0}")]
@@ -460,7 +427,6 @@ impl actix_web::ResponseError for PrismHomeError {
         match self {
             PrismHomeError::Anyhow(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PrismHomeError::AlertError(e) => e.status_code(),
-            PrismHomeError::CorrelationError(e) => e.status_code(),
             PrismHomeError::StreamError(e) => e.status_code(),
             PrismHomeError::ObjectStorageError(_) => StatusCode::INTERNAL_SERVER_ERROR,
             PrismHomeError::InvalidQueryParameter(_) => StatusCode::BAD_REQUEST,
