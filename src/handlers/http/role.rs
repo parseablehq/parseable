@@ -24,6 +24,7 @@ use actix_web::{
     http::header::ContentType,
     web::{self, Json},
 };
+use tracing::instrument;
 
 use crate::rbac::map::roles;
 use crate::rbac::role::model::{Role, RoleType, RoleUI};
@@ -164,11 +165,13 @@ pub async fn delete(
 
 // Handler for PUT /api/v1/role/default
 // Delete existing role
+#[instrument(name = "PUT /role/default", skip(req, name), fields(role_name))]
 pub async fn put_default(
     req: HttpRequest,
     name: web::Json<String>,
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
+    tracing::Span::current().record("role_name", &name.as_str());
     let tenant_id = get_tenant_id_from_request(&req);
     let mut metadata = get_metadata(&tenant_id).await?;
     metadata.default_role = Some(name.clone());
@@ -211,6 +214,7 @@ pub async fn get_default(req: HttpRequest) -> Result<impl Responder, RoleError> 
     Ok(web::Json(res))
 }
 
+#[instrument(name = "role::get_metadata", skip_all)]
 async fn get_metadata(
     tenant_id: &Option<String>,
 ) -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
@@ -223,6 +227,7 @@ async fn get_metadata(
     Ok(serde_json::from_slice::<StorageMetadata>(&metadata)?)
 }
 
+#[instrument(name = "role::put_metadata", skip_all)]
 async fn put_metadata(
     metadata: &StorageMetadata,
     tenant_id: &Option<String>,

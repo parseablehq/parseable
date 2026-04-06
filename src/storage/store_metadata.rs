@@ -25,6 +25,7 @@ use std::{
 use bytes::Bytes;
 use once_cell::sync::OnceCell;
 use std::io;
+use tracing::instrument;
 
 use crate::{
     metastore::metastore_traits::MetastoreObject,
@@ -319,6 +320,7 @@ pub fn get_staging_metadata(tenant_id: &Option<String>) -> io::Result<Option<Sto
     Ok(Some(meta))
 }
 
+#[instrument(name = "storage::put_remote_metadata", skip_all)]
 pub async fn put_remote_metadata(
     metadata: &StorageMetadata,
     tenant_id: &Option<String>,
@@ -330,6 +332,7 @@ pub async fn put_remote_metadata(
         .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))
 }
 
+#[instrument(name = "storage::put_staging_metadata", skip_all)]
 pub fn put_staging_metadata(meta: &StorageMetadata, tenant_id: &Option<String>) -> io::Result<()> {
     let mut staging_metadata = meta.clone();
     staging_metadata.server_mode = PARSEABLE.options.mode;
