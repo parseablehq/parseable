@@ -24,7 +24,6 @@ pub mod catalog;
 mod cli;
 #[cfg(feature = "kafka")]
 pub mod connectors;
-pub mod correlation;
 pub mod enterprise;
 pub mod event;
 pub mod handlers;

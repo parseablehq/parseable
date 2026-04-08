@@ -77,7 +77,6 @@ impl ParseableServer for Server {
         config
             .service(
                 web::scope(&base_path())
-                    .service(Self::get_correlation_webscope())
                     .service(Self::get_query_factory().wrap(from_fn(
                         resource_check::check_resource_utilization_middleware,
                     )))
@@ -218,41 +217,6 @@ impl Server {
         web::scope("/metrics").service(
             web::resource("").route(web::get().to(metrics::get).authorize(Action::Metrics)),
         )
-    }
-
-    pub fn get_correlation_webscope() -> Scope {
-        web::scope("/correlation")
-            .service(
-                web::resource("")
-                    .route(
-                        web::get()
-                            .to(http::correlation::list)
-                            .authorize(Action::GetCorrelation),
-                    )
-                    .route(
-                        web::post()
-                            .to(http::correlation::post)
-                            .authorize(Action::CreateCorrelation),
-                    ),
-            )
-            .service(
-                web::resource("/{correlation_id}")
-                    .route(
-                        web::get()
-                            .to(http::correlation::get)
-                            .authorize(Action::GetCorrelation),
-                    )
-                    .route(
-                        web::put()
-                            .to(http::correlation::modify)
-                            .authorize(Action::PutCorrelation),
-                    )
-                    .route(
-                        web::delete()
-                            .to(http::correlation::delete)
-                            .authorize(Action::DeleteCorrelation),
-                    ),
-            )
     }
 
     pub fn get_alerts_webscope() -> Scope {
