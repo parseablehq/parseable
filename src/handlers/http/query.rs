@@ -26,7 +26,7 @@ use actix_web::http::StatusCode;
 use actix_web::http::header::ContentType;
 use actix_web::web::{self, Json};
 use actix_web::{Either, FromRequest, HttpRequest, HttpResponse, Responder};
-use arrow_array::RecordBatch;
+use arrow_array::{ArrayRef, RecordBatch, StringArray, UInt64Array};
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use datafusion::error::DataFusionError;
@@ -50,7 +50,7 @@ use crate::metrics::{QUERY_EXECUTE_TIME, increment_query_calls_by_date};
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE, StreamNotFound};
 use crate::query::error::ExecuteError;
 use crate::query::resolve_stream_names;
-use crate::query::{CountsRequest, QUERY_SESSION, Query as LogicalQuery, execute};
+use crate::query::{CountsRecord, CountsRequest, QUERY_SESSION, Query as LogicalQuery, execute};
 use crate::rbac::Users;
 use crate::response::QueryResponse;
 use crate::storage::ObjectStorageError;
@@ -387,6 +387,14 @@ pub async fn get_counts(
     // if the user has given a sql query (counts call with filters applied), then use this flow
     // this could include filters or group by
     if body.conditions.is_some() {
+        let group_by_cols: Vec<String> = body
+            .conditions
+            .as_ref()
+            .and_then(|c| c.group_by.as_ref())
+            .cloned()
+            .unwrap_or_default();
+        let has_groups = !group_by_cols.is_empty();
+
         let time_partition = PARSEABLE
             .get_stream(&body.stream, &tenant_id)?
             .get_time_partition()
@@ -410,11 +418,66 @@ pub async fn get_counts(
 
         if let Some(records) = records {
             let json_records = record_batches_to_json(&records)?;
-            let records = json_records.into_iter().map(Value::Object).collect_vec();
+            let raw_records: Vec<Value> = json_records.into_iter().map(Value::Object).collect_vec();
+
+            // Parse into CountsRecord to normalize timestamps
+            let counts_records: Vec<CountsRecord> =
+                serde_json::from_value(serde_json::to_value(&raw_records)?)?;
+
+            let start_time: ArrayRef = Arc::new(StringArray::from_iter_values(
+                counts_records
+                    .iter()
+                    .map(|v| format!("{}+00:00", v.start_time)),
+            ));
+            let end_time: ArrayRef = Arc::new(StringArray::from_iter_values(
+                counts_records
+                    .iter()
+                    .map(|v| format!("{}+00:00", v.end_time)),
+            ));
+            let count: ArrayRef = Arc::new(UInt64Array::from_iter_values(
+                counts_records.iter().map(|v| v.count),
+            ));
+
+            let batch = RecordBatch::try_from_iter(vec![
+                ("start_time", start_time),
+                ("end_time", end_time),
+                ("count", count),
+            ])
+            .map_err(|e| QueryError::CustomError(e.to_string()))?;
+
+            let json_records = record_batches_to_json(&[batch])?;
+            let counts: Vec<Value> = json_records.into_iter().map(Value::Object).collect_vec();
+
+            // When groupBy is present, enrich counts with group column values
+            let counts = if has_groups {
+                counts
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, mut record)| {
+                        if let (Value::Object(rec), Some(Value::Object(raw_obj))) =
+                            (&mut record, raw_records.get(i))
+                        {
+                            for col in &group_by_cols {
+                                if let Some(val) = raw_obj.get(col) {
+                                    rec.insert(col.clone(), val.clone());
+                                }
+                            }
+                        }
+                        record
+                    })
+                    .collect()
+            } else {
+                counts
+            };
+
+            let mut fields = vec!["start_time", "end_time", "count"];
+            if has_groups {
+                fields.extend(group_by_cols.iter().map(|s| s.as_str()));
+            }
 
             let res = json!({
-                "fields": vec!["start_time", "endTime", "count"],
-                "records": records,
+                "fields": fields,
+                "records": counts,
             });
 
             return Ok(web::Json(res));
@@ -427,7 +490,7 @@ pub async fn get_counts(
 
     let records = body.get_bin_density(&tenant_id).await?;
     let res = json!({
-        "fields": vec!["start_time", "endTime", "count"],
+        "fields": vec!["start_time", "end_time", "count"],
         "records": records,
     });
     Ok(web::Json(res))
