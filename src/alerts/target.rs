@@ -18,6 +18,7 @@
 
 use std::{
     collections::HashMap,
+    net::{IpAddr, SocketAddr, ToSocketAddrs},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -473,10 +474,162 @@ impl TargetType {
             TargetType::AlertManager(target) => target.call(payload).await,
         }
     }
+
+    pub fn endpoint_url(&self) -> &Url {
+        match self {
+            TargetType::Slack(h) => &h.endpoint,
+            TargetType::Other(h) => &h.endpoint,
+            TargetType::AlertManager(h) => &h.endpoint,
+        }
+    }
 }
 
 fn default_client_builder() -> ClientBuilder {
     ClientBuilder::new()
+}
+
+fn mask_endpoint(url: &Url) -> String {
+    let s = url.to_string();
+    format!("{}********", &s[..4])
+}
+
+fn is_private_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || v4.is_unspecified()
+                // "This network" 0.0.0.0/8 — on some systems 0.x.x.x routes to localhost
+                || v4.octets()[0] == 0
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_multicast()
+                || v6.is_unspecified()
+                // Unique local addresses (ULA): fc00::/7
+                || (v6.segments()[0] & 0xfe00) == 0xfc00
+                // Link-local: fe80::/10
+                || (v6.segments()[0] & 0xffc0) == 0xfe80
+                // IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1)
+                || v6.to_ipv4_mapped().is_some_and(|v4| is_private_ip(IpAddr::V4(v4)))
+        }
+    }
+}
+
+/// Validate a target endpoint URL to prevent SSRF.
+/// Blocks private/loopback/link-local IP addresses (both literal and DNS-resolved).
+pub async fn validate_target_endpoint(url: &Url) -> Result<(), AlertError> {
+    match url.scheme() {
+        "http" | "https" => {}
+        _ => {
+            return Err(AlertError::CustomError(
+                "Target endpoint must use http or https scheme".into(),
+            ));
+        }
+    }
+
+    let host = url
+        .host()
+        .ok_or_else(|| AlertError::CustomError("Target endpoint must have a valid host".into()))?;
+
+    match host {
+        url::Host::Ipv4(v4) => {
+            if is_private_ip(IpAddr::V4(v4)) {
+                return Err(AlertError::CustomError(
+                    "Target endpoint must not point to a private or internal address".into(),
+                ));
+            }
+        }
+        url::Host::Ipv6(v6) => {
+            if is_private_ip(IpAddr::V6(v6)) {
+                return Err(AlertError::CustomError(
+                    "Target endpoint must not point to a private or internal address".into(),
+                ));
+            }
+        }
+        url::Host::Domain(hostname) => {
+            let port = url.port_or_known_default().unwrap_or(80);
+            let addr = format!("{hostname}:{port}");
+            let resolved = tokio::task::spawn_blocking(move || {
+                addr.to_socket_addrs().map(|i| i.collect::<Vec<_>>())
+            })
+            .await
+            .map_err(|e| AlertError::CustomError(format!("DNS resolution task failed: {e}")))?;
+
+            let addrs = resolved.map_err(|e| {
+                AlertError::CustomError(format!("Could not resolve target endpoint host: {e}"))
+            })?;
+            for sock_addr in addrs {
+                if is_private_ip(sock_addr.ip()) {
+                    return Err(AlertError::CustomError(
+                        "Target endpoint must not point to a private or internal address".into(),
+                    ));
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Resolve DNS and validate IPs at call time to prevent DNS rebinding.
+/// Returns `Some((hostname, addr))` for domain-based URLs (to pin via `ClientBuilder::resolve`),
+/// or `None` for IP-literal URLs (no pinning needed).
+async fn resolve_and_pin(url: &Url) -> Result<Option<(String, SocketAddr)>, String> {
+    let host = url.host().ok_or("No host in target URL")?;
+
+    match host {
+        url::Host::Ipv4(v4) => {
+            if is_private_ip(IpAddr::V4(v4)) {
+                return Err("Target resolves to a private/internal address".into());
+            }
+            Ok(None)
+        }
+        url::Host::Ipv6(v6) => {
+            if is_private_ip(IpAddr::V6(v6)) {
+                return Err("Target resolves to a private/internal address".into());
+            }
+            Ok(None)
+        }
+        url::Host::Domain(hostname) => {
+            let port = url.port_or_known_default().unwrap_or(80);
+            let addr_str = format!("{hostname}:{port}");
+            let hostname = hostname.to_string();
+            let addrs = tokio::task::spawn_blocking(move || {
+                addr_str.to_socket_addrs().map(|i| i.collect::<Vec<_>>())
+            })
+            .await
+            .map_err(|e| format!("DNS resolution task failed: {e}"))?
+            .map_err(|e| format!("Could not resolve host: {e}"))?;
+
+            for sock_addr in &addrs {
+                if is_private_ip(sock_addr.ip()) {
+                    return Err("Target resolves to a private/internal address".into());
+                }
+            }
+
+            let first = addrs
+                .into_iter()
+                .next()
+                .ok_or("DNS resolution returned no addresses")?;
+            Ok(Some((hostname, first)))
+        }
+    }
+}
+
+/// Apply DNS pinning to a `ClientBuilder` to prevent DNS rebinding attacks.
+/// Resolves the endpoint, validates all IPs, and pins the connection to the validated address.
+async fn apply_dns_pinning(
+    mut builder: ClientBuilder,
+    endpoint: &Url,
+) -> Result<ClientBuilder, String> {
+    if let Some((host, addr)) = resolve_and_pin(endpoint).await? {
+        builder = builder.resolve(&host, addr);
+    }
+    Ok(builder)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -487,7 +640,17 @@ pub struct SlackWebHook {
 #[async_trait]
 impl CallableTarget for SlackWebHook {
     async fn call(&self, payload: &Context) {
-        let client = default_client_builder()
+        let builder = match apply_dns_pinning(default_client_builder(), &self.endpoint).await {
+            Ok(b) => b,
+            Err(e) => {
+                error!(
+                    "SSRF protection blocked request to {}: {e}",
+                    mask_endpoint(&self.endpoint)
+                );
+                return;
+            }
+        };
+        let client = builder
             .build()
             .expect("Client can be constructed on this system");
 
@@ -526,6 +689,16 @@ impl CallableTarget for OtherWebHook {
         if self.skip_tls_check {
             builder = builder.danger_accept_invalid_certs(true)
         }
+        builder = match apply_dns_pinning(builder, &self.endpoint).await {
+            Ok(b) => b,
+            Err(e) => {
+                error!(
+                    "SSRF protection blocked request to {}: {e}",
+                    mask_endpoint(&self.endpoint)
+                );
+                return;
+            }
+        };
 
         let client = builder
             .build()
@@ -575,6 +748,17 @@ impl CallableTarget for AlertManager {
             )]);
             builder = builder.default_headers(headers)
         }
+
+        builder = match apply_dns_pinning(builder, &self.endpoint).await {
+            Ok(b) => b,
+            Err(e) => {
+                error!(
+                    "SSRF protection blocked request to {}: {e}",
+                    mask_endpoint(&self.endpoint)
+                );
+                return;
+            }
+        };
 
         let client = builder
             .build()
