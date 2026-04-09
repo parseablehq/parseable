@@ -55,6 +55,7 @@ use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 use sysinfo::System;
 use tokio::runtime::Runtime;
+use tracing::instrument;
 
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
@@ -133,6 +134,7 @@ impl InMemorySessionContext {
 
 /// This function executes a query on the dedicated runtime, ensuring that the query is not isolated to a single thread/CPU
 /// at a time and has access to the entire thread pool, enabling better concurrent processing, and thus quicker results.
+#[instrument(name = "query.execute", skip_all, fields(query.streaming = %is_streaming))]
 pub async fn execute(
     query: Query,
     is_streaming: bool,
@@ -165,8 +167,33 @@ pub async fn execute(
     ExecuteError,
 > {
     let id = tenant_id.clone();
+
+    // QUERY_RUNTIME is a separate Runtime::new() (different OS thread pool).
+    // tracing::Span does NOT propagate OTel context across OS threads.
+    // Use W3C TraceContext propagation to preserve the trace ID.
+    let mut carrier = std::collections::HashMap::new();
+    {
+        use tracing_opentelemetry::OpenTelemetrySpanExt;
+        let cx = tracing::Span::current().context();
+        opentelemetry::global::get_text_map_propagator(|propagator| {
+            propagator.inject_context(&cx, &mut carrier);
+        });
+    }
+
     QUERY_RUNTIME
-        .spawn(async move { query.execute(is_streaming, &id).await })
+        .spawn(async move {
+            // Extract the propagated context on the QUERY_RUNTIME thread
+            let parent_cx = opentelemetry::global::get_text_map_propagator(|propagator| {
+                propagator.extract(&carrier)
+            });
+            let span = tracing::info_span!("query.execute_runtime");
+            {
+                use tracing_opentelemetry::OpenTelemetrySpanExt;
+                span.set_parent(parent_cx);
+            }
+            let _guard = span.enter();
+            query.execute(is_streaming, &id).await
+        })
         .await
         .expect("The Join should have been successful")
 }
@@ -272,6 +299,7 @@ impl Query {
     /// this function returns the result of the query
     /// if streaming is true, it returns a stream
     /// if streaming is false, it returns a vector of record batches
+    #[instrument(name = "Query.execute_datafusion", skip_all, fields(query.streaming = %is_streaming))]
     pub async fn execute(
         &self,
         is_streaming: bool,
@@ -526,6 +554,7 @@ impl CountsRequest {
     /// This function is supposed to read maninfest files for the given stream,
     /// get the sum of `num_rows` between the `startTime` and `endTime`,
     /// divide that by number of bins and return in a manner acceptable for the console
+    #[instrument(name = "get_bin_density", skip_all, fields(db.collection.name = %self.stream))]
     pub async fn get_bin_density(
         &self,
         tenant_id: &Option<String>,
@@ -731,6 +760,7 @@ pub fn resolve_stream_names(sql: &str) -> Result<Vec<String>, anyhow::Error> {
     Ok(tables)
 }
 
+#[instrument(name = "get_manifest_list", skip_all, fields(db.collection.name = %stream_name))]
 pub async fn get_manifest_list(
     stream_name: &str,
     time_range: &TimeRange,

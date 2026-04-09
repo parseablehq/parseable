@@ -104,6 +104,10 @@ opentelemetry-proto = { git = "https://github.com/open-telemetry/opentelemetry-r
     "metrics",
     "trace",
 ] }
+opentelemetry = "0.29"
+opentelemetry_sdk = { version = "0.29", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.29", features = ["http-json", "grpc-tonic"] }
+tracing-opentelemetry = "0.30"
 prometheus = { version = "0.13.4", default-features = false, features = ["process"] }
 prometheus-parse = "0.2.5"
 tracing = "0.1"

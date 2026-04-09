@@ -43,7 +43,7 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::task::JoinSet;
-use tracing::{error, warn};
+use tracing::{error, instrument, warn};
 
 use crate::event::{DEFAULT_TIMESTAMP_KEY, commit_schema};
 use crate::metrics::{QUERY_EXECUTE_TIME, increment_query_calls_by_date};
@@ -115,6 +115,7 @@ pub async fn get_records_and_fields(
     Ok((Some(records), Some(fields)))
 }
 
+#[instrument(name = "POST /query", skip_all, fields(http.request.method = "POST", http.route = "/query"))]
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
     let mut session_state = QUERY_SESSION.get_ctx().state();
     let time_range =
@@ -179,6 +180,7 @@ pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpRespons
 ///
 /// # Returns
 /// - `HttpResponse` with the count result as JSON, including fields if requested.
+#[instrument(name = "handle_count_query", skip_all, fields(db.collection.name = %table_name))]
 async fn handle_count_query(
     query_request: &Query,
     table_name: &str,
@@ -230,6 +232,7 @@ async fn handle_count_query(
 ///
 /// # Returns
 /// - `HttpResponse` with the full query result as a JSON object.
+#[instrument(name = "handle_non_streaming_query", skip_all, fields(db.collection.name))]
 async fn handle_non_streaming_query(
     query: LogicalQuery,
     table_name: Vec<String>,
@@ -238,6 +241,7 @@ async fn handle_non_streaming_query(
     tenant_id: &Option<String>,
 ) -> Result<HttpResponse, QueryError> {
     let first_table_name = table_name[0].clone();
+    tracing::Span::current().record("db.collection.name", &first_table_name.as_str());
     let (records, fields) = execute(query, query_request.streaming, tenant_id).await?;
     let records = match records {
         Either::Left(rbs) => rbs,
@@ -283,6 +287,7 @@ async fn handle_non_streaming_query(
 ///
 /// # Returns
 /// - `HttpResponse` streaming the query results as NDJSON, optionally prefixed with the fields array.
+#[instrument(name = "handle_streaming_query", skip_all, fields(db.collection.name))]
 async fn handle_streaming_query(
     query: LogicalQuery,
     table_name: Vec<String>,
@@ -291,6 +296,7 @@ async fn handle_streaming_query(
     tenant_id: &Option<String>,
 ) -> Result<HttpResponse, QueryError> {
     let first_table_name = table_name[0].clone();
+    tracing::Span::current().record("db.collection.name", &first_table_name.as_str());
     let (records_stream, fields) = execute(query, query_request.streaming, tenant_id).await?;
     let records_stream = match records_stream {
         Either::Left(_) => {
@@ -516,6 +522,7 @@ pub async fn update_schema_when_distributed(
 /// Create streams for querier if they do not exist
 /// get list of streams from memory and storage
 /// create streams for memory from storage if they do not exist
+#[instrument(name = "create_streams_for_distributed", skip_all)]
 pub async fn create_streams_for_distributed(
     streams: Vec<String>,
     tenant_id: &Option<String>,
@@ -526,17 +533,21 @@ pub async fn create_streams_for_distributed(
     let mut join_set = JoinSet::new();
     for stream_name in streams {
         let id = tenant_id.to_owned();
-        join_set.spawn(async move {
-            let result = PARSEABLE
-                .create_stream_and_schema_from_storage(&stream_name, &id)
-                .await;
+        let span = tracing::Span::current();
+        join_set.spawn(tracing::Instrument::instrument(
+            async move {
+                let result = PARSEABLE
+                    .create_stream_and_schema_from_storage(&stream_name, &id)
+                    .await;
 
-            if let Err(e) = &result {
-                warn!("Failed to create stream '{}': {}", stream_name, e);
-            }
+                if let Err(e) = &result {
+                    warn!("Failed to create stream '{}': {}", stream_name, e);
+                }
 
-            (stream_name, result)
-        });
+                (stream_name, result)
+            },
+            span,
+        ));
     }
 
     while let Some(result) = join_set.join_next().await {
@@ -579,6 +590,7 @@ impl FromRequest for Query {
     }
 }
 
+#[instrument(name = "into_query", skip_all, fields(db.query.text = %query.query))]
 pub async fn into_query(
     query: &Query,
     session_state: &SessionState,

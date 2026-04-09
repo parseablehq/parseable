@@ -19,9 +19,10 @@ use std::process::exit;
  */
 #[cfg(feature = "kafka")]
 use parseable::connectors;
+use opentelemetry_sdk::trace::SdkTracerProvider;
 use parseable::{
     IngestServer, ParseableServer, QueryServer, Server, banner, metrics, option::Mode,
-    parseable::PARSEABLE, rbac, storage,
+    parseable::PARSEABLE, rbac, storage, telemetry,
 };
 use tokio::signal::ctrl_c;
 use tokio::sync::oneshot;
@@ -33,7 +34,7 @@ use tracing_subscriber::{EnvFilter, Registry, fmt};
 
 #[actix_web::main]
 async fn main() -> anyhow::Result<()> {
-    init_logger();
+    let otel_provider = init_logger();
     // Install the rustls crypto provider before any TLS operations.
     // This is required for rustls 0.23+ which needs an explicit crypto provider.
     // If the installation fails, log a warning but continue execution.
@@ -95,10 +96,17 @@ async fn main() -> anyhow::Result<()> {
         parseable_server.await?;
     }
 
+    // Flush any buffered OTel spans before exit
+    if let Some(provider) = otel_provider {
+        if let Err(e) = provider.shutdown() {
+            warn!("Failed to shut down OTel tracer provider: {:?}", e);
+        }
+    }
+
     Ok(())
 }
 
-pub fn init_logger() {
+pub fn init_logger() -> Option<SdkTracerProvider> {
     let filter_layer = EnvFilter::try_from_default_env().unwrap_or_else(|_| {
         let default_level = if cfg!(debug_assertions) {
             Level::DEBUG
@@ -116,10 +124,23 @@ pub fn init_logger() {
         .with_target(true)
         .compact();
 
-    Registry::default()
-        .with(filter_layer)
-        .with(fmt_layer)
-        .init();
+    let otel_provider = telemetry::init_otel_tracer();
+
+    if let Some(ref provider) = otel_provider {
+        let otel_layer = telemetry::build_otel_layer(provider);
+        Registry::default()
+            .with(filter_layer)
+            .with(fmt_layer)
+            .with(otel_layer)
+            .init();
+    } else {
+        Registry::default()
+            .with(filter_layer)
+            .with(fmt_layer)
+            .init();
+    }
+
+    otel_provider
 }
 
 #[cfg(windows)]
