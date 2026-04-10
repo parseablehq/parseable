@@ -27,7 +27,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::Duration;
 use sysinfo::System;
-use tracing::{error, info};
+use tracing::{error, info, instrument};
 use ulid::Ulid;
 
 use crate::{
@@ -184,6 +184,7 @@ impl Report {
 }
 
 /// build the node metrics for the node ingestor endpoint
+#[instrument(name = "GET /analytics", skip_all, fields(http.route = "/analytics"))]
 pub async fn get_analytics(_: HttpRequest) -> impl Responder {
     let json = NodeMetrics::build();
     web::Json(json)

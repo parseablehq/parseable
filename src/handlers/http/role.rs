@@ -25,6 +25,8 @@ use actix_web::{
     web::{self, Json},
 };
 
+use tracing::instrument;
+
 use crate::rbac::map::roles;
 use crate::rbac::role::model::{Role, RoleType, RoleUI};
 use crate::{
@@ -109,6 +111,7 @@ pub async fn get(req: HttpRequest, name: web::Path<String>) -> Result<impl Respo
 
 // Handler for GET /api/v1/role
 // Fetch all roles in the system
+#[instrument(name = "GET /role", skip(req), fields(http.route = "/role"))]
 pub async fn list(req: HttpRequest) -> Result<impl Responder, RoleError> {
     let tenant_id = get_tenant_id_from_request(&req);
     let metadata = get_metadata(&tenant_id).await?;
@@ -164,6 +167,7 @@ pub async fn delete(
 
 // Handler for PUT /api/v1/role/default
 // Delete existing role
+#[instrument(name = "PUT /role/default", skip(req, name), fields(http.route = "/role/default"))]
 pub async fn put_default(
     req: HttpRequest,
     name: web::Json<String>,
@@ -211,6 +215,7 @@ pub async fn get_default(req: HttpRequest) -> Result<impl Responder, RoleError> 
     Ok(web::Json(res))
 }
 
+#[instrument(name = "get_metadata", skip_all)]
 async fn get_metadata(
     tenant_id: &Option<String>,
 ) -> Result<crate::storage::StorageMetadata, ObjectStorageError> {
@@ -223,6 +228,7 @@ async fn get_metadata(
     Ok(serde_json::from_slice::<StorageMetadata>(&metadata)?)
 }
 
+#[instrument(name = "put_metadata", skip_all)]
 async fn put_metadata(
     metadata: &StorageMetadata,
     tenant_id: &Option<String>,

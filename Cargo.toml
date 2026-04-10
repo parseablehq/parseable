@@ -166,6 +166,11 @@ prost = "0.13.1"
 dashmap = "6.1.0"
 parking_lot = "0.12.5"
 indexmap = { version = "2.13.0", features = ["serde"] }
+opentelemetry = { version = "0.31.0", features = ["trace"] }
+opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.31.1", features = ["grpc-tonic", "http-proto", "http-json"] }
+tracing-opentelemetry = "0.32.1"
+tracing-actix-web = "0.7"
 
 [build-dependencies]
 cargo_toml = "0.21"
