@@ -138,13 +138,10 @@ impl ApiKeyStore {
         // Hold write lock for the entire operation to prevent TOCTOU race
         // on duplicate name check
         let mut map = self.keys.write().await;
-        if let Some(tenant_keys) = map.get(tenant) {
-            if tenant_keys
-                .values()
-                .any(|k| k.key_name == api_key.key_name)
-            {
-                return Err(ApiKeyError::DuplicateKeyName(api_key.key_name));
-            }
+        if let Some(tenant_keys) = map.get(tenant)
+            && tenant_keys.values().any(|k| k.key_name == api_key.key_name)
+        {
+            return Err(ApiKeyError::DuplicateKeyName(api_key.key_name));
         }
 
         PARSEABLE
@@ -230,26 +227,18 @@ impl ApiKeyStore {
     /// Validate an API key for ingestion. Returns true if the key is valid.
     /// For multi-tenant: checks the key belongs to the specified tenant.
     /// For single-tenant: checks the key exists globally.
-    pub async fn validate_key(
-        &self,
-        api_key_value: &str,
-        tenant_id: &Option<String>,
-    ) -> bool {
+    pub async fn validate_key(&self, api_key_value: &str, tenant_id: &Option<String>) -> bool {
         let map = self.keys.read().await;
         if let Some(tenant_id) = tenant_id {
             // Multi-tenant: check keys for the specific tenant
             if let Some(tenant_keys) = map.get(tenant_id) {
-                return tenant_keys
-                    .values()
-                    .any(|k| k.api_key == api_key_value);
+                return tenant_keys.values().any(|k| k.api_key == api_key_value);
             }
             false
         } else {
             // Single-tenant: check keys under DEFAULT_TENANT
             if let Some(tenant_keys) = map.get(DEFAULT_TENANT) {
-                return tenant_keys
-                    .values()
-                    .any(|k| k.api_key == api_key_value);
+                return tenant_keys.values().any(|k| k.api_key == api_key_value);
             }
             false
         }
@@ -257,9 +246,15 @@ impl ApiKeyStore {
 
     /// Insert an API key directly into memory (used for sync from prism)
     pub async fn sync_put(&self, api_key: ApiKey) {
-        let tenant = api_key.tenant.as_deref().unwrap_or(DEFAULT_TENANT).to_owned();
+        let tenant = api_key
+            .tenant
+            .as_deref()
+            .unwrap_or(DEFAULT_TENANT)
+            .to_owned();
         let mut map = self.keys.write().await;
-        map.entry(tenant).or_default().insert(api_key.key_id, api_key);
+        map.entry(tenant)
+            .or_default()
+            .insert(api_key.key_id, api_key);
     }
 
     /// Remove an API key from memory (used for sync from prism)
