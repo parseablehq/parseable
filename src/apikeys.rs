@@ -20,7 +20,6 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 use once_cell::sync::Lazy;
-use rand::Rng;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 use ulid::Ulid;
@@ -77,7 +76,7 @@ impl ApiKey {
         let now = Utc::now();
         Self {
             key_id: Ulid::new(),
-            api_key: generate_uuid_v4(),
+            api_key: uuid::Uuid::new_v4().to_string(),
             key_name,
             created_by,
             created_at: now,
@@ -112,25 +111,6 @@ impl MetastoreObject for ApiKey {
     fn get_object_id(&self) -> String {
         self.key_id.to_string()
     }
-}
-
-/// Generate a UUID v4 formatted string using rand
-fn generate_uuid_v4() -> String {
-    let mut rng = rand::thread_rng();
-    let mut bytes = [0u8; 16];
-    rng.fill(&mut bytes);
-    // Set version 4 (bits 12-15 of time_hi_and_version)
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    // Set variant 1 (bits 6-7 of clock_seq_hi_and_reserved)
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3],
-        bytes[4], bytes[5],
-        bytes[6], bytes[7],
-        bytes[8], bytes[9],
-        bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
-    )
 }
 
 impl ApiKeyStore {
