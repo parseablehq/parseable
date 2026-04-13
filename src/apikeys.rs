@@ -122,7 +122,11 @@ impl ApiKeyStore {
             let inner = keys
                 .into_iter()
                 .map(|mut k| {
-                    k.tenant = Some(tenant_id.clone());
+                    k.tenant = if tenant_id == DEFAULT_TENANT {
+                        None
+                    } else {
+                        Some(tenant_id.clone())
+                    };
                     (k.key_id, k)
                 })
                 .collect();

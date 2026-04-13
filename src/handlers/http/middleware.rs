@@ -147,52 +147,17 @@ where
     forward_ready!(service);
 
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
-        /*Below section is added to extract the Authorization and X-P-Stream headers from x-amz-firehose-common-attributes custom header
-        when request is made from Kinesis Firehose.
-        For requests made from other clients, no change.
-
-        ## Section start */
-        if self.action.eq(&Action::Ingest)
-            && let Some(kinesis_common_attributes) =
-                req.request().headers().get(KINESIS_COMMON_ATTRIBUTES_KEY)
-            && let Ok(attribute_value) = kinesis_common_attributes.to_str()
-            && let Ok(message) = serde_json::from_str::<Message>(attribute_value)
-            && let Ok(auth_value) =
-                header::HeaderValue::from_str(&message.common_attributes.authorization)
-            && let Ok(stream_name_key) =
-                header::HeaderValue::from_str(&message.common_attributes.x_p_stream)
-        {
-            req.headers_mut()
-                .insert(HeaderName::from_static(AUTHORIZATION_KEY), auth_value);
-            req.headers_mut().insert(
-                HeaderName::from_static(STREAM_NAME_HEADER_KEY),
-                stream_name_key,
-            );
-            req.headers_mut().insert(
-                HeaderName::from_static(LOG_SOURCE_KEY),
-                header::HeaderValue::from_static(LOG_SOURCE_KINESIS),
-            );
+        // Extract Kinesis Firehose headers if applicable
+        if self.action.eq(&Action::Ingest) {
+            extract_kinesis_headers(&mut req);
         }
-        /* ## Section end */
-        // if action is Ingest and multi-tenancy is on, then request MUST have tenant id
-        // else check for the presence of tenant id using other details
 
         // an optional error to track the presence of CORRECT tenant header in case of ingestion
         let mut header_error = None;
         let user_and_tenant_id = get_user_and_tenant(&self.action, &mut req, &mut header_error);
 
-        // Check for X-API-KEY header for ingestion
-        let api_key_value = if self.action.eq(&Action::Ingest) {
-            req.headers()
-                .get("x-api-key")
-                .and_then(|v| v.to_str().ok())
-                .map(String::from)
-        } else {
-            None
-        };
-
-        // If API key auth is being used, short-circuit the normal auth flow
-        if let Some(api_key) = api_key_value {
+        // If X-API-KEY header is present for ingestion, short-circuit normal auth
+        if let Some(api_key) = extract_api_key(&req, &self.action) {
             let suspension = check_suspension(req.request(), self.action);
             let tenant_id = req
                 .headers()
@@ -270,6 +235,43 @@ where
 
             fut.await
         })
+    }
+}
+
+/// Extract Kinesis Firehose headers (Authorization, X-P-Stream) from
+/// the x-amz-firehose-common-attributes custom header when present.
+fn extract_kinesis_headers(req: &mut ServiceRequest) {
+    if let Some(kinesis_common_attributes) =
+        req.request().headers().get(KINESIS_COMMON_ATTRIBUTES_KEY)
+        && let Ok(attribute_value) = kinesis_common_attributes.to_str()
+        && let Ok(message) = serde_json::from_str::<Message>(attribute_value)
+        && let Ok(auth_value) =
+            header::HeaderValue::from_str(&message.common_attributes.authorization)
+        && let Ok(stream_name_key) =
+            header::HeaderValue::from_str(&message.common_attributes.x_p_stream)
+    {
+        req.headers_mut()
+            .insert(HeaderName::from_static(AUTHORIZATION_KEY), auth_value);
+        req.headers_mut().insert(
+            HeaderName::from_static(STREAM_NAME_HEADER_KEY),
+            stream_name_key,
+        );
+        req.headers_mut().insert(
+            HeaderName::from_static(LOG_SOURCE_KEY),
+            header::HeaderValue::from_static(LOG_SOURCE_KINESIS),
+        );
+    }
+}
+
+/// Extract X-API-KEY header value if present and action is Ingest.
+fn extract_api_key(req: &ServiceRequest, action: &Action) -> Option<String> {
+    if action.eq(&Action::Ingest) {
+        req.headers()
+            .get("x-api-key")
+            .and_then(|v| v.to_str().ok())
+            .map(String::from)
+    } else {
+        None
     }
 }
 
