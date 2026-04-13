@@ -67,6 +67,7 @@ pub const SCHEMA_FILE_NAME: &str = ".schema";
 pub const ALERTS_ROOT_DIRECTORY: &str = ".alerts";
 pub const SETTINGS_ROOT_DIRECTORY: &str = ".settings";
 pub const TARGETS_ROOT_DIRECTORY: &str = ".targets";
+pub const APIKEYS_ROOT_DIRECTORY: &str = "apikeys";
 pub const MANIFEST_FILE: &str = "manifest.json";
 
 // max concurrent request allowed for datafusion object store

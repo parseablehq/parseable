@@ -18,6 +18,7 @@
 
 pub mod about;
 pub mod alerts;
+pub mod apikeys;
 pub mod analytics;
 pub mod banner;
 pub mod catalog;

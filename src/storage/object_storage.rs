@@ -58,6 +58,7 @@ use crate::option::Mode;
 use crate::parseable::DEFAULT_TENANT;
 use crate::parseable::{LogStream, PARSEABLE, Stream};
 use crate::stats::FullStats;
+use crate::storage::APIKEYS_ROOT_DIRECTORY;
 use crate::storage::SETTINGS_ROOT_DIRECTORY;
 use crate::storage::TARGETS_ROOT_DIRECTORY;
 use crate::storage::field_stats::DATASET_STATS_STREAM_NAME;
@@ -1345,6 +1346,19 @@ pub fn mttr_json_path(tenant_id: &Option<String>) -> RelativePathBuf {
     } else {
         RelativePathBuf::from_iter([ALERTS_ROOT_DIRECTORY, "mttr.json"])
     }
+}
+
+/// Constructs the path for storing API key JSON files
+/// Format: "{tenant}/.settings/apikeys/{key_id}.json"
+#[inline(always)]
+pub fn apikey_json_path(key_id: &Ulid, tenant_id: &Option<String>) -> RelativePathBuf {
+    let root = tenant_id.as_deref().unwrap_or("");
+    RelativePathBuf::from_iter([
+        root,
+        SETTINGS_ROOT_DIRECTORY,
+        APIKEYS_ROOT_DIRECTORY,
+        &format!("{key_id}.json"),
+    ])
 }
 
 #[inline(always)]

@@ -181,6 +181,42 @@ where
         let mut header_error = None;
         let user_and_tenant_id = get_user_and_tenant(&self.action, &mut req, &mut header_error);
 
+        // Check for X-API-KEY header for ingestion
+        let api_key_value = if self.action.eq(&Action::Ingest) {
+            req.headers()
+                .get("x-api-key")
+                .and_then(|v| v.to_str().ok())
+                .map(String::from)
+        } else {
+            None
+        };
+
+        // If API key auth is being used, short-circuit the normal auth flow
+        if let Some(api_key) = api_key_value {
+            let suspension = check_suspension(req.request(), self.action);
+            let tenant_id = req
+                .headers()
+                .get(TENANT_ID)
+                .and_then(|v| v.to_str().ok())
+                .map(String::from);
+            let fut = self.service.call(req);
+
+            return Box::pin(async move {
+                if let Some(err) = header_error {
+                    return Err(err);
+                }
+                if let rbac::Response::Suspended(msg) = suspension {
+                    return Err(ErrorBadRequest(msg));
+                }
+
+                use crate::apikeys::API_KEYS;
+                if API_KEYS.validate_key(&api_key, &tenant_id).await {
+                    return fut.await;
+                }
+                Err(ErrorUnauthorized("Invalid API key"))
+            });
+        }
+
         let key: Result<SessionKey, Error> = extract_session_key(&mut req);
 
         // if action is ingestion, check if tenant is correct for basic auth user
