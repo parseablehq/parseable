@@ -702,7 +702,7 @@ pub enum PartialTimeFilter {
 }
 
 impl PartialTimeFilter {
-    fn try_from_expr(expr: &Expr, time_partition: &Option<String>) -> Option<Self> {
+    pub fn try_from_expr(expr: &Expr, time_partition: &Option<String>) -> Option<Self> {
         let Expr::BinaryExpr(binexpr) = expr else {
             return None;
         };
