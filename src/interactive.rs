@@ -628,9 +628,15 @@ fn get_enterprise_base_prompts() -> Vec<EnvPrompt> {
             is_secret: false,
         },
         EnvPrompt {
+            env_var: "P_LICENSE_SIGNATURE_BASE64_FILE_PATH",
+            display_name: "License Signature Base64 File Path (priority)",
+            required: false,
+            is_secret: false,
+        },
+        EnvPrompt {
             env_var: "P_LICENSE_SIGNATURE_FILE_PATH",
             display_name: "License Signature File Path",
-            required: true,
+            required: false,
             is_secret: false,
         },
         EnvPrompt {
