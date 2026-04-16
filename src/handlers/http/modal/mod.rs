@@ -460,6 +460,15 @@ impl NodeMetadata {
             meta.token = token;
         }
 
+        let flight_port = options.flight_port.to_string();
+        if meta.flight_port != flight_port {
+            info!(
+                "Flight Port was Updated. Old: {} New: {}",
+                meta.flight_port, flight_port
+            );
+            meta.flight_port = flight_port;
+        }
+
         meta.node_type = node_type;
     }
 
