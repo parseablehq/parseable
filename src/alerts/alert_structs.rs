@@ -833,7 +833,7 @@ impl AlertStateEntry {
 
         // Create a sorted view without mutating the original
         let mut sorted_states = self.states.clone();
-        sorted_states.sort_by(|a, b| a.last_updated_at.cmp(&b.last_updated_at));
+        sorted_states.sort_by_key(|a| a.last_updated_at);
 
         for transition in &sorted_states {
             match transition.state {

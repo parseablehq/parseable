@@ -759,10 +759,10 @@ fn is_overlapping_query(
     for filter in time_filters {
         match filter {
             PartialTimeFilter::Low(Bound::Excluded(time))
-            | PartialTimeFilter::Low(Bound::Included(time)) => {
-                if time < &first_entry_lower_bound.naive_utc() {
-                    return true;
-                }
+            | PartialTimeFilter::Low(Bound::Included(time))
+                if time < &first_entry_lower_bound.naive_utc() =>
+            {
+                return true;
             }
             _ => {}
         }

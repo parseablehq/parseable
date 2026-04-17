@@ -73,6 +73,26 @@ use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
 use crate::storage::{ObjectStorageProvider, ObjectStoreFormat};
 use crate::utils::time::TimeRange;
 
+/// Boxed record-batch stream used as the streaming half of query results.
+type BoxedBatchStream = Pin<
+    Box<
+        RecordBatchStreamAdapter<
+            select_all::SelectAll<
+                Pin<
+                    Box<
+                        dyn RecordBatchStream<
+                                Item = Result<RecordBatch, datafusion::error::DataFusionError>,
+                            > + Send,
+                    >,
+                >,
+            >,
+        >,
+    >,
+>;
+
+/// Result type returned by query execution: either collected batches or a streaming adapter, plus field names.
+type QueryResult = Result<(Either<Vec<RecordBatch>, BoxedBatchStream>, Vec<String>), ExecuteError>;
+
 // pub static QUERY_SESSION: Lazy<SessionContext> =
 //     Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
 
@@ -133,37 +153,7 @@ impl InMemorySessionContext {
 
 /// This function executes a query on the dedicated runtime, ensuring that the query is not isolated to a single thread/CPU
 /// at a time and has access to the entire thread pool, enabling better concurrent processing, and thus quicker results.
-pub async fn execute(
-    query: Query,
-    is_streaming: bool,
-    tenant_id: &Option<String>,
-) -> Result<
-    (
-        Either<
-            Vec<RecordBatch>,
-            Pin<
-                Box<
-                    RecordBatchStreamAdapter<
-                        select_all::SelectAll<
-                            Pin<
-                                Box<
-                                    dyn RecordBatchStream<
-                                            Item = Result<
-                                                RecordBatch,
-                                                datafusion::error::DataFusionError,
-                                            >,
-                                        > + Send,
-                                >,
-                            >,
-                        >,
-                    >,
-                >,
-            >,
-        >,
-        Vec<String>,
-    ),
-    ExecuteError,
-> {
+pub async fn execute(query: Query, is_streaming: bool, tenant_id: &Option<String>) -> QueryResult {
     let id = tenant_id.clone();
     QUERY_RUNTIME
         .spawn(async move { query.execute(is_streaming, &id).await })
@@ -272,37 +262,15 @@ impl Query {
     /// this function returns the result of the query
     /// if streaming is true, it returns a stream
     /// if streaming is false, it returns a vector of record batches
-    pub async fn execute(
-        &self,
-        is_streaming: bool,
-        tenant_id: &Option<String>,
-    ) -> Result<
-        (
-            Either<
-                Vec<RecordBatch>,
-                Pin<
-                    Box<
-                        RecordBatchStreamAdapter<
-                            select_all::SelectAll<
-                                Pin<
-                                    Box<
-                                        dyn RecordBatchStream<
-                                                Item = Result<
-                                                    RecordBatch,
-                                                    datafusion::error::DataFusionError,
-                                                >,
-                                            > + Send,
-                                    >,
-                                >,
-                            >,
-                        >,
-                    >,
-                >,
-            >,
-            Vec<String>,
-        ),
-        ExecuteError,
-    > {
+    #[tracing::instrument(
+        name = "datafusion.execute",
+        skip(self, is_streaming, tenant_id),
+        fields(
+            db.system.name = "datafusion",
+            db.operation.name = "SELECT",
+        )
+    )]
+    pub async fn execute(&self, is_streaming: bool, tenant_id: &Option<String>) -> QueryResult {
         let df = QUERY_SESSION
             .get_ctx()
             .execute_logical_plan(self.final_logical_plan(tenant_id))

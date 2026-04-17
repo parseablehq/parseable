@@ -1459,8 +1459,8 @@ impl AlertManagerTrait for Alerts {
         // let alerts = self.alerts.read().await;
         let mut tags = if let Some(alerts) = self.alerts.read().await.get(tenant) {
             alerts
-                .iter()
-                .filter_map(|(_, alert)| alert.get_tags().as_ref())
+                .values()
+                .filter_map(|alert| alert.get_tags().as_ref())
                 .flat_map(|t| t.iter().cloned())
                 .collect::<Vec<String>>()
         } else {
