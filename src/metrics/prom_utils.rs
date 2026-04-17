@@ -129,29 +129,26 @@ impl Metrics {
         for sample in samples {
             if let PromValue::Gauge(val) = sample.value {
                 match sample.metric.as_str() {
-                    "parseable_events_ingested_date" => {
+                    "parseable_events_ingested_date"
                         if sample.labels.get("stream").expect("stream name is present")
                             == stream_name
-                            && sample.labels.get("date").expect("date is present") == date
-                        {
-                            events_ingested = val as u64;
-                        }
+                            && sample.labels.get("date").expect("date is present") == date =>
+                    {
+                        events_ingested = val as u64;
                     }
-                    "parseable_events_ingested_size_date" => {
+                    "parseable_events_ingested_size_date"
                         if sample.labels.get("stream").expect("stream name is present")
                             == stream_name
-                            && sample.labels.get("date").expect("date is present") == date
-                        {
-                            ingestion_size = val as u64;
-                        }
+                            && sample.labels.get("date").expect("date is present") == date =>
+                    {
+                        ingestion_size = val as u64;
                     }
-                    "parseable_events_storage_size_date" => {
+                    "parseable_events_storage_size_date"
                         if sample.labels.get("stream").expect("stream name is present")
                             == stream_name
-                            && sample.labels.get("date").expect("date is present") == date
-                        {
-                            storage_size = val as u64;
-                        }
+                            && sample.labels.get("date").expect("date is present") == date =>
+                    {
+                        storage_size = val as u64;
                     }
                     _ => {}
                 }
@@ -198,15 +195,15 @@ impl Metrics {
                             prom_dress.parseable_storage_size.data += val;
                         }
                     }
-                    "parseable_lifetime_events_storage_size" => {
-                        if sample.labels.get("type").expect("type is present") == "data" {
-                            prom_dress.parseable_lifetime_storage_size.data += val;
-                        }
+                    "parseable_lifetime_events_storage_size"
+                        if sample.labels.get("type").expect("type is present") == "data" =>
+                    {
+                        prom_dress.parseable_lifetime_storage_size.data += val;
                     }
-                    "parseable_deleted_events_storage_size" => {
-                        if sample.labels.get("type").expect("type is present") == "data" {
-                            prom_dress.parseable_deleted_storage_size.data += val;
-                        }
+                    "parseable_deleted_events_storage_size"
+                        if sample.labels.get("type").expect("type is present") == "data" =>
+                    {
+                        prom_dress.parseable_deleted_storage_size.data += val;
                     }
                     _ => {}
                 }

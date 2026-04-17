@@ -280,15 +280,15 @@ pub async fn get_stats_date(
     let events_ingested = EVENTS_INGESTED_DATE
         .get_metric_with_label_values(&event_labels)
         .unwrap()
-        .get() as u64;
+        .get();
     let ingestion_size = EVENTS_INGESTED_SIZE_DATE
         .get_metric_with_label_values(&event_labels)
         .unwrap()
-        .get() as u64;
+        .get();
     let storage_size = EVENTS_STORAGE_SIZE_DATE
         .get_metric_with_label_values(&storage_size_labels)
         .unwrap()
-        .get() as u64;
+        .get();
 
     let stats = Stats {
         events: events_ingested,
