@@ -80,12 +80,14 @@ fn status_info(config: &Parseable, scheme: &str, id: Uid) {
         Address:            {}
         Credentials:        {}
         Server Mode:        \"{}\"
-        LLM Status:         \"{}\"",
+        LLM Status:         \"{}\"
+        Num workers:        {}",
         "Server:".to_string().bold(),
         address,
         credentials,
         config.get_server_mode_string(),
-        llm_status
+        llm_status,
+        config.options.num_workers
     );
 }
 

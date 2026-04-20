@@ -148,6 +148,51 @@ pub struct Options {
     )]
     pub address: String,
 
+    // Actix request timeout in seconds
+    #[arg(
+        long,
+        env = "P_ACTIX_REQUEST_TIMEOUT",
+        default_value = "5",
+        help = "Client request timeout"
+    )]
+    pub request_timeout: u64,
+
+    // Actix keep alive in seconds
+    #[arg(
+        long,
+        env = "P_ACTIX_KEEP_ALIVE",
+        default_value = "5",
+        help = "Server keep-alive"
+    )]
+    pub keep_alive: u64,
+
+    // Actix num workers
+    #[arg(
+        long,
+        env = "P_ACTIX_NUM_WORKERS",
+        default_value_t = num_cpus::get(),
+        help = "Number of workers for actix-web"
+    )]
+    pub num_workers: usize,
+
+    // Actix connections backlog
+    #[arg(
+        long,
+        env = "P_ACTIX_BACKLOG",
+        default_value = "2048",
+        help = "Maximum number of pending connections"
+    )]
+    pub connection_backlog: u32,
+
+    // Actix max connections
+    #[arg(
+        long,
+        env = "P_ACTIX_MAX_CONNECTIONS",
+        default_value = "25000",
+        help = "Per-worker maximum number of concurrent connections"
+    )]
+    pub max_connections: usize,
+
     #[arg(
         long = "origin",
         env = "P_ORIGIN_URI",
