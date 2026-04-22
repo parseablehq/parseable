@@ -165,12 +165,11 @@ pub async fn push_logs(
     tenant_id: &Option<String>,
 ) -> Result<(), PostError> {
     let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
-    let time_partition_limit = PARSEABLE
-        .get_stream(stream_name, tenant_id)?
-        .get_time_partition_limit();
+    let time_partition_limit = stream.get_time_partition_limit();
     let static_schema_flag = stream.get_static_schema_flag();
     let custom_partition = stream.get_custom_partition();
     let schema_version = stream.get_schema_version();
+    let schema = stream.get_schema_raw();
     let p_timestamp = Utc::now();
 
     let data = convert_array_to_object(
@@ -184,10 +183,7 @@ pub async fn push_logs(
 
     let mut count = 0u64;
     for json in data {
-        let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
-        let schema = PARSEABLE
-            .get_stream(stream_name, tenant_id)?
-            .get_schema_raw();
+        let origin_size = json_byte_size(&json);
         json::Event { json, p_timestamp }
             .into_event(
                 stream_name.to_owned(),
@@ -207,6 +203,25 @@ pub async fn push_logs(
     }
     Span::current().record("record_count", count);
     Ok(())
+}
+
+/// Zero-allocation JSON byte size counter.
+/// Uses serde_json::to_writer with a writer that only counts bytes.
+pub fn json_byte_size(value: &Value) -> u64 {
+    struct CountingWriter(u64);
+    impl std::io::Write for CountingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len() as u64;
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = CountingWriter(0);
+    // serde_json::to_writer won't fail on Value types
+    let _ = serde_json::to_writer(&mut counter, value);
+    counter.0
 }
 
 pub fn get_custom_fields_from_header(req: &HttpRequest) -> HashMap<String, String> {

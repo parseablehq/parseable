@@ -122,9 +122,8 @@ impl MergedReverseRecordReader {
     ) -> impl Iterator<Item = RecordBatch> {
         let adapted_readers = self.readers.into_iter().map(|reader| reader.flatten());
         kmerge_by(adapted_readers, move |a: &RecordBatch, b: &RecordBatch| {
-            // Capture time_partition by value
-            let a_time = get_timestamp_millis(a, time_partition.clone());
-            let b_time = get_timestamp_millis(b, time_partition.clone());
+            let a_time = get_timestamp_millis(a, time_partition.as_deref());
+            let b_time = get_timestamp_millis(b, time_partition.as_deref());
             a_time > b_time
         })
         .map(|batch| reverse(&batch))
@@ -141,10 +140,9 @@ impl MergedReverseRecordReader {
     }
 }
 
-fn get_timestamp_millis(batch: &RecordBatch, time_partition: Option<String>) -> i64 {
+fn get_timestamp_millis(batch: &RecordBatch, time_partition: Option<&str>) -> i64 {
     match time_partition {
         Some(time_partition) => {
-            let time_partition = time_partition.as_str();
             match batch.column_by_name(time_partition) {
                 Some(column) => column
                     .as_any()

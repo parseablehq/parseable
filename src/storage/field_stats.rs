@@ -171,11 +171,11 @@ pub async fn calculate_field_stats(
     )?;
     let mut p_custom_fields = HashMap::new();
     p_custom_fields.insert(USER_AGENT_KEY.to_string(), "parseable".to_string());
+    let schema = PARSEABLE
+        .get_stream(DATASET_STATS_STREAM_NAME, tenant_id)?
+        .get_schema_raw();
     for json in vec_json {
-        let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
-        let schema = PARSEABLE
-            .get_stream(DATASET_STATS_STREAM_NAME, tenant_id)?
-            .get_schema_raw();
+        let origin_size = crate::handlers::http::modal::utils::ingest_utils::json_byte_size(&json);
         json::Event {
             json,
             p_timestamp: parquet_ts,

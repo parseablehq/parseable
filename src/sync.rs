@@ -21,11 +21,15 @@ use futures::FutureExt;
 use std::collections::HashMap;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, interval_at, sleep};
 use tokio::{select, task};
 use tracing::{Instrument, error, info, info_span, trace, warn};
+
+static LOCAL_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
+static REMOTE_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 
 use crate::alerts::alert_enums::AlertTask;
 use crate::alerts::alerts_utils;
@@ -127,6 +131,10 @@ pub fn object_store_sync() -> (
             loop {
                 select! {
                     _ = sync_interval.tick() => {
+                        if REMOTE_SYNC_RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+                            warn!("Previous object_store_sync cycle still running, skipping this tick");
+                            continue;
+                        }
                         async {
                             trace!("Syncing Parquets to Object Store... ");
 
@@ -145,6 +153,7 @@ pub fn object_store_sync() -> (
                                 }
                             ).await;
                         }.instrument(info_span!("object_store_sync_cycle")).await;
+                        REMOTE_SYNC_RUNNING.store(false, Ordering::SeqCst);
                     },
                     res = &mut inbox_rx => {
                         match res {
@@ -196,6 +205,10 @@ pub fn local_sync() -> (
             loop {
                 select! {
                     _ = sync_interval.tick() => {
+                        if LOCAL_SYNC_RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+                            warn!("Previous local_sync cycle still running, skipping this tick");
+                            continue;
+                        }
                         // Monitor the duration of flush_and_convert execution
                         async {
                             monitor_task_duration(
@@ -212,6 +225,7 @@ pub fn local_sync() -> (
                                 }
                             ).await;
                         }.instrument(info_span!("local_sync_cycle")).await;
+                        LOCAL_SYNC_RUNNING.store(false, Ordering::SeqCst);
                     },
                     res = &mut inbox_rx => {
                         match res {
