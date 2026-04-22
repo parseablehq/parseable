@@ -30,7 +30,7 @@ use arrow_ipc::{MessageHeader, reader::StreamReader, root_as_message_unchecked};
 use arrow_schema::Schema;
 use byteorder::{LittleEndian, ReadBytesExt};
 use itertools::kmerge_by;
-use tracing::error;
+use tracing::{error, info_span};
 
 use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
@@ -91,6 +91,7 @@ pub struct MergedReverseRecordReader {
 
 impl MergedReverseRecordReader {
     pub fn try_new(file_paths: &[PathBuf]) -> Self {
+        let _span = info_span!("open_arrow_files", file_count = file_paths.len()).entered();
         let mut readers = Vec::with_capacity(file_paths.len());
         for path in file_paths {
             match File::open(path) {

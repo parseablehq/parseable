@@ -50,6 +50,7 @@ mod static_schema;
 mod stats;
 pub mod storage;
 pub mod sync;
+pub mod telemetry;
 pub mod tenants;
 pub mod users;
 pub mod utils;
@@ -63,9 +64,10 @@ pub use handlers::http::modal::{
 };
 use once_cell::sync::Lazy;
 pub use openid;
-pub use opentelemetry_proto;
 use parseable::PARSEABLE;
 use reqwest::{Client, ClientBuilder};
+pub use {opentelemetry, opentelemetry_otlp, opentelemetry_proto, opentelemetry_sdk};
+pub use {tracing_actix_web, tracing_opentelemetry, tracing_subscriber};
 
 // It is very unlikely that panic will occur when dealing with locks.
 pub const LOCK_EXPECT: &str = "Thread shouldn't panic while holding a lock";

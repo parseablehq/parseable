@@ -24,7 +24,7 @@ use opentelemetry_proto::tonic::{
 };
 use serde_json::Value;
 use std::collections::HashMap;
-use tracing::warn;
+use tracing::{instrument, warn, Span};
 
 use crate::{
     event::{
@@ -48,6 +48,12 @@ const IGNORE_HEADERS: [&str; 3] = [STREAM_NAME_HEADER_KEY, LOG_SOURCE_KEY, EXTRA
 const MAX_CUSTOM_FIELDS: usize = 10;
 const MAX_FIELD_VALUE_LENGTH: usize = 100;
 
+#[instrument(
+    name = "flatten_and_push_logs",
+    level = "info",
+    skip(json, log_source, p_custom_fields, time_partition, telemetry_type, tenant_id),
+    fields(stream_name)
+)]
 pub async fn flatten_and_push_logs(
     json: Value,
     stream_name: &str,
@@ -143,6 +149,12 @@ pub async fn flatten_and_push_logs(
     Ok(())
 }
 
+#[instrument(
+    name = "push_logs",
+    level = "info",
+    skip(json, log_source, p_custom_fields, time_partition, telemetry_type, tenant_id),
+    fields(stream_name, record_count = tracing::field::Empty)
+)]
 pub async fn push_logs(
     stream_name: &str,
     json: Value,
@@ -170,6 +182,7 @@ pub async fn push_logs(
         log_source,
     )?;
 
+    let mut count = 0u64;
     for json in data {
         let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
         let schema = PARSEABLE
@@ -190,7 +203,9 @@ pub async fn push_logs(
                 tenant_id,
             )?
             .process()?;
+        count += 1;
     }
+    Span::current().record("record_count", count);
     Ok(())
 }
 

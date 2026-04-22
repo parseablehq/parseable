@@ -63,7 +63,10 @@ base64 = "0.22.0"
 cookie = "0.18.1"
 hex = "0.4"
 openid = { version = "0.18.3", default-features = false, features = ["rustls"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls = { version = "0.23", default-features = false, features = [
+    "ring",
+    "std",
+] }
 rustls-pemfile = "2.1.2"
 sha2 = "0.10.8"
 
@@ -104,10 +107,27 @@ opentelemetry-proto = { git = "https://github.com/open-telemetry/opentelemetry-r
     "metrics",
     "trace",
 ] }
-prometheus = { version = "0.13.4", default-features = false, features = ["process"] }
+prometheus = { version = "0.13.4", default-features = false, features = [
+    "process",
+] }
 prometheus-parse = "0.2.5"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = [
+    "env-filter",
+    "time",
+    "registry",
+] }
+
+# telemetry
+tracing-opentelemetry = "0.32.1"
+opentelemetry = "0.31.0"
+opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.31.1", features = [
+    "grpc-tonic",
+    "http-proto",
+    "http-json",
+] }
+tracing-actix-web = "0.7"
 
 # Time and Date
 chrono = "0.4"

@@ -43,7 +43,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::task::JoinSet;
-use tracing::{error, info, trace, warn};
+use tracing::{error, info, info_span, instrument, trace, warn};
 use ulid::Ulid;
 
 use crate::{
@@ -146,14 +146,24 @@ impl Stream {
         custom_partition_values: &HashMap<String, String>,
         stream_type: StreamType,
     ) -> Result<(), StagingError> {
-        let mut guard = match self.writer.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                error!(
-                    "Writer lock poisoned while ingesting data for stream {}",
-                    self.stream_name
-                );
-                poisoned.into_inner()
+        let _span = info_span!(
+            "stream_push",
+            stream_name = %self.stream_name,
+            num_rows = record.num_rows(),
+        )
+        .entered();
+
+        let mut guard = {
+            let _lock_span = info_span!("acquire_writer_lock").entered();
+            match self.writer.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    error!(
+                        "Writer lock poisoned while ingesting data for stream {}",
+                        self.stream_name
+                    );
+                    poisoned.into_inner()
+                }
             }
         };
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
@@ -461,6 +471,12 @@ impl Stream {
     }
 
     /// Converts arrow files in staging into parquet files, does so only for past minutes when run with `!shutdown_signal`
+    #[instrument(
+        name = "prepare_parquet",
+        level = "info",
+        skip(self, tenant_id),
+        fields(stream_name = %self.stream_name)
+    )]
     pub fn prepare_parquet(
         &self,
         init_signal: bool,
@@ -521,6 +537,7 @@ impl Stream {
     }
 
     pub fn flush(&self, forced: bool) {
+        let _span = info_span!("flush", stream_name = %self.stream_name, forced).entered();
         let mut writer = match self.writer.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -632,12 +649,20 @@ impl Stream {
         shutdown_signal: bool,
         tenant_id: &Option<String>,
     ) -> Result<Option<Schema>, StagingError> {
+        let span = info_span!(
+            "convert_disk_files_to_parquet",
+            stream_name = %self.stream_name,
+            file_group_count = tracing::field::Empty,
+        );
+        let _guard = span.enter();
+
         let mut schemas = Vec::new();
 
         let now = SystemTime::now();
         let group_minute = minute_from_system_time(now) - 1;
         let staging_files =
             self.arrow_files_grouped_exclude_time(now, group_minute, init_signal, shutdown_signal);
+        span.record("file_group_count", staging_files.len());
         if staging_files.is_empty() {
             self.reset_staging_metrics(tenant_id);
             return Ok(None);
@@ -688,6 +713,11 @@ impl Stream {
         props: &WriterProperties,
         time_partition: Option<&String>,
     ) -> Result<bool, StagingError> {
+        let _span = info_span!(
+            "write_parquet_part_file",
+            stream_name = %self.stream_name,
+        )
+        .entered();
         let mut part_file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -1130,6 +1160,12 @@ impl Stream {
     }
 
     /// First flushes arrows onto disk and then converts the arrow into parquet
+    #[instrument(
+        name = "flush_and_convert",
+        level = "info",
+        skip(self, tenant_id),
+        fields(stream_name = %self.stream_name)
+    )]
     pub fn flush_and_convert(
         &self,
         init_signal: bool,

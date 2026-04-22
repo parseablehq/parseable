@@ -25,7 +25,7 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, interval_at, sleep};
 use tokio::{select, task};
-use tracing::{error, info, trace, warn};
+use tracing::{Instrument, error, info, info_span, trace, warn};
 
 use crate::alerts::alert_enums::AlertTask;
 use crate::alerts::alerts_utils;
@@ -127,22 +127,24 @@ pub fn object_store_sync() -> (
             loop {
                 select! {
                     _ = sync_interval.tick() => {
-                        trace!("Syncing Parquets to Object Store... ");
+                        async {
+                            trace!("Syncing Parquets to Object Store... ");
 
-                        // Monitor the duration of sync_all_streams execution
-                        monitor_task_duration(
-                            "object_store_sync_all_streams",
-                            Duration::from_secs(PARSEABLE.options.object_store_sync_threshold),
-                            || async {
-                                let mut joinset = JoinSet::new();
-                                sync_all_streams(&mut joinset);
+                            // Monitor the duration of sync_all_streams execution
+                            monitor_task_duration(
+                                "object_store_sync_all_streams",
+                                Duration::from_secs(PARSEABLE.options.object_store_sync_threshold),
+                                || async {
+                                    let mut joinset = JoinSet::new();
+                                    sync_all_streams(&mut joinset);
 
-                                // Wait for all spawned tasks to complete
-                                while let Some(res) = joinset.join_next().await {
-                                    log_join_result(res, "object store sync");
+                                    // Wait for all spawned tasks to complete
+                                    while let Some(res) = joinset.join_next().await {
+                                        log_join_result(res, "object store sync");
+                                    }
                                 }
-                            }
-                        ).await;
+                            ).await;
+                        }.instrument(info_span!("object_store_sync_cycle")).await;
                     },
                     res = &mut inbox_rx => {
                         match res {
@@ -195,19 +197,21 @@ pub fn local_sync() -> (
                 select! {
                     _ = sync_interval.tick() => {
                         // Monitor the duration of flush_and_convert execution
-                        monitor_task_duration(
-                            "local_sync_flush_and_convert",
-                            Duration::from_secs(PARSEABLE.options.local_sync_threshold),
-                            || async {
-                                let mut joinset = JoinSet::new();
-                                PARSEABLE.streams.flush_and_convert(&mut joinset, false, false);
+                        async {
+                            monitor_task_duration(
+                                "local_sync_flush_and_convert",
+                                Duration::from_secs(PARSEABLE.options.local_sync_threshold),
+                                || async {
+                                    let mut joinset = JoinSet::new();
+                                    PARSEABLE.streams.flush_and_convert(&mut joinset, false, false);
 
-                                // Wait for all spawned tasks to complete
-                                while let Some(res) = joinset.join_next().await {
-                                    log_join_result(res, "flush and convert");
+                                    // Wait for all spawned tasks to complete
+                                    while let Some(res) = joinset.join_next().await {
+                                        log_join_result(res, "flush and convert");
+                                    }
                                 }
-                            }
-                        ).await;
+                            ).await;
+                        }.instrument(info_span!("local_sync_cycle")).await;
                     },
                     res = &mut inbox_rx => {
                         match res {

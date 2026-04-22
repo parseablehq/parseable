@@ -23,6 +23,8 @@ use opentelemetry_proto::tonic::metrics::v1::{
 };
 use serde_json::{Map, Value};
 
+use tracing::info_span;
+
 use crate::metrics::increment_metrics_collected_by_date;
 
 use super::otel_utils::{
@@ -516,6 +518,11 @@ fn process_resource_metrics<T, S, M>(
     get_metric: fn(&M) -> &Metric,
     tenant_id: &str,
 ) -> Vec<Value> {
+    let _span = info_span!(
+        "process_resource_metrics",
+        resource_count = resource_metrics.len(),
+    )
+    .entered();
     let mut vec_otel_json = Vec::new();
 
     for resource_metric in resource_metrics {
@@ -608,7 +615,14 @@ pub fn flatten_otel_metrics_protobuf(
     message: &ExportMetricsServiceRequest,
     tenant_id: &str,
 ) -> Vec<Value> {
-    process_resource_metrics(
+    let span = info_span!(
+        "flatten_otel_metrics_protobuf",
+        resource_metrics_count = message.resource_metrics.len(),
+        output_count = tracing::field::Empty,
+    );
+    let _guard = span.enter();
+
+    let result = process_resource_metrics(
         &message.resource_metrics,
         |record| record.resource.as_ref(),
         |record| &record.scope_metrics,
@@ -618,7 +632,10 @@ pub fn flatten_otel_metrics_protobuf(
         |scope_metric| &scope_metric.metrics,
         |metric| metric,
         tenant_id,
-    )
+    );
+
+    span.record("output_count", result.len());
+    result
 }
 
 /// otel metrics event has json object for aggregation temporality

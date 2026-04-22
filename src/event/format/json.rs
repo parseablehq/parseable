@@ -31,7 +31,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
 };
-use tracing::error;
+use tracing::{error, info_span};
 
 use super::EventFormat;
 use super::{detect_schema_conflicts, rename_conflicting_fields_in_json};
@@ -86,8 +86,11 @@ impl EventFormat for Event {
         // IMPORTANT: Detect conflicts BEFORE update_field_type_in_schema, because
         // update_field_type_in_schema may override types (e.g., force Utf8 to Timestamp
         // if existing schema has Timestamp), which would hide the actual conflict.
-        let raw_inferred_schema = infer_json_schema_from_iterator(value_arr.iter().map(Ok))
-            .map_err(|err| anyhow!("Could not infer schema for this event due to err {:?}", err))?;
+        let raw_inferred_schema = {
+            let _span = info_span!("infer_json_schema", record_count = value_arr.len()).entered();
+            infer_json_schema_from_iterator(value_arr.iter().map(Ok))
+                .map_err(|err| anyhow!("Could not infer schema for this event due to err {:?}", err))?
+        };
 
         // Detect schema conflicts using raw inferred schema vs existing stream schema
         // Pass the actual values and schema_version to check if values can be coerced to existing types
@@ -110,7 +113,10 @@ impl EventFormat for Event {
             collect_keys(value_arr.iter()).expect("fields can be collected from array of objects");
 
         let mut is_first = false;
-        let (value_arr, schema) = match derive_arrow_schema(stream_schema, fields) {
+        let (value_arr, schema) = match {
+            let _span = info_span!("derive_arrow_schema").entered();
+            derive_arrow_schema(stream_schema, fields)
+        } {
             Ok(schema) => (value_arr, schema),
             Err(_) => {
                 let mut infer_schema = infer_json_schema_from_iterator(value_arr.iter().map(Ok))
@@ -155,6 +161,7 @@ impl EventFormat for Event {
 
     // Convert the Data type (defined above) to arrow record batch
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, anyhow::Error> {
+        let _span = info_span!("json_to_recordbatch", record_count = data.len()).entered();
         let array_capacity = round_upto_multiple_of_64(data.len());
         let mut reader = ReaderBuilder::new(schema)
             .with_batch_size(array_capacity)

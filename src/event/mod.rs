@@ -24,6 +24,8 @@ use arrow_schema::{Field, Fields, Schema};
 use itertools::Itertools;
 use std::sync::Arc;
 
+use tracing::{info_span, instrument};
+
 use self::error::EventError;
 use crate::{
     LOCK_EXPECT,
@@ -60,6 +62,16 @@ pub struct Event {
 
 // Events holds the schema related to a each event for a single log stream
 impl Event {
+    #[instrument(
+        name = "event_process",
+        level = "info",
+        skip_all,
+        fields(
+            stream_name = %self.stream_name,
+            num_rows = self.rb.num_rows(),
+            is_first_event = self.is_first_event
+        )
+    )]
     pub fn process(self) -> Result<(), EventError> {
         let mut key = get_schema_key(&self.rb.schema().fields);
         if self.time_partition.is_some() {
@@ -144,6 +156,7 @@ pub fn commit_schema(
     schema: Arc<Schema>,
     tenant_id: &Option<String>,
 ) -> Result<(), StagingError> {
+    let _span = info_span!("commit_schema", stream_name).entered();
     let mut stream_metadata = PARSEABLE.streams.write().expect("lock poisoned");
     let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     let map = &mut stream_metadata
