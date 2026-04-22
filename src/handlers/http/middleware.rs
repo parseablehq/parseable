@@ -156,29 +156,69 @@ where
         let mut header_error = None;
         let user_and_tenant_id = get_user_and_tenant(&self.action, &mut req, &mut header_error);
 
-        // If X-API-KEY header is present for ingestion, short-circuit normal auth
-        if let Some(api_key) = extract_api_key(&req, &self.action) {
+        // If X-API-KEY header is present and the action supports API key auth,
+        // short-circuit the normal auth flow.
+        if let Some(api_key) = extract_api_key(&req)
+            && let Some(required_type) = api_key_type_for_action(&self.action)
+        {
+            struct SessionCleanupGuard(Option<Ulid>);
+            impl Drop for SessionCleanupGuard {
+                fn drop(&mut self) {
+                    if let Some(sid) = self.0 {
+                        mut_sessions().remove_session(&SessionKey::SessionId(sid));
+                    }
+                }
+            }
+
             let suspension = check_suspension(req.request(), self.action);
             let tenant_id = req
                 .headers()
                 .get(TENANT_ID)
                 .and_then(|v| v.to_str().ok())
                 .map(String::from);
+
+            // For Query keys, set up a short-lived session with global reader
+            // permissions so the query handler's per-stream auth passes.
+            let query_session_id = if required_type == crate::apikeys::KeyType::Query {
+                let session_id = Ulid::new();
+                let session_key = SessionKey::SessionId(session_id);
+                mut_sessions().track_new(
+                    format!("api-key:{session_id}"),
+                    session_key.clone(),
+                    Utc::now() + TimeDelta::minutes(5),
+                    query_api_key_permissions(),
+                    &tenant_id,
+                );
+                req.extensions_mut().insert(session_key);
+                Some(session_id)
+            } else {
+                None
+            };
+
             let fut = self.service.call(req);
 
             return Box::pin(async move {
-                if let Some(err) = header_error {
-                    return Err(err);
-                }
-                if let rbac::Response::Suspended(msg) = suspension {
-                    return Err(ErrorBadRequest(msg));
-                }
+                let _guard = SessionCleanupGuard(query_session_id);
+                let result: Result<ServiceResponse<B>, Error> = async {
+                    if let Some(err) = header_error {
+                        return Err(err);
+                    }
+                    if let rbac::Response::Suspended(msg) = suspension {
+                        return Err(ErrorBadRequest(msg));
+                    }
 
-                use crate::apikeys::API_KEYS;
-                if API_KEYS.validate_key(&api_key, &tenant_id).await {
-                    return fut.await;
+                    use crate::apikeys::API_KEYS;
+                    if API_KEYS
+                        .validate_key(&api_key, &tenant_id, required_type)
+                        .await
+                    {
+                        return fut.await;
+                    }
+                    Err(ErrorUnauthorized("Invalid API key"))
                 }
-                Err(ErrorUnauthorized("Invalid API key"))
+                .await;
+
+                result
             });
         }
 
@@ -263,16 +303,33 @@ fn extract_kinesis_headers(req: &mut ServiceRequest) {
     }
 }
 
-/// Extract X-API-KEY header value if present and action is Ingest.
-fn extract_api_key(req: &ServiceRequest, action: &Action) -> Option<String> {
-    if action.eq(&Action::Ingest) {
-        req.headers()
-            .get("x-api-key")
-            .and_then(|v| v.to_str().ok())
-            .map(String::from)
-    } else {
-        None
+/// Extract X-API-KEY header value if present (independent of action).
+fn extract_api_key(req: &ServiceRequest) -> Option<String> {
+    req.headers()
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from)
+}
+
+/// Map an Action to the KeyType required for API key auth on that action.
+/// Returns None if the action doesn't support API key auth.
+fn api_key_type_for_action(action: &Action) -> Option<crate::apikeys::KeyType> {
+    use crate::apikeys::KeyType;
+    match action {
+        Action::Ingest => Some(KeyType::Ingestion),
+        Action::Query => Some(KeyType::Query),
+        _ => None,
     }
+}
+
+/// Build the set of permissions granted to a Query API key session.
+/// Equivalent to the Reader privilege with no resource restriction
+/// (global query access across all streams in the tenant).
+fn query_api_key_permissions() -> Vec<crate::rbac::role::Permission> {
+    crate::rbac::role::RoleBuilder::from(&crate::rbac::role::model::DefaultPrivilege::Reader {
+        resource: None,
+    })
+    .build()
 }
 
 #[inline]

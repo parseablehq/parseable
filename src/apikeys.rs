@@ -39,12 +39,24 @@ pub struct ApiKeyStore {
     pub keys: RwLock<HashMap<String, HashMap<Ulid, ApiKey>>>,
 }
 
+/// Type of API key, determining how it can be used.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum KeyType {
+    /// Used as a substitute for basic auth on ingestion endpoints
+    Ingestion,
+    /// Used as a substitute for basic auth on query endpoints (global query access)
+    Query,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiKey {
     pub key_id: Ulid,
     pub api_key: String,
     pub key_name: String,
+    #[serde(default = "default_key_type")]
+    pub key_type: KeyType,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
@@ -52,11 +64,17 @@ pub struct ApiKey {
     pub tenant: Option<String>,
 }
 
+fn default_key_type() -> KeyType {
+    KeyType::Ingestion
+}
+
 /// Request body for creating a new API key
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateApiKeyRequest {
     pub key_name: String,
+    #[serde(default = "default_key_type")]
+    pub key_type: KeyType,
 }
 
 /// Response for list keys (api_key masked to last 4 chars)
@@ -66,18 +84,25 @@ pub struct ApiKeyListEntry {
     pub key_id: Ulid,
     pub api_key: String,
     pub key_name: String,
+    pub key_type: KeyType,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
 }
 
 impl ApiKey {
-    pub fn new(key_name: String, created_by: String, tenant: Option<String>) -> Self {
+    pub fn new(
+        key_name: String,
+        key_type: KeyType,
+        created_by: String,
+        tenant: Option<String>,
+    ) -> Self {
         let now = Utc::now();
         Self {
             key_id: Ulid::new(),
             api_key: uuid::Uuid::new_v4().to_string(),
             key_name,
+            key_type,
             created_by,
             created_at: now,
             modified_at: now,
@@ -96,6 +121,7 @@ impl ApiKey {
             key_id: self.key_id,
             api_key: masked,
             key_name: self.key_name.clone(),
+            key_type: self.key_type,
             created_by: self.created_by.clone(),
             created_at: self.created_at,
             modified_at: self.modified_at,
@@ -228,24 +254,24 @@ impl ApiKeyStore {
             .ok_or_else(|| ApiKeyError::KeyNotFound(key_id.to_string()))
     }
 
-    /// Validate an API key for ingestion. Returns true if the key is valid.
+    /// Validate an API key against a required key type. Returns true if the
+    /// key is valid AND its type matches the required type.
     /// For multi-tenant: checks the key belongs to the specified tenant.
     /// For single-tenant: checks the key exists globally.
-    pub async fn validate_key(&self, api_key_value: &str, tenant_id: &Option<String>) -> bool {
+    pub async fn validate_key(
+        &self,
+        api_key_value: &str,
+        tenant_id: &Option<String>,
+        required_type: KeyType,
+    ) -> bool {
         let map = self.keys.read().await;
-        if let Some(tenant_id) = tenant_id {
-            // Multi-tenant: check keys for the specific tenant
-            if let Some(tenant_keys) = map.get(tenant_id) {
-                return tenant_keys.values().any(|k| k.api_key == api_key_value);
-            }
-            false
-        } else {
-            // Single-tenant: check keys under DEFAULT_TENANT
-            if let Some(tenant_keys) = map.get(DEFAULT_TENANT) {
-                return tenant_keys.values().any(|k| k.api_key == api_key_value);
-            }
-            false
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        if let Some(tenant_keys) = map.get(tenant) {
+            return tenant_keys
+                .values()
+                .any(|k| k.api_key == api_key_value && k.key_type == required_type);
         }
+        false
     }
 
     /// Insert an API key directly into memory (used for sync from prism)
