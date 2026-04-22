@@ -32,6 +32,7 @@ use once_cell::sync::OnceCell;
 use ulid::Ulid;
 
 use crate::{
+    apikeys::API_KEYS,
     handlers::{
         AUTHORIZATION_KEY, KINESIS_COMMON_ATTRIBUTES_KEY, LOG_SOURCE_KEY, LOG_SOURCE_KINESIS,
         STREAM_NAME_HEADER_KEY, TENANT_ID,
@@ -147,39 +148,95 @@ where
     forward_ready!(service);
 
     fn call(&self, mut req: ServiceRequest) -> Self::Future {
-        /*Below section is added to extract the Authorization and X-P-Stream headers from x-amz-firehose-common-attributes custom header
-        when request is made from Kinesis Firehose.
-        For requests made from other clients, no change.
-
-        ## Section start */
-        if self.action.eq(&Action::Ingest)
-            && let Some(kinesis_common_attributes) =
-                req.request().headers().get(KINESIS_COMMON_ATTRIBUTES_KEY)
-            && let Ok(attribute_value) = kinesis_common_attributes.to_str()
-            && let Ok(message) = serde_json::from_str::<Message>(attribute_value)
-            && let Ok(auth_value) =
-                header::HeaderValue::from_str(&message.common_attributes.authorization)
-            && let Ok(stream_name_key) =
-                header::HeaderValue::from_str(&message.common_attributes.x_p_stream)
-        {
-            req.headers_mut()
-                .insert(HeaderName::from_static(AUTHORIZATION_KEY), auth_value);
-            req.headers_mut().insert(
-                HeaderName::from_static(STREAM_NAME_HEADER_KEY),
-                stream_name_key,
-            );
-            req.headers_mut().insert(
-                HeaderName::from_static(LOG_SOURCE_KEY),
-                header::HeaderValue::from_static(LOG_SOURCE_KINESIS),
-            );
+        // Extract Kinesis Firehose headers if applicable
+        if self.action.eq(&Action::Ingest) {
+            extract_kinesis_headers(&mut req);
         }
-        /* ## Section end */
-        // if action is Ingest and multi-tenancy is on, then request MUST have tenant id
-        // else check for the presence of tenant id using other details
+
+        // Capture the incoming tenant header value before `get_user_and_tenant`
+        // potentially mutates it, so the API-key branch below sees the original
+        // client-supplied value.
+        let tenant_id_before = req
+            .headers()
+            .get(TENANT_ID)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
 
         // an optional error to track the presence of CORRECT tenant header in case of ingestion
         let mut header_error = None;
         let user_and_tenant_id = get_user_and_tenant(&self.action, &mut req, &mut header_error);
+
+        // If X-API-KEY header is present and the action supports API key auth,
+        // short-circuit the normal auth flow.
+        if let Some(api_key) = extract_api_key(&req)
+            && let Some(required_type) = api_key_type_for_action(&self.action)
+        {
+            struct SessionCleanupGuard(Option<Ulid>);
+            impl Drop for SessionCleanupGuard {
+                fn drop(&mut self) {
+                    if let Some(sid) = self.0 {
+                        mut_sessions().remove_session(&SessionKey::SessionId(sid));
+                    }
+                }
+            }
+
+            let tenant_id = tenant_id_before;
+            let suspension = check_suspension_for_tenant(tenant_id.as_deref(), self.action);
+
+            // For Query keys we pre-allocate a session id and stash the
+            // SessionKey in req.extensions so the downstream handler can find
+            // it via extract_session_key_from_req. The actual session
+            // registration (track_new) is deferred until after the API key
+            // is validated, so failed requests don't mutate the shared
+            // sessions map.
+            let query_session_id = if required_type == crate::apikeys::KeyType::Query {
+                let session_id = Ulid::new();
+                req.extensions_mut()
+                    .insert(SessionKey::SessionId(session_id));
+                Some(session_id)
+            } else {
+                None
+            };
+
+            let fut = self.service.call(req);
+
+            return Box::pin(async move {
+                // Guard starts with None — only set to Some(session_id) once
+                // we've actually called track_new, so invalid/failed requests
+                // don't trigger a spurious remove_session.
+                let mut guard = SessionCleanupGuard(None);
+
+                if let Some(err) = header_error {
+                    return Err(err);
+                }
+                if let rbac::Response::Suspended(msg) = suspension {
+                    return Err(ErrorBadRequest(msg));
+                }
+
+                if !API_KEYS
+                    .validate_key(&api_key, &tenant_id, required_type)
+                    .await
+                {
+                    return Err(ErrorUnauthorized("Invalid API key"));
+                }
+
+                // Key validated — register the session in the shared
+                // sessions map. Arm the cleanup guard so the session is
+                // removed when this request completes.
+                if let Some(session_id) = query_session_id {
+                    mut_sessions().track_new(
+                        format!("api-key:{session_id}"),
+                        SessionKey::SessionId(session_id),
+                        Utc::now() + TimeDelta::minutes(5),
+                        query_api_key_permissions(),
+                        &tenant_id,
+                    );
+                    guard.0 = Some(session_id);
+                }
+
+                fut.await
+            });
+        }
 
         let key: Result<SessionKey, Error> = extract_session_key(&mut req);
 
@@ -235,6 +292,60 @@ where
             fut.await
         })
     }
+}
+
+/// Extract Kinesis Firehose headers (Authorization, X-P-Stream) from
+/// the x-amz-firehose-common-attributes custom header when present.
+fn extract_kinesis_headers(req: &mut ServiceRequest) {
+    if let Some(kinesis_common_attributes) =
+        req.request().headers().get(KINESIS_COMMON_ATTRIBUTES_KEY)
+        && let Ok(attribute_value) = kinesis_common_attributes.to_str()
+        && let Ok(message) = serde_json::from_str::<Message>(attribute_value)
+        && let Ok(auth_value) =
+            header::HeaderValue::from_str(&message.common_attributes.authorization)
+        && let Ok(stream_name_key) =
+            header::HeaderValue::from_str(&message.common_attributes.x_p_stream)
+    {
+        req.headers_mut()
+            .insert(HeaderName::from_static(AUTHORIZATION_KEY), auth_value);
+        req.headers_mut().insert(
+            HeaderName::from_static(STREAM_NAME_HEADER_KEY),
+            stream_name_key,
+        );
+        req.headers_mut().insert(
+            HeaderName::from_static(LOG_SOURCE_KEY),
+            header::HeaderValue::from_static(LOG_SOURCE_KINESIS),
+        );
+    }
+}
+
+/// Extract X-API-KEY header value if present (independent of action).
+fn extract_api_key(req: &ServiceRequest) -> Option<String> {
+    req.headers()
+        .get("x-api-key")
+        .and_then(|v| v.to_str().ok())
+        .map(String::from)
+}
+
+/// Map an Action to the KeyType required for API key auth on that action.
+/// Returns None if the action doesn't support API key auth.
+fn api_key_type_for_action(action: &Action) -> Option<crate::apikeys::KeyType> {
+    use crate::apikeys::KeyType;
+    match action {
+        Action::Ingest => Some(KeyType::Ingestion),
+        Action::Query => Some(KeyType::Query),
+        _ => None,
+    }
+}
+
+/// Build the set of permissions granted to a Query API key session.
+/// Equivalent to the Reader privilege with no resource restriction
+/// (global query access across all streams in the tenant).
+fn query_api_key_permissions() -> Vec<crate::rbac::role::Permission> {
+    crate::rbac::role::RoleBuilder::from(&crate::rbac::role::model::DefaultPrivilege::Reader {
+        resource: None,
+    })
+    .build()
 }
 
 #[inline]
@@ -390,14 +501,18 @@ pub async fn refresh_token(
 
 #[inline(always)]
 pub fn check_suspension(req: &HttpRequest, action: Action) -> rbac::Response {
-    if let Some(tenant) = req.headers().get(TENANT_ID)
-        && let Ok(tenant) = tenant.to_str()
+    let tenant = req.headers().get(TENANT_ID).and_then(|v| v.to_str().ok());
+    check_suspension_for_tenant(tenant, action)
+}
+
+/// Variant of check_suspension that takes the tenant id directly.
+/// Useful when the caller has already captured the tenant from the request
+/// (e.g., before another function may have mutated the TENANT_ID header).
+pub fn check_suspension_for_tenant(tenant: Option<&str>, action: Action) -> rbac::Response {
+    if let Some(tenant) = tenant
+        && let Ok(Some(suspension)) = TENANT_METADATA.is_action_suspended(tenant, &action)
     {
-        if let Ok(Some(suspension)) = TENANT_METADATA.is_action_suspended(tenant, &action) {
-            return rbac::Response::Suspended(suspension);
-        } else {
-            // tenant does not exist
-        }
+        return rbac::Response::Suspended(suspension);
     }
     rbac::Response::Authorized
 }
