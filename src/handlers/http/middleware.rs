@@ -152,6 +152,15 @@ where
             extract_kinesis_headers(&mut req);
         }
 
+        // Capture the incoming tenant header value before `get_user_and_tenant`
+        // potentially mutates it, so the API-key branch below sees the original
+        // client-supplied value.
+        let tenant_id_before = req
+            .headers()
+            .get(TENANT_ID)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from);
+
         // an optional error to track the presence of CORRECT tenant header in case of ingestion
         let mut header_error = None;
         let user_and_tenant_id = get_user_and_tenant(&self.action, &mut req, &mut header_error);
@@ -170,12 +179,8 @@ where
                 }
             }
 
-            let suspension = check_suspension(req.request(), self.action);
-            let tenant_id = req
-                .headers()
-                .get(TENANT_ID)
-                .and_then(|v| v.to_str().ok())
-                .map(String::from);
+            let tenant_id = tenant_id_before;
+            let suspension = check_suspension_for_tenant(tenant_id.as_deref(), self.action);
 
             // For Query keys, set up a short-lived session with global reader
             // permissions so the query handler's per-stream auth passes.
@@ -485,14 +490,18 @@ pub async fn refresh_token(
 
 #[inline(always)]
 pub fn check_suspension(req: &HttpRequest, action: Action) -> rbac::Response {
-    if let Some(tenant) = req.headers().get(TENANT_ID)
-        && let Ok(tenant) = tenant.to_str()
+    let tenant = req.headers().get(TENANT_ID).and_then(|v| v.to_str().ok());
+    check_suspension_for_tenant(tenant, action)
+}
+
+/// Variant of check_suspension that takes the tenant id directly.
+/// Useful when the caller has already captured the tenant from the request
+/// (e.g., before another function may have mutated the TENANT_ID header).
+pub fn check_suspension_for_tenant(tenant: Option<&str>, action: Action) -> rbac::Response {
+    if let Some(tenant) = tenant
+        && let Ok(Some(suspension)) = TENANT_METADATA.is_action_suspended(tenant, &action)
     {
-        if let Ok(Some(suspension)) = TENANT_METADATA.is_action_suspended(tenant, &action) {
-            return rbac::Response::Suspended(suspension);
-        } else {
-            // tenant does not exist
-        }
+        return rbac::Response::Suspended(suspension);
     }
     rbac::Response::Authorized
 }

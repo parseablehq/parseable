@@ -164,24 +164,37 @@ impl ApiKeyStore {
     /// Create a new API key
     pub async fn create(&self, api_key: ApiKey) -> Result<(), ApiKeyError> {
         let tenant = api_key.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
+        let key_id = api_key.key_id;
 
-        // Hold write lock for the entire operation to prevent TOCTOU race
-        // on duplicate name check
-        let mut map = self.keys.write().await;
-        if let Some(tenant_keys) = map.get(tenant)
-            && tenant_keys.values().any(|k| k.key_name == api_key.key_name)
+        // Check duplicate name and reserve the slot under the write lock,
+        // then drop the lock before the async metastore call so we don't
+        // hold a global lock across an await.
         {
-            return Err(ApiKeyError::DuplicateKeyName(api_key.key_name));
+            let mut map = self.keys.write().await;
+            if let Some(tenant_keys) = map.get(tenant)
+                && tenant_keys.values().any(|k| k.key_name == api_key.key_name)
+            {
+                return Err(ApiKeyError::DuplicateKeyName(api_key.key_name));
+            }
+            map.entry(tenant.to_owned())
+                .or_default()
+                .insert(key_id, api_key.clone());
         }
 
-        PARSEABLE
+        // Persist to storage without holding the lock. On failure, remove
+        // the reservation so stale entries don't linger in memory.
+        if let Err(e) = PARSEABLE
             .metastore
             .put_api_key(&api_key, &api_key.tenant)
-            .await?;
+            .await
+        {
+            let mut map = self.keys.write().await;
+            if let Some(tenant_keys) = map.get_mut(tenant) {
+                tenant_keys.remove(&key_id);
+            }
+            return Err(e.into());
+        }
 
-        map.entry(tenant.to_owned())
-            .or_default()
-            .insert(api_key.key_id, api_key);
         Ok(())
     }
 
