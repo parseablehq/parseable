@@ -39,8 +39,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 use tokio::task::JoinSet;
-use tracing::info;
-use tracing::{error, warn};
+use tracing::{Instrument, error, info, info_span, warn};
 use ulid::Ulid;
 
 use crate::catalog::{self, snapshot::Snapshot};
@@ -1188,21 +1187,25 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
         for stream_name in PARSEABLE.streams.list(&tenant_id) {
             let object_store = object_store.clone();
             let id = tenant_id.clone();
-            joinset.spawn(async move {
-                let start = Instant::now();
-                let result = object_store
-                    .upload_files_from_staging(&stream_name, id)
-                    .await;
-                if let Err(ref e) = result {
-                    error!("Failed to upload files from staging for stream {stream_name}: {e}");
-                } else {
-                    info!(
-                        "Completed object_store_sync for stream- {stream_name} in {} ms",
-                        start.elapsed().as_millis()
-                    );
+            let span = info_span!("stream_upload", stream_name = %stream_name);
+            joinset.spawn(
+                async move {
+                    let start = Instant::now();
+                    let result = object_store
+                        .upload_files_from_staging(&stream_name, id)
+                        .await;
+                    if let Err(ref e) = result {
+                        error!("Failed to upload files from staging for stream {stream_name}: {e}");
+                    } else {
+                        info!(
+                            "Completed object_store_sync for stream- {stream_name} in {} ms",
+                            start.elapsed().as_millis()
+                        );
+                    }
+                    result
                 }
-                result
-            });
+                .instrument(span),
+            );
         }
     }
 }

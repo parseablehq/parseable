@@ -43,7 +43,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::task::JoinSet;
-use tracing::{error, info, info_span, instrument, trace, warn};
+use tracing::{Instrument, error, info, info_span, instrument, trace, warn};
 use ulid::Ulid;
 
 use crate::{
@@ -1335,9 +1335,13 @@ impl Streams {
             };
             for stream in streams {
                 let tenant = tenant_id.clone();
-                joinset.spawn(async move {
-                    stream.flush_and_convert(init_signal, shutdown_signal, &Some(tenant))
-                });
+                let span = info_span!("stream_sync", stream_name = %stream.stream_name);
+                joinset.spawn(
+                    async move {
+                        stream.flush_and_convert(init_signal, shutdown_signal, &Some(tenant))
+                    }
+                    .instrument(span),
+                );
             }
         }
     }
