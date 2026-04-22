@@ -32,6 +32,7 @@ use once_cell::sync::OnceCell;
 use ulid::Ulid;
 
 use crate::{
+    apikeys::API_KEYS,
     handlers::{
         AUTHORIZATION_KEY, KINESIS_COMMON_ATTRIBUTES_KEY, LOG_SOURCE_KEY, LOG_SOURCE_KINESIS,
         STREAM_NAME_HEADER_KEY, TENANT_ID,
@@ -182,19 +183,16 @@ where
             let tenant_id = tenant_id_before;
             let suspension = check_suspension_for_tenant(tenant_id.as_deref(), self.action);
 
-            // For Query keys, set up a short-lived session with global reader
-            // permissions so the query handler's per-stream auth passes.
+            // For Query keys we pre-allocate a session id and stash the
+            // SessionKey in req.extensions so the downstream handler can find
+            // it via extract_session_key_from_req. The actual session
+            // registration (track_new) is deferred until after the API key
+            // is validated, so failed requests don't mutate the shared
+            // sessions map.
             let query_session_id = if required_type == crate::apikeys::KeyType::Query {
                 let session_id = Ulid::new();
-                let session_key = SessionKey::SessionId(session_id);
-                mut_sessions().track_new(
-                    format!("api-key:{session_id}"),
-                    session_key.clone(),
-                    Utc::now() + TimeDelta::minutes(5),
-                    query_api_key_permissions(),
-                    &tenant_id,
-                );
-                req.extensions_mut().insert(session_key);
+                req.extensions_mut()
+                    .insert(SessionKey::SessionId(session_id));
                 Some(session_id)
             } else {
                 None
@@ -203,27 +201,40 @@ where
             let fut = self.service.call(req);
 
             return Box::pin(async move {
-                let _guard = SessionCleanupGuard(query_session_id);
-                let result: Result<ServiceResponse<B>, Error> = async {
-                    if let Some(err) = header_error {
-                        return Err(err);
-                    }
-                    if let rbac::Response::Suspended(msg) = suspension {
-                        return Err(ErrorBadRequest(msg));
-                    }
+                // Guard starts with None — only set to Some(session_id) once
+                // we've actually called track_new, so invalid/failed requests
+                // don't trigger a spurious remove_session.
+                let mut guard = SessionCleanupGuard(None);
 
-                    use crate::apikeys::API_KEYS;
-                    if API_KEYS
-                        .validate_key(&api_key, &tenant_id, required_type)
-                        .await
-                    {
-                        return fut.await;
-                    }
-                    Err(ErrorUnauthorized("Invalid API key"))
+                if let Some(err) = header_error {
+                    return Err(err);
                 }
-                .await;
+                if let rbac::Response::Suspended(msg) = suspension {
+                    return Err(ErrorBadRequest(msg));
+                }
 
-                result
+                if !API_KEYS
+                    .validate_key(&api_key, &tenant_id, required_type)
+                    .await
+                {
+                    return Err(ErrorUnauthorized("Invalid API key"));
+                }
+
+                // Key validated — register the session in the shared
+                // sessions map. Arm the cleanup guard so the session is
+                // removed when this request completes.
+                if let Some(session_id) = query_session_id {
+                    mut_sessions().track_new(
+                        format!("api-key:{session_id}"),
+                        SessionKey::SessionId(session_id),
+                        Utc::now() + TimeDelta::minutes(5),
+                        query_api_key_permissions(),
+                        &tenant_id,
+                    );
+                    guard.0 = Some(session_id);
+                }
+
+                fut.await
             });
         }
 
