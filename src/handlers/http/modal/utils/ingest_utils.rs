@@ -22,9 +22,10 @@ use chrono::Utc;
 use opentelemetry_proto::tonic::{
     logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
 };
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde_json::Value;
-use std::collections::HashMap;
-use tracing::{instrument, warn, Span};
+use std::{collections::HashMap, ops::ControlFlow};
+use tracing::{instrument, warn};
 
 use crate::{
     event::{
@@ -51,7 +52,14 @@ const MAX_FIELD_VALUE_LENGTH: usize = 100;
 #[instrument(
     name = "flatten_and_push_logs",
     level = "info",
-    skip(json, log_source, p_custom_fields, time_partition, telemetry_type, tenant_id),
+    skip(
+        json,
+        log_source,
+        p_custom_fields,
+        time_partition,
+        telemetry_type,
+        tenant_id
+    ),
     fields(stream_name)
 )]
 pub async fn flatten_and_push_logs(
@@ -81,8 +89,7 @@ pub async fn flatten_and_push_logs(
                 time_partition,
                 telemetry_type,
                 tenant_id,
-            )
-            .await?;
+            )?;
         }
         LogSource::OtelLogs => {
             //custom flattening required for otel logs
@@ -96,8 +103,7 @@ pub async fn flatten_and_push_logs(
                     time_partition.clone(),
                     telemetry_type,
                     tenant_id,
-                )
-                .await?;
+                )?;
             }
         }
         LogSource::OtelTraces => {
@@ -112,8 +118,7 @@ pub async fn flatten_and_push_logs(
                     time_partition.clone(),
                     telemetry_type,
                     tenant_id,
-                )
-                .await?;
+                )?;
             }
         }
         LogSource::OtelMetrics => {
@@ -128,22 +133,18 @@ pub async fn flatten_and_push_logs(
                     time_partition.clone(),
                     telemetry_type,
                     tenant_id,
-                )
-                .await?;
+                )?;
             }
         }
-        _ => {
-            push_logs(
-                stream_name,
-                json,
-                log_source,
-                p_custom_fields,
-                time_partition,
-                telemetry_type,
-                tenant_id,
-            )
-            .await?
-        }
+        _ => push_logs(
+            stream_name,
+            json,
+            log_source,
+            p_custom_fields,
+            time_partition,
+            telemetry_type,
+            tenant_id,
+        )?,
     }
 
     Ok(())
@@ -155,7 +156,7 @@ pub async fn flatten_and_push_logs(
     skip(json, log_source, p_custom_fields, time_partition, telemetry_type, tenant_id),
     fields(stream_name, record_count = tracing::field::Empty)
 )]
-pub async fn push_logs(
+pub fn push_logs(
     stream_name: &str,
     json: Value,
     log_source: &LogSource,
@@ -181,27 +182,62 @@ pub async fn push_logs(
         log_source,
     )?;
 
-    let mut count = 0u64;
-    for json in data {
+    // let mut count = 0u64;
+
+    let r = data.into_par_iter().try_for_each(|json| {
         let origin_size = json_byte_size(&json);
-        json::Event { json, p_timestamp }
-            .into_event(
-                stream_name.to_owned(),
-                origin_size,
-                &schema,
-                static_schema_flag,
-                custom_partition.as_ref(),
-                time_partition.as_ref(),
-                schema_version,
-                StreamType::UserDefined,
-                p_custom_fields,
-                telemetry_type,
-                tenant_id,
-            )?
-            .process()?;
-        count += 1;
+
+        match (json::Event { json, p_timestamp }).into_event(
+            stream_name.to_owned(),
+            origin_size,
+            &schema,
+            static_schema_flag,
+            custom_partition.as_ref(),
+            time_partition.as_ref(),
+            schema_version,
+            StreamType::UserDefined,
+            p_custom_fields,
+            telemetry_type,
+            tenant_id,
+        ) {
+            Ok(event) => match event.process() {
+                Ok(_) => {
+                    // count += 1;
+                    ControlFlow::Continue(())
+                }
+                Err(e) => return ControlFlow::Break(e.into()),
+            },
+            Err(e) => return ControlFlow::Break(e),
+        }
+        // ?
+        // .process()?;
+        // count += 1;
+    });
+    if let ControlFlow::Break(e) = r {
+        return Err(PostError::CustomError(e.to_string()));
     }
-    Span::current().record("record_count", count);
+
+    // for json in data {
+    //     let origin_size = json_byte_size(&json);
+    //     json::Event { json, p_timestamp }
+    //         .into_event(
+    //             stream_name.to_owned(),
+    //             origin_size,
+    //             &schema,
+    //             static_schema_flag,
+    //             custom_partition.as_ref(),
+    //             time_partition.as_ref(),
+    //             schema_version,
+    //             StreamType::UserDefined,
+    //             p_custom_fields,
+    //             telemetry_type,
+    //             tenant_id,
+    //         )?
+    //         .process()?;
+    //     count += 1;
+    // }
+
+    // Span::current().record("record_count", count);
     Ok(())
 }
 
