@@ -88,8 +88,9 @@ impl EventFormat for Event {
         // if existing schema has Timestamp), which would hide the actual conflict.
         let raw_inferred_schema = {
             let _span = info_span!("infer_json_schema", record_count = value_arr.len()).entered();
-            infer_json_schema_from_iterator(value_arr.iter().map(Ok))
-                .map_err(|err| anyhow!("Could not infer schema for this event due to err {:?}", err))?
+            infer_json_schema_from_iterator(value_arr.iter().map(Ok)).map_err(|err| {
+                anyhow!("Could not infer schema for this event due to err {:?}", err)
+            })?
         };
 
         // Detect schema conflicts using raw inferred schema vs existing stream schema

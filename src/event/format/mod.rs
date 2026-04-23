@@ -28,8 +28,8 @@ use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tracing::info_span;
 use serde_json::Value;
+use tracing::info_span;
 
 use crate::{
     handlers::TelemetryType,

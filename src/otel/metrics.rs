@@ -438,9 +438,10 @@ pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<Map<String, Value>
         Some(metric::Data::Gauge(gauge)) => (flatten_gauge(gauge), "gauge"),
         Some(metric::Data::Sum(sum)) => (flatten_sum(sum), "sum"),
         Some(metric::Data::Histogram(histogram)) => (flatten_histogram(histogram), "histogram"),
-        Some(metric::Data::ExponentialHistogram(exp_histogram)) => {
-            (flatten_exp_histogram(exp_histogram), "exponential_histogram")
-        }
+        Some(metric::Data::ExponentialHistogram(exp_histogram)) => (
+            flatten_exp_histogram(exp_histogram),
+            "exponential_histogram",
+        ),
         Some(metric::Data::Summary(summary)) => (flatten_summary(summary), "summary"),
         None => return Vec::new(),
     };

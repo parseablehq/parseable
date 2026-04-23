@@ -16,9 +16,9 @@
  *
  */
 
-use std::{fmt, path::Path, sync::Arc};
+use std::{fmt, path::Path, sync::Arc, time::Duration};
 
-use actix_web::{App, HttpServer, middleware::from_fn, web::ServiceConfig};
+use actix_web::{App, HttpServer, http::KeepAlive, middleware::from_fn, web::ServiceConfig};
 use actix_web_prometheus::PrometheusMetrics;
 use anyhow::Context;
 use async_trait::async_trait;
@@ -121,8 +121,22 @@ pub trait ParseableServer {
 
         // Create the HTTP server
         let http_server = HttpServer::new(create_app_fn)
-            .workers(num_cpus::get())
+            .workers(PARSEABLE.options.num_workers)
+            .keep_alive(KeepAlive::Timeout(Duration::from_secs(
+                PARSEABLE.options.keep_alive,
+            )))
+            .client_request_timeout(Duration::from_secs(PARSEABLE.options.request_timeout))
+            .backlog(PARSEABLE.options.connection_backlog)
+            .max_connections(PARSEABLE.options.max_connections)
             .shutdown_timeout(60);
+        tracing::warn!(
+            "Starting Query server with-\nNum workers: {}\nKeep Alive: {}\nRequest timeout: {}\nConnection backlog: {}\nMax connections: {}",
+            PARSEABLE.options.num_workers,
+            PARSEABLE.options.keep_alive,
+            PARSEABLE.options.request_timeout,
+            PARSEABLE.options.connection_backlog,
+            PARSEABLE.options.max_connections
+        );
 
         // Start the server with or without TLS
         let srv = if let Some(config) = ssl {
