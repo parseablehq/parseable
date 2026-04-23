@@ -85,7 +85,8 @@ pub async fn list_users_prism(req: HttpRequest) -> impl Responder {
         Some(users) => users
             .values()
             .filter_map(|u| {
-                if u.protected {
+                // Skip protected users and API-key-backed users.
+                if u.protected || u.is_api_key() {
                     None
                 } else {
                     Some(to_prism_user(u))

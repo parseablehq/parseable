@@ -163,9 +163,16 @@ pub async fn generate_home_response(
 
     // Generate checklist and count triggered alerts
     let data_ingested = datasets.iter().any(|d| d.ingestion);
+    // Count only real (non-protected, non-API-key) users. API-key users are
+    // managed separately via /apikeys and shouldn't satisfy the onboarding
+    // checklist "a user has been added" check.
     let user_count = users()
         .get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-        .map(|m| m.values().filter(|u| !u.protected).count())
+        .map(|m| {
+            m.values()
+                .filter(|u| !u.protected && !u.is_api_key())
+                .count()
+        })
         .unwrap_or(0);
     let user_added = user_count > 1; // more than just the default admin user
 
