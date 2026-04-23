@@ -31,7 +31,6 @@ use crate::{
         alert_structs::{AlertStateEntry, MTTRHistory},
         target::Target,
     },
-    apikeys::ApiKey,
     catalog::manifest::Manifest,
     handlers::http::modal::NodeType,
     metastore::MetastoreError,
@@ -161,19 +160,6 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError>;
     async fn delete_target(
-        &self,
-        obj: &dyn MetastoreObject,
-        tenant_id: &Option<String>,
-    ) -> Result<(), MetastoreError>;
-
-    /// api keys
-    async fn get_api_keys(&self) -> Result<HashMap<String, Vec<ApiKey>>, MetastoreError>;
-    async fn put_api_key(
-        &self,
-        obj: &dyn MetastoreObject,
-        tenant_id: &Option<String>,
-    ) -> Result<(), MetastoreError>;
-    async fn delete_api_key(
         &self,
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,

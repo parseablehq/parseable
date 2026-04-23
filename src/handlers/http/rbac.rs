@@ -58,6 +58,7 @@ impl From<&user::User> for User {
         let method = match user.ty {
             user::UserType::Native(_) => "native".to_string(),
             user::UserType::OAuth(_) => "oauth".to_string(),
+            user::UserType::ApiKey(_) => "apikey".to_string(),
         };
 
         User {
@@ -150,7 +151,9 @@ pub async fn post_user(
     if Users.contains(&userid, &tenant_id)
         || metadata.users.iter().any(|user| match &user.ty {
             UserType::Native(basic) => basic.username == userid,
-            UserType::OAuth(_) => false, // OAuth users should be created differently
+            // OAuth users are created via the OIDC flow, and API key users
+            // are provisioned via the /apikeys endpoints.
+            UserType::OAuth(_) | UserType::ApiKey(_) => false,
         })
     {
         return Err(RBACError::UserExists(userid));
