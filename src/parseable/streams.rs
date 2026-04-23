@@ -538,20 +538,35 @@ impl Stream {
 
     pub fn flush(&self, forced: bool) {
         let _span = info_span!("flush", stream_name = %self.stream_name, forced).entered();
-        let mut writer = match self.writer.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                error!(
-                    "Writer lock poisoned while flushing data for stream {}",
-                    self.stream_name
-                );
-                poisoned.into_inner()
+        // Swap out stale writers under the lock, drop them after releasing it.
+        // DiskWriter::Drop does I/O (IPC finish + file rename) so dropping
+        // outside the lock avoids blocking concurrent push() calls.
+        let stale_writers = {
+            let mut writer = match self.writer.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    error!(
+                        "Writer lock poisoned while flushing data for stream {}",
+                        self.stream_name
+                    );
+                    poisoned.into_inner()
+                }
+            };
+            writer.mem.clear();
+
+            let mut old_disk = HashMap::new();
+            std::mem::swap(&mut writer.disk, &mut old_disk);
+            if !forced {
+                for (k, v) in old_disk.drain() {
+                    if v.is_current() {
+                        writer.disk.insert(k, v);
+                    }
+                }
             }
+            old_disk
         };
-        // Flush memory
-        writer.mem.clear();
-        // Drop schema -> disk writer mapping, triggers flush to disk
-        writer.disk.retain(|_, w| !forced && w.is_current());
+        // DiskWriter::Drop I/O happens here, outside the lock
+        drop(stale_writers);
     }
 
     fn parquet_writer_props(
@@ -577,7 +592,7 @@ impl Stream {
         // Create sorting columns
         let mut sorting_column_vec = vec![SortingColumn {
             column_idx: time_partition_idx as i32,
-            descending: true,
+            descending: false,
             nulls_first: true,
         }];
 
@@ -590,7 +605,7 @@ impl Stream {
 
                     sorting_column_vec.push(SortingColumn {
                         column_idx: idx as i32,
-                        descending: true,
+                        descending: false,
                         nulls_first: true,
                     });
                 }
