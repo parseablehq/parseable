@@ -67,7 +67,7 @@ use super::{
     ARROW_FILE_EXTENSION, LogStream, PART_FILE_EXTENSION,
     staging::{
         StagingError,
-        reader::{MergedRecordReader, MergedReverseRecordReader},
+        reader::MergedRecordReader,
         writer::{DiskWriter, Writer},
     },
 };
@@ -670,10 +670,10 @@ impl Stream {
 
         self.update_staging_metrics(&staging_files, tenant_id);
         for (parquet_path, arrow_files) in staging_files {
-            let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
-            if record_reader.readers.is_empty() {
-                continue;
-            }
+            let record_reader = match MergedRecordReader::try_new(&arrow_files) {
+                Ok(reader) if !reader.readers.is_empty() => reader,
+                _ => continue,
+            };
             let merged_schema = record_reader.merged_schema();
             let props = self.parquet_writer_props(&merged_schema, time_partition, custom_partition);
             schemas.push(merged_schema.clone());
@@ -708,7 +708,7 @@ impl Stream {
     fn write_parquet_part_file(
         &self,
         part_path: &Path,
-        record_reader: MergedReverseRecordReader,
+        record_reader: MergedRecordReader,
         schema: &Arc<Schema>,
         props: &WriterProperties,
         time_partition: Option<&String>,

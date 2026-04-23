@@ -82,6 +82,23 @@ impl MergedRecordReader {
         )
         .unwrap()
     }
+
+    /// Merges all readers in ascending time order without reversing batches.
+    /// Each IPC file has batches in ascending ingestion order, so a forward
+    /// k-merge produces globally ascending output with no per-batch copies.
+    pub fn merged_iter(
+        self,
+        schema: Arc<Schema>,
+        time_partition: Option<String>,
+    ) -> impl Iterator<Item = RecordBatch> {
+        let adapted_readers = self.readers.into_iter().map(|reader| reader.flatten());
+        kmerge_by(adapted_readers, move |a: &RecordBatch, b: &RecordBatch| {
+            let a_time = get_timestamp_millis(a, time_partition.as_deref());
+            let b_time = get_timestamp_millis(b, time_partition.as_deref());
+            a_time < b_time
+        })
+        .map(move |batch| adapt_batch(&schema, &batch))
+    }
 }
 
 #[derive(Debug)]

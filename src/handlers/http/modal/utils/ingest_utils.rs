@@ -92,45 +92,45 @@ pub async fn flatten_and_push_logs(
             )?;
         }
         LogSource::OtelLogs => {
-            //custom flattening required for otel logs
             let logs: LogsData = serde_json::from_value(json)?;
-            for record in flatten_otel_logs(&logs, tenant_str) {
+            let records = flatten_otel_logs(&logs, tenant_str);
+            if !records.is_empty() {
                 push_logs(
                     stream_name,
-                    record,
+                    Value::Array(records),
                     log_source,
                     p_custom_fields,
-                    time_partition.clone(),
+                    time_partition,
                     telemetry_type,
                     tenant_id,
                 )?;
             }
         }
         LogSource::OtelTraces => {
-            //custom flattening required for otel traces
             let traces: TracesData = serde_json::from_value(json)?;
-            for record in flatten_otel_traces(&traces, tenant_str) {
+            let records = flatten_otel_traces(&traces, tenant_str);
+            if !records.is_empty() {
                 push_logs(
                     stream_name,
-                    record,
+                    Value::Array(records),
                     log_source,
                     p_custom_fields,
-                    time_partition.clone(),
+                    time_partition,
                     telemetry_type,
                     tenant_id,
                 )?;
             }
         }
         LogSource::OtelMetrics => {
-            //custom flattening required for otel metrics
             let metrics: MetricsData = serde_json::from_value(json)?;
-            for record in flatten_otel_metrics(metrics, tenant_str) {
+            let records = flatten_otel_metrics(metrics, tenant_str);
+            if !records.is_empty() {
                 push_logs(
                     stream_name,
-                    record,
+                    Value::Array(records),
                     log_source,
                     p_custom_fields,
-                    time_partition.clone(),
+                    time_partition,
                     telemetry_type,
                     tenant_id,
                 )?;
@@ -182,62 +182,71 @@ pub fn push_logs(
         log_source,
     )?;
 
-    // let mut count = 0u64;
+    // Batch path: one schema inference + one decoder for the entire batch.
+    // When custom partitions are set, different records may need different
+    // partition keys, so fall back to per-record processing.
+    if custom_partition.is_none() {
+        // process_non_partitioned returns vec![Value::Array([...])], a single
+        // element wrapping the whole batch. Unwrap it to avoid double-nesting.
+        let json_batch = data.into_iter().next().unwrap();
+        let origin_size = json_byte_size(&json_batch);
 
-    let r = data.into_par_iter().try_for_each(|json| {
-        let origin_size = json_byte_size(&json);
-
-        match (json::Event { json, p_timestamp }).into_event(
-            stream_name.to_owned(),
-            origin_size,
+        let (rb, is_first_event) = (json::Event {
+            json: json_batch,
+            p_timestamp,
+        })
+        .into_recordbatch(
             &schema,
             static_schema_flag,
-            custom_partition.as_ref(),
             time_partition.as_ref(),
             schema_version,
-            StreamType::UserDefined,
             p_custom_fields,
+        )?;
+
+        let event = crate::event::Event {
+            rb,
+            stream_name: stream_name.to_owned(),
+            origin_format: "json",
+            origin_size,
+            is_first_event,
+            parsed_timestamp: p_timestamp.naive_utc(),
+            time_partition: None,
+            custom_partition_values: HashMap::new(),
+            stream_type: StreamType::UserDefined,
             telemetry_type,
-            tenant_id,
-        ) {
-            Ok(event) => match event.process() {
-                Ok(_) => {
-                    // count += 1;
-                    ControlFlow::Continue(())
-                }
-                Err(e) => return ControlFlow::Break(e.into()),
-            },
-            Err(e) => return ControlFlow::Break(e),
+            tenant_id: tenant_id.to_owned(),
+        };
+        event.process()?;
+    } else {
+        // Per-record path for custom-partitioned streams
+        let r = data.into_par_iter().try_for_each(|json| {
+            let origin_size = json_byte_size(&json);
+
+            match (json::Event { json, p_timestamp }).into_event(
+                stream_name.to_owned(),
+                origin_size,
+                &schema,
+                static_schema_flag,
+                custom_partition.as_ref(),
+                time_partition.as_ref(),
+                schema_version,
+                StreamType::UserDefined,
+                p_custom_fields,
+                telemetry_type,
+                tenant_id,
+            ) {
+                Ok(event) => match event.process() {
+                    Ok(_) => ControlFlow::Continue(()),
+                    Err(e) => ControlFlow::Break(e.into()),
+                },
+                Err(e) => ControlFlow::Break(e),
+            }
+        });
+        if let ControlFlow::Break(e) = r {
+            return Err(PostError::CustomError(e.to_string()));
         }
-        // ?
-        // .process()?;
-        // count += 1;
-    });
-    if let ControlFlow::Break(e) = r {
-        return Err(PostError::CustomError(e.to_string()));
     }
 
-    // for json in data {
-    //     let origin_size = json_byte_size(&json);
-    //     json::Event { json, p_timestamp }
-    //         .into_event(
-    //             stream_name.to_owned(),
-    //             origin_size,
-    //             &schema,
-    //             static_schema_flag,
-    //             custom_partition.as_ref(),
-    //             time_partition.as_ref(),
-    //             schema_version,
-    //             StreamType::UserDefined,
-    //             p_custom_fields,
-    //             telemetry_type,
-    //             tenant_id,
-    //         )?
-    //         .process()?;
-    //     count += 1;
-    // }
-
-    // Span::current().record("record_count", count);
     Ok(())
 }
 
