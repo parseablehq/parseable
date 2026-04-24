@@ -18,7 +18,7 @@
  */
 
 use std::{
-    fs::{File, remove_file},
+    fs::File,
     io::{self, BufReader, Read, Seek, SeekFrom},
     path::PathBuf,
     sync::Arc,
@@ -37,77 +37,14 @@ use crate::{
     utils::arrow::{adapt_batch, reverse},
 };
 
-#[derive(Debug)]
-pub struct MergedRecordReader {
-    pub readers: Vec<StreamReader<BufReader<File>>>,
-}
-
-impl MergedRecordReader {
-    pub fn try_new(files: &[PathBuf]) -> Result<Self, ()> {
-        let mut readers = Vec::with_capacity(files.len());
-
-        for file in files {
-            //remove empty files before reading
-            match file.metadata() {
-                Err(err) => {
-                    error!("Error when trying to read file: {file:?}; error = {err}");
-                    continue;
-                }
-                Ok(metadata) if metadata.len() == 0 => {
-                    error!("Empty file detected, removing it: {:?}", file);
-                    remove_file(file).unwrap();
-                    continue;
-                }
-                Ok(_) => {
-                    let Ok(reader) =
-                        StreamReader::try_new(BufReader::new(File::open(file).unwrap()), None)
-                    else {
-                        error!("Invalid file detected, ignoring it: {:?}", file);
-                        continue;
-                    };
-
-                    readers.push(reader);
-                }
-            }
-        }
-
-        Ok(Self { readers })
-    }
-
-    pub fn merged_schema(&self) -> Schema {
-        Schema::try_merge(
-            self.readers
-                .iter()
-                .map(|reader| reader.schema().as_ref().clone()),
-        )
-        .unwrap()
-    }
-
-    /// Merges all readers in ascending time order without reversing batches.
-    /// Each IPC file has batches in ascending ingestion order, so a forward
-    /// k-merge produces globally ascending output with no per-batch copies.
-    pub fn merged_iter(
-        self,
-        schema: Arc<Schema>,
-        time_partition: Option<String>,
-    ) -> impl Iterator<Item = RecordBatch> {
-        let adapted_readers = self.readers.into_iter().map(|reader| reader.flatten());
-        kmerge_by(adapted_readers, move |a: &RecordBatch, b: &RecordBatch| {
-            let a_time = get_timestamp_millis(a, time_partition.as_deref());
-            let b_time = get_timestamp_millis(b, time_partition.as_deref());
-            a_time < b_time
-        })
-        .map(move |batch| adapt_batch(&schema, &batch))
-    }
-}
 
 #[derive(Debug)]
-pub struct _MergedReverseRecordReader {
-    pub readers: Vec<StreamReader<BufReader<_OffsetReader<File>>>>,
+pub struct MergedReverseRecordReader {
+    pub readers: Vec<StreamReader<BufReader<OffsetReader<File>>>>,
 }
 
-impl _MergedReverseRecordReader {
-    pub fn _try_new(file_paths: &[PathBuf]) -> Self {
+impl MergedReverseRecordReader {
+    pub fn try_new(file_paths: &[PathBuf]) -> Self {
         let _span = info_span!("open_arrow_files", file_count = file_paths.len()).entered();
         let mut readers = Vec::with_capacity(file_paths.len());
         for path in file_paths {
@@ -117,7 +54,7 @@ impl _MergedReverseRecordReader {
                     continue;
                 }
                 Ok(file) => {
-                    let reader = match _get_reverse_reader(file) {
+                    let reader = match get_reverse_reader(file) {
                         Ok(r) => r,
                         Err(err) => {
                             error!("Invalid file detected, ignoring it: {path:?}; error = {err}");
@@ -132,7 +69,7 @@ impl _MergedReverseRecordReader {
         Self { readers }
     }
 
-    pub fn _merged_iter(
+    pub fn merged_iter(
         self,
         schema: Arc<Schema>,
         time_partition: Option<String>,
@@ -147,7 +84,7 @@ impl _MergedReverseRecordReader {
         .map(move |batch| adapt_batch(&schema, &batch))
     }
 
-    pub fn _merged_schema(&self) -> Schema {
+    pub fn merged_schema(&self) -> Schema {
         Schema::try_merge(
             self.readers
                 .iter()
@@ -196,7 +133,7 @@ fn get_default_timestamp_millis(batch: &RecordBatch) -> i64 {
 /// Safety Invariant: Reader is already validated and all offset and limit are valid to read.
 ///
 /// On empty list the reader returns no bytes read.
-pub struct _OffsetReader<R: Read + Seek> {
+pub struct OffsetReader<R: Read + Seek> {
     reader: R,
     offset_list: IntoIter<(u64, usize)>,
     current_offset: u64,
@@ -206,7 +143,7 @@ pub struct _OffsetReader<R: Read + Seek> {
     finished: bool,
 }
 
-impl<R: Read + Seek> _OffsetReader<R> {
+impl<R: Read + Seek> OffsetReader<R> {
     fn _new(reader: R, offset_list: Vec<(u64, usize)>) -> Self {
         let mut offset_list = offset_list.into_iter();
         let mut finished = false;
@@ -216,7 +153,7 @@ impl<R: Read + Seek> _OffsetReader<R> {
             finished = true
         }
 
-        _OffsetReader {
+        OffsetReader {
             reader,
             offset_list,
             current_offset,
@@ -228,7 +165,7 @@ impl<R: Read + Seek> _OffsetReader<R> {
     }
 }
 
-impl<R: Read + Seek> Read for _OffsetReader<R> {
+impl<R: Read + Seek> Read for OffsetReader<R> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let offset = self.current_offset;
         let size = self.current_size;
@@ -275,9 +212,9 @@ impl<R: Read + Seek> Read for _OffsetReader<R> {
     }
 }
 
-pub fn _get_reverse_reader<T: Read + Seek>(
+pub fn get_reverse_reader<T: Read + Seek>(
     mut reader: T,
-) -> Result<StreamReader<BufReader<_OffsetReader<T>>>, io::Error> {
+) -> Result<StreamReader<BufReader<OffsetReader<T>>>, io::Error> {
     let mut offset = 0;
     let mut messages = Vec::new();
 
@@ -302,7 +239,7 @@ pub fn _get_reverse_reader<T: Read + Seek>(
     // reset reader
     reader.rewind()?;
 
-    Ok(StreamReader::try_new(BufReader::new(_OffsetReader::_new(reader, messages)), None).unwrap())
+    Ok(StreamReader::try_new(BufReader::new(OffsetReader::_new(reader, messages)), None).unwrap())
 }
 
 // return limit for
@@ -366,13 +303,13 @@ mod tests {
     use crate::{
         OBJECT_STORE_DATA_GRANULARITY,
         parseable::staging::{
-            reader::{_MergedReverseRecordReader, _OffsetReader},
+            reader::{MergedReverseRecordReader, OffsetReader},
             writer::DiskWriter,
         },
         utils::time::TimeRange,
     };
 
-    use super::_get_reverse_reader;
+    use super::get_reverse_reader;
 
     fn rb(rows: usize) -> RecordBatch {
         let array1: Arc<dyn Array> = Arc::new(Int64Array::from_iter(0..(rows as i64)));
@@ -405,7 +342,7 @@ mod tests {
         let rb = rb(0);
         let buf = write_mem(&[rb]);
         let reader = Cursor::new(buf);
-        let mut reader = _get_reverse_reader(reader).unwrap();
+        let mut reader = get_reverse_reader(reader).unwrap();
         let rb = reader.next().unwrap().unwrap();
         assert_eq!(rb.num_rows(), 0);
     }
@@ -415,7 +352,7 @@ mod tests {
         let rb = rb(1);
         let buf = write_mem(&[rb]);
         let reader = Cursor::new(buf);
-        let mut reader = _get_reverse_reader(reader).unwrap();
+        let mut reader = get_reverse_reader(reader).unwrap();
         let rb = reader.next().unwrap().unwrap();
         assert_eq!(rb.num_rows(), 1);
     }
@@ -424,7 +361,7 @@ mod tests {
     fn test_multiple_row_multiple_rbs() {
         let buf = write_mem(&[rb(1), rb(2), rb(3)]);
         let reader = Cursor::new(buf);
-        let mut reader = _get_reverse_reader(reader).unwrap();
+        let mut reader = get_reverse_reader(reader).unwrap();
         let rb = reader.next().unwrap().unwrap();
         assert_eq!(rb.num_rows(), 3);
         let col1_val: Vec<i64> = rb
@@ -480,7 +417,7 @@ mod tests {
         write_message(&mut buf, schema, &options).unwrap();
 
         let buf = Cursor::new(buf);
-        let reader = _get_reverse_reader(buf).unwrap().flatten();
+        let reader = get_reverse_reader(buf).unwrap().flatten();
 
         let mut sum = 0;
         for rb in reader {
@@ -540,7 +477,7 @@ mod tests {
         // Define offset list: (offset, size)
         let offsets = vec![(2, 3), (7, 2)]; // Read bytes 2-4 (3, 4, 5) and then 7-8 (8, 9)
 
-        let mut reader = _OffsetReader::_new(cursor, offsets);
+        let mut reader = OffsetReader::_new(cursor, offsets);
         let mut buffer = [0u8; 10];
 
         // First read should get bytes 3, 4, 5
@@ -577,7 +514,7 @@ mod tests {
 
         // Now read them back in reverse order
         let mut reader =
-            _MergedReverseRecordReader::_try_new(&[file_path.into()])._merged_iter(schema, None);
+            MergedReverseRecordReader::_try_new(&[file_path.into()])._merged_iter(schema, None);
 
         // We should get batches in reverse order: 3, 2, 1
         // But first message should be schema, so we'll still read them in order
@@ -627,7 +564,7 @@ mod tests {
         let data = vec![1, 2, 3, 4, 5];
         let cursor = Cursor::new(data);
 
-        let mut reader = _OffsetReader::_new(cursor, vec![]);
+        let mut reader = OffsetReader::_new(cursor, vec![]);
         let mut buffer = [0u8; 10];
 
         // Should return 0 bytes read
@@ -644,7 +581,7 @@ mod tests {
         // One offset of 5 bytes
         let offsets = vec![(2, 5)]; // Read bytes 2-6 (3, 4, 5, 6, 7)
 
-        let mut reader = _OffsetReader::_new(cursor, offsets);
+        let mut reader = OffsetReader::_new(cursor, offsets);
         let mut buffer = [0u8; 3]; // Buffer smaller than the 5 bytes we want to read
 
         // First read should get first 3 bytes: 3, 4, 5
@@ -663,7 +600,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_reverse_reader_single_message() -> io::Result<()> {
+    fn testget_reverse_reader_single_message() -> io::Result<()> {
         let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test_single.data.arrows");
 
@@ -679,7 +616,7 @@ mod tests {
         write_test_batches(&file_path, &schema, &[batch])?;
 
         let mut reader =
-            _MergedReverseRecordReader::_try_new(&[file_path.into()])._merged_iter(schema, None);
+            MergedReverseRecordReader::_try_new(&[file_path.into()])._merged_iter(schema, None);
 
         // Should get the batch
         let result_batch = reader.next().expect("Failed to read batch");
@@ -705,7 +642,7 @@ mod tests {
         // One large offset (8KB)
         let offsets = vec![(1000, 8000)];
 
-        let mut reader = _OffsetReader::_new(cursor, offsets);
+        let mut reader = OffsetReader::_new(cursor, offsets);
         let mut buffer = [0u8; 10000];
 
         // Should read 8KB

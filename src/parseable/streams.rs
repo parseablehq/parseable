@@ -67,7 +67,7 @@ use super::{
     ARROW_FILE_EXTENSION, LogStream, PART_FILE_EXTENSION,
     staging::{
         StagingError,
-        reader::MergedRecordReader,
+        reader::MergedReverseRecordReader,
         writer::{DiskWriter, Writer},
     },
 };
@@ -592,7 +592,7 @@ impl Stream {
         // Create sorting columns
         let mut sorting_column_vec = vec![SortingColumn {
             column_idx: time_partition_idx as i32,
-            descending: false,
+            descending: true,
             nulls_first: true,
         }];
 
@@ -605,7 +605,7 @@ impl Stream {
 
                     sorting_column_vec.push(SortingColumn {
                         column_idx: idx as i32,
-                        descending: false,
+                        descending: true,
                         nulls_first: true,
                     });
                 }
@@ -685,10 +685,10 @@ impl Stream {
 
         self.update_staging_metrics(&staging_files, tenant_id);
         for (parquet_path, arrow_files) in staging_files {
-            let record_reader = match MergedRecordReader::try_new(&arrow_files) {
-                Ok(reader) if !reader.readers.is_empty() => reader,
-                _ => continue,
-            };
+            let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
+            if record_reader.readers.is_empty() {
+                continue;
+            }
             let merged_schema = record_reader.merged_schema();
             let props = self.parquet_writer_props(&merged_schema, time_partition, custom_partition);
             schemas.push(merged_schema.clone());
@@ -723,7 +723,7 @@ impl Stream {
     fn write_parquet_part_file(
         &self,
         part_path: &Path,
-        record_reader: MergedRecordReader,
+        record_reader: MergedReverseRecordReader,
         schema: &Arc<Schema>,
         props: &WriterProperties,
         time_partition: Option<&String>,
@@ -854,7 +854,7 @@ impl Stream {
 
     pub fn updated_schema(&self, current_schema: Schema) -> Schema {
         let staging_files = self.arrow_files();
-        let record_reader = MergedRecordReader::try_new(&staging_files).unwrap();
+        let record_reader = MergedReverseRecordReader::try_new(&staging_files);
         if record_reader.readers.is_empty() {
             return current_schema;
         }
