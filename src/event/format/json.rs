@@ -114,10 +114,11 @@ impl EventFormat for Event {
             collect_keys(value_arr.iter()).expect("fields can be collected from array of objects");
 
         let mut is_first = false;
-        let (value_arr, schema) = match {
+        let res = {
             let _span = info_span!("derive_arrow_schema").entered();
             derive_arrow_schema(stream_schema, fields)
-        } {
+        };
+        let (value_arr, schema) = match res {
             Ok(schema) => (value_arr, schema),
             Err(_) => {
                 let mut infer_schema = infer_json_schema_from_iterator(value_arr.iter().map(Ok))

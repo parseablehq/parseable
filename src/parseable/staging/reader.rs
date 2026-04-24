@@ -37,7 +37,6 @@ use crate::{
     utils::arrow::{adapt_batch, reverse},
 };
 
-
 #[derive(Debug)]
 pub struct MergedReverseRecordReader {
     pub readers: Vec<StreamReader<BufReader<OffsetReader<File>>>>,
@@ -514,7 +513,7 @@ mod tests {
 
         // Now read them back in reverse order
         let mut reader =
-            MergedReverseRecordReader::_try_new(&[file_path.into()])._merged_iter(schema, None);
+            MergedReverseRecordReader::try_new(&[file_path.into()]).merged_iter(schema, None);
 
         // We should get batches in reverse order: 3, 2, 1
         // But first message should be schema, so we'll still read them in order
@@ -616,7 +615,7 @@ mod tests {
         write_test_batches(&file_path, &schema, &[batch])?;
 
         let mut reader =
-            MergedReverseRecordReader::_try_new(&[file_path.into()])._merged_iter(schema, None);
+            MergedReverseRecordReader::try_new(&[file_path.into()]).merged_iter(schema, None);
 
         // Should get the batch
         let result_batch = reader.next().expect("Failed to read batch");
