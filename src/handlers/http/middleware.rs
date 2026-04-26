@@ -32,7 +32,6 @@ use once_cell::sync::OnceCell;
 use ulid::Ulid;
 
 use crate::{
-    apikeys::API_KEYS,
     handlers::{
         AUTHORIZATION_KEY, KINESIS_COMMON_ATTRIBUTES_KEY, LOG_SOURCE_KEY, LOG_SOURCE_KINESIS,
         STREAM_NAME_HEADER_KEY, TENANT_ID,
@@ -44,6 +43,7 @@ use crate::{
         EXPIRY_DURATION,
         map::{SessionKey, mut_sessions, mut_users, sessions, users},
         roles_to_permission, user,
+        user::UserType,
     },
     tenants::TENANT_METADATA,
     utils::{get_user_and_tenant_from_request, get_user_from_request},
@@ -156,7 +156,7 @@ where
         // Capture the incoming tenant header value before `get_user_and_tenant`
         // potentially mutates it, so the API-key branch below sees the original
         // client-supplied value.
-        let tenant_id_before = req
+        let tenant_id = req
             .headers()
             .get(TENANT_ID)
             .and_then(|v| v.to_str().ok())
@@ -166,77 +166,36 @@ where
         let mut header_error = None;
         let user_and_tenant_id = get_user_and_tenant(&self.action, &mut req, &mut header_error);
 
-        // If X-API-KEY header is present and the action supports API key auth,
-        // short-circuit the normal auth flow.
-        if let Some(api_key) = extract_api_key(&req)
-            && let Some(required_type) = api_key_type_for_action(&self.action)
-        {
-            struct SessionCleanupGuard(Option<Ulid>);
-            impl Drop for SessionCleanupGuard {
-                fn drop(&mut self) {
-                    if let Some(sid) = self.0 {
-                        mut_sessions().remove_session(&SessionKey::SessionId(sid));
-                    }
+        // If an X-API-KEY header is present, resolve it to the backing
+        // `UserType::ApiKey` user and register an ephemeral session whose
+        // permissions are derived from the user's assigned roles (same flow
+        // as native/OAuth users). The request then falls through to the
+        // normal auth check, which consults the session permissions.
+        let api_key_session_id = if let Some(api_key) = extract_api_key(&req) {
+            let tenant_id: Option<String> = tenant_id.clone();
+            match find_api_key_user(&api_key, &tenant_id) {
+                Some(user) => {
+                    let tenant = user.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
+                    let permissions = roles_to_permission(user.roles(), tenant);
+                    let session_id = Ulid::new();
+                    let session_key = SessionKey::SessionId(session_id);
+                    mut_sessions().track_new(
+                        user.userid().to_owned(),
+                        session_key.clone(),
+                        Utc::now() + TimeDelta::minutes(5),
+                        permissions,
+                        &user.tenant,
+                    );
+                    req.extensions_mut().insert(session_key);
+                    Some(session_id)
+                }
+                None => {
+                    return Box::pin(async { Err(ErrorUnauthorized("Invalid API key")) });
                 }
             }
-
-            let tenant_id = tenant_id_before;
-            let suspension = check_suspension_for_tenant(tenant_id.as_deref(), self.action);
-
-            // For Query keys we pre-allocate a session id and stash the
-            // SessionKey in req.extensions so the downstream handler can find
-            // it via extract_session_key_from_req. The actual session
-            // registration (track_new) is deferred until after the API key
-            // is validated, so failed requests don't mutate the shared
-            // sessions map.
-            let query_session_id = if required_type == crate::apikeys::KeyType::Query {
-                let session_id = Ulid::new();
-                req.extensions_mut()
-                    .insert(SessionKey::SessionId(session_id));
-                Some(session_id)
-            } else {
-                None
-            };
-
-            let fut = self.service.call(req);
-
-            return Box::pin(async move {
-                // Guard starts with None — only set to Some(session_id) once
-                // we've actually called track_new, so invalid/failed requests
-                // don't trigger a spurious remove_session.
-                let mut guard = SessionCleanupGuard(None);
-
-                if let Some(err) = header_error {
-                    return Err(err);
-                }
-                if let rbac::Response::Suspended(msg) = suspension {
-                    return Err(ErrorBadRequest(msg));
-                }
-
-                if !API_KEYS
-                    .validate_key(&api_key, &tenant_id, required_type)
-                    .await
-                {
-                    return Err(ErrorUnauthorized("Invalid API key"));
-                }
-
-                // Key validated — register the session in the shared
-                // sessions map. Arm the cleanup guard so the session is
-                // removed when this request completes.
-                if let Some(session_id) = query_session_id {
-                    mut_sessions().track_new(
-                        format!("api-key:{session_id}"),
-                        SessionKey::SessionId(session_id),
-                        Utc::now() + TimeDelta::minutes(5),
-                        query_api_key_permissions(),
-                        &tenant_id,
-                    );
-                    guard.0 = Some(session_id);
-                }
-
-                fut.await
-            });
-        }
+        } else {
+            None
+        };
 
         let key: Result<SessionKey, Error> = extract_session_key(&mut req);
 
@@ -257,6 +216,18 @@ where
         let headers = req.headers().clone();
         let fut = self.service.call(req);
         Box::pin(async move {
+            // Guard cleans up the ephemeral session created for an API-key
+            // request when this future finishes (success OR failure).
+            struct ApiKeySessionGuard(Option<Ulid>);
+            impl Drop for ApiKeySessionGuard {
+                fn drop(&mut self) {
+                    if let Some(sid) = self.0 {
+                        mut_sessions().remove_session(&SessionKey::SessionId(sid));
+                    }
+                }
+            }
+            let _api_key_guard = ApiKeySessionGuard(api_key_session_id);
+
             let Ok(key) = key else {
                 return Err(ErrorUnauthorized(
                     "Your session has expired or is no longer valid. Please re-authenticate to access this resource.",
@@ -327,25 +298,29 @@ fn extract_api_key(req: &ServiceRequest) -> Option<String> {
         .map(String::from)
 }
 
-/// Map an Action to the KeyType required for API key auth on that action.
-/// Returns None if the action doesn't support API key auth.
-fn api_key_type_for_action(action: &Action) -> Option<crate::apikeys::KeyType> {
-    use crate::apikeys::KeyType;
-    match action {
-        Action::Ingest => Some(KeyType::Ingestion),
-        Action::Query => Some(KeyType::Query),
-        _ => None,
-    }
-}
+/// Resolve an incoming API key value to its backing `UserType::ApiKey` user.
+/// In multi-tenant deployments the `tenant_hint` is required and the lookup
+/// is scoped to that tenant; in single-tenant deployments we look in the
+/// default tenant. This prevents an API key from one tenant authenticating a
+/// request that is claiming another.
+fn find_api_key_user(api_key_value: &str, tenant_id: &Option<String>) -> Option<user::User> {
+    let tenant = if PARSEABLE.options.is_multi_tenant() {
+        tenant_id.as_deref()?
+    } else {
+        tenant_id.as_deref().unwrap_or(DEFAULT_TENANT)
+    };
 
-/// Build the set of permissions granted to a Query API key session.
-/// Equivalent to the Reader privilege with no resource restriction
-/// (global query access across all streams in the tenant).
-fn query_api_key_permissions() -> Vec<crate::rbac::role::Permission> {
-    crate::rbac::role::RoleBuilder::from(&crate::rbac::role::model::DefaultPrivilege::Reader {
-        resource: None,
+    let users_guard = users();
+    let tenant_users = users_guard.get(tenant)?;
+    tenant_users.values().find_map(|user| {
+        if let UserType::ApiKey(api_key) = &user.ty
+            && api_key.api_key == api_key_value
+        {
+            Some(user.clone())
+        } else {
+            None
+        }
     })
-    .build()
 }
 
 #[inline]

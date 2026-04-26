@@ -140,6 +140,7 @@ pub async fn delete_user(
             let userid = match &user.ty {
                 UserType::Native(basic) => basic.username.clone(),
                 UserType::OAuth(oauth) => oauth.userid.clone(),
+                UserType::ApiKey(api_key) => api_key.userid.clone(),
             };
             ug.remove_users_by_user_ids(HashSet::from_iter([userid]))?;
             groups_to_update.push(ug.clone());

@@ -109,7 +109,10 @@ impl Users {
             Some(users) => users
                 .values()
                 .filter_map(|user| {
-                    if user.protected {
+                    // Skip protected users and API-key-backed users — the
+                    // latter are managed via the /apikeys endpoints, not
+                    // surfaced in the regular users list.
+                    if user.protected || user.is_api_key() {
                         None
                     } else {
                         Some(user.into())

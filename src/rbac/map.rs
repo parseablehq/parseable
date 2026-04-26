@@ -389,11 +389,21 @@ impl Sessions {
                                     }
                                 }
                             } else if resource_type.is_none()
-                                && (action.eq(&Action::Ingest)
-                                    || action.eq(&Action::Query)
-                                    || action.eq(&Action::ListStream))
+                                && matches!(
+                                    action,
+                                    Action::Ingest
+                                        | Action::Query
+                                        | Action::ListStream
+                                        | Action::GetSchema
+                                        | Action::GetStats
+                                        | Action::GetRetention
+                                        | Action::PutRetention
+                                        | Action::GetLLM
+                                        | Action::QueryLLM
+                                        | Action::ListLLM
+                                )
                             {
-                                // flow for global-ingestion / global-query
+                                // flow for global-ingestion / global-query / global-reader / global-writer
                                 let ok_resource =
                                     if let Some(context_resource_id) = context_resource {
                                         let is_internal = PARSEABLE

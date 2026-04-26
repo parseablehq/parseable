@@ -36,7 +36,6 @@ use crate::{
         alert_structs::{AlertStateEntry, MTTRHistory},
         target::Target,
     },
-    apikeys::ApiKey,
     catalog::{manifest::Manifest, partition_path},
     handlers::http::{
         modal::{Metadata, NodeMetadata, NodeType},
@@ -49,9 +48,9 @@ use crate::{
     option::Mode,
     parseable::{DEFAULT_TENANT, PARSEABLE},
     storage::{
-        ALERTS_ROOT_DIRECTORY, APIKEYS_ROOT_DIRECTORY, ObjectStorage, ObjectStorageError,
-        PARSEABLE_ROOT_DIRECTORY, SETTINGS_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME,
-        STREAM_ROOT_DIRECTORY, TARGETS_ROOT_DIRECTORY,
+        ALERTS_ROOT_DIRECTORY, ObjectStorage, ObjectStorageError, PARSEABLE_ROOT_DIRECTORY,
+        SETTINGS_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+        TARGETS_ROOT_DIRECTORY,
         object_storage::{
             alert_json_path, alert_state_json_path, filter_path, manifest_path, mttr_json_path,
             parseable_json_path, schema_path, stream_json_path, to_bytes,
@@ -1120,63 +1119,6 @@ impl Metastore for ObjectStoreMetastore {
         // we need the path to store in obj store
         let path = obj.get_object_path();
 
-        Ok(self
-            .storage
-            .delete_object(&RelativePathBuf::from(path), tenant_id)
-            .await?)
-    }
-
-    /// api keys
-    async fn get_api_keys(&self) -> Result<HashMap<String, Vec<ApiKey>>, MetastoreError> {
-        let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
-        let mut all_keys = HashMap::new();
-        for mut tenant in base_paths {
-            let keys_path = RelativePathBuf::from_iter([
-                &tenant,
-                SETTINGS_ROOT_DIRECTORY,
-                APIKEYS_ROOT_DIRECTORY,
-            ]);
-            let keys = self
-                .storage
-                .get_objects(
-                    Some(&keys_path),
-                    Box::new(|file_name| file_name.ends_with(".json")),
-                    &Some(tenant.clone()),
-                )
-                .await?
-                .iter()
-                .filter_map(|bytes| {
-                    serde_json::from_slice(bytes)
-                        .inspect_err(|err| warn!("Expected compatible api key json, error = {err}"))
-                        .ok()
-                })
-                .collect();
-            if tenant.is_empty() {
-                tenant.clone_from(&DEFAULT_TENANT.to_string());
-            }
-            all_keys.insert(tenant, keys);
-        }
-        Ok(all_keys)
-    }
-
-    async fn put_api_key(
-        &self,
-        obj: &dyn MetastoreObject,
-        tenant_id: &Option<String>,
-    ) -> Result<(), MetastoreError> {
-        let path = obj.get_object_path();
-        Ok(self
-            .storage
-            .put_object(&RelativePathBuf::from(path), to_bytes(obj), tenant_id)
-            .await?)
-    }
-
-    async fn delete_api_key(
-        &self,
-        obj: &dyn MetastoreObject,
-        tenant_id: &Option<String>,
-    ) -> Result<(), MetastoreError> {
-        let path = obj.get_object_path();
         Ok(self
             .storage
             .delete_object(&RelativePathBuf::from(path), tenant_id)

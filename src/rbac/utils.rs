@@ -45,6 +45,13 @@ pub fn to_prism_user(user: &User) -> UsersPrism {
                 oauth.user_info.picture.clone(),
             )
         }
+        UserType::ApiKey(api_key) => (
+            user.userid(),
+            api_key.key_name.as_str(),
+            "apikey",
+            None,
+            None,
+        ),
     };
     let direct_roles: HashMap<String, RoleUI> = Users
         .get_role(id, &user.tenant)

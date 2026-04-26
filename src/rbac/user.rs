@@ -23,11 +23,13 @@ use argon2::{
     password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
 };
 
+use chrono::{DateTime, Utc};
 use openid::Bearer;
 use rand::{
     RngCore,
     distributions::{Alphanumeric, DistString},
 };
+use ulid::Ulid;
 
 use crate::{
     handlers::http::rbac::{InvalidUserGroupError, RBACError},
@@ -42,8 +44,13 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
 pub enum UserType {
-    Native(Basic),
+    // Order matters for `#[serde(untagged)]`: the most specific variant must
+    // come first so it wins deserialization when its distinctive fields are
+    // present. `ApiKey` carries `api_key`/`key_id` which neither `Native` nor
+    // `OAuth` have.
+    ApiKey(Box<ApiKeyUser>),
     OAuth(Box<OAuth>),
+    Native(Basic),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -76,6 +83,32 @@ impl User {
         )
     }
 
+    pub fn new_api_key(
+        key_id: Ulid,
+        api_key: String,
+        key_name: String,
+        roles: HashSet<String>,
+        created_by: String,
+        tenant: Option<String>,
+    ) -> Self {
+        let now = Utc::now();
+        Self {
+            ty: UserType::ApiKey(Box::new(ApiKeyUser {
+                userid: key_id.to_string(),
+                key_id,
+                api_key,
+                key_name,
+                created_by,
+                created_at: now,
+                modified_at: now,
+            })),
+            roles,
+            user_groups: HashSet::new(),
+            tenant,
+            protected: false,
+        }
+    }
+
     pub fn new_oauth(
         userid: String,
         roles: HashSet<String>,
@@ -101,6 +134,7 @@ impl User {
         match self.ty {
             UserType::Native(Basic { ref username, .. }) => username,
             UserType::OAuth(ref oauth) => &oauth.userid,
+            UserType::ApiKey(ref api_key) => &api_key.userid,
         }
     }
 
@@ -116,11 +150,24 @@ impl User {
                         .unwrap_or_else(|| oauth.userid.clone())
                 })
             }
+            UserType::ApiKey(api_key) => api_key.key_name.clone(),
         }
     }
 
     pub fn is_oauth(&self) -> bool {
         matches!(self.ty, UserType::OAuth(_))
+    }
+
+    pub fn is_api_key(&self) -> bool {
+        matches!(self.ty, UserType::ApiKey(_))
+    }
+
+    /// Return the underlying API key data if this user represents an API key.
+    pub fn as_api_key(&self) -> Option<&ApiKeyUser> {
+        match &self.ty {
+            UserType::ApiKey(api_key) => Some(api_key),
+            _ => None,
+        }
     }
 
     pub fn is_super_admin(&self) -> bool {
@@ -199,6 +246,24 @@ pub fn get_super_admin_user() -> User {
         tenant: None,
         protected: false,
     }
+}
+
+/// A user backed by an API key. `userid` is the stable identifier used
+/// everywhere a userid is expected (sessions, groups, audit logs); it equals
+/// `key_id.to_string()` (same value as `keyId`, kept as `String` so
+/// `User::userid()` can return `&str` alongside the Native/OAuth variants).
+/// Permissions for this user are derived from the `roles` set on the parent
+/// `User`, exactly like native and OAuth users.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApiKeyUser {
+    pub userid: String,
+    pub key_id: Ulid,
+    pub api_key: String,
+    pub key_name: String,
+    pub created_by: String,
+    pub created_at: DateTime<Utc>,
+    pub modified_at: DateTime<Utc>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -332,6 +397,12 @@ impl GroupUser {
                     tenant_id: user.tenant.clone(),
                 }
             }
+            UserType::ApiKey(api_key) => GroupUser {
+                userid: api_key.userid.clone(),
+                username: api_key.key_name.clone(),
+                method: "apikey".to_string(),
+                tenant_id: user.tenant.clone(),
+            },
         }
     }
 }
@@ -576,5 +647,71 @@ impl UserGroup {
             .collect();
 
         self.remove_users(users_to_remove)
+    }
+}
+
+#[cfg(test)]
+mod apikey_serde_tests {
+    use super::*;
+
+    #[test]
+    fn user_roundtrip_covers_api_key_variant() {
+        let key_id = Ulid::new();
+        let roles: HashSet<String> = ["admin".to_string()].into_iter().collect();
+        let user = User::new_api_key(
+            key_id,
+            "secret-token".into(),
+            "my-key".into(),
+            roles.clone(),
+            "admin-user".into(),
+            Some("tenant-a".into()),
+        );
+
+        // userid is derived from key_id with no prefix.
+        assert_eq!(user.userid(), key_id.to_string());
+
+        let json = serde_json::to_string(&user).expect("serialize User(ApiKey)");
+        assert!(
+            json.contains("\"apiKey\":\"secret-token\""),
+            "json = {json}"
+        );
+        assert!(json.contains("\"roles\""), "json = {json}");
+        assert!(json.contains("\"userid\""), "json = {json}");
+
+        let back: User = serde_json::from_str(&json).expect("deserialize User");
+        assert!(back.is_api_key());
+        assert_eq!(back.userid(), user.userid());
+        assert_eq!(back.roles, roles);
+        let ak = back.as_api_key().expect("ApiKey variant");
+        assert_eq!(ak.key_id, key_id);
+        assert_eq!(ak.userid, key_id.to_string());
+        assert_eq!(ak.api_key, "secret-token");
+    }
+
+    #[test]
+    fn native_user_still_roundtrips_with_api_key_variant_present() {
+        let (user, _pw) = User::new_basic("alice".into(), Some("tenant-a".into()), false);
+        let json = serde_json::to_string(&user).unwrap();
+        let back: User = serde_json::from_str(&json).unwrap();
+        assert!(matches!(back.ty, UserType::Native(_)));
+        assert_eq!(back.userid(), "alice");
+    }
+
+    #[test]
+    fn dump_api_key_json() {
+        let key_id = Ulid::from_string("01KPWAKVAQVXJGTKRKZCSVVCDF").unwrap();
+        let roles: HashSet<String> = ["admin".to_string()].into_iter().collect();
+        let user = User::new_api_key(
+            key_id,
+            "550e8400-e29b-41d4-a716-446655440000".into(),
+            "diag-test-key".into(),
+            roles,
+            "admin".into(),
+            None,
+        );
+        let pretty = serde_json::to_string_pretty(&user).unwrap();
+        println!(
+            "\n=== user json (persisted shape) ===\n{pretty}\n====================================\n"
+        );
     }
 }
