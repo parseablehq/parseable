@@ -32,7 +32,6 @@ use rand::{
 use ulid::Ulid;
 
 use crate::{
-    apikeys::KeyType,
     handlers::http::rbac::{InvalidUserGroupError, RBACError},
     parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::{
@@ -88,7 +87,7 @@ impl User {
         key_id: Ulid,
         api_key: String,
         key_name: String,
-        key_type: KeyType,
+        roles: HashSet<String>,
         created_by: String,
         tenant: Option<String>,
     ) -> Self {
@@ -99,12 +98,11 @@ impl User {
                 key_id,
                 api_key,
                 key_name,
-                key_type,
                 created_by,
                 created_at: now,
                 modified_at: now,
             })),
-            roles: HashSet::new(),
+            roles,
             user_groups: HashSet::new(),
             tenant,
             protected: false,
@@ -254,8 +252,8 @@ pub fn get_super_admin_user() -> User {
 /// everywhere a userid is expected (sessions, groups, audit logs); it equals
 /// `key_id.to_string()` (same value as `keyId`, kept as `String` so
 /// `User::userid()` can return `&str` alongside the Native/OAuth variants).
-/// `key_type` determines the global privileges granted to this user across
-/// the whole org/tenant.
+/// Permissions for this user are derived from the `roles` set on the parent
+/// `User`, exactly like native and OAuth users.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ApiKeyUser {
@@ -263,8 +261,6 @@ pub struct ApiKeyUser {
     pub key_id: Ulid,
     pub api_key: String,
     pub key_name: String,
-    #[serde(default)]
-    pub key_type: KeyType,
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub modified_at: DateTime<Utc>,
@@ -661,11 +657,12 @@ mod apikey_serde_tests {
     #[test]
     fn user_roundtrip_covers_api_key_variant() {
         let key_id = Ulid::new();
+        let roles: HashSet<String> = ["admin".to_string()].into_iter().collect();
         let user = User::new_api_key(
             key_id,
             "secret-token".into(),
             "my-key".into(),
-            KeyType::Admin,
+            roles.clone(),
             "admin-user".into(),
             Some("tenant-a".into()),
         );
@@ -678,17 +675,17 @@ mod apikey_serde_tests {
             json.contains("\"apiKey\":\"secret-token\""),
             "json = {json}"
         );
-        assert!(json.contains("\"keyType\":\"admin\""), "json = {json}");
+        assert!(json.contains("\"roles\""), "json = {json}");
         assert!(json.contains("\"userid\""), "json = {json}");
 
         let back: User = serde_json::from_str(&json).expect("deserialize User");
         assert!(back.is_api_key());
         assert_eq!(back.userid(), user.userid());
+        assert_eq!(back.roles, roles);
         let ak = back.as_api_key().expect("ApiKey variant");
         assert_eq!(ak.key_id, key_id);
         assert_eq!(ak.userid, key_id.to_string());
         assert_eq!(ak.api_key, "secret-token");
-        assert_eq!(ak.key_type, KeyType::Admin);
     }
 
     #[test]
@@ -703,11 +700,12 @@ mod apikey_serde_tests {
     #[test]
     fn dump_api_key_json() {
         let key_id = Ulid::from_string("01KPWAKVAQVXJGTKRKZCSVVCDF").unwrap();
+        let roles: HashSet<String> = ["admin".to_string()].into_iter().collect();
         let user = User::new_api_key(
             key_id,
             "550e8400-e29b-41d4-a716-446655440000".into(),
             "diag-test-key".into(),
-            KeyType::Admin,
+            roles,
             "admin".into(),
             None,
         );

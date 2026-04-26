@@ -168,20 +168,22 @@ where
 
         // If an X-API-KEY header is present, resolve it to the backing
         // `UserType::ApiKey` user and register an ephemeral session whose
-        // permissions are derived from the key's type. The request then
-        // falls through to the normal auth flow, which consults the session
-        // permissions exactly like for basic/OAuth users.
+        // permissions are derived from the user's assigned roles (same flow
+        // as native/OAuth users). The request then falls through to the
+        // normal auth check, which consults the session permissions.
         let api_key_session_id = if let Some(api_key) = extract_api_key(&req) {
             let tenant_id: Option<String> = tenant_id.clone();
             match find_api_key_user(&api_key, &tenant_id) {
-                Some((user, key_type)) => {
+                Some(user) => {
+                    let tenant = user.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
+                    let permissions = roles_to_permission(user.roles(), tenant);
                     let session_id = Ulid::new();
                     let session_key = SessionKey::SessionId(session_id);
                     mut_sessions().track_new(
                         user.userid().to_owned(),
                         session_key.clone(),
                         Utc::now() + TimeDelta::minutes(5),
-                        key_type.permissions(),
+                        permissions,
                         &user.tenant,
                     );
                     req.extensions_mut().insert(session_key);
@@ -296,15 +298,12 @@ fn extract_api_key(req: &ServiceRequest) -> Option<String> {
         .map(String::from)
 }
 
-/// Resolve an incoming API key value to its backing `UserType::ApiKey` user
-/// (and extract the user's `KeyType`). In multi-tenant deployments the
-/// `tenant_hint` is required and the lookup is scoped to that tenant; in
-/// single-tenant deployments we look in the default tenant. This prevents an
-/// API key from one tenant authenticating a request that is claiming another.
-fn find_api_key_user(
-    api_key_value: &str,
-    tenant_id: &Option<String>,
-) -> Option<(user::User, crate::apikeys::KeyType)> {
+/// Resolve an incoming API key value to its backing `UserType::ApiKey` user.
+/// In multi-tenant deployments the `tenant_hint` is required and the lookup
+/// is scoped to that tenant; in single-tenant deployments we look in the
+/// default tenant. This prevents an API key from one tenant authenticating a
+/// request that is claiming another.
+fn find_api_key_user(api_key_value: &str, tenant_id: &Option<String>) -> Option<user::User> {
     let tenant = if PARSEABLE.options.is_multi_tenant() {
         tenant_id.as_deref()?
     } else {
@@ -317,7 +316,7 @@ fn find_api_key_user(
         if let UserType::ApiKey(api_key) = &user.ty
             && api_key.api_key == api_key_value
         {
-            Some((user.clone(), api_key.key_type))
+            Some(user.clone())
         } else {
             None
         }

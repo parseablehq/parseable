@@ -19,57 +19,23 @@
 //! API key primitives.
 //!
 //! API keys are persisted as a third `UserType` variant (`UserType::ApiKey`)
-//! inside `parseable.json`, alongside native and OAuth users. This module
-//! defines the key's type enum (which determines the user's global privileges)
-//! and the request/response shapes used by the enterprise CRUD handlers.
+//! inside `parseable.json`, alongside native and OAuth users. The backing
+//! user's permissions are resolved from the `roles` assigned to it (same
+//! mechanism as native and OAuth users).
 
-use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
-use crate::rbac::role::{Permission, RoleBuilder, model::DefaultPrivilege};
+use serde::Deserialize;
 
-/// Type of API key, determining the global privileges the backing user gets
-/// across the org/tenant. Mirrors the built-in `DefaultPrivilege` levels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum KeyType {
-    /// Global ingestion across all streams in the tenant/org.
-    #[default]
-    Ingestion,
-    /// Global query access across all streams in the tenant/org.
-    Query,
-    /// Full admin privileges within the tenant/org.
-    Admin,
-    /// Editor privileges within the tenant/org (same set granted to editor users).
-    Editor,
-}
-
-impl KeyType {
-    /// Map the key type to the equivalent `DefaultPrivilege`. Permissions for
-    /// an API-key-backed user are derived from this privilege rather than from
-    /// role-name lookup, so no role needs to exist per-tenant.
-    pub fn default_privilege(&self) -> DefaultPrivilege {
-        match self {
-            KeyType::Ingestion => DefaultPrivilege::Ingestor { resource: None },
-            KeyType::Query => DefaultPrivilege::Reader { resource: None },
-            KeyType::Admin => DefaultPrivilege::Admin,
-            KeyType::Editor => DefaultPrivilege::Editor,
-        }
-    }
-
-    /// Build the flat permission set granted by this key type.
-    pub fn permissions(&self) -> Vec<Permission> {
-        RoleBuilder::from(&self.default_privilege()).build()
-    }
-}
-
-/// Request body for creating a new API key. When `keyType` is omitted,
-/// defaults to `KeyType::Ingestion` (least-privileged option).
+/// Request body for creating a new API key. `roles` is a set of role names
+/// that must already exist in the tenant; permissions for the backing user
+/// are derived from these roles (same flow as native/OAuth users).
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CreateApiKeyRequest {
     pub key_name: String,
     #[serde(default)]
-    pub key_type: KeyType,
+    pub roles: HashSet<String>,
 }
 
 #[derive(Debug, thiserror::Error)]

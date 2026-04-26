@@ -195,7 +195,7 @@ pub mod model {
         Admin,
         Editor,
         Writer {
-            resource: ParseableResourceType,
+            resource: Option<ParseableResourceType>,
         },
         Ingestor {
             resource: Option<ParseableResourceType>,
@@ -299,7 +299,11 @@ pub mod model {
                 DefaultPrivilege::Admin => admin_perm_builder(),
                 DefaultPrivilege::Editor => editor_perm_builder(),
                 DefaultPrivilege::Writer { resource } => {
-                    writer_perm_builder().with_resource(resource.to_owned())
+                    if let Some(resource) = resource.as_ref() {
+                        writer_perm_builder().with_resource(resource.to_owned())
+                    } else {
+                        writer_perm_builder()
+                    }
                 }
                 DefaultPrivilege::Reader { resource } => {
                     if let Some(resource) = resource.as_ref() {
