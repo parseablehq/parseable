@@ -26,7 +26,9 @@ use opentelemetry_sdk::{
 };
 // Consts describing the env vars
 const OTEL_EXPORTER_OTLP_ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
+const OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: &str = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT";
 const OTEL_EXPORTER_OTLP_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
+
 /// Initialise an OTLP tracer provider.
 ///
 /// **Required env var:**
@@ -45,12 +47,16 @@ const OTEL_EXPORTER_OTLP_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
 ///   as gRPC metadata or HTTP headers, e.g.
 ///   \`authorization=Basic <token>,x-p-stream=my-stream,x-p-log-source=otel-traces\`
 ///
-/// Returns \`None\` when \`OTEL_EXPORTER_OTLP_ENDPOINT\` is not set (OTEL disabled).
+/// Returns \`None\` when \`OTEL_EXPORTER_OTLP_ENDPOINT\` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is not set (OTEL disabled).
 /// The caller must call \`provider.shutdown()\` before process exit.
 pub fn init_tracing() -> Option<SdkTracerProvider> {
     // Only used to decide whether OTEL is enabled; the SDK reads it again
     // from env to build the exporter (which also appends /v1/traces for HTTP).
-    std::env::var(OTEL_EXPORTER_OTLP_ENDPOINT).ok()?;
+    if std::env::var(OTEL_EXPORTER_OTLP_ENDPOINT).is_err()
+        && std::env::var(OTEL_EXPORTER_OTLP_TRACES_ENDPOINT).is_err()
+    {
+        return None;
+    }
 
     let protocol =
         std::env::var(OTEL_EXPORTER_OTLP_PROTOCOL).unwrap_or_else(|_| "http/json".to_string());

@@ -460,6 +460,23 @@ pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<Map<String, Value>
         single.insert("metric_description".to_string(), metric_desc);
         single.insert("metric_unit".to_string(), metric_unit);
         single.insert("metric_type".to_string(), metric_type_val);
+        match &metrics_record.data {
+            Some(metric::Data::Sum(sum)) => {
+                single.extend(flatten_aggregation_temporality(sum.aggregation_temporality));
+                single.insert("is_monotonic".to_string(), Value::Bool(sum.is_monotonic));
+            }
+            Some(metric::Data::Histogram(histogram)) => {
+                single.extend(flatten_aggregation_temporality(
+                    histogram.aggregation_temporality,
+                ));
+            }
+            Some(metric::Data::ExponentialHistogram(exp_histogram)) => {
+                single.extend(flatten_aggregation_temporality(
+                    exp_histogram.aggregation_temporality,
+                ));
+            }
+            _ => {}
+        }
         single.extend(metadata);
         return vec![single];
     }

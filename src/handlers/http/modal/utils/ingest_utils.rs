@@ -24,7 +24,7 @@ use opentelemetry_proto::tonic::{
 };
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde_json::Value;
-use std::{collections::HashMap, ops::ControlFlow};
+use std::collections::HashMap;
 use tracing::{instrument, warn};
 
 use crate::{
@@ -100,7 +100,7 @@ pub async fn flatten_and_push_logs(
                     Value::Array(records),
                     log_source,
                     p_custom_fields,
-                    time_partition,
+                    None,
                     telemetry_type,
                     tenant_id,
                 )?;
@@ -115,7 +115,7 @@ pub async fn flatten_and_push_logs(
                     Value::Array(records),
                     log_source,
                     p_custom_fields,
-                    time_partition,
+                    None,
                     telemetry_type,
                     tenant_id,
                 )?;
@@ -130,7 +130,7 @@ pub async fn flatten_and_push_logs(
                     Value::Array(records),
                     log_source,
                     p_custom_fields,
-                    time_partition,
+                    None,
                     telemetry_type,
                     tenant_id,
                 )?;
@@ -182,10 +182,16 @@ pub fn push_logs(
         log_source,
     )?;
 
+    if data.is_empty() {
+        return Err(PostError::Invalid(anyhow::Error::msg(
+            "Empty data object received",
+        )));
+    }
+
     // Batch path: one schema inference + one decoder for the entire batch.
     // When custom partitions are set, different records may need different
     // partition keys, so fall back to per-record processing.
-    if custom_partition.is_none() {
+    if custom_partition.is_none() && time_partition.is_none() {
         // process_non_partitioned returns vec![Value::Array([...])], a single
         // element wrapping the whole batch. Unwrap it to avoid double-nesting.
         let json_batch = data.into_iter().next().unwrap();
@@ -219,34 +225,29 @@ pub fn push_logs(
         event.process()?;
     } else {
         // Per-record path for custom-partitioned streams
-        let r = data.into_par_iter().try_for_each(|json| {
-            let origin_size = json_byte_size(&json);
-
-            match (json::Event { json, p_timestamp }).into_event(
-                stream_name.to_owned(),
-                origin_size,
-                &schema,
-                static_schema_flag,
-                custom_partition.as_ref(),
-                time_partition.as_ref(),
-                schema_version,
-                StreamType::UserDefined,
-                p_custom_fields,
-                telemetry_type,
-                tenant_id,
-            ) {
-                Ok(event) => match event.process() {
-                    Ok(_) => ControlFlow::Continue(()),
-                    Err(e) => ControlFlow::Break(e.into()),
-                },
-                Err(e) => ControlFlow::Break(e),
-            }
-        });
-        if let ControlFlow::Break(e) = r {
-            return Err(PostError::CustomError(e.to_string()));
+        let events: Result<Vec<_>, _> = data
+            .into_par_iter()
+            .map(|json| {
+                let origin_size = json_byte_size(&json);
+                (json::Event { json, p_timestamp }).into_event(
+                    stream_name.to_owned(),
+                    origin_size,
+                    &schema,
+                    static_schema_flag,
+                    custom_partition.as_ref(),
+                    time_partition.as_ref(),
+                    schema_version,
+                    StreamType::UserDefined,
+                    p_custom_fields,
+                    telemetry_type,
+                    tenant_id,
+                )
+            })
+            .collect();
+        for event in events.map_err(PostError::Invalid)? {
+            event.process()?;
         }
     }
-
     Ok(())
 }
 

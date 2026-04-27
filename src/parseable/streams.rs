@@ -33,7 +33,6 @@ use parquet::{
     schema::types::ColumnPath,
 };
 use relative_path::RelativePathBuf;
-use std::io::BufReader;
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions, remove_file, write},
@@ -42,6 +41,7 @@ use std::{
     sync::{Arc, Mutex, RwLock},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
+use std::{io::BufReader, sync::PoisonError};
 use tokio::task::JoinSet;
 use tracing::{Instrument, error, info, info_span, instrument, trace, warn};
 use ulid::Ulid;
@@ -162,7 +162,11 @@ impl Stream {
                         "Writer lock poisoned while ingesting data for stream {}",
                         self.stream_name
                     );
-                    poisoned.into_inner()
+
+                    return Err(StagingError::PoisonError(PoisonError::new(format!(
+                        "Writer lock poisoned while ingesting data for stream {} - {}",
+                        self.stream_name, poisoned
+                    ))));
                 }
             }
         };
@@ -542,16 +546,12 @@ impl Stream {
         // DiskWriter::Drop does I/O (IPC finish + file rename) so dropping
         // outside the lock avoids blocking concurrent push() calls.
         let stale_writers = {
-            let mut writer = match self.writer.lock() {
-                Ok(guard) => guard,
-                Err(poisoned) => {
-                    error!(
-                        "Writer lock poisoned while flushing data for stream {}",
-                        self.stream_name
-                    );
-                    poisoned.into_inner()
-                }
-            };
+            let mut writer = self.writer.lock().unwrap_or_else(|_| {
+                panic!(
+                    "Writer lock poisoned while flushing data for stream {}",
+                    self.stream_name
+                )
+            });
             writer.mem.clear();
 
             let mut old_disk = HashMap::new();

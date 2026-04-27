@@ -21,6 +21,7 @@ use std::{fmt, path::Path, sync::Arc, time::Duration};
 use actix_web::{App, HttpServer, http::KeepAlive, middleware::from_fn, web::ServiceConfig};
 use actix_web_prometheus::PrometheusMetrics;
 use anyhow::Context;
+use arrow::datatypes::ArrowNativeType;
 use async_trait::async_trait;
 use base64::{Engine, prelude::BASE64_STANDARD};
 use bytes::Bytes;
@@ -121,7 +122,7 @@ pub trait ParseableServer {
 
         // Create the HTTP server
         let http_server = HttpServer::new(create_app_fn)
-            .workers(PARSEABLE.options.num_workers)
+            .workers(PARSEABLE.options.num_workers.as_usize())
             .keep_alive(KeepAlive::Timeout(Duration::from_secs(
                 PARSEABLE.options.keep_alive,
             )))

@@ -16,7 +16,7 @@
  *
  */
 
-use clap::Parser;
+use clap::{Parser, value_parser};
 use std::{env, fs, path::PathBuf};
 
 use url::Url;
@@ -170,10 +170,11 @@ pub struct Options {
     #[arg(
         long,
         env = "P_ACTIX_NUM_WORKERS",
-        default_value_t = num_cpus::get(),
+        default_value_t = num_cpus::get() as u64,
+        value_parser = value_parser!(u64).range(1..),
         help = "Number of workers for actix-web"
     )]
-    pub num_workers: usize,
+    pub num_workers: u64,
 
     // Actix connections backlog
     #[arg(

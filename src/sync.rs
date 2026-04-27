@@ -31,6 +31,16 @@ use tracing::{Instrument, error, info, info_span, trace, warn};
 static LOCAL_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 static REMOTE_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 
+/// RAII guard that clears a sync-running flag on drop, so a panic inside the
+/// sync body cannot leave the flag stuck at `true` and wedge future ticks.
+struct SyncRunningGuard(&'static AtomicBool);
+
+impl Drop for SyncRunningGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 use crate::alerts::alert_enums::AlertTask;
 use crate::alerts::alerts_utils;
 use crate::parseable::PARSEABLE;
@@ -135,6 +145,7 @@ pub fn object_store_sync() -> (
                             warn!("Previous object_store_sync cycle still running, skipping this tick");
                             continue;
                         }
+                        let _guard = SyncRunningGuard(&REMOTE_SYNC_RUNNING);
                         async {
                             trace!("Syncing Parquets to Object Store... ");
 
@@ -153,7 +164,6 @@ pub fn object_store_sync() -> (
                                 }
                             ).await;
                         }.instrument(info_span!("object_store_sync_cycle")).await;
-                        REMOTE_SYNC_RUNNING.store(false, Ordering::SeqCst);
                     },
                     res = &mut inbox_rx => {
                         match res {
@@ -209,6 +219,7 @@ pub fn local_sync() -> (
                             warn!("Previous local_sync cycle still running, skipping this tick");
                             continue;
                         }
+                        let _guard = SyncRunningGuard(&LOCAL_SYNC_RUNNING);
                         // Monitor the duration of flush_and_convert execution
                         async {
                             monitor_task_duration(
@@ -225,7 +236,6 @@ pub fn local_sync() -> (
                                 }
                             ).await;
                         }.instrument(info_span!("local_sync_cycle")).await;
-                        LOCAL_SYNC_RUNNING.store(false, Ordering::SeqCst);
                     },
                     res = &mut inbox_rx => {
                         match res {

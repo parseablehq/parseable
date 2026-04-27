@@ -143,7 +143,7 @@ pub struct OffsetReader<R: Read + Seek> {
 }
 
 impl<R: Read + Seek> OffsetReader<R> {
-    fn _new(reader: R, offset_list: Vec<(u64, usize)>) -> Self {
+    fn new(reader: R, offset_list: Vec<(u64, usize)>) -> Self {
         let mut offset_list = offset_list.into_iter();
         let mut finished = false;
 
@@ -217,7 +217,7 @@ pub fn get_reverse_reader<T: Read + Seek>(
     let mut offset = 0;
     let mut messages = Vec::new();
 
-    while let Some(res) = _find_limit_and_type(&mut reader).transpose() {
+    while let Some(res) = find_limit_and_type(&mut reader).transpose() {
         match res {
             Ok((header, size)) => {
                 messages.push((header, offset, size));
@@ -238,11 +238,16 @@ pub fn get_reverse_reader<T: Read + Seek>(
     // reset reader
     reader.rewind()?;
 
-    Ok(StreamReader::try_new(BufReader::new(OffsetReader::_new(reader, messages)), None).unwrap())
+    StreamReader::try_new(BufReader::new(OffsetReader::new(reader, messages)), None).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Invalid arrow stream: {e}"),
+        )
+    })
 }
 
 // return limit for
-fn _find_limit_and_type(
+fn find_limit_and_type(
     reader: &mut (impl Read + Seek),
 ) -> Result<Option<(MessageHeader, usize)>, io::Error> {
     let mut size = 0;
@@ -476,7 +481,7 @@ mod tests {
         // Define offset list: (offset, size)
         let offsets = vec![(2, 3), (7, 2)]; // Read bytes 2-4 (3, 4, 5) and then 7-8 (8, 9)
 
-        let mut reader = OffsetReader::_new(cursor, offsets);
+        let mut reader = OffsetReader::new(cursor, offsets);
         let mut buffer = [0u8; 10];
 
         // First read should get bytes 3, 4, 5
@@ -563,7 +568,7 @@ mod tests {
         let data = vec![1, 2, 3, 4, 5];
         let cursor = Cursor::new(data);
 
-        let mut reader = OffsetReader::_new(cursor, vec![]);
+        let mut reader = OffsetReader::new(cursor, vec![]);
         let mut buffer = [0u8; 10];
 
         // Should return 0 bytes read
@@ -580,7 +585,7 @@ mod tests {
         // One offset of 5 bytes
         let offsets = vec![(2, 5)]; // Read bytes 2-6 (3, 4, 5, 6, 7)
 
-        let mut reader = OffsetReader::_new(cursor, offsets);
+        let mut reader = OffsetReader::new(cursor, offsets);
         let mut buffer = [0u8; 3]; // Buffer smaller than the 5 bytes we want to read
 
         // First read should get first 3 bytes: 3, 4, 5
@@ -641,7 +646,7 @@ mod tests {
         // One large offset (8KB)
         let offsets = vec![(1000, 8000)];
 
-        let mut reader = OffsetReader::_new(cursor, offsets);
+        let mut reader = OffsetReader::new(cursor, offsets);
         let mut buffer = [0u8; 10000];
 
         // Should read 8KB
