@@ -33,7 +33,6 @@ use parquet::{
     schema::types::ColumnPath,
 };
 use relative_path::RelativePathBuf;
-use std::io::BufReader;
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions, remove_file, write},
@@ -42,8 +41,9 @@ use std::{
     sync::{Arc, Mutex, RwLock},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
+use std::{io::BufReader, sync::PoisonError};
 use tokio::task::JoinSet;
-use tracing::{error, info, trace, warn};
+use tracing::{Instrument, error, info, info_span, instrument, trace, warn};
 use ulid::Ulid;
 
 use crate::{
@@ -67,7 +67,7 @@ use super::{
     ARROW_FILE_EXTENSION, LogStream, PART_FILE_EXTENSION,
     staging::{
         StagingError,
-        reader::{MergedRecordReader, MergedReverseRecordReader},
+        reader::MergedReverseRecordReader,
         writer::{DiskWriter, Writer},
     },
 };
@@ -146,14 +146,28 @@ impl Stream {
         custom_partition_values: &HashMap<String, String>,
         stream_type: StreamType,
     ) -> Result<(), StagingError> {
-        let mut guard = match self.writer.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                error!(
-                    "Writer lock poisoned while ingesting data for stream {}",
-                    self.stream_name
-                );
-                poisoned.into_inner()
+        let _span = info_span!(
+            "stream_push",
+            stream_name = %self.stream_name,
+            num_rows = record.num_rows(),
+        )
+        .entered();
+
+        let mut guard = {
+            let _lock_span = info_span!("acquire_writer_lock").entered();
+            match self.writer.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => {
+                    error!(
+                        "Writer lock poisoned while ingesting data for stream {}",
+                        self.stream_name
+                    );
+
+                    return Err(StagingError::PoisonError(PoisonError::new(format!(
+                        "Writer lock poisoned while ingesting data for stream {} - {}",
+                        self.stream_name, poisoned
+                    ))));
+                }
             }
         };
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
@@ -461,6 +475,12 @@ impl Stream {
     }
 
     /// Converts arrow files in staging into parquet files, does so only for past minutes when run with `!shutdown_signal`
+    #[instrument(
+        name = "prepare_parquet",
+        level = "info",
+        skip(self, tenant_id),
+        fields(stream_name = %self.stream_name)
+    )]
     pub fn prepare_parquet(
         &self,
         init_signal: bool,
@@ -521,20 +541,32 @@ impl Stream {
     }
 
     pub fn flush(&self, forced: bool) {
-        let mut writer = match self.writer.lock() {
-            Ok(guard) => guard,
-            Err(poisoned) => {
-                error!(
+        let _span = info_span!("flush", stream_name = %self.stream_name, forced).entered();
+        // Swap out stale writers under the lock, drop them after releasing it.
+        // DiskWriter::Drop does I/O (IPC finish + file rename) so dropping
+        // outside the lock avoids blocking concurrent push() calls.
+        let stale_writers = {
+            let mut writer = self.writer.lock().unwrap_or_else(|_| {
+                panic!(
                     "Writer lock poisoned while flushing data for stream {}",
                     self.stream_name
-                );
-                poisoned.into_inner()
+                )
+            });
+            writer.mem.clear();
+
+            let mut old_disk = HashMap::new();
+            std::mem::swap(&mut writer.disk, &mut old_disk);
+            if !forced {
+                for (k, v) in old_disk.drain() {
+                    if v.is_current() {
+                        writer.disk.insert(k, v);
+                    }
+                }
             }
+            old_disk
         };
-        // Flush memory
-        writer.mem.clear();
-        // Drop schema -> disk writer mapping, triggers flush to disk
-        writer.disk.retain(|_, w| !forced && w.is_current());
+        // DiskWriter::Drop I/O happens here, outside the lock
+        drop(stale_writers);
     }
 
     fn parquet_writer_props(
@@ -632,12 +664,20 @@ impl Stream {
         shutdown_signal: bool,
         tenant_id: &Option<String>,
     ) -> Result<Option<Schema>, StagingError> {
+        let span = info_span!(
+            "convert_disk_files_to_parquet",
+            stream_name = %self.stream_name,
+            file_group_count = tracing::field::Empty,
+        );
+        let _guard = span.enter();
+
         let mut schemas = Vec::new();
 
         let now = SystemTime::now();
         let group_minute = minute_from_system_time(now) - 1;
         let staging_files =
             self.arrow_files_grouped_exclude_time(now, group_minute, init_signal, shutdown_signal);
+        span.record("file_group_count", staging_files.len());
         if staging_files.is_empty() {
             self.reset_staging_metrics(tenant_id);
             return Ok(None);
@@ -688,6 +728,11 @@ impl Stream {
         props: &WriterProperties,
         time_partition: Option<&String>,
     ) -> Result<bool, StagingError> {
+        let _span = info_span!(
+            "write_parquet_part_file",
+            stream_name = %self.stream_name,
+        )
+        .entered();
         let mut part_file = OpenOptions::new()
             .create(true)
             .append(true)
@@ -809,7 +854,7 @@ impl Stream {
 
     pub fn updated_schema(&self, current_schema: Schema) -> Schema {
         let staging_files = self.arrow_files();
-        let record_reader = MergedRecordReader::try_new(&staging_files).unwrap();
+        let record_reader = MergedReverseRecordReader::try_new(&staging_files);
         if record_reader.readers.is_empty() {
             return current_schema;
         }
@@ -1130,6 +1175,12 @@ impl Stream {
     }
 
     /// First flushes arrows onto disk and then converts the arrow into parquet
+    #[instrument(
+        name = "flush_and_convert",
+        level = "info",
+        skip(self, tenant_id),
+        fields(stream_name = %self.stream_name)
+    )]
     pub fn flush_and_convert(
         &self,
         init_signal: bool,
@@ -1299,9 +1350,13 @@ impl Streams {
             };
             for stream in streams {
                 let tenant = tenant_id.clone();
-                joinset.spawn(async move {
-                    stream.flush_and_convert(init_signal, shutdown_signal, &Some(tenant))
-                });
+                let span = info_span!("stream_sync", stream_name = %stream.stream_name);
+                joinset.spawn(
+                    async move {
+                        stream.flush_and_convert(init_signal, shutdown_signal, &Some(tenant))
+                    }
+                    .instrument(span),
+                );
             }
         }
     }

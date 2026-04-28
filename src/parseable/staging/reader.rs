@@ -18,7 +18,7 @@
  */
 
 use std::{
-    fs::{File, remove_file},
+    fs::File,
     io::{self, BufReader, Read, Seek, SeekFrom},
     path::PathBuf,
     sync::Arc,
@@ -30,59 +30,12 @@ use arrow_ipc::{MessageHeader, reader::StreamReader, root_as_message_unchecked};
 use arrow_schema::Schema;
 use byteorder::{LittleEndian, ReadBytesExt};
 use itertools::kmerge_by;
-use tracing::error;
+use tracing::{error, info_span};
 
 use crate::{
     event::DEFAULT_TIMESTAMP_KEY,
     utils::arrow::{adapt_batch, reverse},
 };
-
-#[derive(Debug)]
-pub struct MergedRecordReader {
-    pub readers: Vec<StreamReader<BufReader<File>>>,
-}
-
-impl MergedRecordReader {
-    pub fn try_new(files: &[PathBuf]) -> Result<Self, ()> {
-        let mut readers = Vec::with_capacity(files.len());
-
-        for file in files {
-            //remove empty files before reading
-            match file.metadata() {
-                Err(err) => {
-                    error!("Error when trying to read file: {file:?}; error = {err}");
-                    continue;
-                }
-                Ok(metadata) if metadata.len() == 0 => {
-                    error!("Empty file detected, removing it: {:?}", file);
-                    remove_file(file).unwrap();
-                    continue;
-                }
-                Ok(_) => {
-                    let Ok(reader) =
-                        StreamReader::try_new(BufReader::new(File::open(file).unwrap()), None)
-                    else {
-                        error!("Invalid file detected, ignoring it: {:?}", file);
-                        continue;
-                    };
-
-                    readers.push(reader);
-                }
-            }
-        }
-
-        Ok(Self { readers })
-    }
-
-    pub fn merged_schema(&self) -> Schema {
-        Schema::try_merge(
-            self.readers
-                .iter()
-                .map(|reader| reader.schema().as_ref().clone()),
-        )
-        .unwrap()
-    }
-}
 
 #[derive(Debug)]
 pub struct MergedReverseRecordReader {
@@ -91,6 +44,7 @@ pub struct MergedReverseRecordReader {
 
 impl MergedReverseRecordReader {
     pub fn try_new(file_paths: &[PathBuf]) -> Self {
+        let _span = info_span!("open_arrow_files", file_count = file_paths.len()).entered();
         let mut readers = Vec::with_capacity(file_paths.len());
         for path in file_paths {
             match File::open(path) {
@@ -121,9 +75,8 @@ impl MergedReverseRecordReader {
     ) -> impl Iterator<Item = RecordBatch> {
         let adapted_readers = self.readers.into_iter().map(|reader| reader.flatten());
         kmerge_by(adapted_readers, move |a: &RecordBatch, b: &RecordBatch| {
-            // Capture time_partition by value
-            let a_time = get_timestamp_millis(a, time_partition.clone());
-            let b_time = get_timestamp_millis(b, time_partition.clone());
+            let a_time = get_timestamp_millis(a, time_partition.as_deref());
+            let b_time = get_timestamp_millis(b, time_partition.as_deref());
             a_time > b_time
         })
         .map(|batch| reverse(&batch))
@@ -140,19 +93,16 @@ impl MergedReverseRecordReader {
     }
 }
 
-fn get_timestamp_millis(batch: &RecordBatch, time_partition: Option<String>) -> i64 {
+fn get_timestamp_millis(batch: &RecordBatch, time_partition: Option<&str>) -> i64 {
     match time_partition {
-        Some(time_partition) => {
-            let time_partition = time_partition.as_str();
-            match batch.column_by_name(time_partition) {
-                Some(column) => column
-                    .as_any()
-                    .downcast_ref::<TimestampMillisecondArray>()
-                    .unwrap()
-                    .value(0),
-                None => get_default_timestamp_millis(batch),
-            }
-        }
+        Some(time_partition) => match batch.column_by_name(time_partition) {
+            Some(column) => column
+                .as_any()
+                .downcast_ref::<TimestampMillisecondArray>()
+                .unwrap()
+                .value(0),
+            None => get_default_timestamp_millis(batch),
+        },
         None => get_default_timestamp_millis(batch),
     }
 }
@@ -288,7 +238,12 @@ pub fn get_reverse_reader<T: Read + Seek>(
     // reset reader
     reader.rewind()?;
 
-    Ok(StreamReader::try_new(BufReader::new(OffsetReader::new(reader, messages)), None).unwrap())
+    StreamReader::try_new(BufReader::new(OffsetReader::new(reader, messages)), None).map_err(|e| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Invalid arrow stream: {e}"),
+        )
+    })
 }
 
 // return limit for
@@ -562,7 +517,8 @@ mod tests {
         write_test_batches(&file_path, &schema, &batches)?;
 
         // Now read them back in reverse order
-        let mut reader = MergedReverseRecordReader::try_new(&[file_path]).merged_iter(schema, None);
+        let mut reader =
+            MergedReverseRecordReader::try_new(&[file_path.into()]).merged_iter(schema, None);
 
         // We should get batches in reverse order: 3, 2, 1
         // But first message should be schema, so we'll still read them in order
@@ -648,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn test_get_reverse_reader_single_message() -> io::Result<()> {
+    fn testget_reverse_reader_single_message() -> io::Result<()> {
         let dir = TempDir::new().unwrap();
         let file_path = dir.path().join("test_single.data.arrows");
 
@@ -663,7 +619,8 @@ mod tests {
         // Write batch to file
         write_test_batches(&file_path, &schema, &[batch])?;
 
-        let mut reader = MergedReverseRecordReader::try_new(&[file_path]).merged_iter(schema, None);
+        let mut reader =
+            MergedReverseRecordReader::try_new(&[file_path.into()]).merged_iter(schema, None);
 
         // Should get the batch
         let result_batch = reader.next().expect("Failed to read batch");

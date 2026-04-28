@@ -23,6 +23,7 @@ use flatten::{convert_to_array, generic_flattening, has_more_than_max_allowed_le
 use serde::de::Visitor;
 use serde_json;
 use serde_json::Value;
+use tracing::info_span;
 
 use crate::event::format::LogSource;
 use crate::metadata::SchemaVersion;
@@ -224,6 +225,7 @@ pub fn convert_array_to_object(
     schema_version: SchemaVersion,
     log_source: &LogSource,
 ) -> Result<Vec<Value>, anyhow::Error> {
+    let _span = info_span!("convert_array_to_object").entered();
     if time_partition.is_some() || custom_partition.is_some() {
         match body {
             Value::Array(arr) => process_partitioned_array(

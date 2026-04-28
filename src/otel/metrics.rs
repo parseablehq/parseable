@@ -23,6 +23,8 @@ use opentelemetry_proto::tonic::metrics::v1::{
 };
 use serde_json::{Map, Value};
 
+use tracing::info_span;
+
 use crate::metrics::increment_metrics_collected_by_date;
 
 use super::otel_utils::{
@@ -174,17 +176,7 @@ fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<Map<String
 /// this function flatten the gauge json object
 /// and returns a `Vec` of `Map` for each data point
 fn flatten_gauge(gauge: &Gauge) -> Vec<Map<String, Value>> {
-    let mut vec_gauge_json = Vec::new();
-    let data_points_json = flatten_number_data_points(&gauge.data_points);
-
-    for data_point_json in data_points_json {
-        let mut gauge_json = Map::new();
-        for (key, value) in &data_point_json {
-            gauge_json.insert(key.clone(), value.clone());
-        }
-        vec_gauge_json.push(gauge_json);
-    }
-    vec_gauge_json
+    flatten_number_data_points(&gauge.data_points)
 }
 
 /// otel metrics event has json object for sum
@@ -192,24 +184,15 @@ fn flatten_gauge(gauge: &Gauge) -> Vec<Map<String, Value>> {
 /// this function flatten the sum json object
 /// and returns a `Vec` of `Map` for each data point
 fn flatten_sum(sum: &Sum) -> Vec<Map<String, Value>> {
-    let mut vec_sum_json = Vec::new();
-    let data_points_json = flatten_number_data_points(&sum.data_points);
-    for data_point_json in data_points_json {
-        let mut sum_json = Map::new();
-        for (key, value) in &data_point_json {
-            sum_json.insert(key.clone(), value.clone());
+    let mut data_points = flatten_number_data_points(&sum.data_points);
+    let agg_temp = flatten_aggregation_temporality(sum.aggregation_temporality);
+    for dp in &mut data_points {
+        for (k, v) in &agg_temp {
+            dp.insert(k.clone(), v.clone());
         }
-        vec_sum_json.push(sum_json);
+        dp.insert("is_monotonic".to_string(), Value::Bool(sum.is_monotonic));
     }
-    let mut sum_json = Map::new();
-    sum_json.extend(flatten_aggregation_temporality(sum.aggregation_temporality));
-    sum_json.insert("is_monotonic".to_string(), Value::Bool(sum.is_monotonic));
-    for data_point_json in &mut vec_sum_json {
-        for (key, value) in &sum_json {
-            data_point_json.insert(key.clone(), value.clone());
-        }
-    }
-    vec_sum_json
+    data_points
 }
 
 /// otel metrics event has json object for histogram
@@ -451,56 +434,65 @@ fn flatten_summary(summary: &Summary) -> Vec<Map<String, Value>> {
 /// and returns a `Vec` of `Map` of the flattened json
 /// this function is called recursively for each metric record object in the otel metrics event
 pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<Map<String, Value>> {
-    let mut data_points_json = Vec::new();
-    let mut metric_json = Map::new();
-    let mut metric_type = String::default();
-    match &metrics_record.data {
-        Some(metric::Data::Gauge(gauge)) => {
-            metric_type = "gauge".to_string();
-            data_points_json.extend(flatten_gauge(gauge));
+    let (mut data_points, metric_type) = match &metrics_record.data {
+        Some(metric::Data::Gauge(gauge)) => (flatten_gauge(gauge), "gauge"),
+        Some(metric::Data::Sum(sum)) => (flatten_sum(sum), "sum"),
+        Some(metric::Data::Histogram(histogram)) => (flatten_histogram(histogram), "histogram"),
+        Some(metric::Data::ExponentialHistogram(exp_histogram)) => (
+            flatten_exp_histogram(exp_histogram),
+            "exponential_histogram",
+        ),
+        Some(metric::Data::Summary(summary)) => (flatten_summary(summary), "summary"),
+        None => return Vec::new(),
+    };
+
+    // Build metric-level fields once
+    let metric_name = Value::String(metrics_record.name.clone());
+    let metric_desc = Value::String(metrics_record.description.clone());
+    let metric_unit = Value::String(metrics_record.unit.clone());
+    let metric_type_val = Value::String(metric_type.to_string());
+    let mut metadata = Map::new();
+    insert_attributes(&mut metadata, &metrics_record.metadata);
+
+    if data_points.is_empty() {
+        let mut single = Map::new();
+        single.insert("metric_name".to_string(), metric_name);
+        single.insert("metric_description".to_string(), metric_desc);
+        single.insert("metric_unit".to_string(), metric_unit);
+        single.insert("metric_type".to_string(), metric_type_val);
+        match &metrics_record.data {
+            Some(metric::Data::Sum(sum)) => {
+                single.extend(flatten_aggregation_temporality(sum.aggregation_temporality));
+                single.insert("is_monotonic".to_string(), Value::Bool(sum.is_monotonic));
+            }
+            Some(metric::Data::Histogram(histogram)) => {
+                single.extend(flatten_aggregation_temporality(
+                    histogram.aggregation_temporality,
+                ));
+            }
+            Some(metric::Data::ExponentialHistogram(exp_histogram)) => {
+                single.extend(flatten_aggregation_temporality(
+                    exp_histogram.aggregation_temporality,
+                ));
+            }
+            _ => {}
         }
-        Some(metric::Data::Sum(sum)) => {
-            metric_type = "sum".to_string();
-            data_points_json.extend(flatten_sum(sum));
-        }
-        Some(metric::Data::Histogram(histogram)) => {
-            metric_type = "histogram".to_string();
-            data_points_json.extend(flatten_histogram(histogram));
-        }
-        Some(metric::Data::ExponentialHistogram(exp_histogram)) => {
-            metric_type = "exponential_histogram".to_string();
-            data_points_json.extend(flatten_exp_histogram(exp_histogram));
-        }
-        Some(metric::Data::Summary(summary)) => {
-            metric_type = "summary".to_string();
-            data_points_json.extend(flatten_summary(summary));
-        }
-        None => {}
-    }
-    metric_json.insert(
-        "metric_name".to_string(),
-        Value::String(metrics_record.name.clone()),
-    );
-    metric_json.insert(
-        "metric_description".to_string(),
-        Value::String(metrics_record.description.clone()),
-    );
-    metric_json.insert(
-        "metric_unit".to_string(),
-        Value::String(metrics_record.unit.clone()),
-    );
-    metric_json.insert("metric_type".to_string(), Value::String(metric_type));
-    insert_attributes(&mut metric_json, &metrics_record.metadata);
-    for data_point_json in &mut data_points_json {
-        for (key, value) in &metric_json {
-            data_point_json.insert(key.clone(), value.clone());
-        }
-    }
-    if data_points_json.is_empty() {
-        data_points_json.push(metric_json);
+        single.extend(metadata);
+        return vec![single];
     }
 
-    data_points_json
+    // Insert metric-level fields directly into each data point
+    for dp in &mut data_points {
+        dp.insert("metric_name".to_string(), metric_name.clone());
+        dp.insert("metric_description".to_string(), metric_desc.clone());
+        dp.insert("metric_unit".to_string(), metric_unit.clone());
+        dp.insert("metric_type".to_string(), metric_type_val.clone());
+        for (k, v) in &metadata {
+            dp.insert(k.clone(), v.clone());
+        }
+    }
+
+    data_points
 }
 
 /// Common function to process resource metrics and merge resource-level fields
@@ -516,71 +508,63 @@ fn process_resource_metrics<T, S, M>(
     get_metric: fn(&M) -> &Metric,
     tenant_id: &str,
 ) -> Vec<Value> {
+    let _span = info_span!(
+        "process_resource_metrics",
+        resource_count = resource_metrics.len(),
+    )
+    .entered();
     let mut vec_otel_json = Vec::new();
 
     for resource_metric in resource_metrics {
-        let mut resource_metrics_json = Map::new();
-
-        // Process resource attributes if present
+        // Build resource-level fields once per resource
+        let mut resource_fields = Map::new();
         if let Some(resource) = get_resource(resource_metric) {
-            insert_attributes(&mut resource_metrics_json, &resource.attributes);
-            resource_metrics_json.insert(
+            insert_attributes(&mut resource_fields, &resource.attributes);
+            resource_fields.insert(
                 "resource_dropped_attributes_count".to_string(),
                 Value::Number(resource.dropped_attributes_count.into()),
             );
         }
-
-        let mut vec_scope_metrics_json = Vec::new();
-        let scope_metrics = get_scope_metrics(resource_metric);
-
-        for scope_metric in scope_metrics {
-            let mut scope_metrics_json = Map::new();
-
-            let metrics = get_metrics(scope_metric);
-            for metric in metrics {
-                vec_scope_metrics_json.extend(flatten_metrics_record(get_metric(metric)));
-            }
-
-            let date = chrono::Utc::now().date_naive().to_string();
-            increment_metrics_collected_by_date(metrics.len() as u64, &date, tenant_id);
-
-            if let Some(scope) = get_scope(scope_metric) {
-                scope_metrics_json
-                    .insert("scope_name".to_string(), Value::String(scope.name.clone()));
-                scope_metrics_json.insert(
-                    "scope_version".to_string(),
-                    Value::String(scope.version.clone()),
-                );
-                insert_attributes(&mut scope_metrics_json, &scope.attributes);
-                scope_metrics_json.insert(
-                    "scope_dropped_attributes_count".to_string(),
-                    Value::Number(scope.dropped_attributes_count.into()),
-                );
-            }
-
-            scope_metrics_json.insert(
-                "scope_schema_url".to_string(),
-                Value::String(get_scope_schema_url(scope_metric).to_string()),
-            );
-
-            for scope_metric_json in &mut vec_scope_metrics_json {
-                for (key, value) in &scope_metrics_json {
-                    scope_metric_json.insert(key.clone(), value.clone());
-                }
-            }
-        }
-
-        resource_metrics_json.insert(
+        resource_fields.insert(
             "resource_schema_url".to_string(),
             Value::String(get_schema_url(resource_metric).to_string()),
         );
 
-        for resource_metric_json in &mut vec_scope_metrics_json {
-            for (key, value) in &resource_metrics_json {
-                resource_metric_json.insert(key.clone(), value.clone());
-            }
+        for scope_metric in get_scope_metrics(resource_metric) {
+            // Build envelope = resource + scope fields (once per scope)
+            let mut envelope = resource_fields.clone();
 
-            vec_otel_json.push(Value::Object(resource_metric_json.clone()));
+            if let Some(scope) = get_scope(scope_metric) {
+                envelope.insert("scope_name".to_string(), Value::String(scope.name.clone()));
+                envelope.insert(
+                    "scope_version".to_string(),
+                    Value::String(scope.version.clone()),
+                );
+                insert_attributes(&mut envelope, &scope.attributes);
+                envelope.insert(
+                    "scope_dropped_attributes_count".to_string(),
+                    Value::Number(scope.dropped_attributes_count.into()),
+                );
+            }
+            envelope.insert(
+                "scope_schema_url".to_string(),
+                Value::String(get_scope_schema_url(scope_metric).to_string()),
+            );
+
+            let metrics = get_metrics(scope_metric);
+            let date = chrono::Utc::now().date_naive().to_string();
+            increment_metrics_collected_by_date(metrics.len() as u64, &date, tenant_id);
+
+            // Flatten each metric's data points and merge envelope in one pass
+            for metric in metrics {
+                let data_points = flatten_metrics_record(get_metric(metric));
+                for mut dp in data_points {
+                    for (k, v) in &envelope {
+                        dp.insert(k.clone(), v.clone());
+                    }
+                    vec_otel_json.push(Value::Object(dp));
+                }
+            }
         }
     }
 
@@ -608,7 +592,14 @@ pub fn flatten_otel_metrics_protobuf(
     message: &ExportMetricsServiceRequest,
     tenant_id: &str,
 ) -> Vec<Value> {
-    process_resource_metrics(
+    let span = info_span!(
+        "flatten_otel_metrics_protobuf",
+        resource_metrics_count = message.resource_metrics.len(),
+        output_count = tracing::field::Empty,
+    );
+    let _guard = span.enter();
+
+    let result = process_resource_metrics(
         &message.resource_metrics,
         |record| record.resource.as_ref(),
         |record| &record.scope_metrics,
@@ -618,7 +609,10 @@ pub fn flatten_otel_metrics_protobuf(
         |scope_metric| &scope_metric.metrics,
         |metric| metric,
         tenant_id,
-    )
+    );
+
+    span.record("output_count", result.len());
+    result
 }
 
 /// otel metrics event has json object for aggregation temporality

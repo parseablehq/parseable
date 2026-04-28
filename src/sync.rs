@@ -21,11 +21,25 @@ use futures::FutureExt;
 use std::collections::HashMap;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, interval_at, sleep};
 use tokio::{select, task};
-use tracing::{error, info, trace, warn};
+use tracing::{Instrument, error, info, info_span, trace, warn};
+
+static LOCAL_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
+static REMOTE_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// RAII guard that clears a sync-running flag on drop, so a panic inside the
+/// sync body cannot leave the flag stuck at `true` and wedge future ticks.
+struct SyncRunningGuard(&'static AtomicBool);
+
+impl Drop for SyncRunningGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
 
 use crate::alerts::alert_enums::AlertTask;
 use crate::alerts::alerts_utils;
@@ -127,22 +141,29 @@ pub fn object_store_sync() -> (
             loop {
                 select! {
                     _ = sync_interval.tick() => {
-                        trace!("Syncing Parquets to Object Store... ");
+                        if REMOTE_SYNC_RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+                            warn!("Previous object_store_sync cycle still running, skipping this tick");
+                            continue;
+                        }
+                        let _guard = SyncRunningGuard(&REMOTE_SYNC_RUNNING);
+                        async {
+                            trace!("Syncing Parquets to Object Store... ");
 
-                        // Monitor the duration of sync_all_streams execution
-                        monitor_task_duration(
-                            "object_store_sync_all_streams",
-                            Duration::from_secs(PARSEABLE.options.object_store_sync_threshold),
-                            || async {
-                                let mut joinset = JoinSet::new();
-                                sync_all_streams(&mut joinset);
+                            // Monitor the duration of sync_all_streams execution
+                            monitor_task_duration(
+                                "object_store_sync_all_streams",
+                                Duration::from_secs(PARSEABLE.options.object_store_sync_threshold),
+                                || async {
+                                    let mut joinset = JoinSet::new();
+                                    sync_all_streams(&mut joinset);
 
-                                // Wait for all spawned tasks to complete
-                                while let Some(res) = joinset.join_next().await {
-                                    log_join_result(res, "object store sync");
+                                    // Wait for all spawned tasks to complete
+                                    while let Some(res) = joinset.join_next().await {
+                                        log_join_result(res, "object store sync");
+                                    }
                                 }
-                            }
-                        ).await;
+                            ).await;
+                        }.instrument(info_span!("object_store_sync_cycle")).await;
                     },
                     res = &mut inbox_rx => {
                         match res {
@@ -194,20 +215,27 @@ pub fn local_sync() -> (
             loop {
                 select! {
                     _ = sync_interval.tick() => {
+                        if LOCAL_SYNC_RUNNING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+                            warn!("Previous local_sync cycle still running, skipping this tick");
+                            continue;
+                        }
+                        let _guard = SyncRunningGuard(&LOCAL_SYNC_RUNNING);
                         // Monitor the duration of flush_and_convert execution
-                        monitor_task_duration(
-                            "local_sync_flush_and_convert",
-                            Duration::from_secs(PARSEABLE.options.local_sync_threshold),
-                            || async {
-                                let mut joinset = JoinSet::new();
-                                PARSEABLE.streams.flush_and_convert(&mut joinset, false, false);
+                        async {
+                            monitor_task_duration(
+                                "local_sync_flush_and_convert",
+                                Duration::from_secs(PARSEABLE.options.local_sync_threshold),
+                                || async {
+                                    let mut joinset = JoinSet::new();
+                                    PARSEABLE.streams.flush_and_convert(&mut joinset, false, false);
 
-                                // Wait for all spawned tasks to complete
-                                while let Some(res) = joinset.join_next().await {
-                                    log_join_result(res, "flush and convert");
+                                    // Wait for all spawned tasks to complete
+                                    while let Some(res) = joinset.join_next().await {
+                                        log_join_result(res, "flush and convert");
+                                    }
                                 }
-                            }
-                        ).await;
+                            ).await;
+                        }.instrument(info_span!("local_sync_cycle")).await;
                     },
                     res = &mut inbox_rx => {
                         match res {

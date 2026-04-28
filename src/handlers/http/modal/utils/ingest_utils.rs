@@ -22,9 +22,10 @@ use chrono::Utc;
 use opentelemetry_proto::tonic::{
     logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
 };
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde_json::Value;
 use std::collections::HashMap;
-use tracing::warn;
+use tracing::{instrument, warn};
 
 use crate::{
     event::{
@@ -48,6 +49,19 @@ const IGNORE_HEADERS: [&str; 3] = [STREAM_NAME_HEADER_KEY, LOG_SOURCE_KEY, EXTRA
 const MAX_CUSTOM_FIELDS: usize = 10;
 const MAX_FIELD_VALUE_LENGTH: usize = 100;
 
+#[instrument(
+    name = "flatten_and_push_logs",
+    level = "info",
+    skip(
+        json,
+        log_source,
+        p_custom_fields,
+        time_partition,
+        telemetry_type,
+        tenant_id
+    ),
+    fields(stream_name)
+)]
 pub async fn flatten_and_push_logs(
     json: Value,
     stream_name: &str,
@@ -75,75 +89,74 @@ pub async fn flatten_and_push_logs(
                 time_partition,
                 telemetry_type,
                 tenant_id,
-            )
-            .await?;
+            )?;
         }
         LogSource::OtelLogs => {
-            //custom flattening required for otel logs
             let logs: LogsData = serde_json::from_value(json)?;
-            for record in flatten_otel_logs(&logs, tenant_str) {
+            let records = flatten_otel_logs(&logs, tenant_str);
+            if !records.is_empty() {
                 push_logs(
                     stream_name,
-                    record,
+                    Value::Array(records),
                     log_source,
                     p_custom_fields,
-                    time_partition.clone(),
+                    None,
                     telemetry_type,
                     tenant_id,
-                )
-                .await?;
+                )?;
             }
         }
         LogSource::OtelTraces => {
-            //custom flattening required for otel traces
             let traces: TracesData = serde_json::from_value(json)?;
-            for record in flatten_otel_traces(&traces, tenant_str) {
+            let records = flatten_otel_traces(&traces, tenant_str);
+            if !records.is_empty() {
                 push_logs(
                     stream_name,
-                    record,
+                    Value::Array(records),
                     log_source,
                     p_custom_fields,
-                    time_partition.clone(),
+                    None,
                     telemetry_type,
                     tenant_id,
-                )
-                .await?;
+                )?;
             }
         }
         LogSource::OtelMetrics => {
-            //custom flattening required for otel metrics
             let metrics: MetricsData = serde_json::from_value(json)?;
-            for record in flatten_otel_metrics(metrics, tenant_str) {
+            let records = flatten_otel_metrics(metrics, tenant_str);
+            if !records.is_empty() {
                 push_logs(
                     stream_name,
-                    record,
+                    Value::Array(records),
                     log_source,
                     p_custom_fields,
-                    time_partition.clone(),
+                    None,
                     telemetry_type,
                     tenant_id,
-                )
-                .await?;
+                )?;
             }
         }
-        _ => {
-            push_logs(
-                stream_name,
-                json,
-                log_source,
-                p_custom_fields,
-                time_partition,
-                telemetry_type,
-                tenant_id,
-            )
-            .await?
-        }
+        _ => push_logs(
+            stream_name,
+            json,
+            log_source,
+            p_custom_fields,
+            time_partition,
+            telemetry_type,
+            tenant_id,
+        )?,
     }
 
     Ok(())
 }
 
-pub async fn push_logs(
+#[instrument(
+    name = "push_logs",
+    level = "info",
+    skip(json, log_source, p_custom_fields, time_partition, telemetry_type, tenant_id),
+    fields(stream_name, record_count = tracing::field::Empty)
+)]
+pub fn push_logs(
     stream_name: &str,
     json: Value,
     log_source: &LogSource,
@@ -153,12 +166,11 @@ pub async fn push_logs(
     tenant_id: &Option<String>,
 ) -> Result<(), PostError> {
     let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
-    let time_partition_limit = PARSEABLE
-        .get_stream(stream_name, tenant_id)?
-        .get_time_partition_limit();
+    let time_partition_limit = stream.get_time_partition_limit();
     let static_schema_flag = stream.get_static_schema_flag();
     let custom_partition = stream.get_custom_partition();
     let schema_version = stream.get_schema_version();
+    let schema = stream.get_schema_raw();
     let p_timestamp = Utc::now();
 
     let data = convert_array_to_object(
@@ -170,28 +182,92 @@ pub async fn push_logs(
         log_source,
     )?;
 
-    for json in data {
-        let origin_size = serde_json::to_vec(&json).unwrap().len() as u64; // string length need not be the same as byte length
-        let schema = PARSEABLE
-            .get_stream(stream_name, tenant_id)?
-            .get_schema_raw();
-        json::Event { json, p_timestamp }
-            .into_event(
-                stream_name.to_owned(),
-                origin_size,
-                &schema,
-                static_schema_flag,
-                custom_partition.as_ref(),
-                time_partition.as_ref(),
-                schema_version,
-                StreamType::UserDefined,
-                p_custom_fields,
-                telemetry_type,
-                tenant_id,
-            )?
-            .process()?;
+    if data.is_empty() {
+        return Err(PostError::Invalid(anyhow::Error::msg(
+            "Empty data object received",
+        )));
+    }
+
+    // Batch path: one schema inference + one decoder for the entire batch.
+    // When custom partitions are set, different records may need different
+    // partition keys, so fall back to per-record processing.
+    if custom_partition.is_none() && time_partition.is_none() {
+        // process_non_partitioned returns vec![Value::Array([...])], a single
+        // element wrapping the whole batch. Unwrap it to avoid double-nesting.
+        let json_batch = data.into_iter().next().unwrap();
+        let origin_size = json_byte_size(&json_batch);
+
+        let (rb, is_first_event) = (json::Event {
+            json: json_batch,
+            p_timestamp,
+        })
+        .into_recordbatch(
+            &schema,
+            static_schema_flag,
+            time_partition.as_ref(),
+            schema_version,
+            p_custom_fields,
+        )?;
+
+        let event = crate::event::Event {
+            rb,
+            stream_name: stream_name.to_owned(),
+            origin_format: "json",
+            origin_size,
+            is_first_event,
+            parsed_timestamp: p_timestamp.naive_utc(),
+            time_partition: None,
+            custom_partition_values: HashMap::new(),
+            stream_type: StreamType::UserDefined,
+            telemetry_type,
+            tenant_id: tenant_id.to_owned(),
+        };
+        event.process()?;
+    } else {
+        // Per-record path for custom-partitioned streams
+        let events: Result<Vec<_>, _> = data
+            .into_par_iter()
+            .map(|json| {
+                let origin_size = json_byte_size(&json);
+                (json::Event { json, p_timestamp }).into_event(
+                    stream_name.to_owned(),
+                    origin_size,
+                    &schema,
+                    static_schema_flag,
+                    custom_partition.as_ref(),
+                    time_partition.as_ref(),
+                    schema_version,
+                    StreamType::UserDefined,
+                    p_custom_fields,
+                    telemetry_type,
+                    tenant_id,
+                )
+            })
+            .collect();
+        for event in events.map_err(PostError::Invalid)? {
+            event.process()?;
+        }
     }
     Ok(())
+}
+
+/// Zero-allocation JSON byte size counter.
+/// Uses serde_json::to_writer with a writer that only counts bytes.
+pub fn json_byte_size(value: &Value) -> u64 {
+    struct CountingWriter(u64);
+    impl std::io::Write for CountingWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len() as u64;
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = CountingWriter(0);
+    // serde_json::to_writer won't fail on Value types
+    let _ = serde_json::to_writer(&mut counter, value);
+    counter.0
 }
 
 pub fn get_custom_fields_from_header(req: &HttpRequest) -> HashMap<String, String> {

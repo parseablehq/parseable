@@ -29,6 +29,7 @@ use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::info_span;
 
 use crate::{
     handlers::TelemetryType,
@@ -167,6 +168,7 @@ pub trait EventFormat: Sized {
         schema_version: SchemaVersion,
         p_custom_fields: &HashMap<String, String>,
     ) -> Result<(RecordBatch, bool), AnyError> {
+        let _span = info_span!("into_recordbatch").entered();
         let p_timestamp = self.get_p_timestamp();
         let (data, schema, is_first) = self.to_data(
             storage_schema,
