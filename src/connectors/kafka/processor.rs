@@ -75,6 +75,7 @@ impl ParseableSinkProcessor {
         let custom_partition = stream.get_custom_partition();
         let static_schema_flag = stream.get_static_schema_flag();
         let schema_version = stream.get_schema_version();
+        let infer_timestamp = stream.get_infer_timestamp();
 
         let mut json_vec = Vec::with_capacity(records.len());
         let mut total_payload_size = 0u64;
@@ -101,6 +102,7 @@ impl ParseableSinkProcessor {
             &p_custom_fields,
             TelemetryType::Logs,
             tenant_id,
+            infer_timestamp,
         )?;
 
         Ok(p_event)

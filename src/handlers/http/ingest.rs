@@ -195,6 +195,7 @@ pub async fn ingest_internal_stream(
             &p_custom_fields,
             TelemetryType::Logs,
             tenant_id,
+            true,
         )?
         .process()?;
 
@@ -712,6 +713,7 @@ mod tests {
                 None,
                 SchemaVersion::V0,
                 &HashMap::new(),
+                true,
             )
             .unwrap();
 
@@ -746,6 +748,7 @@ mod tests {
                 None,
                 SchemaVersion::V0,
                 &HashMap::new(),
+                true,
             )
             .unwrap();
 
@@ -778,7 +781,14 @@ mod tests {
         );
 
         let (rb, _) = json::Event::new(json, Utc::now())
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
+            .into_recordbatch(
+                &schema,
+                false,
+                None,
+                SchemaVersion::V0,
+                &HashMap::new(),
+                true,
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
@@ -811,7 +821,14 @@ mod tests {
 
         assert!(
             json::Event::new(json, Utc::now())
-                .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
+                .into_recordbatch(
+                    &schema,
+                    false,
+                    None,
+                    SchemaVersion::V0,
+                    &HashMap::new(),
+                    true
+                )
                 .is_ok() // schema will have new field called b_int64 and the original b will be ignored since it has type mismatch
         );
     }
@@ -830,7 +847,14 @@ mod tests {
         );
 
         let (rb, _) = json::Event::new(json, Utc::now())
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
+            .into_recordbatch(
+                &schema,
+                false,
+                None,
+                SchemaVersion::V0,
+                &HashMap::new(),
+                true,
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
@@ -862,6 +886,7 @@ mod tests {
                 None,
                 SchemaVersion::V0,
                 &HashMap::new(),
+                true,
             )
             .unwrap();
 
@@ -916,6 +941,7 @@ mod tests {
                 None,
                 SchemaVersion::V0,
                 &HashMap::new(),
+                true,
             )
             .unwrap();
 
@@ -965,7 +991,14 @@ mod tests {
         );
 
         let (rb, _) = json::Event::new(json, Utc::now())
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
+            .into_recordbatch(
+                &schema,
+                false,
+                None,
+                SchemaVersion::V0,
+                &HashMap::new(),
+                true,
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
@@ -985,23 +1018,14 @@ mod tests {
     }
 
     #[test]
-    fn arr_schema_mismatch() {
+    fn arr_schema_mismatch_auto_routes_to_typed_sibling() {
+        // Storage has c: Float64. Record 2 has c: 1 (int). In V0, ints aren't
+        // compatible with Float64, so the per-record rename routes that record
+        // to a c_int64 sibling column. Record 1's c: 1.24 stays in c.
         let json = json!([
-            {
-                "a": null,
-                "b": "hello",
-                "c": 1.24
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": 1
-            },
-            {
-                "a": 1,
-                "b": "hello",
-                "c": null
-            },
+            { "a": null, "b": "hello", "c": 1.24 },
+            { "a": 1,    "b": "hello", "c": 1 },
+            { "a": 1,    "b": "hello", "c": null },
         ]);
 
         let schema = fields_to_map(
@@ -1013,11 +1037,21 @@ mod tests {
             .into_iter(),
         );
 
-        assert!(
-            json::Event::new(json, Utc::now())
-                .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
-                .is_err()
-        );
+        let (rb, _) = json::Event::new(json, Utc::now())
+            .into_recordbatch(
+                &schema,
+                false,
+                None,
+                SchemaVersion::V0,
+                &HashMap::new(),
+                true,
+            )
+            .expect("batch should succeed via per-record type rename");
+
+        assert_eq!(rb.num_rows(), 3);
+        // Original c keeps the float; the int got routed to c_int64.
+        assert!(rb.column_by_name("c").is_some());
+        assert!(rb.column_by_name("c_int64").is_some());
     }
 
     #[test]
@@ -1051,6 +1085,7 @@ mod tests {
                 None,
                 SchemaVersion::V0,
                 &HashMap::new(),
+                true,
             )
             .unwrap();
         assert_eq!(rb.num_rows(), 4);
@@ -1129,6 +1164,7 @@ mod tests {
                 None,
                 SchemaVersion::V1,
                 &HashMap::new(),
+                true,
             )
             .unwrap();
 

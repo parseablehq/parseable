@@ -182,7 +182,7 @@ fn column_statistics(row_groups: &[RowGroupMetaData]) -> HashMap<String, Column>
                 entry.compressed_size += col.compressed_size() as u64;
                 entry.uncompressed_size += col.uncompressed_size() as u64;
                 if let Some(other) = col.statistics().and_then(|stats| stats.try_into().ok()) {
-                    entry.stats = entry.stats.clone().map(|this| this.update(other));
+                    entry.stats = entry.stats.clone().and_then(|this| this.update(other));
                 }
             } else {
                 columns.insert(

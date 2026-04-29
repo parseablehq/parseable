@@ -456,6 +456,7 @@ async fn setup_logstream_metadata(
         telemetry_type,
         dataset_tags,
         dataset_labels,
+        infer_timestamp,
         ..
     } = serde_json::from_value(stream_metadata_value).unwrap_or_default();
 
@@ -503,6 +504,7 @@ async fn setup_logstream_metadata(
         telemetry_type,
         dataset_tags,
         dataset_labels,
+        infer_timestamp,
     };
 
     Ok(metadata)

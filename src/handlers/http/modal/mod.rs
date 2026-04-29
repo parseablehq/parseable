@@ -131,7 +131,7 @@ pub trait ParseableServer {
             .max_connections(PARSEABLE.options.max_connections)
             .shutdown_timeout(60);
         tracing::warn!(
-            "Starting Query server with-\nNum workers: {}\nKeep Alive: {}\nRequest timeout: {}\nConnection backlog: {}\nMax connections: {}",
+            "Starting server with-\nNum workers: {}\nKeep Alive: {}\nRequest timeout: {}\nConnection backlog: {}\nMax connections: {}",
             PARSEABLE.options.num_workers,
             PARSEABLE.options.keep_alive,
             PARSEABLE.options.request_timeout,

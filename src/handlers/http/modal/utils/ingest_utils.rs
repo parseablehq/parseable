@@ -171,6 +171,7 @@ pub fn push_logs(
     let custom_partition = stream.get_custom_partition();
     let schema_version = stream.get_schema_version();
     let schema = stream.get_schema_raw();
+    let infer_timestamp = stream.get_infer_timestamp();
     let p_timestamp = Utc::now();
 
     let data = convert_array_to_object(
@@ -207,6 +208,7 @@ pub fn push_logs(
             time_partition.as_ref(),
             schema_version,
             p_custom_fields,
+            infer_timestamp,
         )?;
 
         let event = crate::event::Event {
@@ -241,6 +243,7 @@ pub fn push_logs(
                     p_custom_fields,
                     telemetry_type,
                     tenant_id,
+                    infer_timestamp,
                 )
             })
             .collect();

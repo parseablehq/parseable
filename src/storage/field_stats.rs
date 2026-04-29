@@ -192,6 +192,7 @@ pub async fn calculate_field_stats(
             &p_custom_fields,
             TelemetryType::Logs,
             tenant_id,
+            true,
         )?
         .process()?;
     }
