@@ -84,11 +84,24 @@ impl TypedStatistics {
                 }))
             }
             (TypedStatistics::Float(this), TypedStatistics::Float(other)) => {
+                // Validate each operand BEFORE merging. f64::min and f64::max
+                // follow IEEE 754-2019 minimumNumber/maximumNumber semantics:
+                // when exactly one operand is NaN they return the *other*,
+                // silently masking a tainted source range. TypedStatistics
+                // derives Deserialize, so an invalid value can enter without
+                // going through TryFrom — this guard keeps merge correct.
+                if !is_valid_float_range(this.min, this.max)
+                    || !is_valid_float_range(other.min, other.max)
+                {
+                    warn!(
+                        "Dropping float column stats with invalid source range before merge: \
+                         lhs=({}, {}), rhs=({}, {})",
+                        this.min, this.max, other.min, other.max
+                    );
+                    return None;
+                }
                 let min = this.min.min(other.min);
                 let max = this.max.max(other.max);
-                // Defensive: if either operand was already inverted (min>max)
-                // or carries NaN, the merge can land outside a usable range.
-                // Drop the stats rather than passing them downstream.
                 if !is_valid_float_range(min, max) {
                     warn!(
                         "Dropping float column stats with invalid range after merge: \
@@ -377,10 +390,12 @@ mod tests {
     }
 
     #[test]
-    fn update_repairs_when_one_operand_is_inverted_but_other_brackets_it() {
-        // Documents a real semantic: f64::min/max can produce a valid result
-        // even if one operand was inverted, as long as the other operand's
-        // bounds bracket it. We don't try to detect this — it's correct.
+    fn update_drops_when_one_operand_is_inverted_even_if_bracketed() {
+        // Per-operand validation rejects an inverted operand even when the
+        // other operand's bounds would have bracketed it into a valid merged
+        // range. This is intentional: an inverted operand signals a tainted
+        // upstream stat, so we drop the column's stats entirely rather than
+        // letting the merge silently launder it into a clean-looking result.
         let inverted = TypedStatistics::Float(Float64Type {
             min: 600025.1656670001,
             max: 600025.165667,
@@ -389,11 +404,23 @@ mod tests {
             min: 100.0,
             max: 1_000_000.0,
         });
-        let merged = inverted.update(valid).expect("merge should succeed");
-        match merged {
-            TypedStatistics::Float(s) => assert!(s.min <= s.max),
-            _ => panic!("expected Float variant"),
-        }
+        assert!(inverted.update(valid).is_none());
+    }
+
+    #[test]
+    fn update_drops_when_one_operand_has_nan() {
+        // Without per-operand validation, f64::min(NaN, 5) = 5 silently masks
+        // the NaN. The validation must fire first so this returns None.
+        let with_nan = TypedStatistics::Float(Float64Type {
+            min: f64::NAN,
+            max: 10.0,
+        });
+        let valid = TypedStatistics::Float(Float64Type {
+            min: 1.0,
+            max: 20.0,
+        });
+        assert!(with_nan.clone().update(valid.clone()).is_none());
+        assert!(valid.update(with_nan).is_none());
     }
 
     #[test]
