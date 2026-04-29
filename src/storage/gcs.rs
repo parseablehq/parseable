@@ -343,14 +343,6 @@ impl Gcs {
         let mut file = OpenOptions::new().read(true).open(path).await?;
         let location = &to_object_store_path(key);
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        let async_writer = self.client.put_multipart(location).await;
-        let mut async_writer = match async_writer {
-            Ok(writer) => writer,
-            Err(err) => {
-                return Err(err.into());
-            }
-        };
-
         let meta = file.metadata().await?;
         let total_size = meta.len() as usize;
         let min_multipart_size = PARSEABLE.options.min_multipart_size as usize;
@@ -380,6 +372,13 @@ impl Gcs {
             }
             return Ok(());
         } else {
+            let async_writer = self.client.put_multipart(location).await;
+            let mut async_writer = match async_writer {
+                Ok(writer) => writer,
+                Err(err) => {
+                    return Err(err.into());
+                }
+            };
             let mut data = Vec::new();
             file.read_to_end(&mut data).await?;
 

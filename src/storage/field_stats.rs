@@ -458,7 +458,8 @@ fn format_arrow_value(array: &dyn Array, idx: usize) -> String {
     }
 }
 
-fn extract_datetime_from_parquet_path_regex(
+#[inline(always)]
+pub fn extract_datetime_from_parquet_path_regex(
     parquet_path: &Path,
 ) -> Result<DateTime<Utc>, Box<dyn std::error::Error>> {
     let filename = parquet_path
