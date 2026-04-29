@@ -99,6 +99,39 @@ pub const JOIN_COMMUNITY: &str =
     "Join us on Parseable Slack community for questions : https://logg.ing/community";
 pub const STREAM_EXISTS: &str = "Stream exists";
 
+/// For OTel log sources the telemetry_type is fully determined by the log_source.
+/// When the user explicitly sets x-p-telemetry-type and it disagrees with the
+/// implied type for an otel-* source, reject the request. When they don't set it,
+/// derive the value automatically.
+fn resolve_telemetry_type(
+    log_source: &LogSource,
+    telemetry_type: TelemetryType,
+    telemetry_type_set: bool,
+) -> Result<TelemetryType, StreamError> {
+    let expected = match log_source {
+        LogSource::OtelLogs => Some(TelemetryType::Logs),
+        LogSource::OtelMetrics => Some(TelemetryType::Metrics),
+        LogSource::OtelTraces => Some(TelemetryType::Traces),
+        _ => None,
+    };
+    match expected {
+        Some(expected) if telemetry_type_set && telemetry_type != expected => {
+            Err(StreamError::Custom {
+                msg: format!(
+                    "Header {} '{}' does not match log source '{}'. Expected '{}'.",
+                    crate::handlers::TELEMETRY_TYPE_KEY,
+                    telemetry_type,
+                    log_source,
+                    expected,
+                ),
+                status: StatusCode::BAD_REQUEST,
+            })
+        }
+        Some(expected) => Ok(expected),
+        None => Ok(telemetry_type),
+    }
+}
+
 /// Shared state of the Parseable server.
 pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| {
     // Prompt user for missing env vars before clap validates them.
@@ -669,7 +702,8 @@ impl Parseable {
             update_stream_flag,
             stream_type,
             log_source,
-            telemetry_type,
+            mut telemetry_type,
+            telemetry_type_set,
             dataset_tags,
             dataset_labels,
             infer_timestamp,
@@ -698,6 +732,11 @@ impl Parseable {
                 });
             }
         }
+
+        // For OTel datasets the telemetry_type is implied by the log_source and
+        // they must be consistent. Auto-derive it when not provided; reject any
+        // mismatch when both x-p-log-source and x-p-telemetry-type are set.
+        telemetry_type = resolve_telemetry_type(&log_source, telemetry_type, telemetry_type_set)?;
 
         let stream_in_memory_dont_update =
             self.streams.contains(stream_name, tenant_id) && !update_stream_flag;
@@ -1336,4 +1375,75 @@ pub fn validate_custom_partition(custom_partition: &str) -> Result<(), CreateStr
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn telemetry_type_inferred_for_otel_metrics_when_unset() {
+        let resolved =
+            resolve_telemetry_type(&LogSource::OtelMetrics, TelemetryType::Logs, false).unwrap();
+        assert_eq!(resolved, TelemetryType::Metrics);
+    }
+
+    #[test]
+    fn telemetry_type_inferred_for_otel_traces_when_unset() {
+        let resolved =
+            resolve_telemetry_type(&LogSource::OtelTraces, TelemetryType::Logs, false).unwrap();
+        assert_eq!(resolved, TelemetryType::Traces);
+    }
+
+    #[test]
+    fn telemetry_type_inferred_for_otel_logs_when_unset() {
+        let resolved =
+            resolve_telemetry_type(&LogSource::OtelLogs, TelemetryType::Logs, false).unwrap();
+        assert_eq!(resolved, TelemetryType::Logs);
+    }
+
+    #[test]
+    fn telemetry_type_overridden_for_otel_when_set_to_matching_value() {
+        // Explicit telemetry_type matching the OTel log source is accepted.
+        let resolved =
+            resolve_telemetry_type(&LogSource::OtelMetrics, TelemetryType::Metrics, true).unwrap();
+        assert_eq!(resolved, TelemetryType::Metrics);
+    }
+
+    #[test]
+    fn telemetry_type_mismatch_with_otel_returns_error() {
+        // otel-metrics + telemetry=logs is a contradiction -> 400.
+        let err =
+            resolve_telemetry_type(&LogSource::OtelMetrics, TelemetryType::Logs, true).unwrap_err();
+        match err {
+            StreamError::Custom { msg, status } => {
+                assert_eq!(status, StatusCode::BAD_REQUEST);
+                assert!(msg.contains("otel-metrics"));
+                assert!(msg.contains("metrics"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn telemetry_type_mismatch_otel_traces_vs_metrics() {
+        let err = resolve_telemetry_type(&LogSource::OtelTraces, TelemetryType::Metrics, true)
+            .unwrap_err();
+        assert!(matches!(err, StreamError::Custom { .. }));
+    }
+
+    #[test]
+    fn telemetry_type_passthrough_for_non_otel_log_source() {
+        // For non-otel sources we keep whatever the user supplied (or the default).
+        for source in [
+            LogSource::Json,
+            LogSource::Kinesis,
+            LogSource::Custom("syslog".into()),
+        ] {
+            let resolved = resolve_telemetry_type(&source, TelemetryType::Events, true).unwrap();
+            assert_eq!(resolved, TelemetryType::Events);
+            let resolved = resolve_telemetry_type(&source, TelemetryType::Logs, false).unwrap();
+            assert_eq!(resolved, TelemetryType::Logs);
+        }
+    }
 }

@@ -84,10 +84,19 @@ impl TypedStatistics {
                 }))
             }
             (TypedStatistics::Float(this), TypedStatistics::Float(other)) => {
-                Some(TypedStatistics::Float(Float64Type {
-                    min: this.min.min(other.min),
-                    max: this.max.max(other.max),
-                }))
+                let min = this.min.min(other.min);
+                let max = this.max.max(other.max);
+                // Defensive: if either operand was already inverted (min>max)
+                // or carries NaN, the merge can land outside a usable range.
+                // Drop the stats rather than passing them downstream.
+                if !is_valid_float_range(min, max) {
+                    warn!(
+                        "Dropping float column stats with invalid range after merge: \
+                         min={min}, max={max}"
+                    );
+                    return None;
+                }
+                Some(TypedStatistics::Float(Float64Type { min, max }))
             }
             (TypedStatistics::Int(this), TypedStatistics::Int(other)) => {
                 Some(TypedStatistics::Int(Int64Type {
@@ -126,14 +135,29 @@ impl TypedStatistics {
                 ScalarValue::Int64(Some(stats.min)),
                 ScalarValue::Int64(Some(stats.max)),
             ),
-            (TypedStatistics::Float(stats), DataType::Float32) => (
-                ScalarValue::Float32(Some(stats.min as f32)),
-                ScalarValue::Float32(Some(stats.max as f32)),
-            ),
-            (TypedStatistics::Float(stats), DataType::Float64) => (
-                ScalarValue::Float64(Some(stats.min)),
-                ScalarValue::Float64(Some(stats.max)),
-            ),
+            (TypedStatistics::Float(stats), DataType::Float32) => {
+                let min_f32 = stats.min as f32;
+                let max_f32 = stats.max as f32;
+                // Drop float stats with NaN or inverted bounds — handing
+                // these to DataFusion can trip f64::clamp inside its
+                // statistics-aware operators (e.g. approx_percentile_cont).
+                if min_f32.is_nan() || max_f32.is_nan() || min_f32 > max_f32 {
+                    return None;
+                }
+                (
+                    ScalarValue::Float32(Some(min_f32)),
+                    ScalarValue::Float32(Some(max_f32)),
+                )
+            }
+            (TypedStatistics::Float(stats), DataType::Float64) => {
+                if !is_valid_float_range(stats.min, stats.max) {
+                    return None;
+                }
+                (
+                    ScalarValue::Float64(Some(stats.min)),
+                    ScalarValue::Float64(Some(stats.max)),
+                )
+            }
             (TypedStatistics::String(stats), DataType::Utf8) => (
                 ScalarValue::Utf8(Some(stats.min)),
                 ScalarValue::Utf8(Some(stats.max)),
@@ -145,6 +169,17 @@ impl TypedStatistics {
 
         Some((min, max))
     }
+}
+
+/// Returns true when (min, max) form a usable float range:
+/// - neither bound is NaN
+/// - min <= max
+///
+/// Float stats can come back inverted or NaN-bearing from a corrupt parquet
+/// writer or a downstream computation; passing them on to DataFusion can
+/// panic inside `f64::clamp` in operators like approx_percentile_cont.
+fn is_valid_float_range(min: f64, max: f64) -> bool {
+    !(min.is_nan() || max.is_nan() || min > max)
 }
 
 /// Column statistics are used to track statistics for a column in a given file.
@@ -183,14 +218,26 @@ impl TryFrom<&Statistics> for TypedStatistics {
                 min: int96_to_i64_nanos(stats.min_opt().expect("Int96 stats min not set")),
                 max: int96_to_i64_nanos(stats.max_opt().expect("Int96 stats max not set")),
             }),
-            Statistics::Float(stats) => TypedStatistics::Float(Float64Type {
-                min: *stats.min_opt().expect("Float32 stats min not set") as f64,
-                max: *stats.max_opt().expect("Float32 stats max not set") as f64,
-            }),
-            Statistics::Double(stats) => TypedStatistics::Float(Float64Type {
-                min: *stats.min_opt().expect("Float64 stats min not set"),
-                max: *stats.max_opt().expect("Float64 stats max not set"),
-            }),
+            Statistics::Float(stats) => {
+                let min = *stats.min_opt().expect("Float32 stats min not set") as f64;
+                let max = *stats.max_opt().expect("Float32 stats max not set") as f64;
+                if !is_valid_float_range(min, max) {
+                    return Err(parquet::errors::ParquetError::General(format!(
+                        "invalid Float32 stats: min={min}, max={max}"
+                    )));
+                }
+                TypedStatistics::Float(Float64Type { min, max })
+            }
+            Statistics::Double(stats) => {
+                let min = *stats.min_opt().expect("Float64 stats min not set");
+                let max = *stats.max_opt().expect("Float64 stats max not set");
+                if !is_valid_float_range(min, max) {
+                    return Err(parquet::errors::ParquetError::General(format!(
+                        "invalid Float64 stats: min={min}, max={max}"
+                    )));
+                }
+                TypedStatistics::Float(Float64Type { min, max })
+            }
             Statistics::ByteArray(stats) => TypedStatistics::String(Utf8Type {
                 min: stats
                     .min_opt()
@@ -312,5 +359,77 @@ mod tests {
         assert!(int_s.clone().update(float_s.clone()).is_none());
         assert!(float_s.clone().update(str_s.clone()).is_none());
         assert!(str_s.update(bool_s).is_none());
+    }
+
+    #[test]
+    fn update_drops_float_stats_when_both_inputs_inverted() {
+        // Both operands inverted with overlapping ranges — the merge preserves
+        // the inversion (min stays > max). Drop to avoid tripping f64::clamp.
+        let a = TypedStatistics::Float(Float64Type {
+            min: 600025.1656670001,
+            max: 600025.165667,
+        });
+        let b = TypedStatistics::Float(Float64Type {
+            min: 600025.1656670001,
+            max: 600025.165667,
+        });
+        assert!(a.update(b).is_none());
+    }
+
+    #[test]
+    fn update_repairs_when_one_operand_is_inverted_but_other_brackets_it() {
+        // Documents a real semantic: f64::min/max can produce a valid result
+        // even if one operand was inverted, as long as the other operand's
+        // bounds bracket it. We don't try to detect this — it's correct.
+        let inverted = TypedStatistics::Float(Float64Type {
+            min: 600025.1656670001,
+            max: 600025.165667,
+        });
+        let valid = TypedStatistics::Float(Float64Type {
+            min: 100.0,
+            max: 1_000_000.0,
+        });
+        let merged = inverted.update(valid).expect("merge should succeed");
+        match merged {
+            TypedStatistics::Float(s) => assert!(s.min <= s.max),
+            _ => panic!("expected Float variant"),
+        }
+    }
+
+    #[test]
+    fn is_valid_float_range_rejects_nan_and_inversion() {
+        assert!(is_valid_float_range(0.0, 1.0));
+        assert!(is_valid_float_range(0.0, 0.0));
+        assert!(!is_valid_float_range(2.0, 1.0));
+        assert!(!is_valid_float_range(f64::NAN, 1.0));
+        assert!(!is_valid_float_range(0.0, f64::NAN));
+        assert!(!is_valid_float_range(f64::NAN, f64::NAN));
+    }
+
+    #[test]
+    fn min_max_as_scalar_returns_none_for_inverted_float_stats() {
+        // Same shape as the user-reported panic: min slightly larger than max
+        // due to upstream float precision artefacts.
+        let stats = TypedStatistics::Float(Float64Type {
+            min: 600025.1656670001,
+            max: 600025.165667,
+        });
+        assert!(stats.min_max_as_scalar(&DataType::Float64).is_none());
+    }
+
+    #[test]
+    fn min_max_as_scalar_returns_none_for_nan_float_stats() {
+        let stats = TypedStatistics::Float(Float64Type {
+            min: 0.0,
+            max: f64::NAN,
+        });
+        assert!(stats.min_max_as_scalar(&DataType::Float64).is_none());
+    }
+
+    #[test]
+    fn min_max_as_scalar_returns_some_for_valid_float_stats() {
+        let stats = TypedStatistics::Float(Float64Type { min: 0.5, max: 1.5 });
+        let result = stats.min_max_as_scalar(&DataType::Float64);
+        assert!(result.is_some());
     }
 }

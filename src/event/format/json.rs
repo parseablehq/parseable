@@ -110,6 +110,18 @@ impl EventFormat for Event {
             value_arr
         };
 
+        // Per-record fallback: catches batches with mixed JSON types for the
+        // same field, which the batch-level detect_schema_conflicts misses
+        // because arrow's inference picks one winning type (string over bool).
+        // Internally short-circuits when this can't apply (single-record
+        // batches, or no field-name collision at the same type).
+        let value_arr = super::rename_per_record_type_mismatches(
+            value_arr,
+            &raw_inferred_schema,
+            stream_schema,
+            schema_version,
+        );
+
         // collect all the keys from all the json objects in the request body
         let fields =
             collect_keys(value_arr.iter()).expect("fields can be collected from array of objects");
@@ -151,12 +163,12 @@ impl EventFormat for Event {
             }
         };
 
-        if value_arr
+        if let Some(mismatch) = value_arr
             .iter()
-            .any(|value| fields_mismatch(&schema, value, schema_version, static_schema_flag))
+            .find_map(|value| fields_mismatch(&schema, value, schema_version, static_schema_flag))
         {
             return Err(anyhow!(
-                "Could not process this event due to mismatch in datatype"
+                "Could not process this event due to mismatch in datatype: {mismatch}"
             ));
         }
 
@@ -347,24 +359,47 @@ fn rename_json_keys(values: Vec<Value>) -> Result<Vec<Value>, anyhow::Error> {
         .collect()
 }
 
+/// Returns `Some(reason)` when `body` does not match the target `schema`.
+/// `reason` names the offending field and includes the expected vs. actual
+/// types so the caller can surface it in the error message.
 fn fields_mismatch(
     schema: &[Arc<Field>],
     body: &Value,
     schema_version: SchemaVersion,
     static_schema_flag: bool,
-) -> bool {
+) -> Option<String> {
     for (name, val) in body.as_object().expect("body is of object variant") {
         if val.is_null() {
             continue;
         }
         let Some(field) = get_field(schema, name) else {
-            return true;
+            return Some(format!(
+                "field '{name}' not present in stream schema (got {})",
+                json_value_kind(val)
+            ));
         };
         if !valid_type(field, val, schema_version, static_schema_flag) {
-            return true;
+            return Some(format!(
+                "field '{name}' expected {:?} but got {} value",
+                field.data_type(),
+                json_value_kind(val),
+            ));
         }
     }
-    false
+    None
+}
+
+fn json_value_kind(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "bool",
+        Value::Number(n) if n.is_i64() => "i64",
+        Value::Number(n) if n.is_u64() => "u64",
+        Value::Number(_) => "f64",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 fn valid_type(
