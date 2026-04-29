@@ -104,7 +104,7 @@ impl Default for LogStreamMetadata {
             schema_version: SchemaVersion::default(),
             schema: HashMap::new(),
             retention: None,
-            created_at: String::new(),
+            created_at: String::default(),
             first_event_at: None,
             time_partition: None,
             time_partition_limit: None,

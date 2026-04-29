@@ -48,8 +48,8 @@ pub struct PutStreamHeaders {
 impl Default for PutStreamHeaders {
     fn default() -> Self {
         Self {
-            time_partition: String::new(),
-            time_partition_limit: String::new(),
+            time_partition: String::default(),
+            time_partition_limit: String::default(),
             custom_partition: None,
             static_schema_flag: false,
             update_stream_flag: false,
