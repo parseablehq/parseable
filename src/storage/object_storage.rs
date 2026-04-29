@@ -1160,13 +1160,8 @@ async fn collect_upload_results(
         // check if file has been in hashset for more than 5 minutes
         let now = Utc::now();
         guard.retain(|f| {
-            if let Ok(ts) = extract_datetime_from_parquet_path_regex(f)
-                && (now - ts).num_minutes() >= 5
-            {
-                false
-            } else {
-                true
-            }
+            !extract_datetime_from_parquet_path_regex(f)
+                .is_ok_and(|ts| (now - ts).num_minutes() >= 5)
         });
     }
     let manifest_files: Vec<_> = uploaded_files
