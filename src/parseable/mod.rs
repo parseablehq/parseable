@@ -437,6 +437,7 @@ impl Parseable {
         let telemetry_type = stream_metadata.telemetry_type;
         let dataset_tags = stream_metadata.dataset_tags;
         let dataset_labels = stream_metadata.dataset_labels;
+        let infer_timestamp = stream_metadata.infer_timestamp;
         let mut metadata = LogStreamMetadata::new(
             created_at,
             time_partition,
@@ -450,6 +451,7 @@ impl Parseable {
             telemetry_type,
             dataset_tags,
             dataset_labels,
+            infer_timestamp,
         );
 
         // Set hot tier fields from the stored metadata
@@ -591,6 +593,7 @@ impl Parseable {
             tenant_id,
             dataset_tags,
             dataset_labels,
+            true,
         )
         .await?;
 
@@ -669,7 +672,32 @@ impl Parseable {
             telemetry_type,
             dataset_tags,
             dataset_labels,
+            infer_timestamp,
+            infer_timestamp_set,
         } = headers.into();
+
+        // x-p-infer-timestamp can only be set during stream creation, not on update.
+        // It is only valid for otel-metrics datasets.
+        if infer_timestamp_set {
+            if update_stream_flag {
+                return Err(StreamError::Custom {
+                    msg: format!(
+                        "Header {} can only be set at stream creation, not on update",
+                        crate::handlers::INFER_TIMESTAMP_KEY
+                    ),
+                    status: StatusCode::BAD_REQUEST,
+                });
+            }
+            if log_source != LogSource::OtelMetrics {
+                return Err(StreamError::Custom {
+                    msg: format!(
+                        "Header {} is only supported for otel-metrics datasets",
+                        crate::handlers::INFER_TIMESTAMP_KEY
+                    ),
+                    status: StatusCode::BAD_REQUEST,
+                });
+            }
+        }
 
         let stream_in_memory_dont_update =
             self.streams.contains(stream_name, tenant_id) && !update_stream_flag;
@@ -744,6 +772,7 @@ impl Parseable {
             tenant_id,
             dataset_tags,
             dataset_labels,
+            infer_timestamp,
         )
         .await?;
 
@@ -807,6 +836,7 @@ impl Parseable {
         tenant_id: &Option<String>,
         dataset_tags: Vec<DatasetTag>,
         dataset_labels: Vec<String>,
+        infer_timestamp: bool,
     ) -> Result<(), CreateStreamError> {
         // fail to proceed if invalid stream name
         if stream_type != StreamType::Internal {
@@ -833,6 +863,7 @@ impl Parseable {
             telemetry_type,
             dataset_tags: dataset_tags.clone(),
             dataset_labels: dataset_labels.clone(),
+            infer_timestamp,
             ..Default::default()
         };
 
@@ -864,6 +895,7 @@ impl Parseable {
                     telemetry_type,
                     dataset_tags,
                     dataset_labels,
+                    infer_timestamp,
                 );
                 let ingestor_id = INGESTOR_META
                     .get()

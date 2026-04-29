@@ -195,6 +195,7 @@ pub async fn ingest_internal_stream(
             &p_custom_fields,
             TelemetryType::Logs,
             tenant_id,
+            true,
         )?
         .process()?;
 
@@ -712,6 +713,7 @@ mod tests {
                 None,
                 SchemaVersion::V0,
                 &HashMap::new(),
+                true,
             )
             .unwrap();
 
@@ -746,6 +748,7 @@ mod tests {
                 None,
                 SchemaVersion::V0,
                 &HashMap::new(),
+                true,
             )
             .unwrap();
 
@@ -778,7 +781,14 @@ mod tests {
         );
 
         let (rb, _) = json::Event::new(json, Utc::now())
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
+            .into_recordbatch(
+                &schema,
+                false,
+                None,
+                SchemaVersion::V0,
+                &HashMap::new(),
+                true,
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
@@ -811,7 +821,14 @@ mod tests {
 
         assert!(
             json::Event::new(json, Utc::now())
-                .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
+                .into_recordbatch(
+                    &schema,
+                    false,
+                    None,
+                    SchemaVersion::V0,
+                    &HashMap::new(),
+                    true
+                )
                 .is_ok() // schema will have new field called b_int64 and the original b will be ignored since it has type mismatch
         );
     }
@@ -830,7 +847,14 @@ mod tests {
         );
 
         let (rb, _) = json::Event::new(json, Utc::now())
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
+            .into_recordbatch(
+                &schema,
+                false,
+                None,
+                SchemaVersion::V0,
+                &HashMap::new(),
+                true,
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 1);
@@ -862,6 +886,7 @@ mod tests {
                 None,
                 SchemaVersion::V0,
                 &HashMap::new(),
+                true,
             )
             .unwrap();
 
@@ -916,6 +941,7 @@ mod tests {
                 None,
                 SchemaVersion::V0,
                 &HashMap::new(),
+                true,
             )
             .unwrap();
 
@@ -965,7 +991,14 @@ mod tests {
         );
 
         let (rb, _) = json::Event::new(json, Utc::now())
-            .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
+            .into_recordbatch(
+                &schema,
+                false,
+                None,
+                SchemaVersion::V0,
+                &HashMap::new(),
+                true,
+            )
             .unwrap();
 
         assert_eq!(rb.num_rows(), 3);
@@ -1015,7 +1048,14 @@ mod tests {
 
         assert!(
             json::Event::new(json, Utc::now())
-                .into_recordbatch(&schema, false, None, SchemaVersion::V0, &HashMap::new())
+                .into_recordbatch(
+                    &schema,
+                    false,
+                    None,
+                    SchemaVersion::V0,
+                    &HashMap::new(),
+                    true
+                )
                 .is_err()
         );
     }
@@ -1051,6 +1091,7 @@ mod tests {
                 None,
                 SchemaVersion::V0,
                 &HashMap::new(),
+                true,
             )
             .unwrap();
         assert_eq!(rb.num_rows(), 4);
@@ -1129,6 +1170,7 @@ mod tests {
                 None,
                 SchemaVersion::V1,
                 &HashMap::new(),
+                true,
             )
             .unwrap();
 

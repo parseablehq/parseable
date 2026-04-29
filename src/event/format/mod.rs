@@ -56,6 +56,15 @@ static TIME_FIELD_NAME_PARTS: [&str; 11] = [
     "ts",
     "dt",
 ];
+
+/// Minimum integer value for a time-named numeric field to be treated as an epoch.
+/// 1e9 covers:
+///   - seconds since 2001-09-09 (modern epoch-in-seconds values)
+///   - any millisecond / microsecond / nanosecond epoch from 1970 onwards
+///
+/// Smaller integers are kept as Float64 to avoid misinterpreting counters,
+/// durations, IDs, etc. as timestamps.
+const EPOCH_PROMOTION_MIN: u64 = 1_000_000_000;
 type EventSchema = Vec<Arc<Field>>;
 
 /// Normalizes a field name by replacing leading '@' with '_'.
@@ -153,6 +162,7 @@ pub trait EventFormat: Sized {
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
         static_schema_flag: bool,
+        infer_timestamp: bool,
     ) -> Result<(Self::Data, EventSchema, bool), AnyError>;
 
     fn decode(data: Self::Data, schema: Arc<Schema>) -> Result<RecordBatch, AnyError>;
@@ -167,6 +177,7 @@ pub trait EventFormat: Sized {
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
         p_custom_fields: &HashMap<String, String>,
+        infer_timestamp: bool,
     ) -> Result<(RecordBatch, bool), AnyError> {
         let _span = info_span!("into_recordbatch").entered();
         let p_timestamp = self.get_p_timestamp();
@@ -175,6 +186,7 @@ pub trait EventFormat: Sized {
             time_partition,
             schema_version,
             static_schema_flag,
+            infer_timestamp,
         )?;
 
         if get_field(&schema, DEFAULT_TIMESTAMP_KEY).is_some() {
@@ -189,8 +201,14 @@ pub trait EventFormat: Sized {
         if !Self::is_schema_matching(new_schema.clone(), storage_schema, static_schema_flag) {
             return Err(anyhow!("Schema mismatch"));
         }
-        new_schema =
-            update_field_type_in_schema(new_schema, None, time_partition, None, schema_version);
+        new_schema = update_field_type_in_schema(
+            new_schema,
+            None,
+            time_partition,
+            None,
+            schema_version,
+            infer_timestamp,
+        );
 
         let rb = Self::decode(data, new_schema.clone())?;
         let rb = add_parseable_fields(rb, p_timestamp, p_custom_fields)?;
@@ -234,6 +252,7 @@ pub trait EventFormat: Sized {
         p_custom_fields: &HashMap<String, String>,
         telemetry_type: TelemetryType,
         tenant_id: &Option<String>,
+        infer_timestamp: bool,
     ) -> Result<Event, AnyError>;
 }
 
@@ -294,6 +313,7 @@ pub fn update_field_type_in_schema(
     time_partition: Option<&String>,
     log_records: Option<&Vec<Value>>,
     schema_version: SchemaVersion,
+    infer_timestamp: bool,
 ) -> Arc<Schema> {
     let mut updated_schema = inferred_schema.clone();
     let existing_field_names = get_existing_field_names(inferred_schema.clone(), existing_schema);
@@ -305,8 +325,12 @@ pub fn update_field_type_in_schema(
 
     if let Some(log_records) = log_records {
         for log_record in log_records {
-            updated_schema =
-                override_data_type(updated_schema.clone(), log_record.clone(), schema_version);
+            updated_schema = override_data_type(
+                updated_schema.clone(),
+                log_record.clone(),
+                schema_version,
+                infer_timestamp,
+            );
         }
     }
 
@@ -339,6 +363,7 @@ pub fn override_data_type(
     inferred_schema: Arc<Schema>,
     log_record: Value,
     schema_version: SchemaVersion,
+    infer_timestamp: bool,
 ) -> Arc<Schema> {
     let Value::Object(map) = log_record else {
         return inferred_schema;
@@ -350,19 +375,38 @@ pub fn override_data_type(
             // Normalize field names - replace '@' prefix with '_'
             let mut field_name = field.name().to_string();
             normalize_field_name(&mut field_name);
+            let is_time_named = TIME_FIELD_NAME_PARTS
+                .iter()
+                .any(|part| field_name.to_lowercase().contains(part));
             match (schema_version, map.get(field.name())) {
-                // in V1 for new fields in json named "time"/"date" or such and having inferred
-                // type string, that can be parsed as timestamp, use the timestamp type.
+                // in V1 for fields named "time"/"date" or such with a string value that
+                // parses as a datetime, promote to Timestamp. Only when `infer_timestamp`
+                // is enabled (default). The flag is settable per dataset (otel-metrics)
+                // via x-p-infer-timestamp=false.
                 // NOTE: support even more datetime string formats
                 (SchemaVersion::V1, Some(Value::String(s)))
-                    if TIME_FIELD_NAME_PARTS
-                        .iter()
-                        .any(|part| field_name.to_lowercase().contains(part))
-                        && field.data_type() == &DataType::Utf8
+                    if infer_timestamp
+                        && is_time_named
                         && (DateTime::parse_from_rfc3339(s).is_ok()
                             || DateTime::parse_from_rfc2822(s).is_ok()) =>
                 {
-                    // Update the field's data type to Timestamp
+                    Field::new(
+                        field_name,
+                        DataType::Timestamp(TimeUnit::Millisecond, None),
+                        true,
+                    )
+                }
+                // in V1 for time-named fields with an integer value that's large enough
+                // to plausibly be a Unix epoch (seconds since 2001-09-09, or any
+                // milli/micro/nano-precision epoch), promote to Timestamp. Arrow's JSON
+                // decoder accepts integer epochs for Timestamp(ms) columns. Small ints
+                // (counters, IDs, durations) fall through to the float64 arm.
+                // Floats do not decode for Timestamp and are also left as Float64 below.
+                (SchemaVersion::V1, Some(Value::Number(n)))
+                    if infer_timestamp
+                        && is_time_named
+                        && n.as_u64().is_some_and(|v| v >= EPOCH_PROMOTION_MIN) =>
+                {
                     Field::new(
                         field_name,
                         DataType::Timestamp(TimeUnit::Millisecond, None),
@@ -809,5 +853,264 @@ mod tests {
 
         // Should NOT detect conflict because V1 allows any number for Float64
         assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn override_data_type_converts_time_field_when_infer_enabled() {
+        let inferred = Arc::new(Schema::new(vec![Field::new(
+            "start_time",
+            DataType::Utf8,
+            true,
+        )]));
+        let log = json!({"start_time": "2025-01-01T00:00:00Z"});
+
+        let updated = override_data_type(inferred, log, SchemaVersion::V1, true);
+
+        assert_eq!(
+            updated.field(0).data_type(),
+            &DataType::Timestamp(TimeUnit::Millisecond, None)
+        );
+    }
+
+    #[test]
+    fn override_data_type_keeps_utf8_when_infer_disabled() {
+        let inferred = Arc::new(Schema::new(vec![Field::new(
+            "start_time",
+            DataType::Utf8,
+            true,
+        )]));
+        let log = json!({"start_time": "2025-01-01T00:00:00Z"});
+
+        let updated = override_data_type(inferred, log, SchemaVersion::V1, false);
+
+        // With infer_timestamp=false, time-named string fields stay Utf8.
+        assert_eq!(updated.field(0).data_type(), &DataType::Utf8);
+    }
+
+    #[test]
+    fn override_data_type_still_casts_numbers_when_infer_disabled() {
+        // The flag must only affect string-to-timestamp inference, not
+        // V1's number-to-float64 promotion.
+        let inferred = Arc::new(Schema::new(vec![Field::new(
+            "count",
+            DataType::Int64,
+            true,
+        )]));
+        let log = json!({"count": 7});
+
+        let updated = override_data_type(inferred, log, SchemaVersion::V1, false);
+
+        assert_eq!(updated.field(0).data_type(), &DataType::Float64);
+    }
+
+    #[test]
+    fn override_data_type_no_effect_on_v0_schema() {
+        // The inference happens only on V1; V0 must be untouched regardless of the flag.
+        let inferred = Arc::new(Schema::new(vec![Field::new(
+            "start_time",
+            DataType::Utf8,
+            true,
+        )]));
+        let log = json!({"start_time": "2025-01-01T00:00:00Z"});
+
+        let v0_with_flag =
+            override_data_type(inferred.clone(), log.clone(), SchemaVersion::V0, true);
+        assert_eq!(v0_with_flag.field(0).data_type(), &DataType::Utf8);
+
+        let v0_no_flag = override_data_type(inferred, log, SchemaVersion::V0, false);
+        assert_eq!(v0_no_flag.field(0).data_type(), &DataType::Utf8);
+    }
+
+    #[test]
+    fn update_field_type_in_schema_respects_infer_flag() {
+        let inferred = Arc::new(Schema::new(vec![Field::new(
+            "received_at",
+            DataType::Utf8,
+            true,
+        )]));
+        let log_records = vec![json!({"received_at": "2025-01-01T00:00:00Z"})];
+
+        let with_flag = update_field_type_in_schema(
+            inferred.clone(),
+            None,
+            None,
+            Some(&log_records),
+            SchemaVersion::V1,
+            true,
+        );
+        assert_eq!(
+            with_flag.field(0).data_type(),
+            &DataType::Timestamp(TimeUnit::Millisecond, None)
+        );
+
+        let without_flag = update_field_type_in_schema(
+            inferred,
+            None,
+            None,
+            Some(&log_records),
+            SchemaVersion::V1,
+            false,
+        );
+        assert_eq!(without_flag.field(0).data_type(), &DataType::Utf8);
+    }
+
+    #[test]
+    fn override_data_type_promotes_integer_epoch_for_time_named_field() {
+        // Field named "timestamp" inferred as Int64 with a plausible epoch value
+        // (above the threshold) is promoted to Timestamp(ms) when the flag is on.
+        let inferred = Arc::new(Schema::new(vec![Field::new(
+            "timestamp",
+            DataType::Int64,
+            true,
+        )]));
+        let log = json!({"timestamp": 1735689600000_i64});
+
+        let updated = override_data_type(inferred, log, SchemaVersion::V1, true);
+        assert_eq!(
+            updated.field(0).data_type(),
+            &DataType::Timestamp(TimeUnit::Millisecond, None)
+        );
+    }
+
+    #[test]
+    fn override_data_type_keeps_integer_epoch_when_flag_off() {
+        // With flag off, integer epoch values stay numeric (Float64 via the
+        // V1 number-to-float64 normalization), even above the threshold.
+        let inferred = Arc::new(Schema::new(vec![Field::new(
+            "timestamp",
+            DataType::Int64,
+            true,
+        )]));
+        let log = json!({"timestamp": 1735689600000_i64});
+
+        let updated = override_data_type(inferred, log, SchemaVersion::V1, false);
+        assert_eq!(updated.field(0).data_type(), &DataType::Float64);
+    }
+
+    #[test]
+    fn override_data_type_float_epoch_stays_float64() {
+        // Floats are not promoted (Arrow's JSON decoder doesn't accept floats for
+        // Timestamp), so they fall through to the V1 number-to-float64 arm.
+        let inferred = Arc::new(Schema::new(vec![Field::new(
+            "timestamp",
+            DataType::Float64,
+            true,
+        )]));
+        let log = json!({"timestamp": 1735689600.5_f64});
+
+        let updated = override_data_type(inferred, log, SchemaVersion::V1, true);
+        assert_eq!(updated.field(0).data_type(), &DataType::Float64);
+    }
+
+    #[test]
+    fn override_data_type_promotes_non_utf8_string_when_name_matches() {
+        // The Utf8-only gate has been removed: even when the field's prior inferred
+        // type is something else, a parseable RFC3339 string should still trigger
+        // promotion to Timestamp.
+        let inferred = Arc::new(Schema::new(vec![Field::new(
+            "timestamp",
+            DataType::Int64, // pretend a previous inference produced a non-Utf8 type
+            true,
+        )]));
+        let log = json!({"timestamp": "2025-01-01T00:00:00.000Z"});
+
+        let updated = override_data_type(inferred, log, SchemaVersion::V1, true);
+        assert_eq!(
+            updated.field(0).data_type(),
+            &DataType::Timestamp(TimeUnit::Millisecond, None)
+        );
+    }
+
+    #[test]
+    fn override_data_type_non_time_named_integer_stays_float64() {
+        // Field name doesn't contain a time keyword — integer should NOT be
+        // promoted to Timestamp; it falls through to the float64 arm.
+        let inferred = Arc::new(Schema::new(vec![Field::new(
+            "count",
+            DataType::Int64,
+            true,
+        )]));
+        let log = json!({"count": 1735689600_i64});
+
+        let updated = override_data_type(inferred, log, SchemaVersion::V1, true);
+        assert_eq!(updated.field(0).data_type(), &DataType::Float64);
+    }
+
+    #[test]
+    fn override_data_type_small_integer_in_time_named_field_stays_float64() {
+        // {"time": 1234} must NOT be promoted to Timestamp — it would decode as
+        // 1970-01-01 00:00:01.234 UTC and silently misinterpret a counter / ID /
+        // duration as an epoch. Threshold (1e9) keeps small ints as Float64.
+        for value in [0_i64, 1, 1234, 999_999_999] {
+            let inferred = Arc::new(Schema::new(vec![Field::new("time", DataType::Int64, true)]));
+            let log = json!({ "time": value });
+            let updated = override_data_type(inferred, log, SchemaVersion::V1, true);
+            assert_eq!(
+                updated.field(0).data_type(),
+                &DataType::Float64,
+                "value {value} should NOT be treated as epoch",
+            );
+        }
+    }
+
+    #[test]
+    fn override_data_type_negative_integer_in_time_named_field_stays_float64() {
+        // Negative ints (sentinels like -1, "no value", or rare pre-1970 epochs)
+        // are not promoted — `as_u64` returns None for them.
+        let inferred = Arc::new(Schema::new(vec![Field::new("time", DataType::Int64, true)]));
+        let log = json!({"time": -1_i64});
+
+        let updated = override_data_type(inferred, log, SchemaVersion::V1, true);
+        assert_eq!(updated.field(0).data_type(), &DataType::Float64);
+    }
+
+    #[test]
+    fn override_data_type_promotes_at_threshold_and_above() {
+        // Each of these magnitudes is a plausible epoch in some unit:
+        //   1e9          — seconds since 2001-09-09
+        //   1.7e12       — milliseconds (modern)
+        //   1.7e15       — microseconds (modern)
+        //   1.7e18       — nanoseconds (modern)
+        for value in [
+            1_000_000_000_i64,
+            1_735_689_600_000,
+            1_735_689_600_000_000,
+            1_735_689_600_000_000_000,
+        ] {
+            let inferred = Arc::new(Schema::new(vec![Field::new("ts", DataType::Int64, true)]));
+            let log = json!({ "ts": value });
+            let updated = override_data_type(inferred, log, SchemaVersion::V1, true);
+            assert_eq!(
+                updated.field(0).data_type(),
+                &DataType::Timestamp(TimeUnit::Millisecond, None),
+                "value {value} should be treated as epoch",
+            );
+        }
+    }
+
+    #[test]
+    fn update_field_type_in_schema_explicit_time_partition_unaffected_by_flag() {
+        // When the user explicitly configures a time_partition, that field is always
+        // promoted to Timestamp regardless of infer_timestamp.
+        let inferred = Arc::new(Schema::new(vec![Field::new(
+            "ingest_ts",
+            DataType::Utf8,
+            true,
+        )]));
+        let time_partition = "ingest_ts".to_string();
+
+        let updated = update_field_type_in_schema(
+            inferred,
+            None,
+            Some(&time_partition),
+            None,
+            SchemaVersion::V1,
+            false,
+        );
+
+        assert_eq!(
+            updated.field(0).data_type(),
+            &DataType::Timestamp(TimeUnit::Millisecond, None)
+        );
     }
 }

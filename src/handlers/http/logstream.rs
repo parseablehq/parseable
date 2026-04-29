@@ -156,7 +156,7 @@ pub async fn detect_schema(Json(json): Json<Value>) -> Result<impl Responder, St
             }
         };
         for flattened_json in flattened_json_arr {
-            schema = override_data_type(schema, flattened_json, SchemaVersion::V1);
+            schema = override_data_type(schema, flattened_json, SchemaVersion::V1, true);
         }
         Ok((web::Json(schema), StatusCode::OK))
     } else {

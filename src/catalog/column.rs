@@ -21,6 +21,7 @@ use std::cmp::{max, min};
 use arrow_schema::DataType;
 use datafusion::scalar::ScalarValue;
 use parquet::file::statistics::Statistics;
+use tracing::warn;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct BoolType {
@@ -58,33 +59,56 @@ pub enum TypedStatistics {
 }
 
 impl TypedStatistics {
-    pub fn update(self, other: Self) -> Self {
+    /// Variant name used in logs when the two operands disagree on type.
+    fn variant_name(&self) -> &'static str {
+        match self {
+            TypedStatistics::Bool(_) => "bool",
+            TypedStatistics::Int(_) => "int",
+            TypedStatistics::Float(_) => "float",
+            TypedStatistics::String(_) => "string",
+        }
+    }
+
+    /// Merge two stat ranges. Returns `None` when the operands disagree on
+    /// variant (which can happen if the same column was historically written
+    /// under two different Arrow types — e.g. timestamp vs utf8 — in different
+    /// parquet files). In that case the caller should drop stats for the
+    /// column rather than treat them as authoritative; planners then fall
+    /// back to scanning without min/max pushdown.
+    pub fn update(self, other: Self) -> Option<Self> {
         match (self, other) {
             (TypedStatistics::Bool(this), TypedStatistics::Bool(other)) => {
-                TypedStatistics::Bool(BoolType {
+                Some(TypedStatistics::Bool(BoolType {
                     min: min(this.min, other.min),
                     max: max(this.max, other.max),
-                })
+                }))
             }
             (TypedStatistics::Float(this), TypedStatistics::Float(other)) => {
-                TypedStatistics::Float(Float64Type {
+                Some(TypedStatistics::Float(Float64Type {
                     min: this.min.min(other.min),
                     max: this.max.max(other.max),
-                })
+                }))
             }
             (TypedStatistics::Int(this), TypedStatistics::Int(other)) => {
-                TypedStatistics::Int(Int64Type {
+                Some(TypedStatistics::Int(Int64Type {
                     min: min(this.min, other.min),
                     max: max(this.max, other.max),
-                })
+                }))
             }
             (TypedStatistics::String(this), TypedStatistics::String(other)) => {
-                TypedStatistics::String(Utf8Type {
+                Some(TypedStatistics::String(Utf8Type {
                     min: min(this.min, other.min),
                     max: max(this.max, other.max),
-                })
+                }))
             }
-            _ => panic!("Cannot update wrong types"),
+            (this, other) => {
+                warn!(
+                    "Dropping incompatible column stats: existing={} new={}",
+                    this.variant_name(),
+                    other.variant_name()
+                );
+                None
+            }
         }
     }
 
@@ -213,4 +237,80 @@ fn int96_to_i64_nanos(int96: &parquet::data_type::Int96) -> i64 {
     // Convert to nanoseconds since Unix epoch
     let days_since_epoch = julian_day - JULIAN_DAY_OF_EPOCH;
     days_since_epoch * SECONDS_PER_DAY * NANOS_PER_SECOND + nanos_of_day
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_merges_compatible_int_stats() {
+        let a = TypedStatistics::Int(Int64Type { min: 5, max: 10 });
+        let b = TypedStatistics::Int(Int64Type { min: 1, max: 7 });
+        let merged = a.update(b).expect("same variant should merge");
+        match merged {
+            TypedStatistics::Int(s) => {
+                assert_eq!(s.min, 1);
+                assert_eq!(s.max, 10);
+            }
+            _ => panic!("expected Int variant"),
+        }
+    }
+
+    #[test]
+    fn update_merges_compatible_string_stats() {
+        let a = TypedStatistics::String(Utf8Type {
+            min: "b".into(),
+            max: "y".into(),
+        });
+        let b = TypedStatistics::String(Utf8Type {
+            min: "a".into(),
+            max: "z".into(),
+        });
+        let merged = a.update(b).expect("same variant should merge");
+        match merged {
+            TypedStatistics::String(s) => {
+                assert_eq!(s.min, "a");
+                assert_eq!(s.max, "z");
+            }
+            _ => panic!("expected String variant"),
+        }
+    }
+
+    #[test]
+    fn update_returns_none_on_type_mismatch_instead_of_panicking() {
+        // Reproduces the "Cannot update wrong types" panic scenario: a column
+        // that was historically written as Utf8 in some files and Timestamp(ms)
+        // in others. Timestamps map to Int stats internally.
+        let str_stats = TypedStatistics::String(Utf8Type {
+            min: "2025-01-01".into(),
+            max: "2025-12-31".into(),
+        });
+        let int_stats = TypedStatistics::Int(Int64Type {
+            min: 1_700_000_000_000,
+            max: 1_800_000_000_000,
+        });
+
+        assert!(str_stats.clone().update(int_stats.clone()).is_none());
+        assert!(int_stats.update(str_stats).is_none());
+    }
+
+    #[test]
+    fn update_returns_none_for_each_cross_variant_pair() {
+        let bool_s = TypedStatistics::Bool(BoolType {
+            min: false,
+            max: true,
+        });
+        let int_s = TypedStatistics::Int(Int64Type { min: 0, max: 1 });
+        let float_s = TypedStatistics::Float(Float64Type { min: 0.0, max: 1.0 });
+        let str_s = TypedStatistics::String(Utf8Type {
+            min: "a".into(),
+            max: "b".into(),
+        });
+
+        assert!(bool_s.clone().update(int_s.clone()).is_none());
+        assert!(int_s.clone().update(float_s.clone()).is_none());
+        assert!(float_s.clone().update(str_s.clone()).is_none());
+        assert!(str_s.update(bool_s).is_none());
+    }
 }

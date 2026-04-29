@@ -40,6 +40,7 @@ pub const TELEMETRY_TYPE_KEY: &str = "x-p-telemetry-type";
 pub const DATASET_TAG_KEY: &str = "x-p-dataset-tag";
 pub const DATASET_TAGS_KEY: &str = "x-p-dataset-tags";
 pub const DATASET_LABELS_KEY: &str = "x-p-dataset-labels";
+pub const INFER_TIMESTAMP_KEY: &str = "x-p-infer-timestamp";
 pub const TENANT_ID: &str = "x-p-tenant";
 const COOKIE_AGE_DAYS: usize = 7;
 const SESSION_COOKIE_NAME: &str = "session";

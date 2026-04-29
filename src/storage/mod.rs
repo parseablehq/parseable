@@ -135,6 +135,12 @@ pub struct ObjectStoreFormat {
     pub dataset_tags: Vec<DatasetTag>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dataset_labels: Vec<String>,
+    #[serde(default = "default_infer_timestamp")]
+    pub infer_timestamp: bool,
+}
+
+fn default_infer_timestamp() -> bool {
+    true
 }
 
 impl MetastoreObject for ObjectStoreFormat {
@@ -179,6 +185,8 @@ pub struct StreamInfo {
     pub dataset_tags: Vec<DatasetTag>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dataset_labels: Vec<String>,
+    #[serde(default = "default_infer_timestamp")]
+    pub infer_timestamp: bool,
 }
 
 impl StreamInfo {
@@ -203,6 +211,7 @@ impl StreamInfo {
             hot_tier_enabled: metadata.hot_tier_enabled,
             dataset_tags: metadata.dataset_tags.clone(),
             dataset_labels: metadata.dataset_labels.clone(),
+            infer_timestamp: metadata.infer_timestamp,
         }
     }
 }
@@ -286,6 +295,7 @@ impl Default for ObjectStoreFormat {
             telemetry_type: TelemetryType::Logs,
             dataset_tags: Vec::new(),
             dataset_labels: Vec::new(),
+            infer_timestamp: true,
         }
     }
 }

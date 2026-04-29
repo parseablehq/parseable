@@ -397,7 +397,11 @@ impl StandardTableProvider {
                     .and_modify(|x| {
                         if let Some((stats, col_stats)) = x.as_ref().cloned().zip(col.stats.clone())
                         {
-                            *x = Some(stats.update(col_stats));
+                            // update() returns None on type mismatch (e.g. column
+                            // historically written as both Utf8 and Timestamp(ms)).
+                            // Dropping to None here makes the planner skip min/max
+                            // pushdown for this column instead of crashing the worker.
+                            *x = stats.update(col_stats);
                         }
                     })
                     .or_insert_with(|| col.stats.as_ref().cloned());

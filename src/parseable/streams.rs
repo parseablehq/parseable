@@ -982,6 +982,10 @@ impl Stream {
         self.metadata.write().expect(LOCK_EXPECT).custom_partition = custom_partition.cloned();
     }
 
+    pub fn get_infer_timestamp(&self) -> bool {
+        self.metadata.read().expect(LOCK_EXPECT).infer_timestamp
+    }
+
     pub fn set_hot_tier(&self, hot_tier: Option<StreamHotTier>) {
         let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
         metadata.hot_tier.clone_from(&hot_tier);

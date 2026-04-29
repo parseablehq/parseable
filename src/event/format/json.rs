@@ -66,6 +66,7 @@ impl EventFormat for Event {
         time_partition: Option<&String>,
         schema_version: SchemaVersion,
         static_schema_flag: bool,
+        infer_timestamp: bool,
     ) -> Result<(Self::Data, Vec<Arc<Field>>, bool), anyhow::Error> {
         let stream_schema = schema;
 
@@ -131,6 +132,7 @@ impl EventFormat for Event {
                     time_partition,
                     Some(&value_arr),
                     schema_version,
+                    infer_timestamp,
                 );
                 infer_schema = Schema::new(new_infer_schema.fields().clone());
                 Schema::try_merge(vec![
@@ -192,6 +194,7 @@ impl EventFormat for Event {
         p_custom_fields: &HashMap<String, String>,
         telemetry_type: TelemetryType,
         tenant_id: &Option<String>,
+        infer_timestamp: bool,
     ) -> Result<super::Event, anyhow::Error> {
         let custom_partition_values = match custom_partitions.as_ref() {
             Some(custom_partition) => {
@@ -212,6 +215,7 @@ impl EventFormat for Event {
             time_partition,
             schema_version,
             p_custom_fields,
+            infer_timestamp,
         )?;
 
         Ok(super::Event {

@@ -77,7 +77,7 @@ pub enum SchemaVersion {
     V1,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct LogStreamMetadata {
     pub schema_version: SchemaVersion,
     pub schema: HashMap<String, Arc<Field>>,
@@ -95,6 +95,31 @@ pub struct LogStreamMetadata {
     pub telemetry_type: TelemetryType,
     pub dataset_tags: Vec<DatasetTag>,
     pub dataset_labels: Vec<String>,
+    pub infer_timestamp: bool,
+}
+
+impl Default for LogStreamMetadata {
+    fn default() -> Self {
+        Self {
+            schema_version: SchemaVersion::default(),
+            schema: HashMap::new(),
+            retention: None,
+            created_at: String::new(),
+            first_event_at: None,
+            time_partition: None,
+            time_partition_limit: None,
+            custom_partition: None,
+            static_schema_flag: false,
+            hot_tier_enabled: false,
+            hot_tier: None,
+            stream_type: StreamType::default(),
+            log_source: Vec::new(),
+            telemetry_type: TelemetryType::default(),
+            dataset_tags: Vec::new(),
+            dataset_labels: Vec::new(),
+            infer_timestamp: true,
+        }
+    }
 }
 
 impl LogStreamMetadata {
@@ -112,6 +137,7 @@ impl LogStreamMetadata {
         telemetry_type: TelemetryType,
         dataset_tags: Vec<DatasetTag>,
         dataset_labels: Vec<String>,
+        infer_timestamp: bool,
     ) -> Self {
         LogStreamMetadata {
             created_at: if created_at.is_empty() {
@@ -138,6 +164,7 @@ impl LogStreamMetadata {
             telemetry_type,
             dataset_tags,
             dataset_labels,
+            infer_timestamp,
             ..Default::default()
         }
     }
