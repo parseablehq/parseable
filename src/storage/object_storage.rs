@@ -35,6 +35,7 @@ use std::fmt::Debug;
 use std::fs::{File, remove_file};
 use std::num::NonZeroU32;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
@@ -61,6 +62,8 @@ use crate::storage::SETTINGS_ROOT_DIRECTORY;
 use crate::storage::TARGETS_ROOT_DIRECTORY;
 use crate::storage::field_stats::DATASET_STATS_STREAM_NAME;
 use crate::storage::field_stats::calculate_field_stats;
+use crate::storage::field_stats::extract_datetime_from_parquet_path_regex;
+use crate::sync::ACTIVE_OBJECT_STORE_SYNC_FILES;
 
 use super::{
     ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, ObjectStorageError, ObjectStoreFormat,
@@ -102,7 +105,7 @@ async fn upload_single_parquet_file(
     stream_name: String,
     schema: Arc<Schema>,
     tenant_id: Option<String>,
-) -> Result<UploadResult, ObjectStorageError> {
+) -> Result<UploadResult, (PathBuf, ObjectStorageError)> {
     let filename = path
         .file_name()
         .expect("only parquet files are returned by iterator")
@@ -112,7 +115,12 @@ async fn upload_single_parquet_file(
     // Get the local file size for validation
     let local_file_size = path
         .metadata()
-        .map_err(|e| ObjectStorageError::Custom(format!("Failed to get local file metadata: {e}")))?
+        .map_err(|e| {
+            (
+                path.clone(),
+                ObjectStorageError::Custom(format!("Failed to get local file metadata: {e}")),
+            )
+        })?
         .len();
 
     // Upload the file
@@ -125,7 +133,10 @@ async fn upload_single_parquet_file(
         .await
         .map_err(|e| {
             error!("Failed to upload file {filename:?} to {stream_relative_path}: {e}");
-            ObjectStorageError::Custom(format!("Failed to upload {filename}: {e}"))
+            (
+                path.clone(),
+                ObjectStorageError::Custom(format!("Failed to upload {filename}: {e}")),
+            )
         })?;
 
     // Validate the uploaded file size matches local file
@@ -136,7 +147,8 @@ async fn upload_single_parquet_file(
         &stream_name,
         &tenant_id,
     )
-    .await?;
+    .await
+    .map_err(|e| (path.clone(), e))?;
 
     if !upload_is_valid {
         // Upload validation failed, clean up the uploaded file and return error
@@ -156,14 +168,16 @@ async fn upload_single_parquet_file(
         &stream_name,
         filename,
         tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
-    )?;
+    )
+    .map_err(|e| (path.clone(), e))?;
 
     // Create manifest entry
     let absolute_path = store
         .absolute_url(RelativePath::from_path(&stream_relative_path).expect("valid relative path"))
         .to_string();
 
-    let manifest = catalog::create_from_parquet_file(absolute_path, &path)?;
+    let manifest = catalog::create_from_parquet_file(absolute_path, &path)
+        .map_err(|e| (path.clone(), ObjectStorageError::from(e)))?;
 
     // Calculate field stats if enabled
     calculate_stats_if_enabled(&stream_name, &path, &schema, tenant_id).await;
@@ -1022,8 +1036,25 @@ async fn process_parquet_files(
     let mut join_set = JoinSet::new();
     let object_store = PARSEABLE.storage().get_object_store();
 
+    // collect all parquet files to upload
+    let parquet_paths = {
+        let mut guard = ACTIVE_OBJECT_STORE_SYNC_FILES.write().await;
+
+        let parquet_paths: Vec<PathBuf> = upload_context
+            .stream
+            .parquet_files()
+            .into_par_iter()
+            .filter(|p| !guard.contains(p))
+            .collect();
+
+        let mut ret = Vec::with_capacity(parquet_paths.len());
+        ret.clone_from(&parquet_paths);
+        guard.extend(parquet_paths);
+        ret
+    };
+
     // Spawn upload tasks for each parquet file
-    for path in upload_context.stream.parquet_files() {
+    for path in parquet_paths {
         spawn_parquet_upload_task(
             &mut join_set,
             semaphore.clone(),
@@ -1042,7 +1073,7 @@ async fn process_parquet_files(
 
 /// Spawns an individual parquet file upload task
 async fn spawn_parquet_upload_task(
-    join_set: &mut JoinSet<Result<UploadResult, ObjectStorageError>>,
+    join_set: &mut JoinSet<Result<UploadResult, (PathBuf, ObjectStorageError)>>,
     semaphore: Arc<tokio::sync::Semaphore>,
     store: Arc<dyn ObjectStorage>,
     upload_context: &UploadContext,
@@ -1083,7 +1114,7 @@ async fn spawn_parquet_upload_task(
 
 /// Collects results from all upload tasks
 async fn collect_upload_results(
-    mut join_set: JoinSet<Result<UploadResult, ObjectStorageError>>,
+    mut join_set: JoinSet<Result<UploadResult, (PathBuf, ObjectStorageError)>>,
 ) -> Result<Vec<catalog::manifest::File>, ObjectStorageError> {
     let mut uploaded_files = Vec::new();
 
@@ -1098,10 +1129,18 @@ async fn collect_upload_results(
                         "Parquet file upload size validation failed for {:?}, preserving in staging for retry",
                         upload_result.file_path
                     );
+                    {
+                        let mut guard = ACTIVE_OBJECT_STORE_SYNC_FILES.write().await;
+                        guard.remove(&upload_result.file_path);
+                    }
                 }
             }
-            Ok(Err(e)) => {
+            Ok(Err((path, e))) => {
                 error!("Error uploading parquet file: {e}");
+                {
+                    let mut guard = ACTIVE_OBJECT_STORE_SYNC_FILES.write().await;
+                    guard.remove(&path);
+                }
                 return Err(e);
             }
             Err(e) => {
@@ -1111,6 +1150,20 @@ async fn collect_upload_results(
         }
     }
 
+    // successfully uploaded files, remove from in-mem hashset
+    {
+        let mut guard = ACTIVE_OBJECT_STORE_SYNC_FILES.write().await;
+        for (path, _) in uploaded_files.iter() {
+            guard.remove(path);
+        }
+
+        // check if file has been in hashset for more than 5 minutes
+        let now = Utc::now();
+        guard.retain(|f| {
+            !extract_datetime_from_parquet_path_regex(f)
+                .is_ok_and(|ts| (now - ts).num_minutes() >= 5)
+        });
+    }
     let manifest_files: Vec<_> = uploaded_files
         .into_par_iter()
         .map(|(path, manifest_file)| {

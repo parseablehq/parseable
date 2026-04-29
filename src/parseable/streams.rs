@@ -33,6 +33,7 @@ use parquet::{
     schema::types::ColumnPath,
 };
 use relative_path::RelativePathBuf;
+use std::sync::PoisonError;
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions, remove_file, write},
@@ -41,7 +42,6 @@ use std::{
     sync::{Arc, Mutex, RwLock},
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
-use std::{io::BufReader, sync::PoisonError};
 use tokio::task::JoinSet;
 use tracing::{Instrument, error, info, info_span, instrument, trace, warn};
 use ulid::Ulid;
@@ -1118,50 +1118,47 @@ impl Stream {
                         // Try to validate the arrow file by reading its schema
                         match File::open(&path) {
                             Ok(file) => {
-                                match StreamReader::try_new(BufReader::new(file), None) {
-                                    Ok(_reader) => {
-                                        // File has valid schema, rename to .arrows
-                                        let mut arrow_path = path.clone();
-                                        arrow_path.set_extension(ARROW_FILE_EXTENSION);
-
-                                        // If arrow file with same name exists, generate a unique name
-                                        if arrow_path.exists() {
-                                            let file_name =
-                                                arrow_path.file_name().unwrap().to_string_lossy();
-                                            if let Some(date_pos) = file_name.find(".date") {
-                                                let random_suffix = ulid::Ulid::new().to_string();
-                                                let new_name = format!(
-                                                    "{}{}",
-                                                    random_suffix,
-                                                    &file_name[date_pos..]
-                                                );
-                                                arrow_path.set_file_name(new_name);
-                                            }
-                                        }
-
-                                        info!(
-                                            "Recovering orphaned .part file: {:?} -> {:?} for stream {}",
-                                            path, arrow_path, self.stream_name
+                                if let Err(e) = StreamReader::try_new_buffered(file, None) {
+                                    // File is invalid/corrupted, remove it
+                                    warn!(
+                                        "Removing invalid/corrupted .part file: {:?} for stream {}: {e}",
+                                        path, self.stream_name
+                                    );
+                                    if let Err(e) = remove_file(&path) {
+                                        error!(
+                                            "Failed to remove invalid .part file {:?}: {e}",
+                                            path
                                         );
-                                        if let Err(e) = std::fs::rename(&path, &arrow_path) {
-                                            error!(
-                                                "Failed to rename .part file {:?} to {:?}: {e}",
-                                                path, arrow_path
+                                    }
+                                } else {
+                                    // File has valid schema, rename to .arrows
+                                    let mut arrow_path = path.clone();
+                                    arrow_path.set_extension(ARROW_FILE_EXTENSION);
+
+                                    // If arrow file with same name exists, generate a unique name
+                                    if arrow_path.exists() {
+                                        let file_name =
+                                            arrow_path.file_name().unwrap().to_string_lossy();
+                                        if let Some(date_pos) = file_name.find(".date") {
+                                            let random_suffix = ulid::Ulid::new().to_string();
+                                            let new_name = format!(
+                                                "{}{}",
+                                                random_suffix,
+                                                &file_name[date_pos..]
                                             );
+                                            arrow_path.set_file_name(new_name);
                                         }
                                     }
-                                    Err(e) => {
-                                        // File is invalid/corrupted, remove it
-                                        warn!(
-                                            "Removing invalid/corrupted .part file: {:?} for stream {}: {e}",
-                                            path, self.stream_name
+
+                                    info!(
+                                        "Recovering orphaned .part file: {:?} -> {:?} for stream {}",
+                                        path, arrow_path, self.stream_name
+                                    );
+                                    if let Err(e) = std::fs::rename(&path, &arrow_path) {
+                                        error!(
+                                            "Failed to rename .part file {:?} to {:?}: {e}",
+                                            path, arrow_path
                                         );
-                                        if let Err(e) = remove_file(&path) {
-                                            error!(
-                                                "Failed to remove invalid .part file {:?}: {e}",
-                                                path
-                                            );
-                                        }
                                     }
                                 }
                             }
@@ -1201,7 +1198,7 @@ impl Stream {
         // For regular cycles, use false to only flush non-current writers
         let forced = init_signal || shutdown_signal;
         self.flush(forced);
-        trace!(
+        info!(
             "Flushing stream ({}) took: {}s",
             self.stream_name,
             start_flush.elapsed().as_secs_f64()
@@ -1210,7 +1207,7 @@ impl Stream {
         let start_convert = Instant::now();
 
         self.prepare_parquet(init_signal, shutdown_signal, tenant_id)?;
-        trace!(
+        info!(
             "Converting arrows to parquet on stream ({}) took: {}s",
             self.stream_name,
             start_convert.elapsed().as_secs_f64()

@@ -541,6 +541,25 @@ pub struct Options {
         help = "Max allowed age gap (in hours) between events within the same node, relative to the reference event"
     )]
     pub event_max_chunk_age: u64,
+
+    // enable multipart uploads to object store
+    #[arg(
+        long,
+        env = "P_ENABLE_MULTIPART",
+        default_value = "true",
+        help = "Enable multipart uploads to object store"
+    )]
+    pub enable_multipart: bool,
+
+    // minimum multipart upload size
+    #[arg(
+        long,
+        env = "P_MULTIPART_MIN_SIZE",
+        default_value = "26214400",
+        value_parser = clap::value_parser!(u64).range(26214400..),
+        help = "Minimum file size for multipart uploads (25MB)"
+    )]
+    pub min_multipart_size: u64,
 }
 
 #[derive(Parser, Debug)]

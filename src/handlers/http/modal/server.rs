@@ -30,7 +30,6 @@ use crate::handlers::http::middleware::IntraClusterRequest;
 use crate::handlers::http::modal::initialize_hot_tier_metadata_on_startup;
 use crate::handlers::http::prism_base_path;
 use crate::handlers::http::query;
-use crate::handlers::http::resource_check;
 use crate::handlers::http::targets;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
@@ -44,7 +43,6 @@ use crate::sync::sync_start;
 
 use actix_web::Resource;
 use actix_web::Scope;
-use actix_web::middleware::from_fn;
 use actix_web::web;
 use actix_web::web::resource;
 use actix_web_prometheus::PrometheusMetrics;
@@ -78,12 +76,8 @@ impl ParseableServer for Server {
             .service(
                 web::scope(&base_path())
                     .service(Self::get_correlation_webscope())
-                    .service(Self::get_query_factory().wrap(from_fn(
-                        resource_check::check_resource_utilization_middleware,
-                    )))
-                    .service(Self::get_ingest_factory().wrap(from_fn(
-                        resource_check::check_resource_utilization_middleware,
-                    )))
+                    .service(Self::get_query_factory())
+                    .service(Self::get_ingest_factory())
                     .service(Self::get_liveness_factory())
                     .service(Self::get_readiness_factory())
                     .service(Self::get_about_factory())
@@ -96,9 +90,7 @@ impl ParseableServer for Server {
                     .service(Self::get_oauth_webscope())
                     .service(Self::get_user_role_webscope())
                     .service(Self::get_roles_webscope())
-                    .service(Self::get_counts_webscope().wrap(from_fn(
-                        resource_check::check_resource_utilization_middleware,
-                    )))
+                    .service(Self::get_counts_webscope())
                     .service(Self::get_alerts_webscope())
                     .service(Self::get_targets_webscope())
                     .service(Self::get_metrics_webscope())
@@ -111,9 +103,7 @@ impl ParseableServer for Server {
                     .service(Server::get_prism_datasets())
                     .service(Self::get_dataset_stats_webscope()),
             )
-            .service(Self::get_ingest_otel_factory().wrap(from_fn(
-                resource_check::check_resource_utilization_middleware,
-            )))
+            .service(Self::get_ingest_otel_factory())
             .service(Self::get_generated());
     }
 
@@ -140,11 +130,7 @@ impl ParseableServer for Server {
         storage::retention::load_retention_from_global();
 
         // local sync on init
-        let startup_sync_handle = tokio::spawn(async {
-            if let Err(e) = sync_start().await {
-                tracing::warn!("local sync on server start failed: {e}");
-            }
-        });
+        thread::spawn(sync_start);
 
         if let Some(hot_tier_manager) = HotTierManager::global() {
             // Initialize hot tier metadata files for streams that have hot tier configuration
@@ -171,9 +157,6 @@ impl ParseableServer for Server {
             .await;
         // Cancel sync jobs
         cancel_tx.send(()).expect("Cancellation should not fail");
-        if let Err(join_err) = startup_sync_handle.await {
-            tracing::warn!("startup sync task panicked: {join_err}");
-        }
         return result;
     }
 }
@@ -460,10 +443,7 @@ impl Server {
                             .route(
                                 web::post()
                                     .to(ingest::post_event)
-                                    .authorize_for_resource(Action::Ingest)
-                                    .wrap(from_fn(
-                                        resource_check::check_resource_utilization_middleware,
-                                    )),
+                                    .authorize_for_resource(Action::Ingest),
                             )
                             // DELETE "/logstream/{logstream}" ==> Delete log stream
                             .route(
