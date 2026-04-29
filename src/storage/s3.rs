@@ -48,14 +48,13 @@ use crate::{
         increment_files_scanned_in_object_store_calls_by_date,
         increment_object_store_calls_by_date,
     },
-    parseable::{DEFAULT_TENANT, LogStream},
+    parseable::{DEFAULT_TENANT, LogStream, PARSEABLE},
 };
 
 use super::{
-    CONNECT_TIMEOUT_SECS, MIN_MULTIPART_UPLOAD_SIZE, ObjectStorage, ObjectStorageError,
-    ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS,
-    STREAM_METADATA_FILE_NAME, metrics_layer::MetricLayer, object_storage::parseable_json_path,
-    to_object_store_path,
+    CONNECT_TIMEOUT_SECS, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
+    PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, STREAM_METADATA_FILE_NAME,
+    metrics_layer::MetricLayer, object_storage::parseable_json_path, to_object_store_path,
 };
 
 // in bytes
@@ -543,7 +542,8 @@ impl S3 {
 
         let meta = file.metadata().await?;
         let total_size = meta.len() as usize;
-        if total_size < MIN_MULTIPART_UPLOAD_SIZE {
+        let min_multipart_size = PARSEABLE.options.min_multipart_size as usize;
+        if total_size < min_multipart_size || !PARSEABLE.options.enable_multipart {
             let mut data = Vec::new();
             file.read_to_end(&mut data).await?;
 
@@ -577,19 +577,19 @@ impl S3 {
 
             // let mut upload_parts = Vec::new();
 
-            let has_final_partial_part = !total_size.is_multiple_of(MIN_MULTIPART_UPLOAD_SIZE);
-            let num_full_parts = total_size / MIN_MULTIPART_UPLOAD_SIZE;
+            let has_final_partial_part = !total_size.is_multiple_of(min_multipart_size);
+            let num_full_parts = total_size / min_multipart_size;
             let total_parts = num_full_parts + if has_final_partial_part { 1 } else { 0 };
 
             // Upload each part with metrics
             for part_number in 0..(total_parts) {
-                let start_pos = part_number * MIN_MULTIPART_UPLOAD_SIZE;
+                let start_pos = part_number * min_multipart_size;
                 let end_pos = if part_number == num_full_parts && has_final_partial_part {
                     // Last part might be smaller than 5MB (which is allowed)
                     total_size
                 } else {
                     // All other parts must be at least 5MB
-                    start_pos + MIN_MULTIPART_UPLOAD_SIZE
+                    start_pos + min_multipart_size
                 };
 
                 // Extract this part's data

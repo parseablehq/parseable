@@ -29,7 +29,6 @@ use crate::handlers::http::{base_path, prism_base_path, resource_check};
 use crate::handlers::http::{rbac, role};
 use crate::hottier::HotTierManager;
 use crate::rbac::role::Action;
-use crate::sync::sync_start;
 use crate::{analytics, migration, storage, sync};
 use actix_web::middleware::from_fn;
 use actix_web::web::{ServiceConfig, resource};
@@ -132,12 +131,6 @@ impl ParseableServer for QueryServer {
             analytics::init_analytics_scheduler()?;
         }
 
-        // local sync on init
-        let startup_sync_handle = tokio::spawn(async {
-            if let Err(e) = sync_start().await {
-                tracing::warn!("local sync on server start failed: {e}");
-            }
-        });
         if let Some(hot_tier_manager) = HotTierManager::global() {
             // Initialize hot tier metadata files for streams that have hot tier configuration
             // but don't have local hot tier metadata files yet
@@ -158,9 +151,6 @@ impl ParseableServer for QueryServer {
             .await?;
         // Cancel sync jobs
         cancel_tx.send(()).expect("Cancellation should not fail");
-        if let Err(join_err) = startup_sync_handle.await {
-            tracing::warn!("startup sync task panicked: {join_err}");
-        }
         Ok(result)
     }
 }

@@ -68,9 +68,7 @@ impl ParseableServer for IngestServer {
             .service(
                 // Base path "{url}/api/v1"
                 web::scope(&base_path())
-                    .service(Server::get_ingest_factory().wrap(from_fn(
-                        resource_check::check_resource_utilization_middleware,
-                    )))
+                    .service(Server::get_ingest_factory())
                     .service(Self::logstream_api())
                     .service(Server::get_about_factory())
                     .service(Self::analytics_factory())
@@ -120,11 +118,7 @@ impl ParseableServer for IngestServer {
         migration::run_migration(&PARSEABLE).await?;
 
         // local sync on init
-        let startup_sync_handle = tokio::spawn(async {
-            if let Err(e) = sync_start().await {
-                tracing::warn!("local sync on server start failed: {e}");
-            }
-        });
+        thread::spawn(sync_start);
 
         // Run sync on a background thread
         let (cancel_tx, cancel_rx) = oneshot::channel();
@@ -136,9 +130,6 @@ impl ParseableServer for IngestServer {
         let result = self.start(shutdown_rx, prometheus.clone(), None).await;
         // Cancel sync jobs
         cancel_tx.send(()).expect("Cancellation should not fail");
-        if let Err(join_err) = startup_sync_handle.await {
-            tracing::warn!("startup sync task panicked: {join_err}");
-        }
         result
     }
 }

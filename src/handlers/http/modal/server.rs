@@ -78,12 +78,8 @@ impl ParseableServer for Server {
             .service(
                 web::scope(&base_path())
                     .service(Self::get_correlation_webscope())
-                    .service(Self::get_query_factory().wrap(from_fn(
-                        resource_check::check_resource_utilization_middleware,
-                    )))
-                    .service(Self::get_ingest_factory().wrap(from_fn(
-                        resource_check::check_resource_utilization_middleware,
-                    )))
+                    .service(Self::get_query_factory())
+                    .service(Self::get_ingest_factory())
                     .service(Self::get_liveness_factory())
                     .service(Self::get_readiness_factory())
                     .service(Self::get_about_factory())
@@ -96,9 +92,7 @@ impl ParseableServer for Server {
                     .service(Self::get_oauth_webscope())
                     .service(Self::get_user_role_webscope())
                     .service(Self::get_roles_webscope())
-                    .service(Self::get_counts_webscope().wrap(from_fn(
-                        resource_check::check_resource_utilization_middleware,
-                    )))
+                    .service(Self::get_counts_webscope())
                     .service(Self::get_alerts_webscope())
                     .service(Self::get_targets_webscope())
                     .service(Self::get_metrics_webscope())
@@ -140,11 +134,7 @@ impl ParseableServer for Server {
         storage::retention::load_retention_from_global();
 
         // local sync on init
-        let startup_sync_handle = tokio::spawn(async {
-            if let Err(e) = sync_start().await {
-                tracing::warn!("local sync on server start failed: {e}");
-            }
-        });
+        thread::spawn(sync_start);
 
         if let Some(hot_tier_manager) = HotTierManager::global() {
             // Initialize hot tier metadata files for streams that have hot tier configuration
@@ -171,9 +161,6 @@ impl ParseableServer for Server {
             .await;
         // Cancel sync jobs
         cancel_tx.send(()).expect("Cancellation should not fail");
-        if let Err(join_err) = startup_sync_handle.await {
-            tracing::warn!("startup sync task panicked: {join_err}");
-        }
         return result;
     }
 }
