@@ -32,7 +32,8 @@ use datafusion::{
 };
 use futures::{StreamExt, TryStreamExt, stream::FuturesUnordered};
 use object_store::{
-    BackoffConfig, ClientOptions, ListResult, ObjectMeta, ObjectStore, PutPayload, RetryConfig,
+    BackoffConfig, ClientOptions, ListResult, ObjectMeta, ObjectStore, ObjectStoreExt, PutPayload,
+    RetryConfig,
     aws::{AmazonS3, AmazonS3Builder, AmazonS3ConfigKey, Checksum},
     buffered::BufReader,
     limit::LimitStore,
