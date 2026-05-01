@@ -35,7 +35,7 @@ use chrono::NaiveDate;
 use clokwerk::{AsyncScheduler, Interval, Job};
 use futures::{StreamExt, TryStreamExt, stream::FuturesUnordered};
 use futures_util::TryFutureExt;
-use object_store::{ObjectStore, local::LocalFileSystem};
+use object_store::{ObjectStoreExt, local::LocalFileSystem};
 use once_cell::sync::OnceCell;
 use parquet::errors::ParquetError;
 use relative_path::RelativePathBuf;

@@ -150,22 +150,21 @@ impl StandardTableProvider {
 
         // parquet file source, default table parquet options
         let file_source = if let Some(phyiscal_expr) = filters {
-            ParquetSource::default().with_predicate(phyiscal_expr)
+            ParquetSource::new(self.schema.clone()).with_predicate(phyiscal_expr)
         } else {
-            ParquetSource::default()
+            ParquetSource::new(self.schema.clone())
         };
 
-        let mut conf_builder =
-            FileScanConfigBuilder::new(object_store_url, self.schema.clone(), file_source.into())
-                .with_statistics(statistics)
-                .with_batch_size(Some(20000))
-                .with_constraints(Constraints::default())
-                .with_file_groups(file_groups)
-                .with_output_ordering(vec![LexOrdering::new([sort_expr]).unwrap()]);
+        let mut conf_builder = FileScanConfigBuilder::new(object_store_url, file_source.into())
+            .with_statistics(statistics)
+            .with_batch_size(Some(20000))
+            .with_constraints(Constraints::default())
+            .with_file_groups(file_groups)
+            .with_output_ordering(vec![LexOrdering::new([sort_expr]).unwrap()]);
 
         // Set projection if provided
         if let Some(proj_indices) = projection {
-            conf_builder = conf_builder.with_projection_indices(Some(proj_indices.clone()));
+            conf_builder = conf_builder.with_projection_indices(Some(proj_indices.clone()))?;
         }
 
         // Set limit if provided
@@ -423,6 +422,7 @@ impl StandardTableProvider {
                         min_value: Precision::Exact(min),
                         distinct_count: Precision::Absent,
                         sum_value: Precision::Absent,
+                        byte_size: Precision::Absent,
                     })
                     .unwrap_or_default()
             })

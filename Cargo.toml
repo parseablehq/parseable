@@ -9,24 +9,24 @@ build = "build.rs"
 
 [dependencies]
 # Arrow and DataFusion ecosystem
-arrow = "57.1.0"
-arrow-array = "57.1.0"
-arrow-flight = { version = "57.1.0", features = [
+arrow = "58.0.0"
+arrow-array = "58.0.0"
+arrow-flight = { version = "58.0.0", features = [
     "tls-aws-lc",
     "tls-native-roots",
 ] }
-arrow-ipc = { version = "57.1.0", features = ["zstd"] }
-arrow-json = "57.1.0"
-arrow-schema = { version = "57.1.0", features = ["serde"] }
-arrow-select = "57.1.0"
-datafusion = "51.0.0"
-object_store = { version = "0.12.4", features = [
+arrow-ipc = { version = "58.0.0", features = ["zstd"] }
+arrow-json = "58.0.0"
+arrow-schema = { version = "58.0.0", features = ["serde"] }
+arrow-select = "58.0.0"
+datafusion = "53.0.0"
+object_store = { version = "0.13.1", features = [
     "cloud",
     "aws",
     "azure",
     "gcp",
 ] }
-parquet = "57.1.0"
+parquet = "58.0.0"
 
 # Web server and HTTP-related
 actix-cors = "0.7.0"
@@ -200,7 +200,7 @@ anyhow = "1.0"
 
 [dev-dependencies]
 rstest = "0.23.0"
-arrow = "57.1.0"
+arrow = "58.0.0"
 temp-dir = "0.1.14"
 
 [package.metadata.parseable_ui]

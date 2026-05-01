@@ -26,9 +26,9 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt, stream::BoxStream};
 use object_store::{
-    GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    PutMultipartOptions, PutOptions, PutPayload, PutResult, Result as ObjectStoreResult,
-    path::Path,
+    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
+    PutMultipartOptions, PutOptions, PutPayload, PutResult, RenameOptions,
+    Result as ObjectStoreResult, path::Path,
 };
 
 use crate::metrics::STORAGE_REQUEST_RESPONSE_TIME;
@@ -85,14 +85,14 @@ impl<T: ObjectStore> std::fmt::Display for MetricLayer<T> {
 
 #[async_trait]
 impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
-    /// PutPayload.from_bytes(bytes)
-    async fn put(
+    async fn put_opts(
         &self,
         location: &Path,
-        bytes: PutPayload, /* PutPayload */
+        payload: PutPayload,
+        opts: PutOptions,
     ) -> ObjectStoreResult<PutResult> {
         let time = time::Instant::now();
-        let put_result = self.inner.put(location, bytes).await;
+        let put_result = self.inner.put_opts(location, payload, opts).await;
         let elapsed = time.elapsed().as_secs_f64();
 
         let status = match &put_result {
@@ -106,43 +106,6 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         put_result
     }
 
-    async fn put_opts(
-        &self,
-        location: &Path,
-        payload: PutPayload, /* PutPayload */
-        opts: PutOptions,
-    ) -> ObjectStoreResult<PutResult> {
-        let time = time::Instant::now();
-        let put_result = self.inner.put_opts(location, payload, opts).await;
-        let elapsed = time.elapsed().as_secs_f64();
-
-        let status = match &put_result {
-            Ok(_) => "200",
-            Err(err) => error_to_status_code(err),
-        };
-
-        STORAGE_REQUEST_RESPONSE_TIME
-            .with_label_values(&[&self.provider, "PUT_OPTS", status])
-            .observe(elapsed);
-        put_result
-    }
-
-    // // ! removed in object_store 0.10.0
-    // async fn abort_multipart(
-    //     &self,
-    //     location: &Path,
-    //     multipart_id: &MultipartId,
-    // ) -> object_store::Result<()> {
-    //     let time = time::Instant::now();
-    //     let elapsed = time.elapsed().as_secs_f64();
-    //     self.inner.abort_multipart(location, multipart_id).await?;
-    //     STORAGE_REQUEST_RESPONSE_TIME
-    //         .with_label_values(&["PUT_MULTIPART_ABORT", "200"])
-    //         .observe(elapsed);
-    //     Ok(())
-    // }
-
-    /* Keep for easier migration to object_store 0.10.0 */
     async fn put_multipart_opts(
         &self,
         location: &Path,
@@ -158,43 +121,9 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         };
 
         STORAGE_REQUEST_RESPONSE_TIME
-            .with_label_values(&[&self.provider, "PUT_MULTIPART_OPTS", status])
-            .observe(elapsed);
-        result
-    }
-
-    // todo completly tracking multipart upload
-    async fn put_multipart(&self, location: &Path) -> ObjectStoreResult<Box<dyn MultipartUpload>> /* ObjectStoreResult<(MultipartId, Box<dyn AsyncWrite + Unpin + Send>)> */
-    {
-        let time = time::Instant::now();
-        let result = self.inner.put_multipart(location).await;
-        let elapsed = time.elapsed().as_secs_f64();
-
-        let status = match &result {
-            Ok(_) => "200",
-            Err(err) => error_to_status_code(err),
-        };
-
-        STORAGE_REQUEST_RESPONSE_TIME
             .with_label_values(&[&self.provider, "PUT_MULTIPART", status])
             .observe(elapsed);
         result
-    }
-
-    async fn get(&self, location: &Path) -> ObjectStoreResult<GetResult> {
-        let time = time::Instant::now();
-        let get_result = self.inner.get(location).await;
-        let elapsed = time.elapsed().as_secs_f64();
-
-        let status = match &get_result {
-            Ok(_) => "200",
-            Err(err) => error_to_status_code(err),
-        };
-
-        STORAGE_REQUEST_RESPONSE_TIME
-            .with_label_values(&[&self.provider, "GET", status])
-            .observe(elapsed);
-        get_result
     }
 
     async fn get_opts(&self, location: &Path, options: GetOptions) -> ObjectStoreResult<GetResult> {
@@ -208,23 +137,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         };
 
         STORAGE_REQUEST_RESPONSE_TIME
-            .with_label_values(&[&self.provider, "GET_OPTS", status])
-            .observe(elapsed);
-        result
-    }
-
-    async fn get_range(&self, location: &Path, range: Range<u64>) -> ObjectStoreResult<Bytes> {
-        let time = time::Instant::now();
-        let result = self.inner.get_range(location, range).await;
-        let elapsed = time.elapsed().as_secs_f64();
-
-        let status = match &result {
-            Ok(_) => "200",
-            Err(err) => error_to_status_code(err),
-        };
-
-        STORAGE_REQUEST_RESPONSE_TIME
-            .with_label_values(&[&self.provider, "GET_RANGE", status])
+            .with_label_values(&[&self.provider, "GET", status])
             .observe(elapsed);
         result
     }
@@ -249,42 +162,10 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         result
     }
 
-    async fn head(&self, location: &Path) -> ObjectStoreResult<ObjectMeta> {
-        let time = time::Instant::now();
-        let result = self.inner.head(location).await;
-        let elapsed = time.elapsed().as_secs_f64();
-
-        let status = match &result {
-            Ok(_) => "200",
-            Err(err) => error_to_status_code(err),
-        };
-
-        STORAGE_REQUEST_RESPONSE_TIME
-            .with_label_values(&[&self.provider, "HEAD", status])
-            .observe(elapsed);
-        result
-    }
-
-    async fn delete(&self, location: &Path) -> ObjectStoreResult<()> {
-        let time = time::Instant::now();
-        let result = self.inner.delete(location).await;
-        let elapsed = time.elapsed().as_secs_f64();
-
-        let status = match &result {
-            Ok(_) => "200",
-            Err(err) => error_to_status_code(err),
-        };
-
-        STORAGE_REQUEST_RESPONSE_TIME
-            .with_label_values(&[&self.provider, "DELETE", status])
-            .observe(elapsed);
-        result
-    }
-
-    fn delete_stream<'a>(
-        &'a self,
-        locations: BoxStream<'a, ObjectStoreResult<Path>>,
-    ) -> BoxStream<'a, ObjectStoreResult<Path>> {
+    fn delete_stream(
+        &self,
+        locations: BoxStream<'static, ObjectStoreResult<Path>>,
+    ) -> BoxStream<'static, ObjectStoreResult<Path>> {
         self.inner.delete_stream(locations)
     }
 
@@ -335,9 +216,14 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         result
     }
 
-    async fn copy(&self, from: &Path, to: &Path) -> ObjectStoreResult<()> {
+    async fn copy_opts(
+        &self,
+        from: &Path,
+        to: &Path,
+        options: CopyOptions,
+    ) -> ObjectStoreResult<()> {
         let time = time::Instant::now();
-        let result = self.inner.copy(from, to).await;
+        let result = self.inner.copy_opts(from, to, options).await;
         let elapsed = time.elapsed().as_secs_f64();
 
         let status = match &result {
@@ -351,9 +237,14 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         result
     }
 
-    async fn rename(&self, from: &Path, to: &Path) -> ObjectStoreResult<()> {
+    async fn rename_opts(
+        &self,
+        from: &Path,
+        to: &Path,
+        options: RenameOptions,
+    ) -> ObjectStoreResult<()> {
         let time = time::Instant::now();
-        let result = self.inner.rename(from, to).await;
+        let result = self.inner.rename_opts(from, to, options).await;
         let elapsed = time.elapsed().as_secs_f64();
 
         let status = match &result {
@@ -363,38 +254,6 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
 
         STORAGE_REQUEST_RESPONSE_TIME
             .with_label_values(&[&self.provider, "RENAME", status])
-            .observe(elapsed);
-        result
-    }
-
-    async fn copy_if_not_exists(&self, from: &Path, to: &Path) -> ObjectStoreResult<()> {
-        let time = time::Instant::now();
-        let result = self.inner.copy_if_not_exists(from, to).await;
-        let elapsed = time.elapsed().as_secs_f64();
-
-        let status = match &result {
-            Ok(_) => "200",
-            Err(err) => error_to_status_code(err),
-        };
-
-        STORAGE_REQUEST_RESPONSE_TIME
-            .with_label_values(&[&self.provider, "COPY_IF", status])
-            .observe(elapsed);
-        result
-    }
-
-    async fn rename_if_not_exists(&self, from: &Path, to: &Path) -> ObjectStoreResult<()> {
-        let time = time::Instant::now();
-        let result = self.inner.rename_if_not_exists(from, to).await;
-        let elapsed = time.elapsed().as_secs_f64();
-
-        let status = match &result {
-            Ok(_) => "200",
-            Err(err) => error_to_status_code(err),
-        };
-
-        STORAGE_REQUEST_RESPONSE_TIME
-            .with_label_values(&[&self.provider, "RENAME_IF", status])
             .observe(elapsed);
         result
     }

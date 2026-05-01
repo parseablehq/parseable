@@ -582,7 +582,7 @@ impl Stream {
         let time_partition_idx = merged_schema.index_of(time_partition_field).unwrap_or(0);
 
         let mut props = WriterProperties::builder()
-            .set_max_row_group_size(self.options.row_group_size)
+            .set_max_row_group_row_count(Some(self.options.row_group_size))
             .set_compression(self.options.parquet_compression.into())
             .set_column_encoding(
                 ColumnPath::new(vec![time_partition_field.to_string()]),
