@@ -612,6 +612,13 @@ pub fn rename_per_record_type_mismatches(
                     if val.is_null() {
                         return (key, val);
                     }
+                    // Arrays and objects are validated structurally by arrow at
+                    // decode time; value_compatible_with_type can't reliably
+                    // judge them, so skip to avoid spurious renames of valid
+                    // list/struct values.
+                    if val.is_array() || val.is_object() {
+                        return (key, val);
+                    }
                     // Prefer storage's declared type; fall back to the inferred
                     // type so within-batch mismatches on new fields are caught.
                     let target_type = existing_schema
@@ -1168,26 +1175,22 @@ mod tests {
     }
 
     #[test]
-    fn rename_per_record_short_circuits_when_no_field_overlap_at_same_type() {
-        // No inferred field shares both name AND type with storage —
-        // arrow can't have absorbed a mixed-type batch, so we skip the loop.
-        let mut storage: HashMap<String, Arc<Field>> = HashMap::new();
-        storage.insert(
-            "escaped".to_string(),
-            Arc::new(Field::new("escaped", DataType::Utf8, true)),
-        );
-        // Inferred has a DIFFERENT type for the shared field — handled by
-        // detect_schema_conflicts as a batch-level rename, not per-record.
-        let inferred = Schema::new(vec![Field::new("escaped", DataType::Boolean, true)]);
+    fn rename_per_record_renames_against_inferred_when_field_absent_from_storage() {
+        // First-batch case: storage is empty, so the reference type for each
+        // field comes from arrow's batch-level inference. With mixed bool+string
+        // for `escaped`, arrow picks Utf8 (string wins), and the bool record
+        // must be rewritten so it routes to a typed sibling column rather than
+        // failing fields_mismatch later.
+        let storage: HashMap<String, Arc<Field>> = HashMap::new();
+        let inferred = Schema::new(vec![Field::new("escaped", DataType::Utf8, true)]);
         let renamed = rename_per_record_type_mismatches(
-            vec![json!({"escaped": true}), json!({"escaped": false})],
+            vec![json!({"escaped": "true"}), json!({"escaped": false})],
             &inferred,
             &storage,
             SchemaVersion::V1,
         );
-        // Per-record loop skipped; values pass through unchanged.
         assert!(renamed[0].as_object().unwrap().contains_key("escaped"));
-        assert!(renamed[1].as_object().unwrap().contains_key("escaped"));
+        assert!(renamed[1].as_object().unwrap().contains_key("escaped_bool"));
     }
 
     #[test]
