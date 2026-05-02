@@ -584,20 +584,21 @@ pub fn rename_per_record_type_mismatches(
     existing_schema: &HashMap<String, Arc<Field>>,
     schema_version: SchemaVersion,
 ) -> Vec<Value> {
-    if values.len() <= 1 || existing_schema.is_empty() {
+    if values.len() <= 1 {
         return values;
     }
-    // Bail out unless at least one inferred field collides with storage at
-    // the same type. Without that, arrow's inference can't have hidden a
-    // mixed-type batch behind a matching aggregate type.
-    let needs_check = inferred_schema.fields().iter().any(|f| {
-        existing_schema
-            .get(f.name())
-            .is_some_and(|s| s.data_type() == f.data_type())
-    });
-    if !needs_check {
-        return values;
-    }
+
+    // Lookup of inferred field types — used as the reference type when a field
+    // isn't yet in storage (e.g. first batch for the stream, or a new column).
+    // Without this, mixed-type batches for new fields slip through: arrow picks
+    // a single aggregate type (Utf8 wins over Bool, etc.), the batch-level
+    // conflict check sees nothing to compare against in empty storage, and
+    // records carrying the loser type later fail `fields_mismatch`.
+    let inferred_types: HashMap<&str, &DataType> = inferred_schema
+        .fields()
+        .iter()
+        .map(|f| (f.name().as_str(), f.data_type()))
+        .collect();
 
     values
         .into_iter()
@@ -611,11 +612,29 @@ pub fn rename_per_record_type_mismatches(
                     if val.is_null() {
                         return (key, val);
                     }
-                    let Some(existing_field) = existing_schema.get(&key) else {
+                    // Prefer storage's declared type; fall back to the inferred
+                    // type so within-batch mismatches on new fields are caught.
+                    let target_type = existing_schema
+                        .get(&key)
+                        .map(|f| f.data_type())
+                        .or_else(|| inferred_types.get(key.as_str()).copied());
+                    let Some(target_type) = target_type else {
                         return (key, val);
                     };
-                    if value_compatible_with_type(&val, existing_field.data_type(), schema_version)
+                    // When the resolved target is a structural arrow type
+                    // (list/struct/map), arrow validates conformance at decode
+                    // time and value_compatible_with_type can't reliably judge
+                    // arrays/objects — skip to avoid spurious renames of valid
+                    // nested values. Scalars still flow through the check, so
+                    // an array landing on e.g. a Utf8 column is still routed
+                    // to a typed sibling rather than crashing decode.
+                    if (val.is_array() || val.is_object())
+                        && (target_type.is_list()
+                            || matches!(target_type, DataType::Struct(_) | DataType::Map(_, _)))
                     {
+                        return (key, val);
+                    }
+                    if value_compatible_with_type(&val, target_type, schema_version) {
                         return (key, val);
                     }
                     let suffix = get_datatype_suffix(&datatype_for_value(&val));
@@ -1162,26 +1181,22 @@ mod tests {
     }
 
     #[test]
-    fn rename_per_record_short_circuits_when_no_field_overlap_at_same_type() {
-        // No inferred field shares both name AND type with storage —
-        // arrow can't have absorbed a mixed-type batch, so we skip the loop.
-        let mut storage: HashMap<String, Arc<Field>> = HashMap::new();
-        storage.insert(
-            "escaped".to_string(),
-            Arc::new(Field::new("escaped", DataType::Utf8, true)),
-        );
-        // Inferred has a DIFFERENT type for the shared field — handled by
-        // detect_schema_conflicts as a batch-level rename, not per-record.
-        let inferred = Schema::new(vec![Field::new("escaped", DataType::Boolean, true)]);
+    fn rename_per_record_renames_against_inferred_when_field_absent_from_storage() {
+        // First-batch case: storage is empty, so the reference type for each
+        // field comes from arrow's batch-level inference. With mixed bool+string
+        // for `escaped`, arrow picks Utf8 (string wins), and the bool record
+        // must be rewritten so it routes to a typed sibling column rather than
+        // failing fields_mismatch later.
+        let storage: HashMap<String, Arc<Field>> = HashMap::new();
+        let inferred = Schema::new(vec![Field::new("escaped", DataType::Utf8, true)]);
         let renamed = rename_per_record_type_mismatches(
-            vec![json!({"escaped": true}), json!({"escaped": false})],
+            vec![json!({"escaped": "true"}), json!({"escaped": false})],
             &inferred,
             &storage,
             SchemaVersion::V1,
         );
-        // Per-record loop skipped; values pass through unchanged.
         assert!(renamed[0].as_object().unwrap().contains_key("escaped"));
-        assert!(renamed[1].as_object().unwrap().contains_key("escaped"));
+        assert!(renamed[1].as_object().unwrap().contains_key("escaped_bool"));
     }
 
     #[test]

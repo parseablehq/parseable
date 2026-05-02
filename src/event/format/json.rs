@@ -94,33 +94,37 @@ impl EventFormat for Event {
             })?
         };
 
-        // Detect schema conflicts using raw inferred schema vs existing stream schema
-        // Pass the actual values and schema_version to check if values can be coerced to existing types
-        let conflicts = detect_schema_conflicts(
-            &raw_inferred_schema,
-            stream_schema,
-            &value_arr,
-            schema_version,
-        );
-
-        // If there are conflicts, rename the fields in JSON values
-        let value_arr = if !conflicts.is_empty() {
-            rename_conflicting_fields_in_json(value_arr, &conflicts)
-        } else {
+        let value_arr = if static_schema_flag {
             value_arr
-        };
+        } else {
+            // Detect schema conflicts using raw inferred schema vs existing stream schema
+            // Pass the actual values and schema_version to check if values can be coerced to existing types
+            let conflicts = detect_schema_conflicts(
+                &raw_inferred_schema,
+                stream_schema,
+                &value_arr,
+                schema_version,
+            );
 
-        // Per-record fallback: catches batches with mixed JSON types for the
-        // same field, which the batch-level detect_schema_conflicts misses
-        // because arrow's inference picks one winning type (string over bool).
-        // Internally short-circuits when this can't apply (single-record
-        // batches, or no field-name collision at the same type).
-        let value_arr = super::rename_per_record_type_mismatches(
-            value_arr,
-            &raw_inferred_schema,
-            stream_schema,
-            schema_version,
-        );
+            // If there are conflicts, rename the fields in JSON values
+            let value_arr = if !conflicts.is_empty() {
+                rename_conflicting_fields_in_json(value_arr, &conflicts)
+            } else {
+                value_arr
+            };
+
+            // Per-record fallback: catches batches with mixed JSON types for the
+            // same field, which the batch-level detect_schema_conflicts misses
+            // because arrow's inference picks one winning type (string over bool).
+            // Internally short-circuits when this can't apply (single-record
+            // batches, or no field-name collision at the same type).
+            super::rename_per_record_type_mismatches(
+                value_arr,
+                &raw_inferred_schema,
+                stream_schema,
+                schema_version,
+            )
+        };
 
         // collect all the keys from all the json objects in the request body
         let fields =
