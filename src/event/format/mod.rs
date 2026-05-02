@@ -612,13 +612,6 @@ pub fn rename_per_record_type_mismatches(
                     if val.is_null() {
                         return (key, val);
                     }
-                    // Arrays and objects are validated structurally by arrow at
-                    // decode time; value_compatible_with_type can't reliably
-                    // judge them, so skip to avoid spurious renames of valid
-                    // list/struct values.
-                    if val.is_array() || val.is_object() {
-                        return (key, val);
-                    }
                     // Prefer storage's declared type; fall back to the inferred
                     // type so within-batch mismatches on new fields are caught.
                     let target_type = existing_schema
@@ -628,6 +621,19 @@ pub fn rename_per_record_type_mismatches(
                     let Some(target_type) = target_type else {
                         return (key, val);
                     };
+                    // When the resolved target is a structural arrow type
+                    // (list/struct/map), arrow validates conformance at decode
+                    // time and value_compatible_with_type can't reliably judge
+                    // arrays/objects — skip to avoid spurious renames of valid
+                    // nested values. Scalars still flow through the check, so
+                    // an array landing on e.g. a Utf8 column is still routed
+                    // to a typed sibling rather than crashing decode.
+                    if (val.is_array() || val.is_object())
+                        && (target_type.is_list()
+                            || matches!(target_type, DataType::Struct(_) | DataType::Map(_, _)))
+                    {
+                        return (key, val);
+                    }
                     if value_compatible_with_type(&val, target_type, schema_version) {
                         return (key, val);
                     }
