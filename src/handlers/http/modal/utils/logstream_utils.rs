@@ -23,15 +23,14 @@ use crate::{
     handlers::{
         CUSTOM_PARTITION_KEY, DATASET_LABELS_KEY, DATASET_TAG_KEY, DATASET_TAGS_KEY, DatasetTag,
         INFER_TIMESTAMP_KEY, LOG_SOURCE_KEY, STATIC_SCHEMA_FLAG, STREAM_TYPE_KEY,
-        TELEMETRY_TYPE_KEY, TIME_PARTITION_KEY, TIME_PARTITION_LIMIT_KEY, TelemetryType,
-        UPDATE_STREAM_KEY, parse_dataset_labels, parse_dataset_tags,
+        TELEMETRY_TYPE_KEY, TIME_PARTITION_LIMIT_KEY, TelemetryType, UPDATE_STREAM_KEY,
+        parse_dataset_labels, parse_dataset_tags,
     },
     storage::StreamType,
 };
 
 #[derive(Debug)]
 pub struct PutStreamHeaders {
-    pub time_partition: String,
     pub time_partition_limit: String,
     pub custom_partition: Option<String>,
     pub static_schema_flag: bool,
@@ -49,7 +48,6 @@ pub struct PutStreamHeaders {
 impl Default for PutStreamHeaders {
     fn default() -> Self {
         Self {
-            time_partition: String::default(),
             time_partition_limit: String::default(),
             custom_partition: None,
             static_schema_flag: false,
@@ -80,10 +78,6 @@ impl From<&HeaderMap> for PutStreamHeaders {
             .get(TELEMETRY_TYPE_KEY)
             .and_then(|v| v.to_str().ok());
         PutStreamHeaders {
-            time_partition: headers
-                .get(TIME_PARTITION_KEY)
-                .map_or("", |v| v.to_str().unwrap())
-                .to_string(),
             time_partition_limit: headers
                 .get(TIME_PARTITION_LIMIT_KEY)
                 .map_or("", |v| v.to_str().unwrap())

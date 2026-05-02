@@ -695,7 +695,6 @@ impl Parseable {
         tenant_id: &Option<String>,
     ) -> Result<HeaderMap, StreamError> {
         let PutStreamHeaders {
-            time_partition,
             time_partition_limit,
             custom_partition,
             static_schema_flag,
@@ -763,7 +762,6 @@ impl Parseable {
                 .update_stream(
                     headers,
                     stream_name,
-                    &time_partition,
                     static_schema_flag,
                     &time_partition_limit,
                     custom_partition.as_ref(),
@@ -782,17 +780,10 @@ impl Parseable {
             validate_custom_partition(custom_partition)?;
         }
 
-        if !time_partition.is_empty() && custom_partition.is_some() {
-            return Err(StreamError::Custom {
-                msg: "Cannot set both time partition and custom partition".to_string(),
-                status: StatusCode::BAD_REQUEST,
-            });
-        }
-
         let schema = validate_static_schema(
             body,
             stream_name,
-            &time_partition,
+            "",
             custom_partition.as_ref(),
             static_schema_flag,
         )?;
@@ -800,7 +791,7 @@ impl Parseable {
         let log_source_entry = LogSourceEntry::new(log_source, HashSet::new());
         self.create_stream(
             stream_name.to_string(),
-            &time_partition,
+            "",
             time_partition_in_days,
             custom_partition.as_ref(),
             static_schema_flag,
@@ -818,12 +809,10 @@ impl Parseable {
         Ok(headers.clone())
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn update_stream(
         &self,
         headers: &HeaderMap,
         stream_name: &str,
-        time_partition: &str,
         static_schema_flag: bool,
         time_partition_limit: &str,
         custom_partition: Option<&String>,
@@ -831,12 +820,6 @@ impl Parseable {
     ) -> Result<HeaderMap, StreamError> {
         if !self.streams.contains(stream_name, tenant_id) {
             return Err(StreamNotFound(stream_name.to_string()).into());
-        }
-        if !time_partition.is_empty() {
-            return Err(StreamError::Custom {
-                msg: "Altering the time partition of an existing stream is restricted.".to_string(),
-                status: StatusCode::BAD_REQUEST,
-            });
         }
         if static_schema_flag {
             return Err(StreamError::Custom {

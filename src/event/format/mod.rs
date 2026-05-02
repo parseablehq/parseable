@@ -584,20 +584,21 @@ pub fn rename_per_record_type_mismatches(
     existing_schema: &HashMap<String, Arc<Field>>,
     schema_version: SchemaVersion,
 ) -> Vec<Value> {
-    if values.len() <= 1 || existing_schema.is_empty() {
+    if values.len() <= 1 {
         return values;
     }
-    // Bail out unless at least one inferred field collides with storage at
-    // the same type. Without that, arrow's inference can't have hidden a
-    // mixed-type batch behind a matching aggregate type.
-    let needs_check = inferred_schema.fields().iter().any(|f| {
-        existing_schema
-            .get(f.name())
-            .is_some_and(|s| s.data_type() == f.data_type())
-    });
-    if !needs_check {
-        return values;
-    }
+
+    // Lookup of inferred field types — used as the reference type when a field
+    // isn't yet in storage (e.g. first batch for the stream, or a new column).
+    // Without this, mixed-type batches for new fields slip through: arrow picks
+    // a single aggregate type (Utf8 wins over Bool, etc.), the batch-level
+    // conflict check sees nothing to compare against in empty storage, and
+    // records carrying the loser type later fail `fields_mismatch`.
+    let inferred_types: HashMap<&str, &DataType> = inferred_schema
+        .fields()
+        .iter()
+        .map(|f| (f.name().as_str(), f.data_type()))
+        .collect();
 
     values
         .into_iter()
@@ -611,11 +612,16 @@ pub fn rename_per_record_type_mismatches(
                     if val.is_null() {
                         return (key, val);
                     }
-                    let Some(existing_field) = existing_schema.get(&key) else {
+                    // Prefer storage's declared type; fall back to the inferred
+                    // type so within-batch mismatches on new fields are caught.
+                    let target_type = existing_schema
+                        .get(&key)
+                        .map(|f| f.data_type())
+                        .or_else(|| inferred_types.get(key.as_str()).copied());
+                    let Some(target_type) = target_type else {
                         return (key, val);
                     };
-                    if value_compatible_with_type(&val, existing_field.data_type(), schema_version)
-                    {
+                    if value_compatible_with_type(&val, target_type, schema_version) {
                         return (key, val);
                     }
                     let suffix = get_datatype_suffix(&datatype_for_value(&val));
