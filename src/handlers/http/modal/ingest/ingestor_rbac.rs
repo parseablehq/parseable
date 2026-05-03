@@ -49,7 +49,7 @@ pub async fn post_user(
         let req_tenant_id = get_tenant_id_from_request(&req);
         let req_tenant = req_tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if req_tenant.ne(DEFAULT_TENANT)
-            && (req_tenant.eq(user.tenant.as_deref().unwrap_or(DEFAULT_TENANT)))
+            && (req_tenant.ne(user.tenant.as_deref().unwrap_or(DEFAULT_TENANT)))
         {
             return Err(RBACError::Anyhow(anyhow::Error::msg(
                 "non super-admin user trying to create user for another tenant",
