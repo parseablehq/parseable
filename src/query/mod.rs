@@ -98,6 +98,12 @@ type QueryResult = Result<(Either<Vec<RecordBatch>, BoxedBatchStream>, Vec<Strin
 //     Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
 pub static SCHEMA_PROVIDER: OnceCell<Box<dyn ParseableSchemaProvider>> = OnceCell::new();
 
+/// Additional physical optimizer rules registered by enterprise/plugins.
+/// Must be populated BEFORE `QUERY_SESSION_STATE` is first accessed.
+pub static ADDITIONAL_PHYSICAL_OPTIMIZER_RULES: Lazy<
+    RwLock<Vec<Arc<dyn datafusion::physical_optimizer::PhysicalOptimizerRule + Send + Sync>>>,
+> = Lazy::new(|| RwLock::new(Vec::new()));
+
 pub static QUERY_SESSION_STATE: Lazy<SessionState> =
     Lazy::new(|| Query::create_session_state(PARSEABLE.storage()));
 
@@ -280,11 +286,19 @@ impl Query {
             .parquet
             .schema_force_view_types = true;
 
-        SessionStateBuilder::new()
+        let mut builder = SessionStateBuilder::new()
             .with_default_features()
             .with_config(config)
-            .with_runtime_env(runtime)
-            .build()
+            .with_runtime_env(runtime);
+
+        // Append any additional physical optimizer rules (e.g., enterprise partial agg pushdown)
+        if let Ok(rules) = ADDITIONAL_PHYSICAL_OPTIMIZER_RULES.read() {
+            for rule in rules.iter() {
+                builder = builder.with_physical_optimizer_rule(Arc::clone(rule));
+            }
+        }
+
+        builder.build()
     }
 
     /// this function returns the result of the query
@@ -315,6 +329,8 @@ impl Query {
         if fields.is_empty() && !is_streaming {
             return Ok((Either::Left(vec![]), fields));
         }
+
+        let ctx = QUERY_SESSION.get_ctx();
 
         let plan = ctx.state().create_physical_plan(df.logical_plan()).await?;
 

@@ -2121,6 +2121,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "datafusion-proto"
+version = "53.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a387aaef949dc16bb6abc81bd1af850ec7449183aef011214f9724957495738"
+dependencies = [
+ "arrow",
+ "chrono",
+ "datafusion-catalog",
+ "datafusion-catalog-listing",
+ "datafusion-common",
+ "datafusion-datasource",
+ "datafusion-datasource-arrow",
+ "datafusion-datasource-csv",
+ "datafusion-datasource-json",
+ "datafusion-datasource-parquet",
+ "datafusion-execution",
+ "datafusion-expr",
+ "datafusion-functions-table",
+ "datafusion-physical-expr",
+ "datafusion-physical-expr-common",
+ "datafusion-physical-plan",
+ "datafusion-proto-common",
+ "object_store",
+ "prost 0.14.1",
+ "rand 0.9.4",
+]
+
+[[package]]
+name = "datafusion-proto-common"
+version = "53.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16e614c7c53a9c304c6a850b821010bb492e57300311835f1180613f9d2c63d9"
+dependencies = [
+ "arrow",
+ "datafusion-common",
+ "prost 0.14.1",
+]
+
+[[package]]
 name = "datafusion-pruning"
 version = "53.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3896,6 +3935,7 @@ dependencies = [
  "crossterm",
  "dashmap",
  "datafusion",
+ "datafusion-proto",
  "derive_more 1.0.0",
  "erased-serde",
  "fs_extra",

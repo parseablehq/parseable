@@ -143,6 +143,31 @@ fn lit_timestamp_milli(time: i64) -> Expr {
     Expr::Literal(ScalarValue::TimestampMillisecond(Some(time), None), None)
 }
 
+/// Streaming variant of into_flight_data. Converts a DataFusion record batch
+/// stream directly into Flight data without materializing all batches in memory.
+pub fn into_flight_data_stream(
+    stream: datafusion::execution::SendableRecordBatchStream,
+) -> Result<Response<DoGetStream>, Box<Status>> {
+    let record_stream = stream.map_err(|e| {
+        arrow_flight::error::FlightError::Arrow(arrow_schema::ArrowError::ExternalError(
+            Box::new(e),
+        ))
+    });
+
+    let write_options = IpcWriteOptions::default()
+        .try_with_compression(Some(arrow_ipc::CompressionType(1)))
+        .map_err(|err| Status::failed_precondition(err.to_string()))?;
+
+    let flight_data_stream = FlightDataEncoderBuilder::new()
+        .with_max_flight_data_size(usize::MAX)
+        .with_options(write_options)
+        .build(record_stream);
+
+    let flight_data_stream = flight_data_stream.map_err(|err| Status::unknown(err.to_string()));
+
+    Ok(Response::new(Box::pin(flight_data_stream) as DoGetStream))
+}
+
 pub fn into_flight_data(records: Vec<RecordBatch>) -> Result<Response<DoGetStream>, Box<Status>> {
     let input_stream = futures::stream::iter(records.into_iter().map(Ok));
     let write_options = IpcWriteOptions::default()
