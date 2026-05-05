@@ -18,6 +18,7 @@
 
 use std::{
     collections::HashSet,
+    ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -45,10 +46,14 @@ use object_store::{
 use relative_path::{RelativePath, RelativePathBuf};
 use tokio::{
     fs::OpenOptions,
-    io::{AsyncReadExt, AsyncWriteExt, BufWriter},
+    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
+    sync::Mutex as AsyncMutex,
 };
 use tracing::error;
 use url::Url;
+
+const PARALLEL_DOWNLOAD_CHUNK_SIZE: u64 = 8 * 1024 * 1024;
+const PARALLEL_DOWNLOAD_CONCURRENCY: usize = 8;
 
 use crate::{
     metrics::{
@@ -213,7 +218,7 @@ pub struct BlobStore {
 }
 
 impl BlobStore {
-    async fn _stream_to_file(
+    async fn _parallel_download(
         &self,
         path: &RelativePath,
         tenant_id: &Option<String>,
@@ -221,27 +226,49 @@ impl BlobStore {
     ) -> Result<(), ObjectStorageError> {
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let date = Utc::now().date_naive().to_string();
-        let resp = self.client.get(&to_object_store_path(path)).await;
-        increment_object_store_calls_by_date("GET", &date, tenant_str);
-        let resp = resp?;
+        let src = to_object_store_path(path);
+
+        let meta = self.client.head(&src).await?;
+        increment_object_store_calls_by_date("HEAD", &date, tenant_str);
+        let total = meta.size;
 
         if let Some(parent) = write_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
         let file = tokio::fs::File::create(&write_path).await?;
-        let mut writer = BufWriter::new(file);
-        let mut stream = resp.into_stream();
-        let mut total: u64 = 0;
-        let mut chunk_count: u64 = 0;
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk?;
-            total += chunk.len() as u64;
-            chunk_count += 1;
-            writer.write_all(&chunk).await?;
-        }
-        writer.flush().await?;
-        writer.into_inner().sync_all().await?;
+        file.set_len(total).await?;
+        let file = Arc::new(AsyncMutex::new(file));
 
+        let chunk = PARALLEL_DOWNLOAD_CHUNK_SIZE;
+        let ranges: Vec<Range<u64>> = (0..total)
+            .step_by(chunk as usize)
+            .map(|s| s..(s + chunk).min(total))
+            .collect();
+        let chunk_count = ranges.len() as u64;
+
+        futures::stream::iter(ranges)
+            .map(|r| {
+                let src = src.clone();
+                let file = file.clone();
+                let client = &self.client;
+                async move {
+                    let bytes = client.get_range(&src, r.clone()).await?;
+                    let mut f = file.lock().await;
+                    f.seek(std::io::SeekFrom::Start(r.start)).await?;
+                    f.write_all(&bytes).await?;
+                    Ok::<_, ObjectStorageError>(())
+                }
+            })
+            .buffer_unordered(PARALLEL_DOWNLOAD_CONCURRENCY)
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        let file = Arc::try_unwrap(file)
+            .map_err(|_| ObjectStorageError::Custom("download file arc still shared".into()))?
+            .into_inner();
+        file.sync_all().await?;
+
+        increment_object_store_calls_by_date("GET", &date, tenant_str);
         increment_files_scanned_in_object_store_calls_by_date("GET", 1, &date, tenant_str);
         increment_bytes_scanned_in_object_store_calls_by_date("GET", total, &date, tenant_str);
         increment_partial_file_scans_in_object_store_calls_by_date(
@@ -521,7 +548,7 @@ impl ObjectStorage for BlobStore {
         tenant_id: &Option<String>,
         write_path: PathBuf,
     ) -> Result<(), ObjectStorageError> {
-        self._stream_to_file(path, tenant_id, write_path).await
+        self._parallel_download(path, tenant_id, write_path).await
     }
     async fn get_buffered_reader(
         &self,
