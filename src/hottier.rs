@@ -498,9 +498,9 @@ impl HotTierManager {
                         tenant_id,
                     )
                     .await?
-                {
-                    return Ok(false);
-                }
+            {
+                return Ok(false);
+            }
             if sht.available_size <= parquet_file.file_size {
                 return Ok(false);
             }

@@ -46,11 +46,7 @@ use object_store::{
     path::Path as StorePath,
 };
 use relative_path::{RelativePath, RelativePathBuf};
-use tokio::{
-    fs::OpenOptions,
-    io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
-    sync::Mutex as AsyncMutex,
-};
+use tokio::{fs::OpenOptions, io::AsyncReadExt};
 use tracing::error;
 
 use crate::{
@@ -361,7 +357,7 @@ impl S3 {
         }
         let file = tokio::fs::File::create(&write_path).await?;
         file.set_len(total).await?;
-        let file = Arc::new(AsyncMutex::new(file));
+        let std_file = Arc::new(file.into_std().await);
 
         let chunk = PARSEABLE
             .options
@@ -380,7 +376,7 @@ impl S3 {
         for r in ranges {
             let client = client.clone();
             let src = src.clone();
-            let file = file.clone();
+            let std_file = std_file.clone();
             let semaphore = semaphore.clone();
             handles.push(tokio::spawn(async move {
                 let _permit = semaphore
@@ -388,9 +384,13 @@ impl S3 {
                     .await
                     .map_err(|e| ObjectStorageError::Custom(format!("semaphore closed: {e}")))?;
                 let bytes = client.get_range(&src, r.clone()).await?;
-                let mut f = file.lock().await;
-                f.seek(std::io::SeekFrom::Start(r.start)).await?;
-                f.write_all(&bytes).await?;
+                let offset = r.start;
+                tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+                    use std::os::unix::fs::FileExt;
+                    std_file.write_all_at(&bytes, offset)
+                })
+                .await
+                .map_err(|e| ObjectStorageError::Custom(format!("join: {e}")))??;
                 Ok::<_, ObjectStorageError>(())
             }));
         }
@@ -399,10 +399,10 @@ impl S3 {
                 .map_err(|e| ObjectStorageError::Custom(format!("join error: {e}")))??;
         }
 
-        let file = Arc::try_unwrap(file)
-            .map_err(|_| ObjectStorageError::Custom("download file arc still shared".into()))?
-            .into_inner();
-        file.sync_all().await?;
+        let std_file_sync = std_file.clone();
+        tokio::task::spawn_blocking(move || std_file_sync.sync_all())
+            .await
+            .map_err(|e| ObjectStorageError::Custom(format!("join: {e}")))??;
 
         increment_object_store_calls_by_date("GET", &date, tenant_str);
         increment_files_scanned_in_object_store_calls_by_date("GET", 1, &date, tenant_str);
