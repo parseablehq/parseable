@@ -60,7 +60,7 @@ use tokio::{
 };
 
 const PARALLEL_DOWNLOAD_CHUNK_SIZE: u64 = 8 * 1024 * 1024;
-const PARALLEL_DOWNLOAD_CONCURRENCY: usize = 8;
+const PARALLEL_DOWNLOAD_CONCURRENCY: usize = 16;
 use tracing::error;
 
 use super::{
@@ -211,23 +211,30 @@ impl Gcs {
             .collect();
         let chunk_count = ranges.len() as u64;
         let client = self.client.clone();
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(PARALLEL_DOWNLOAD_CONCURRENCY));
 
-        futures::stream::iter(ranges)
-            .map(|r| {
-                let client = client.clone();
-                let src = src.clone();
-                let file = file.clone();
-                async move {
-                    let bytes = client.get_range(&src, r.clone()).await?;
-                    let mut f = file.lock().await;
-                    f.seek(std::io::SeekFrom::Start(r.start)).await?;
-                    f.write_all(&bytes).await?;
-                    Ok::<_, ObjectStorageError>(())
-                }
-            })
-            .buffer_unordered(PARALLEL_DOWNLOAD_CONCURRENCY)
-            .try_collect::<Vec<_>>()
-            .await?;
+        let mut handles = Vec::with_capacity(ranges.len());
+        for r in ranges {
+            let client = client.clone();
+            let src = src.clone();
+            let file = file.clone();
+            let semaphore = semaphore.clone();
+            handles.push(tokio::spawn(async move {
+                let _permit = semaphore
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| ObjectStorageError::Custom(format!("semaphore closed: {e}")))?;
+                let bytes = client.get_range(&src, r.clone()).await?;
+                let mut f = file.lock().await;
+                f.seek(std::io::SeekFrom::Start(r.start)).await?;
+                f.write_all(&bytes).await?;
+                Ok::<_, ObjectStorageError>(())
+            }));
+        }
+        for h in handles {
+            h.await
+                .map_err(|e| ObjectStorageError::Custom(format!("join error: {e}")))??;
+        }
 
         let file = Arc::try_unwrap(file)
             .map_err(|_| ObjectStorageError::Custom("download file arc still shared".into()))?
