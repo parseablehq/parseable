@@ -72,8 +72,6 @@ use super::{
 // in bytes
 // const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
 const AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: &str = "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI";
-const PARALLEL_DOWNLOAD_CHUNK_SIZE: u64 = 8 * 1024 * 1024;
-const PARALLEL_DOWNLOAD_CONCURRENCY: usize = 16;
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -365,14 +363,18 @@ impl S3 {
         file.set_len(total).await?;
         let file = Arc::new(AsyncMutex::new(file));
 
-        let chunk = PARALLEL_DOWNLOAD_CHUNK_SIZE;
+        let chunk = PARSEABLE
+            .options
+            .hot_tier_download_chunk_size
+            .max(8 * 1024 * 1024);
+        let concurrency = PARSEABLE.options.hot_tier_download_concurrency.max(16);
         let ranges: Vec<Range<u64>> = (0..total)
             .step_by(chunk as usize)
             .map(|s| s..(s + chunk).min(total))
             .collect();
         let chunk_count = ranges.len() as u64;
         let client = Arc::new(self.client.clone());
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(PARALLEL_DOWNLOAD_CONCURRENCY));
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
 
         let mut handles = Vec::with_capacity(ranges.len());
         for r in ranges {

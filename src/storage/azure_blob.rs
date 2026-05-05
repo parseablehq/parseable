@@ -52,9 +52,6 @@ use tokio::{
 use tracing::error;
 use url::Url;
 
-const PARALLEL_DOWNLOAD_CHUNK_SIZE: u64 = 8 * 1024 * 1024;
-const PARALLEL_DOWNLOAD_CONCURRENCY: usize = 16;
-
 use crate::{
     metrics::{
         increment_bytes_scanned_in_object_store_calls_by_date,
@@ -239,14 +236,18 @@ impl BlobStore {
         file.set_len(total).await?;
         let file = Arc::new(AsyncMutex::new(file));
 
-        let chunk = PARALLEL_DOWNLOAD_CHUNK_SIZE;
+        let chunk = PARSEABLE
+            .options
+            .hot_tier_download_chunk_size
+            .max(8 * 1024 * 1024);
+        let concurrency = PARSEABLE.options.hot_tier_download_concurrency.max(6);
         let ranges: Vec<Range<u64>> = (0..total)
             .step_by(chunk as usize)
             .map(|s| s..(s + chunk).min(total))
             .collect();
         let chunk_count = ranges.len() as u64;
         let client = self.client.clone();
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(PARALLEL_DOWNLOAD_CONCURRENCY));
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
 
         let mut handles = Vec::with_capacity(ranges.len());
         for r in ranges {

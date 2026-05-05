@@ -314,6 +314,22 @@ pub struct Options {
     )]
     pub hot_tier_storage_path: Option<PathBuf>,
 
+    #[arg(
+        long = "hot-tier-download-chunk-size",
+        env = "P_HOT_TIER_DOWNLOAD_CHUNK_SIZE",
+        default_value = "8388608",
+        help = "Chunk size in bytes for parallel hot tier downloads (default 8 MiB)"
+    )]
+    pub hot_tier_download_chunk_size: u64,
+
+    #[arg(
+        long = "hot-tier-download-concurrency",
+        env = "P_HOT_TIER_DOWNLOAD_CONCURRENCY",
+        default_value = "16",
+        help = "Number of concurrent range requests per hot tier download"
+    )]
+    pub hot_tier_download_concurrency: usize,
+
     //TODO: remove this when smart cache is implemented
     #[arg(
         long = "index-storage-path",
