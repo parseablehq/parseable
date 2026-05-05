@@ -330,6 +330,14 @@ pub struct Options {
     )]
     pub hot_tier_download_concurrency: usize,
 
+    #[arg(
+        long = "hot-tier-files-per-stream-concurrency",
+        env = "P_HOT_TIER_FILES_PER_STREAM_CONCURRENCY",
+        default_value = "4",
+        help = "Number of concurrent parquet file downloads per stream during hot tier sync"
+    )]
+    pub hot_tier_files_per_stream_concurrency: usize,
+
     //TODO: remove this when smart cache is implemented
     #[arg(
         long = "index-storage-path",

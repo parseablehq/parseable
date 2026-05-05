@@ -17,10 +17,12 @@
  */
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     io,
     path::{Path, PathBuf},
+    sync::Arc,
 };
+use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock};
 
 use crate::{
     catalog::manifest::{File, Manifest},
@@ -64,9 +66,18 @@ pub struct StreamHotTier {
     pub oldest_date_time_entry: Option<String>,
 }
 
+/// Per-stream in-memory bookkeeping. Mutex protects concurrent reservation,
+/// commit, and per-date manifest writes. Downloads run outside the lock.
+struct StreamSyncState {
+    sht: AsyncMutex<StreamHotTier>,
+}
+
+type StreamKey = (Option<String>, String);
+
 pub struct HotTierManager {
     filesystem: LocalFileSystem,
     hot_tier_path: &'static Path,
+    state_cache: AsyncRwLock<HashMap<StreamKey, Arc<StreamSyncState>>>,
 }
 
 impl HotTierManager {
@@ -75,7 +86,37 @@ impl HotTierManager {
         HotTierManager {
             filesystem: LocalFileSystem::new(),
             hot_tier_path,
+            state_cache: AsyncRwLock::new(HashMap::new()),
         }
+    }
+
+    /// Lazy-load and cache the `StreamHotTier` for a (tenant, stream) pair.
+    /// All sync-path mutations should acquire `state.sht.lock()`.
+    async fn get_or_load_state(
+        &self,
+        stream: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Arc<StreamSyncState>, HotTierError> {
+        let key: StreamKey = (tenant_id.clone(), stream.to_owned());
+        if let Some(state) = self.state_cache.read().await.get(&key).cloned() {
+            return Ok(state);
+        }
+        let mut cache = self.state_cache.write().await;
+        if let Some(state) = cache.get(&key).cloned() {
+            return Ok(state);
+        }
+        let sht = self.get_hot_tier(stream, tenant_id).await?;
+        let state = Arc::new(StreamSyncState {
+            sht: AsyncMutex::new(sht),
+        });
+        cache.insert(key, state.clone());
+        Ok(state)
+    }
+
+    /// Drop cached state for a stream (used after delete).
+    pub async fn invalidate_state(&self, stream: &str, tenant_id: &Option<String>) {
+        let key: StreamKey = (tenant_id.clone(), stream.to_owned());
+        self.state_cache.write().await.remove(&key);
     }
 
     /// Get a global
@@ -219,6 +260,7 @@ impl HotTierManager {
             self.hot_tier_path.join(stream)
         };
         fs::remove_dir_all(path).await?;
+        self.invalidate_state(stream, tenant_id).await;
 
         Ok(())
     }
@@ -319,9 +361,6 @@ impl HotTierManager {
         stream: String,
         tenant_id: Option<String>,
     ) -> Result<(), HotTierError> {
-        let stream_hot_tier = self.get_hot_tier(&stream, &tenant_id).await?;
-        let mut parquet_file_size = stream_hot_tier.used_size;
-
         let mut s3_manifest_file_list = PARSEABLE
             .metastore
             .get_all_manifest_files(&stream, &tenant_id)
@@ -332,13 +371,8 @@ impl HotTierManager {
                 )))
             })?;
 
-        self.process_manifest(
-            &stream,
-            &mut s3_manifest_file_list,
-            &mut parquet_file_size,
-            &tenant_id,
-        )
-        .await?;
+        self.process_manifest(&stream, &mut s3_manifest_file_list, &tenant_id)
+            .await?;
 
         Ok(())
     }
@@ -351,118 +385,172 @@ impl HotTierManager {
         &self,
         stream: &str,
         manifest_files_to_download: &mut BTreeMap<String, Vec<Manifest>>,
-        parquet_file_size: &mut u64,
         tenant_id: &Option<String>,
     ) -> Result<(), HotTierError> {
         if manifest_files_to_download.is_empty() {
             return Ok(());
         }
+
+        // Build flat work list: (date, file, local_path) ordered latest-date-first,
+        // and within a date by descending file_path (matches old `pop()` order).
+        let mut work: Vec<(NaiveDate, File, PathBuf)> = Vec::new();
         for (str_date, manifest_files) in manifest_files_to_download.iter().rev() {
-            let mut storage_combined_manifest = Manifest::default();
-
-            for storage_manifest in manifest_files {
-                storage_combined_manifest
-                    .files
-                    .extend(storage_manifest.files.clone());
-            }
-
-            storage_combined_manifest
-                .files
-                .sort_by_key(|file| file.file_path.clone());
-
-            while let Some(parquet_file) = storage_combined_manifest.files.pop() {
-                let parquet_file_path = &parquet_file.file_path;
-                let parquet_path = self.hot_tier_path.join(parquet_file_path);
-
-                if !parquet_path.exists() {
-                    if let Ok(date) =
-                        NaiveDate::parse_from_str(str_date.trim_start_matches("date="), "%Y-%m-%d")
-                    {
-                        if !self
-                            .process_parquet_file(
-                                stream,
-                                &parquet_file,
-                                parquet_file_size,
-                                parquet_path,
-                                date,
-                                tenant_id,
-                            )
-                            .await?
-                        {
-                            break;
-                        }
-                    } else {
+            let date =
+                match NaiveDate::parse_from_str(str_date.trim_start_matches("date="), "%Y-%m-%d") {
+                    Ok(d) => d,
+                    Err(_) => {
                         warn!("Invalid date format: {}", str_date);
+                        continue;
                     }
+                };
+
+            let mut combined = Manifest::default();
+            for storage_manifest in manifest_files {
+                combined.files.extend(storage_manifest.files.clone());
+            }
+            combined.files.sort_by_key(|f| f.file_path.clone());
+            while let Some(parquet_file) = combined.files.pop() {
+                let parquet_path = self.hot_tier_path.join(&parquet_file.file_path);
+                if !parquet_path.exists() {
+                    work.push((date, parquet_file, parquet_path));
                 }
             }
+        }
+
+        if work.is_empty() {
+            return Ok(());
+        }
+
+        let state = self.get_or_load_state(stream, tenant_id).await?;
+        let concurrency = PARSEABLE
+            .options
+            .hot_tier_files_per_stream_concurrency
+            .max(4);
+
+        // Reservation failure (out of disk + nothing to evict) is sticky:
+        // once one file can't be placed, no subsequent file will fit either.
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let stream_owned = stream.to_owned();
+        let tenant_owned = tenant_id.clone();
+
+        let results: Vec<Result<(), HotTierError>> = futures::stream::iter(work)
+            .map(|(date, file, parquet_path)| {
+                let state = state.clone();
+                let stream = stream_owned.clone();
+                let tenant_id = tenant_owned.clone();
+                let stop = stop.clone();
+                async move {
+                    if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Ok(());
+                    }
+                    let processed = self
+                        .process_parquet_file_concurrent(
+                            &stream,
+                            &file,
+                            parquet_path,
+                            date,
+                            &tenant_id,
+                            &state,
+                        )
+                        .await?;
+                    if !processed {
+                        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Ok(())
+                }
+            })
+            .buffer_unordered(concurrency)
+            .collect()
+            .await;
+
+        for r in results {
+            r?;
         }
 
         Ok(())
     }
 
-    /// process the parquet file for the stream
-    /// check if the disk is available to download the parquet file
-    /// if not available, delete the oldest entry from the hot tier directory
-    /// download the parquet file from S3 to the hot tier directory
-    /// update the used and available size in the hot tier metadata
-    /// return true if the parquet file is processed successfully
-    async fn process_parquet_file(
+    /// Reserve disk budget under the per-stream lock, download outside the lock,
+    /// then commit usage + per-date manifest under the lock again.
+    /// Returns false when no budget is available (caller should stop scheduling
+    /// further work for this stream).
+    async fn process_parquet_file_concurrent(
         &self,
         stream: &str,
         parquet_file: &File,
-        parquet_file_size: &mut u64,
         parquet_path: PathBuf,
         date: NaiveDate,
         tenant_id: &Option<String>,
+        state: &Arc<StreamSyncState>,
     ) -> Result<bool, HotTierError> {
-        let mut file_processed = false;
-        let mut stream_hot_tier = self.get_hot_tier(stream, tenant_id).await?;
-        if !self.is_disk_available(parquet_file.file_size).await?
-            || stream_hot_tier.available_size <= parquet_file.file_size
+        // RESERVE
         {
-            if !self
-                .cleanup_hot_tier_old_data(
-                    stream,
-                    &mut stream_hot_tier,
-                    &parquet_path,
-                    parquet_file.file_size,
-                    tenant_id,
-                )
-                .await?
-            {
-                return Ok(file_processed);
+            let mut sht = state.sht.lock().await;
+            if (!self.is_disk_available(parquet_file.file_size).await?
+                || sht.available_size <= parquet_file.file_size)
+                && !self
+                    .cleanup_hot_tier_old_data(
+                        stream,
+                        &mut sht,
+                        &parquet_path,
+                        parquet_file.file_size,
+                        tenant_id,
+                    )
+                    .await?
+                {
+                    return Ok(false);
+                }
+            if sht.available_size <= parquet_file.file_size {
+                return Ok(false);
             }
-            *parquet_file_size = stream_hot_tier.used_size;
+            sht.available_size -= parquet_file.file_size;
+            self.put_hot_tier(stream, &mut sht, tenant_id).await?;
         }
+
+        // DOWNLOAD (no lock held)
         let parquet_file_path = RelativePathBuf::from(parquet_file.file_path.clone());
         fs::create_dir_all(parquet_path.parent().unwrap()).await?;
-        PARSEABLE
+        let download_result = PARSEABLE
             .storage
             .get_object_store()
-            .buffered_write(&parquet_file_path, tenant_id, parquet_path)
-            .await?;
-        *parquet_file_size += parquet_file.file_size;
-        stream_hot_tier.used_size = *parquet_file_size;
+            .buffered_write(&parquet_file_path, tenant_id, parquet_path.clone())
+            .await;
 
-        stream_hot_tier.available_size -= parquet_file.file_size;
-        self.put_hot_tier(stream, &mut stream_hot_tier, tenant_id)
-            .await?;
-        file_processed = true;
-        let path = self.get_stream_path_for_date(stream, &date, tenant_id);
-        let mut hot_tier_manifest = HotTierManager::get_hot_tier_manifest_from_path(path).await?;
-        hot_tier_manifest.files.push(parquet_file.clone());
-        hot_tier_manifest
-            .files
-            .sort_by_key(|file| file.file_path.clone());
-        // write the manifest file to the hot tier directory
-        let manifest_path = self
-            .get_stream_path_for_date(stream, &date, tenant_id)
-            .join("hottier.manifest.json");
-        fs::create_dir_all(manifest_path.parent().unwrap()).await?;
-        fs::write(manifest_path, serde_json::to_vec(&hot_tier_manifest)?).await?;
+        if let Err(e) = download_result {
+            // refund reservation
+            let mut sht = state.sht.lock().await;
+            sht.available_size += parquet_file.file_size;
+            if let Err(put_err) = self.put_hot_tier(stream, &mut sht, tenant_id).await {
+                error!("failed to persist refund after download failure: {put_err:?}");
+            }
+            // best-effort cleanup of any partial file
+            let _ = fs::remove_file(&parquet_path).await;
+            return Err(e.into());
+        }
 
-        Ok(file_processed)
+        // COMMIT
+        {
+            let mut sht = state.sht.lock().await;
+            sht.used_size += parquet_file.file_size;
+            self.put_hot_tier(stream, &mut sht, tenant_id).await?;
+
+            let path = self.get_stream_path_for_date(stream, &date, tenant_id);
+            let mut hot_tier_manifest =
+                HotTierManager::get_hot_tier_manifest_from_path(path).await?;
+            hot_tier_manifest.files.push(parquet_file.clone());
+            hot_tier_manifest
+                .files
+                .sort_by_key(|file| file.file_path.clone());
+            // write the manifest file to the hot tier directory
+            let manifest_path = self
+                .get_stream_path_for_date(stream, &date, tenant_id)
+                .join("hottier.manifest.json");
+            fs::create_dir_all(manifest_path.parent().unwrap()).await?;
+            fs::write(manifest_path, serde_json::to_vec(&hot_tier_manifest)?).await?;
+        }
+
+        Ok(true)
     }
 
     ///fetch the list of dates available in the hot tier directory for the stream and sort them
