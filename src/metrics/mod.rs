@@ -306,6 +306,19 @@ pub static TOTAL_FILES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE: Lazy<IntCounterVec
         .expect("metric can be created")
     });
 
+pub static PARTIAL_FILE_SCANS_IN_OBJECT_STORE_CALLS_BY_DATE: Lazy<IntCounterVec> =
+    Lazy::new(|| {
+        IntCounterVec::new(
+            Opts::new(
+                "partial_file_scans_in_object_store_calls_by_date",
+                "Partial file scans in object store calls by date",
+            )
+            .namespace(METRICS_NAMESPACE),
+            &["method", "date", "tenant_id"],
+        )
+        .expect("metric can be created")
+    });
+
 pub static TOTAL_BYTES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE: Lazy<IntCounterVec> =
     Lazy::new(|| {
         IntCounterVec::new(
@@ -529,6 +542,11 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(
+            PARTIAL_FILE_SCANS_IN_OBJECT_STORE_CALLS_BY_DATE.clone(),
+        ))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(
             TOTAL_BYTES_SCANNED_IN_OBJECT_STORE_CALLS_BY_DATE.clone(),
         ))
         .expect("metric can be registered");
@@ -693,6 +711,17 @@ pub fn increment_object_store_calls_by_date(method: &str, date: &str, tenant_id:
     TOTAL_OBJECT_STORE_CALLS_BY_DATE
         .with_label_values(&[method, date, tenant_id])
         .inc();
+}
+
+pub fn increment_partial_file_scans_in_object_store_calls_by_date(
+    method: &str,
+    count: u64,
+    date: &str,
+    tenant_id: &str,
+) {
+    PARTIAL_FILE_SCANS_IN_OBJECT_STORE_CALLS_BY_DATE
+        .with_label_values(&[method, date, tenant_id])
+        .inc_by(count);
 }
 
 pub fn increment_files_scanned_in_object_store_calls_by_date(

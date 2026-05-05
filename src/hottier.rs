@@ -42,7 +42,6 @@ use relative_path::RelativePathBuf;
 use std::time::Duration;
 use sysinfo::Disks;
 use tokio::fs::{self, DirEntry};
-use tokio::io::AsyncWriteExt;
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::{error, warn};
 
@@ -438,13 +437,11 @@ impl HotTierManager {
         }
         let parquet_file_path = RelativePathBuf::from(parquet_file.file_path.clone());
         fs::create_dir_all(parquet_path.parent().unwrap()).await?;
-        let mut file = fs::File::create(parquet_path.clone()).await?;
-        let parquet_data = PARSEABLE
+        PARSEABLE
             .storage
             .get_object_store()
-            .get_object(&parquet_file_path, tenant_id)
+            .buffered_write(&parquet_file_path, tenant_id, parquet_path)
             .await?;
-        file.write_all(&parquet_data).await?;
         *parquet_file_size += parquet_file.file_size;
         stream_hot_tier.used_size = *parquet_file_size;
 

@@ -16,7 +16,12 @@
  *
  */
 
-use std::{collections::HashSet, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -38,7 +43,10 @@ use object_store::{
     path::Path as StorePath,
 };
 use relative_path::{RelativePath, RelativePathBuf};
-use tokio::{fs::OpenOptions, io::AsyncReadExt};
+use tokio::{
+    fs::OpenOptions,
+    io::{AsyncReadExt, AsyncWriteExt, BufWriter},
+};
 use tracing::error;
 use url::Url;
 
@@ -47,6 +55,7 @@ use crate::{
         increment_bytes_scanned_in_object_store_calls_by_date,
         increment_files_scanned_in_object_store_calls_by_date,
         increment_object_store_calls_by_date,
+        increment_partial_file_scans_in_object_store_calls_by_date,
     },
     parseable::{DEFAULT_TENANT, LogStream, PARSEABLE},
 };
@@ -204,6 +213,46 @@ pub struct BlobStore {
 }
 
 impl BlobStore {
+    async fn _stream_to_file(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+        write_path: PathBuf,
+    ) -> Result<(), ObjectStorageError> {
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let date = Utc::now().date_naive().to_string();
+        let resp = self.client.get(&to_object_store_path(path)).await;
+        increment_object_store_calls_by_date("GET", &date, tenant_str);
+        let resp = resp?;
+
+        if let Some(parent) = write_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let file = tokio::fs::File::create(&write_path).await?;
+        let mut writer = BufWriter::new(file);
+        let mut stream = resp.into_stream();
+        let mut total: u64 = 0;
+        let mut chunk_count: u64 = 0;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            total += chunk.len() as u64;
+            chunk_count += 1;
+            writer.write_all(&chunk).await?;
+        }
+        writer.flush().await?;
+        writer.into_inner().sync_all().await?;
+
+        increment_files_scanned_in_object_store_calls_by_date("GET", 1, &date, tenant_str);
+        increment_bytes_scanned_in_object_store_calls_by_date("GET", total, &date, tenant_str);
+        increment_partial_file_scans_in_object_store_calls_by_date(
+            "GET",
+            chunk_count,
+            &date,
+            tenant_str,
+        );
+        Ok(())
+    }
+
     async fn _get_object(
         &self,
         path: &RelativePath,
@@ -466,6 +515,14 @@ impl BlobStore {
 
 #[async_trait]
 impl ObjectStorage for BlobStore {
+    async fn buffered_write(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+        write_path: PathBuf,
+    ) -> Result<(), ObjectStorageError> {
+        self._stream_to_file(path, tenant_id, write_path).await
+    }
     async fn get_buffered_reader(
         &self,
         _path: &RelativePath,

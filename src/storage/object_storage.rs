@@ -302,6 +302,12 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         path: &RelativePath,
         tenant_id: &Option<String>,
     ) -> Result<ObjectMeta, ObjectStorageError>;
+    async fn buffered_write(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+        write_path: PathBuf,
+    ) -> Result<(), ObjectStorageError>;
     async fn get_object(
         &self,
         path: &RelativePath,

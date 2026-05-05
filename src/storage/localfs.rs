@@ -106,6 +106,19 @@ impl LocalFS {
 
 #[async_trait]
 impl ObjectStorage for LocalFS {
+    async fn buffered_write(
+        &self,
+        path: &RelativePath,
+        _tenant_id: &Option<String>,
+        write_path: PathBuf,
+    ) -> Result<(), ObjectStorageError> {
+        let src = self.path_in_root(path);
+        if let Some(parent) = write_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::copy(&src, &write_path).await?;
+        Ok(())
+    }
     async fn upload_multipart(
         &self,
         key: &RelativePath,
