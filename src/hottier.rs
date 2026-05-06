@@ -139,9 +139,13 @@ impl HotTierManager {
         stream: &str,
         tenant_id: &Option<String>,
     ) -> Result<StreamHotTier, HotTierError> {
+        warn!(stream = %stream, tenant = ?tenant_id, "reconcile starting");
         let mut sht = self.get_hot_tier(stream, tenant_id).await?;
         let dates = self.fetch_hot_tier_dates(stream, tenant_id).await?;
         let mut total_used: u64 = 0;
+        let mut partials_removed = 0usize;
+        let mut entries_dropped = 0usize;
+        let mut orphans_removed = 0usize;
 
         for date in dates {
             let date_dir = self.get_stream_path_for_date(stream, &date, tenant_id);
@@ -160,6 +164,13 @@ impl HotTierManager {
                 let name = name_os.to_string_lossy();
                 if name.ends_with(".partial") {
                     let _ = fs::remove_file(&p).await;
+                    partials_removed += 1;
+                    warn!(
+                        stream = %stream,
+                        tenant = ?tenant_id,
+                        path = %p.display(),
+                        "reconcile: deleted partial orphan"
+                    );
                     continue;
                 }
                 if name.ends_with(".manifest.json") {
@@ -197,6 +208,13 @@ impl HotTierManager {
                     kept.push(f);
                 } else {
                     let _ = fs::remove_file(&local).await;
+                    entries_dropped += 1;
+                    warn!(
+                        stream = %stream,
+                        tenant = ?tenant_id,
+                        file = %f.file_path,
+                        "reconcile: dropped manifest entry (file missing or wrong size)"
+                    );
                 }
             }
             kept.sort_by_key(|f| f.file_path.clone());
@@ -211,12 +229,29 @@ impl HotTierManager {
             for name in on_disk.difference(&keep_names) {
                 let p = date_dir.join(name);
                 let _ = fs::remove_file(&p).await;
+                orphans_removed += 1;
+                warn!(
+                    stream = %stream,
+                    tenant = ?tenant_id,
+                    file = %p.display(),
+                    "reconcile: deleted orphan parquet not in manifest"
+                );
             }
         }
 
         sht.used_size = total_used;
         sht.available_size = sht.size.saturating_sub(total_used);
         self.put_hot_tier(stream, &mut sht, tenant_id).await?;
+        warn!(
+            stream = %stream,
+            tenant = ?tenant_id,
+            partials_removed,
+            entries_dropped,
+            orphans_removed,
+            used = sht.used_size,
+            available = sht.available_size,
+            "reconcile done"
+        );
         Ok(sht)
     }
 
@@ -409,22 +444,30 @@ impl HotTierManager {
     where
         'a: 'static,
     {
+        let latest_min = PARSEABLE.options.hot_tier_latest_minutes;
+        let historic_min = PARSEABLE.options.hot_tier_historic_sync_minutes.max(1);
+        warn!(
+            latest_minutes = latest_min,
+            historic_sync_minutes = historic_min,
+            "hot tier scheduler starting"
+        );
+
         let mut scheduler = AsyncScheduler::new();
         scheduler
             .every(HOT_TIER_SYNC_DURATION)
             .plus(Interval::Seconds(5))
             .run(move || async {
+                warn!(phase = ?SyncPhase::Latest, "hot tier tick fired");
                 if let Err(err) = self.sync_hot_tier(SyncPhase::Latest).await {
                     error!("Error in hot tier latest scheduler: {:?}", err);
                 }
             });
 
-        let historic_interval =
-            Interval::Minutes(PARSEABLE.options.hot_tier_historic_sync_minutes.max(1));
         scheduler
-            .every(historic_interval)
+            .every(Interval::Minutes(historic_min))
             .plus(Interval::Seconds(15))
             .run(move || async {
+                warn!(phase = ?SyncPhase::Historic, "hot tier tick fired");
                 if let Err(err) = self.sync_hot_tier(SyncPhase::Historic).await {
                     error!("Error in hot tier historic scheduler: {:?}", err);
                 }
@@ -452,6 +495,7 @@ impl HotTierManager {
         } else {
             vec![None]
         };
+        let mut scheduled = 0usize;
         for tenant_id in tenants {
             for stream in PARSEABLE.streams.list(&tenant_id) {
                 if self.check_stream_hot_tier_exists(&stream, &tenant_id) {
@@ -460,9 +504,11 @@ impl HotTierManager {
                         tenant_id.to_owned(),
                         phase,
                     ));
+                    scheduled += 1;
                 }
             }
         }
+        warn!(phase = ?phase, num_streams = scheduled, "hot tier tick: streams scheduled");
 
         while let Some(res) = sync_hot_tier_tasks.next().await {
             if let Err(err) = res {
@@ -470,6 +516,7 @@ impl HotTierManager {
                 return Err(err);
             }
         }
+        warn!(phase = ?phase, "hot tier tick complete");
         Ok(())
     }
 
@@ -481,6 +528,12 @@ impl HotTierManager {
         tenant_id: Option<String>,
         phase: SyncPhase,
     ) -> Result<(), HotTierError> {
+        warn!(
+            stream = %stream,
+            tenant = ?tenant_id,
+            phase = ?phase,
+            "fetching manifest from metastore"
+        );
         let mut s3_manifest_file_list = PARSEABLE
             .metastore
             .get_all_manifest_files(&stream, &tenant_id)
@@ -490,10 +543,24 @@ impl HotTierManager {
                     e.to_detail(),
                 )))
             })?;
+        let date_count = s3_manifest_file_list.len();
+        let total_files: usize = s3_manifest_file_list
+            .values()
+            .map(|m| m.iter().map(|x| x.files.len()).sum::<usize>())
+            .sum();
+        warn!(
+            stream = %stream,
+            tenant = ?tenant_id,
+            phase = ?phase,
+            dates = date_count,
+            files = total_files,
+            "manifest fetched"
+        );
 
         self.process_manifest(&stream, &mut s3_manifest_file_list, &tenant_id, phase)
             .await?;
 
+        warn!(stream = %stream, tenant = ?tenant_id, phase = ?phase, "stream sync done");
         Ok(())
     }
 
@@ -550,9 +617,25 @@ impl HotTierManager {
             }
         }
 
+        let work_count = work.len();
+        let total_bytes: u64 = work.iter().map(|(_, f, _)| f.file_size).sum();
         if work.is_empty() {
+            warn!(
+                stream = %stream,
+                tenant = ?tenant_id,
+                phase = ?phase,
+                "no files to download this tick"
+            );
             return Ok(());
         }
+        warn!(
+            stream = %stream,
+            tenant = ?tenant_id,
+            phase = ?phase,
+            work_count,
+            total_bytes,
+            "work list built"
+        );
 
         let state = self.get_or_load_state(stream, tenant_id).await?;
         let concurrency = PARSEABLE
@@ -588,9 +671,15 @@ impl HotTierManager {
                             phase,
                         )
                         .await?;
-                    if !processed {
-                        stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                    }
+                    if !processed
+                        && !stop.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            warn!(
+                                stream = %stream,
+                                tenant = ?tenant_id,
+                                phase = ?phase,
+                                "sticky stop: halting further reservations this tick"
+                            );
+                        }
                     Ok(())
                 }
             })
@@ -623,11 +712,29 @@ impl HotTierManager {
         // RESERVE
         {
             let mut sht = state.sht.lock().await;
+            warn!(
+                stream = %stream,
+                tenant = ?tenant_id,
+                phase = ?phase,
+                file = %parquet_file.file_path,
+                file_size = parquet_file.file_size,
+                available = sht.available_size,
+                used = sht.used_size,
+                "reserving"
+            );
             if !self.is_disk_available(parquet_file.file_size).await?
                 || sht.available_size <= parquet_file.file_size
             {
                 match phase {
                     SyncPhase::Latest => {
+                        warn!(
+                            stream = %stream,
+                            tenant = ?tenant_id,
+                            file = %parquet_file.file_path,
+                            file_size = parquet_file.file_size,
+                            available = sht.available_size,
+                            "tight on space; triggering eviction"
+                        );
                         if !self
                             .cleanup_hot_tier_old_data(
                                 stream,
@@ -638,25 +745,62 @@ impl HotTierManager {
                             )
                             .await?
                         {
+                            warn!(
+                                stream = %stream,
+                                tenant = ?tenant_id,
+                                file = %parquet_file.file_path,
+                                file_size = parquet_file.file_size,
+                                "eviction freed nothing, skipping file"
+                            );
                             return Ok(false);
                         }
                     }
                     SyncPhase::Historic => {
-                        // Historic never evicts; just skip when full.
+                        warn!(
+                            stream = %stream,
+                            tenant = ?tenant_id,
+                            file = %parquet_file.file_path,
+                            file_size = parquet_file.file_size,
+                            available = sht.available_size,
+                            "historic phase: full, skipping file"
+                        );
                         return Ok(false);
                     }
                 }
             }
             if sht.available_size <= parquet_file.file_size {
+                warn!(
+                    stream = %stream,
+                    tenant = ?tenant_id,
+                    file = %parquet_file.file_path,
+                    file_size = parquet_file.file_size,
+                    available = sht.available_size,
+                    "still no space after eviction, skipping"
+                );
                 return Ok(false);
             }
             sht.available_size -= parquet_file.file_size;
             self.put_hot_tier(stream, &mut sht, tenant_id).await?;
+            warn!(
+                stream = %stream,
+                tenant = ?tenant_id,
+                file = %parquet_file.file_path,
+                deducted = parquet_file.file_size,
+                new_available = sht.available_size,
+                "reserved"
+            );
         }
 
         // DOWNLOAD (no lock held)
         let parquet_file_path = RelativePathBuf::from(parquet_file.file_path.clone());
         fs::create_dir_all(parquet_path.parent().unwrap()).await?;
+        warn!(
+            stream = %stream,
+            tenant = ?tenant_id,
+            file = %parquet_file.file_path,
+            file_size = parquet_file.file_size,
+            "download starting"
+        );
         let download_result = PARSEABLE
             .storage
             .get_object_store()
@@ -664,6 +808,13 @@ impl HotTierManager {
             .await;
 
         if let Err(e) = download_result {
+            warn!(
+                stream = %stream,
+                tenant = ?tenant_id,
+                file = %parquet_file.file_path,
+                err = %e,
+                "download failed, refunding reservation"
+            );
             // refund reservation
             let mut sht = state.sht.lock().await;
             sht.available_size += parquet_file.file_size;
@@ -673,6 +824,13 @@ impl HotTierManager {
             // backend already cleaned up its `.partial` file; final path was never created.
             return Err(e.into());
         }
+        warn!(
+            stream = %stream,
+            tenant = ?tenant_id,
+            file = %parquet_file.file_path,
+            file_size = parquet_file.file_size,
+            "download finished, committing"
+        );
 
         // COMMIT
         {
@@ -693,6 +851,14 @@ impl HotTierManager {
                 .join("hottier.manifest.json");
             fs::create_dir_all(manifest_path.parent().unwrap()).await?;
             fs::write(manifest_path, serde_json::to_vec(&hot_tier_manifest)?).await?;
+            warn!(
+                stream = %stream,
+                tenant = ?tenant_id,
+                file = %parquet_file.file_path,
+                used = sht.used_size,
+                available = sht.available_size,
+                "committed"
+            );
         }
 
         Ok(true)
@@ -872,7 +1038,15 @@ impl HotTierManager {
         parquet_file_size: u64,
         tenant_id: &Option<String>,
     ) -> Result<bool, HotTierError> {
+        warn!(
+            stream = %stream,
+            tenant = ?tenant_id,
+            target_size = parquet_file_size,
+            available = stream_hot_tier.available_size,
+            "eviction starting"
+        );
         let mut delete_successful = false;
+        let mut freed_total: u64 = 0;
         let dates = self.fetch_hot_tier_dates(stream, tenant_id).await?;
         'loop_dates: for date in dates {
             let path = self.get_stream_path_for_date(stream, &date, tenant_id);
@@ -905,6 +1079,13 @@ impl HotTierManager {
                             extract_datetime(path_to_delete.to_str().unwrap()),
                         ) && download_date_time <= delete_date_time
                         {
+                            warn!(
+                                stream = %stream,
+                                tenant = ?tenant_id,
+                                candidate = %file_to_delete.file_path,
+                                target = %download_file_path.display(),
+                                "skip evict: candidate newer than target"
+                            );
                             delete_successful = false;
                             break 'loop_files;
                         }
@@ -922,6 +1103,16 @@ impl HotTierManager {
                         self.put_hot_tier(stream, stream_hot_tier, tenant_id)
                             .await?;
                         delete_successful = true;
+                        freed_total += file_size;
+                        warn!(
+                            stream = %stream,
+                            tenant = ?tenant_id,
+                            evicted_file = %file_to_delete.file_path,
+                            evicted_size = file_size,
+                            freed_total,
+                            new_available = stream_hot_tier.available_size,
+                            "evicted"
+                        );
 
                         if stream_hot_tier.available_size <= parquet_file_size {
                             continue 'loop_files;
@@ -935,6 +1126,13 @@ impl HotTierManager {
             }
         }
 
+        warn!(
+            stream = %stream,
+            tenant = ?tenant_id,
+            freed_total,
+            success = delete_successful,
+            "eviction complete"
+        );
         Ok(delete_successful)
     }
 
