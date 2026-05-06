@@ -149,38 +149,60 @@ impl Users {
     // caller ensures that this operation is valid for the user
     pub fn change_password_hash(&self, userid: &str, hash: &String, tenant_id: &Option<String>) {
         let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        if let Some(users) = mut_users().get_mut(tenant_id)
+        let found = if let Some(users) = mut_users().get_mut(tenant_id)
             && let Some(User {
                 ty: UserType::Native(user),
                 ..
             }) = users.get_mut(userid)
         {
             user.password_hash.clone_from(hash);
-            mut_sessions().remove_user(userid, tenant_id);
+            true
+        } else {
+            false
         };
+        // USERS write lock dropped — acquire SESSIONS lock separately to
+        // avoid USERS→SESSIONS ordering that inverts the auth-path's
+        // SESSIONS→USERS ordering (deadlock).
+        if found {
+            mut_sessions().remove_user(userid, tenant_id);
+        }
     }
 
     pub fn add_roles(&self, userid: &str, roles: HashSet<String>, tenant_id: &Option<String>) {
         let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        if let Some(users) = mut_users().get_mut(tenant_id)
+        let new_perms = if let Some(users) = mut_users().get_mut(tenant_id)
             && let Some(user) = users.get_mut(userid)
         {
             user.roles.extend(roles);
-            let new_perms = roles_to_permission(user.roles(), tenant_id);
-            mut_sessions().refresh_user_permissions(userid, tenant_id, &new_perms);
+            Some(roles_to_permission(user.roles(), tenant_id))
+        } else {
+            None
         };
+        // USERS write lock dropped — acquire SESSIONS lock separately to
+        // avoid USERS→SESSIONS ordering that inverts the auth-path's
+        // SESSIONS→USERS ordering (deadlock).
+        if let Some(new_perms) = new_perms {
+            mut_sessions().refresh_user_permissions(userid, tenant_id, &new_perms);
+        }
     }
 
     pub fn remove_roles(&self, userid: &str, roles: HashSet<String>, tenant_id: &Option<String>) {
         let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        if let Some(users) = mut_users().get_mut(tenant_id)
+        let new_perms = if let Some(users) = mut_users().get_mut(tenant_id)
             && let Some(user) = users.get_mut(userid)
         {
             let diff = HashSet::from_iter(user.roles.difference(&roles).cloned());
             user.roles = diff;
-            let new_perms = roles_to_permission(user.roles(), tenant_id);
-            mut_sessions().refresh_user_permissions(userid, tenant_id, &new_perms);
+            Some(roles_to_permission(user.roles(), tenant_id))
+        } else {
+            None
         };
+        // USERS write lock dropped — acquire SESSIONS lock separately to
+        // avoid USERS→SESSIONS ordering that inverts the auth-path's
+        // SESSIONS→USERS ordering (deadlock).
+        if let Some(new_perms) = new_perms {
+            mut_sessions().refresh_user_permissions(userid, tenant_id, &new_perms);
+        }
     }
 
     pub fn contains(&self, userid: &str, tenant_id: &Option<String>) -> bool {
@@ -262,29 +284,36 @@ impl Users {
             get_tenant_id_from_key(&key)
         };
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        if let Some(users) = users().get(tenant)
+        // Clone user data under USERS read lock, then drop it before
+        // acquiring SESSIONS write lock. This avoids USERS→SESSIONS
+        // ordering that could participate in a deadlock with the
+        // auth-path's SESSIONS→USERS ordering.
+        let verified = if let Some(users) = users().get(tenant)
             && let Some(
                 user @ User {
                     ty: UserType::Native(basic_user),
                     ..
                 },
             ) = users.get(username)
+            && basic_user.verify_password(password)
         {
-            // if user exists and password matches
-            // add this user to auth map
-            if basic_user.verify_password(password) {
-                let mut sessions = mut_sessions();
-                sessions.track_new(
-                    username.clone(),
-                    key.clone(),
-                    DateTime::<Utc>::MAX_UTC,
-                    roles_to_permission(user.roles(), tenant),
-                    &user.tenant,
-                );
-                return sessions
-                    .check_auth(&key, action, context_stream, context_user)
-                    .expect("entry for this key just added");
-            }
+            Some((user.roles(), user.tenant.clone()))
+        } else {
+            None
+        };
+        // USERS read lock dropped here
+        if let Some((user_roles, user_tenant)) = verified {
+            let mut sessions = mut_sessions();
+            sessions.track_new(
+                username.clone(),
+                key.clone(),
+                DateTime::<Utc>::MAX_UTC,
+                roles_to_permission(user_roles, tenant),
+                &user_tenant,
+            );
+            return sessions
+                .check_auth(&key, action, context_stream, context_user)
+                .expect("entry for this key just added");
         }
 
         Response::UnAuthorized
