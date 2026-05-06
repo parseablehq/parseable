@@ -338,6 +338,22 @@ pub struct Options {
     )]
     pub hot_tier_files_per_stream_concurrency: usize,
 
+    #[arg(
+        long = "hot-tier-latest-minutes",
+        env = "P_HOT_TIER_LATEST_MINUTES",
+        default_value = "10",
+        help = "Files whose timestamp is within the last N minutes are 'latest'; rest are 'historic'."
+    )]
+    pub hot_tier_latest_minutes: i64,
+
+    #[arg(
+        long = "hot-tier-historic-sync-minutes",
+        env = "P_HOT_TIER_HISTORIC_SYNC_MINUTES",
+        default_value = "5",
+        help = "Interval (minutes) at which the historic hot-tier sync runs."
+    )]
+    pub hot_tier_historic_sync_minutes: u32,
+
     //TODO: remove this when smart cache is implemented
     #[arg(
         long = "index-storage-path",

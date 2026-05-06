@@ -72,6 +72,15 @@ struct StreamSyncState {
     sht: AsyncMutex<StreamHotTier>,
 }
 
+/// Hot-tier sync runs in two phases. Latest pulls files newer than
+/// `hot_tier_latest_minutes` ago and may evict historic to make room.
+/// Historic pulls older files, runs less often, never triggers eviction.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+enum SyncPhase {
+    Latest,
+    Historic,
+}
+
 type StreamKey = (Option<String>, String);
 
 pub struct HotTierManager {
@@ -392,7 +401,10 @@ impl HotTierManager {
         Ok(path)
     }
 
-    /// schedule the download of the hot tier files from S3 every minute
+    /// schedule two hot-tier sync jobs: a frequent "latest" pass for files
+    /// within the last `P_HOT_TIER_LATEST_MINUTES`, and a less-frequent
+    /// "historic" pass for older files. Both share the per-stream lock; only
+    /// the latest pass triggers eviction.
     pub fn download_from_s3<'a>(&'a self) -> Result<(), HotTierError>
     where
         'a: 'static,
@@ -402,8 +414,19 @@ impl HotTierManager {
             .every(HOT_TIER_SYNC_DURATION)
             .plus(Interval::Seconds(5))
             .run(move || async {
-                if let Err(err) = self.sync_hot_tier().await {
-                    error!("Error in hot tier scheduler: {:?}", err);
+                if let Err(err) = self.sync_hot_tier(SyncPhase::Latest).await {
+                    error!("Error in hot tier latest scheduler: {:?}", err);
+                }
+            });
+
+        let historic_interval =
+            Interval::Minutes(PARSEABLE.options.hot_tier_historic_sync_minutes.max(1));
+        scheduler
+            .every(historic_interval)
+            .plus(Interval::Seconds(15))
+            .run(move || async {
+                if let Err(err) = self.sync_hot_tier(SyncPhase::Historic).await {
+                    error!("Error in hot tier historic scheduler: {:?}", err);
                 }
             });
 
@@ -417,7 +440,7 @@ impl HotTierManager {
     }
 
     /// sync the hot tier files from S3 to the hot tier directory for all streams
-    async fn sync_hot_tier(&self) -> Result<(), HotTierError> {
+    async fn sync_hot_tier(&self, phase: SyncPhase) -> Result<(), HotTierError> {
         // Before syncing, check if pstats stream was created and needs hot tier
         if let Err(e) = self.create_pstats_hot_tier().await {
             tracing::trace!("Skipping pstats hot tier creation because of error: {e}");
@@ -432,7 +455,11 @@ impl HotTierManager {
         for tenant_id in tenants {
             for stream in PARSEABLE.streams.list(&tenant_id) {
                 if self.check_stream_hot_tier_exists(&stream, &tenant_id) {
-                    sync_hot_tier_tasks.push(self.process_stream(stream, tenant_id.to_owned()));
+                    sync_hot_tier_tasks.push(self.process_stream(
+                        stream,
+                        tenant_id.to_owned(),
+                        phase,
+                    ));
                 }
             }
         }
@@ -452,6 +479,7 @@ impl HotTierManager {
         &self,
         stream: String,
         tenant_id: Option<String>,
+        phase: SyncPhase,
     ) -> Result<(), HotTierError> {
         let mut s3_manifest_file_list = PARSEABLE
             .metastore
@@ -463,7 +491,7 @@ impl HotTierManager {
                 )))
             })?;
 
-        self.process_manifest(&stream, &mut s3_manifest_file_list, &tenant_id)
+        self.process_manifest(&stream, &mut s3_manifest_file_list, &tenant_id, phase)
             .await?;
 
         Ok(())
@@ -478,10 +506,14 @@ impl HotTierManager {
         stream: &str,
         manifest_files_to_download: &mut BTreeMap<String, Vec<Manifest>>,
         tenant_id: &Option<String>,
+        phase: SyncPhase,
     ) -> Result<(), HotTierError> {
         if manifest_files_to_download.is_empty() {
             return Ok(());
         }
+
+        let latest_minutes = PARSEABLE.options.hot_tier_latest_minutes.max(0);
+        let cutoff = chrono::Utc::now().naive_utc() - chrono::Duration::minutes(latest_minutes);
 
         // Build flat work list: (date, file, local_path) ordered latest-date-first,
         // and within a date by descending file_path (matches old `pop()` order).
@@ -503,7 +535,16 @@ impl HotTierManager {
             combined.files.sort_by_key(|f| f.file_path.clone());
             while let Some(parquet_file) = combined.files.pop() {
                 let parquet_path = self.hot_tier_path.join(&parquet_file.file_path);
-                if !parquet_path.exists() {
+                if parquet_path.exists() {
+                    continue;
+                }
+                let dt = extract_datetime(&parquet_file.file_path);
+                let is_latest = dt.map(|d| d >= cutoff).unwrap_or(false);
+                let keep = match phase {
+                    SyncPhase::Latest => is_latest,
+                    SyncPhase::Historic => !is_latest,
+                };
+                if keep {
                     work.push((date, parquet_file, parquet_path));
                 }
             }
@@ -544,6 +585,7 @@ impl HotTierManager {
                             date,
                             &tenant_id,
                             &state,
+                            phase,
                         )
                         .await?;
                     if !processed {
@@ -567,6 +609,7 @@ impl HotTierManager {
     /// then commit usage + per-date manifest under the lock again.
     /// Returns false when no budget is available (caller should stop scheduling
     /// further work for this stream).
+    #[allow(clippy::too_many_arguments)]
     async fn process_parquet_file_concurrent(
         &self,
         stream: &str,
@@ -575,23 +618,34 @@ impl HotTierManager {
         date: NaiveDate,
         tenant_id: &Option<String>,
         state: &Arc<StreamSyncState>,
+        phase: SyncPhase,
     ) -> Result<bool, HotTierError> {
         // RESERVE
         {
             let mut sht = state.sht.lock().await;
-            if (!self.is_disk_available(parquet_file.file_size).await?
-                || sht.available_size <= parquet_file.file_size)
-                && !self
-                    .cleanup_hot_tier_old_data(
-                        stream,
-                        &mut sht,
-                        &parquet_path,
-                        parquet_file.file_size,
-                        tenant_id,
-                    )
-                    .await?
+            if !self.is_disk_available(parquet_file.file_size).await?
+                || sht.available_size <= parquet_file.file_size
             {
-                return Ok(false);
+                match phase {
+                    SyncPhase::Latest => {
+                        if !self
+                            .cleanup_hot_tier_old_data(
+                                stream,
+                                &mut sht,
+                                &parquet_path,
+                                parquet_file.file_size,
+                                tenant_id,
+                            )
+                            .await?
+                        {
+                            return Ok(false);
+                        }
+                    }
+                    SyncPhase::Historic => {
+                        // Historic never evicts; just skip when full.
+                        return Ok(false);
+                    }
+                }
             }
             if sht.available_size <= parquet_file.file_size {
                 return Ok(false);
