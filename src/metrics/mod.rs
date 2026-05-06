@@ -257,6 +257,18 @@ pub static TOTAL_QUERY_CALLS_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
+pub static TOTAL_FILES_SCANNED_IN_HOTTIER_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "total_files_scanned_in_hottier_by_date",
+            "Total files scanned in hottier by date",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["stream", "date", "tenant_id"],
+    )
+    .expect("metric can be created")
+});
+
 pub static TOTAL_FILES_SCANNED_IN_QUERY_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         Opts::new(
@@ -680,6 +692,17 @@ pub fn increment_query_calls_by_date(date: &str, tenant_id: &str) {
 pub fn increment_files_scanned_in_query_by_date(count: u64, date: &str, tenant_id: &str) {
     TOTAL_FILES_SCANNED_IN_QUERY_BY_DATE
         .with_label_values(&[date, tenant_id])
+        .inc_by(count);
+}
+
+pub fn increment_files_scanned_in_hottier_by_date(
+    count: u64,
+    date: &str,
+    tenant_id: &str,
+    stream_name: &str,
+) {
+    TOTAL_FILES_SCANNED_IN_HOTTIER_BY_DATE
+        .with_label_values(&[stream_name, date, tenant_id])
         .inc_by(count);
 }
 

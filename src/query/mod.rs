@@ -25,6 +25,7 @@ use arrow_schema::SchemaRef;
 use chrono::NaiveDateTime;
 use chrono::{DateTime, Duration, Utc};
 use datafusion::arrow::record_batch::RecordBatch;
+use datafusion::catalog::SchemaProvider;
 use datafusion::common::tree_node::Transformed;
 use datafusion::execution::disk_manager::DiskManager;
 use datafusion::execution::{
@@ -45,7 +46,7 @@ use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
 use futures::Stream;
 use futures::stream::select_all;
 use itertools::Itertools;
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::ops::Bound;
@@ -57,7 +58,6 @@ use sysinfo::System;
 use tokio::runtime::Runtime;
 
 use self::error::ExecuteError;
-use self::stream_schema_provider::GlobalSchemaProvider;
 pub use self::stream_schema_provider::PartialTimeFilter;
 use crate::alerts::alert_structs::Conditions;
 use crate::alerts::alerts_utils::get_filter_string;
@@ -70,7 +70,8 @@ use crate::handlers::http::query::QueryError;
 use crate::metrics::increment_bytes_scanned_in_query_by_date;
 use crate::option::Mode;
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
-use crate::storage::{ObjectStorageProvider, ObjectStoreFormat};
+use crate::query::stream_schema_provider::GlobalSchemaProvider;
+use crate::storage::{ObjectStorage, ObjectStorageProvider, ObjectStoreFormat};
 use crate::utils::time::TimeRange;
 
 /// Boxed record-batch stream used as the streaming half of query results.
@@ -95,6 +96,13 @@ type QueryResult = Result<(Either<Vec<RecordBatch>, BoxedBatchStream>, Vec<Strin
 
 // pub static QUERY_SESSION: Lazy<SessionContext> =
 //     Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
+pub static SCHEMA_PROVIDER: OnceCell<Box<dyn ParseableSchemaProvider>> = OnceCell::new();
+
+/// Additional physical optimizer rules registered by enterprise/plugins.
+/// Must be populated BEFORE `QUERY_SESSION_STATE` is first accessed.
+pub static ADDITIONAL_PHYSICAL_OPTIMIZER_RULES: Lazy<
+    RwLock<Vec<Arc<dyn datafusion::physical_optimizer::PhysicalOptimizerRule + Send + Sync>>>,
+> = Lazy::new(|| RwLock::new(Vec::new()));
 
 pub static QUERY_SESSION_STATE: Lazy<SessionState> =
     Lazy::new(|| Query::create_session_state(PARSEABLE.storage()));
@@ -110,6 +118,15 @@ pub static QUERY_SESSION: Lazy<InMemorySessionContext> = Lazy::new(|| {
     }
 });
 
+/// Trait to enable implementation of SchemaProvider
+pub trait ParseableSchemaProvider: Send + Sync {
+    fn new_provider(
+        &self,
+        storage: Option<Arc<dyn ObjectStorage>>,
+        tenant_id: &Option<String>,
+    ) -> Box<dyn SchemaProvider>;
+}
+
 pub struct InMemorySessionContext {
     session_context: Arc<RwLock<SessionContext>>,
 }
@@ -124,18 +141,23 @@ impl InMemorySessionContext {
     }
 
     pub fn add_schema(&self, tenant_id: &str) {
+        let schema_provider = if let Some(provider) = SCHEMA_PROVIDER.get() {
+            provider.new_provider(
+                Some(PARSEABLE.storage().get_object_store()),
+                &Some(tenant_id.to_owned()),
+            )
+        } else {
+            Box::new(GlobalSchemaProvider {
+                storage: PARSEABLE.storage().get_object_store(),
+                tenant_id: Some(tenant_id.to_owned()),
+            })
+        };
         self.session_context
             .write()
             .expect("SessionContext should be writeable")
             .catalog("datafusion")
             .expect("Default catalog should be available")
-            .register_schema(
-                tenant_id,
-                Arc::new(GlobalSchemaProvider {
-                    storage: PARSEABLE.storage().get_object_store(),
-                    tenant_id: Some(tenant_id.to_owned()),
-                }),
-            )
+            .register_schema(tenant_id, schema_provider.into())
             .expect("Should be able to register new schema");
     }
 
@@ -184,29 +206,41 @@ impl Query {
             // register multiple schemas
             if let Some(tenants) = PARSEABLE.list_tenants() {
                 for t in tenants.iter() {
-                    let schema_provider = Arc::new(GlobalSchemaProvider {
-                        storage: storage.get_object_store(),
-                        tenant_id: Some(t.clone()),
-                    });
-                    let _ = catalog.register_schema(t, schema_provider);
+                    let schema_provider = if let Some(provider) = SCHEMA_PROVIDER.get() {
+                        provider.new_provider(
+                            Some(PARSEABLE.storage().get_object_store()),
+                            &Some(t.to_owned()),
+                        )
+                    } else {
+                        Box::new(GlobalSchemaProvider {
+                            storage: PARSEABLE.storage().get_object_store(),
+                            tenant_id: Some(t.to_owned()),
+                        })
+                    };
+                    let _ = catalog.register_schema(t, schema_provider.into());
                 }
             }
         } else {
             // register just one schema
-            let schema_provider = Arc::new(GlobalSchemaProvider {
-                storage: storage.get_object_store(),
-                tenant_id: None,
-            });
+            let schema_provider = if let Some(provider) = SCHEMA_PROVIDER.get() {
+                provider.new_provider(Some(PARSEABLE.storage().get_object_store()), &None)
+            } else {
+                Box::new(GlobalSchemaProvider {
+                    storage: PARSEABLE.storage().get_object_store(),
+                    tenant_id: None,
+                })
+            };
+
             let _ = catalog.register_schema(
                 &state.config_options().catalog.default_schema,
-                schema_provider,
+                schema_provider.into(),
             );
         }
 
         SessionContext::new_with_state(state)
     }
 
-    fn create_session_state(storage: Arc<dyn ObjectStorageProvider>) -> SessionState {
+    pub fn create_session_state(storage: Arc<dyn ObjectStorageProvider>) -> SessionState {
         let runtime_config = storage
             .get_datafusion_runtime()
             .with_disk_manager_builder(DiskManager::builder());
@@ -252,11 +286,19 @@ impl Query {
             .parquet
             .schema_force_view_types = true;
 
-        SessionStateBuilder::new()
+        let mut builder = SessionStateBuilder::new()
             .with_default_features()
             .with_config(config)
-            .with_runtime_env(runtime)
-            .build()
+            .with_runtime_env(runtime);
+
+        // Append any additional physical optimizer rules (e.g., enterprise partial agg pushdown)
+        if let Ok(rules) = ADDITIONAL_PHYSICAL_OPTIMIZER_RULES.read() {
+            for rule in rules.iter() {
+                builder = builder.with_physical_optimizer_rule(Arc::clone(rule));
+            }
+        }
+
+        builder.build()
     }
 
     /// this function returns the result of the query
@@ -288,14 +330,12 @@ impl Query {
             return Ok((Either::Left(vec![]), fields));
         }
 
-        let plan = QUERY_SESSION
-            .get_ctx()
-            .state()
-            .create_physical_plan(df.logical_plan())
-            .await?;
+        let ctx = QUERY_SESSION.get_ctx();
+
+        let plan = ctx.state().create_physical_plan(df.logical_plan()).await?;
 
         let results = if !is_streaming {
-            let task_ctx = QUERY_SESSION.get_ctx().task_ctx();
+            let task_ctx = ctx.task_ctx();
 
             let batches = collect_partitioned(plan.clone(), task_ctx.clone())
                 .await?
@@ -311,7 +351,7 @@ impl Query {
 
             Either::Left(batches)
         } else {
-            let task_ctx = QUERY_SESSION.get_ctx().task_ctx();
+            let task_ctx = ctx.task_ctx();
 
             let output_partitions = plan.output_partitioning().partition_count();
 
