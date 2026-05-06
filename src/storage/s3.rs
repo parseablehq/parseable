@@ -62,7 +62,8 @@ use crate::{
 use super::{
     CONNECT_TIMEOUT_SECS, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
     PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, STREAM_METADATA_FILE_NAME,
-    metrics_layer::MetricLayer, object_storage::parseable_json_path, to_object_store_path,
+    metrics_layer::MetricLayer, object_storage::parseable_json_path, partial_path,
+    to_object_store_path,
 };
 
 // in bytes
@@ -344,6 +345,28 @@ impl S3 {
         tenant_id: &Option<String>,
         write_path: PathBuf,
     ) -> Result<(), ObjectStorageError> {
+        let partial = partial_path(&write_path)?;
+        match self
+            ._parallel_download_inner(path, tenant_id, partial.clone())
+            .await
+        {
+            Ok(()) => {
+                tokio::fs::rename(&partial, &write_path).await?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&partial).await;
+                Err(e)
+            }
+        }
+    }
+
+    async fn _parallel_download_inner(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+        partial_path: PathBuf,
+    ) -> Result<(), ObjectStorageError> {
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let date = Utc::now().date_naive().to_string();
         let src = to_object_store_path(path);
@@ -352,10 +375,10 @@ impl S3 {
         increment_object_store_calls_by_date("HEAD", &date, tenant_str);
         let total = meta.size;
 
-        if let Some(parent) = write_path.parent() {
+        if let Some(parent) = partial_path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let file = tokio::fs::File::create(&write_path).await?;
+        let file = tokio::fs::File::create(&partial_path).await?;
         file.set_len(total).await?;
         let std_file = Arc::new(file.into_std().await);
 

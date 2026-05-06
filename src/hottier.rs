@@ -105,7 +105,7 @@ impl HotTierManager {
         if let Some(state) = cache.get(&key).cloned() {
             return Ok(state);
         }
-        let sht = self.get_hot_tier(stream, tenant_id).await?;
+        let sht = self.reconcile_stream(stream, tenant_id).await?;
         let state = Arc::new(StreamSyncState {
             sht: AsyncMutex::new(sht),
         });
@@ -117,6 +117,98 @@ impl HotTierManager {
     pub async fn invalidate_state(&self, stream: &str, tenant_id: &Option<String>) {
         let key: StreamKey = (tenant_id.clone(), stream.to_owned());
         self.state_cache.write().await.remove(&key);
+    }
+
+    /// Walk the on-disk hot-tier directory for a stream and bring it into
+    /// agreement with `hottier.manifest.json` files. Removes `.partial`
+    /// orphans, drops manifest entries whose files are missing or wrong size,
+    /// deletes parquet files that exist but are not in their date manifest,
+    /// then recomputes `used_size` / `available_size` from the cleaned
+    /// manifests and persists the updated `StreamHotTier`.
+    async fn reconcile_stream(
+        &self,
+        stream: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<StreamHotTier, HotTierError> {
+        let mut sht = self.get_hot_tier(stream, tenant_id).await?;
+        let dates = self.fetch_hot_tier_dates(stream, tenant_id).await?;
+        let mut total_used: u64 = 0;
+
+        for date in dates {
+            let date_dir = self.get_stream_path_for_date(stream, &date, tenant_id);
+            if !date_dir.exists() {
+                continue;
+            }
+
+            // Pass 1: collect on-disk parquet files (drop .partial orphans).
+            let mut on_disk: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut entries = fs::read_dir(&date_dir).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                let p = entry.path();
+                let Some(name_os) = p.file_name() else {
+                    continue;
+                };
+                let name = name_os.to_string_lossy();
+                if name.ends_with(".partial") {
+                    let _ = fs::remove_file(&p).await;
+                    continue;
+                }
+                if name.ends_with(".manifest.json") {
+                    continue;
+                }
+                if !p.is_file() {
+                    continue;
+                }
+                on_disk.insert(name.into_owned());
+            }
+
+            // Pass 2: clean manifest of stale entries.
+            let manifest_path = date_dir.join("hottier.manifest.json");
+            let mut manifest: Manifest = if manifest_path.exists() {
+                let bytes = fs::read(&manifest_path).await?;
+                serde_json::from_slice(&bytes).unwrap_or_default()
+            } else {
+                Manifest::default()
+            };
+
+            let mut kept = Vec::with_capacity(manifest.files.len());
+            let mut keep_names: std::collections::HashSet<String> =
+                std::collections::HashSet::new();
+            for f in manifest.files.drain(..) {
+                let local = self.hot_tier_path.join(&f.file_path);
+                let ok = match fs::metadata(&local).await {
+                    Ok(m) => m.len() == f.file_size,
+                    Err(_) => false,
+                };
+                if ok {
+                    if let Some(name) = local.file_name().and_then(|s| s.to_str()) {
+                        keep_names.insert(name.to_owned());
+                    }
+                    total_used += f.file_size;
+                    kept.push(f);
+                } else {
+                    let _ = fs::remove_file(&local).await;
+                }
+            }
+            kept.sort_by_key(|f| f.file_path.clone());
+            manifest.files = kept;
+
+            if manifest_path.exists() || !manifest.files.is_empty() {
+                fs::create_dir_all(&date_dir).await?;
+                fs::write(&manifest_path, serde_json::to_vec(&manifest)?).await?;
+            }
+
+            // Pass 3: delete on-disk parquet files not referenced by the cleaned manifest.
+            for name in on_disk.difference(&keep_names) {
+                let p = date_dir.join(name);
+                let _ = fs::remove_file(&p).await;
+            }
+        }
+
+        sht.used_size = total_used;
+        sht.available_size = sht.size.saturating_sub(total_used);
+        self.put_hot_tier(stream, &mut sht, tenant_id).await?;
+        Ok(sht)
     }
 
     /// Get a global
@@ -524,8 +616,7 @@ impl HotTierManager {
             if let Err(put_err) = self.put_hot_tier(stream, &mut sht, tenant_id).await {
                 error!("failed to persist refund after download failure: {put_err:?}");
             }
-            // best-effort cleanup of any partial file
-            let _ = fs::remove_file(&parquet_path).await;
+            // backend already cleaned up its `.partial` file; final path was never created.
             return Err(e.into());
         }
 

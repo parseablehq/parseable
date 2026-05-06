@@ -113,11 +113,20 @@ impl ObjectStorage for LocalFS {
         write_path: PathBuf,
     ) -> Result<(), ObjectStorageError> {
         let src = self.path_in_root(path);
-        if let Some(parent) = write_path.parent() {
+        let partial = super::partial_path(&write_path)?;
+        if let Some(parent) = partial.parent() {
             fs::create_dir_all(parent).await?;
         }
-        fs::copy(&src, &write_path).await?;
-        Ok(())
+        match fs::copy(&src, &partial).await {
+            Ok(_) => {
+                fs::rename(&partial, &write_path).await?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&partial).await;
+                Err(e.into())
+            }
+        }
     }
     async fn upload_multipart(
         &self,

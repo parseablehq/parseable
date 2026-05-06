@@ -344,3 +344,18 @@ pub enum ObjectStorageError {
 pub fn to_object_store_path(path: &RelativePath) -> Path {
     Path::from(path.as_str())
 }
+
+/// Append `.partial` to the file name of a local path. Used by hot-tier
+/// downloaders to write to a sibling path and atomically rename on success.
+pub fn partial_path(
+    write_path: &std::path::Path,
+) -> Result<std::path::PathBuf, ObjectStorageError> {
+    let name = write_path
+        .file_name()
+        .ok_or_else(|| ObjectStorageError::Custom("download write_path has no file name".into()))?;
+    let mut next = std::ffi::OsString::from(name);
+    next.push(".partial");
+    let mut buf = write_path.to_path_buf();
+    buf.set_file_name(next);
+    Ok(buf)
+}
