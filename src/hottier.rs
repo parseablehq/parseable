@@ -34,7 +34,6 @@ use crate::{
     validator::error::HotTierValidationError,
 };
 use chrono::NaiveDate;
-use clokwerk::{AsyncScheduler, Interval, Job};
 use futures::{StreamExt, TryStreamExt, stream::FuturesUnordered};
 use futures_util::TryFutureExt;
 use object_store::{ObjectStoreExt, local::LocalFileSystem};
@@ -49,7 +48,6 @@ use tracing::{error, warn};
 
 pub const STREAM_HOT_TIER_FILENAME: &str = ".hot_tier.json";
 pub const MIN_STREAM_HOT_TIER_SIZE_BYTES: u64 = 10737418240; // 10 GiB
-const HOT_TIER_SYNC_DURATION: Interval = clokwerk::Interval::Minutes(1);
 pub const INTERNAL_STREAM_HOT_TIER_SIZE_BYTES: u64 = 10485760; //10 MiB
 pub const CURRENT_HOT_TIER_VERSION: &str = "v2";
 
@@ -436,10 +434,11 @@ impl HotTierManager {
         Ok(path)
     }
 
-    /// schedule two hot-tier sync jobs: a frequent "latest" pass for files
-    /// within the last `P_HOT_TIER_LATEST_MINUTES`, and a less-frequent
-    /// "historic" pass for older files. Both share the per-stream lock; only
-    /// the latest pass triggers eviction.
+    /// Spawn two independent loops, one per phase, so Latest and Historic
+    /// tick clocks are independent. A long-running Historic backfill no
+    /// longer delays Latest ticks. Within each phase, the next iteration
+    /// starts only after the previous returns + a sleep, so a phase can
+    /// never overlap itself.
     pub fn download_from_s3<'a>(&'a self) -> Result<(), HotTierError>
     where
         'a: 'static,
@@ -452,31 +451,28 @@ impl HotTierManager {
             "hot tier scheduler starting"
         );
 
-        let mut scheduler = AsyncScheduler::new();
-        scheduler
-            .every(HOT_TIER_SYNC_DURATION)
-            .plus(Interval::Seconds(5))
-            .run(move || async {
-                warn!(phase = ?SyncPhase::Latest, "hot tier tick fired");
-                if let Err(err) = self.sync_hot_tier(SyncPhase::Latest).await {
-                    error!("Error in hot tier latest scheduler: {:?}", err);
-                }
-            });
+        let latest_interval = Duration::from_secs(60);
+        let historic_interval = Duration::from_secs(historic_min as u64 * 60);
 
-        scheduler
-            .every(Interval::Minutes(historic_min))
-            .plus(Interval::Seconds(15))
-            .run(move || async {
-                warn!(phase = ?SyncPhase::Historic, "hot tier tick fired");
-                if let Err(err) = self.sync_hot_tier(SyncPhase::Historic).await {
-                    error!("Error in hot tier historic scheduler: {:?}", err);
-                }
-            });
-
+        let this = self;
         tokio::spawn(async move {
             loop {
-                scheduler.run_pending().await;
-                tokio::time::sleep(Duration::from_secs(10)).await;
+                warn!(phase = ?SyncPhase::Latest, "hot tier tick fired");
+                if let Err(err) = this.sync_hot_tier(SyncPhase::Latest).await {
+                    error!("Error in hot tier latest scheduler: {:?}", err);
+                }
+                tokio::time::sleep(latest_interval).await;
+            }
+        });
+
+        let this = self;
+        tokio::spawn(async move {
+            loop {
+                warn!(phase = ?SyncPhase::Historic, "hot tier tick fired");
+                if let Err(err) = this.sync_hot_tier(SyncPhase::Historic).await {
+                    error!("Error in hot tier historic scheduler: {:?}", err);
+                }
+                tokio::time::sleep(historic_interval).await;
             }
         });
         Ok(())
@@ -510,13 +506,18 @@ impl HotTierManager {
         }
         warn!(phase = ?phase, num_streams = scheduled, "hot tier tick: streams scheduled");
 
+        let tick_start = std::time::Instant::now();
         while let Some(res) = sync_hot_tier_tasks.next().await {
             if let Err(err) = res {
                 error!("Failed to run hot tier sync task {err:?}");
                 return Err(err);
             }
         }
-        warn!(phase = ?phase, "hot tier tick complete");
+        warn!(
+            phase = ?phase,
+            elapsed_ms = tick_start.elapsed().as_millis() as u64,
+            "hot tier tick complete"
+        );
         Ok(())
     }
 
@@ -557,10 +558,17 @@ impl HotTierManager {
             "manifest fetched"
         );
 
+        let stream_start = std::time::Instant::now();
         self.process_manifest(&stream, &mut s3_manifest_file_list, &tenant_id, phase)
             .await?;
 
-        warn!(stream = %stream, tenant = ?tenant_id, phase = ?phase, "stream sync done");
+        warn!(
+            stream = %stream,
+            tenant = ?tenant_id,
+            phase = ?phase,
+            elapsed_ms = stream_start.elapsed().as_millis() as u64,
+            "stream sync done"
+        );
         Ok(())
     }
 
@@ -671,15 +679,14 @@ impl HotTierManager {
                             phase,
                         )
                         .await?;
-                    if !processed
-                        && !stop.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                            warn!(
-                                stream = %stream,
-                                tenant = ?tenant_id,
-                                phase = ?phase,
-                                "sticky stop: halting further reservations this tick"
-                            );
-                        }
+                    if !processed && !stop.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        warn!(
+                            stream = %stream,
+                            tenant = ?tenant_id,
+                            phase = ?phase,
+                            "sticky stop: halting further reservations this tick"
+                        );
+                    }
                     Ok(())
                 }
             })
@@ -801,17 +808,20 @@ impl HotTierManager {
             file_size = parquet_file.file_size,
             "download starting"
         );
+        let dl_start = std::time::Instant::now();
         let download_result = PARSEABLE
             .storage
             .get_object_store()
             .buffered_write(&parquet_file_path, tenant_id, parquet_path.clone())
             .await;
+        let dl_elapsed = dl_start.elapsed();
 
         if let Err(e) = download_result {
             warn!(
                 stream = %stream,
                 tenant = ?tenant_id,
                 file = %parquet_file.file_path,
+                elapsed_ms = dl_elapsed.as_millis() as u64,
                 err = %e,
                 "download failed, refunding reservation"
             );
@@ -824,11 +834,19 @@ impl HotTierManager {
             // backend already cleaned up its `.partial` file; final path was never created.
             return Err(e.into());
         }
+        let elapsed_ms = dl_elapsed.as_millis() as u64;
+        let mbps = if dl_elapsed.as_secs_f64() > 0.0 {
+            (parquet_file.file_size as f64 * 8.0) / dl_elapsed.as_secs_f64() / 1_000_000.0
+        } else {
+            0.0
+        };
         warn!(
             stream = %stream,
             tenant = ?tenant_id,
             file = %parquet_file.file_path,
             file_size = parquet_file.file_size,
+            elapsed_ms,
+            mbps = format!("{mbps:.1}"),
             "download finished, committing"
         );
 
