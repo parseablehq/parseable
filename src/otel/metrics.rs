@@ -31,7 +31,7 @@ use super::otel_utils::{
     convert_epoch_nano_to_timestamp, insert_attributes, insert_number_if_some,
 };
 
-pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 34] = [
+pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 36] = [
     "metric_name",
     "metric_description",
     "metric_unit",
@@ -46,6 +46,8 @@ pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 34] = [
     "data_point_sum",
     "data_point_bucket_counts",
     "data_point_explicit_bounds",
+    "data_point_quantile_values_quantile",
+    "data_point_quantile_values_value",
     "data_point_scale",
     "data_point_zero_count",
     "data_point_flags",
