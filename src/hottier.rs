@@ -81,10 +81,16 @@ enum SyncPhase {
 
 type StreamKey = (Option<String>, String);
 
+struct StreamTasks {
+    latest: tokio::task::JoinHandle<()>,
+    historic: tokio::task::JoinHandle<()>,
+}
+
 pub struct HotTierManager {
     filesystem: LocalFileSystem,
     hot_tier_path: &'static Path,
     state_cache: AsyncRwLock<HashMap<StreamKey, Arc<StreamSyncState>>>,
+    tasks: AsyncRwLock<HashMap<StreamKey, StreamTasks>>,
 }
 
 impl HotTierManager {
@@ -94,6 +100,7 @@ impl HotTierManager {
             filesystem: LocalFileSystem::new(),
             hot_tier_path,
             state_cache: AsyncRwLock::new(HashMap::new()),
+            tasks: AsyncRwLock::new(HashMap::new()),
         }
     }
 
@@ -388,6 +395,9 @@ impl HotTierManager {
         if !self.check_stream_hot_tier_exists(stream, tenant_id) {
             return Err(HotTierValidationError::NotFound(stream.to_owned()).into());
         }
+        // Stop loops before tearing down the directory so no in-flight tick
+        // re-creates files mid-delete.
+        self.abort_stream_tasks(stream, tenant_id).await;
         let path = if let Some(tenant_id) = tenant_id.as_ref() {
             self.hot_tier_path.join(tenant_id).join(stream)
         } else {
@@ -434,11 +444,9 @@ impl HotTierManager {
         Ok(path)
     }
 
-    /// Spawn two independent loops, one per phase, so Latest and Historic
-    /// tick clocks are independent. A long-running Historic backfill no
-    /// longer delays Latest ticks. Within each phase, the next iteration
-    /// starts only after the previous returns + a sleep, so a phase can
-    /// never overlap itself.
+    /// Discover hot-tier-enabled streams at boot and spawn a per-stream pair
+    /// of (Latest, Historic) loops for each. New streams added later acquire
+    /// their own loops via `spawn_stream_tasks` from the PUT hot-tier handler.
     pub fn download_from_s3<'a>(&'a self) -> Result<(), HotTierError>
     where
         'a: 'static,
@@ -451,74 +459,96 @@ impl HotTierManager {
             "hot tier scheduler starting"
         );
 
-        let latest_interval = Duration::from_secs(60);
-        let historic_interval = Duration::from_secs(historic_min as u64 * 60);
-
-        let this = self;
+        let this: &'static HotTierManager = self;
         tokio::spawn(async move {
-            loop {
-                warn!(phase = ?SyncPhase::Latest, "hot tier tick fired");
-                if let Err(err) = this.sync_hot_tier(SyncPhase::Latest).await {
-                    error!("Error in hot tier latest scheduler: {:?}", err);
-                }
-                tokio::time::sleep(latest_interval).await;
+            // pstats hot tier may need to be created on boot before any tasks
+            // can pick it up.
+            if let Err(e) = this.create_pstats_hot_tier().await {
+                tracing::error!("Skipping pstats hot tier creation because of error: {e}");
             }
-        });
-
-        let this = self;
-        tokio::spawn(async move {
-            loop {
-                warn!(phase = ?SyncPhase::Historic, "hot tier tick fired");
-                if let Err(err) = this.sync_hot_tier(SyncPhase::Historic).await {
-                    error!("Error in hot tier historic scheduler: {:?}", err);
+            let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
+                tenants.into_iter().map(Some).collect::<Vec<_>>()
+            } else {
+                vec![None]
+            };
+            for tenant_id in tenants {
+                for stream in PARSEABLE.streams.list(&tenant_id) {
+                    if this.check_stream_hot_tier_exists(&stream, &tenant_id) {
+                        this.spawn_stream_tasks(stream, tenant_id.clone()).await;
+                    }
                 }
-                tokio::time::sleep(historic_interval).await;
             }
         });
         Ok(())
     }
 
-    /// sync the hot tier files from S3 to the hot tier directory for all streams
-    async fn sync_hot_tier(&self, phase: SyncPhase) -> Result<(), HotTierError> {
-        // Before syncing, check if pstats stream was created and needs hot tier
-        if let Err(e) = self.create_pstats_hot_tier().await {
-            tracing::trace!("Skipping pstats hot tier creation because of error: {e}");
-        }
-
-        let mut sync_hot_tier_tasks = FuturesUnordered::new();
-        let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
-            tenants.into_iter().map(Some).collect()
-        } else {
-            vec![None]
-        };
-        let mut scheduled = 0usize;
-        for tenant_id in tenants {
-            for stream in PARSEABLE.streams.list(&tenant_id) {
-                if self.check_stream_hot_tier_exists(&stream, &tenant_id) {
-                    sync_hot_tier_tasks.push(self.process_stream(
-                        stream,
-                        tenant_id.to_owned(),
-                        phase,
-                    ));
-                    scheduled += 1;
-                }
+    /// Spawn (Latest, Historic) loops for a single stream. Idempotent:
+    /// if tasks already exist for this (tenant, stream), no-op.
+    pub async fn spawn_stream_tasks(&'static self, stream: String, tenant_id: Option<String>) {
+        let key: StreamKey = (tenant_id.clone(), stream.clone());
+        {
+            let tasks = self.tasks.read().await;
+            if let Some(existing) = tasks.get(&key)
+                && !existing.latest.is_finished()
+                && !existing.historic.is_finished()
+            {
+                return;
             }
         }
-        warn!(phase = ?phase, num_streams = scheduled, "hot tier tick: streams scheduled");
 
-        let tick_start = std::time::Instant::now();
-        while let Some(res) = sync_hot_tier_tasks.next().await {
-            if let Err(err) = res {
-                error!("Failed to run hot tier sync task {err:?}");
-                return Err(err);
-            }
-        }
-        warn!(
-            phase = ?phase,
-            elapsed_ms = tick_start.elapsed().as_millis() as u64,
-            "hot tier tick complete"
+        let latest_interval = Duration::from_secs(60);
+        let historic_interval = Duration::from_secs(
+            PARSEABLE.options.hot_tier_historic_sync_minutes.max(1) as u64 * 60,
         );
-        Ok(())
+
+        warn!(stream = %stream, tenant = ?tenant_id, "spawning per-stream hot tier tasks");
+
+        let s = stream.clone();
+        let t = tenant_id.clone();
+        let latest = tokio::spawn(async move {
+            loop {
+                warn!(stream = %s, tenant = ?t, phase = ?SyncPhase::Latest, "stream tick fired");
+                if let Err(err) = self
+                    .process_stream(s.clone(), t.clone(), SyncPhase::Latest)
+                    .await
+                {
+                    error!(stream = %s, "latest sync error: {err:?}");
+                }
+                tokio::time::sleep(latest_interval).await;
+            }
+        });
+
+        let s = stream.clone();
+        let t = tenant_id.clone();
+        let historic = tokio::spawn(async move {
+            loop {
+                warn!(stream = %s, tenant = ?t, phase = ?SyncPhase::Historic, "stream tick fired");
+                if let Err(err) = self
+                    .process_stream(s.clone(), t.clone(), SyncPhase::Historic)
+                    .await
+                {
+                    error!(stream = %s, "historic sync error: {err:?}");
+                }
+                tokio::time::sleep(historic_interval).await;
+            }
+        });
+
+        let mut tasks = self.tasks.write().await;
+        if let Some(old) = tasks.insert(key, StreamTasks { latest, historic }) {
+            old.latest.abort();
+            old.historic.abort();
+        }
+    }
+
+    /// Abort and remove per-stream tasks. Caller must ensure no further work
+    /// will be enqueued for the stream after this returns.
+    async fn abort_stream_tasks(&self, stream: &str, tenant_id: &Option<String>) {
+        let key: StreamKey = (tenant_id.clone(), stream.to_owned());
+        if let Some(t) = self.tasks.write().await.remove(&key) {
+            t.latest.abort();
+            t.historic.abort();
+            warn!(stream = %stream, tenant = ?tenant_id, "aborted per-stream hot tier tasks");
+        }
     }
 
     /// process the hot tier files for the stream

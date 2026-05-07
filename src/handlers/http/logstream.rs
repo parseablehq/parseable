@@ -455,6 +455,9 @@ pub async fn put_stream_hot_tier(
     hot_tier_manager
         .put_hot_tier(&stream_name, &mut hottier, &tenant_id)
         .await?;
+    hot_tier_manager
+        .spawn_stream_tasks(stream_name.clone(), tenant_id.clone())
+        .await;
 
     let mut stream_metadata: ObjectStoreFormat = serde_json::from_slice(
         &PARSEABLE
