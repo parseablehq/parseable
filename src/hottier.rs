@@ -16,6 +16,7 @@
  *
  */
 
+use datafusion::common::HashSet;
 use std::{
     collections::{BTreeMap, HashMap},
     io,
@@ -44,7 +45,7 @@ use std::time::Duration;
 use sysinfo::Disks;
 use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{error, warn};
+use tracing::{error, info};
 
 pub const STREAM_HOT_TIER_FILENAME: &str = ".hot_tier.json";
 pub const MIN_STREAM_HOT_TIER_SIZE_BYTES: u64 = 10737418240; // 10 GiB
@@ -144,7 +145,7 @@ impl HotTierManager {
         stream: &str,
         tenant_id: &Option<String>,
     ) -> Result<StreamHotTier, HotTierError> {
-        warn!(stream = %stream, tenant = ?tenant_id, "reconcile starting");
+        info!(stream = %stream, tenant = ?tenant_id, "reconcile starting");
         let mut sht = self.get_hot_tier(stream, tenant_id).await?;
         let dates = self.fetch_hot_tier_dates(stream, tenant_id).await?;
         let mut total_used: u64 = 0;
@@ -158,84 +159,36 @@ impl HotTierManager {
                 continue;
             }
 
+            let mut on_disk: HashSet<String> = HashSet::new();
+
             // Pass 1: collect on-disk parquet files (drop .partial orphans).
-            let mut on_disk: std::collections::HashSet<String> = std::collections::HashSet::new();
-            let mut entries = fs::read_dir(&date_dir).await?;
-            while let Some(entry) = entries.next_entry().await? {
-                let p = entry.path();
-                let Some(name_os) = p.file_name() else {
-                    continue;
-                };
-                let name = name_os.to_string_lossy();
-                if name.ends_with(".partial") {
-                    let _ = fs::remove_file(&p).await;
-                    partials_removed += 1;
-                    warn!(
-                        stream = %stream,
-                        tenant = ?tenant_id,
-                        path = %p.display(),
-                        "reconcile: deleted partial orphan"
-                    );
-                    continue;
-                }
-                if name.ends_with(".manifest.json") {
-                    continue;
-                }
-                if !p.is_file() {
-                    continue;
-                }
-                on_disk.insert(name.into_owned());
-            }
+            self.drop_partials(
+                &mut on_disk,
+                &date_dir,
+                &mut partials_removed,
+                stream,
+                tenant_id,
+            )
+            .await?;
 
             // Pass 2: clean manifest of stale entries.
-            let manifest_path = date_dir.join("hottier.manifest.json");
-            let mut manifest: Manifest = if manifest_path.exists() {
-                let bytes = fs::read(&manifest_path).await?;
-                serde_json::from_slice(&bytes).unwrap_or_default()
-            } else {
-                Manifest::default()
-            };
-
-            let mut kept = Vec::with_capacity(manifest.files.len());
-            let mut keep_names: std::collections::HashSet<String> =
-                std::collections::HashSet::new();
-            for f in manifest.files.drain(..) {
-                let local = self.hot_tier_path.join(&f.file_path);
-                let ok = match fs::metadata(&local).await {
-                    Ok(m) => m.len() == f.file_size,
-                    Err(_) => false,
-                };
-                if ok {
-                    if let Some(name) = local.file_name().and_then(|s| s.to_str()) {
-                        keep_names.insert(name.to_owned());
-                    }
-                    total_used += f.file_size;
-                    kept.push(f);
-                } else {
-                    let _ = fs::remove_file(&local).await;
-                    entries_dropped += 1;
-                    warn!(
-                        stream = %stream,
-                        tenant = ?tenant_id,
-                        file = %f.file_path,
-                        "reconcile: dropped manifest entry (file missing or wrong size)"
-                    );
-                }
-            }
-            kept.sort_by_key(|f| f.file_path.clone());
-            manifest.files = kept;
-
-            if manifest_path.exists() || !manifest.files.is_empty() {
-                fs::create_dir_all(&date_dir).await?;
-                fs::write(&manifest_path, serde_json::to_vec(&manifest)?).await?;
-            }
+            let mut keep_names: HashSet<String> = HashSet::new();
+            self.clean_manifest(
+                &mut keep_names,
+                &date_dir,
+                &mut total_used,
+                &mut entries_dropped,
+                stream,
+                tenant_id,
+            )
+            .await?;
 
             // Pass 3: delete on-disk parquet files not referenced by the cleaned manifest.
             for name in on_disk.difference(&keep_names) {
                 let p = date_dir.join(name);
                 let _ = fs::remove_file(&p).await;
                 orphans_removed += 1;
-                warn!(
+                info!(
                     stream = %stream,
                     tenant = ?tenant_id,
                     file = %p.display(),
@@ -247,7 +200,7 @@ impl HotTierManager {
         sht.used_size = total_used;
         sht.available_size = sht.size.saturating_sub(total_used);
         self.put_hot_tier(stream, &mut sht, tenant_id).await?;
-        warn!(
+        info!(
             stream = %stream,
             tenant = ?tenant_id,
             partials_removed,
@@ -258,6 +211,94 @@ impl HotTierManager {
             "reconcile done"
         );
         Ok(sht)
+    }
+
+    async fn drop_partials(
+        &self,
+        on_disk: &mut HashSet<String>,
+        date_dir: &PathBuf,
+        partials_removed: &mut usize,
+        stream: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<(), HotTierError> {
+        let mut entries = fs::read_dir(date_dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let p = entry.path();
+            let Some(name_os) = p.file_name() else {
+                continue;
+            };
+            let name = name_os.to_string_lossy();
+            if name.ends_with(".partial") {
+                let _ = fs::remove_file(&p).await;
+                *partials_removed += 1;
+                info!(
+                    stream = %stream,
+                    tenant = ?tenant_id,
+                    path = %p.display(),
+                    "reconcile: deleted partial orphan"
+                );
+                continue;
+            }
+            if name.ends_with(".manifest.json") {
+                continue;
+            }
+            if !p.is_file() {
+                continue;
+            }
+            on_disk.insert(name.into_owned());
+        }
+        Ok(())
+    }
+
+    async fn clean_manifest(
+        &self,
+        keep_names: &mut HashSet<String>,
+        date_dir: &PathBuf,
+        total_used: &mut u64,
+        entries_dropped: &mut usize,
+        stream: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<(), HotTierError> {
+        let manifest_path = date_dir.join("hottier.manifest.json");
+        let mut manifest: Manifest = if manifest_path.exists() {
+            let bytes = fs::read(&manifest_path).await?;
+            serde_json::from_slice(&bytes).unwrap_or_default()
+        } else {
+            Manifest::default()
+        };
+
+        let mut kept = Vec::with_capacity(manifest.files.len());
+        for f in manifest.files.drain(..) {
+            let local = self.hot_tier_path.join(&f.file_path);
+            let ok = match fs::metadata(&local).await {
+                Ok(m) => m.len() == f.file_size,
+                Err(_) => false,
+            };
+            if ok {
+                if let Some(name) = local.file_name().and_then(|s| s.to_str()) {
+                    keep_names.insert(name.to_owned());
+                }
+                *total_used += f.file_size;
+                kept.push(f);
+            } else {
+                let _ = fs::remove_file(&local).await;
+                *entries_dropped += 1;
+                info!(
+                    stream = %stream,
+                    tenant = ?tenant_id,
+                    file = %f.file_path,
+                    "reconcile: dropped manifest entry (file missing or wrong size)"
+                );
+            }
+        }
+        kept.sort_by_key(|f| f.file_path.clone());
+        manifest.files = kept;
+
+        if manifest_path.exists() || !manifest.files.is_empty() {
+            fs::create_dir_all(&date_dir).await?;
+            fs::write(&manifest_path, serde_json::to_vec(&manifest)?).await?;
+        }
+        Ok(())
     }
 
     /// Get a global
@@ -453,7 +494,7 @@ impl HotTierManager {
     {
         let latest_min = PARSEABLE.options.hot_tier_latest_minutes;
         let historic_min = PARSEABLE.options.hot_tier_historic_sync_minutes.max(1);
-        warn!(
+        info!(
             latest_minutes = latest_min,
             historic_sync_minutes = historic_min,
             "hot tier scheduler starting"
@@ -501,13 +542,13 @@ impl HotTierManager {
             PARSEABLE.options.hot_tier_historic_sync_minutes.max(1) as u64 * 60,
         );
 
-        warn!(stream = %stream, tenant = ?tenant_id, "spawning per-stream hot tier tasks");
+        info!(stream = %stream, tenant = ?tenant_id, "spawning per-stream hot tier tasks");
 
         let s = stream.clone();
         let t = tenant_id.clone();
         let latest = tokio::spawn(async move {
             loop {
-                warn!(stream = %s, tenant = ?t, phase = ?SyncPhase::Latest, "stream tick fired");
+                info!(stream = %s, tenant = ?t, phase = ?SyncPhase::Latest, "stream tick fired");
                 if let Err(err) = self
                     .process_stream(s.clone(), t.clone(), SyncPhase::Latest)
                     .await
@@ -522,7 +563,7 @@ impl HotTierManager {
         let t = tenant_id.clone();
         let historic = tokio::spawn(async move {
             loop {
-                warn!(stream = %s, tenant = ?t, phase = ?SyncPhase::Historic, "stream tick fired");
+                info!(stream = %s, tenant = ?t, phase = ?SyncPhase::Historic, "stream tick fired");
                 if let Err(err) = self
                     .process_stream(s.clone(), t.clone(), SyncPhase::Historic)
                     .await
@@ -547,7 +588,7 @@ impl HotTierManager {
         if let Some(t) = self.tasks.write().await.remove(&key) {
             t.latest.abort();
             t.historic.abort();
-            warn!(stream = %stream, tenant = ?tenant_id, "aborted per-stream hot tier tasks");
+            info!(stream = %stream, tenant = ?tenant_id, "aborted per-stream hot tier tasks");
         }
     }
 
@@ -559,7 +600,7 @@ impl HotTierManager {
         tenant_id: Option<String>,
         phase: SyncPhase,
     ) -> Result<(), HotTierError> {
-        warn!(
+        info!(
             stream = %stream,
             tenant = ?tenant_id,
             phase = ?phase,
@@ -579,7 +620,7 @@ impl HotTierManager {
             .values()
             .map(|m| m.iter().map(|x| x.files.len()).sum::<usize>())
             .sum();
-        warn!(
+        info!(
             stream = %stream,
             tenant = ?tenant_id,
             phase = ?phase,
@@ -592,7 +633,7 @@ impl HotTierManager {
         self.process_manifest(&stream, &mut s3_manifest_file_list, &tenant_id, phase)
             .await?;
 
-        warn!(
+        info!(
             stream = %stream,
             tenant = ?tenant_id,
             phase = ?phase,
@@ -628,7 +669,7 @@ impl HotTierManager {
                 match NaiveDate::parse_from_str(str_date.trim_start_matches("date="), "%Y-%m-%d") {
                     Ok(d) => d,
                     Err(_) => {
-                        warn!("Invalid date format: {}", str_date);
+                        info!("Invalid date format: {}", str_date);
                         continue;
                     }
                 };
@@ -658,7 +699,7 @@ impl HotTierManager {
         let work_count = work.len();
         let total_bytes: u64 = work.iter().map(|(_, f, _)| f.file_size).sum();
         if work.is_empty() {
-            warn!(
+            info!(
                 stream = %stream,
                 tenant = ?tenant_id,
                 phase = ?phase,
@@ -666,7 +707,7 @@ impl HotTierManager {
             );
             return Ok(());
         }
-        warn!(
+        info!(
             stream = %stream,
             tenant = ?tenant_id,
             phase = ?phase,
@@ -710,7 +751,7 @@ impl HotTierManager {
                         )
                         .await?;
                     if !processed && !stop.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                        warn!(
+                        info!(
                             stream = %stream,
                             tenant = ?tenant_id,
                             phase = ?phase,
@@ -749,7 +790,7 @@ impl HotTierManager {
         // RESERVE
         {
             let mut sht = state.sht.lock().await;
-            warn!(
+            info!(
                 stream = %stream,
                 tenant = ?tenant_id,
                 phase = ?phase,
@@ -760,11 +801,11 @@ impl HotTierManager {
                 "reserving"
             );
             if !self.is_disk_available(parquet_file.file_size).await?
-                || sht.available_size <= parquet_file.file_size
+                || sht.available_size < parquet_file.file_size
             {
                 match phase {
                     SyncPhase::Latest => {
-                        warn!(
+                        info!(
                             stream = %stream,
                             tenant = ?tenant_id,
                             file = %parquet_file.file_path,
@@ -782,7 +823,7 @@ impl HotTierManager {
                             )
                             .await?
                         {
-                            warn!(
+                            info!(
                                 stream = %stream,
                                 tenant = ?tenant_id,
                                 file = %parquet_file.file_path,
@@ -793,7 +834,7 @@ impl HotTierManager {
                         }
                     }
                     SyncPhase::Historic => {
-                        warn!(
+                        info!(
                             stream = %stream,
                             tenant = ?tenant_id,
                             file = %parquet_file.file_path,
@@ -805,8 +846,8 @@ impl HotTierManager {
                     }
                 }
             }
-            if sht.available_size <= parquet_file.file_size {
-                warn!(
+            if sht.available_size < parquet_file.file_size {
+                info!(
                     stream = %stream,
                     tenant = ?tenant_id,
                     file = %parquet_file.file_path,
@@ -818,7 +859,7 @@ impl HotTierManager {
             }
             sht.available_size -= parquet_file.file_size;
             self.put_hot_tier(stream, &mut sht, tenant_id).await?;
-            warn!(
+            info!(
                 stream = %stream,
                 tenant = ?tenant_id,
                 file = %parquet_file.file_path,
@@ -831,7 +872,7 @@ impl HotTierManager {
         // DOWNLOAD (no lock held)
         let parquet_file_path = RelativePathBuf::from(parquet_file.file_path.clone());
         fs::create_dir_all(parquet_path.parent().unwrap()).await?;
-        warn!(
+        info!(
             stream = %stream,
             tenant = ?tenant_id,
             file = %parquet_file.file_path,
@@ -847,7 +888,7 @@ impl HotTierManager {
         let dl_elapsed = dl_start.elapsed();
 
         if let Err(e) = download_result {
-            warn!(
+            info!(
                 stream = %stream,
                 tenant = ?tenant_id,
                 file = %parquet_file.file_path,
@@ -870,7 +911,7 @@ impl HotTierManager {
         } else {
             0.0
         };
-        warn!(
+        info!(
             stream = %stream,
             tenant = ?tenant_id,
             file = %parquet_file.file_path,
@@ -899,7 +940,7 @@ impl HotTierManager {
                 .join("hottier.manifest.json");
             fs::create_dir_all(manifest_path.parent().unwrap()).await?;
             fs::write(manifest_path, serde_json::to_vec(&hot_tier_manifest)?).await?;
-            warn!(
+            info!(
                 stream = %stream,
                 tenant = ?tenant_id,
                 file = %parquet_file.file_path,
@@ -1086,7 +1127,7 @@ impl HotTierManager {
         parquet_file_size: u64,
         tenant_id: &Option<String>,
     ) -> Result<bool, HotTierError> {
-        warn!(
+        info!(
             stream = %stream,
             tenant = ?tenant_id,
             target_size = parquet_file_size,
@@ -1127,7 +1168,7 @@ impl HotTierManager {
                             extract_datetime(path_to_delete.to_str().unwrap()),
                         ) && download_date_time <= delete_date_time
                         {
-                            warn!(
+                            info!(
                                 stream = %stream,
                                 tenant = ?tenant_id,
                                 candidate = %file_to_delete.file_path,
@@ -1152,7 +1193,7 @@ impl HotTierManager {
                             .await?;
                         delete_successful = true;
                         freed_total += file_size;
-                        warn!(
+                        info!(
                             stream = %stream,
                             tenant = ?tenant_id,
                             evicted_file = %file_to_delete.file_path,
@@ -1174,7 +1215,7 @@ impl HotTierManager {
             }
         }
 
-        warn!(
+        info!(
             stream = %stream,
             tenant = ?tenant_id,
             freed_total,

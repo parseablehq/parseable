@@ -268,32 +268,30 @@ impl BlobStore {
         let client = self.client.clone();
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
 
-        let mut handles = Vec::with_capacity(ranges.len());
-        for r in ranges {
-            let client = client.clone();
-            let src = src.clone();
-            let std_file = std_file.clone();
-            let semaphore = semaphore.clone();
-            handles.push(tokio::spawn(async move {
-                let _permit = semaphore
-                    .acquire_owned()
+        futures::stream::iter(ranges)
+            .map(|r| {
+                let client = client.clone();
+                let src = src.clone();
+                let std_file = std_file.clone();
+                let semaphore = semaphore.clone();
+                async move {
+                    let _permit = semaphore.acquire_owned().await.map_err(|e| {
+                        ObjectStorageError::Custom(format!("semaphore closed: {e}"))
+                    })?;
+                    let bytes = client.get_range(&src, r.clone()).await?;
+                    let offset = r.start;
+                    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+                        use std::os::unix::fs::FileExt;
+                        std_file.write_all_at(&bytes, offset)
+                    })
                     .await
-                    .map_err(|e| ObjectStorageError::Custom(format!("semaphore closed: {e}")))?;
-                let bytes = client.get_range(&src, r.clone()).await?;
-                let offset = r.start;
-                tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-                    use std::os::unix::fs::FileExt;
-                    std_file.write_all_at(&bytes, offset)
-                })
-                .await
-                .map_err(|e| ObjectStorageError::Custom(format!("join: {e}")))??;
-                Ok::<_, ObjectStorageError>(())
-            }));
-        }
-        for h in handles {
-            h.await
-                .map_err(|e| ObjectStorageError::Custom(format!("join error: {e}")))??;
-        }
+                    .map_err(|e| ObjectStorageError::Custom(format!("join: {e}")))??;
+                    Ok::<_, ObjectStorageError>(())
+                }
+            })
+            .buffer_unordered(concurrency)
+            .try_collect::<Vec<_>>()
+            .await?;
 
         let std_file_sync = std_file.clone();
         tokio::task::spawn_blocking(move || std_file_sync.sync_all())

@@ -351,7 +351,10 @@ impl S3 {
             .await
         {
             Ok(()) => {
-                tokio::fs::rename(&partial, &write_path).await?;
+                if let Err(e) = tokio::fs::rename(&partial, &write_path).await {
+                    let _ = tokio::fs::remove_file(&partial).await;
+                    return Err(e.into());
+                }
                 Ok(())
             }
             Err(e) => {
