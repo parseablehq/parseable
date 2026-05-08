@@ -857,7 +857,20 @@ impl HotTierManager {
                 );
                 return Ok(false);
             }
-            sht.available_size -= parquet_file.file_size;
+            sht.available_size =
+                if let Some(val) = sht.available_size.checked_sub(parquet_file.file_size) {
+                    val
+                } else {
+                    tracing::error!(
+                        stream = %stream,
+                        tenant = ?tenant_id,
+                        file = %parquet_file.file_path,
+                        file_size = parquet_file.file_size,
+                        available = sht.available_size,
+                        "file_size > sht.available_size, setting available_size to 0 and moving on"
+                    );
+                    0
+                };
             self.put_hot_tier(stream, &mut sht, tenant_id).await?;
             info!(
                 stream = %stream,
@@ -1113,7 +1126,7 @@ impl HotTierManager {
         path.exists()
     }
 
-    ///delete the parquet file from the hot tier directory for the stream
+    /// delete entire parquet file minute from the hot tier directory for the stream
     /// loop through all manifests in the hot tier directory for the stream
     /// loop through all parquet files in the manifest
     /// check for the oldest entry to delete if the path exists in hot tier
@@ -1155,61 +1168,86 @@ impl HotTierManager {
                 let file = fs::read(manifest_file.path()).await?;
                 let mut manifest: Manifest = serde_json::from_slice(&file)?;
 
+                if manifest.files.is_empty() {
+                    continue;
+                }
+
+                // sort in an ascending manner
+                // idx0: minute=00
+                // idx59: minute=59
                 manifest.files.sort_by_key(|file| file.file_path.clone());
-                manifest.files.reverse();
 
-                'loop_files: while let Some(file_to_delete) = manifest.files.pop() {
-                    let file_size = file_to_delete.file_size;
-                    let path_to_delete = self.hot_tier_path.join(&file_to_delete.file_path);
+                // get first file's parent (/hottier/stream/date=d/hour=h/minute=m)
+                let first_file = manifest.files.first().unwrap();
+                let first_file_path = self.hot_tier_path.join(&first_file.file_path);
+                let minute_to_delete = first_file_path.parent().unwrap();
 
-                    if path_to_delete.exists() {
-                        if let (Some(download_date_time), Some(delete_date_time)) = (
-                            extract_datetime(download_file_path.to_str().unwrap()),
-                            extract_datetime(path_to_delete.to_str().unwrap()),
-                        ) && download_date_time <= delete_date_time
-                        {
-                            info!(
-                                stream = %stream,
-                                tenant = ?tenant_id,
-                                candidate = %file_to_delete.file_path,
-                                target = %download_file_path.display(),
-                                "skip evict: candidate newer than target"
-                            );
-                            delete_successful = false;
-                            break 'loop_files;
-                        }
-
-                        fs::write(manifest_file.path(), serde_json::to_vec(&manifest)?).await?;
-
-                        fs::remove_dir_all(path_to_delete.parent().unwrap()).await?;
-                        delete_empty_directory_hot_tier(
-                            path_to_delete.parent().unwrap().to_path_buf(),
-                        )
-                        .await?;
-
-                        stream_hot_tier.used_size -= file_size;
-                        stream_hot_tier.available_size += file_size;
-                        self.put_hot_tier(stream, stream_hot_tier, tenant_id)
-                            .await?;
-                        delete_successful = true;
-                        freed_total += file_size;
+                if minute_to_delete.exists() {
+                    if let (Some(download_date_time), Some(delete_date_time)) = (
+                        extract_datetime(download_file_path.to_str().unwrap()),
+                        extract_datetime(first_file_path.to_str().unwrap()),
+                    ) && download_date_time <= delete_date_time
+                    {
                         info!(
                             stream = %stream,
                             tenant = ?tenant_id,
-                            evicted_file = %file_to_delete.file_path,
-                            evicted_size = file_size,
-                            freed_total,
-                            new_available = stream_hot_tier.available_size,
-                            "evicted"
+                            candidate = %minute_to_delete.display(),
+                            target = %download_file_path.display(),
+                            "skip evict: candidate newer than target"
                         );
+                        continue;
+                    }
 
-                        if stream_hot_tier.available_size <= parquet_file_size {
-                            continue 'loop_files;
+                    let minute_to_delete_owned = minute_to_delete.to_path_buf();
+                    let mut minute_freed: u64 = 0;
+                    manifest.files.retain(|file| {
+                        let file_path = self.hot_tier_path.join(&file.file_path);
+                        let file_minute = file_path.parent().unwrap();
+                        if file_minute == minute_to_delete_owned {
+                            minute_freed = minute_freed.saturating_add(file.file_size);
+                            false
                         } else {
-                            break 'loop_dates;
+                            true
                         }
+                    });
+
+                    stream_hot_tier.used_size = stream_hot_tier
+                        .used_size
+                        .checked_sub(minute_freed)
+                        .unwrap_or_else(|| {
+                            tracing::error!(
+                                stream = %stream,
+                                tenant = ?tenant_id,
+                                minute = %minute_to_delete_owned.display(),
+                                minute_freed,
+                                used_size = stream_hot_tier.used_size,
+                                "minute_freed > used_size, clamping used_size to 0"
+                            );
+                            0
+                        });
+                    stream_hot_tier.available_size =
+                        stream_hot_tier.available_size.saturating_add(minute_freed);
+                    freed_total = freed_total.saturating_add(minute_freed);
+
+                    fs::write(manifest_file.path(), serde_json::to_vec(&manifest)?).await?;
+                    fs::remove_dir_all(&minute_to_delete_owned).await?;
+                    delete_empty_directory_hot_tier(minute_to_delete_owned.clone()).await?;
+                    self.put_hot_tier(stream, stream_hot_tier, tenant_id)
+                        .await?;
+                    delete_successful = true;
+                    info!(
+                        stream = %stream,
+                        tenant = ?tenant_id,
+                        evicted_minute = %minute_to_delete_owned.display(),
+                        evicted_size = minute_freed,
+                        freed_total,
+                        new_available = stream_hot_tier.available_size,
+                        "evicted"
+                    );
+                    if stream_hot_tier.available_size <= parquet_file_size {
+                        continue;
                     } else {
-                        fs::write(manifest_file.path(), serde_json::to_vec(&manifest)?).await?;
+                        break 'loop_dates;
                     }
                 }
             }
