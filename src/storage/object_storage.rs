@@ -302,7 +302,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         path: &RelativePath,
         tenant_id: &Option<String>,
     ) -> Result<ObjectMeta, ObjectStorageError>;
-    async fn buffered_write(
+    async fn parallel_chunked_download(
         &self,
         path: &RelativePath,
         tenant_id: &Option<String>,

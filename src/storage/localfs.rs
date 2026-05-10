@@ -106,7 +106,7 @@ impl LocalFS {
 
 #[async_trait]
 impl ObjectStorage for LocalFS {
-    async fn buffered_write(
+    async fn parallel_chunked_download(
         &self,
         path: &RelativePath,
         _tenant_id: &Option<String>,

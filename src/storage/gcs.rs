@@ -190,7 +190,10 @@ impl Gcs {
             .await
         {
             Ok(()) => {
-                tokio::fs::rename(&partial, &write_path).await?;
+                if let Err(e) = tokio::fs::rename(&partial, &write_path).await {
+                    let _ = tokio::fs::remove_file(&partial).await;
+                    return Err(e.into());
+                }
                 Ok(())
             }
             Err(e) => {
@@ -221,45 +224,39 @@ impl Gcs {
         file.set_len(total).await?;
         let std_file = Arc::new(file.into_std().await);
 
-        let chunk = PARSEABLE
-            .options
-            .hot_tier_download_chunk_size
-            .max(8 * 1024 * 1024);
-        let concurrency = PARSEABLE.options.hot_tier_download_concurrency.max(16);
+        let chunk = PARSEABLE.options.hot_tier_download_chunk_size;
+        let concurrency = PARSEABLE.options.hot_tier_download_concurrency;
         let ranges: Vec<Range<u64>> = (0..total)
             .step_by(chunk as usize)
             .map(|s| s..(s + chunk).min(total))
             .collect();
         let chunk_count = ranges.len() as u64;
         let client = self.client.clone();
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency as usize));
 
-        let mut handles = Vec::with_capacity(ranges.len());
-        for r in ranges {
-            let client = client.clone();
-            let src = src.clone();
-            let std_file = std_file.clone();
-            let semaphore = semaphore.clone();
-            handles.push(tokio::spawn(async move {
-                let _permit = semaphore
-                    .acquire_owned()
+        futures::stream::iter(ranges)
+            .map(|r| {
+                let client = client.clone();
+                let src = src.clone();
+                let std_file = std_file.clone();
+                let semaphore = semaphore.clone();
+                async move {
+                    let _permit = semaphore.acquire_owned().await.map_err(|e| {
+                        ObjectStorageError::Custom(format!("semaphore closed: {e}"))
+                    })?;
+                    let bytes = client.get_range(&src, r.clone()).await?;
+                    let offset = r.start;
+                    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+                        crate::storage::write_all_at(&std_file, &bytes, offset)
+                    })
                     .await
-                    .map_err(|e| ObjectStorageError::Custom(format!("semaphore closed: {e}")))?;
-                let bytes = client.get_range(&src, r.clone()).await?;
-                let offset = r.start;
-                tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-                    use std::os::unix::fs::FileExt;
-                    std_file.write_all_at(&bytes, offset)
-                })
-                .await
-                .map_err(|e| ObjectStorageError::Custom(format!("join: {e}")))??;
-                Ok::<_, ObjectStorageError>(())
-            }));
-        }
-        for h in handles {
-            h.await
-                .map_err(|e| ObjectStorageError::Custom(format!("join error: {e}")))??;
-        }
+                    .map_err(|e| ObjectStorageError::Custom(format!("join: {e}")))??;
+                    Ok::<_, ObjectStorageError>(())
+                }
+            })
+            .buffer_unordered(concurrency as usize)
+            .try_collect::<Vec<_>>()
+            .await?;
 
         let std_file_sync = std_file.clone();
         tokio::task::spawn_blocking(move || std_file_sync.sync_all())
@@ -540,7 +537,7 @@ impl Gcs {
 
 #[async_trait]
 impl ObjectStorage for Gcs {
-    async fn buffered_write(
+    async fn parallel_chunked_download(
         &self,
         path: &RelativePath,
         tenant_id: &Option<String>,

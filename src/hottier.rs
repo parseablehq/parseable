@@ -116,15 +116,19 @@ impl HotTierManager {
         if let Some(state) = self.state_cache.read().await.get(&key).cloned() {
             return Ok(state);
         }
-        let mut cache = self.state_cache.write().await;
-        if let Some(state) = cache.get(&key).cloned() {
-            return Ok(state);
-        }
+        // key not present, reconcile
         let sht = self.reconcile_stream(stream, tenant_id).await?;
         let state = Arc::new(StreamSyncState {
             sht: AsyncMutex::new(sht),
         });
-        cache.insert(key, state.clone());
+
+        let mut cache = self.state_cache.write().await;
+        if cache.insert(key, state.clone()).is_some() {
+            tracing::warn!(
+                "Key- {:?} was absent during read lock but already exists after reconcile!",
+                (tenant_id, stream),
+            );
+        };
         Ok(state)
     }
 
@@ -221,31 +225,41 @@ impl HotTierManager {
         stream: &str,
         tenant_id: &Option<String>,
     ) -> Result<(), HotTierError> {
-        let mut entries = fs::read_dir(date_dir).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            let p = entry.path();
-            let Some(name_os) = p.file_name() else {
-                continue;
-            };
-            let name = name_os.to_string_lossy();
-            if name.ends_with(".partial") {
-                let _ = fs::remove_file(&p).await;
-                *partials_removed += 1;
-                info!(
-                    stream = %stream,
-                    tenant = ?tenant_id,
-                    path = %p.display(),
-                    "reconcile: deleted partial orphan"
-                );
-                continue;
+        let mut stack: Vec<PathBuf> = vec![date_dir.clone()];
+        while let Some(dir) = stack.pop() {
+            let mut entries = fs::read_dir(&dir).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                let p = entry.path();
+                let ft = entry.file_type().await?;
+                if ft.is_dir() {
+                    stack.push(p);
+                    continue;
+                }
+                let Some(name_os) = p.file_name() else {
+                    continue;
+                };
+                let name = name_os.to_string_lossy();
+                if name.ends_with(".partial") {
+                    let _ = fs::remove_file(&p).await;
+                    *partials_removed += 1;
+                    info!(
+                        stream = %stream,
+                        tenant = ?tenant_id,
+                        path = %p.display(),
+                        "reconcile: deleted partial orphan"
+                    );
+                    continue;
+                }
+                if name.ends_with(".manifest.json") {
+                    continue;
+                }
+                if !ft.is_file() {
+                    continue;
+                }
+                if let Ok(rel) = p.strip_prefix(date_dir) {
+                    on_disk.insert(rel.to_string_lossy().into_owned());
+                }
             }
-            if name.ends_with(".manifest.json") {
-                continue;
-            }
-            if !p.is_file() {
-                continue;
-            }
-            on_disk.insert(name.into_owned());
         }
         Ok(())
     }
@@ -275,8 +289,8 @@ impl HotTierManager {
                 Err(_) => false,
             };
             if ok {
-                if let Some(name) = local.file_name().and_then(|s| s.to_str()) {
-                    keep_names.insert(name.to_owned());
+                if let Ok(rel) = local.strip_prefix(date_dir) {
+                    keep_names.insert(rel.to_string_lossy().into_owned());
                 }
                 *total_used += f.file_size;
                 kept.push(f);
@@ -493,7 +507,7 @@ impl HotTierManager {
         'a: 'static,
     {
         let latest_min = PARSEABLE.options.hot_tier_latest_minutes;
-        let historic_min = PARSEABLE.options.hot_tier_historic_sync_minutes.max(1);
+        let historic_min = PARSEABLE.options.hot_tier_historic_sync_minutes;
         info!(
             latest_minutes = latest_min,
             historic_sync_minutes = historic_min,
@@ -516,6 +530,21 @@ impl HotTierManager {
                 for stream in PARSEABLE.streams.list(&tenant_id) {
                     if this.check_stream_hot_tier_exists(&stream, &tenant_id) {
                         this.spawn_stream_tasks(stream, tenant_id.clone()).await;
+                    } else {
+                        // check for potential orphan directory on disk
+                        let path = if let Some(tenant_id) = tenant_id.as_ref() {
+                            self.hot_tier_path.join(tenant_id).join(stream)
+                        } else {
+                            self.hot_tier_path.join(stream)
+                        };
+                        if path.exists() {
+                            // delete this entire folder as stream meta says no hottier for stream
+                            if let Err(e) = fs::remove_dir_all(&path).await {
+                                tracing::error!(
+                                    "Unable to remove orphaned hottier dir- `{path:?}` with error- {e}"
+                                );
+                            };
+                        }
                     }
                 }
             }
@@ -538,9 +567,8 @@ impl HotTierManager {
         }
 
         let latest_interval = Duration::from_secs(60);
-        let historic_interval = Duration::from_secs(
-            PARSEABLE.options.hot_tier_historic_sync_minutes.max(1) as u64 * 60,
-        );
+        let historic_interval =
+            Duration::from_secs(PARSEABLE.options.hot_tier_historic_sync_minutes as u64 * 60);
 
         info!(stream = %stream, tenant = ?tenant_id, "spawning per-stream hot tier tasks");
 
@@ -588,6 +616,12 @@ impl HotTierManager {
         if let Some(t) = self.tasks.write().await.remove(&key) {
             t.latest.abort();
             t.historic.abort();
+
+            // run these tasks till completion or till JoinError
+            // post this, we delete the folders so its better if these tasks complete
+            // and then deletion happens
+            let _ = t.latest.await;
+            let _ = t.historic.await;
             info!(stream = %stream, tenant = ?tenant_id, "aborted per-stream hot tier tasks");
         }
     }
@@ -658,8 +692,9 @@ impl HotTierManager {
             return Ok(());
         }
 
-        let latest_minutes = PARSEABLE.options.hot_tier_latest_minutes.max(0);
-        let cutoff = chrono::Utc::now().naive_utc() - chrono::Duration::minutes(latest_minutes);
+        let latest_minutes = PARSEABLE.options.hot_tier_latest_minutes;
+        let cutoff = chrono::Utc::now().naive_utc()
+            - chrono::Duration::minutes(latest_minutes.try_into().unwrap());
 
         // Build flat work list: (date, file, local_path) ordered latest-date-first,
         // and within a date by descending file_path (matches old `pop()` order).
@@ -717,10 +752,7 @@ impl HotTierManager {
         );
 
         let state = self.get_or_load_state(stream, tenant_id).await?;
-        let concurrency = PARSEABLE
-            .options
-            .hot_tier_files_per_stream_concurrency
-            .max(4);
+        let concurrency = PARSEABLE.options.hot_tier_files_per_stream_concurrency;
 
         // Reservation failure (out of disk + nothing to evict) is sticky:
         // once one file can't be placed, no subsequent file will fit either.
@@ -896,7 +928,7 @@ impl HotTierManager {
         let download_result = PARSEABLE
             .storage
             .get_object_store()
-            .buffered_write(&parquet_file_path, tenant_id, parquet_path.clone())
+            .parallel_chunked_download(&parquet_file_path, tenant_id, parquet_path.clone())
             .await;
         let dl_elapsed = dl_start.elapsed();
 
@@ -1150,9 +1182,23 @@ impl HotTierManager {
         let mut delete_successful = false;
         let mut freed_total: u64 = 0;
         let dates = self.fetch_hot_tier_dates(stream, tenant_id).await?;
+        if dates.is_empty() {
+            info!(
+                stream = %stream,
+                tenant = ?tenant_id,
+                "eviction: no date dirs found, nothing to evict"
+            );
+        }
         'loop_dates: for date in dates {
             let path = self.get_stream_path_for_date(stream, &date, tenant_id);
             if !path.exists() {
+                info!(
+                    stream = %stream,
+                    tenant = ?tenant_id,
+                    date = %date,
+                    path = %path.display(),
+                    "eviction: date path missing, skipping"
+                );
                 continue;
             }
 
@@ -1164,11 +1210,27 @@ impl HotTierManager {
                     .to_string_lossy()
                     .ends_with(".manifest.json")
             });
+            if manifest_files.is_empty() {
+                info!(
+                    stream = %stream,
+                    tenant = ?tenant_id,
+                    date = %date,
+                    path = %path.display(),
+                    "eviction: no .manifest.json files in date dir"
+                );
+                continue;
+            }
             for manifest_file in manifest_files {
                 let file = fs::read(manifest_file.path()).await?;
                 let mut manifest: Manifest = serde_json::from_slice(&file)?;
 
                 if manifest.files.is_empty() {
+                    info!(
+                        stream = %stream,
+                        tenant = ?tenant_id,
+                        manifest = %manifest_file.path().display(),
+                        "eviction: manifest has zero file entries"
+                    );
                     continue;
                 }
 
@@ -1182,7 +1244,18 @@ impl HotTierManager {
                 let first_file_path = self.hot_tier_path.join(&first_file.file_path);
                 let minute_to_delete = first_file_path.parent().unwrap();
 
-                if minute_to_delete.exists() {
+                if !minute_to_delete.exists() {
+                    info!(
+                        stream = %stream,
+                        tenant = ?tenant_id,
+                        manifest = %manifest_file.path().display(),
+                        first_file = %first_file.file_path,
+                        minute = %minute_to_delete.display(),
+                        "eviction: minute dir referenced by manifest does not exist on disk"
+                    );
+                    continue;
+                }
+                {
                     if let (Some(download_date_time), Some(delete_date_time)) = (
                         extract_datetime(download_file_path.to_str().unwrap()),
                         extract_datetime(first_file_path.to_str().unwrap()),
@@ -1244,7 +1317,7 @@ impl HotTierManager {
                         new_available = stream_hot_tier.available_size,
                         "evicted"
                     );
-                    if stream_hot_tier.available_size <= parquet_file_size {
+                    if stream_hot_tier.available_size < parquet_file_size {
                         continue;
                     } else {
                         break 'loop_dates;
@@ -1263,7 +1336,7 @@ impl HotTierManager {
         Ok(delete_successful)
     }
 
-    ///check if the disk is available to download the parquet file
+    /// check if the disk is available to download the parquet file
     /// check if the disk usage is above the threshold
     pub async fn is_disk_available(&self, size_to_download: u64) -> Result<bool, HotTierError> {
         if let Some(DiskUtil {

@@ -224,7 +224,10 @@ impl BlobStore {
             .await
         {
             Ok(()) => {
-                tokio::fs::rename(&partial, &write_path).await?;
+                if let Err(e) = tokio::fs::rename(&partial, &write_path).await {
+                    let _ = tokio::fs::remove_file(&partial).await;
+                    return Err(e.into());
+                }
                 Ok(())
             }
             Err(e) => {
@@ -255,18 +258,15 @@ impl BlobStore {
         file.set_len(total).await?;
         let std_file = Arc::new(file.into_std().await);
 
-        let chunk = PARSEABLE
-            .options
-            .hot_tier_download_chunk_size
-            .max(8 * 1024 * 1024);
-        let concurrency = PARSEABLE.options.hot_tier_download_concurrency.max(6);
+        let chunk = PARSEABLE.options.hot_tier_download_chunk_size;
+        let concurrency = PARSEABLE.options.hot_tier_download_concurrency;
         let ranges: Vec<Range<u64>> = (0..total)
             .step_by(chunk as usize)
             .map(|s| s..(s + chunk).min(total))
             .collect();
         let chunk_count = ranges.len() as u64;
         let client = self.client.clone();
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency as usize));
 
         futures::stream::iter(ranges)
             .map(|r| {
@@ -281,15 +281,14 @@ impl BlobStore {
                     let bytes = client.get_range(&src, r.clone()).await?;
                     let offset = r.start;
                     tokio::task::spawn_blocking(move || -> std::io::Result<()> {
-                        use std::os::unix::fs::FileExt;
-                        std_file.write_all_at(&bytes, offset)
+                        crate::storage::write_all_at(&std_file, &bytes, offset)
                     })
                     .await
                     .map_err(|e| ObjectStorageError::Custom(format!("join: {e}")))??;
                     Ok::<_, ObjectStorageError>(())
                 }
             })
-            .buffer_unordered(concurrency)
+            .buffer_unordered(concurrency as usize)
             .try_collect::<Vec<_>>()
             .await?;
 
@@ -572,7 +571,7 @@ impl BlobStore {
 
 #[async_trait]
 impl ObjectStorage for BlobStore {
-    async fn buffered_write(
+    async fn parallel_chunked_download(
         &self,
         path: &RelativePath,
         tenant_id: &Option<String>,

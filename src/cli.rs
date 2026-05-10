@@ -317,6 +317,7 @@ pub struct Options {
     #[arg(
         long = "hot-tier-download-chunk-size",
         env = "P_HOT_TIER_DOWNLOAD_CHUNK_SIZE",
+        value_parser = clap::value_parser!(u64).range(5242880..),
         default_value = "8388608",
         help = "Chunk size in bytes for parallel hot tier downloads (default 8 MiB)"
     )]
@@ -325,10 +326,11 @@ pub struct Options {
     #[arg(
         long = "hot-tier-download-concurrency",
         env = "P_HOT_TIER_DOWNLOAD_CONCURRENCY",
+        value_parser = clap::value_parser!(u64).range(1..),
         default_value = "16",
         help = "Number of concurrent range requests per hot tier download"
     )]
-    pub hot_tier_download_concurrency: usize,
+    pub hot_tier_download_concurrency: u64,
 
     #[arg(
         long = "hot-tier-files-per-stream-concurrency",
@@ -341,14 +343,16 @@ pub struct Options {
     #[arg(
         long = "hot-tier-latest-minutes",
         env = "P_HOT_TIER_LATEST_MINUTES",
+        value_parser = clap::value_parser!(u64).range(1..),
         default_value = "10",
         help = "Files whose timestamp is within the last N minutes are 'latest'; rest are 'historic'."
     )]
-    pub hot_tier_latest_minutes: i64,
+    pub hot_tier_latest_minutes: u64,
 
     #[arg(
         long = "hot-tier-historic-sync-minutes",
         env = "P_HOT_TIER_HISTORIC_SYNC_MINUTES",
+        value_parser = clap::value_parser!(u32).range(1..),
         default_value = "5",
         help = "Interval (minutes) at which the historic hot-tier sync runs."
     )]
