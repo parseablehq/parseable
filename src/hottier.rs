@@ -45,7 +45,7 @@ use std::time::Duration;
 use sysinfo::Disks;
 use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{error, info};
+use tracing::{Instrument, error, info};
 
 pub const STREAM_HOT_TIER_FILENAME: &str = ".hot_tier.json";
 pub const MIN_STREAM_HOT_TIER_SIZE_BYTES: u64 = 10737418240; // 10 GiB
@@ -144,6 +144,12 @@ impl HotTierManager {
     /// deletes parquet files that exist but are not in their date manifest,
     /// then recomputes `used_size` / `available_size` from the cleaned
     /// manifests and persists the updated `StreamHotTier`.
+    #[tracing::instrument(
+        name = "hottier.reconcile_stream",
+        skip(self),
+        fields(stream = %stream, tenant = ?tenant_id),
+        err
+    )]
     async fn reconcile_stream(
         &self,
         stream: &str,
@@ -217,6 +223,11 @@ impl HotTierManager {
         Ok(sht)
     }
 
+    #[tracing::instrument(
+        name = "hottier.drop_partials",
+        skip(self, on_disk, partials_removed),
+        fields(stream = %stream, tenant = ?tenant_id, date_dir = %date_dir.display())
+    )]
     async fn drop_partials(
         &self,
         on_disk: &mut HashSet<String>,
@@ -227,10 +238,33 @@ impl HotTierManager {
     ) -> Result<(), HotTierError> {
         let mut stack: Vec<PathBuf> = vec![date_dir.clone()];
         while let Some(dir) = stack.pop() {
-            let mut entries = fs::read_dir(&dir).await?;
-            while let Some(entry) = entries.next_entry().await? {
+            let mut entries = fs::read_dir(&dir).await.map_err(|e| {
+                error!(
+                    stream = %stream,
+                    tenant = ?tenant_id,
+                    dir = ?dir,
+                    error = ?e
+                );
+                e
+            })?;
+            while let Some(entry) = entries.next_entry().await.map_err(|e| {
+                error!(
+                    stream = %stream,
+                    tenant = ?tenant_id,
+                    error = ?e
+                );
+                e
+            })? {
                 let p = entry.path();
-                let ft = entry.file_type().await?;
+                let ft = entry.file_type().await.map_err(|e| {
+                    error!(
+                        stream = %stream,
+                        tenant = ?tenant_id,
+                        entry = ?entry,
+                        error = ?e
+                    );
+                    e
+                })?;
                 if ft.is_dir() {
                     stack.push(p);
                     continue;
@@ -264,6 +298,11 @@ impl HotTierManager {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "hottier.clean_manifest",
+        skip(self, keep_names, total_used, entries_dropped),
+        fields(stream = %stream, tenant = ?tenant_id, date_dir = %date_dir.display())
+    )]
     async fn clean_manifest(
         &self,
         keep_names: &mut HashSet<String>,
@@ -275,7 +314,15 @@ impl HotTierManager {
     ) -> Result<(), HotTierError> {
         let manifest_path = date_dir.join("hottier.manifest.json");
         let mut manifest: Manifest = if manifest_path.exists() {
-            let bytes = fs::read(&manifest_path).await?;
+            let bytes = fs::read(&manifest_path).await.map_err(|e| {
+                error!(
+                    stream = %stream,
+                    tenant = ?tenant_id,
+                    manifest_path = ?manifest_path,
+                    error = ?e
+                );
+                e
+            })?;
             serde_json::from_slice(&bytes).unwrap_or_default()
         } else {
             Manifest::default()
@@ -310,7 +357,28 @@ impl HotTierManager {
 
         if manifest_path.exists() || !manifest.files.is_empty() {
             fs::create_dir_all(&date_dir).await?;
-            fs::write(&manifest_path, serde_json::to_vec(&manifest)?).await?;
+            fs::write(
+                &manifest_path,
+                serde_json::to_vec(&manifest).map_err(|e| {
+                    error!(
+                        stream = %stream,
+                        tenant = ?tenant_id,
+                        mainfest_path = ?manifest_path,
+                        error = ?e
+                    );
+                    e
+                })?,
+            )
+            .await
+            .map_err(|e| {
+                error!(
+                    stream = %stream,
+                    tenant = ?tenant_id,
+                    manifest_path = ?manifest_path,
+                    error = ?e
+                );
+                e
+            })?;
         }
         Ok(())
     }
@@ -327,6 +395,12 @@ impl HotTierManager {
     }
 
     /// get the total hot tier size for all streams
+    #[tracing::instrument(
+        name = "hottier.get_hot_tiers_size",
+        skip(self),
+        fields(current_stream = %current_stream, current_tenant = ?current_tenant_id),
+        err
+    )]
     pub async fn get_hot_tiers_size(
         &self,
         current_stream: &str,
@@ -358,6 +432,12 @@ impl HotTierManager {
     /// check disk usage and hot tier size of all other streams
     /// check if total hot tier size of all streams is less than max disk usage
     /// delete all the files from hot tier once validation is successful and hot tier is ready to be updated
+    #[tracing::instrument(
+        name = "hottier.validate_size",
+        skip(self),
+        fields(stream = %stream, tenant = ?tenant_id, size = stream_hot_tier_size),
+        err
+    )]
     pub async fn validate_hot_tier_size(
         &self,
         stream: &str,
@@ -420,6 +500,12 @@ impl HotTierManager {
     }
 
     /// get the hot tier metadata file for the stream
+    #[tracing::instrument(
+        name = "hottier.get_hot_tier",
+        skip(self),
+        fields(stream = %stream, tenant = ?tenant_id),
+        err
+    )]
     pub async fn get_hot_tier(
         &self,
         stream: &str,
@@ -442,6 +528,12 @@ impl HotTierManager {
         Ok(stream_hot_tier)
     }
 
+    #[tracing::instrument(
+        name = "hottier.delete_hot_tier",
+        skip(self),
+        fields(stream = %stream, tenant = ?tenant_id),
+        err
+    )]
     pub async fn delete_hot_tier(
         &self,
         stream: &str,
@@ -458,7 +550,14 @@ impl HotTierManager {
         } else {
             self.hot_tier_path.join(stream)
         };
-        fs::remove_dir_all(path).await?;
+        fs::remove_dir_all(path).await.map_err(|e| {
+            error!(
+                stream = %stream,
+                tenant = ?tenant_id,
+                error = ?e
+            );
+            e
+        })?;
         self.invalidate_state(stream, tenant_id).await;
 
         Ok(())
@@ -466,6 +565,12 @@ impl HotTierManager {
 
     /// put the hot tier metadata file for the stream
     /// set the updated_date_range in the hot tier metadata file
+    #[tracing::instrument(
+        name = "hottier.put_hot_tier",
+        skip(self, hot_tier),
+        fields(stream = %stream, tenant = ?tenant_id, size = hot_tier.size),
+        err
+    )]
     pub async fn put_hot_tier(
         &self,
         stream: &str,
@@ -502,6 +607,7 @@ impl HotTierManager {
     /// Discover hot-tier-enabled streams at boot and spawn a per-stream pair
     /// of (Latest, Historic) loops for each. New streams added later acquire
     /// their own loops via `spawn_stream_tasks` from the PUT hot-tier handler.
+    #[tracing::instrument(name = "hottier.startup", skip(self), err)]
     pub fn download_from_s3<'a>(&'a self) -> Result<(), HotTierError>
     where
         'a: 'static,
@@ -515,45 +621,54 @@ impl HotTierManager {
         );
 
         let this: &'static HotTierManager = self;
-        tokio::spawn(async move {
-            // pstats hot tier may need to be created on boot before any tasks
-            // can pick it up.
-            if let Err(e) = this.create_pstats_hot_tier().await {
-                tracing::error!("Skipping pstats hot tier creation because of error: {e}");
-            }
-            let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
-                tenants.into_iter().map(Some).collect::<Vec<_>>()
-            } else {
-                vec![None]
-            };
-            for tenant_id in tenants {
-                for stream in PARSEABLE.streams.list(&tenant_id) {
-                    if this.check_stream_hot_tier_exists(&stream, &tenant_id) {
-                        this.spawn_stream_tasks(stream, tenant_id.clone()).await;
-                    } else {
-                        // check for potential orphan directory on disk
-                        let path = if let Some(tenant_id) = tenant_id.as_ref() {
-                            self.hot_tier_path.join(tenant_id).join(stream)
+        let startup_span = tracing::info_span!("hottier.startup.bootstrap");
+        tokio::spawn(
+            async move {
+                // pstats hot tier may need to be created on boot before any tasks
+                // can pick it up.
+                if let Err(e) = this.create_pstats_hot_tier().await {
+                    tracing::error!("Skipping pstats hot tier creation because of error: {e}");
+                }
+                let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
+                    tenants.into_iter().map(Some).collect::<Vec<_>>()
+                } else {
+                    vec![None]
+                };
+                for tenant_id in tenants {
+                    for stream in PARSEABLE.streams.list(&tenant_id) {
+                        if this.check_stream_hot_tier_exists(&stream, &tenant_id) {
+                            this.spawn_stream_tasks(stream, tenant_id.clone()).await;
                         } else {
-                            self.hot_tier_path.join(stream)
-                        };
-                        if path.exists() {
-                            // delete this entire folder as stream meta says no hottier for stream
-                            if let Err(e) = fs::remove_dir_all(&path).await {
-                                tracing::error!(
-                                    "Unable to remove orphaned hottier dir- `{path:?}` with error- {e}"
-                                );
+                            // check for potential orphan directory on disk
+                            let path = if let Some(tenant_id) = tenant_id.as_ref() {
+                                self.hot_tier_path.join(tenant_id).join(stream)
+                            } else {
+                                self.hot_tier_path.join(stream)
                             };
+                            if path.exists() {
+                                // delete this entire folder as stream meta says no hottier for stream
+                                if let Err(e) = fs::remove_dir_all(&path).await {
+                                    tracing::error!(
+                                        "Unable to remove orphaned hottier dir- `{path:?}` with error- {e}"
+                                    );
+                                };
+                            }
                         }
                     }
                 }
             }
-        });
+            .instrument(startup_span),
+        );
         Ok(())
     }
 
     /// Spawn (Latest, Historic) loops for a single stream. Idempotent:
     /// if tasks already exist for this (tenant, stream), no-op.
+    #[tracing::instrument(
+        name = "hottier.spawn_stream_tasks",
+        skip(self),
+        fields(stream = %stream, tenant = ?tenant_id)
+    )]
     pub async fn spawn_stream_tasks(&'static self, stream: String, tenant_id: Option<String>) {
         let key: StreamKey = (tenant_id.clone(), stream.clone());
         {
@@ -576,13 +691,23 @@ impl HotTierManager {
         let t = tenant_id.clone();
         let latest = tokio::spawn(async move {
             loop {
-                info!(stream = %s, tenant = ?t, phase = ?SyncPhase::Latest, "stream tick fired");
-                if let Err(err) = self
-                    .process_stream(s.clone(), t.clone(), SyncPhase::Latest)
-                    .await
-                {
-                    error!(stream = %s, "latest sync error: {err:?}");
+                let tick_span = tracing::info_span!(
+                    "hottier.tick",
+                    stream = %s,
+                    tenant = ?t,
+                    phase = "latest"
+                );
+                async {
+                    info!("stream tick fired");
+                    if let Err(err) = self
+                        .process_stream(s.clone(), t.clone(), SyncPhase::Latest)
+                        .await
+                    {
+                        error!("latest sync error: {err:?}");
+                    }
                 }
+                .instrument(tick_span)
+                .await;
                 tokio::time::sleep(latest_interval).await;
             }
         });
@@ -591,13 +716,23 @@ impl HotTierManager {
         let t = tenant_id.clone();
         let historic = tokio::spawn(async move {
             loop {
-                info!(stream = %s, tenant = ?t, phase = ?SyncPhase::Historic, "stream tick fired");
-                if let Err(err) = self
-                    .process_stream(s.clone(), t.clone(), SyncPhase::Historic)
-                    .await
-                {
-                    error!(stream = %s, "historic sync error: {err:?}");
+                let tick_span = tracing::info_span!(
+                    "hottier.tick",
+                    stream = %s,
+                    tenant = ?t,
+                    phase = "historic"
+                );
+                async {
+                    info!("stream tick fired");
+                    if let Err(err) = self
+                        .process_stream(s.clone(), t.clone(), SyncPhase::Historic)
+                        .await
+                    {
+                        error!("historic sync error: {err:?}");
+                    }
                 }
+                .instrument(tick_span)
+                .await;
                 tokio::time::sleep(historic_interval).await;
             }
         });
@@ -628,6 +763,12 @@ impl HotTierManager {
 
     /// process the hot tier files for the stream
     /// delete the files from the hot tier directory if the available date range is outside the hot tier range
+    #[tracing::instrument(
+        name = "hottier.process_stream",
+        skip(self),
+        fields(stream = %stream, tenant = ?tenant_id, phase = ?phase),
+        err
+    )]
     async fn process_stream(
         &self,
         stream: String,
@@ -645,6 +786,12 @@ impl HotTierManager {
             .get_all_manifest_files(&stream, &tenant_id)
             .await
             .map_err(|e| {
+                error!(
+                    stream = %stream,
+                    tenant = ?tenant_id,
+                    phase = ?phase,
+                    error = ?e
+                );
                 HotTierError::ObjectStorageError(ObjectStorageError::MetastoreError(Box::new(
                     e.to_detail(),
                 )))
@@ -665,7 +812,16 @@ impl HotTierManager {
 
         let stream_start = std::time::Instant::now();
         self.process_manifest(&stream, &mut s3_manifest_file_list, &tenant_id, phase)
-            .await?;
+            .await
+            .map_err(|e| {
+                error!(
+                    stream = %stream,
+                    tenant = ?tenant_id,
+                    phase = ?phase,
+                    error = ?e
+                );
+                e
+            })?;
 
         info!(
             stream = %stream,
@@ -681,6 +837,11 @@ impl HotTierManager {
     /// collect all manifests from metastore for the date, sort the parquet file list
     /// in order to download the latest files first
     /// download the parquet files if not present in hot tier directory
+    #[tracing::instrument(
+        name = "hottier.process_manifest",
+        skip(self, manifest_files_to_download),
+        fields(stream = %stream, tenant = ?tenant_id, phase = ?phase, dates = manifest_files_to_download.len())
+    )]
     async fn process_manifest(
         &self,
         stream: &str,
@@ -809,6 +970,19 @@ impl HotTierManager {
     /// Returns false when no budget is available (caller should stop scheduling
     /// further work for this stream).
     #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(
+        name = "hottier.process_parquet_file",
+        skip(self, parquet_file, parquet_path, state),
+        fields(
+            stream = %stream,
+            tenant = ?tenant_id,
+            phase = ?phase,
+            date = %date,
+            file = %parquet_file.file_path,
+            file_size = parquet_file.file_size
+        ),
+        err
+    )]
     async fn process_parquet_file_concurrent(
         &self,
         stream: &str,
@@ -999,6 +1173,12 @@ impl HotTierManager {
     }
 
     ///fetch the list of dates available in the hot tier directory for the stream and sort them
+    #[tracing::instrument(
+        name = "hottier.fetch_dates",
+        skip(self),
+        fields(stream = %stream, tenant = ?tenant_id),
+        err
+    )]
     pub async fn fetch_hot_tier_dates(
         &self,
         stream: &str,
@@ -1112,6 +1292,12 @@ impl HotTierManager {
     }
 
     ///get the list of parquet files from the hot tier directory for the stream
+    #[tracing::instrument(
+        name = "hottier.get_parquet_files",
+        skip(self),
+        fields(stream = %stream, tenant = ?tenant_id),
+        err
+    )]
     pub async fn get_hot_tier_parquet_files(
         &self,
         stream: &str,
@@ -1164,6 +1350,12 @@ impl HotTierManager {
     /// check for the oldest entry to delete if the path exists in hot tier
     /// update the used and available size in the hot tier metadata
     /// loop if available size is still less than the parquet file size
+    #[tracing::instrument(
+        name = "hottier.cleanup_old_data",
+        skip(self, stream_hot_tier, download_file_path),
+        fields(stream = %stream, tenant = ?tenant_id, target_size = parquet_file_size),
+        err
+    )]
     pub async fn cleanup_hot_tier_old_data(
         &self,
         stream: &str,
@@ -1408,6 +1600,7 @@ impl HotTierManager {
         Ok(None)
     }
 
+    #[tracing::instrument(name = "hottier.put_internal_stream", skip(self), err)]
     pub async fn put_internal_stream_hot_tier(&self) -> Result<(), HotTierError> {
         let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
             tenants.into_iter().map(Some).collect()
@@ -1439,6 +1632,7 @@ impl HotTierManager {
     }
 
     /// Creates hot tier for pstats internal stream if the stream exists in storage
+    #[tracing::instrument(name = "hottier.create_pstats", skip(self), err)]
     async fn create_pstats_hot_tier(&self) -> Result<(), HotTierError> {
         let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
             tenants.into_iter().map(Some).collect()

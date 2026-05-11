@@ -364,6 +364,12 @@ impl S3 {
         }
     }
 
+    #[tracing::instrument(
+        name = "s3.parallel_download",
+        skip(self, partial_path),
+        fields(path = %path, tenant = ?tenant_id, total_bytes = tracing::field::Empty, chunks = tracing::field::Empty),
+        err
+    )]
     async fn _parallel_download_inner(
         &self,
         path: &RelativePath,
@@ -392,6 +398,9 @@ impl S3 {
             .map(|s| s..(s + chunk).min(total))
             .collect();
         let chunk_count = ranges.len() as u64;
+        tracing::Span::current()
+            .record("total_bytes", total)
+            .record("chunks", chunk_count);
         let client = Arc::new(self.client.clone());
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency as usize));
 
@@ -436,6 +445,12 @@ impl S3 {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "s3.get_object",
+        skip(self),
+        fields(path = %path, tenant = ?tenant_id, bytes = tracing::field::Empty),
+        err
+    )]
     async fn _get_object(
         &self,
         path: &RelativePath,
@@ -452,6 +467,7 @@ impl S3 {
         match resp {
             Ok(resp) => {
                 let body = resp.bytes().await?;
+                tracing::Span::current().record("bytes", body.len());
                 increment_files_scanned_in_object_store_calls_by_date(
                     "GET",
                     1,
@@ -470,6 +486,11 @@ impl S3 {
         }
     }
 
+    #[tracing::instrument(
+        name = "s3.put_object",
+        skip(self, resource),
+        fields(path = %path, tenant = ?tenant_id, bytes = resource.content_length())
+    )]
     async fn _put_object(
         &self,
         path: &RelativePath,
@@ -497,6 +518,12 @@ impl S3 {
         }
     }
 
+    #[tracing::instrument(
+        name = "s3.delete_prefix",
+        skip(self),
+        fields(prefix = %key, tenant = ?tenant_id, deleted = tracing::field::Empty, failed = tracing::field::Empty),
+        err
+    )]
     async fn _delete_prefix(
         &self,
         key: &str,
@@ -531,6 +558,9 @@ impl S3 {
         }
 
         let total_files = files_deleted + failed_deletes;
+        tracing::Span::current()
+            .record("deleted", files_deleted)
+            .record("failed", failed_deletes);
         increment_files_scanned_in_object_store_calls_by_date(
             "LIST",
             total_files,
@@ -553,6 +583,12 @@ impl S3 {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "s3.list_dates",
+        skip(self),
+        fields(stream = %stream, tenant = ?tenant_id, dates = tracing::field::Empty),
+        err
+    )]
     async fn _list_dates(
         &self,
         stream: &str,
@@ -595,10 +631,16 @@ impl S3 {
             .filter_map(|path| path.as_ref().strip_prefix(&prefix))
             .map(String::from)
             .collect();
+        tracing::Span::current().record("dates", dates.len());
 
         Ok(dates)
     }
 
+    #[tracing::instrument(
+        name = "s3.upload_file",
+        skip(self),
+        fields(key = %key, path = %path.display(), tenant = ?tenant_id)
+    )]
     async fn _upload_file(
         &self,
         key: &str,
@@ -628,6 +670,11 @@ impl S3 {
         }
     }
 
+    #[tracing::instrument(
+        name = "s3.upload_multipart",
+        skip(self),
+        fields(key = %key, path = %path.display(), tenant = ?tenant_id, total_bytes = tracing::field::Empty, parts = tracing::field::Empty)
+    )]
     async fn _upload_multipart(
         &self,
         key: &RelativePath,
@@ -684,6 +731,9 @@ impl S3 {
             let has_final_partial_part = !total_size.is_multiple_of(min_multipart_size);
             let num_full_parts = total_size / min_multipart_size;
             let total_parts = num_full_parts + if has_final_partial_part { 1 } else { 0 };
+            tracing::Span::current()
+                .record("total_bytes", total_size)
+                .record("parts", total_parts);
 
             // Upload each part with metrics
             for part_number in 0..(total_parts) {
@@ -767,6 +817,12 @@ impl ObjectStorage for S3 {
         self._upload_multipart(key, path, tenant_id).await
     }
 
+    #[tracing::instrument(
+        name = "s3.head",
+        skip(self),
+        fields(path = %path, tenant = ?tenant_id),
+        err
+    )]
     async fn head(
         &self,
         path: &RelativePath,
@@ -929,6 +985,12 @@ impl ObjectStorage for S3 {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "s3.delete_object",
+        skip(self),
+        fields(path = %path, tenant = ?tenant_id),
+        err
+    )]
     async fn delete_object(
         &self,
         path: &RelativePath,
@@ -953,12 +1015,25 @@ impl ObjectStorage for S3 {
         Ok(result?)
     }
 
+    #[tracing::instrument(
+        name = "s3.check",
+        skip(self),
+        fields(tenant = ?tenant_id),
+        err
+    )]
+    #[tracing::instrument(
+        name = "s3.check",
+        skip(self),
+        fields(tenant = ?tenant_id, ok = tracing::field::Empty),
+        err
+    )]
     async fn check(&self, tenant_id: &Option<String>) -> Result<(), ObjectStorageError> {
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let result = self
             .client
             .head(&to_object_store_path(&parseable_json_path()))
             .await;
+        tracing::Span::current().record("ok", result.is_ok());
         increment_object_store_calls_by_date(
             "HEAD",
             &Utc::now().date_naive().to_string(),

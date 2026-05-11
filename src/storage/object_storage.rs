@@ -98,6 +98,11 @@ pub(crate) struct UploadResult {
 }
 
 /// Handles the upload of a single parquet file
+#[tracing::instrument(
+    name = "object_store.upload_single_parquet",
+    skip(store, schema),
+    fields(stream = %stream_name, tenant = ?tenant_id, path = %path.display(), key = %stream_relative_path)
+)]
 async fn upload_single_parquet_file(
     store: Arc<dyn ObjectStorage>,
     path: std::path::PathBuf,
@@ -240,6 +245,11 @@ async fn calculate_stats_if_enabled(
 }
 
 /// Validates that a parquet file uploaded to object storage matches the staging file size
+#[tracing::instrument(
+    name = "object_store.validate_uploaded_parquet",
+    skip(store),
+    fields(stream = %stream_name, tenant = ?tenant_id, key = %stream_relative_path, expected_size)
+)]
 async fn validate_uploaded_parquet_file(
     store: &Arc<dyn ObjectStorage>,
     stream_relative_path: &str,
@@ -1004,6 +1014,12 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     // pick a better name
     fn get_bucket_name(&self) -> String;
 
+    #[tracing::instrument(
+        name = "object_store.upload_files_from_staging",
+        skip(self),
+        fields(stream = %stream_name, tenant = ?tenant_id),
+        err
+    )]
     async fn upload_files_from_staging(
         &self,
         stream_name: &str,
@@ -1033,6 +1049,18 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 }
 
 /// Processes parquet files concurrently and returns stats status and manifest files
+#[tracing::instrument(
+    name = "object_store.process_parquet_files",
+    skip(upload_context),
+    fields(
+        stream = %stream_name,
+        tenant = ?tenant_id,
+        parquet_count = tracing::field::Empty,
+        total_size_bytes = tracing::field::Empty,
+        smallest_date = tracing::field::Empty,
+        largest_date = tracing::field::Empty,
+    )
+)]
 async fn process_parquet_files(
     upload_context: &UploadContext,
     stream_name: &str,
@@ -1059,6 +1087,27 @@ async fn process_parquet_files(
         ret
     };
 
+    let mut total_size: u64 = 0;
+    let mut min_dt: Option<chrono::DateTime<Utc>> = None;
+    let mut max_dt: Option<chrono::DateTime<Utc>> = None;
+    for path in &parquet_paths {
+        if let Ok(meta) = path.metadata() {
+            total_size = total_size.saturating_add(meta.len());
+        }
+        if let Ok(dt) = extract_datetime_from_parquet_path_regex(path) {
+            min_dt = Some(min_dt.map_or(dt, |cur| cur.min(dt)));
+            max_dt = Some(max_dt.map_or(dt, |cur| cur.max(dt)));
+        }
+    }
+    let span = tracing::Span::current();
+    span.record("parquet_count", parquet_paths.len());
+    span.record("total_size_bytes", total_size);
+    if let Some(dt) = min_dt {
+        span.record("smallest_date", tracing::field::display(dt));
+    }
+    if let Some(dt) = max_dt {
+        span.record("largest_date", tracing::field::display(dt));
+    }
     // Spawn upload tasks for each parquet file
     for path in parquet_paths {
         spawn_parquet_upload_task(

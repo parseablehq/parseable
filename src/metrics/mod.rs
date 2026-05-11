@@ -389,6 +389,18 @@ pub static STORAGE_REQUEST_RESPONSE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
+pub static STORAGE_REQUESTS_INFLIGHT: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "storage_requests_inflight",
+            "Number of in-flight object store requests",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["provider", "method"],
+    )
+    .expect("metric can be created")
+});
+
 pub static TOTAL_METRICS_COLLECTED_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         Opts::new(
@@ -564,6 +576,9 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(STORAGE_REQUEST_RESPONSE_TIME.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(STORAGE_REQUESTS_INFLIGHT.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(TOTAL_METRICS_COLLECTED_BY_DATE.clone()))

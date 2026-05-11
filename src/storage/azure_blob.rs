@@ -237,6 +237,12 @@ impl BlobStore {
         }
     }
 
+    #[tracing::instrument(
+        name = "azure.parallel_download",
+        skip(self, partial_path),
+        fields(path = %path, tenant = ?tenant_id, total_bytes = tracing::field::Empty, chunks = tracing::field::Empty),
+        err
+    )]
     async fn _parallel_download_inner(
         &self,
         path: &RelativePath,
@@ -265,6 +271,9 @@ impl BlobStore {
             .map(|s| s..(s + chunk).min(total))
             .collect();
         let chunk_count = ranges.len() as u64;
+        tracing::Span::current()
+            .record("total_bytes", total)
+            .record("chunks", chunk_count);
         let client = self.client.clone();
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency as usize));
 
@@ -309,6 +318,12 @@ impl BlobStore {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "azure.get_object",
+        skip(self),
+        fields(path = %path, tenant = ?tenant_id, bytes = tracing::field::Empty),
+        err
+    )]
     async fn _get_object(
         &self,
         path: &RelativePath,
@@ -321,6 +336,7 @@ impl BlobStore {
         match resp {
             Ok(resp) => {
                 let body: Bytes = resp.bytes().await?;
+                tracing::Span::current().record("bytes", body.len());
                 increment_files_scanned_in_object_store_calls_by_date(
                     "GET",
                     1,
@@ -339,6 +355,11 @@ impl BlobStore {
         }
     }
 
+    #[tracing::instrument(
+        name = "azure.put_object",
+        skip(self, resource),
+        fields(path = %path, tenant = ?tenant_id, bytes = resource.content_length())
+    )]
     async fn _put_object(
         &self,
         path: &RelativePath,
@@ -362,6 +383,12 @@ impl BlobStore {
         }
     }
 
+    #[tracing::instrument(
+        name = "azure.delete_prefix",
+        skip(self),
+        fields(prefix = %key, tenant = ?tenant_id, deleted = tracing::field::Empty, failed = tracing::field::Empty),
+        err
+    )]
     async fn _delete_prefix(
         &self,
         key: &str,
@@ -392,6 +419,9 @@ impl BlobStore {
         }
 
         let total_files = files_deleted + failed_deletes;
+        tracing::Span::current()
+            .record("deleted", files_deleted)
+            .record("failed", failed_deletes);
         increment_files_scanned_in_object_store_calls_by_date(
             "LIST",
             total_files,
@@ -414,6 +444,12 @@ impl BlobStore {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "azure.list_dates",
+        skip(self),
+        fields(stream = %stream, tenant = ?tenant_id, dates = tracing::field::Empty),
+        err
+    )]
     async fn _list_dates(
         &self,
         stream: &str,
@@ -448,10 +484,16 @@ impl BlobStore {
             .filter_map(|path| path.as_ref().strip_prefix(&format!("{stream}/")))
             .map(String::from)
             .collect();
+        tracing::Span::current().record("dates", dates.len());
 
         Ok(dates)
     }
 
+    #[tracing::instrument(
+        name = "azure.upload_file",
+        skip(self),
+        fields(key = %key, path = %path.display(), tenant = ?tenant_id)
+    )]
     async fn _upload_file(
         &self,
         key: &str,
@@ -476,6 +518,11 @@ impl BlobStore {
         }
     }
 
+    #[tracing::instrument(
+        name = "azure.upload_multipart",
+        skip(self),
+        fields(key = %key, path = %path.display(), tenant = ?tenant_id, total_bytes = tracing::field::Empty)
+    )]
     async fn _upload_multipart(
         &self,
         key: &RelativePath,
@@ -488,6 +535,7 @@ impl BlobStore {
 
         let meta = file.metadata().await?;
         let total_size = meta.len() as usize;
+        tracing::Span::current().record("total_bytes", total_size);
         let min_multipart_size = PARSEABLE.options.min_multipart_size as usize;
         if total_size < min_multipart_size || !PARSEABLE.options.enable_multipart {
             let mut data = Vec::new();
@@ -601,6 +649,12 @@ impl ObjectStorage for BlobStore {
         self._upload_multipart(key, path, tenant_id).await
     }
 
+    #[tracing::instrument(
+        name = "azure.head",
+        skip(self),
+        fields(path = %path, tenant = ?tenant_id),
+        err
+    )]
     async fn head(
         &self,
         path: &RelativePath,
@@ -741,6 +795,12 @@ impl ObjectStorage for BlobStore {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "azure.delete_object",
+        skip(self),
+        fields(path = %path, tenant = ?tenant_id),
+        err
+    )]
     async fn delete_object(
         &self,
         path: &RelativePath,
@@ -765,11 +825,18 @@ impl ObjectStorage for BlobStore {
         Ok(result?)
     }
 
+    #[tracing::instrument(
+        name = "azure.check",
+        skip(self),
+        fields(tenant = ?tenant_id, ok = tracing::field::Empty),
+        err
+    )]
     async fn check(&self, tenant_id: &Option<String>) -> Result<(), ObjectStorageError> {
         let result = self
             .client
             .head(&to_object_store_path(&parseable_json_path()))
             .await;
+        tracing::Span::current().record("ok", result.is_ok());
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         increment_object_store_calls_by_date("HEAD", &Utc::now().date_naive().to_string(), tenant);
         if result.is_ok() {

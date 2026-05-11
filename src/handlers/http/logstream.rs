@@ -413,6 +413,11 @@ pub async fn get_stream_info(
     Ok((web::Json(stream_info), StatusCode::OK))
 }
 
+#[tracing::instrument(
+    name = "http.put_stream_hot_tier",
+    skip(req, logstream, hottier),
+    fields(stream = tracing::field::Empty, tenant = tracing::field::Empty, size = hottier.size)
+)]
 pub async fn put_stream_hot_tier(
     req: HttpRequest,
     logstream: Path<String>,
@@ -420,6 +425,9 @@ pub async fn put_stream_hot_tier(
 ) -> Result<impl Responder, StreamError> {
     let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    tracing::Span::current()
+        .record("stream", tracing::field::display(&stream_name))
+        .record("tenant", tracing::field::debug(&tenant_id));
     // For query mode, if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
@@ -478,12 +486,20 @@ pub async fn put_stream_hot_tier(
     ))
 }
 
+#[tracing::instrument(
+    name = "http.get_stream_hot_tier",
+    skip(req, logstream),
+    fields(stream = tracing::field::Empty, tenant = tracing::field::Empty)
+)]
 pub async fn get_stream_hot_tier(
     req: HttpRequest,
     logstream: Path<String>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    tracing::Span::current()
+        .record("stream", tracing::field::display(&stream_name))
+        .record("tenant", tracing::field::debug(&tenant_id));
     // For query mode, if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage
@@ -504,12 +520,20 @@ pub async fn get_stream_hot_tier(
     Ok((web::Json(meta), StatusCode::OK))
 }
 
+#[tracing::instrument(
+    name = "http.delete_stream_hot_tier",
+    skip(req, logstream),
+    fields(stream = tracing::field::Empty, tenant = tracing::field::Empty)
+)]
 pub async fn delete_stream_hot_tier(
     req: HttpRequest,
     logstream: Path<String>,
 ) -> Result<impl Responder, StreamError> {
     let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
+    tracing::Span::current()
+        .record("stream", tracing::field::display(&stream_name))
+        .record("tenant", tracing::field::debug(&tenant_id));
     // For query mode, if the stream not found in memory map,
     //check if it exists in the storage
     //create stream and schema from storage

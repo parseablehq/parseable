@@ -49,7 +49,7 @@ const OTEL_EXPORTER_OTLP_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
 ///
 /// Returns \`None\` when \`OTEL_EXPORTER_OTLP_ENDPOINT\` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is not set (OTEL disabled).
 /// The caller must call \`provider.shutdown()\` before process exit.
-pub fn init_tracing() -> Option<SdkTracerProvider> {
+pub fn init_tracing(service: &'static str) -> Option<SdkTracerProvider> {
     // Only used to decide whether OTEL is enabled; the SDK reads it again
     // from env to build the exporter (which also appends /v1/traces for HTTP).
     if std::env::var(OTEL_EXPORTER_OTLP_ENDPOINT).is_err()
@@ -101,7 +101,7 @@ pub fn init_tracing() -> Option<SdkTracerProvider> {
     // migration tables to rewrite attribute names across semconv versions —
     // so even if upstream semconv drifts, emitted telemetry remains translatable.
     let resource = Resource::builder_empty()
-        .with_service_name("parseable")
+        .with_service_name(service)
         .with_schema_url(
             std::iter::empty::<opentelemetry::KeyValue>(),
             "https://opentelemetry.io/schemas/1.56.0",
