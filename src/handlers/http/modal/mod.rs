@@ -160,6 +160,11 @@ pub trait ParseableServer {
             // Shutdown resource monitor
             let _ = resource_shutdown_tx.send(());
 
+            // Shutdown hottier
+            if let Some(ht_global) = HotTierManager::global() {
+                ht_global.abort_all().await;
+            }
+
             // Initiate graceful shutdown
             info!("Graceful shutdown of HTTP server triggered");
             srv_handle.stop(true).await;

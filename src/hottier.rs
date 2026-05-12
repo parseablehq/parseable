@@ -613,6 +613,16 @@ impl HotTierManager {
         Ok(path)
     }
 
+    #[tracing::instrument(name = "hottier.abort", skip(self))]
+    pub async fn abort_all(&self) {
+        let guard = self.tasks.write().await;
+        for (streamkey, task) in guard.iter() {
+            task.latest.abort();
+            task.historic.abort();
+            info!("aborted hot tier tasks for- {streamkey:?}");
+        }
+    }
+
     /// Discover hot-tier-enabled streams at boot and spawn a per-stream pair
     /// of (Latest, Historic) loops for each. New streams added later acquire
     /// their own loops via `spawn_stream_tasks` from the PUT hot-tier handler.
@@ -770,12 +780,6 @@ impl HotTierManager {
         if let Some(t) = self.tasks.write().await.remove(&key) {
             t.latest.abort();
             t.historic.abort();
-
-            // run these tasks till completion or till JoinError
-            // post this, we delete the folders so its better if these tasks complete
-            // and then deletion happens
-            let _ = t.latest.await;
-            let _ = t.historic.await;
             info!(stream = %stream, tenant = ?tenant_id, "aborted per-stream hot tier tasks");
         }
     }
