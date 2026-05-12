@@ -929,34 +929,24 @@ impl Metastore for ObjectStoreMetastore {
     }
 
     /// Fetch all `Manifest` files
-    async fn get_all_manifest_files(
+    async fn get_manifest_files_for_dates(
         &self,
         stream_name: &str,
         tenant_id: &Option<String>,
+        dates: &[String],
     ) -> Result<BTreeMap<String, Vec<Manifest>>, MetastoreError> {
         let mut result_file_list: BTreeMap<String, Vec<Manifest>> = BTreeMap::new();
-        let root = if let Some(tenant) = tenant_id {
-            format!("{tenant}/{stream_name}")
-        } else {
-            stream_name.into()
-        };
-        let resp = self.storage.list_with_delimiter(Some(root.into())).await?;
-
-        let dates = resp
-            .common_prefixes
-            .iter()
-            .flat_map(|path| path.parts())
-            .filter(|name| name.as_ref() != stream_name && name.as_ref() != STREAM_ROOT_DIRECTORY)
-            .map(|name| name.as_ref().to_string())
-            .collect::<Vec<_>>();
-
         for date in dates {
             let date_path = if let Some(tenant) = tenant_id {
-                object_store::path::Path::from(format!("{}/{}/{}", tenant, stream_name, &date))
+                object_store::path::Path::from(format!("{}/{}/{}", tenant, stream_name, date))
             } else {
-                object_store::path::Path::from(format!("{}/{}", stream_name, &date))
+                object_store::path::Path::from(format!("{}/{}", stream_name, date))
             };
-            let resp = self.storage.list_with_delimiter(Some(date_path)).await?;
+            let resp = match self.storage.list_with_delimiter(Some(date_path)).await {
+                Ok(r) => r,
+                Err(ObjectStorageError::NoSuchKey(_)) => continue,
+                Err(e) => return Err(e.into()),
+            };
 
             let manifest_paths: Vec<String> = resp
                 .objects
@@ -970,7 +960,6 @@ impl Metastore for ObjectStoreMetastore {
                     .storage
                     .get_object(&RelativePathBuf::from(path), tenant_id)
                     .await?;
-
                 result_file_list
                     .entry(date.clone())
                     .or_default()

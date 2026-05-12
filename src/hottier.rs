@@ -18,7 +18,7 @@
 
 use datafusion::common::HashSet;
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -34,7 +34,7 @@ use crate::{
     utils::{extract_datetime, human_size::bytes_to_human_size},
     validator::error::HotTierValidationError,
 };
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Timelike, Utc};
 use futures::{StreamExt, TryStreamExt, stream::FuturesUnordered};
 use futures_util::TryFutureExt;
 use object_store::{ObjectStoreExt, local::LocalFileSystem};
@@ -46,6 +46,15 @@ use sysinfo::Disks;
 use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
 use tracing::{Instrument, error, info};
+
+/// Floor a timestamp to the start of its minute (seconds + sub-second zeroed).
+/// Used to produce a stable per-tick anchor so all spans within one tick share
+/// the same cutoff value.
+fn floor_to_minute(ts: DateTime<Utc>) -> DateTime<Utc> {
+    ts.with_second(0)
+        .and_then(|t| t.with_nanosecond(0))
+        .unwrap_or(ts)
+}
 
 pub const STREAM_HOT_TIER_FILENAME: &str = ".hot_tier.json";
 pub const MIN_STREAM_HOT_TIER_SIZE_BYTES: u64 = 10737418240; // 10 GiB
@@ -622,6 +631,7 @@ impl HotTierManager {
 
         let this: &'static HotTierManager = self;
         let startup_span = tracing::info_span!("hottier.startup.bootstrap");
+        let span = startup_span.clone();
         tokio::spawn(
             async move {
                 // pstats hot tier may need to be created on boot before any tasks
@@ -637,7 +647,12 @@ impl HotTierManager {
                 for tenant_id in tenants {
                     for stream in PARSEABLE.streams.list(&tenant_id) {
                         if this.check_stream_hot_tier_exists(&stream, &tenant_id) {
-                            this.spawn_stream_tasks(stream, tenant_id.clone()).await;
+                            let tenant_id = tenant_id.clone();
+
+                            tokio::spawn(async move {
+                                this.spawn_stream_tasks(stream, tenant_id).await;
+                            }.instrument(span.clone()));
+                            tokio::time::sleep(Duration::from_secs(8)).await;
                         } else {
                             // check for potential orphan directory on disk
                             let path = if let Some(tenant_id) = tenant_id.as_ref() {
@@ -657,7 +672,7 @@ impl HotTierManager {
                     }
                 }
             }
-            .instrument(startup_span),
+            .instrument(startup_span.clone()),
         );
         Ok(())
     }
@@ -691,16 +706,18 @@ impl HotTierManager {
         let t = tenant_id.clone();
         let latest = tokio::spawn(async move {
             loop {
+                let anchor = floor_to_minute(Utc::now());
                 let tick_span = tracing::info_span!(
                     "hottier.tick",
                     stream = %s,
                     tenant = ?t,
-                    phase = "latest"
+                    phase = "latest",
+                    anchor = %anchor
                 );
                 async {
                     info!("stream tick fired");
                     if let Err(err) = self
-                        .process_stream(s.clone(), t.clone(), SyncPhase::Latest)
+                        .process_stream(s.clone(), t.clone(), SyncPhase::Latest, anchor)
                         .await
                     {
                         error!("latest sync error: {err:?}");
@@ -716,16 +733,18 @@ impl HotTierManager {
         let t = tenant_id.clone();
         let historic = tokio::spawn(async move {
             loop {
+                let anchor = floor_to_minute(Utc::now());
                 let tick_span = tracing::info_span!(
                     "hottier.tick",
                     stream = %s,
                     tenant = ?t,
-                    phase = "historic"
+                    phase = "historic",
+                    anchor = %anchor
                 );
                 async {
                     info!("stream tick fired");
                     if let Err(err) = self
-                        .process_stream(s.clone(), t.clone(), SyncPhase::Historic)
+                        .process_stream(s.clone(), t.clone(), SyncPhase::Historic, anchor)
                         .await
                     {
                         error!("historic sync error: {err:?}");
@@ -766,7 +785,7 @@ impl HotTierManager {
     #[tracing::instrument(
         name = "hottier.process_stream",
         skip(self),
-        fields(stream = %stream, tenant = ?tenant_id, phase = ?phase),
+        fields(stream = %stream, tenant = ?tenant_id, phase = ?phase, anchor = %anchor),
         err
     )]
     async fn process_stream(
@@ -774,44 +793,10 @@ impl HotTierManager {
         stream: String,
         tenant_id: Option<String>,
         phase: SyncPhase,
+        anchor: DateTime<Utc>,
     ) -> Result<(), HotTierError> {
-        info!(
-            stream = %stream,
-            tenant = ?tenant_id,
-            phase = ?phase,
-            "fetching manifest from metastore"
-        );
-        let mut s3_manifest_file_list = PARSEABLE
-            .metastore
-            .get_all_manifest_files(&stream, &tenant_id)
-            .await
-            .map_err(|e| {
-                error!(
-                    stream = %stream,
-                    tenant = ?tenant_id,
-                    phase = ?phase,
-                    error = ?e
-                );
-                HotTierError::ObjectStorageError(ObjectStorageError::MetastoreError(Box::new(
-                    e.to_detail(),
-                )))
-            })?;
-        let date_count = s3_manifest_file_list.len();
-        let total_files: usize = s3_manifest_file_list
-            .values()
-            .map(|m| m.iter().map(|x| x.files.len()).sum::<usize>())
-            .sum();
-        info!(
-            stream = %stream,
-            tenant = ?tenant_id,
-            phase = ?phase,
-            dates = date_count,
-            files = total_files,
-            "manifest fetched"
-        );
-
         let stream_start = std::time::Instant::now();
-        self.process_manifest(&stream, &mut s3_manifest_file_list, &tenant_id, phase)
+        self.process_manifest(&stream, &tenant_id, phase, anchor)
             .await
             .map_err(|e| {
                 error!(
@@ -833,34 +818,123 @@ impl HotTierManager {
         Ok(())
     }
 
-    /// process the hot tier files for the date for the stream
-    /// collect all manifests from metastore for the date, sort the parquet file list
-    /// in order to download the latest files first
-    /// download the parquet files if not present in hot tier directory
+    /// process the hot tier files for the stream
+    /// Determine the candidate dates for the current phase, fetch only those
+    /// manifests from the metastore, build a work list sorted newest-first by
+    /// file timestamp, then download via the existing reserve/commit flow.
     #[tracing::instrument(
         name = "hottier.process_manifest",
-        skip(self, manifest_files_to_download),
-        fields(stream = %stream, tenant = ?tenant_id, phase = ?phase, dates = manifest_files_to_download.len())
+        skip(self),
+        fields(
+            stream = %stream,
+            tenant = ?tenant_id,
+            phase = ?phase,
+            anchor = %anchor,
+            candidate_dates = tracing::field::Empty,
+            work_count = tracing::field::Empty,
+            total_bytes = tracing::field::Empty,
+        ),
+        err
     )]
     async fn process_manifest(
         &self,
         stream: &str,
-        manifest_files_to_download: &mut BTreeMap<String, Vec<Manifest>>,
         tenant_id: &Option<String>,
         phase: SyncPhase,
+        anchor: DateTime<Utc>,
     ) -> Result<(), HotTierError> {
-        if manifest_files_to_download.is_empty() {
+        let latest_minutes = PARSEABLE.options.hot_tier_latest_minutes;
+        let latest_window = chrono::Duration::minutes(latest_minutes.try_into().unwrap());
+        let historic_cutoff = anchor - latest_window;
+        let historic_cutoff_naive = historic_cutoff.naive_utc();
+        let today_date_key = format!("date={}", anchor.date_naive());
+
+        // Determine which date keys to fetch from the metastore this tick.
+        let candidate_dates: Vec<String> = match phase {
+            SyncPhase::Latest => {
+                // Dates covered by [historic_cutoff, anchor]. Usually just today,
+                // or today + yesterday if window crosses midnight.
+                let start = historic_cutoff.date_naive();
+                let end = anchor.date_naive();
+                let mut out = Vec::new();
+                let mut d = start;
+                while d <= end {
+                    out.push(format!("date={d}"));
+                    d = d.succ_opt().unwrap_or(d);
+                    if out.len() > 365 {
+                        break;
+                    }
+                }
+                out
+            }
+            SyncPhase::Historic => {
+                let local = self
+                    .fetch_hot_tier_dates(stream, tenant_id)
+                    .await
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|d| format!("date={d}"))
+                    .collect::<Vec<_>>();
+                let s3 = PARSEABLE
+                    .storage()
+                    .get_object_store()
+                    .list_dates(stream, tenant_id)
+                    .await
+                    .unwrap_or_default();
+
+                let mut union: std::collections::BTreeSet<String> = local.into_iter().collect();
+                union.extend(s3);
+
+                let mut out = Vec::new();
+                for date_key in union {
+                    // drop today and anything >= today (Latest handles those)
+                    if date_key.as_str() >= today_date_key.as_str() {
+                        continue;
+                    }
+                    if self.is_locally_complete(stream, &date_key, tenant_id).await {
+                        continue;
+                    }
+                    out.push(date_key);
+                }
+                // Newest-first: discover newest missing past date first.
+                out.sort();
+                out.reverse();
+                out
+            }
+        };
+        tracing::Span::current().record("candidate_dates", candidate_dates.len());
+
+        if candidate_dates.is_empty() {
+            info!(
+                stream = %stream,
+                tenant = ?tenant_id,
+                phase = ?phase,
+                "no candidate dates this tick"
+            );
             return Ok(());
         }
 
-        let latest_minutes = PARSEABLE.options.hot_tier_latest_minutes;
-        let cutoff = chrono::Utc::now().naive_utc()
-            - chrono::Duration::minutes(latest_minutes.try_into().unwrap());
+        let s3_manifests = PARSEABLE
+            .metastore
+            .get_manifest_files_for_dates(stream, tenant_id, &candidate_dates)
+            .await
+            .map_err(|e| {
+                error!(
+                    stream = %stream,
+                    tenant = ?tenant_id,
+                    phase = ?phase,
+                    error = ?e,
+                    "manifest fetch failed"
+                );
+                HotTierError::ObjectStorageError(ObjectStorageError::MetastoreError(Box::new(
+                    e.to_detail(),
+                )))
+            })?;
 
-        // Build flat work list: (date, file, local_path) ordered latest-date-first,
-        // and within a date by descending file_path (matches old `pop()` order).
-        let mut work: Vec<(NaiveDate, File, PathBuf)> = Vec::new();
-        for (str_date, manifest_files) in manifest_files_to_download.iter().rev() {
+        // Build flat work list across all candidate dates: keep only files
+        // matching this phase's cutoff and not already on disk.
+        let mut work: Vec<(NaiveDate, chrono::NaiveDateTime, File, PathBuf)> = Vec::new();
+        for (str_date, manifest_files) in s3_manifests.iter() {
             let date =
                 match NaiveDate::parse_from_str(str_date.trim_start_matches("date="), "%Y-%m-%d") {
                     Ok(d) => d,
@@ -870,30 +944,36 @@ impl HotTierManager {
                     }
                 };
 
-            let mut combined = Manifest::default();
             for storage_manifest in manifest_files {
-                combined.files.extend(storage_manifest.files.clone());
-            }
-            combined.files.sort_by_key(|f| f.file_path.clone());
-            while let Some(parquet_file) = combined.files.pop() {
-                let parquet_path = self.hot_tier_path.join(&parquet_file.file_path);
-                if parquet_path.exists() {
-                    continue;
-                }
-                let dt = extract_datetime(&parquet_file.file_path);
-                let is_latest = dt.map(|d| d >= cutoff).unwrap_or(false);
-                let keep = match phase {
-                    SyncPhase::Latest => is_latest,
-                    SyncPhase::Historic => !is_latest,
-                };
-                if keep {
-                    work.push((date, parquet_file, parquet_path));
+                for parquet_file in &storage_manifest.files {
+                    let parquet_path = self.hot_tier_path.join(&parquet_file.file_path);
+                    if parquet_path.exists() {
+                        continue;
+                    }
+                    let dt = match extract_datetime(&parquet_file.file_path) {
+                        Some(d) => d,
+                        None => continue,
+                    };
+                    let is_latest = dt >= historic_cutoff_naive;
+                    let keep = match phase {
+                        SyncPhase::Latest => is_latest,
+                        SyncPhase::Historic => !is_latest,
+                    };
+                    if keep {
+                        work.push((date, dt, parquet_file.clone(), parquet_path));
+                    }
                 }
             }
         }
 
+        // Newest first by file timestamp.
+        work.sort_by_key(|b| std::cmp::Reverse(b.1));
+
         let work_count = work.len();
-        let total_bytes: u64 = work.iter().map(|(_, f, _)| f.file_size).sum();
+        let total_bytes: u64 = work.iter().map(|(_, _, f, _)| f.file_size).sum();
+        tracing::Span::current()
+            .record("work_count", work_count)
+            .record("total_bytes", total_bytes);
         if work.is_empty() {
             info!(
                 stream = %stream,
@@ -923,7 +1003,7 @@ impl HotTierManager {
         let tenant_owned = tenant_id.clone();
 
         let results: Vec<Result<(), HotTierError>> = futures::stream::iter(work)
-            .map(|(date, file, parquet_path)| {
+            .map(|(date, _dt, file, parquet_path)| {
                 let state = state.clone();
                 let stream = stream_owned.clone();
                 let tenant_id = tenant_owned.clone();
@@ -1258,6 +1338,34 @@ impl HotTierManager {
                 .join(format!("date={date}"))
         } else {
             self.hot_tier_path.join(stream).join(format!("date={date}"))
+        }
+    }
+
+    /// A past date is treated as fully synced when its on-disk hottier
+    /// manifest exists and lists at least one parquet. Used by the Historic
+    /// phase to skip the metastore fetch for dates we already have data for.
+    /// `date_key` is the partition directory name (e.g. "date=2026-05-12").
+    async fn is_locally_complete(
+        &self,
+        stream: &str,
+        date_key: &str,
+        tenant_id: &Option<String>,
+    ) -> bool {
+        let date_dir = if let Some(tenant) = tenant_id.as_ref() {
+            self.hot_tier_path.join(tenant).join(stream).join(date_key)
+        } else {
+            self.hot_tier_path.join(stream).join(date_key)
+        };
+        let manifest_path = date_dir.join("hottier.manifest.json");
+        if !manifest_path.exists() {
+            return false;
+        }
+        match fs::read(&manifest_path).await {
+            Ok(bytes) => match serde_json::from_slice::<Manifest>(&bytes) {
+                Ok(m) => !m.files.is_empty(),
+                Err(_) => false,
+            },
+            Err(_) => false,
         }
     }
 

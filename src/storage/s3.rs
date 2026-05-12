@@ -318,9 +318,11 @@ impl ObjectStorageProvider for S3Config {
 
     fn construct_client(&self) -> Arc<dyn ObjectStorage> {
         let s3 = self.get_default_builder().build().unwrap();
-
+        // limit objectstore to a concurrent request limit
+        let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
+        let s3 = MetricLayer::new(s3, "s3");
         Arc::new(S3 {
-            client: s3,
+            client: Arc::new(s3),
             bucket: self.bucket_name.clone(),
             root: StorePath::from(""),
         })
@@ -333,7 +335,7 @@ impl ObjectStorageProvider for S3Config {
 
 #[derive(Debug)]
 pub struct S3 {
-    client: AmazonS3,
+    client: Arc<MetricLayer<LimitStore<AmazonS3>>>,
     bucket: String,
     root: StorePath,
 }

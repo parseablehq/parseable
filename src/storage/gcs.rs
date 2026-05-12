@@ -150,7 +150,9 @@ impl ObjectStorageProvider for GcsConfig {
 
     fn construct_client(&self) -> Arc<dyn ObjectStorage> {
         let gcs = self.get_default_builder().build().unwrap();
-
+        // limit objectstore to a concurrent request limit
+        let gcs = LimitStore::new(gcs, super::MAX_OBJECT_STORE_REQUESTS);
+        let gcs = MetricLayer::new(gcs, "gcs");
         Arc::new(Gcs {
             client: Arc::new(gcs),
             bucket: self.bucket_name.clone(),
@@ -172,7 +174,7 @@ impl ObjectStorageProvider for GcsConfig {
 
 #[derive(Debug)]
 pub struct Gcs {
-    client: Arc<GoogleCloudStorage>,
+    client: Arc<MetricLayer<LimitStore<GoogleCloudStorage>>>,
     bucket: String,
     root: StorePath,
 }
