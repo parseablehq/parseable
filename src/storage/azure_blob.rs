@@ -188,7 +188,7 @@ impl ObjectStorageProvider for AzureBlobConfig {
         let azure = self.get_default_builder().build().unwrap();
         // limit objectstore to a concurrent request limit
         let azure = LimitStore::new(azure, super::MAX_OBJECT_STORE_REQUESTS);
-        let azure = MetricLayer::new(azure, "azure");
+        let azure = MetricLayer::new(azure, "azure_blob");
         Arc::new(BlobStore {
             client: Arc::new(azure),
             account: self.account.clone(),

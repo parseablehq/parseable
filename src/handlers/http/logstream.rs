@@ -450,7 +450,6 @@ pub async fn put_stream_hot_tier(
 
     validator::hot_tier(&hottier.size.to_string())?;
 
-    stream.set_hot_tier(Some(hottier.clone()));
     let Some(hot_tier_manager) = GLOBAL_HOTTIER.get() else {
         return Err(StreamError::HotTierNotEnabled(stream_name));
     };
@@ -458,7 +457,7 @@ pub async fn put_stream_hot_tier(
         .validate_hot_tier_size(&stream_name, hottier.size, &tenant_id)
         .await?;
     hottier.used_size = existing_hot_tier_used_size;
-    hottier.available_size = hottier.size;
+    hottier.available_size = hottier.size.saturating_sub(existing_hot_tier_used_size);
     hottier.version = Some(CURRENT_HOT_TIER_VERSION.to_string());
     hot_tier_manager
         .put_hot_tier(&stream_name, &mut hottier, &tenant_id)
@@ -477,6 +476,7 @@ pub async fn put_stream_hot_tier(
         .metastore
         .put_stream_json(&stream_metadata, &stream_name, &tenant_id)
         .await?;
+    stream.set_hot_tier(Some(hottier.clone()));
     let stream = stream_name.clone();
     let tenant = tenant_id.clone();
     hot_tier_manager

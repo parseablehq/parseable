@@ -306,14 +306,6 @@ pub struct Options {
     )]
     pub local_staging_path: PathBuf,
 
-    // trace modules
-    #[arg(
-        long,
-        env = "P_TRACE_MODULES",
-        help = "Comma separated values for modules to trace"
-    )]
-    pub trace_modules: Option<String>,
-
     #[arg(
         long = "hot-tier-path",
         env = "P_HOT_TIER_DIR",

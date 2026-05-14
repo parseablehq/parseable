@@ -18,7 +18,7 @@
 
 use datafusion::common::HashSet;
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     io,
     path::{Path, PathBuf},
     sync::{Arc, OnceLock},
@@ -45,7 +45,7 @@ use std::time::Duration;
 use sysinfo::Disks;
 use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{Instrument, error, info, warn};
+use tracing::{Instrument, error, info};
 
 pub enum HotTierMessage {
     StartTask(StreamKey),
@@ -169,13 +169,6 @@ pub async fn hottier_runtime(
             }
             HotTierMessage::StartAll => {
                 let htm = GLOBAL_HOTTIER.get().unwrap();
-                let latest_min = PARSEABLE.options.hot_tier_latest_minutes;
-                let historic_min = PARSEABLE.options.hot_tier_historic_sync_minutes;
-                info!(
-                    latest_minutes = latest_min,
-                    historic_sync_minutes = historic_min,
-                    "hot tier scheduler starting"
-                );
 
                 let this: &'static HotTierManager = htm;
                 let startup_span = tracing::info_span!("hottier.startup.bootstrap");
@@ -308,7 +301,6 @@ impl HotTierManager {
         stream: &str,
         tenant_id: &Option<String>,
     ) -> Result<StreamHotTier, HotTierError> {
-        info!(stream = %stream, tenant = ?tenant_id, "reconcile starting");
         let mut sht = self.get_hot_tier(stream, tenant_id).await?;
         let dates = self.fetch_hot_tier_dates(stream, tenant_id).await?;
         let mut total_used: u64 = 0;
@@ -922,318 +914,299 @@ impl HotTierManager {
         phase: SyncPhase,
         anchor: DateTime<Utc>,
     ) -> Result<(), HotTierError> {
-        // Load state up-front so the Historic candidate filter can consult
-        // `completed_dates` and so post-download completion marking has
-        // somewhere to write. Lazy-cached; steady-state cost is zero.
         let state = self.get_or_load_state(stream, tenant_id).await?;
         let latest_minutes = PARSEABLE.options.hot_tier_latest_minutes;
-        let latest_window = chrono::Duration::minutes(latest_minutes as i64);
-        let historic_cutoff = anchor - latest_window;
-        let historic_cutoff_naive = historic_cutoff.naive_utc();
+        let historic_cutoff = anchor - chrono::Duration::minutes(latest_minutes as i64);
         let today_date_key = format!("date={}", anchor.date_naive());
 
-        // Determine which date keys to fetch from the metastore this tick.
-        let candidate_dates: Vec<String> = match phase {
-            SyncPhase::Latest => {
-                // Dates covered by [historic_cutoff, anchor]. Usually just today,
-                // or today + yesterday if window crosses midnight.
-                let start = historic_cutoff.date_naive();
-                let end = anchor.date_naive();
-                let mut out = Vec::new();
-                let mut d = start;
-                while d <= end {
-                    out.push(format!("date={d}"));
-                    d = d.succ_opt().unwrap_or(d);
-                    // if out.len() > 365 {
-                    //     break;
-                    // }
-                }
-                out
-            }
+        let candidate_dates = match phase {
+            SyncPhase::Latest => Self::latest_candidate_dates(historic_cutoff, anchor),
             SyncPhase::Historic => {
-                let local = self
-                    .fetch_hot_tier_dates(stream, tenant_id)
+                self.historic_candidate_dates(stream, tenant_id, &state, &today_date_key)
                     .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|d| format!("date={d}"))
-                    .collect::<Vec<_>>();
-                info!(
-                    stream = ?stream,
-                    tenant_id=?tenant_id,
-                    local_dates=?local
-                );
-                let s3 = PARSEABLE
-                    .hottier_connection_pool
-                    .list_dates(stream, tenant_id)
-                    .await
-                    .unwrap_or_default();
-                info!(
-                    stream = ?stream,
-                    tenant_id=?tenant_id,
-                    s3_dates=?s3
-                );
-                let mut union: std::collections::BTreeSet<String> = local.into_iter().collect();
-                union.extend(s3);
-
-                let mut out = {
-                    let completed = state.completed_dates.read().await;
-                    info!(
-                        stream = ?stream,
-                        tenant_id=?tenant_id,
-                        completed_dates_len=?completed.len(),
-                        "acquired completed_dates lock"
-                    );
-                    let mut out = Vec::new();
-                    for date_key in union {
-                        // drop today and anything >= today (Latest handles those)
-                        if date_key.as_str() >= today_date_key.as_str() {
-                            continue;
-                        }
-                        if completed.contains(&date_key) {
-                            continue;
-                        }
-                        out.push(date_key);
-                    }
-
-                    info!(
-                        stream = ?stream,
-                        tenant_id=?tenant_id,
-                        "dropping completed_dates lock"
-                    );
-                    out
-                };
-                info!(
-                    stream = ?stream,
-                    tenant_id=?tenant_id,
-                    "dropped completed_dates lock"
-                );
-                // Newest-first: discover newest missing past date first.
-                out.sort();
-                out.reverse();
-                info!(
-                    stream = ?stream,
-                    tenant_id=?tenant_id,
-                    selected_dates=?out
-                );
-                out
             }
         };
 
         if candidate_dates.is_empty() {
-            info!(
-                stream = %stream,
-                tenant = ?tenant_id,
-                phase = ?phase,
-                "no candidate dates this tick"
-            );
+            info!(stream = %stream, tenant = ?tenant_id, phase = ?phase, "no candidate dates this tick");
             return Ok(());
         }
 
-        let s3_manifests = PARSEABLE
-            .metastore
-            .get_manifest_files_for_dates(stream, tenant_id, &candidate_dates)
-            .await
-            .map_err(|e| {
-                error!(
-                    stream = %stream,
-                    tenant = ?tenant_id,
-                    phase = ?phase,
-                    error = ?e,
-                    "manifest fetch failed"
-                );
-                HotTierError::ObjectStorageError(ObjectStorageError::MetastoreError(Box::new(
-                    e.to_detail(),
-                )))
-            })?;
-        warn!("fetched manifests {stream}");
-        // Build flat work list across all candidate dates: keep only files
-        // matching this phase's cutoff and not already on disk.
-        let mut work: Vec<(NaiveDate, chrono::NaiveDateTime, File, PathBuf)> = Vec::new();
-        for (str_date, manifest_files) in s3_manifests.iter() {
-            let date =
-                match NaiveDate::parse_from_str(str_date.trim_start_matches("date="), "%Y-%m-%d") {
-                    Ok(d) => d,
-                    Err(_) => {
-                        info!("Invalid date format: {}", str_date);
-                        continue;
-                    }
-                };
+        let s3_manifests = self
+            .fetch_manifests(stream, tenant_id, phase, &candidate_dates)
+            .await?;
 
-            for storage_manifest in manifest_files {
-                for parquet_file in &storage_manifest.files {
-                    let parquet_path = self.hot_tier_path.join(&parquet_file.file_path);
-                    if parquet_path.exists() {
-                        continue;
-                    }
-                    let dt = match extract_datetime(&parquet_file.file_path) {
-                        Some(d) => d,
-                        None => continue,
-                    };
-                    let is_latest = dt >= historic_cutoff_naive;
-                    let keep = match phase {
-                        SyncPhase::Latest => is_latest,
-                        SyncPhase::Historic => !is_latest,
-                    };
-                    if keep {
-                        work.push((date, dt, parquet_file.clone(), parquet_path));
-                    }
-                }
-            }
-        }
-
-        // Newest first by file timestamp.
+        let mut work = self.build_work_list(&s3_manifests, historic_cutoff.naive_utc(), phase);
         work.sort_by_key(|b| std::cmp::Reverse(b.1));
-        warn!("made work list {stream}");
-        // Historic ticks cap per-tick work so a fresh stream with months of
-        // backlog doesn't pin the loop for tens of minutes. Remainder flows
-        // through subsequent Historic ticks. Latest stays uncapped — its
-        // window is already time-bounded.
-        let per_tick_cap = PARSEABLE.options.historic_per_tick_cap as usize;
-        let truncated = if matches!(phase, SyncPhase::Historic) && work.len() > per_tick_cap {
-            let dropped = work.len() - per_tick_cap;
-            work.truncate(per_tick_cap);
-            warn!("truncated work list {stream} {dropped}");
-            dropped
-        } else {
-            0
-        };
+        let truncated = Self::cap_historic_work(&mut work, phase);
 
-        let work_count = work.len();
         let total_bytes: u64 = work.iter().map(|(_, _, f, _)| f.file_size).sum();
         tracing::Span::current()
-            .record("work_count", work_count)
+            .record("work_count", work.len())
             .record("total_bytes", total_bytes);
         if truncated > 0 {
             info!(
-                stream = %stream,
-                tenant = ?tenant_id,
-                phase = ?phase,
-                cap = per_tick_cap,
+                stream = %stream, tenant = ?tenant_id, phase = ?phase,
+                cap = PARSEABLE.options.historic_per_tick_cap as usize,
                 deferred = truncated,
                 "historic per-tick cap hit; deferring rest to next tick"
             );
         }
         if work.is_empty() {
-            info!(
-                stream = %stream,
-                tenant = ?tenant_id,
-                phase = ?phase,
-                "no files to download this tick"
-            );
+            info!(stream = %stream, tenant = ?tenant_id, phase = ?phase, "no files to download this tick");
             return Ok(());
         }
-        info!(
-            stream = %stream,
-            tenant = ?tenant_id,
-            phase = ?phase,
-            work_count,
-            total_bytes,
-            "work list built"
-        );
 
+        self.download_work(stream, tenant_id, phase, &state, work)
+            .await?;
+
+        if matches!(phase, SyncPhase::Historic) && truncated == 0 {
+            self.mark_complete_dates(stream, tenant_id, &state, &candidate_dates, &s3_manifests)
+                .await;
+        }
+
+        Ok(())
+    }
+
+    /// Dates covered by `[historic_cutoff, anchor]`. Usually today, or
+    /// today + yesterday when latest window crosses midnight.
+    fn latest_candidate_dates(
+        historic_cutoff: DateTime<Utc>,
+        anchor: DateTime<Utc>,
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut d = historic_cutoff.date_naive();
+        let end = anchor.date_naive();
+        while d <= end {
+            out.push(format!("date={d}"));
+            d = d.succ_opt().unwrap_or(d);
+        }
+        out
+    }
+
+    /// Union of local hot-tier dates and S3 dates, minus today and dates
+    /// already marked complete. Newest-first.
+    async fn historic_candidate_dates(
+        &self,
+        stream: &str,
+        tenant_id: &Option<String>,
+        state: &Arc<StreamSyncState>,
+        today_date_key: &str,
+    ) -> Vec<String> {
+        let local = self
+            .fetch_hot_tier_dates(stream, tenant_id)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| format!("date={d}"));
+        let s3 = PARSEABLE
+            .hottier_connection_pool
+            .list_dates(stream, tenant_id)
+            .await
+            .unwrap_or_default();
+        let mut union: std::collections::BTreeSet<String> = local.collect();
+        union.extend(s3);
+
+        let completed = state.completed_dates.read().await;
+        let mut out: Vec<String> = union
+            .into_iter()
+            .filter(|d| d.as_str() < today_date_key && !completed.contains(d))
+            .collect();
+        out.sort();
+        out.reverse();
+        out
+    }
+
+    async fn fetch_manifests(
+        &self,
+        stream: &str,
+        tenant_id: &Option<String>,
+        phase: SyncPhase,
+        candidate_dates: &[String],
+    ) -> Result<BTreeMap<String, Vec<Manifest>>, HotTierError> {
+        PARSEABLE
+            .metastore
+            .get_manifest_files_for_dates(stream, tenant_id, candidate_dates)
+            .await
+            .map_err(|e| {
+                error!(
+                    stream = %stream, tenant = ?tenant_id, phase = ?phase,
+                    error = ?e, "manifest fetch failed"
+                );
+                HotTierError::ObjectStorageError(ObjectStorageError::MetastoreError(Box::new(
+                    e.to_detail(),
+                )))
+            })
+    }
+
+    /// Flatten manifests into work list. Keep only files matching this
+    /// phase's cutoff and not already on disk.
+    fn build_work_list(
+        &self,
+        s3_manifests: &BTreeMap<String, Vec<Manifest>>,
+        historic_cutoff_naive: chrono::NaiveDateTime,
+        phase: SyncPhase,
+    ) -> Vec<(NaiveDate, chrono::NaiveDateTime, File, PathBuf)> {
+        let mut work = Vec::new();
+        for (str_date, manifest_files) in s3_manifests.iter() {
+            let Some(date) = Self::parse_date_key(str_date) else {
+                continue;
+            };
+            for manifest in manifest_files {
+                for parquet_file in &manifest.files {
+                    if let Some(item) =
+                        self.work_item_for(parquet_file, date, historic_cutoff_naive, phase)
+                    {
+                        work.push(item);
+                    }
+                }
+            }
+        }
+        work
+    }
+
+    fn parse_date_key(str_date: &str) -> Option<NaiveDate> {
+        match NaiveDate::parse_from_str(str_date.trim_start_matches("date="), "%Y-%m-%d") {
+            Ok(d) => Some(d),
+            Err(_) => {
+                error!("Invalid date format: {}", str_date);
+                None
+            }
+        }
+    }
+
+    fn work_item_for(
+        &self,
+        parquet_file: &File,
+        date: NaiveDate,
+        historic_cutoff_naive: chrono::NaiveDateTime,
+        phase: SyncPhase,
+    ) -> Option<(NaiveDate, chrono::NaiveDateTime, File, PathBuf)> {
+        let parquet_path = self.hot_tier_path.join(&parquet_file.file_path);
+        if parquet_path.exists() {
+            return None;
+        }
+        let dt = extract_datetime(&parquet_file.file_path)?;
+        let is_latest = dt >= historic_cutoff_naive;
+        let keep = match phase {
+            SyncPhase::Latest => is_latest,
+            SyncPhase::Historic => !is_latest,
+        };
+        keep.then(|| (date, dt, parquet_file.clone(), parquet_path))
+    }
+
+    /// Historic ticks cap per-tick work. Returns count truncated (0 for Latest).
+    fn cap_historic_work(
+        work: &mut Vec<(NaiveDate, chrono::NaiveDateTime, File, PathBuf)>,
+        phase: SyncPhase,
+    ) -> usize {
+        if !matches!(phase, SyncPhase::Historic) {
+            return 0;
+        }
+        let cap = PARSEABLE.options.historic_per_tick_cap as usize;
+        if work.len() <= cap {
+            return 0;
+        }
+        let dropped = work.len() - cap;
+        work.truncate(cap);
+        dropped
+    }
+
+    async fn download_work(
+        &self,
+        stream: &str,
+        tenant_id: &Option<String>,
+        phase: SyncPhase,
+        state: &Arc<StreamSyncState>,
+        work: Vec<(NaiveDate, chrono::NaiveDateTime, File, PathBuf)>,
+    ) -> Result<(), HotTierError> {
         let concurrency = PARSEABLE.options.hot_tier_files_per_stream_concurrency;
-
-        // Reservation failure (out of disk + nothing to evict) is sticky:
-        // once one file can't be placed, no subsequent file will fit either.
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-
         let stream_owned = stream.to_owned();
         let tenant_owned = tenant_id.clone();
 
-        // take lock over sht and reserve
-        // for all files in worklist
-        warn!("reserving for {stream}");
         let reserved = {
             let mut sht = state.sht.lock().await;
             self.reserve_disk_budget(stream, &work, tenant_id, phase, &mut sht)
                 .await?
         };
-        warn!("reserved {reserved} for {stream}");
-        let results: Vec<Result<(), HotTierError>> = if reserved {
-            futures::stream::iter(work)
-                .map(|(date, _dt, file, parquet_path)| {
-                    let state = state.clone();
-                    let stream = stream_owned.clone();
-                    let tenant_id = tenant_owned.clone();
-                    let stop = stop.clone();
-                    async move {
-                        warn!("processing {parquet_path:?} for {stream}");
-                        if stop.load(std::sync::atomic::Ordering::Relaxed) {
-                            return Ok(());
-                        }
-                        let processed = self
-                            .process_parquet_file_concurrent(
-                                &stream,
-                                &file,
-                                parquet_path,
-                                date,
-                                &tenant_id,
-                                &state,
-                                phase,
-                            )
-                            .await?;
-                        warn!("processed for {stream}\n");
-                        if !processed && !stop.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                            info!(
-                                stream = %stream,
-                                tenant = ?tenant_id,
-                                phase = ?phase,
-                                "sticky stop: halting further reservations this tick"
-                            );
-                            warn!("stopping reservations for {stream}");
-                        }
-                        Ok(())
+        if !reserved {
+            return Ok(());
+        }
+
+        let results: Vec<Result<(), HotTierError>> = futures::stream::iter(work)
+            .map(|(date, _dt, file, parquet_path)| {
+                let state = state.clone();
+                let stream = stream_owned.clone();
+                let tenant_id = tenant_owned.clone();
+                let stop = stop.clone();
+                async move {
+                    if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        return Ok(());
                     }
-                })
-                .buffered(concurrency as usize)
-                .collect()
-                .await
-        } else {
-            vec![]
-        };
+                    let processed = self
+                        .process_parquet_file_concurrent(
+                            &stream,
+                            &file,
+                            parquet_path,
+                            date,
+                            &tenant_id,
+                            &state,
+                            phase,
+                        )
+                        .await?;
+                    if !processed && !stop.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        info!(
+                            stream = %stream, tenant = ?tenant_id, phase = ?phase,
+                            "sticky stop: halting further reservations this tick"
+                        );
+                    }
+                    Ok(())
+                }
+            })
+            .buffered(concurrency as usize)
+            .collect()
+            .await;
 
         for r in results {
             r?;
         }
+        Ok(())
+    }
 
-        // Mark Historic candidate dates as complete when local count now
-        // matches the S3 manifest count. Skip when truncation deferred work
-        // — by definition more files exist than we downloaded.
-        if matches!(phase, SyncPhase::Historic) && truncated == 0 {
-            let mut newly_complete = Vec::new();
-            for date_key in &candidate_dates {
-                let s3_count: usize = s3_manifests
-                    .get(date_key)
-                    .map(|v| v.iter().map(|m| m.files.len()).sum())
-                    .unwrap_or(0);
-                if s3_count == 0 {
-                    continue;
-                }
-                let local_count = self
-                    .local_manifest_file_count(stream, date_key, tenant_id)
-                    .await;
-                if local_count >= s3_count {
-                    newly_complete.push(date_key.clone());
-                }
+    /// For each candidate date where local manifest caught up to S3,
+    /// add it to `completed_dates` so future Historic ticks skip it.
+    async fn mark_complete_dates(
+        &self,
+        stream: &str,
+        tenant_id: &Option<String>,
+        state: &Arc<StreamSyncState>,
+        candidate_dates: &[String],
+        s3_manifests: &BTreeMap<String, Vec<Manifest>>,
+    ) {
+        let mut newly_complete = Vec::new();
+        for date_key in candidate_dates {
+            let s3_count: usize = s3_manifests
+                .get(date_key)
+                .map_or(0, |v| v.iter().map(|m| m.files.len()).sum());
+            if s3_count == 0 {
+                continue;
             }
-            if !newly_complete.is_empty() {
-                {
-                    let mut completed = state.completed_dates.write().await;
-                    for d in newly_complete {
-                        info!(
-                            stream = %stream,
-                            tenant = ?tenant_id,
-                            date = %d,
-                            "marking date locally complete"
-                        );
-                        completed.insert(d);
-                    }
-                }
+            let local_count = self
+                .local_manifest_file_count(stream, date_key, tenant_id)
+                .await;
+            if local_count >= s3_count {
+                newly_complete.push(date_key.clone());
             }
         }
-
-        Ok(())
+        if newly_complete.is_empty() {
+            return;
+        }
+        let mut completed = state.completed_dates.write().await;
+        for d in newly_complete {
+            info!(stream = %stream, tenant = ?tenant_id, date = %d, "marking date locally complete");
+            completed.insert(d);
+        }
     }
 
     /// Count files recorded in a date's local `hottier.manifest.json`.
@@ -1286,16 +1259,6 @@ impl HotTierManager {
 
         for (_, _, parquet_file, parquet_path) in work {
             // let mut sht = state.sht.lock().await;
-            info!(
-                stream = %stream,
-                tenant = ?tenant_id,
-                phase = ?phase,
-                file = %parquet_file.file_path,
-                file_size = parquet_file.file_size,
-                available = sht.available_size,
-                used = sht.used_size,
-                "reserving"
-            );
             if !self.is_disk_available(parquet_file.file_size).await?
                 || sht.available_size < parquet_file.file_size
             {
@@ -1367,14 +1330,6 @@ impl HotTierManager {
                     );
                     0
                 };
-            info!(
-                stream = %stream,
-                tenant = ?tenant_id,
-                file = %parquet_file.file_path,
-                deducted = parquet_file.file_size,
-                new_available = sht.available_size,
-                "reserved"
-            );
         }
         self.put_hot_tier(stream, sht, tenant_id).await?;
         Ok(true)
@@ -1385,19 +1340,6 @@ impl HotTierManager {
     /// Returns false when no budget is available (caller should stop scheduling
     /// further work for this stream).
     #[allow(clippy::too_many_arguments)]
-    #[tracing::instrument(
-        name = "hottier.process_parquet_file",
-        skip(self, parquet_file, parquet_path, state),
-        fields(
-            stream = %stream,
-            tenant = ?tenant_id,
-            phase = ?phase,
-            date = %date,
-            file = %parquet_file.file_path,
-            file_size = parquet_file.file_size
-        ),
-        err
-    )]
     async fn process_parquet_file_concurrent(
         &self,
         stream: &str,
@@ -1416,6 +1358,7 @@ impl HotTierManager {
             tenant = ?tenant_id,
             file = %parquet_file.file_path,
             file_size = parquet_file.file_size,
+            phase = ?phase,
             "download starting"
         );
         let dl_start = std::time::Instant::now();
@@ -1432,6 +1375,7 @@ impl HotTierManager {
                 file = %parquet_file.file_path,
                 elapsed_ms = dl_elapsed.as_millis() as u64,
                 err = %e,
+                phase = ?phase,
                 "download failed, refunding reservation"
             );
             // refund reservation
@@ -1455,6 +1399,7 @@ impl HotTierManager {
             file = %parquet_file.file_path,
             file_size = parquet_file.file_size,
             elapsed_ms,
+            phase = ?phase,
             mbps = format!("{mbps:.1}"),
             "download finished, committing"
         );
