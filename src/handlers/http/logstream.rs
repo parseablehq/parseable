@@ -20,7 +20,7 @@ use self::error::StreamError;
 use super::cluster::utils::{IngestionStats, QueriedStats, StorageStats};
 use super::query::update_schema_when_distributed;
 use crate::event::format::override_data_type;
-use crate::hottier::{CURRENT_HOT_TIER_VERSION, HotTierManager, StreamHotTier};
+use crate::hottier::{CURRENT_HOT_TIER_VERSION, GLOBAL_HOTTIER, StreamHotTier};
 use crate::metadata::SchemaVersion;
 use crate::metrics::{EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE_DATE, EVENTS_STORAGE_SIZE_DATE};
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE, StreamNotFound};
@@ -47,7 +47,7 @@ use itertools::Itertools;
 use serde_json::{Value, json};
 use std::fs;
 use std::sync::Arc;
-use tracing::warn;
+use tracing::{Instrument, warn};
 
 pub async fn delete(
     req: HttpRequest,
@@ -77,7 +77,7 @@ pub async fn delete(
         )
     }
 
-    if let Some(hot_tier_manager) = HotTierManager::global()
+    if let Some(hot_tier_manager) = GLOBAL_HOTTIER.get()
         && hot_tier_manager.check_stream_hot_tier_exists(&stream_name, &tenant_id)
     {
         hot_tier_manager
@@ -425,12 +425,13 @@ pub async fn put_stream_hot_tier(
 ) -> Result<impl Responder, StreamError> {
     let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    tracing::Span::current()
+    let current_span = tracing::Span::current();
+    current_span
         .record("stream", tracing::field::display(&stream_name))
         .record("tenant", tracing::field::debug(&tenant_id));
     // For query mode, if the stream not found in memory map,
-    //check if it exists in the storage
-    //create stream and schema from storage
+    // check if it exists in the storage
+    // create stream and schema from storage
     if !PARSEABLE
         .check_or_load_stream(&stream_name, &tenant_id)
         .await
@@ -449,9 +450,8 @@ pub async fn put_stream_hot_tier(
 
     validator::hot_tier(&hottier.size.to_string())?;
 
-    // TODO tenants
     stream.set_hot_tier(Some(hottier.clone()));
-    let Some(hot_tier_manager) = HotTierManager::global() else {
+    let Some(hot_tier_manager) = GLOBAL_HOTTIER.get() else {
         return Err(StreamError::HotTierNotEnabled(stream_name));
     };
     let existing_hot_tier_used_size = hot_tier_manager
@@ -477,9 +477,13 @@ pub async fn put_stream_hot_tier(
         .metastore
         .put_stream_json(&stream_metadata, &stream_name, &tenant_id)
         .await?;
+    let stream = stream_name.clone();
+    let tenant = tenant_id.clone();
     hot_tier_manager
-        .spawn_stream_tasks(stream_name.clone(), tenant_id.clone())
+        .spawn_stream_task(stream, tenant)
+        .instrument(current_span)
         .await;
+
     Ok((
         format!("hot tier set for stream {stream_name}"),
         StatusCode::OK,
@@ -510,7 +514,7 @@ pub async fn get_stream_hot_tier(
         return Err(StreamNotFound(stream_name.clone()).into());
     }
 
-    let Some(hot_tier_manager) = HotTierManager::global() else {
+    let Some(hot_tier_manager) = GLOBAL_HOTTIER.get() else {
         return Err(StreamError::HotTierNotEnabled(stream_name));
     };
     let meta = hot_tier_manager
@@ -531,7 +535,8 @@ pub async fn delete_stream_hot_tier(
 ) -> Result<impl Responder, StreamError> {
     let stream_name = logstream.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    tracing::Span::current()
+    let current_span = tracing::Span::current();
+    current_span
         .record("stream", tracing::field::display(&stream_name))
         .record("tenant", tracing::field::debug(&tenant_id));
     // For query mode, if the stream not found in memory map,
@@ -555,12 +560,13 @@ pub async fn delete_stream_hot_tier(
         });
     }
 
-    let Some(hot_tier_manager) = HotTierManager::global() else {
+    let Some(hot_tier_manager) = GLOBAL_HOTTIER.get() else {
         return Err(StreamError::HotTierNotEnabled(stream_name));
     };
 
     hot_tier_manager
         .delete_hot_tier(&stream_name, &tenant_id)
+        .instrument(tracing::Span::current())
         .await?;
 
     let mut stream_metadata: ObjectStoreFormat = serde_json::from_slice(

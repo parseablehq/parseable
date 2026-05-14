@@ -24,10 +24,12 @@ use crate::handlers::http::cluster;
 use crate::handlers::http::logstream;
 use crate::handlers::http::max_event_payload_size;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
-use crate::handlers::http::modal::initialize_hot_tier_metadata_on_startup;
 use crate::handlers::http::{base_path, prism_base_path};
 use crate::handlers::http::{rbac, role};
+use crate::hottier::GLOBAL_HOTTIER;
 use crate::hottier::HotTierManager;
+use crate::hottier::HotTierMessage;
+use crate::hottier::hottier_runtime;
 use crate::rbac::role::Action;
 use crate::{analytics, migration, storage, sync};
 use actix_web::web::{ServiceConfig, resource};
@@ -35,6 +37,7 @@ use actix_web::{Scope, web};
 use actix_web_prometheus::PrometheusMetrics;
 use async_trait::async_trait;
 use bytes::Bytes;
+use tokio::sync::mpsc;
 use tokio::sync::{OnceCell, oneshot};
 
 use crate::Server;
@@ -126,13 +129,26 @@ impl ParseableServer for QueryServer {
             analytics::init_analytics_scheduler()?;
         }
 
-        if let Some(hot_tier_manager) = HotTierManager::global() {
-            // Initialize hot tier metadata files for streams that have hot tier configuration
-            // but don't have local hot tier metadata files yet
-            if let Err(e) = initialize_hot_tier_metadata_on_startup(hot_tier_manager).await {
-                tracing::warn!("Failed to initialize hot tier metadata on startup: {}", e);
-            }
-            hot_tier_manager.download_from_s3()?;
+        // Initialize hot tier metadata files for streams that have hot tier configuration
+        // but don't have local hot tier metadata files yet
+        if let Some(htm) = PARSEABLE
+            .options
+            .hot_tier_storage_path
+            .as_ref()
+            .map(|hot_tier_path| {
+                // start hottier runtime
+                let (sender, receiver): (
+                    mpsc::UnboundedSender<HotTierMessage>,
+                    mpsc::UnboundedReceiver<HotTierMessage>,
+                ) = mpsc::unbounded_channel();
+                std::thread::spawn(|| hottier_runtime(receiver));
+
+                // set global hottier
+
+                GLOBAL_HOTTIER.get_or_init(|| HotTierManager::new(hot_tier_path, sender))
+            })
+        {
+            htm.start_all_tasks().await;
         };
 
         // Run sync on a background thread

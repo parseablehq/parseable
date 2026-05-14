@@ -21,9 +21,9 @@ use std::{
     collections::HashMap,
     io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
-use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock};
+use tokio::sync::{Mutex as AsyncMutex, RwLock as AsyncRwLock, mpsc};
 
 use crate::{
     catalog::manifest::{File, Manifest},
@@ -45,7 +45,21 @@ use std::time::Duration;
 use sysinfo::Disks;
 use tokio::fs::{self, DirEntry};
 use tokio_stream::wrappers::ReadDirStream;
-use tracing::{Instrument, error, info};
+use tracing::{Instrument, error, info, warn};
+
+pub enum HotTierMessage {
+    StartTask(StreamKey),
+    KillTask(StreamKey),
+    // KillAll,
+    StartAll,
+}
+
+pub static GLOBAL_HOTTIER: OnceLock<HotTierManager> = OnceLock::new();
+
+pub static HOTTIER_RUNTIME: OnceCell<(
+    mpsc::UnboundedSender<HotTierMessage>,
+    mpsc::UnboundedReceiver<HotTierResponse>,
+)> = OnceCell::new();
 
 /// Floor a timestamp to the start of its minute (seconds + sub-second zeroed).
 /// Used to produce a stable per-tick anchor so all spans within one tick share
@@ -78,6 +92,11 @@ pub struct StreamHotTier {
 /// commit, and per-date manifest writes. Downloads run outside the lock.
 struct StreamSyncState {
     sht: AsyncMutex<StreamHotTier>,
+    /// Past-date keys (e.g. `date=2026-05-11`) whose local file count is
+    /// known to match the S3 manifest count. Historic phase skips fetching
+    /// these. Populated after a tick observes `local_count >= s3_count`.
+    /// In-memory only; rebuilt on restart.
+    completed_dates: AsyncRwLock<HashSet<String>>,
 }
 
 /// Hot-tier sync runs in two phases. Latest pulls files newer than
@@ -89,7 +108,8 @@ enum SyncPhase {
     Historic,
 }
 
-type StreamKey = (Option<String>, String);
+pub type StreamKey = (Option<String>, String);
+pub type HotTierResponse = Result<(), HotTierError>;
 
 struct StreamTasks {
     latest: tokio::task::JoinHandle<()>,
@@ -101,17 +121,134 @@ pub struct HotTierManager {
     hot_tier_path: &'static Path,
     state_cache: AsyncRwLock<HashMap<StreamKey, Arc<StreamSyncState>>>,
     tasks: AsyncRwLock<HashMap<StreamKey, StreamTasks>>,
+    sender: mpsc::UnboundedSender<HotTierMessage>,
+}
+
+#[tokio::main(flavor = "multi_thread")]
+pub async fn hottier_runtime(
+    mut receiver: mpsc::UnboundedReceiver<HotTierMessage>,
+    // sender: mpsc::UnboundedSender<HotTierResponse>,
+) {
+    while let Some(msg) = receiver.recv().await {
+        match msg {
+            HotTierMessage::StartTask((tenant_id, stream)) => {
+                tokio::spawn(async move {
+                    if let Some(htm) = GLOBAL_HOTTIER.get() {
+                        htm.spawn_stream_task_inner(stream, tenant_id).await;
+                    }
+                });
+            }
+            HotTierMessage::KillTask((tenant_id, stream)) => {
+                if let Some(htm) = GLOBAL_HOTTIER.get() {
+                    htm.abort_stream_tasks(&stream, &tenant_id).await;
+                    let path = if let Some(tenant_id) = tenant_id.as_ref() {
+                        htm.hot_tier_path.join(tenant_id).join(&stream)
+                    } else {
+                        htm.hot_tier_path.join(&stream)
+                    };
+                    let _ = fs::remove_dir_all(path)
+                        .await
+                        .map_err(|e| {
+                            error!(
+                                stream = %stream,
+                                tenant = ?tenant_id,
+                                error = ?e
+                            );
+                            e
+                        })
+                        .map_err(|e| {
+                            error!(
+                                stream=?stream,
+                                tenant_id=?tenant_id,
+                                error=?e,
+                                "kill task"
+                            )
+                        });
+                    htm.invalidate_state(&stream, &tenant_id).await;
+                }
+            }
+            HotTierMessage::StartAll => {
+                let htm = GLOBAL_HOTTIER.get().unwrap();
+                let latest_min = PARSEABLE.options.hot_tier_latest_minutes;
+                let historic_min = PARSEABLE.options.hot_tier_historic_sync_minutes;
+                info!(
+                    latest_minutes = latest_min,
+                    historic_sync_minutes = historic_min,
+                    "hot tier scheduler starting"
+                );
+
+                let this: &'static HotTierManager = htm;
+                let startup_span = tracing::info_span!("hottier.startup.bootstrap");
+                let span = startup_span.clone();
+                tokio::spawn(
+            async move {
+                // pstats hot tier may need to be created on boot before any tasks
+                // can pick it up.
+                if let Err(e) = this.create_pstats_hot_tier().await {
+                    tracing::error!("Skipping pstats hot tier creation because of error: {e}");
+                }
+                let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
+                    tenants.into_iter().map(Some).collect::<Vec<_>>()
+                } else {
+                    vec![None]
+                };
+                for tenant_id in tenants {
+                    for stream in PARSEABLE.streams.list(&tenant_id) {
+                        if this.check_stream_hot_tier_exists(&stream, &tenant_id) {
+                            let tenant_id = tenant_id.clone();
+
+                            tokio::spawn(async move {
+                                this.spawn_stream_task_inner(stream, tenant_id).await;
+                            }.instrument(span.clone()));
+                            tokio::time::sleep(Duration::from_secs(2)).await;
+                        } else {
+                            // check for potential orphan directory on disk
+                            let path = if let Some(tenant_id) = tenant_id.as_ref() {
+                                this.hot_tier_path.join(tenant_id).join(stream)
+                            } else {
+                                this.hot_tier_path.join(stream)
+                            };
+                            if path.exists() {
+                                // delete this entire folder as stream meta says no hottier for stream
+                                if let Err(e) = fs::remove_dir_all(&path).await {
+                                    tracing::error!(
+                                        "Unable to remove orphaned hottier dir- `{path:?}` with error- {e}"
+                                    );
+                                };
+                            }
+                        }
+                    }
+                }
+            }
+            .instrument(startup_span.clone()),
+        );
+            }
+        }
+    }
 }
 
 impl HotTierManager {
-    pub fn new(hot_tier_path: &'static Path) -> Self {
+    pub fn new(
+        hot_tier_path: &'static Path,
+        sender: mpsc::UnboundedSender<HotTierMessage>,
+    ) -> Self {
         std::fs::create_dir_all(hot_tier_path).unwrap();
         HotTierManager {
             filesystem: LocalFileSystem::new(),
             hot_tier_path,
             state_cache: AsyncRwLock::new(HashMap::new()),
             tasks: AsyncRwLock::new(HashMap::new()),
+            sender,
         }
+    }
+
+    #[tracing::instrument(name = "hottier.startup", skip(self))]
+    pub async fn start_all_tasks(&'static self) {
+        let _ = tokio::spawn(async move {
+            self.sender.send(HotTierMessage::StartAll).unwrap();
+        })
+        .instrument(tracing::Span::current())
+        .await;
     }
 
     /// Lazy-load and cache the `StreamHotTier` for a (tenant, stream) pair.
@@ -122,29 +259,36 @@ impl HotTierManager {
         tenant_id: &Option<String>,
     ) -> Result<Arc<StreamSyncState>, HotTierError> {
         let key: StreamKey = (tenant_id.clone(), stream.to_owned());
-        if let Some(state) = self.state_cache.read().await.get(&key).cloned() {
-            return Ok(state);
+        {
+            if let Some(state) = self.state_cache.read().await.get(&key).cloned() {
+                return Ok(state);
+            }
         }
         // key not present, reconcile
         let sht = self.reconcile_stream(stream, tenant_id).await?;
         let state = Arc::new(StreamSyncState {
             sht: AsyncMutex::new(sht),
+            completed_dates: AsyncRwLock::new(HashSet::new()),
         });
 
-        let mut cache = self.state_cache.write().await;
-        if cache.insert(key, state.clone()).is_some() {
-            tracing::warn!(
-                "Key- {:?} was absent during read lock but already exists after reconcile!",
-                (tenant_id, stream),
-            );
-        };
+        {
+            let mut cache = self.state_cache.write().await;
+            if cache.insert(key, state.clone()).is_some() {
+                tracing::warn!(
+                    "Key- {:?} was absent during read lock but already exists after reconcile!",
+                    (tenant_id, stream),
+                );
+            };
+        }
         Ok(state)
     }
 
     /// Drop cached state for a stream (used after delete).
     pub async fn invalidate_state(&self, stream: &str, tenant_id: &Option<String>) {
         let key: StreamKey = (tenant_id.clone(), stream.to_owned());
-        self.state_cache.write().await.remove(&key);
+        {
+            self.state_cache.write().await.remove(&key);
+        }
     }
 
     /// Walk the on-disk hot-tier directory for a stream and bring it into
@@ -392,17 +536,6 @@ impl HotTierManager {
         Ok(())
     }
 
-    /// Get a global
-    pub fn global() -> Option<&'static HotTierManager> {
-        static INSTANCE: OnceCell<HotTierManager> = OnceCell::new();
-
-        PARSEABLE
-            .options
-            .hot_tier_storage_path
-            .as_ref()
-            .map(|hot_tier_path| INSTANCE.get_or_init(|| HotTierManager::new(hot_tier_path)))
-    }
-
     /// get the total hot tier size for all streams
     #[tracing::instrument(
         name = "hottier.get_hot_tiers_size",
@@ -544,30 +677,22 @@ impl HotTierManager {
         err
     )]
     pub async fn delete_hot_tier(
-        &self,
+        &'static self,
         stream: &str,
         tenant_id: &Option<String>,
     ) -> Result<(), HotTierError> {
         if !self.check_stream_hot_tier_exists(stream, tenant_id) {
             return Err(HotTierValidationError::NotFound(stream.to_owned()).into());
         }
-        // Stop loops before tearing down the directory so no in-flight tick
-        // re-creates files mid-delete.
-        self.abort_stream_tasks(stream, tenant_id).await;
-        let path = if let Some(tenant_id) = tenant_id.as_ref() {
-            self.hot_tier_path.join(tenant_id).join(stream)
-        } else {
-            self.hot_tier_path.join(stream)
-        };
-        fs::remove_dir_all(path).await.map_err(|e| {
-            error!(
-                stream = %stream,
-                tenant = ?tenant_id,
-                error = ?e
-            );
-            e
-        })?;
-        self.invalidate_state(stream, tenant_id).await;
+        let stream_name = stream.to_owned();
+        let tenant = tenant_id.to_owned();
+        let _ = tokio::spawn(async move {
+            self.sender
+                .send(HotTierMessage::KillTask((tenant, stream_name)))
+                .unwrap();
+        })
+        .instrument(tracing::Span::current())
+        .await;
 
         Ok(())
     }
@@ -615,86 +740,34 @@ impl HotTierManager {
 
     #[tracing::instrument(name = "hottier.abort", skip(self))]
     pub async fn abort_all(&self) {
-        let guard = self.tasks.write().await;
-        for (streamkey, task) in guard.iter() {
-            task.latest.abort();
-            task.historic.abort();
-            info!("aborted hot tier tasks for- {streamkey:?}");
+        {
+            let guard = self.tasks.write().await;
+            for (streamkey, task) in guard.iter() {
+                task.latest.abort();
+                task.historic.abort();
+                info!("aborted hot tier tasks for- {streamkey:?}");
+            }
         }
     }
 
-    /// Discover hot-tier-enabled streams at boot and spawn a per-stream pair
-    /// of (Latest, Historic) loops for each. New streams added later acquire
-    /// their own loops via `spawn_stream_tasks` from the PUT hot-tier handler.
-    #[tracing::instrument(name = "hottier.startup", skip(self), err)]
-    pub fn download_from_s3<'a>(&'a self) -> Result<(), HotTierError>
-    where
-        'a: 'static,
-    {
-        let latest_min = PARSEABLE.options.hot_tier_latest_minutes;
-        let historic_min = PARSEABLE.options.hot_tier_historic_sync_minutes;
-        info!(
-            latest_minutes = latest_min,
-            historic_sync_minutes = historic_min,
-            "hot tier scheduler starting"
-        );
-
-        let this: &'static HotTierManager = self;
-        let startup_span = tracing::info_span!("hottier.startup.bootstrap");
-        let span = startup_span.clone();
-        tokio::spawn(
-            async move {
-                // pstats hot tier may need to be created on boot before any tasks
-                // can pick it up.
-                if let Err(e) = this.create_pstats_hot_tier().await {
-                    tracing::error!("Skipping pstats hot tier creation because of error: {e}");
-                }
-                let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
-                    tenants.into_iter().map(Some).collect::<Vec<_>>()
-                } else {
-                    vec![None]
-                };
-                for tenant_id in tenants {
-                    for stream in PARSEABLE.streams.list(&tenant_id) {
-                        if this.check_stream_hot_tier_exists(&stream, &tenant_id) {
-                            let tenant_id = tenant_id.clone();
-
-                            tokio::spawn(async move {
-                                this.spawn_stream_tasks(stream, tenant_id).await;
-                            }.instrument(span.clone()));
-                            tokio::time::sleep(Duration::from_secs(8)).await;
-                        } else {
-                            // check for potential orphan directory on disk
-                            let path = if let Some(tenant_id) = tenant_id.as_ref() {
-                                self.hot_tier_path.join(tenant_id).join(stream)
-                            } else {
-                                self.hot_tier_path.join(stream)
-                            };
-                            if path.exists() {
-                                // delete this entire folder as stream meta says no hottier for stream
-                                if let Err(e) = fs::remove_dir_all(&path).await {
-                                    tracing::error!(
-                                        "Unable to remove orphaned hottier dir- `{path:?}` with error- {e}"
-                                    );
-                                };
-                            }
-                        }
-                    }
-                }
-            }
-            .instrument(startup_span.clone()),
-        );
-        Ok(())
+    #[tracing::instrument(
+        name = "hottier.spawn_stream_task",
+        skip(self),
+        fields(stream = %stream, tenant = ?tenant_id)
+    )]
+    pub async fn spawn_stream_task(&'static self, stream: String, tenant_id: Option<String>) {
+        let _ = tokio::spawn(async move {
+            self.sender
+                .send(HotTierMessage::StartTask((tenant_id, stream)))
+                .unwrap();
+        })
+        .instrument(tracing::Span::current())
+        .await;
     }
 
     /// Spawn (Latest, Historic) loops for a single stream. Idempotent:
     /// if tasks already exist for this (tenant, stream), no-op.
-    #[tracing::instrument(
-        name = "hottier.spawn_stream_tasks",
-        skip(self),
-        fields(stream = %stream, tenant = ?tenant_id)
-    )]
-    pub async fn spawn_stream_tasks(&'static self, stream: String, tenant_id: Option<String>) {
+    async fn spawn_stream_task_inner(&'static self, stream: String, tenant_id: Option<String>) {
         let key: StreamKey = (tenant_id.clone(), stream.clone());
         {
             let tasks = self.tasks.read().await;
@@ -725,7 +798,6 @@ impl HotTierManager {
                     anchor = %anchor
                 );
                 async {
-                    info!("stream tick fired");
                     if let Err(err) = self
                         .process_stream(s.clone(), t.clone(), SyncPhase::Latest, anchor)
                         .await
@@ -752,7 +824,6 @@ impl HotTierManager {
                     anchor = %anchor
                 );
                 async {
-                    info!("stream tick fired");
                     if let Err(err) = self
                         .process_stream(s.clone(), t.clone(), SyncPhase::Historic, anchor)
                         .await
@@ -766,10 +837,12 @@ impl HotTierManager {
             }
         });
 
-        let mut tasks = self.tasks.write().await;
-        if let Some(old) = tasks.insert(key, StreamTasks { latest, historic }) {
-            old.latest.abort();
-            old.historic.abort();
+        {
+            let mut tasks = self.tasks.write().await;
+            if let Some(old) = tasks.insert(key, StreamTasks { latest, historic }) {
+                old.latest.abort();
+                old.historic.abort();
+            }
         }
     }
 
@@ -777,10 +850,12 @@ impl HotTierManager {
     /// will be enqueued for the stream after this returns.
     async fn abort_stream_tasks(&self, stream: &str, tenant_id: &Option<String>) {
         let key: StreamKey = (tenant_id.clone(), stream.to_owned());
-        if let Some(t) = self.tasks.write().await.remove(&key) {
-            t.latest.abort();
-            t.historic.abort();
-            info!(stream = %stream, tenant = ?tenant_id, "aborted per-stream hot tier tasks");
+        {
+            if let Some(t) = self.tasks.write().await.remove(&key) {
+                t.latest.abort();
+                t.historic.abort();
+                info!(stream = %stream, tenant = ?tenant_id, "aborted per-stream hot tier tasks");
+            }
         }
     }
 
@@ -847,8 +922,12 @@ impl HotTierManager {
         phase: SyncPhase,
         anchor: DateTime<Utc>,
     ) -> Result<(), HotTierError> {
+        // Load state up-front so the Historic candidate filter can consult
+        // `completed_dates` and so post-download completion marking has
+        // somewhere to write. Lazy-cached; steady-state cost is zero.
+        let state = self.get_or_load_state(stream, tenant_id).await?;
         let latest_minutes = PARSEABLE.options.hot_tier_latest_minutes;
-        let latest_window = chrono::Duration::minutes(latest_minutes.try_into().unwrap());
+        let latest_window = chrono::Duration::minutes(latest_minutes as i64);
         let historic_cutoff = anchor - latest_window;
         let historic_cutoff_naive = historic_cutoff.naive_utc();
         let today_date_key = format!("date={}", anchor.date_naive());
@@ -865,9 +944,9 @@ impl HotTierManager {
                 while d <= end {
                     out.push(format!("date={d}"));
                     d = d.succ_opt().unwrap_or(d);
-                    if out.len() > 365 {
-                        break;
-                    }
+                    // if out.len() > 365 {
+                    //     break;
+                    // }
                 }
                 out
             }
@@ -879,34 +958,67 @@ impl HotTierManager {
                     .into_iter()
                     .map(|d| format!("date={d}"))
                     .collect::<Vec<_>>();
+                info!(
+                    stream = ?stream,
+                    tenant_id=?tenant_id,
+                    local_dates=?local
+                );
                 let s3 = PARSEABLE
-                    .storage()
-                    .get_object_store()
+                    .hottier_connection_pool
                     .list_dates(stream, tenant_id)
                     .await
                     .unwrap_or_default();
-
+                info!(
+                    stream = ?stream,
+                    tenant_id=?tenant_id,
+                    s3_dates=?s3
+                );
                 let mut union: std::collections::BTreeSet<String> = local.into_iter().collect();
                 union.extend(s3);
 
-                let mut out = Vec::new();
-                for date_key in union {
-                    // drop today and anything >= today (Latest handles those)
-                    if date_key.as_str() >= today_date_key.as_str() {
-                        continue;
+                let mut out = {
+                    let completed = state.completed_dates.read().await;
+                    info!(
+                        stream = ?stream,
+                        tenant_id=?tenant_id,
+                        completed_dates_len=?completed.len(),
+                        "acquired completed_dates lock"
+                    );
+                    let mut out = Vec::new();
+                    for date_key in union {
+                        // drop today and anything >= today (Latest handles those)
+                        if date_key.as_str() >= today_date_key.as_str() {
+                            continue;
+                        }
+                        if completed.contains(&date_key) {
+                            continue;
+                        }
+                        out.push(date_key);
                     }
-                    if self.is_locally_complete(stream, &date_key, tenant_id).await {
-                        continue;
-                    }
-                    out.push(date_key);
-                }
+
+                    info!(
+                        stream = ?stream,
+                        tenant_id=?tenant_id,
+                        "dropping completed_dates lock"
+                    );
+                    out
+                };
+                info!(
+                    stream = ?stream,
+                    tenant_id=?tenant_id,
+                    "dropped completed_dates lock"
+                );
                 // Newest-first: discover newest missing past date first.
                 out.sort();
                 out.reverse();
+                info!(
+                    stream = ?stream,
+                    tenant_id=?tenant_id,
+                    selected_dates=?out
+                );
                 out
             }
         };
-        tracing::Span::current().record("candidate_dates", candidate_dates.len());
 
         if candidate_dates.is_empty() {
             info!(
@@ -934,7 +1046,7 @@ impl HotTierManager {
                     e.to_detail(),
                 )))
             })?;
-
+        warn!("fetched manifests {stream}");
         // Build flat work list across all candidate dates: keep only files
         // matching this phase's cutoff and not already on disk.
         let mut work: Vec<(NaiveDate, chrono::NaiveDateTime, File, PathBuf)> = Vec::new();
@@ -972,12 +1084,36 @@ impl HotTierManager {
 
         // Newest first by file timestamp.
         work.sort_by_key(|b| std::cmp::Reverse(b.1));
+        warn!("made work list {stream}");
+        // Historic ticks cap per-tick work so a fresh stream with months of
+        // backlog doesn't pin the loop for tens of minutes. Remainder flows
+        // through subsequent Historic ticks. Latest stays uncapped — its
+        // window is already time-bounded.
+        let per_tick_cap = PARSEABLE.options.historic_per_tick_cap as usize;
+        let truncated = if matches!(phase, SyncPhase::Historic) && work.len() > per_tick_cap {
+            let dropped = work.len() - per_tick_cap;
+            work.truncate(per_tick_cap);
+            warn!("truncated work list {stream} {dropped}");
+            dropped
+        } else {
+            0
+        };
 
         let work_count = work.len();
         let total_bytes: u64 = work.iter().map(|(_, _, f, _)| f.file_size).sum();
         tracing::Span::current()
             .record("work_count", work_count)
             .record("total_bytes", total_bytes);
+        if truncated > 0 {
+            info!(
+                stream = %stream,
+                tenant = ?tenant_id,
+                phase = ?phase,
+                cap = per_tick_cap,
+                deferred = truncated,
+                "historic per-tick cap hit; deferring rest to next tick"
+            );
+        }
         if work.is_empty() {
             info!(
                 stream = %stream,
@@ -996,7 +1132,6 @@ impl HotTierManager {
             "work list built"
         );
 
-        let state = self.get_or_load_state(stream, tenant_id).await?;
         let concurrency = PARSEABLE.options.hot_tier_files_per_stream_concurrency;
 
         // Reservation failure (out of disk + nothing to evict) is sticky:
@@ -1006,80 +1141,151 @@ impl HotTierManager {
         let stream_owned = stream.to_owned();
         let tenant_owned = tenant_id.clone();
 
-        let results: Vec<Result<(), HotTierError>> = futures::stream::iter(work)
-            .map(|(date, _dt, file, parquet_path)| {
-                let state = state.clone();
-                let stream = stream_owned.clone();
-                let tenant_id = tenant_owned.clone();
-                let stop = stop.clone();
-                async move {
-                    if stop.load(std::sync::atomic::Ordering::Relaxed) {
-                        return Ok(());
+        // take lock over sht and reserve
+        // for all files in worklist
+        warn!("reserving for {stream}");
+        let reserved = {
+            let mut sht = state.sht.lock().await;
+            self.reserve_disk_budget(stream, &work, tenant_id, phase, &mut sht)
+                .await?
+        };
+        warn!("reserved {reserved} for {stream}");
+        let results: Vec<Result<(), HotTierError>> = if reserved {
+            futures::stream::iter(work)
+                .map(|(date, _dt, file, parquet_path)| {
+                    let state = state.clone();
+                    let stream = stream_owned.clone();
+                    let tenant_id = tenant_owned.clone();
+                    let stop = stop.clone();
+                    async move {
+                        warn!("processing {parquet_path:?} for {stream}");
+                        if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                            return Ok(());
+                        }
+                        let processed = self
+                            .process_parquet_file_concurrent(
+                                &stream,
+                                &file,
+                                parquet_path,
+                                date,
+                                &tenant_id,
+                                &state,
+                                phase,
+                            )
+                            .await?;
+                        warn!("processed for {stream}\n");
+                        if !processed && !stop.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                            info!(
+                                stream = %stream,
+                                tenant = ?tenant_id,
+                                phase = ?phase,
+                                "sticky stop: halting further reservations this tick"
+                            );
+                            warn!("stopping reservations for {stream}");
+                        }
+                        Ok(())
                     }
-                    let processed = self
-                        .process_parquet_file_concurrent(
-                            &stream,
-                            &file,
-                            parquet_path,
-                            date,
-                            &tenant_id,
-                            &state,
-                            phase,
-                        )
-                        .await?;
-                    if !processed && !stop.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                        info!(
-                            stream = %stream,
-                            tenant = ?tenant_id,
-                            phase = ?phase,
-                            "sticky stop: halting further reservations this tick"
-                        );
-                    }
-                    Ok(())
-                }
-            })
-            .buffer_unordered(concurrency)
-            .collect()
-            .await;
+                })
+                .buffered(concurrency as usize)
+                .collect()
+                .await
+        } else {
+            vec![]
+        };
 
         for r in results {
             r?;
         }
 
+        // Mark Historic candidate dates as complete when local count now
+        // matches the S3 manifest count. Skip when truncation deferred work
+        // — by definition more files exist than we downloaded.
+        if matches!(phase, SyncPhase::Historic) && truncated == 0 {
+            let mut newly_complete = Vec::new();
+            for date_key in &candidate_dates {
+                let s3_count: usize = s3_manifests
+                    .get(date_key)
+                    .map(|v| v.iter().map(|m| m.files.len()).sum())
+                    .unwrap_or(0);
+                if s3_count == 0 {
+                    continue;
+                }
+                let local_count = self
+                    .local_manifest_file_count(stream, date_key, tenant_id)
+                    .await;
+                if local_count >= s3_count {
+                    newly_complete.push(date_key.clone());
+                }
+            }
+            if !newly_complete.is_empty() {
+                {
+                    let mut completed = state.completed_dates.write().await;
+                    for d in newly_complete {
+                        info!(
+                            stream = %stream,
+                            tenant = ?tenant_id,
+                            date = %d,
+                            "marking date locally complete"
+                        );
+                        completed.insert(d);
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 
-    /// Reserve disk budget under the per-stream lock, download outside the lock,
-    /// then commit usage + per-date manifest under the lock again.
-    /// Returns false when no budget is available (caller should stop scheduling
-    /// further work for this stream).
+    /// Count files recorded in a date's local `hottier.manifest.json`.
+    /// Returns 0 if the manifest is missing or fails to parse.
+    async fn local_manifest_file_count(
+        &self,
+        stream: &str,
+        date_key: &str,
+        tenant_id: &Option<String>,
+    ) -> usize {
+        let date_dir = if let Some(tenant) = tenant_id.as_ref() {
+            self.hot_tier_path.join(tenant).join(stream).join(date_key)
+        } else {
+            self.hot_tier_path.join(stream).join(date_key)
+        };
+        let manifest_path = date_dir.join("hottier.manifest.json");
+        if !manifest_path.exists() {
+            return 0;
+        }
+        match fs::read(&manifest_path).await {
+            Ok(bytes) => serde_json::from_slice::<Manifest>(&bytes)
+                .map(|m| m.files.len())
+                .unwrap_or(0),
+            Err(_) => 0,
+        }
+    }
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(
-        name = "hottier.process_parquet_file",
-        skip(self, parquet_file, parquet_path, state),
+        name = "hottier.reserve_disk_budget",
+        skip(self, work, sht),
         fields(
             stream = %stream,
             tenant = ?tenant_id,
             phase = ?phase,
-            date = %date,
-            file = %parquet_file.file_path,
-            file_size = parquet_file.file_size
         ),
         err
     )]
-    async fn process_parquet_file_concurrent(
+    async fn reserve_disk_budget(
         &self,
         stream: &str,
-        parquet_file: &File,
-        parquet_path: PathBuf,
-        date: NaiveDate,
+        // parquet_file: &File,
+        // parquet_path: PathBuf,
+        // date: NaiveDate,
+        work: &Vec<(NaiveDate, chrono::NaiveDateTime, File, PathBuf)>,
         tenant_id: &Option<String>,
-        state: &Arc<StreamSyncState>,
         phase: SyncPhase,
+        sht: &mut StreamHotTier,
     ) -> Result<bool, HotTierError> {
         // RESERVE
-        {
-            let mut sht = state.sht.lock().await;
+
+        for (_, _, parquet_file, parquet_path) in work {
+            // let mut sht = state.sht.lock().await;
             info!(
                 stream = %stream,
                 tenant = ?tenant_id,
@@ -1106,8 +1312,8 @@ impl HotTierManager {
                         if !self
                             .cleanup_hot_tier_old_data(
                                 stream,
-                                &mut sht,
-                                &parquet_path,
+                                sht,
+                                parquet_path,
                                 parquet_file.file_size,
                                 tenant_id,
                             )
@@ -1161,7 +1367,6 @@ impl HotTierManager {
                     );
                     0
                 };
-            self.put_hot_tier(stream, &mut sht, tenant_id).await?;
             info!(
                 stream = %stream,
                 tenant = ?tenant_id,
@@ -1171,7 +1376,38 @@ impl HotTierManager {
                 "reserved"
             );
         }
+        self.put_hot_tier(stream, sht, tenant_id).await?;
+        Ok(true)
+    }
 
+    /// Reserve disk budget under the per-stream lock, download outside the lock,
+    /// then commit usage + per-date manifest under the lock again.
+    /// Returns false when no budget is available (caller should stop scheduling
+    /// further work for this stream).
+    #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(
+        name = "hottier.process_parquet_file",
+        skip(self, parquet_file, parquet_path, state),
+        fields(
+            stream = %stream,
+            tenant = ?tenant_id,
+            phase = ?phase,
+            date = %date,
+            file = %parquet_file.file_path,
+            file_size = parquet_file.file_size
+        ),
+        err
+    )]
+    async fn process_parquet_file_concurrent(
+        &self,
+        stream: &str,
+        parquet_file: &File,
+        parquet_path: PathBuf,
+        date: NaiveDate,
+        tenant_id: &Option<String>,
+        state: &Arc<StreamSyncState>,
+        phase: SyncPhase,
+    ) -> Result<bool, HotTierError> {
         // DOWNLOAD (no lock held)
         let parquet_file_path = RelativePathBuf::from(parquet_file.file_path.clone());
         fs::create_dir_all(parquet_path.parent().unwrap()).await?;
@@ -1184,8 +1420,7 @@ impl HotTierManager {
         );
         let dl_start = std::time::Instant::now();
         let download_result = PARSEABLE
-            .storage
-            .get_object_store()
+            .hottier_connection_pool
             .parallel_chunked_download(&parquet_file_path, tenant_id, parquet_path.clone())
             .await;
         let dl_elapsed = dl_start.elapsed();
@@ -1342,34 +1577,6 @@ impl HotTierManager {
                 .join(format!("date={date}"))
         } else {
             self.hot_tier_path.join(stream).join(format!("date={date}"))
-        }
-    }
-
-    /// A past date is treated as fully synced when its on-disk hottier
-    /// manifest exists and lists at least one parquet. Used by the Historic
-    /// phase to skip the metastore fetch for dates we already have data for.
-    /// `date_key` is the partition directory name (e.g. "date=2026-05-12").
-    async fn is_locally_complete(
-        &self,
-        stream: &str,
-        date_key: &str,
-        tenant_id: &Option<String>,
-    ) -> bool {
-        let date_dir = if let Some(tenant) = tenant_id.as_ref() {
-            self.hot_tier_path.join(tenant).join(stream).join(date_key)
-        } else {
-            self.hot_tier_path.join(stream).join(date_key)
-        };
-        let manifest_path = date_dir.join("hottier.manifest.json");
-        if !manifest_path.exists() {
-            return false;
-        }
-        match fs::read(&manifest_path).await {
-            Ok(bytes) => match serde_json::from_slice::<Manifest>(&bytes) {
-                Ok(m) => !m.files.is_empty(),
-                Err(_) => false,
-            },
-            Err(_) => false,
         }
     }
 

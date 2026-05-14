@@ -16,6 +16,7 @@
  *
  */
 
+use datafusion::common::HashSet;
 use opentelemetry_otlp::Protocol;
 use opentelemetry_otlp::SpanExporter;
 use opentelemetry_otlp::WithExportConfig;
@@ -24,10 +25,42 @@ use opentelemetry_sdk::{
     propagation::TraceContextPropagator,
     trace::{BatchSpanProcessor, SdkTracerProvider},
 };
+use tracing::Metadata;
+use tracing_subscriber::layer::Context;
+use tracing_subscriber::layer::Filter;
+
+use crate::parseable::PARSEABLE;
 // Consts describing the env vars
 const OTEL_EXPORTER_OTLP_ENDPOINT: &str = "OTEL_EXPORTER_OTLP_ENDPOINT";
 const OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: &str = "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT";
 const OTEL_EXPORTER_OTLP_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
+
+pub struct ModuleFilter {
+    trace_modules: HashSet<String>,
+}
+
+impl ModuleFilter {
+    fn new() -> Option<Self> {
+        if let Some(modules) = PARSEABLE.options.trace_modules.as_ref() {
+            let trace_modules = modules.split(",").map(|v| v.to_owned()).collect();
+            Some(Self { trace_modules })
+        } else {
+            None
+        }
+    }
+}
+
+impl<S> Filter<S> for ModuleFilter {
+    fn enabled(&self, meta: &Metadata<'_>, _cx: &Context<'_, S>) -> bool {
+        if let Some(path) = meta.module_path()
+            && self.trace_modules.contains(path)
+        {
+            true
+        } else {
+            false
+        }
+    }
+}
 
 /// Initialise an OTLP tracer provider.
 ///
@@ -125,4 +158,8 @@ pub fn init_tracing(service: &'static str) -> Option<SdkTracerProvider> {
     opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
 
     Some(provider)
+}
+
+pub fn module_filter() -> Option<ModuleFilter> {
+    ModuleFilter::new()
 }

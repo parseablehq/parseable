@@ -236,6 +236,8 @@ impl S3Config {
         let mut client_options = ClientOptions::default()
             .with_allow_http(true)
             .with_connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+            .with_pool_idle_timeout(Duration::from_secs(15))
+            .with_pool_max_idle_per_host(128)
             .with_timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS));
 
         if self.skip_tls {
@@ -243,7 +245,7 @@ impl S3Config {
         }
         let retry_config = RetryConfig {
             max_retries: 5,
-            retry_timeout: Duration::from_secs(30),
+            retry_timeout: Duration::from_secs(5),
             backoff: BackoffConfig::default(),
         };
 
@@ -403,12 +405,11 @@ impl S3 {
         tracing::Span::current()
             .record("total_bytes", total)
             .record("chunks", chunk_count);
-        let client = Arc::new(self.client.clone());
+
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency as usize));
 
         futures::stream::iter(ranges)
             .map(|r| {
-                let client = client.clone();
                 let src = src.clone();
                 let std_file = std_file.clone();
                 let semaphore = semaphore.clone();
@@ -416,7 +417,7 @@ impl S3 {
                     let _permit = semaphore.acquire_owned().await.map_err(|e| {
                         ObjectStorageError::Custom(format!("semaphore closed: {e}"))
                     })?;
-                    let bytes = client.get_range(&src, r.clone()).await?;
+                    let bytes = self.client.get_range(&src, r.clone()).await?;
                     let offset = r.start;
                     tokio::task::spawn_blocking(move || -> std::io::Result<()> {
                         crate::storage::write_all_at(&std_file, &bytes, offset)
@@ -805,8 +806,7 @@ impl ObjectStorage for S3 {
             }
         };
 
-        let store: Arc<dyn ObjectStore> = Arc::new(self.client.clone());
-        let buf = object_store::buffered::BufReader::new(store, &meta);
+        let buf = object_store::buffered::BufReader::new(self.client.clone(), &meta);
         Ok(buf)
     }
 
@@ -1017,12 +1017,6 @@ impl ObjectStorage for S3 {
         Ok(result?)
     }
 
-    #[tracing::instrument(
-        name = "s3.check",
-        skip(self),
-        fields(tenant = ?tenant_id),
-        err
-    )]
     #[tracing::instrument(
         name = "s3.check",
         skip(self),

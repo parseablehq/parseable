@@ -28,7 +28,7 @@ use chrono::{DateTime, Utc};
 use dashmap::DashMap;
 use relative_path::RelativePathBuf;
 use tonic::async_trait;
-use tracing::warn;
+use tracing::{info, warn};
 use ulid::Ulid;
 
 use crate::{
@@ -928,44 +928,103 @@ impl Metastore for ObjectStoreMetastore {
             .await?)
     }
 
-    /// Fetch all `Manifest` files
+    /// Fetch manifest files for the given date keys in parallel.
+    ///
+    /// Per-date work runs concurrently via `futures::future::try_join_all`
+    /// so a slow LIST on one date does not block the others. Each date's
+    /// timing is logged at info level so any pathologically slow dates
+    /// (S3 retries, oversized prefixes) are visible without needing extra
+    /// span instrumentation.
     async fn get_manifest_files_for_dates(
         &self,
         stream_name: &str,
         tenant_id: &Option<String>,
         dates: &[String],
     ) -> Result<BTreeMap<String, Vec<Manifest>>, MetastoreError> {
+        let total_start = std::time::Instant::now();
+        let date_futures = dates.iter().map(|date| {
+            // let storage = self.storage.clone();
+            let stream = stream_name.to_string();
+            let tenant = tenant_id.clone();
+            let date = date.clone();
+            async move {
+                let t_start = std::time::Instant::now();
+                let date_path = if let Some(tenant) = tenant.as_ref() {
+                    object_store::path::Path::from(format!("{}/{}/{}", tenant, &stream, &date))
+                } else {
+                    object_store::path::Path::from(format!("{}/{}", &stream, &date))
+                };
+
+                let t_list = std::time::Instant::now();
+                let resp = match self.storage.list_with_delimiter(Some(date_path)).await {
+                    Ok(r) => r,
+                    Err(ObjectStorageError::NoSuchKey(_)) => {
+                        info!(
+                            stream = %stream,
+                            tenant = ?tenant,
+                            date = %date,
+                            list_ms = t_list.elapsed().as_millis() as u64,
+                            "manifest fetch: date prefix not found"
+                        );
+                        return Ok::<(String, Vec<Manifest>), MetastoreError>((date, Vec::new()));
+                    }
+                    Err(e) => return Err(e.into()),
+                };
+                let list_ms = t_list.elapsed().as_millis() as u64;
+
+                let manifest_paths: Vec<String> = resp
+                    .objects
+                    .iter()
+                    .filter(|name| name.location.filename().unwrap().ends_with("manifest.json"))
+                    .map(|name| name.location.to_string())
+                    .collect();
+                let manifest_count = manifest_paths.len();
+
+                let t_gets = std::time::Instant::now();
+                let mut manifests: Vec<Manifest> = Vec::with_capacity(manifest_count);
+                for path in manifest_paths {
+                    let bytes = self
+                        .storage
+                        .get_object(&RelativePathBuf::from(path), &tenant)
+                        .await?;
+                    manifests.push(serde_json::from_slice::<Manifest>(&bytes)?);
+                }
+                let gets_ms = t_gets.elapsed().as_millis() as u64;
+                let total_ms = t_start.elapsed().as_millis() as u64;
+
+                if total_ms > 100 {
+                    info!(
+                        stream = %stream,
+                        tenant = ?tenant,
+                        date = %date,
+                        list_ms,
+                        gets_ms,
+                        total_ms,
+                        manifest_count,
+                        "manifest fetch per-date timing"
+                    );
+                }
+                Ok((date, manifests))
+            }
+        });
+
+        let results: Vec<(String, Vec<Manifest>)> =
+            futures::future::try_join_all(date_futures).await?;
+
         let mut result_file_list: BTreeMap<String, Vec<Manifest>> = BTreeMap::new();
-        for date in dates {
-            let date_path = if let Some(tenant) = tenant_id {
-                object_store::path::Path::from(format!("{}/{}/{}", tenant, stream_name, date))
-            } else {
-                object_store::path::Path::from(format!("{}/{}", stream_name, date))
-            };
-            let resp = match self.storage.list_with_delimiter(Some(date_path)).await {
-                Ok(r) => r,
-                Err(ObjectStorageError::NoSuchKey(_)) => continue,
-                Err(e) => return Err(e.into()),
-            };
-
-            let manifest_paths: Vec<String> = resp
-                .objects
-                .iter()
-                .filter(|name| name.location.filename().unwrap().ends_with("manifest.json"))
-                .map(|name| name.location.to_string())
-                .collect();
-
-            for path in manifest_paths {
-                let bytes = self
-                    .storage
-                    .get_object(&RelativePathBuf::from(path), tenant_id)
-                    .await?;
-                result_file_list
-                    .entry(date.clone())
-                    .or_default()
-                    .push(serde_json::from_slice::<Manifest>(&bytes)?);
+        for (date, manifests) in results {
+            if !manifests.is_empty() {
+                result_file_list.insert(date, manifests);
             }
         }
+        info!(
+            stream = %stream_name,
+            tenant = ?tenant_id,
+            dates = dates.len(),
+            populated = result_file_list.len(),
+            total_ms = total_start.elapsed().as_millis() as u64,
+            "get_manifest_files_for_dates done"
+        );
         Ok(result_file_list)
     }
 

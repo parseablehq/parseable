@@ -121,7 +121,7 @@ pub const CURRENT_OBJECT_STORE_VERSION: &str = "v7";
 pub const CURRENT_SCHEMA_VERSION: &str = "v7";
 
 const CONNECT_TIMEOUT_SECS: u64 = 5;
-const REQUEST_TIMEOUT_SECS: u64 = 300;
+const REQUEST_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectStoreFormat {

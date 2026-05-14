@@ -306,6 +306,14 @@ pub struct Options {
     )]
     pub local_staging_path: PathBuf,
 
+    // trace modules
+    #[arg(
+        long,
+        env = "P_TRACE_MODULES",
+        help = "Comma separated values for modules to trace"
+    )]
+    pub trace_modules: Option<String>,
+
     #[arg(
         long = "hot-tier-path",
         env = "P_HOT_TIER_DIR",
@@ -335,10 +343,11 @@ pub struct Options {
     #[arg(
         long = "hot-tier-files-per-stream-concurrency",
         env = "P_HOT_TIER_FILES_PER_STREAM_CONCURRENCY",
+        value_parser = clap::value_parser!(u32).range(1..),
         default_value = "4",
         help = "Number of concurrent parquet file downloads per stream during hot tier sync"
     )]
-    pub hot_tier_files_per_stream_concurrency: usize,
+    pub hot_tier_files_per_stream_concurrency: u32,
 
     #[arg(
         long = "hot-tier-latest-minutes",
@@ -348,6 +357,15 @@ pub struct Options {
         help = "Files whose timestamp is within the last N minutes are 'latest'; rest are 'historic'."
     )]
     pub hot_tier_latest_minutes: u64,
+
+    #[arg(
+        long = "hot-tier-per-tick-cap",
+        env = "P_HISTORIC_PER_TICK_CAP",
+        value_parser = clap::value_parser!(u32).range(10..),
+        default_value = "100",
+        help = "Maximum files to download per historic tick."
+    )]
+    pub historic_per_tick_cap: u32,
 
     #[arg(
         long = "hot-tier-historic-sync-minutes",

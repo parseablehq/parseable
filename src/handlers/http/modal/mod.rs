@@ -38,11 +38,11 @@ use crate::{
     alerts::{ALERTS, get_alert_manager, target::TARGETS},
     cli::Options,
     correlation::CORRELATIONS,
-    hottier::{HotTierManager, StreamHotTier},
+    hottier::GLOBAL_HOTTIER,
     metastore::metastore_traits::MetastoreObject,
     oauth::{OAuthProvider, connect_oidc},
     option::Mode,
-    parseable::{DEFAULT_TENANT, PARSEABLE},
+    parseable::PARSEABLE,
     storage::{ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY},
     users::{dashboards::DASHBOARDS, filters::FILTERS},
     utils::get_node_id,
@@ -161,8 +161,8 @@ pub trait ParseableServer {
             let _ = resource_shutdown_tx.send(());
 
             // Shutdown hottier
-            if let Some(ht_global) = HotTierManager::global() {
-                ht_global.abort_all().await;
+            if let Some(htm) = GLOBAL_HOTTIER.get() {
+                htm.abort_all().await;
             }
 
             // Initiate graceful shutdown
@@ -627,78 +627,6 @@ pub type IngestorMetadata = NodeMetadata;
 pub type IndexerMetadata = NodeMetadata;
 pub type QuerierMetadata = NodeMetadata;
 pub type PrismMetadata = NodeMetadata;
-
-/// Initialize hot tier metadata files for streams that have hot tier configuration
-/// in their stream metadata but don't have local hot tier metadata files yet.
-/// This function is called once during query server startup.
-#[tracing::instrument(name = "hottier.init_metadata_startup", skip(hot_tier_manager))]
-pub async fn initialize_hot_tier_metadata_on_startup(
-    hot_tier_manager: &HotTierManager,
-) -> anyhow::Result<()> {
-    // Collect hot tier configurations from streams before doing async operations
-    let hot_tier_configs: Vec<(String, Option<String>, StreamHotTier)> = {
-        let tenants_guard = PARSEABLE.streams.read().unwrap();
-        tenants_guard
-            .iter()
-            .flat_map(|(tenant_id, streams)| {
-                streams.iter().filter_map(|(stream_name, stream)| {
-                    // Skip if hot tier metadata file already exists for this stream
-                    let tenant_id = if tenant_id.eq(DEFAULT_TENANT) {
-                        None
-                    } else {
-                        Some(tenant_id.clone())
-                    };
-                    if hot_tier_manager.check_stream_hot_tier_exists(stream_name, &tenant_id) {
-                        return None;
-                    }
-
-                    // Get the hot tier configuration from the in-memory stream metadata
-                    stream
-                        .get_hot_tier()
-                        .map(|config| (stream_name.clone(), tenant_id, config.clone()))
-                })
-            })
-            .collect()
-        // let streams_guard = PARSEABLE.streams.read().unwrap();
-        // streams_guard
-        //     .iter()
-        //     .filter_map(|(stream_name, stream)| {
-        //         // Skip if hot tier metadata file already exists for this stream
-        //         if hot_tier_manager.check_stream_hot_tier_exists(stream_name) {
-        //             return None;
-        //         }
-
-        //         // Get the hot tier configuration from the in-memory stream metadata
-        //         stream
-        //             .get_hot_tier()
-        //             .map(|config| (stream_name.clone(), config))
-        //     })
-        //     .collect()
-    };
-
-    for (stream_name, tenant_id, hot_tier_config) in hot_tier_configs {
-        // Create the hot tier metadata file with the configuration from stream metadata
-        let mut hot_tier_metadata = hot_tier_config;
-        hot_tier_metadata.used_size = 0;
-        hot_tier_metadata.available_size = hot_tier_metadata.size;
-        hot_tier_metadata.oldest_date_time_entry = None;
-        if hot_tier_metadata.version.is_none() {
-            hot_tier_metadata.version = Some(crate::hottier::CURRENT_HOT_TIER_VERSION.to_string());
-        }
-
-        if let Err(e) = hot_tier_manager
-            .put_hot_tier(&stream_name, &mut hot_tier_metadata, &tenant_id)
-            .await
-        {
-            warn!(
-                "Failed to initialize hot tier metadata for stream {}: {}",
-                stream_name, e
-            );
-        }
-    }
-
-    Ok(())
-}
 
 #[cfg(test)]
 mod test {
