@@ -248,11 +248,15 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         tenant_id: &Option<String>,
     ) -> Result<Vec<Bytes>, MetastoreError>;
 
-    /// manifest
-    async fn get_all_manifest_files(
+    /// Fetch manifests only for the explicitly requested date keys
+    /// (e.g. `["date=2026-05-12"]`). Skips the top-level LIST to discover
+    /// dates — callers must already know which dates to query (e.g. via
+    /// the local hot-tier dir + a single object-store LIST when needed).
+    async fn get_manifest_files_for_dates(
         &self,
         stream_name: &str,
         tenant_id: &Option<String>,
+        dates: &[String],
     ) -> Result<BTreeMap<String, Vec<Manifest>>, MetastoreError>;
     async fn get_manifest(
         &self,

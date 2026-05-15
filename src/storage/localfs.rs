@@ -106,6 +106,28 @@ impl LocalFS {
 
 #[async_trait]
 impl ObjectStorage for LocalFS {
+    async fn parallel_chunked_download(
+        &self,
+        path: &RelativePath,
+        _tenant_id: &Option<String>,
+        write_path: PathBuf,
+    ) -> Result<(), ObjectStorageError> {
+        let src = self.path_in_root(path);
+        let partial = super::partial_path(&write_path)?;
+        if let Some(parent) = partial.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        match fs::copy(&src, &partial).await {
+            Ok(_) => {
+                fs::rename(&partial, &write_path).await?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&partial).await;
+                Err(e.into())
+            }
+        }
+    }
     async fn upload_multipart(
         &self,
         key: &RelativePath,

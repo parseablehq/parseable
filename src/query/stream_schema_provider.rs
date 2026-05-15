@@ -55,11 +55,11 @@ use crate::{
         snapshot::{ManifestItem, Snapshot},
     },
     event::DEFAULT_TIMESTAMP_KEY,
-    hottier::HotTierManager,
     metrics::{
         QUERY_CACHE_HIT, increment_files_scanned_in_hottier_by_date,
         increment_files_scanned_in_query_by_date,
     },
+    hottier::{GLOBAL_HOTTIER, HotTierManager},
     option::Mode,
     parseable::{DEFAULT_TENANT, PARSEABLE, STREAM_EXISTS},
     storage::{ObjectStorage, ObjectStoreFormat},
@@ -630,7 +630,7 @@ impl TableProvider for StandardTableProvider {
         }
 
         // Hot tier data fetch
-        if let Some(hot_tier_manager) = HotTierManager::global()
+        if let Some(hot_tier_manager) = GLOBAL_HOTTIER.get()
             && hot_tier_manager.check_stream_hot_tier_exists(&self.stream, &self.tenant_id)
         {
             self.get_hottier_exectuion_plan(
