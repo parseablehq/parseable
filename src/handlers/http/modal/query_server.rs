@@ -24,6 +24,7 @@ use crate::handlers::http::cluster;
 use crate::handlers::http::logstream;
 use crate::handlers::http::max_event_payload_size;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
+use crate::handlers::http::modal::initialize_hot_tier_metadata_on_startup;
 use crate::handlers::http::{base_path, prism_base_path};
 use crate::handlers::http::{rbac, role};
 use crate::hottier::GLOBAL_HOTTIER;
@@ -144,10 +145,13 @@ impl ParseableServer for QueryServer {
                 std::thread::spawn(|| hottier_runtime(receiver));
 
                 // set global hottier
-
                 GLOBAL_HOTTIER.get_or_init(|| HotTierManager::new(hot_tier_path, sender))
             })
         {
+            // init hottier meta
+            if let Err(e) = initialize_hot_tier_metadata_on_startup(htm).await {
+                tracing::error!("Unable to init hottier meta- {e}");
+            };
             htm.start_all_tasks().await;
         };
 

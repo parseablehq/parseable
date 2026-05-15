@@ -29,7 +29,7 @@ use crate::{
     catalog::manifest::{File, Manifest},
     handlers::http::cluster::PMETA_STREAM_NAME,
     parseable::PARSEABLE,
-    storage::{ObjectStorageError, field_stats::DATASET_STATS_STREAM_NAME},
+    storage::{ObjectStorageError, StreamType, field_stats::DATASET_STATS_STREAM_NAME},
     tenants::TENANT_METADATA,
     utils::{extract_datetime, human_size::bytes_to_human_size},
     validator::error::HotTierValidationError,
@@ -170,14 +170,13 @@ pub async fn hottier_runtime(
             HotTierMessage::StartAll => {
                 let htm = GLOBAL_HOTTIER.get().unwrap();
 
-                let this: &'static HotTierManager = htm;
                 let startup_span = tracing::info_span!("hottier.startup.bootstrap");
                 let span = startup_span.clone();
                 tokio::spawn(
             async move {
                 // pstats hot tier may need to be created on boot before any tasks
                 // can pick it up.
-                if let Err(e) = this.create_pstats_hot_tier().await {
+                if let Err(e) = htm.create_pstats_hot_tier().await {
                     tracing::error!("Skipping pstats hot tier creation because of error: {e}");
                 }
                 let tenants = if let Some(tenants) = PARSEABLE.list_tenants() {
@@ -187,19 +186,22 @@ pub async fn hottier_runtime(
                 };
                 for tenant_id in tenants {
                     for stream in PARSEABLE.streams.list(&tenant_id) {
-                        if this.check_stream_hot_tier_exists(&stream, &tenant_id) {
+                        if htm.check_stream_hot_tier_exists(&stream, &tenant_id) {
                             let tenant_id = tenant_id.clone();
 
-                            tokio::spawn(async move {
-                                this.spawn_stream_task_inner(stream, tenant_id).await;
-                            }.instrument(span.clone()));
+                            tokio::spawn(
+                                async move {
+                                    htm.spawn_stream_task_inner(stream, tenant_id).await;
+                                }
+                                .instrument(span.clone()),
+                            );
                             tokio::time::sleep(Duration::from_secs(2)).await;
                         } else {
                             // check for potential orphan directory on disk
                             let path = if let Some(tenant_id) = tenant_id.as_ref() {
-                                this.hot_tier_path.join(tenant_id).join(stream)
+                                htm.hot_tier_path.join(tenant_id).join(stream)
                             } else {
-                                this.hot_tier_path.join(stream)
+                                htm.hot_tier_path.join(stream)
                             };
                             if path.exists() {
                                 // delete this entire folder as stream meta says no hottier for stream
@@ -771,7 +773,7 @@ impl HotTierManager {
             }
         }
 
-        let latest_interval = Duration::from_secs(60);
+        let latest_interval = Duration::from_secs(30);
         let historic_interval =
             Duration::from_secs(PARSEABLE.options.hot_tier_historic_sync_minutes as u64 * 60);
 
@@ -807,24 +809,34 @@ impl HotTierManager {
         let t = tenant_id.clone();
         let historic = tokio::spawn(async move {
             loop {
-                let anchor = floor_to_minute(Utc::now());
-                let tick_span = tracing::info_span!(
-                    "hottier.tick",
-                    stream = %s,
-                    tenant = ?t,
-                    phase = "historic",
-                    anchor = %anchor
-                );
-                async {
-                    if let Err(err) = self
-                        .process_stream(s.clone(), t.clone(), SyncPhase::Historic, anchor)
-                        .await
-                    {
-                        error!("historic sync error: {err:?}");
+                if let Ok(stream) = PARSEABLE.get_stream(&s, &t)
+                    && stream.get_stream_type().ne(&StreamType::Internal)
+                {
+                    info!(
+                        stream = ?s,
+                        tenant = ?t,
+                        "skipping historic phase for user-defined stream"
+                    );
+                } else {
+                    let anchor = floor_to_minute(Utc::now());
+                    let tick_span = tracing::info_span!(
+                        "hottier.tick",
+                        stream = %s,
+                        tenant = ?t,
+                        phase = "historic",
+                        anchor = %anchor
+                    );
+                    async {
+                        if let Err(err) = self
+                            .process_stream(s.clone(), t.clone(), SyncPhase::Historic, anchor)
+                            .await
+                        {
+                            error!("historic sync error: {err:?}");
+                        }
                     }
+                    .instrument(tick_span)
+                    .await;
                 }
-                .instrument(tick_span)
-                .await;
                 tokio::time::sleep(historic_interval).await;
             }
         });
@@ -1436,7 +1448,7 @@ impl HotTierManager {
         Ok(true)
     }
 
-    ///fetch the list of dates available in the hot tier directory for the stream and sort them
+    /// fetch the list of dates available in the hot tier directory for the stream and sort them
     #[tracing::instrument(
         name = "hottier.fetch_dates",
         skip(self),
