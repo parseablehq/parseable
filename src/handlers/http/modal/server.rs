@@ -27,13 +27,15 @@ use crate::handlers::http::demo_data::get_demo_data;
 use crate::handlers::http::health_check;
 use crate::handlers::http::max_event_payload_size;
 use crate::handlers::http::middleware::IntraClusterRequest;
-use crate::handlers::http::modal::initialize_hot_tier_metadata_on_startup;
 use crate::handlers::http::prism_base_path;
 use crate::handlers::http::query;
 use crate::handlers::http::targets;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
+use crate::hottier::GLOBAL_HOTTIER;
 use crate::hottier::HotTierManager;
+use crate::hottier::HotTierMessage;
+use crate::hottier::hottier_runtime;
 use crate::metrics;
 use crate::migration;
 use crate::storage;
@@ -49,6 +51,7 @@ use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
 use bytes::Bytes;
+use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
 use crate::{
@@ -132,14 +135,25 @@ impl ParseableServer for Server {
         // local sync on init
         thread::spawn(sync_start);
 
-        if let Some(hot_tier_manager) = HotTierManager::global() {
-            // Initialize hot tier metadata files for streams that have hot tier configuration
-            // but don't have local hot tier metadata files yet
-            if let Err(e) = initialize_hot_tier_metadata_on_startup(hot_tier_manager).await {
-                tracing::warn!("Failed to initialize hot tier metadata on startup: {}", e);
-            }
-            hot_tier_manager.download_from_s3()?;
-        };
+        if let Some(htm) = PARSEABLE
+            .options
+            .hot_tier_storage_path
+            .as_ref()
+            .map(|hot_tier_path| {
+                // start hottier runtime
+                let (sender, receiver): (
+                    mpsc::UnboundedSender<HotTierMessage>,
+                    mpsc::UnboundedReceiver<HotTierMessage>,
+                ) = mpsc::unbounded_channel();
+                std::thread::spawn(|| hottier_runtime(receiver));
+
+                // set global hottier
+
+                GLOBAL_HOTTIER.get_or_init(|| HotTierManager::new(hot_tier_path, sender))
+            })
+        {
+            htm.start_all_tasks().await;
+        }
 
         // Run sync on a background thread
         let (cancel_tx, cancel_rx) = oneshot::channel();

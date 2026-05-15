@@ -16,7 +16,13 @@
  *
  */
 
-use std::{collections::HashSet, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -47,6 +53,7 @@ use crate::{
         increment_bytes_scanned_in_object_store_calls_by_date,
         increment_files_scanned_in_object_store_calls_by_date,
         increment_object_store_calls_by_date,
+        increment_partial_file_scans_in_object_store_calls_by_date,
     },
     parseable::{DEFAULT_TENANT, LogStream, PARSEABLE},
 };
@@ -54,7 +61,8 @@ use crate::{
 use super::{
     CONNECT_TIMEOUT_SECS, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
     PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, STREAM_METADATA_FILE_NAME,
-    metrics_layer::MetricLayer, object_storage::parseable_json_path, to_object_store_path,
+    metrics_layer::MetricLayer, object_storage::parseable_json_path, partial_path,
+    to_object_store_path,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -180,8 +188,9 @@ impl ObjectStorageProvider for AzureBlobConfig {
         let azure = self.get_default_builder().build().unwrap();
         // limit objectstore to a concurrent request limit
         let azure = LimitStore::new(azure, super::MAX_OBJECT_STORE_REQUESTS);
+        let azure = MetricLayer::new(azure, "azure_blob");
         Arc::new(BlobStore {
-            client: azure,
+            client: Arc::new(azure),
             account: self.account.clone(),
             container: self.container.clone(),
             root: StorePath::from(""),
@@ -197,13 +206,123 @@ impl ObjectStorageProvider for AzureBlobConfig {
 // object store such as S3 and Azure Blob
 #[derive(Debug)]
 pub struct BlobStore {
-    client: LimitStore<MicrosoftAzure>,
+    client: Arc<MetricLayer<LimitStore<MicrosoftAzure>>>,
     account: String,
     container: String,
     root: StorePath,
 }
 
 impl BlobStore {
+    async fn _parallel_download(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+        write_path: PathBuf,
+    ) -> Result<(), ObjectStorageError> {
+        let partial = partial_path(&write_path)?;
+        match self
+            ._parallel_download_inner(path, tenant_id, partial.clone())
+            .await
+        {
+            Ok(()) => {
+                if let Err(e) = tokio::fs::rename(&partial, &write_path).await {
+                    let _ = tokio::fs::remove_file(&partial).await;
+                    return Err(e.into());
+                }
+                Ok(())
+            }
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&partial).await;
+                Err(e)
+            }
+        }
+    }
+
+    #[tracing::instrument(
+        name = "azure.parallel_download",
+        skip(self, partial_path),
+        fields(path = %path, tenant = ?tenant_id, total_bytes = tracing::field::Empty, chunks = tracing::field::Empty),
+        err
+    )]
+    async fn _parallel_download_inner(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+        partial_path: PathBuf,
+    ) -> Result<(), ObjectStorageError> {
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let date = Utc::now().date_naive().to_string();
+        let src = to_object_store_path(path);
+
+        let meta = self.client.head(&src).await?;
+        increment_object_store_calls_by_date("HEAD", &date, tenant_str);
+        let total = meta.size;
+
+        if let Some(parent) = partial_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let file = tokio::fs::File::create(&partial_path).await?;
+        file.set_len(total).await?;
+        let std_file = Arc::new(file.into_std().await);
+
+        let chunk = PARSEABLE.options.hot_tier_download_chunk_size;
+        let concurrency = PARSEABLE.options.hot_tier_download_concurrency;
+        let ranges: Vec<Range<u64>> = (0..total)
+            .step_by(chunk as usize)
+            .map(|s| s..(s + chunk).min(total))
+            .collect();
+        let chunk_count = ranges.len() as u64;
+        tracing::Span::current()
+            .record("total_bytes", total)
+            .record("chunks", chunk_count);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency as usize));
+
+        futures::stream::iter(ranges)
+            .map(|r| {
+                let src = src.clone();
+                let std_file = std_file.clone();
+                let semaphore = semaphore.clone();
+                async move {
+                    let _permit = semaphore.acquire_owned().await.map_err(|e| {
+                        ObjectStorageError::Custom(format!("semaphore closed: {e}"))
+                    })?;
+                    let bytes = self.client.get_range(&src, r.clone()).await?;
+                    let offset = r.start;
+                    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+                        crate::storage::write_all_at(&std_file, &bytes, offset)
+                    })
+                    .await
+                    .map_err(|e| ObjectStorageError::Custom(format!("join: {e}")))??;
+                    Ok::<_, ObjectStorageError>(())
+                }
+            })
+            .buffer_unordered(concurrency as usize)
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        let std_file_sync = std_file.clone();
+        tokio::task::spawn_blocking(move || std_file_sync.sync_all())
+            .await
+            .map_err(|e| ObjectStorageError::Custom(format!("join: {e}")))??;
+
+        increment_object_store_calls_by_date("GET", &date, tenant_str);
+        increment_files_scanned_in_object_store_calls_by_date("GET", 1, &date, tenant_str);
+        increment_bytes_scanned_in_object_store_calls_by_date("GET", total, &date, tenant_str);
+        increment_partial_file_scans_in_object_store_calls_by_date(
+            "GET",
+            chunk_count,
+            &date,
+            tenant_str,
+        );
+        Ok(())
+    }
+
+    #[tracing::instrument(
+        name = "azure.get_object",
+        skip(self),
+        fields(path = %path, tenant = ?tenant_id, bytes = tracing::field::Empty),
+        err
+    )]
     async fn _get_object(
         &self,
         path: &RelativePath,
@@ -216,6 +335,7 @@ impl BlobStore {
         match resp {
             Ok(resp) => {
                 let body: Bytes = resp.bytes().await?;
+                tracing::Span::current().record("bytes", body.len());
                 increment_files_scanned_in_object_store_calls_by_date(
                     "GET",
                     1,
@@ -234,6 +354,11 @@ impl BlobStore {
         }
     }
 
+    #[tracing::instrument(
+        name = "azure.put_object",
+        skip(self, resource),
+        fields(path = %path, tenant = ?tenant_id, bytes = resource.content_length())
+    )]
     async fn _put_object(
         &self,
         path: &RelativePath,
@@ -257,6 +382,12 @@ impl BlobStore {
         }
     }
 
+    #[tracing::instrument(
+        name = "azure.delete_prefix",
+        skip(self),
+        fields(prefix = %key, tenant = ?tenant_id, deleted = tracing::field::Empty, failed = tracing::field::Empty),
+        err
+    )]
     async fn _delete_prefix(
         &self,
         key: &str,
@@ -287,6 +418,9 @@ impl BlobStore {
         }
 
         let total_files = files_deleted + failed_deletes;
+        tracing::Span::current()
+            .record("deleted", files_deleted)
+            .record("failed", failed_deletes);
         increment_files_scanned_in_object_store_calls_by_date(
             "LIST",
             total_files,
@@ -309,6 +443,12 @@ impl BlobStore {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "azure.list_dates",
+        skip(self),
+        fields(stream = %stream, tenant = ?tenant_id, dates = tracing::field::Empty),
+        err
+    )]
     async fn _list_dates(
         &self,
         stream: &str,
@@ -343,10 +483,16 @@ impl BlobStore {
             .filter_map(|path| path.as_ref().strip_prefix(&format!("{stream}/")))
             .map(String::from)
             .collect();
+        tracing::Span::current().record("dates", dates.len());
 
         Ok(dates)
     }
 
+    #[tracing::instrument(
+        name = "azure.upload_file",
+        skip(self),
+        fields(key = %key, path = %path.display(), tenant = ?tenant_id)
+    )]
     async fn _upload_file(
         &self,
         key: &str,
@@ -371,6 +517,11 @@ impl BlobStore {
         }
     }
 
+    #[tracing::instrument(
+        name = "azure.upload_multipart",
+        skip(self),
+        fields(key = %key, path = %path.display(), tenant = ?tenant_id, total_bytes = tracing::field::Empty)
+    )]
     async fn _upload_multipart(
         &self,
         key: &RelativePath,
@@ -383,6 +534,7 @@ impl BlobStore {
 
         let meta = file.metadata().await?;
         let total_size = meta.len() as usize;
+        tracing::Span::current().record("total_bytes", total_size);
         let min_multipart_size = PARSEABLE.options.min_multipart_size as usize;
         if total_size < min_multipart_size || !PARSEABLE.options.enable_multipart {
             let mut data = Vec::new();
@@ -466,6 +618,14 @@ impl BlobStore {
 
 #[async_trait]
 impl ObjectStorage for BlobStore {
+    async fn parallel_chunked_download(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+        write_path: PathBuf,
+    ) -> Result<(), ObjectStorageError> {
+        self._parallel_download(path, tenant_id, write_path).await
+    }
     async fn get_buffered_reader(
         &self,
         _path: &RelativePath,
@@ -488,6 +648,12 @@ impl ObjectStorage for BlobStore {
         self._upload_multipart(key, path, tenant_id).await
     }
 
+    #[tracing::instrument(
+        name = "azure.head",
+        skip(self),
+        fields(path = %path, tenant = ?tenant_id),
+        err
+    )]
     async fn head(
         &self,
         path: &RelativePath,
@@ -628,6 +794,12 @@ impl ObjectStorage for BlobStore {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "azure.delete_object",
+        skip(self),
+        fields(path = %path, tenant = ?tenant_id),
+        err
+    )]
     async fn delete_object(
         &self,
         path: &RelativePath,
@@ -652,11 +824,18 @@ impl ObjectStorage for BlobStore {
         Ok(result?)
     }
 
+    #[tracing::instrument(
+        name = "azure.check",
+        skip(self),
+        fields(tenant = ?tenant_id, ok = tracing::field::Empty),
+        err
+    )]
     async fn check(&self, tenant_id: &Option<String>) -> Result<(), ObjectStorageError> {
         let result = self
             .client
             .head(&to_object_store_path(&parseable_json_path()))
             .await;
+        tracing::Span::current().record("ok", result.is_ok());
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         increment_object_store_calls_by_date("HEAD", &Utc::now().date_naive().to_string(), tenant);
         if result.is_ok() {

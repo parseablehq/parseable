@@ -31,7 +31,34 @@ use object_store::{
     Result as ObjectStoreResult, path::Path,
 };
 
-use crate::metrics::STORAGE_REQUEST_RESPONSE_TIME;
+use crate::metrics::{STORAGE_REQUEST_RESPONSE_TIME, STORAGE_REQUESTS_INFLIGHT};
+
+/// RAII guard that increments the in-flight gauge on construction and
+/// decrements on drop. Handles early returns, panics, and dropped futures.
+struct InflightGuard {
+    provider: String,
+    method: &'static str,
+}
+
+impl InflightGuard {
+    fn new(provider: &str, method: &'static str) -> Self {
+        STORAGE_REQUESTS_INFLIGHT
+            .with_label_values(&[provider, method])
+            .inc();
+        Self {
+            provider: provider.to_string(),
+            method,
+        }
+    }
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        STORAGE_REQUESTS_INFLIGHT
+            .with_label_values(&[&self.provider, self.method])
+            .dec();
+    }
+}
 
 // Public helper function to map object_store errors to HTTP status codes
 pub fn error_to_status_code(err: &object_store::Error) -> &'static str {
@@ -91,6 +118,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         payload: PutPayload,
         opts: PutOptions,
     ) -> ObjectStoreResult<PutResult> {
+        let _guard = InflightGuard::new(&self.provider, "PUT");
         let time = time::Instant::now();
         let put_result = self.inner.put_opts(location, payload, opts).await;
         let elapsed = time.elapsed().as_secs_f64();
@@ -111,6 +139,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         location: &Path,
         opts: PutMultipartOptions,
     ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+        let _guard = InflightGuard::new(&self.provider, "PUT_MULTIPART");
         let time = time::Instant::now();
         let result = self.inner.put_multipart_opts(location, opts).await;
         let elapsed = time.elapsed().as_secs_f64();
@@ -127,6 +156,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
     }
 
     async fn get_opts(&self, location: &Path, options: GetOptions) -> ObjectStoreResult<GetResult> {
+        let _guard = InflightGuard::new(&self.provider, "GET");
         let time = time::Instant::now();
         let result = self.inner.get_opts(location, options).await;
         let elapsed = time.elapsed().as_secs_f64();
@@ -147,6 +177,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         location: &Path,
         ranges: &[Range<u64>],
     ) -> ObjectStoreResult<Vec<Bytes>> {
+        let _guard = InflightGuard::new(&self.provider, "GET_RANGES");
         let time = time::Instant::now();
         let result = self.inner.get_ranges(location, ranges).await;
         let elapsed = time.elapsed().as_secs_f64();
@@ -170,6 +201,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
     }
 
     fn list(&self, prefix: Option<&Path>) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+        let _guard = InflightGuard::new(&self.provider, "LIST");
         let time = time::Instant::now();
         let inner = self.inner.list(prefix);
         let res = StreamMetricWrapper {
@@ -177,6 +209,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
             provider: self.provider.clone(),
             method: "LIST",
             status: "200",
+            _guard,
             inner,
         };
         Box::pin(res)
@@ -187,6 +220,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         prefix: Option<&Path>,
         offset: &Path,
     ) -> BoxStream<'static, ObjectStoreResult<ObjectMeta>> {
+        let _guard = InflightGuard::new(&self.provider, "LIST_OFFSET");
         let time = time::Instant::now();
         let inner = self.inner.list_with_offset(prefix, offset);
         let res = StreamMetricWrapper {
@@ -194,6 +228,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
             provider: self.provider.clone(),
             method: "LIST_OFFSET",
             status: "200",
+            _guard,
             inner,
         };
 
@@ -201,6 +236,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> ObjectStoreResult<ListResult> {
+        let _guard = InflightGuard::new(&self.provider, "LIST_DELIM");
         let time = time::Instant::now();
         let result = self.inner.list_with_delimiter(prefix).await;
         let elapsed = time.elapsed().as_secs_f64();
@@ -222,6 +258,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         to: &Path,
         options: CopyOptions,
     ) -> ObjectStoreResult<()> {
+        let _guard = InflightGuard::new(&self.provider, "COPY");
         let time = time::Instant::now();
         let result = self.inner.copy_opts(from, to, options).await;
         let elapsed = time.elapsed().as_secs_f64();
@@ -243,6 +280,7 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         to: &Path,
         options: RenameOptions,
     ) -> ObjectStoreResult<()> {
+        let _guard = InflightGuard::new(&self.provider, "RENAME");
         let time = time::Instant::now();
         let result = self.inner.rename_opts(from, to, options).await;
         let elapsed = time.elapsed().as_secs_f64();
@@ -264,6 +302,7 @@ struct StreamMetricWrapper<'a, T> {
     provider: String,
     method: &'static str,
     status: &'static str,
+    _guard: InflightGuard,
     inner: BoxStream<'a, T>,
 }
 

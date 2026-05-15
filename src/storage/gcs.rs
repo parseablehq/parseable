@@ -16,13 +16,20 @@
  *
  */
 
-use std::{collections::HashSet, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::HashSet,
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use crate::{
     metrics::{
         increment_bytes_scanned_in_object_store_calls_by_date,
         increment_files_scanned_in_object_store_calls_by_date,
         increment_object_store_calls_by_date,
+        increment_partial_file_scans_in_object_store_calls_by_date,
     },
     parseable::{DEFAULT_TENANT, LogStream, PARSEABLE},
 };
@@ -47,12 +54,14 @@ use object_store::{
 };
 use relative_path::{RelativePath, RelativePathBuf};
 use tokio::{fs::OpenOptions, io::AsyncReadExt};
+
 use tracing::error;
 
 use super::{
     CONNECT_TIMEOUT_SECS, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
     PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, STREAM_METADATA_FILE_NAME,
-    metrics_layer::MetricLayer, object_storage::parseable_json_path, to_object_store_path,
+    metrics_layer::MetricLayer, object_storage::parseable_json_path, partial_path,
+    to_object_store_path,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -141,7 +150,9 @@ impl ObjectStorageProvider for GcsConfig {
 
     fn construct_client(&self) -> Arc<dyn ObjectStorage> {
         let gcs = self.get_default_builder().build().unwrap();
-
+        // limit objectstore to a concurrent request limit
+        let gcs = LimitStore::new(gcs, super::MAX_OBJECT_STORE_REQUESTS);
+        let gcs = MetricLayer::new(gcs, "gcs");
         Arc::new(Gcs {
             client: Arc::new(gcs),
             bucket: self.bucket_name.clone(),
@@ -163,12 +174,122 @@ impl ObjectStorageProvider for GcsConfig {
 
 #[derive(Debug)]
 pub struct Gcs {
-    client: Arc<GoogleCloudStorage>,
+    client: Arc<MetricLayer<LimitStore<GoogleCloudStorage>>>,
     bucket: String,
     root: StorePath,
 }
 
 impl Gcs {
+    async fn _parallel_download(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+        write_path: PathBuf,
+    ) -> Result<(), ObjectStorageError> {
+        let partial = partial_path(&write_path)?;
+        match self
+            ._parallel_download_inner(path, tenant_id, partial.clone())
+            .await
+        {
+            Ok(()) => {
+                if let Err(e) = tokio::fs::rename(&partial, &write_path).await {
+                    let _ = tokio::fs::remove_file(&partial).await;
+                    return Err(e.into());
+                }
+                Ok(())
+            }
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&partial).await;
+                Err(e)
+            }
+        }
+    }
+
+    #[tracing::instrument(
+        name = "gcs.parallel_download",
+        skip(self, partial_path),
+        fields(path = %path, tenant = ?tenant_id, total_bytes = tracing::field::Empty, chunks = tracing::field::Empty),
+        err
+    )]
+    async fn _parallel_download_inner(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+        partial_path: PathBuf,
+    ) -> Result<(), ObjectStorageError> {
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let date = Utc::now().date_naive().to_string();
+        let src = to_object_store_path(path);
+
+        let meta = self.client.head(&src).await?;
+        increment_object_store_calls_by_date("HEAD", &date, tenant_str);
+        let total = meta.size;
+
+        if let Some(parent) = partial_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let file = tokio::fs::File::create(&partial_path).await?;
+        file.set_len(total).await?;
+        let std_file = Arc::new(file.into_std().await);
+
+        let chunk = PARSEABLE.options.hot_tier_download_chunk_size;
+        let concurrency = PARSEABLE.options.hot_tier_download_concurrency;
+        let ranges: Vec<Range<u64>> = (0..total)
+            .step_by(chunk as usize)
+            .map(|s| s..(s + chunk).min(total))
+            .collect();
+        let chunk_count = ranges.len() as u64;
+        tracing::Span::current()
+            .record("total_bytes", total)
+            .record("chunks", chunk_count);
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency as usize));
+
+        futures::stream::iter(ranges)
+            .map(|r| {
+                let src = src.clone();
+                let std_file = std_file.clone();
+                let semaphore = semaphore.clone();
+                async move {
+                    let _permit = semaphore.acquire_owned().await.map_err(|e| {
+                        ObjectStorageError::Custom(format!("semaphore closed: {e}"))
+                    })?;
+                    let bytes = self.client.get_range(&src, r.clone()).await?;
+                    let offset = r.start;
+                    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+                        crate::storage::write_all_at(&std_file, &bytes, offset)
+                    })
+                    .await
+                    .map_err(|e| ObjectStorageError::Custom(format!("join: {e}")))??;
+                    Ok::<_, ObjectStorageError>(())
+                }
+            })
+            .buffer_unordered(concurrency as usize)
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        let std_file_sync = std_file.clone();
+        tokio::task::spawn_blocking(move || std_file_sync.sync_all())
+            .await
+            .map_err(|e| ObjectStorageError::Custom(format!("join: {e}")))??;
+
+        increment_object_store_calls_by_date("GET", &date, tenant_str);
+        increment_files_scanned_in_object_store_calls_by_date("GET", 1, &date, tenant_str);
+        increment_bytes_scanned_in_object_store_calls_by_date("GET", total, &date, tenant_str);
+        increment_partial_file_scans_in_object_store_calls_by_date(
+            "GET",
+            chunk_count,
+            &date,
+            tenant_str,
+        );
+        Ok(())
+    }
+
+    #[tracing::instrument(
+        name = "gcs.get_object",
+        skip(self),
+        fields(path = %path, tenant = ?tenant_id, bytes = tracing::field::Empty),
+        err
+    )]
     async fn _get_object(
         &self,
         path: &RelativePath,
@@ -180,6 +301,7 @@ impl Gcs {
         match resp {
             Ok(resp) => {
                 let body: Bytes = resp.bytes().await?;
+                tracing::Span::current().record("bytes", body.len());
                 increment_files_scanned_in_object_store_calls_by_date(
                     "GET",
                     1,
@@ -198,6 +320,11 @@ impl Gcs {
         }
     }
 
+    #[tracing::instrument(
+        name = "gcs.put_object",
+        skip(self, resource),
+        fields(path = %path, tenant = ?tenant_id, bytes = resource.content_length())
+    )]
     async fn _put_object(
         &self,
         path: &RelativePath,
@@ -221,6 +348,12 @@ impl Gcs {
         }
     }
 
+    #[tracing::instrument(
+        name = "gcs.delete_prefix",
+        skip(self),
+        fields(prefix = %key, tenant = ?tenant_id, deleted = tracing::field::Empty, failed = tracing::field::Empty),
+        err
+    )]
     async fn _delete_prefix(
         &self,
         key: &str,
@@ -251,6 +384,9 @@ impl Gcs {
         }
 
         let total_files = files_deleted + failed_deletes;
+        tracing::Span::current()
+            .record("deleted", files_deleted)
+            .record("failed", failed_deletes);
         increment_files_scanned_in_object_store_calls_by_date(
             "LIST",
             total_files,
@@ -273,6 +409,12 @@ impl Gcs {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "gcs.list_dates",
+        skip(self),
+        fields(stream = %stream, tenant = ?tenant_id, dates = tracing::field::Empty),
+        err
+    )]
     async fn _list_dates(
         &self,
         stream: &str,
@@ -307,10 +449,16 @@ impl Gcs {
             .filter_map(|path| path.as_ref().strip_prefix(&format!("{stream}/")))
             .map(String::from)
             .collect();
+        tracing::Span::current().record("dates", dates.len());
 
         Ok(dates)
     }
 
+    #[tracing::instrument(
+        name = "gcs.upload_file",
+        skip(self),
+        fields(key = %key, path = %path.display(), tenant = ?tenant_id)
+    )]
     async fn _upload_file(
         &self,
         key: &str,
@@ -335,6 +483,11 @@ impl Gcs {
         }
     }
 
+    #[tracing::instrument(
+        name = "gcs.upload_multipart",
+        skip(self),
+        fields(key = %key, path = %path.display(), tenant = ?tenant_id, total_bytes = tracing::field::Empty)
+    )]
     async fn _upload_multipart(
         &self,
         key: &RelativePath,
@@ -346,6 +499,7 @@ impl Gcs {
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let meta = file.metadata().await?;
         let total_size = meta.len() as usize;
+        tracing::Span::current().record("total_bytes", total_size);
         let min_multipart_size = PARSEABLE.options.min_multipart_size as usize;
         if total_size < min_multipart_size || !PARSEABLE.options.enable_multipart {
             let mut data = Vec::new();
@@ -431,6 +585,14 @@ impl Gcs {
 
 #[async_trait]
 impl ObjectStorage for Gcs {
+    async fn parallel_chunked_download(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+        write_path: PathBuf,
+    ) -> Result<(), ObjectStorageError> {
+        self._parallel_download(path, tenant_id, write_path).await
+    }
     async fn get_buffered_reader(
         &self,
         path: &RelativePath,
@@ -455,8 +617,7 @@ impl ObjectStorage for Gcs {
             }
         };
 
-        let store: Arc<dyn ObjectStore> = self.client.clone();
-        let buf = object_store::buffered::BufReader::new(store, &meta);
+        let buf = object_store::buffered::BufReader::new(self.client.clone(), &meta);
         Ok(buf)
     }
 
@@ -469,6 +630,12 @@ impl ObjectStorage for Gcs {
         self._upload_multipart(key, path, tenant_id).await
     }
 
+    #[tracing::instrument(
+        name = "gcs.head",
+        skip(self),
+        fields(path = %path, tenant = ?tenant_id),
+        err
+    )]
     async fn head(
         &self,
         path: &RelativePath,
@@ -609,6 +776,12 @@ impl ObjectStorage for Gcs {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "gcs.delete_object",
+        skip(self),
+        fields(path = %path, tenant = ?tenant_id),
+        err
+    )]
     async fn delete_object(
         &self,
         path: &RelativePath,
@@ -633,11 +806,18 @@ impl ObjectStorage for Gcs {
         Ok(result?)
     }
 
+    #[tracing::instrument(
+        name = "gcs.check",
+        skip(self),
+        fields(tenant = ?tenant_id, ok = tracing::field::Empty),
+        err
+    )]
     async fn check(&self, tenant_id: &Option<String>) -> Result<(), ObjectStorageError> {
         let result = self
             .client
             .head(&to_object_store_path(&parseable_json_path()))
             .await;
+        tracing::Span::current().record("ok", result.is_ok());
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         increment_object_store_calls_by_date("HEAD", &Utc::now().date_naive().to_string(), tenant);
 
