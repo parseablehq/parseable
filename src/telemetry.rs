@@ -53,12 +53,19 @@ const OTEL_EXPORTER_OTLP_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
 /// Returns \`None\` when \`OTEL_EXPORTER_OTLP_ENDPOINT\` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is not set (OTEL disabled).
 /// The caller must call \`provider.shutdown()\` before process exit.
 pub fn init_tracing(service: &'static str) -> Option<SdkTracerProvider> {
-    let endpoint = std::env::var(OTEL_EXPORTER_OTLP_ENDPOINT)
-        .or_else(|_| std::env::var(OTEL_EXPORTER_OTLP_TRACES_ENDPOINT))
-        .ok()?;
+    let endpoint = std::env::var(OTEL_EXPORTER_OTLP_ENDPOINT).ok();
+    let traces_endpoint = std::env::var(OTEL_EXPORTER_OTLP_TRACES_ENDPOINT).ok();
+    if endpoint.is_none() && traces_endpoint.is_none() {
+        return None;
+    }
 
     // Endpoint sentinel: route spans to stdout, skip OTLP exporter entirely.
-    let use_stdout = endpoint.eq_ignore_ascii_case("stdout");
+    // Either env var set to "stdout" (case-insensitive) triggers stdout mode.
+    let is_stdout_sentinel = |v: &Option<String>| {
+        v.as_deref()
+            .is_some_and(|s| s.eq_ignore_ascii_case("stdout"))
+    };
+    let use_stdout = is_stdout_sentinel(&endpoint) || is_stdout_sentinel(&traces_endpoint);
 
     let protocol =
         std::env::var(OTEL_EXPORTER_OTLP_PROTOCOL).unwrap_or_else(|_| "http/json".to_string());
