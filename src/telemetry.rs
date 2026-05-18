@@ -33,7 +33,8 @@ const OTEL_EXPORTER_OTLP_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
 /// Initialise an OTLP tracer provider.
 ///
 /// **Required env var:**
-/// - \`OTEL_EXPORTER_OTLP_ENDPOINT\` — collector address.
+/// - \`OTEL_EXPORTER_OTLP_ENDPOINT\` — collector address, or the literal
+///   value \`stdout\` to write spans as JSON to process stdout (no collector).
 ///   For HTTP exporters the SDK appends the signal path automatically:
 ///   e.g. \`http://localhost:4318\` → \`http://localhost:4318/v1/traces\`.
 ///   Set a signal-specific var \`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT\` to
@@ -44,6 +45,7 @@ const OTEL_EXPORTER_OTLP_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
 ///   - \`grpc\`           → gRPC / tonic  (Jaeger, Tempo, …)
 ///   - \`http/json\`      → HTTP + JSON   (Parseable OSS ingest at \`/v1/traces\`)
 ///   - \`http/protobuf\`  → HTTP + protobuf
+///     Ignored when endpoint is \`stdout\`.
 /// - \`OTEL_EXPORTER_OTLP_HEADERS\` — comma-separated \`key=value\` pairs forwarded
 ///   as gRPC metadata or HTTP headers, e.g.
 ///   \`authorization=Basic <token>,x-p-stream=my-stream,x-p-log-source=otel-traces\`
@@ -51,51 +53,65 @@ const OTEL_EXPORTER_OTLP_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
 /// Returns \`None\` when \`OTEL_EXPORTER_OTLP_ENDPOINT\` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is not set (OTEL disabled).
 /// The caller must call \`provider.shutdown()\` before process exit.
 pub fn init_tracing(service: &'static str) -> Option<SdkTracerProvider> {
-    // Only used to decide whether OTEL is enabled; the SDK reads it again
-    // from env to build the exporter (which also appends /v1/traces for HTTP).
-    if std::env::var(OTEL_EXPORTER_OTLP_ENDPOINT).is_err()
-        && std::env::var(OTEL_EXPORTER_OTLP_TRACES_ENDPOINT).is_err()
-    {
-        return None;
-    }
+    let endpoint = std::env::var(OTEL_EXPORTER_OTLP_ENDPOINT)
+        .or_else(|_| std::env::var(OTEL_EXPORTER_OTLP_TRACES_ENDPOINT))
+        .ok()?;
+
+    // Endpoint sentinel: route spans to stdout, skip OTLP exporter entirely.
+    let use_stdout = endpoint.eq_ignore_ascii_case("stdout");
 
     let protocol =
         std::env::var(OTEL_EXPORTER_OTLP_PROTOCOL).unwrap_or_else(|_| "http/json".to_string());
 
-    // Build the exporter using the SDK's env-var-aware builders.
+    // Build the exporter and wrap it in a BatchSpanProcessor. The stdout
+    // exporter has a different concrete type, so we build the processor
+    // inside each match arm to keep the types monomorphic.
+    //
     // We intentionally do NOT call .with_endpoint() / .with_headers() /
-    // .with_metadata() here — the SDK reads OTEL_EXPORTER_OTLP_ENDPOINT and
-    // OTEL_EXPORTER_OTLP_HEADERS from the environment automatically, which
+    // .with_metadata() on OTLP builders — the SDK reads OTEL_EXPORTER_OTLP_ENDPOINT
+    // and OTEL_EXPORTER_OTLP_HEADERS from the environment automatically, which
     // preserves correct path-appending behaviour for HTTP exporters.
-    let exporter = match protocol.as_str() {
-        // ── gRPC ─────────────────────────────────────────────────────────────
-        "grpc" => opentelemetry_otlp::SpanExporter::builder()
-            .with_tonic()
-            .build(),
-        // ── HTTP/Protobuf ────────────────────────────────────────────────────
-        "http/protobuf" => SpanExporter::builder()
-            .with_http()
-            .with_protocol(Protocol::HttpBinary)
-            .build(),
-        // ── HTTP/JSON ─────────────────────────────────────────────────────────
-        "http/json" => SpanExporter::builder()
-            .with_http()
-            .with_protocol(Protocol::HttpJson)
-            .build(),
-        // return none if an invalid value is set
-        other => {
-            tracing::warn!(
-                "Unknown OTEL_EXPORTER_OTLP_PROTOCOL value '{}'; disabling OTEL tracing. \
-                 Supported values: grpc, http/protobuf, http/json",
-                other
-            );
-            return None;
+    let processor = if use_stdout {
+        let exporter = opentelemetry_stdout::SpanExporter::default();
+        BatchSpanProcessor::builder(exporter).build()
+    } else {
+        match protocol.as_str() {
+            "grpc" => {
+                let exporter = opentelemetry_otlp::SpanExporter::builder()
+                    .with_tonic()
+                    .build()
+                    .map_err(|e| tracing::warn!("Failed to build OTEL span exporter: {}", e))
+                    .ok()?;
+                BatchSpanProcessor::builder(exporter).build()
+            }
+            "http/protobuf" => {
+                let exporter = SpanExporter::builder()
+                    .with_http()
+                    .with_protocol(Protocol::HttpBinary)
+                    .build()
+                    .map_err(|e| tracing::warn!("Failed to build OTEL span exporter: {}", e))
+                    .ok()?;
+                BatchSpanProcessor::builder(exporter).build()
+            }
+            "http/json" => {
+                let exporter = SpanExporter::builder()
+                    .with_http()
+                    .with_protocol(Protocol::HttpJson)
+                    .build()
+                    .map_err(|e| tracing::warn!("Failed to build OTEL span exporter: {}", e))
+                    .ok()?;
+                BatchSpanProcessor::builder(exporter).build()
+            }
+            other => {
+                tracing::warn!(
+                    "Unknown OTEL_EXPORTER_OTLP_PROTOCOL value '{}'; disabling OTEL tracing. \
+                     Supported values: grpc, http/protobuf, http/json",
+                    other
+                );
+                return None;
+            }
         }
     };
-
-    let exporter = exporter
-        .map_err(|e| tracing::warn!("Failed to build OTEL span exporter: {}", e))
-        .ok()?;
 
     // Declare conformance to OTel Semantic Conventions v1.56.0 via schema_url.
     // Downstream collectors (e.g., the Schema Translate Processor) can apply
@@ -108,8 +124,6 @@ pub fn init_tracing(service: &'static str) -> Option<SdkTracerProvider> {
             "https://opentelemetry.io/schemas/1.56.0",
         )
         .build();
-
-    let processor = BatchSpanProcessor::builder(exporter).build();
 
     let provider = SdkTracerProvider::builder()
         .with_span_processor(processor)
