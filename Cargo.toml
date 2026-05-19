@@ -127,6 +127,7 @@ opentelemetry-otlp = { version = "0.31.1", features = [
     "http-proto",
     "http-json",
 ] }
+opentelemetry-stdout = "0.31.0"
 tracing-actix-web = "0.7"
 
 # Time and Date
