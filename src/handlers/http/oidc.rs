@@ -167,11 +167,23 @@ pub async fn login(
     }
 }
 
-pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> HttpResponse {
+pub async fn logout(
+    req: HttpRequest,
+    query: web::Query<RedirectAfterLogin>,
+) -> Result<HttpResponse, OIDCError> {
+    // Validate redirect URL against server host to prevent open redirect attacks
+    let conn = req.connection_info().clone();
+    let base_url_without_scheme = format!("{}/", conn.host());
+    if !is_valid_redirect_url(&base_url_without_scheme, query.redirect.as_str()) {
+        return Err(OIDCError::BadRequest(
+            "Bad Request, Invalid Redirect URL!".to_string(),
+        ));
+    }
+
     let oidc_client = OIDC_CLIENT.get();
 
     let Some(session) = extract_session_key_from_req(&req).ok() else {
-        return redirect_to_client(query.redirect.as_str(), None);
+        return Ok(redirect_to_client(query.redirect.as_str(), None));
     };
     let tenant_id = get_tenant_id_from_key(&session);
     let user = Users.remove_session(&session);
@@ -181,14 +193,14 @@ pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> 
         None
     };
 
-    match (user, logout_endpoint) {
+    Ok(match (user, logout_endpoint) {
         (Some(username), Some(logout_endpoint))
             if Users.is_oauth(&username, &tenant_id).unwrap_or_default() =>
         {
             redirect_to_oidc_logout(logout_endpoint, &query.redirect)
         }
         _ => redirect_to_client(query.redirect.as_str(), None),
-    }
+    })
 }
 
 /// Handler for code callback
