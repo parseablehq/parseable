@@ -70,11 +70,15 @@ pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 37] = [
     "scope_dropped_attributes_count",
     "resource_dropped_attributes_count",
     "resource_schema_url",
-    // Precomputed per-sample identity of the physical series. Stable hash
-    // of `metric_name` + sorted attribute key/value pairs. Lets the query
-    // layer group samples into physical series via a single u64 column
-    // read instead of decoding every label column and hashing per row.
-    "_series_hash",
+    // Precomputed per-sample identity of the physical series. Stable
+    // u64 hash of `metric_name` + sorted attribute key/value pairs,
+    // stored as a decimal-encoded string so arrow-json infers Utf8 and
+    // we get byte-exact roundtrip. Int64/Float64 inference dropped bits
+    // for hashes near the high range; string sidesteps that entirely.
+    // Lets the query layer group samples into physical series via a
+    // single column read instead of decoding every label column and
+    // hashing per row.
+    "__series_hash",
 ];
 
 /// Compute a stable u64 identifier for the physical series a sample
@@ -618,13 +622,12 @@ fn process_resource_metrics<T, S, M>(
                     // perspective). Computed once per data point — O(label
                     // count) per sample, ~200 ns at typical attribute counts.
                     let series_hash = compute_series_hash(&dp);
-                    // Bit-reinterpret u64 → i64 so arrow-json infers a
-                    // signed integer column (it would coerce u64 values >
-                    // i64::MAX to Float64 and lose precision). The query
-                    // side reverses the cast: `i64.to_le_bytes() as u64`.
+                    // Stored as decimal-encoded string. Arrow-json
+                    // infers Utf8, preserving all 64 bits — Int64/Float64
+                    // inference truncated values near the high range.
                     dp.insert(
-                        "_series_hash".to_string(),
-                        Value::Number((series_hash as i64).into()),
+                        "__series_hash".to_string(),
+                        Value::String(series_hash.to_string()),
                     );
                     vec_otel_json.push(Value::Object(dp));
                 }
