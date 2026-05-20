@@ -618,9 +618,13 @@ fn process_resource_metrics<T, S, M>(
                     // perspective). Computed once per data point — O(label
                     // count) per sample, ~200 ns at typical attribute counts.
                     let series_hash = compute_series_hash(&dp);
+                    // Bit-reinterpret u64 → i64 so arrow-json infers a
+                    // signed integer column (it would coerce u64 values >
+                    // i64::MAX to Float64 and lose precision). The query
+                    // side reverses the cast: `i64.to_le_bytes() as u64`.
                     dp.insert(
                         "_series_hash".to_string(),
-                        Value::Number(series_hash.into()),
+                        Value::Number((series_hash as i64).into()),
                     );
                     vec_otel_json.push(Value::Object(dp));
                 }
