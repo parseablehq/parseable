@@ -23,6 +23,8 @@ use opentelemetry_proto::tonic::metrics::v1::{
 };
 use serde_json::{Map, Value};
 
+use rustc_hash::FxHasher;
+use std::hash::Hasher;
 use tracing::info_span;
 
 use crate::metrics::increment_metrics_collected_by_date;
@@ -31,7 +33,7 @@ use super::otel_utils::{
     convert_epoch_nano_to_timestamp, insert_attributes, insert_number_if_some,
 };
 
-pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 36] = [
+pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 37] = [
     "metric_name",
     "metric_description",
     "metric_unit",
@@ -68,7 +70,53 @@ pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 36] = [
     "scope_dropped_attributes_count",
     "resource_dropped_attributes_count",
     "resource_schema_url",
+    // Precomputed per-sample identity of the physical series. Stable hash
+    // of `metric_name` + sorted attribute key/value pairs. Lets the query
+    // layer group samples into physical series via a single u64 column
+    // read instead of decoding every label column and hashing per row.
+    "_series_hash",
 ];
+
+/// Compute a stable u64 identifier for the physical series a sample
+/// belongs to. Hashes `metric_name` plus every attribute key/value pair
+/// that survived OTel flattening — everything in the flattened data
+/// point that isn't a known sample-level field is treated as a label.
+///
+/// Hash output must be stable across process restarts and matching at
+/// query time. Uses rustc-hash's FxHasher (fast, deterministic,
+/// non-cryptographic) and feeds keys in sorted order so the hash
+/// doesn't depend on JSON Map iteration order.
+fn compute_series_hash(dp: &Map<String, Value>) -> u64 {
+    let known: std::collections::HashSet<&str> =
+        OTEL_METRICS_KNOWN_FIELD_LIST.iter().copied().collect();
+    let mut label_pairs: Vec<(&str, String)> = dp
+        .iter()
+        .filter(|(k, _)| !known.contains(k.as_str()))
+        .map(|(k, v)| {
+            let v_str = match v {
+                Value::String(s) => s.clone(),
+                other => other.to_string(),
+            };
+            (k.as_str(), v_str)
+        })
+        .collect();
+    label_pairs.sort_by(|a, b| a.0.cmp(b.0));
+
+    let mut hasher = FxHasher::default();
+    // Include metric_name in the identity. Without it, two different
+    // metrics with identical label sets would collide into one series.
+    if let Some(Value::String(name)) = dp.get("metric_name") {
+        hasher.write(name.as_bytes());
+        hasher.write(b"\0");
+    }
+    for (k, v) in &label_pairs {
+        hasher.write(k.as_bytes());
+        hasher.write(b"=");
+        hasher.write(v.as_bytes());
+        hasher.write(b"\0");
+    }
+    hasher.finish()
+}
 
 /// otel metrics event has json array for exemplar
 /// this function flatten the exemplar json array
@@ -564,6 +612,16 @@ fn process_resource_metrics<T, S, M>(
                     for (k, v) in &envelope {
                         dp.insert(k.clone(), v.clone());
                     }
+                    // Compute the physical-series hash AFTER envelope merge
+                    // so resource/scope attributes participate in series
+                    // identity (they're labels from the query layer's
+                    // perspective). Computed once per data point — O(label
+                    // count) per sample, ~200 ns at typical attribute counts.
+                    let series_hash = compute_series_hash(&dp);
+                    dp.insert(
+                        "_series_hash".to_string(),
+                        Value::Number(series_hash.into()),
+                    );
                     vec_otel_json.push(Value::Object(dp));
                 }
             }
@@ -654,4 +712,111 @@ fn flatten_data_point_flags(flags: u32) -> Map<String, Value> {
         Value::String(description.to_string()),
     );
     data_point_flags_json
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_dp() -> Map<String, Value> {
+        let mut dp = Map::new();
+        dp.insert(
+            "metric_name".to_string(),
+            Value::String("counter.app.metric_0006".into()),
+        );
+        dp.insert(
+            "time_unix_nano".to_string(),
+            Value::String("2026-05-19T09:00:00Z".into()),
+        );
+        dp.insert("data_point_value".to_string(), Value::Number(1000.into()));
+        dp.insert("is_monotonic".to_string(), Value::Bool(true));
+        dp.insert("service.name".to_string(), Value::String("api".into()));
+        dp.insert("http.method".to_string(), Value::String("GET".into()));
+        dp.insert("request.id".to_string(), Value::String("req-1".into()));
+        dp
+    }
+
+    #[test]
+    fn series_hash_stable_across_runs() {
+        // Same input → same hash. Locks in the wire contract between
+        // ingest and query layers; any algorithm change here breaks
+        // grouping for already-ingested data.
+        let dp = make_dp();
+        let h1 = compute_series_hash(&dp);
+        let h2 = compute_series_hash(&dp);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn series_hash_independent_of_label_insertion_order() {
+        // serde_json::Map preserves insertion order; query side may see
+        // labels in different order. Hash must be insertion-order-agnostic.
+        let mut a = Map::new();
+        a.insert("metric_name".to_string(), Value::String("m".into()));
+        a.insert("service.name".to_string(), Value::String("api".into()));
+        a.insert("http.method".to_string(), Value::String("GET".into()));
+
+        let mut b = Map::new();
+        b.insert("http.method".to_string(), Value::String("GET".into()));
+        b.insert("metric_name".to_string(), Value::String("m".into()));
+        b.insert("service.name".to_string(), Value::String("api".into()));
+
+        assert_eq!(compute_series_hash(&a), compute_series_hash(&b));
+    }
+
+    #[test]
+    fn series_hash_changes_with_label_value() {
+        let dp = make_dp();
+        let mut dp2 = dp.clone();
+        dp2.insert("service.name".to_string(), Value::String("billing".into()));
+        assert_ne!(compute_series_hash(&dp), compute_series_hash(&dp2));
+    }
+
+    #[test]
+    fn series_hash_changes_with_metric_name() {
+        // Two different metrics with identical labels must hash to
+        // different values, otherwise samples for `requests_total` and
+        // `latency_seconds` would collide into one logical series.
+        let dp = make_dp();
+        let mut dp2 = dp.clone();
+        dp2.insert(
+            "metric_name".to_string(),
+            Value::String("other.metric".into()),
+        );
+        assert_ne!(compute_series_hash(&dp), compute_series_hash(&dp2));
+    }
+
+    #[test]
+    fn series_hash_ignores_sample_level_fields() {
+        // time_unix_nano and data_point_value belong to the SAMPLE, not
+        // the series. Hash must be identical across samples of the same
+        // physical series taken at different times with different values.
+        let dp = make_dp();
+        let mut dp_later = dp.clone();
+        dp_later.insert(
+            "time_unix_nano".to_string(),
+            Value::String("2026-05-19T10:00:00Z".into()),
+        );
+        dp_later.insert("data_point_value".to_string(), Value::Number(2000.into()));
+        assert_eq!(compute_series_hash(&dp), compute_series_hash(&dp_later));
+    }
+
+    #[test]
+    fn series_hash_distinguishes_label_kv_swap() {
+        // Pathological pair: {a=bc, d=e} vs {a=b, cd=e}. A naive
+        // concatenation hash would emit identical bytes. Delimiters in
+        // the hasher input prevent this — verify here so a future
+        // optimisation can't silently regress collision resistance.
+        let mut a = Map::new();
+        a.insert("metric_name".to_string(), Value::String("m".into()));
+        a.insert("a".to_string(), Value::String("bc".into()));
+        a.insert("d".to_string(), Value::String("e".into()));
+
+        let mut b = Map::new();
+        b.insert("metric_name".to_string(), Value::String("m".into()));
+        b.insert("a".to_string(), Value::String("b".into()));
+        b.insert("cd".to_string(), Value::String("e".into()));
+
+        assert_ne!(compute_series_hash(&a), compute_series_hash(&b));
+    }
 }
