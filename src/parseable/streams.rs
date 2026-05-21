@@ -607,7 +607,7 @@ impl Stream {
         sorting_column_vec.push(SortingColumn {
             column_idx: time_partition_idx as i32,
             descending: true,
-            nulls_first: true,
+            nulls_first: false,
         });
 
         // Describe custom partition column encodings and sorting
