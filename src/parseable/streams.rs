@@ -17,7 +17,7 @@
  *
  */
 
-use arrow_array::RecordBatch;
+use arrow_array::{ArrayRef, RecordBatch};
 use arrow_ipc::reader::StreamReader;
 use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
@@ -589,12 +589,26 @@ impl Stream {
                 Encoding::DELTA_BINARY_PACKED,
             );
 
-        // Create sorting columns
-        let mut sorting_column_vec = vec![SortingColumn {
+        // Build sorting columns. For OTel-metrics streams, put
+        // `metric_name` ahead of the time partition so per-page parquet
+        // min/max stats can prune by metric (PromQL's universal selector
+        // predicate). The actual row order is enforced at write time
+        // (`sort_batch_for_metric_pruning`) — this just advertises the
+        // sort in parquet footer metadata so readers can rely on it.
+        let is_otel_metrics = self.is_otel_metrics();
+        let mut sorting_column_vec: Vec<SortingColumn> = Vec::new();
+        if is_otel_metrics && let Ok(name_idx) = merged_schema.index_of("metric_name") {
+            sorting_column_vec.push(SortingColumn {
+                column_idx: name_idx as i32,
+                descending: false,
+                nulls_first: false,
+            });
+        }
+        sorting_column_vec.push(SortingColumn {
             column_idx: time_partition_idx as i32,
             descending: true,
             nulls_first: true,
-        }];
+        });
 
         // Describe custom partition column encodings and sorting
         if let Some(custom_partition) = custom_partition {
@@ -614,6 +628,66 @@ impl Stream {
 
         // Set sorting columns
         props.set_sorting_columns(Some(sorting_column_vec)).build()
+    }
+
+    /// True if this stream's log_source carries the OTel-metrics
+    /// format. Determines whether per-batch sort and metric_name-first
+    /// SortingColumn metadata get applied at write time.
+    fn is_otel_metrics(&self) -> bool {
+        self.get_log_source()
+            .iter()
+            .any(|s| matches!(s.log_source_format, LogSource::OtelMetrics))
+    }
+
+    /// Permute a `RecordBatch` so rows are ordered by
+    /// `(metric_name ASC, time_partition DESC)`. Required for parquet
+    /// page-index pruning to be effective on PromQL's
+    /// `metric_name = 'X'` selector — without this, pages within a row
+    /// group hold interleaved metrics and per-page min/max stats span
+    /// every metric in the stream, killing pruning.
+    ///
+    /// Bails out without sorting when either source column is missing
+    /// (non-metric stream, schema drift) so the caller can write the
+    /// batch unchanged.
+    fn sort_batch_for_metric_pruning(
+        batch: &RecordBatch,
+        time_partition_field: &str,
+    ) -> Result<RecordBatch, StagingError> {
+        use arrow::compute::{SortColumn, kernels::sort::SortOptions, lexsort_to_indices, take};
+        let schema = batch.schema();
+        let Some(name_idx) = schema.index_of("metric_name").ok() else {
+            return Ok(batch.clone());
+        };
+        let Some(time_idx) = schema.index_of(time_partition_field).ok() else {
+            return Ok(batch.clone());
+        };
+        if batch.num_rows() < 2 {
+            return Ok(batch.clone());
+        }
+
+        let sort_cols = vec![
+            SortColumn {
+                values: batch.column(name_idx).clone(),
+                options: Some(SortOptions {
+                    descending: false,
+                    nulls_first: false,
+                }),
+            },
+            SortColumn {
+                values: batch.column(time_idx).clone(),
+                options: Some(SortOptions {
+                    descending: true,
+                    nulls_first: false,
+                }),
+            },
+        ];
+        let indices = lexsort_to_indices(&sort_cols, None)?;
+        let columns: Vec<ArrayRef> = batch
+            .columns()
+            .iter()
+            .map(|c| take(c.as_ref(), &indices, None))
+            .collect::<Result<_, _>>()?;
+        Ok(RecordBatch::try_new(schema, columns)?)
     }
 
     fn reset_staging_metrics(&self, tenant_id: &Option<String>) {
@@ -739,8 +813,17 @@ impl Stream {
             .open(part_path)
             .map_err(|_| StagingError::Create)?;
         let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
+        let sort_for_metric_pruning = self.is_otel_metrics();
+        let time_partition_field = time_partition
+            .map(|s| s.as_str().to_string())
+            .unwrap_or_else(|| DEFAULT_TIMESTAMP_KEY.to_string());
         for ref record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
-            writer.write(record)?;
+            if sort_for_metric_pruning {
+                let sorted = Self::sort_batch_for_metric_pruning(record, &time_partition_field)?;
+                writer.write(&sorted)?;
+            } else {
+                writer.write(record)?;
+            }
         }
         writer.close()?;
 
