@@ -814,9 +814,10 @@ impl Stream {
             .map_err(|_| StagingError::Create)?;
         let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
         let sort_for_metric_pruning = self.is_otel_metrics();
-        let time_partition_field = time_partition
-            .map(|s| s.as_str().to_string())
-            .unwrap_or_else(|| DEFAULT_TIMESTAMP_KEY.to_string());
+        let time_partition_field = time_partition.map_or_else(
+            || DEFAULT_TIMESTAMP_KEY.to_string(),
+            |s| s.as_str().to_string(),
+        );
 
         if sort_for_metric_pruning {
             // Buffer batches up to the row-group target, then
@@ -832,7 +833,7 @@ impl Stream {
                 buffered_rows += record.num_rows();
                 buffer.push(record);
                 if buffered_rows >= target {
-                    let combined = arrow::compute::concat_batches(&schema, &buffer)?;
+                    let combined = arrow::compute::concat_batches(schema, &buffer)?;
                     let sorted =
                         Self::sort_batch_for_metric_pruning(&combined, &time_partition_field)?;
                     writer.write(&sorted)?;
@@ -841,7 +842,7 @@ impl Stream {
                 }
             }
             if !buffer.is_empty() {
-                let combined = arrow::compute::concat_batches(&schema, &buffer)?;
+                let combined = arrow::compute::concat_batches(schema, &buffer)?;
                 let sorted = Self::sort_batch_for_metric_pruning(&combined, &time_partition_field)?;
                 writer.write(&sorted)?;
             }
