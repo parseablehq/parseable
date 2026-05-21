@@ -3985,6 +3985,7 @@ dependencies = [
  "relative-path",
  "reqwest",
  "rstest",
+ "rustc-hash",
  "rustls",
  "rustls-pemfile",
  "sasl2-sys",

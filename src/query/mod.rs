@@ -44,7 +44,6 @@ use datafusion::sql::parser::DFParser;
 use datafusion::sql::resolve::resolve_table_references;
 use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
 use futures::Stream;
-use futures::stream::select_all;
 use itertools::Itertools;
 use once_cell::sync::{Lazy, OnceCell};
 use serde::{Deserialize, Serialize};
@@ -56,6 +55,8 @@ use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 use sysinfo::System;
 use tokio::runtime::Runtime;
+use tokio_stream::wrappers::ReceiverStream;
+use tracing::Instrument;
 
 use self::error::ExecuteError;
 pub use self::stream_schema_provider::PartialTimeFilter;
@@ -75,21 +76,7 @@ use crate::storage::{ObjectStorage, ObjectStorageProvider, ObjectStoreFormat};
 use crate::utils::time::TimeRange;
 
 /// Boxed record-batch stream used as the streaming half of query results.
-type BoxedBatchStream = Pin<
-    Box<
-        RecordBatchStreamAdapter<
-            select_all::SelectAll<
-                Pin<
-                    Box<
-                        dyn RecordBatchStream<
-                                Item = Result<RecordBatch, datafusion::error::DataFusionError>,
-                            > + Send,
-                    >,
-                >,
-            >,
-        >,
-    >,
->;
+type BoxedBatchStream = SendableRecordBatchStream;
 
 /// Result type returned by query execution: either collected batches or a streaming adapter, plus field names.
 type QueryResult = Result<(Either<Vec<RecordBatch>, BoxedBatchStream>, Vec<String>), ExecuteError>;
@@ -360,19 +347,36 @@ impl Query {
                 active_streams: AtomicUsize::new(output_partitions),
             });
 
-            let streams = execute_stream_partitioned(plan.clone(), task_ctx.clone())?
-                .into_iter()
-                .map(|s| {
-                    let wrapped =
-                        PartitionedMetricMonitor::new(s, monitor_state.clone(), tenant_id.clone());
-                    Box::pin(wrapped) as SendableRecordBatchStream
-                })
-                .collect_vec();
+            let partition_streams = execute_stream_partitioned(plan.clone(), task_ctx.clone())?;
+            let n = partition_streams.len();
+            // Bound channel so a slow consumer backpressures producers — caps peak memory.
+            let (tx, rx) = tokio::sync::mpsc::channel::<
+                Result<RecordBatch, datafusion::error::DataFusionError>,
+            >((num_cpus::get() * 4).max(n * 2).max(1));
 
-            let merged_stream = futures::stream::select_all(streams);
+            for s in partition_streams {
+                let wrapped =
+                    PartitionedMetricMonitor::new(s, monitor_state.clone(), tenant_id.clone());
+                let tx = tx.clone();
+                let span = tracing::Span::current();
+                tokio::spawn(
+                    async move {
+                        let mut stream: SendableRecordBatchStream = Box::pin(wrapped);
+                        use futures::StreamExt;
+                        while let Some(batch) = stream.next().await {
+                            if tx.send(batch).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    .instrument(span),
+                );
+            }
+            drop(tx);
 
-            let final_stream = RecordBatchStreamAdapter::new(plan.schema(), merged_stream);
-            Either::Right(Box::pin(final_stream))
+            let merged = ReceiverStream::new(rx);
+            let final_stream = RecordBatchStreamAdapter::new(plan.schema(), merged);
+            Either::Right(Box::pin(final_stream) as SendableRecordBatchStream)
         };
 
         Ok((results, fields))
