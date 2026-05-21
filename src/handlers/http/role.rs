@@ -25,6 +25,7 @@ use actix_web::{
     web::{self, Json},
 };
 
+use crate::handlers::http::rbac::UPDATE_LOCK;
 use crate::rbac::map::roles;
 use crate::rbac::role::model::{Role, RoleType, RoleUI};
 use crate::{
@@ -55,21 +56,23 @@ pub async fn put(
     // validate the role name
     validator::user_role_name(&name).map_err(RoleError::ValidationError)?;
 
-    let mut metadata = get_metadata(&tenant_id).await?;
-    metadata.roles.insert(name.clone(), role.clone());
+    {
+        let _guard = UPDATE_LOCK.lock().await;
+        let mut metadata = get_metadata(&tenant_id).await?;
+        metadata.roles.insert(name.clone(), role.clone());
+        put_metadata(&metadata, &tenant_id).await?;
+    }
 
-    put_metadata(&metadata, &tenant_id).await?;
-
-    let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+    // Update in-memory state after releasing the lock
+    let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT).to_owned();
     mut_roles()
-        .entry(tenant_id.to_owned())
+        .entry(tenant_str.clone())
         .or_default()
         .insert(name.clone(), role.clone());
 
-    // refresh the sessions of all users using this role
-    // for this, iterate over all user_groups and users and create a hashset of users
+    // Refresh sessions for users who have this role
     let mut session_refresh_users: HashSet<String> = HashSet::new();
-    if let Some(groups) = read_user_groups().get(tenant_id) {
+    if let Some(groups) = read_user_groups().get(tenant_str.as_str()) {
         for user_group in groups.values() {
             if user_group.roles.contains(&name) {
                 session_refresh_users
@@ -77,18 +80,15 @@ pub async fn put(
             }
         }
     }
-
-    // iterate over all users to see if they have this role
-    if let Some(users) = users().get(tenant_id) {
+    if let Some(users) = users().get(tenant_str.as_str()) {
         for user in users.values() {
             if user.roles.contains(&name) {
                 session_refresh_users.insert(user.userid().to_string());
             }
         }
     }
-
     for userid in session_refresh_users {
-        mut_sessions().remove_user(&userid, tenant_id);
+        mut_sessions().remove_user(&userid, &tenant_str);
     }
 
     Ok(HttpResponse::Ok().finish())
@@ -138,26 +138,28 @@ pub async fn delete(
         return Err(RoleError::ProtectedRole);
     }
 
-    // check if the role is being used by any user or group
-    let mut metadata = get_metadata(&tenant_id).await?;
-    if metadata.users.iter().any(|user| user.roles.contains(&name)) {
-        return Err(RoleError::RoleInUse);
-    }
-    if metadata
-        .user_groups
-        .iter()
-        .any(|user_group| user_group.roles.contains(&name))
     {
-        return Err(RoleError::RoleInUse);
+        let _guard = UPDATE_LOCK.lock().await;
+        // check if the role is being used by any user or group
+        let mut metadata = get_metadata(&tenant_id).await?;
+        if metadata.users.iter().any(|user| user.roles.contains(&name)) {
+            return Err(RoleError::RoleInUse);
+        }
+        if metadata
+            .user_groups
+            .iter()
+            .any(|user_group| user_group.roles.contains(&name))
+        {
+            return Err(RoleError::RoleInUse);
+        }
+        metadata.roles.remove(&name);
+        put_metadata(&metadata, &tenant_id).await?;
     }
-    metadata.roles.remove(&name);
-    put_metadata(&metadata, &tenant_id).await?;
 
     mut_roles()
         .entry(tenant.to_owned())
         .or_default()
         .remove(&name);
-    // mut_roles().remove(&name);
 
     Ok(HttpResponse::Ok().finish())
 }
@@ -170,17 +172,16 @@ pub async fn put_default(
 ) -> Result<impl Responder, RoleError> {
     let name = name.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
-    let mut metadata = get_metadata(&tenant_id).await?;
-    metadata.default_role = Some(name.clone());
-    DEFAULT_ROLE
-        .write()
-        // .unwrap()
-        .insert(
-            tenant_id.as_deref().unwrap_or(DEFAULT_TENANT).to_owned(),
-            Some(name),
-        );
-    // *DEFAULT_ROLE.lock().unwrap() = Some(name);
-    put_metadata(&metadata, &tenant_id).await?;
+    {
+        let _guard = UPDATE_LOCK.lock().await;
+        let mut metadata = get_metadata(&tenant_id).await?;
+        metadata.default_role = Some(name.clone());
+        put_metadata(&metadata, &tenant_id).await?;
+    }
+    DEFAULT_ROLE.write().insert(
+        tenant_id.as_deref().unwrap_or(DEFAULT_TENANT).to_owned(),
+        Some(name),
+    );
     Ok(HttpResponse::Ok().finish())
 }
 

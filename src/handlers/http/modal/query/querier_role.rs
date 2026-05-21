@@ -27,6 +27,7 @@ use crate::{
     handlers::http::{
         cluster::{sync_role_delete, sync_role_update},
         modal::utils::rbac_utils::{get_metadata, put_metadata},
+        rbac::UPDATE_LOCK,
         role::RoleError,
     },
     parseable::DEFAULT_TENANT,
@@ -74,10 +75,12 @@ pub async fn put(
         return Err(RoleError::SuperAdminPrivilege);
     }
 
-    let mut metadata = get_metadata(&tenant_id).await?;
-    metadata.roles.insert(name.clone(), role.clone());
-
-    put_metadata(&metadata, &tenant_id).await?;
+    {
+        let _guard = UPDATE_LOCK.lock().await;
+        let mut metadata = get_metadata(&tenant_id).await?;
+        metadata.roles.insert(name.clone(), role.clone());
+        put_metadata(&metadata, &tenant_id).await?;
+    }
     mut_roles()
         .entry(tenant.to_owned())
         .or_default()
@@ -142,26 +145,28 @@ pub async fn delete(
         return Err(RoleError::ProtectedRole);
     }
 
-    // check if the role is being used by any user or group
-    let mut metadata = get_metadata(&tenant_id).await?;
-    if metadata.users.iter().any(|user| user.roles.contains(&name)) {
-        return Err(RoleError::RoleInUse);
-    }
-    if metadata
-        .user_groups
-        .iter()
-        .any(|user_group| user_group.roles.contains(&name))
     {
-        return Err(RoleError::RoleInUse);
+        let _guard = UPDATE_LOCK.lock().await;
+        // check if the role is being used by any user or group
+        let mut metadata = get_metadata(&tenant_id).await?;
+        if metadata.users.iter().any(|user| user.roles.contains(&name)) {
+            return Err(RoleError::RoleInUse);
+        }
+        if metadata
+            .user_groups
+            .iter()
+            .any(|user_group| user_group.roles.contains(&name))
+        {
+            return Err(RoleError::RoleInUse);
+        }
+        metadata.roles.remove(&name);
+        put_metadata(&metadata, &tenant_id).await?;
     }
-    metadata.roles.remove(&name);
-    put_metadata(&metadata, &tenant_id).await?;
 
     mut_roles()
         .entry(tenant.to_owned())
         .or_default()
         .remove(&name);
-    // mut_roles().remove(&name);
 
     // refresh the sessions of all users using this role
     // for this, iterate over all user_groups and users and create a hashset of users

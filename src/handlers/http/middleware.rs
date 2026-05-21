@@ -459,16 +459,27 @@ pub async fn refresh_token(
                 roles_to_permission(user_roles, tenant_id.as_deref().unwrap_or(DEFAULT_TENANT)),
                 &tenant_id,
             );
-        } else if let Some(users) = users().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
-            && let Some(user) = users.get(&userid)
-        {
-            mut_sessions().track_new(
-                userid.clone(),
-                key.clone(),
-                Utc::now() + EXPIRY_DURATION,
-                roles_to_permission(user.roles(), tenant_id.as_deref().unwrap_or(DEFAULT_TENANT)),
-                &tenant_id,
-            );
+        } else {
+            // Clone user roles under USERS read lock, then drop it before
+            // acquiring SESSIONS write lock to preserve lock ordering.
+            let user_roles = if let Some(users) =
+                users().get(tenant_id.as_deref().unwrap_or(DEFAULT_TENANT))
+                && let Some(user) = users.get(&userid)
+            {
+                Some(user.roles())
+            } else {
+                None
+            };
+            // USERS read lock dropped here
+            if let Some(user_roles) = user_roles {
+                mut_sessions().track_new(
+                    userid.clone(),
+                    key.clone(),
+                    Utc::now() + EXPIRY_DURATION,
+                    roles_to_permission(user_roles, tenant_id.as_deref().unwrap_or(DEFAULT_TENANT)),
+                    &tenant_id,
+                );
+            }
         }
     }
     Ok(())
