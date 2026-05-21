@@ -817,11 +817,36 @@ impl Stream {
         let time_partition_field = time_partition
             .map(|s| s.as_str().to_string())
             .unwrap_or_else(|| DEFAULT_TIMESTAMP_KEY.to_string());
-        for ref record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
-            if sort_for_metric_pruning {
-                let sorted = Self::sort_batch_for_metric_pruning(record, &time_partition_field)?;
+
+        if sort_for_metric_pruning {
+            // Buffer batches up to the row-group target, then
+            // concat + sort + write as a single contiguous batch. The
+            // ArrowWriter splits the sorted batch into row groups at the
+            // same boundary, so the row order survives intact and
+            // per-page (metric_name min, max) stats narrow to the slice
+            // each page actually carries.
+            let target = self.options.row_group_size;
+            let mut buffer: Vec<RecordBatch> = Vec::new();
+            let mut buffered_rows: usize = 0;
+            for record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
+                buffered_rows += record.num_rows();
+                buffer.push(record);
+                if buffered_rows >= target {
+                    let combined = arrow::compute::concat_batches(&schema, &buffer)?;
+                    let sorted =
+                        Self::sort_batch_for_metric_pruning(&combined, &time_partition_field)?;
+                    writer.write(&sorted)?;
+                    buffer.clear();
+                    buffered_rows = 0;
+                }
+            }
+            if !buffer.is_empty() {
+                let combined = arrow::compute::concat_batches(&schema, &buffer)?;
+                let sorted = Self::sort_batch_for_metric_pruning(&combined, &time_partition_field)?;
                 writer.write(&sorted)?;
-            } else {
+            }
+        } else {
+            for ref record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
                 writer.write(record)?;
             }
         }
