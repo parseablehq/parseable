@@ -264,25 +264,34 @@ impl S3Config {
             builder = builder.with_checksum_algorithm(Checksum::SHA256)
         }
 
+        assert!(
+            self.access_key_id.is_some() == self.secret_key.is_some(),
+            "P_S3_ACCESS_KEY and P_S3_SECRET_KEY must be set together"
+        );
+
         if let Some((access_key, secret_key)) =
             self.access_key_id.as_ref().zip(self.secret_key.as_ref())
         {
             builder = builder
                 .with_access_key_id(access_key)
                 .with_secret_access_key(secret_key);
-        }
+        } else {
+            let token_file = std::env::var(AWS_WEB_IDENTITY_TOKEN_FILE).ok();
+            let role_arn = std::env::var(AWS_ROLE_ARN).ok();
 
-        if self.access_key_id.is_none() && self.secret_key.is_none() {
-            if let Ok(token_file) = std::env::var(AWS_WEB_IDENTITY_TOKEN_FILE) {
-                builder = builder.with_config(AmazonS3ConfigKey::WebIdentityTokenFile, token_file);
-            }
+            assert!(
+                token_file.is_some() == role_arn.is_some(),
+                "{AWS_WEB_IDENTITY_TOKEN_FILE} and {AWS_ROLE_ARN} must be set together"
+            );
 
-            if let Ok(role_arn) = std::env::var(AWS_ROLE_ARN) {
-                builder = builder.with_config(AmazonS3ConfigKey::RoleArn, role_arn);
-            }
+            if let Some((token_file, role_arn)) = token_file.zip(role_arn) {
+                builder = builder
+                    .with_config(AmazonS3ConfigKey::WebIdentityTokenFile, token_file)
+                    .with_config(AmazonS3ConfigKey::RoleArn, role_arn);
 
-            if let Ok(session_name) = std::env::var(AWS_ROLE_SESSION_NAME) {
-                builder = builder.with_config(AmazonS3ConfigKey::RoleSessionName, session_name);
+                if let Ok(session_name) = std::env::var(AWS_ROLE_SESSION_NAME) {
+                    builder = builder.with_config(AmazonS3ConfigKey::RoleSessionName, session_name);
+                }
             }
         }
 
