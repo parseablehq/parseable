@@ -69,6 +69,9 @@ use super::{
 // in bytes
 // const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
 const AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: &str = "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI";
+const AWS_WEB_IDENTITY_TOKEN_FILE: &str = "AWS_WEB_IDENTITY_TOKEN_FILE";
+const AWS_ROLE_ARN: &str = "AWS_ROLE_ARN";
+const AWS_ROLE_SESSION_NAME: &str = "AWS_ROLE_SESSION_NAME";
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -267,6 +270,20 @@ impl S3Config {
             builder = builder
                 .with_access_key_id(access_key)
                 .with_secret_access_key(secret_key);
+        }
+
+        if self.access_key_id.is_none() && self.secret_key.is_none() {
+            if let Ok(token_file) = std::env::var(AWS_WEB_IDENTITY_TOKEN_FILE) {
+                builder = builder.with_config(AmazonS3ConfigKey::WebIdentityTokenFile, token_file);
+            }
+
+            if let Ok(role_arn) = std::env::var(AWS_ROLE_ARN) {
+                builder = builder.with_config(AmazonS3ConfigKey::RoleArn, role_arn);
+            }
+
+            if let Ok(session_name) = std::env::var(AWS_ROLE_SESSION_NAME) {
+                builder = builder.with_config(AmazonS3ConfigKey::RoleSessionName, session_name);
+            }
         }
 
         if let Some(ssec_encryption_key) = &self.ssec_encryption_key {
