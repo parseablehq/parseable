@@ -63,7 +63,7 @@ use crate::storage::TARGETS_ROOT_DIRECTORY;
 use crate::storage::field_stats::DATASET_STATS_STREAM_NAME;
 use crate::storage::field_stats::calculate_field_stats;
 use crate::storage::field_stats::extract_datetime_from_parquet_path_regex;
-use crate::sync::ACTIVE_OBJECT_STORE_SYNC_FILES;
+use crate::sync::{ACTIVE_OBJECT_STORE_SYNC_FILES, SyncFileEntry};
 
 use super::{
     ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, ObjectStorageError, ObjectStoreFormat,
@@ -1078,12 +1078,20 @@ async fn process_parquet_files(
             .stream
             .parquet_files()
             .into_par_iter()
-            .filter(|p| !guard.contains(p))
+            .filter(|p| !guard.contains_key(p))
             .collect();
 
         let mut ret = Vec::with_capacity(parquet_paths.len());
         ret.clone_from(&parquet_paths);
-        guard.extend(parquet_paths);
+        for path in parquet_paths {
+            guard.insert(
+                path,
+                SyncFileEntry {
+                    tracked_instant: Instant::now(),
+                    tracked_utc: Utc::now(),
+                },
+            );
+        }
         ret
     };
 
@@ -1212,11 +1220,23 @@ async fn collect_upload_results(
             guard.remove(path);
         }
 
-        // check if file has been in hashset for more than 5 minutes
-        let now = Utc::now();
-        guard.retain(|f| {
-            !extract_datetime_from_parquet_path_regex(f)
-                .is_ok_and(|ts| (now - ts).num_minutes() >= 5)
+        // Use monotonic time to ensure the 5-minute eviction window is immune to system clock adjustments.
+        let now = Instant::now();
+        guard.retain(|path, entry| {
+            let elapsed = now.duration_since(entry.tracked_instant);
+            // 5 min eviction window
+            if elapsed >= Duration::from_secs(300) {
+                // Added log for observability and debugging
+                warn!(
+                    "Removing stale sync file: {} (elapsed: {}s, tracked_at: {})",
+                    path.display(),
+                    elapsed.as_secs(),
+                    entry.tracked_utc.to_rfc3339(),
+                );
+                false
+            } else {
+                true
+            }
         });
     }
     let manifest_files: Vec<_> = uploaded_files
