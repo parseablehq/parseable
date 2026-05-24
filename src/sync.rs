@@ -16,8 +16,7 @@
  *
  */
 
-use chrono::{TimeDelta, Timelike};
-use datafusion::common::HashSet;
+use chrono::{DateTime, TimeDelta, Timelike, Utc};
 use futures::FutureExt;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -39,8 +38,17 @@ pub static FLUSH_AND_CONVERT_RUNTIME: Lazy<Runtime> =
 static LOCAL_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 static REMOTE_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 
-pub static ACTIVE_OBJECT_STORE_SYNC_FILES: Lazy<Arc<RwLock<HashSet<PathBuf>>>> =
-    Lazy::new(|| Arc::new(RwLock::new(HashSet::new())));
+// tracks metadata for files being synced to object storage
+#[derive(Clone, Debug)]
+pub struct SyncFileEntry {
+    // Monotonic instant when file was added to tracking
+    pub tracked_instant: std::time::Instant,
+    // Wall-clock UTC timestamp for observability
+    pub tracked_utc: DateTime<Utc>,
+}
+
+pub static ACTIVE_OBJECT_STORE_SYNC_FILES: Lazy<Arc<RwLock<HashMap<PathBuf, SyncFileEntry>>>> =
+    Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
 /// RAII guard that clears a sync-running flag on drop, so a panic inside the
 /// sync body cannot leave the flag stuck at `true` and wedge future ticks.
 struct SyncRunningGuard(&'static AtomicBool);
