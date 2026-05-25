@@ -23,6 +23,7 @@ use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::derive::{Deref, DerefMut};
 use itertools::Itertools;
+use parking_lot::{Mutex, RwLock};
 use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
@@ -33,13 +34,12 @@ use parquet::{
     schema::types::ColumnPath,
 };
 use relative_path::RelativePathBuf;
-use std::sync::PoisonError;
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions, remove_file, write},
     num::NonZeroU32,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, RwLock},
+    sync::Arc,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::task::JoinSet;
@@ -47,7 +47,7 @@ use tracing::{Instrument, error, info, info_span, instrument, trace, warn};
 use ulid::Ulid;
 
 use crate::{
-    LOCK_EXPECT, OBJECT_STORE_DATA_GRANULARITY,
+    OBJECT_STORE_DATA_GRANULARITY,
     cli::Options,
     event::{
         DEFAULT_TIMESTAMP_KEY,
@@ -155,20 +155,7 @@ impl Stream {
 
         let mut guard = {
             let _lock_span = info_span!("acquire_writer_lock").entered();
-            match self.writer.lock() {
-                Ok(guard) => guard,
-                Err(poisoned) => {
-                    error!(
-                        "Writer lock poisoned while ingesting data for stream {}",
-                        self.stream_name
-                    );
-
-                    return Err(StagingError::PoisonError(PoisonError::new(format!(
-                        "Writer lock poisoned while ingesting data for stream {} - {}",
-                        self.stream_name, poisoned
-                    ))));
-                }
-            }
+            self.writer.lock()
         };
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
             let filename =
@@ -533,11 +520,11 @@ impl Stream {
     }
 
     pub fn recordbatches_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
-        self.writer.lock().unwrap().mem.recordbatch_cloned(schema)
+        self.writer.lock().mem.recordbatch_cloned(schema)
     }
 
     pub fn clear(&self) {
-        self.writer.lock().unwrap().mem.clear();
+        self.writer.lock().mem.clear();
     }
 
     pub fn flush(&self, forced: bool) {
@@ -546,12 +533,7 @@ impl Stream {
         // DiskWriter::Drop does I/O (IPC finish + file rename) so dropping
         // outside the lock avoids blocking concurrent push() calls.
         let stale_writers = {
-            let mut writer = self.writer.lock().unwrap_or_else(|_| {
-                panic!(
-                    "Writer lock poisoned while flushing data for stream {}",
-                    self.stream_name
-                )
-            });
+            let mut writer = self.writer.lock();
             writer.mem.clear();
 
             let mut old_disk = HashMap::new();
@@ -975,54 +957,39 @@ impl Stream {
 
     /// Stores the provided stream metadata in memory mapping
     pub async fn set_metadata(&self, updated_metadata: LogStreamMetadata) {
-        *self.metadata.write().expect(LOCK_EXPECT) = updated_metadata;
+        *self.metadata.write() = updated_metadata;
     }
 
     pub fn get_first_event(&self) -> Option<String> {
-        self.metadata
-            .read()
-            .expect(LOCK_EXPECT)
-            .first_event_at
-            .clone()
+        self.metadata.read().first_event_at.clone()
     }
 
     pub fn get_time_partition(&self) -> Option<String> {
-        self.metadata
-            .read()
-            .expect(LOCK_EXPECT)
-            .time_partition
-            .clone()
+        self.metadata.read().time_partition.clone()
     }
 
     pub fn get_time_partition_limit(&self) -> Option<NonZeroU32> {
-        self.metadata
-            .read()
-            .expect(LOCK_EXPECT)
-            .time_partition_limit
+        self.metadata.read().time_partition_limit
     }
 
     pub fn get_custom_partition(&self) -> Option<String> {
-        self.metadata
-            .read()
-            .expect(LOCK_EXPECT)
-            .custom_partition
-            .clone()
+        self.metadata.read().custom_partition.clone()
     }
 
     pub fn get_static_schema_flag(&self) -> bool {
-        self.metadata.read().expect(LOCK_EXPECT).static_schema_flag
+        self.metadata.read().static_schema_flag
     }
 
     pub fn get_retention(&self) -> Option<Retention> {
-        self.metadata.read().expect(LOCK_EXPECT).retention.clone()
+        self.metadata.read().retention.clone()
     }
 
     pub fn get_schema_version(&self) -> SchemaVersion {
-        self.metadata.read().expect(LOCK_EXPECT).schema_version
+        self.metadata.read().schema_version
     }
 
     pub fn get_schema(&self) -> Arc<Schema> {
-        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+        let metadata = self.metadata.read();
 
         // sort fields on read from hashmap as order of fields can differ.
         // This provides a stable output order if schema is same between calls to this function
@@ -1037,15 +1004,15 @@ impl Stream {
     }
 
     pub fn get_schema_raw(&self) -> HashMap<String, Arc<Field>> {
-        self.metadata.read().expect(LOCK_EXPECT).schema.clone()
+        self.metadata.read().schema.clone()
     }
 
     pub fn set_retention(&self, retention: Retention) {
-        self.metadata.write().expect(LOCK_EXPECT).retention = Some(retention);
+        self.metadata.write().retention = Some(retention);
     }
 
     pub fn set_first_event_at(&self, first_event_at: &str) {
-        self.metadata.write().expect(LOCK_EXPECT).first_event_at = Some(first_event_at.to_owned());
+        self.metadata.write().first_event_at = Some(first_event_at.to_owned());
     }
 
     /// Removes the `first_event_at` timestamp for the specified stream from the LogStreamMetadata.
@@ -1073,80 +1040,65 @@ impl Stream {
     /// }
     /// ```
     pub fn reset_first_event_at(&self) {
-        self.metadata
-            .write()
-            .expect(LOCK_EXPECT)
-            .first_event_at
-            .take();
+        self.metadata.write().first_event_at.take();
     }
 
     pub fn set_time_partition_limit(&self, time_partition_limit: NonZeroU32) {
-        self.metadata
-            .write()
-            .expect(LOCK_EXPECT)
-            .time_partition_limit = Some(time_partition_limit);
+        self.metadata.write().time_partition_limit = Some(time_partition_limit);
     }
 
     pub fn set_custom_partition(&self, custom_partition: Option<&String>) {
-        self.metadata.write().expect(LOCK_EXPECT).custom_partition = custom_partition.cloned();
+        self.metadata.write().custom_partition = custom_partition.cloned();
     }
 
     pub fn get_infer_timestamp(&self) -> bool {
-        self.metadata.read().expect(LOCK_EXPECT).infer_timestamp
+        self.metadata.read().infer_timestamp
     }
 
     pub fn set_hot_tier(&self, hot_tier: Option<StreamHotTier>) {
-        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        let mut metadata = self.metadata.write();
         metadata.hot_tier.clone_from(&hot_tier);
         metadata.hot_tier_enabled = hot_tier.is_some();
     }
 
     pub fn get_hot_tier(&self) -> Option<StreamHotTier> {
-        self.metadata.read().expect(LOCK_EXPECT).hot_tier.clone()
+        self.metadata.read().hot_tier.clone()
     }
 
     pub fn is_hot_tier_enabled(&self) -> bool {
-        self.metadata.read().expect(LOCK_EXPECT).hot_tier_enabled
+        self.metadata.read().hot_tier_enabled
     }
 
     pub fn get_stream_type(&self) -> StreamType {
-        self.metadata.read().expect(LOCK_EXPECT).stream_type
+        self.metadata.read().stream_type
     }
 
     pub fn set_log_source(&self, log_source: Vec<LogSourceEntry>) {
-        self.metadata.write().expect(LOCK_EXPECT).log_source = log_source;
+        self.metadata.write().log_source = log_source;
     }
 
     pub fn get_log_source(&self) -> Vec<LogSourceEntry> {
-        self.metadata.read().expect(LOCK_EXPECT).log_source.clone()
+        self.metadata.read().log_source.clone()
     }
 
     pub fn get_dataset_tags(&self) -> Vec<DatasetTag> {
-        self.metadata
-            .read()
-            .expect(LOCK_EXPECT)
-            .dataset_tags
-            .clone()
+        self.metadata.read().dataset_tags.clone()
     }
 
     pub fn get_dataset_labels(&self) -> Vec<String> {
-        self.metadata
-            .read()
-            .expect(LOCK_EXPECT)
-            .dataset_labels
-            .clone()
+        self.metadata.read().dataset_labels.clone()
     }
 
     pub fn set_dataset_tags(&self, tags: Vec<DatasetTag>) {
-        self.metadata.write().expect(LOCK_EXPECT).dataset_tags = tags;
+        self.metadata.write().dataset_tags = tags;
     }
 
     pub fn set_dataset_labels(&self, labels: Vec<String>) {
-        self.metadata.write().expect(LOCK_EXPECT).dataset_labels = labels;
+        self.metadata.write().dataset_labels = labels;
     }
 
     pub fn add_log_source(&self, log_source: LogSourceEntry) {
-        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+        let metadata = self.metadata.read();
         for existing in &metadata.log_source {
             if existing.log_source_format == log_source.log_source_format {
                 drop(metadata);
@@ -1159,7 +1111,7 @@ impl Stream {
         }
         drop(metadata);
 
-        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        let mut metadata = self.metadata.write();
         for existing in &metadata.log_source {
             if existing.log_source_format == log_source.log_source_format {
                 self.add_fields_to_log_source(
@@ -1173,7 +1125,7 @@ impl Stream {
     }
 
     pub fn add_fields_to_log_source(&self, log_source: &LogSource, fields: HashSet<String>) {
-        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        let mut metadata = self.metadata.write();
         for log_source_entry in metadata.log_source.iter_mut() {
             if log_source_entry.log_source_format == *log_source {
                 log_source_entry.fields.extend(fields);
@@ -1183,7 +1135,7 @@ impl Stream {
     }
 
     pub fn get_fields_from_log_source(&self, log_source: &LogSource) -> Option<HashSet<String>> {
-        let metadata = self.metadata.read().expect(LOCK_EXPECT);
+        let metadata = self.metadata.read();
         for log_source_entry in metadata.log_source.iter() {
             if log_source_entry.log_source_format == *log_source {
                 return Some(log_source_entry.fields.clone());
@@ -1349,7 +1301,7 @@ impl Streams {
         ingestor_id: Option<String>,
         tenant_id: &Option<String>,
     ) -> StreamRef {
-        let mut guard = self.write().expect(LOCK_EXPECT);
+        let mut guard = self.write();
 
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
@@ -1370,16 +1322,16 @@ impl Streams {
     /// TODO: validate possibility of stream continuing to exist despite being deleted
     pub fn delete(&self, stream_name: &str, tenant_id: &Option<String>) {
         let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        let mut guard = self.write().expect(LOCK_EXPECT);
+        let mut guard = self.write();
         if let Some(tenant_streams) = guard.get_mut(tenant_id) {
             tenant_streams.remove(stream_name);
         }
-        // self.write().expect(LOCK_EXPECT).remove(stream_name);
+        // self.write().remove(stream_name);
     }
 
     pub fn contains(&self, stream_name: &str, tenant_id: &Option<String>) -> bool {
         let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        if let Some(tenant) = self.read().expect(LOCK_EXPECT).get(tenant_id) {
+        if let Some(tenant) = self.read().get(tenant_id) {
             tenant.contains_key(stream_name)
         } else {
             false
@@ -1388,11 +1340,7 @@ impl Streams {
 
     /// Returns the number of logstreams that parseable is aware of
     pub fn len(&self) -> usize {
-        self.read()
-            .expect(LOCK_EXPECT)
-            .iter()
-            .map(|map| map.1.len())
-            .sum()
+        self.read().iter().map(|map| map.1.len()).sum()
     }
 
     /// Returns true if parseable is not aware of any streams
@@ -1404,7 +1352,7 @@ impl Streams {
     pub fn list(&self, tenant_id: &Option<String>) -> Vec<LogStream> {
         let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
-        let guard = self.read().expect(LOCK_EXPECT);
+        let guard = self.read();
         if let Some(tenant_streams) = guard.get(tenant_id) {
             tenant_streams.keys().map(String::clone).collect()
         } else {
@@ -1422,14 +1370,12 @@ impl Streams {
     }
 
     pub fn list_internal_streams(&self, tenant_id: &Option<String>) -> Vec<String> {
-        let map = self.read().expect(LOCK_EXPECT);
+        let map = self.read();
         let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if let Some(tenant_streams) = map.get(tenant_id) {
             tenant_streams
                 .iter()
-                .filter(|(_, stream)| {
-                    stream.metadata.read().expect(LOCK_EXPECT).stream_type == StreamType::Internal
-                })
+                .filter(|(_, stream)| stream.metadata.read().stream_type == StreamType::Internal)
                 .map(|(k, _)| k.clone())
                 .collect()
         } else {
@@ -1452,7 +1398,7 @@ impl Streams {
         };
 
         for tenant_id in tenants {
-            let guard = self.read().expect(LOCK_EXPECT);
+            let guard = self.read();
             let streams: Vec<Arc<Stream>> = if let Some(tenant_streams) = guard.get(&tenant_id) {
                 tenant_streams.values().map(Arc::clone).collect()
             } else {

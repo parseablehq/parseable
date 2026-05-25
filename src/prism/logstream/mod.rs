@@ -177,7 +177,7 @@ pub async fn get_stream_info_helper(
     };
 
     let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
-    let stream_meta = stream.metadata.read().unwrap();
+    let stream_meta = stream.metadata.read();
 
     let stream_info =
         StreamInfo::from_metadata(&stream_meta, stream_first_event_at, stream_latest_event_at);
