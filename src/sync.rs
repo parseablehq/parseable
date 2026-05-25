@@ -16,17 +16,17 @@
  *
  */
 
-use chrono::{DateTime, TimeDelta, Timelike, Utc};
+use chrono::{TimeDelta, Timelike};
+use dashmap::DashMap;
 use futures::FutureExt;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::runtime::Runtime;
-use tokio::sync::{RwLock, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, interval_at, sleep};
 use tokio::{select, task};
@@ -38,17 +38,8 @@ pub static FLUSH_AND_CONVERT_RUNTIME: Lazy<Runtime> =
 static LOCAL_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 static REMOTE_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 
-// tracks metadata for files being synced to object storage
-#[derive(Clone, Debug)]
-pub struct SyncFileEntry {
-    // Monotonic instant when file was added to tracking
-    pub tracked_instant: std::time::Instant,
-    // Wall-clock UTC timestamp for observability
-    pub tracked_utc: DateTime<Utc>,
-}
-
-pub static ACTIVE_OBJECT_STORE_SYNC_FILES: Lazy<Arc<RwLock<HashMap<PathBuf, SyncFileEntry>>>> =
-    Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
+pub static ACTIVE_OBJECT_STORE_SYNC_FILES: Lazy<DashMap<PathBuf, std::time::Instant>> =
+    Lazy::new(DashMap::new);
 /// RAII guard that clears a sync-running flag on drop, so a panic inside the
 /// sync body cannot leave the flag stuck at `true` and wedge future ticks.
 struct SyncRunningGuard(&'static AtomicBool);
