@@ -132,7 +132,6 @@ pub fn init(metadata: &StorageMetadata) {
     PARSEABLE
         .streams
         .write()
-        .unwrap()
         .entry(DEFAULT_TENANT.to_owned())
         .or_default();
 

@@ -280,7 +280,6 @@ impl Parseable {
         let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         self.streams
             .read()
-            .unwrap()
             .get(tenant_id)
             .ok_or_else(|| StreamNotFound(format!("{stream_name} with tenant {tenant_id}")))
             .map(|v| v.get(stream_name))?
@@ -1219,9 +1218,7 @@ impl Parseable {
         write_user_groups().remove(tenant_id);
 
         // delete streams
-        if let Ok(mut streams) = PARSEABLE.streams.write() {
-            streams.remove(tenant_id);
-        }
+        PARSEABLE.streams.write().remove(tenant_id);
 
         // delete from in-mem
         if let Ok(mut tenants) = self.tenants.write() {

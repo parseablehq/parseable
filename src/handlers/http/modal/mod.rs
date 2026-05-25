@@ -636,7 +636,7 @@ pub async fn initialize_hot_tier_metadata_on_startup(
 ) -> anyhow::Result<()> {
     // Collect hot tier configurations from streams before doing async operations
     let hot_tier_configs: Vec<(String, Option<String>, StreamHotTier)> = {
-        let tenants_guard = PARSEABLE.streams.read().unwrap();
+        let tenants_guard = PARSEABLE.streams.read();
         tenants_guard
             .iter()
             .flat_map(|(tenant_id, streams)| {

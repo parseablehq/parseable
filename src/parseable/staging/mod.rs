@@ -17,8 +17,6 @@
  *
  */
 
-use std::sync::PoisonError;
-
 use crate::{parseable::StreamNotFound, tenants::TenantNotFound};
 
 pub mod reader;
@@ -38,6 +36,4 @@ pub enum StagingError {
     StreamNotFound(#[from] StreamNotFound),
     #[error("{0}")]
     TenantNotFound(#[from] TenantNotFound),
-    #[error("{0}")]
-    PoisonError(#[from] PoisonError<String>),
 }
