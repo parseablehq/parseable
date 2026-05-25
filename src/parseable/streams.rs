@@ -1921,7 +1921,7 @@ mod tests {
         assert!(Arc::ptr_eq(&stream1, &stream2));
 
         // Verify the map contains only one entry
-        let guard = streams.read().expect("Failed to acquire read lock");
+        let guard = streams.read();
         assert_eq!(guard.len(), 1);
     }
 
@@ -1934,7 +1934,7 @@ mod tests {
         let ingestor_id = Some("new_ingestor".to_owned());
 
         // Assert the stream doesn't exist already
-        let mut guard = streams.write().expect("Failed to acquire read lock");
+        let mut guard = streams.write();
         assert_eq!(guard.len(), 0);
         assert!(
             !guard
@@ -1957,7 +1957,7 @@ mod tests {
         assert_eq!(stream.ingestor_id, ingestor_id);
 
         // Assert that the stream is created
-        let guard = streams.read().expect("Failed to acquire read lock");
+        let guard = streams.read();
         assert_eq!(guard.len(), 1);
         assert!(guard.get(DEFAULT_TENANT).unwrap().contains_key(stream_name));
     }
@@ -2004,7 +2004,7 @@ mod tests {
         assert!(Arc::ptr_eq(&stream1, &stream2));
 
         // Verify the map contains only one entry
-        let guard = streams.read().expect("Failed to acquire read lock");
+        let guard = streams.read();
         assert_eq!(guard.len(), 1);
     }
 }
