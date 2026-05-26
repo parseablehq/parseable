@@ -78,11 +78,10 @@ pub async fn login(
     req: HttpRequest,
     query: web::Query<RedirectAfterLogin>,
 ) -> Result<HttpResponse, OIDCError> {
-    let conn = req.connection_info().clone();
-    let base_url_without_scheme = format!("{}/", conn.host());
-    if !is_valid_redirect_url(&base_url_without_scheme, query.redirect.as_str()) {
+    let canonical_origin = get_canonical_origin();
+    if !is_valid_redirect_url_safe(&canonical_origin, &query.redirect) {
         return Err(OIDCError::BadRequest(
-            "Bad Request, Invalid Redirect URL!".to_string(),
+            "Bad Request,Invalid Redirect URL!".to_string(),
         ));
     }
 
@@ -169,7 +168,12 @@ pub async fn login(
 
 pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> HttpResponse {
     let oidc_client = OIDC_CLIENT.get();
-
+    let canonical_origin = get_canonical_origin();
+    if !is_valid_redirect_url_safe(&canonical_origin, &query.redirect) {
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error":"Invalid redirect URL"
+        }));
+    }
     let Some(session) = extract_session_key_from_req(&req).ok() else {
         return redirect_to_client(query.redirect.as_str(), None);
     };
@@ -627,10 +631,25 @@ impl actix_web::ResponseError for OIDCError {
             .body(self.to_string())
     }
 }
+// get the canonical origin for this PARSEABLE instance
+fn get_canonical_origin() -> Url {
+    if let Some(origin_url) = &PARSEABLE.options.domain_address {
+        return origin_url.clone();
+    }
+    let addr = &PARSEABLE.options.address;
+    // detect http vs https based on TLS cert/key
+    let scheme = PARSEABLE.options.get_scheme();
+    match Url::parse(&format!("{}://{}", scheme, addr)) {
+        Ok(url) => url,
+        Err(_) => Url::parse("http://localhost:8000").unwrap(),
+    }
+}
 
-fn is_valid_redirect_url(base_url_without_scheme: &str, redirect_url: &str) -> bool {
-    let http_scheme_match_regex = Regex::new(r"^(https?://)").unwrap();
-    let redirect_url_without_scheme = http_scheme_match_regex.replace(redirect_url, "");
-
-    base_url_without_scheme == redirect_url_without_scheme
+fn is_valid_redirect_url_safe(canonical: &Url, redirect: &Url) -> bool {
+    // relative paths are always safe
+    if !redirect.has_host() {
+        return true;
+    }
+    // absolute urls must match canonical origin exactly
+    redirect.origin() == canonical.origin()
 }
