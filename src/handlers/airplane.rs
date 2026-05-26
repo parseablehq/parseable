@@ -235,7 +235,7 @@ impl FlightService for AirServiceImpl {
 
         if event.is_some() {
             // Clear staging of stream once airplane has taxied
-            PARSEABLE.get_or_create_stream(&stream_name, &None).clear();
+            let _ = PARSEABLE.get_or_create_stream(&stream_name, &None).clear();
         }
 
         let time = time.elapsed().as_secs_f64();

@@ -531,12 +531,32 @@ impl Stream {
         Ok(())
     }
 
-    pub fn recordbatches_cloned(&self, schema: &Arc<Schema>) -> Result<Vec<RecordBatch>, StagingError> {
-        self.writer.lock().unwrap().mem.recordbatch_cloned(schema)
+    pub fn recordbatches_cloned(
+        &self,
+        schema: &Arc<Schema>,
+    ) -> Result<Vec<RecordBatch>, StagingError> {
+        let writer = self.writer.lock().map_err(|poisoned| {
+            StagingError::PoisonError(PoisonError::new(format!(
+                "Writer lock poisoned while cloning record batches for stream {} - {}",
+                self.stream_name, poisoned
+            )))
+        })?;
+
+        writer.mem.recordbatch_cloned(schema)
     }
 
-    pub fn clear(&self) {
-        self.writer.lock().unwrap().mem.clear();
+    pub fn clear(&self) -> Result<(), StagingError> {
+        self.writer
+            .lock()
+            .map_err(|poisoned| {
+                StagingError::PoisonError(PoisonError::new(format!(
+                    "Writer lock poisoned while clearing stream {} - {}",
+                    self.stream_name, poisoned
+                )))
+            })?
+            .mem
+            .clear();
+        Ok(())
     }
 
     pub fn flush(&self, forced: bool) {
