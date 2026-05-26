@@ -17,7 +17,7 @@
  */
 
 use clap::{Parser, value_parser};
-use std::{env, fs, path::PathBuf};
+use std::{env, fs, ops::Div, path::PathBuf};
 
 use url::Url;
 
@@ -193,6 +193,16 @@ pub struct Options {
         help = "Per-worker maximum number of concurrent connections"
     )]
     pub max_connections: usize,
+
+    // DataFusion target partitions
+    #[arg(
+        long,
+        env = "P_DATAFUSION_TARGET_PARTITIONS",
+        default_value_t = num_cpus::get().div(2).max(1) as u64,
+        value_parser = value_parser!(u64).range(1..),
+        help = "Number of partitions for DF to split execution into"
+    )]
+    pub target_partitions: u64,
 
     #[arg(
         long = "origin",

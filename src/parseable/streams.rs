@@ -186,8 +186,7 @@ impl Stream {
                         OBJECT_STORE_DATA_GRANULARITY,
                     );
                     let file_path = self.data_path.join(&filename);
-                    let mut writer = DiskWriter::try_new(file_path, &record.schema(), range)
-                        .expect("File and RecordBatch both are checked");
+                    let mut writer = DiskWriter::try_new(file_path, &record.schema(), range)?;
 
                     writer.write(record)?;
                     guard.disk.insert(filename, writer);
@@ -195,7 +194,7 @@ impl Stream {
             };
         }
 
-        guard.mem.push(schema_key, record);
+        guard.mem.push(schema_key, record)?;
 
         Ok(())
     }
@@ -532,7 +531,7 @@ impl Stream {
         Ok(())
     }
 
-    pub fn recordbatches_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
+    pub fn recordbatches_cloned(&self, schema: &Arc<Schema>) -> Result<Vec<RecordBatch>, StagingError> {
         self.writer.lock().unwrap().mem.recordbatch_cloned(schema)
     }
 
