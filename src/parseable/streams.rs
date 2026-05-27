@@ -186,8 +186,7 @@ impl Stream {
                         OBJECT_STORE_DATA_GRANULARITY,
                     );
                     let file_path = self.data_path.join(&filename);
-                    let mut writer = DiskWriter::try_new(file_path, &record.schema(), range)
-                        .expect("File and RecordBatch both are checked");
+                    let mut writer = DiskWriter::try_new(file_path, &record.schema(), range)?;
 
                     writer.write(record)?;
                     guard.disk.insert(filename, writer);
@@ -195,7 +194,7 @@ impl Stream {
             };
         }
 
-        guard.mem.push(schema_key, record);
+        guard.mem.push(schema_key, record)?;
 
         Ok(())
     }
@@ -532,26 +531,46 @@ impl Stream {
         Ok(())
     }
 
-    pub fn recordbatches_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
-        self.writer.lock().unwrap().mem.recordbatch_cloned(schema)
+    pub fn recordbatches_cloned(
+        &self,
+        schema: &Arc<Schema>,
+    ) -> Result<Vec<RecordBatch>, StagingError> {
+        let writer = self.writer.lock().map_err(|poisoned| {
+            StagingError::PoisonError(PoisonError::new(format!(
+                "Writer lock poisoned while cloning record batches for stream {} - {}",
+                self.stream_name, poisoned
+            )))
+        })?;
+
+        writer.mem.recordbatch_cloned(schema)
     }
 
-    pub fn clear(&self) {
-        self.writer.lock().unwrap().mem.clear();
+    pub fn clear(&self) -> Result<(), StagingError> {
+        self.writer
+            .lock()
+            .map_err(|poisoned| {
+                StagingError::PoisonError(PoisonError::new(format!(
+                    "Writer lock poisoned while clearing stream {} - {}",
+                    self.stream_name, poisoned
+                )))
+            })?
+            .mem
+            .clear();
+        Ok(())
     }
 
-    pub fn flush(&self, forced: bool) {
+    pub fn flush(&self, forced: bool) -> Result<(), StagingError> {
         let _span = info_span!("flush", stream_name = %self.stream_name, forced).entered();
         // Swap out stale writers under the lock, drop them after releasing it.
         // DiskWriter::Drop does I/O (IPC finish + file rename) so dropping
         // outside the lock avoids blocking concurrent push() calls.
         let stale_writers = {
-            let mut writer = self.writer.lock().unwrap_or_else(|_| {
-                panic!(
-                    "Writer lock poisoned while flushing data for stream {}",
-                    self.stream_name
-                )
-            });
+            let mut writer = self.writer.lock().map_err(|poisoned| {
+                StagingError::PoisonError(PoisonError::new(format!(
+                    "Writer lock poisoned while flushing data for stream {} - {}",
+                    self.stream_name, poisoned
+                )))
+            })?;
             writer.mem.clear();
 
             let mut old_disk = HashMap::new();
@@ -567,6 +586,7 @@ impl Stream {
         };
         // DiskWriter::Drop I/O happens here, outside the lock
         drop(stale_writers);
+        Ok(())
     }
 
     fn parquet_writer_props(
@@ -1306,7 +1326,7 @@ impl Stream {
         // Force flush for init or shutdown signals to convert all .part files to .arrows
         // For regular cycles, use false to only flush non-current writers
         let forced = init_signal || shutdown_signal;
-        self.flush(forced);
+        self.flush(forced)?;
         info!(
             "Flushing stream ({}) took: {}s",
             self.stream_name,
@@ -1717,7 +1737,7 @@ mod tests {
                 StreamType::UserDefined,
             )
             .unwrap();
-        staging.flush(true);
+        staging.flush(true).unwrap();
     }
 
     #[test]
