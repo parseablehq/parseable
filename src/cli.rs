@@ -198,7 +198,7 @@ pub struct Options {
         long = "origin",
         env = "P_ORIGIN_URI",
         value_parser = validation::url,
-        help = "Parseable server global domain address"
+        help = "Public canonical origin for Parseable, used for OIDC redirects. Set this when running behind a reverse proxy or TLS terminator"
     )]
     pub domain_address: Option<Url>,
 

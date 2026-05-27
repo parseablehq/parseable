@@ -50,6 +50,9 @@ parseable:
   ## Add environment variables to the Parseable Deployment
   env:
     RUST_LOG: warn
+    # Set this when Parseable is accessed through a reverse proxy/TLS terminator.
+      # Must match the public URL users access.
+      # P_ORIGIN_URI: "https://parseable.example.com"
   ## Enable to create a log stream and then add retention configuration
   ## for that log stream
   # logstream:
