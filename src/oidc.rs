@@ -54,16 +54,44 @@ impl OpenidConfig {
         redirect_to: &str,
     ) -> Result<DiscoveredClient, openid::error::Error> {
         let redirect_uri = match self.origin {
-            Origin::Local { socket_addr, https } => {
-                let protocol = if https { "https" } else { "http" };
-                url::Url::parse(&format!("{protocol}://{socket_addr}")).expect("valid url")
-            }
+            Origin::Local { socket_addr, https } => canonical_local_origin(&socket_addr, https),
             Origin::Production(url) => url,
         };
 
         let redirect_uri = redirect_uri.join(redirect_to).expect("valid suffix");
         DiscoveredClient::discover(self.id, self.secret, redirect_uri.to_string(), self.issuer)
             .await
+    }
+}
+
+pub fn canonical_local_origin(socket_addr: &str, https: bool) -> Url {
+    let scheme = if https { "https" } else { "http" };
+    let mut url = Url::parse(&format!("{scheme}://{socket_addr}"))
+        .unwrap_or_else(|_| Url::parse(&format!("{scheme}://localhost:8000")).unwrap());
+    if matches!(url.host_str(), Some("0.0.0.0") | Some("::")) {
+        url.set_host(Some("localhost")).expect("localhost is valid");
+    }
+    url
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wildcard_ipv4_origin_uses_localhost_with_configured_port() {
+        assert_eq!(
+            canonical_local_origin("0.0.0.0:8000", false).as_str(),
+            "http://localhost:8000/"
+        );
+    }
+
+    #[test]
+    fn loopback_ipv4_origin_is_preserved() {
+        assert_eq!(
+            canonical_local_origin("127.0.0.1:9000", false).as_str(),
+            "http://127.0.0.1:9000/"
+        );
     }
 }
 

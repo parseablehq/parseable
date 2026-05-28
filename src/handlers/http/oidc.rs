@@ -660,13 +660,10 @@ fn get_canonical_origin() -> Url {
     if let Some(origin_url) = &PARSEABLE.options.domain_address {
         return origin_url.clone();
     }
-    let addr = &PARSEABLE.options.address;
-    // detect http vs https based on TLS cert/key
-    let scheme = PARSEABLE.options.get_scheme();
-    match Url::parse(&format!("{}://{}", scheme, addr)) {
-        Ok(url) => url,
-        Err(_) => Url::parse("http://localhost:8000").unwrap(),
-    }
+    crate::oidc::canonical_local_origin(
+        &PARSEABLE.options.address,
+        PARSEABLE.options.tls_cert_path.is_some() && PARSEABLE.options.tls_key_path.is_some(),
+    )
 }
 
 fn is_valid_redirect_url_safe(canonical: &Url, redirect: &str) -> Result<String, ()> {
