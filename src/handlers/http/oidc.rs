@@ -69,6 +69,7 @@ pub struct Login {
 /// at the end used as target for redirect
 #[derive(Deserialize, Debug)]
 pub struct RedirectAfterLogin {
+    #[serde(default)]
     pub redirect: String,
 }
 
@@ -78,7 +79,10 @@ pub async fn login(
 ) -> Result<HttpResponse, OIDCError> {
     let canonical_origin = get_canonical_origin();
     let redirect = is_valid_redirect_url_safe(&canonical_origin, &query.redirect)
-        .map_err(|_| OIDCError::BadRequest("Bad Request,Invalid Redirect URL!".to_string()))?;
+        .map_err(|_| {
+            tracing::warn!("Invalid redirect URL provided: '{}'", query.redirect);
+            OIDCError::BadRequest("Invalid Redirect URL".to_string())
+        })?;
 
     let oidc_client = OIDC_CLIENT.get();
 
@@ -162,36 +166,33 @@ pub async fn login(
     }
 }
 
-pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> HttpResponse {
+pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> Result<HttpResponse, OIDCError> {
     let oidc_client = OIDC_CLIENT.get();
     let canonical_origin = get_canonical_origin();
-    let redirect = match is_valid_redirect_url_safe(&canonical_origin, &query.redirect) {
-        Ok(redirect) => redirect,
-        Err(_) => {
-            return HttpResponse::BadRequest().json(serde_json::json!({
-                "error":"Invalid redirect URL"
-            }));
-        }
-    };
-    let Some(session) = extract_session_key_from_req(&req).ok() else {
-        return redirect_to_client(&redirect, None);
-    };
-    let tenant_id = get_tenant_id_from_key(&session);
-    let user = Users.remove_session(&session);
-    let logout_endpoint = if let Some(client) = oidc_client {
-        client.read().await.logout_url()
-    } else {
-        None
-    };
+    let redirect = is_valid_redirect_url_safe(&canonical_origin, &query.redirect)
+        .map_err(|_| {
+            tracing::warn!("Invalid redirect URL provided in logout: '{}'", query.redirect);
+            OIDCError::BadRequest("Invalid Redirect URL".to_string())
+        })?;
+     let Some(session) = extract_session_key_from_req(&req).ok() else {
+         return Ok(redirect_to_client(&redirect, None));
+     };
+     let tenant_id = get_tenant_id_from_key(&session);
+     let user = Users.remove_session(&session);
+     let logout_endpoint = if let Some(client) = oidc_client {
+         client.read().await.logout_url()
+     } else {
+         None
+     };
 
-    match (user, logout_endpoint) {
-        (Some(username), Some(logout_endpoint))
-            if Users.is_oauth(&username, &tenant_id).unwrap_or_default() =>
-        {
-            redirect_to_oidc_logout(logout_endpoint, &redirect, &canonical_origin)
-        }
-        _ => redirect_to_client(&redirect, None),
-    }
+     Ok(match (user, logout_endpoint) {
+         (Some(username), Some(logout_endpoint))
+             if Users.is_oauth(&username, &tenant_id).unwrap_or_default() =>
+         {
+             redirect_to_oidc_logout(logout_endpoint, &redirect, &canonical_origin)
+         }
+         _ => redirect_to_client(&redirect, None),
+     })
 }
 
 /// Handler for code callback
