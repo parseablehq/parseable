@@ -184,8 +184,10 @@ async fn upload_single_parquet_file(
     let manifest = catalog::create_from_parquet_file(absolute_path, &path)
         .map_err(|e| (path.clone(), ObjectStorageError::from(e)))?;
 
-    // Calculate field stats if enabled
-    calculate_stats_if_enabled(&stream_name, &path, &schema, tenant_id).await;
+    if PARSEABLE.options.calculate_field_statistics {
+        // Calculate field stats if enabled
+        calculate_stats_if_enabled(&stream_name, &path, &schema, tenant_id).await;
+    }
 
     Ok(UploadResult {
         file_path: path,
