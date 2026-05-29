@@ -17,7 +17,13 @@
  */
 
 use std::{
-    collections::HashSet, fmt::Display, path::Path, str::FromStr, sync::Arc, time::Duration,
+    collections::HashSet,
+    fmt::Display,
+    ops::Range,
+    path::{Path, PathBuf},
+    str::FromStr,
+    sync::Arc,
+    time::Duration,
 };
 
 use async_trait::async_trait;
@@ -48,6 +54,7 @@ use crate::{
         increment_bytes_scanned_in_object_store_calls_by_date,
         increment_files_scanned_in_object_store_calls_by_date,
         increment_object_store_calls_by_date,
+        increment_partial_file_scans_in_object_store_calls_by_date,
     },
     parseable::{DEFAULT_TENANT, LogStream, PARSEABLE},
 };
@@ -55,7 +62,8 @@ use crate::{
 use super::{
     CONNECT_TIMEOUT_SECS, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
     PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, STREAM_METADATA_FILE_NAME,
-    metrics_layer::MetricLayer, object_storage::parseable_json_path, to_object_store_path,
+    metrics_layer::MetricLayer, object_storage::parseable_json_path, partial_path,
+    to_object_store_path,
 };
 
 // in bytes
@@ -228,6 +236,8 @@ impl S3Config {
         let mut client_options = ClientOptions::default()
             .with_allow_http(true)
             .with_connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+            .with_pool_idle_timeout(Duration::from_secs(15))
+            .with_pool_max_idle_per_host(128)
             .with_timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS));
 
         if self.skip_tls {
@@ -235,7 +245,7 @@ impl S3Config {
         }
         let retry_config = RetryConfig {
             max_retries: 5,
-            retry_timeout: Duration::from_secs(30),
+            retry_timeout: Duration::from_secs(5),
             backoff: BackoffConfig::default(),
         };
 
@@ -310,9 +320,11 @@ impl ObjectStorageProvider for S3Config {
 
     fn construct_client(&self) -> Arc<dyn ObjectStorage> {
         let s3 = self.get_default_builder().build().unwrap();
-
+        // limit objectstore to a concurrent request limit
+        let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
+        let s3 = MetricLayer::new(s3, "s3");
         Arc::new(S3 {
-            client: s3,
+            client: Arc::new(s3),
             bucket: self.bucket_name.clone(),
             root: StorePath::from(""),
         })
@@ -325,12 +337,123 @@ impl ObjectStorageProvider for S3Config {
 
 #[derive(Debug)]
 pub struct S3 {
-    client: AmazonS3,
+    client: Arc<MetricLayer<LimitStore<AmazonS3>>>,
     bucket: String,
     root: StorePath,
 }
 
 impl S3 {
+    async fn _parallel_download(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+        write_path: PathBuf,
+    ) -> Result<(), ObjectStorageError> {
+        let partial = partial_path(&write_path)?;
+        match self
+            ._parallel_download_inner(path, tenant_id, partial.clone())
+            .await
+        {
+            Ok(()) => {
+                if let Err(e) = tokio::fs::rename(&partial, &write_path).await {
+                    let _ = tokio::fs::remove_file(&partial).await;
+                    return Err(e.into());
+                }
+                Ok(())
+            }
+            Err(e) => {
+                let _ = tokio::fs::remove_file(&partial).await;
+                Err(e)
+            }
+        }
+    }
+
+    #[tracing::instrument(
+        name = "s3.parallel_download",
+        skip(self, partial_path),
+        fields(path = %path, tenant = ?tenant_id, total_bytes = tracing::field::Empty, chunks = tracing::field::Empty),
+        err
+    )]
+    async fn _parallel_download_inner(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+        partial_path: PathBuf,
+    ) -> Result<(), ObjectStorageError> {
+        let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let date = Utc::now().date_naive().to_string();
+        let src = to_object_store_path(path);
+
+        let meta = self.client.head(&src).await?;
+        increment_object_store_calls_by_date("HEAD", &date, tenant_str);
+        let total = meta.size;
+
+        if let Some(parent) = partial_path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let file = tokio::fs::File::create(&partial_path).await?;
+        file.set_len(total).await?;
+        let std_file = Arc::new(file.into_std().await);
+
+        let chunk = PARSEABLE.options.hot_tier_download_chunk_size;
+        let concurrency = PARSEABLE.options.hot_tier_download_concurrency;
+        let ranges: Vec<Range<u64>> = (0..total)
+            .step_by(chunk as usize)
+            .map(|s| s..(s + chunk).min(total))
+            .collect();
+        let chunk_count = ranges.len() as u64;
+        tracing::Span::current()
+            .record("total_bytes", total)
+            .record("chunks", chunk_count);
+
+        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency as usize));
+
+        futures::stream::iter(ranges)
+            .map(|r| {
+                let src = src.clone();
+                let std_file = std_file.clone();
+                let semaphore = semaphore.clone();
+                async move {
+                    let _permit = semaphore.acquire_owned().await.map_err(|e| {
+                        ObjectStorageError::Custom(format!("semaphore closed: {e}"))
+                    })?;
+                    let bytes = self.client.get_range(&src, r.clone()).await?;
+                    let offset = r.start;
+                    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+                        crate::storage::write_all_at(&std_file, &bytes, offset)
+                    })
+                    .await
+                    .map_err(|e| ObjectStorageError::Custom(format!("join: {e}")))??;
+                    Ok::<_, ObjectStorageError>(())
+                }
+            })
+            .buffer_unordered(concurrency as usize)
+            .try_collect::<Vec<_>>()
+            .await?;
+
+        let std_file_sync = std_file.clone();
+        tokio::task::spawn_blocking(move || std_file_sync.sync_all())
+            .await
+            .map_err(|e| ObjectStorageError::Custom(format!("join: {e}")))??;
+
+        increment_object_store_calls_by_date("GET", &date, tenant_str);
+        increment_files_scanned_in_object_store_calls_by_date("GET", 1, &date, tenant_str);
+        increment_bytes_scanned_in_object_store_calls_by_date("GET", total, &date, tenant_str);
+        increment_partial_file_scans_in_object_store_calls_by_date(
+            "GET",
+            chunk_count,
+            &date,
+            tenant_str,
+        );
+        Ok(())
+    }
+
+    #[tracing::instrument(
+        name = "s3.get_object",
+        skip(self),
+        fields(path = %path, tenant = ?tenant_id, bytes = tracing::field::Empty),
+        err
+    )]
     async fn _get_object(
         &self,
         path: &RelativePath,
@@ -347,6 +470,7 @@ impl S3 {
         match resp {
             Ok(resp) => {
                 let body = resp.bytes().await?;
+                tracing::Span::current().record("bytes", body.len());
                 increment_files_scanned_in_object_store_calls_by_date(
                     "GET",
                     1,
@@ -365,6 +489,11 @@ impl S3 {
         }
     }
 
+    #[tracing::instrument(
+        name = "s3.put_object",
+        skip(self, resource),
+        fields(path = %path, tenant = ?tenant_id, bytes = resource.content_length())
+    )]
     async fn _put_object(
         &self,
         path: &RelativePath,
@@ -392,6 +521,12 @@ impl S3 {
         }
     }
 
+    #[tracing::instrument(
+        name = "s3.delete_prefix",
+        skip(self),
+        fields(prefix = %key, tenant = ?tenant_id, deleted = tracing::field::Empty, failed = tracing::field::Empty),
+        err
+    )]
     async fn _delete_prefix(
         &self,
         key: &str,
@@ -426,6 +561,9 @@ impl S3 {
         }
 
         let total_files = files_deleted + failed_deletes;
+        tracing::Span::current()
+            .record("deleted", files_deleted)
+            .record("failed", failed_deletes);
         increment_files_scanned_in_object_store_calls_by_date(
             "LIST",
             total_files,
@@ -448,6 +586,12 @@ impl S3 {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "s3.list_dates",
+        skip(self),
+        fields(stream = %stream, tenant = ?tenant_id, dates = tracing::field::Empty),
+        err
+    )]
     async fn _list_dates(
         &self,
         stream: &str,
@@ -490,10 +634,16 @@ impl S3 {
             .filter_map(|path| path.as_ref().strip_prefix(&prefix))
             .map(String::from)
             .collect();
+        tracing::Span::current().record("dates", dates.len());
 
         Ok(dates)
     }
 
+    #[tracing::instrument(
+        name = "s3.upload_file",
+        skip(self),
+        fields(key = %key, path = %path.display(), tenant = ?tenant_id)
+    )]
     async fn _upload_file(
         &self,
         key: &str,
@@ -523,6 +673,11 @@ impl S3 {
         }
     }
 
+    #[tracing::instrument(
+        name = "s3.upload_multipart",
+        skip(self),
+        fields(key = %key, path = %path.display(), tenant = ?tenant_id, total_bytes = tracing::field::Empty, parts = tracing::field::Empty)
+    )]
     async fn _upload_multipart(
         &self,
         key: &RelativePath,
@@ -579,6 +734,9 @@ impl S3 {
             let has_final_partial_part = !total_size.is_multiple_of(min_multipart_size);
             let num_full_parts = total_size / min_multipart_size;
             let total_parts = num_full_parts + if has_final_partial_part { 1 } else { 0 };
+            tracing::Span::current()
+                .record("total_bytes", total_size)
+                .record("parts", total_parts);
 
             // Upload each part with metrics
             for part_number in 0..(total_parts) {
@@ -648,8 +806,7 @@ impl ObjectStorage for S3 {
             }
         };
 
-        let store: Arc<dyn ObjectStore> = Arc::new(self.client.clone());
-        let buf = object_store::buffered::BufReader::new(store, &meta);
+        let buf = object_store::buffered::BufReader::new(self.client.clone(), &meta);
         Ok(buf)
     }
 
@@ -662,6 +819,12 @@ impl ObjectStorage for S3 {
         self._upload_multipart(key, path, tenant_id).await
     }
 
+    #[tracing::instrument(
+        name = "s3.head",
+        skip(self),
+        fields(path = %path, tenant = ?tenant_id),
+        err
+    )]
     async fn head(
         &self,
         path: &RelativePath,
@@ -686,12 +849,21 @@ impl ObjectStorage for S3 {
         Ok(result?)
     }
 
+    async fn parallel_chunked_download(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+        write_path: PathBuf,
+    ) -> Result<(), ObjectStorageError> {
+        self._parallel_download(path, tenant_id, write_path).await
+    }
+
     async fn get_object(
         &self,
         path: &RelativePath,
         tenant_id: &Option<String>,
     ) -> Result<Bytes, ObjectStorageError> {
-        Ok(self._get_object(path, tenant_id).await?)
+        self._get_object(path, tenant_id).await
     }
 
     async fn get_objects(
@@ -815,6 +987,12 @@ impl ObjectStorage for S3 {
         Ok(())
     }
 
+    #[tracing::instrument(
+        name = "s3.delete_object",
+        skip(self),
+        fields(path = %path, tenant = ?tenant_id),
+        err
+    )]
     async fn delete_object(
         &self,
         path: &RelativePath,
@@ -839,12 +1017,19 @@ impl ObjectStorage for S3 {
         Ok(result?)
     }
 
+    #[tracing::instrument(
+        name = "s3.check",
+        skip(self),
+        fields(tenant = ?tenant_id, ok = tracing::field::Empty),
+        err
+    )]
     async fn check(&self, tenant_id: &Option<String>) -> Result<(), ObjectStorageError> {
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         let result = self
             .client
             .head(&to_object_store_path(&parseable_json_path()))
             .await;
+        tracing::Span::current().record("ok", result.is_ok());
         increment_object_store_calls_by_date(
             "HEAD",
             &Utc::now().date_naive().to_string(),

@@ -3749,6 +3749,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentelemetry-stdout"
+version = "0.31.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc8887887e169414f637b18751487cce4e095be787d23fad13c454e2fb1b3811"
+dependencies = [
+ "chrono",
+ "opentelemetry 0.31.0 (registry+https://github.com/rust-lang/crates.io-index)",
+ "opentelemetry_sdk 0.31.0 (registry+https://github.com/rust-lang/crates.io-index)",
+]
+
+[[package]]
 name = "opentelemetry_sdk"
 version = "0.31.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3866,7 +3877,7 @@ dependencies = [
 
 [[package]]
 name = "parseable"
-version = "2.7.2"
+version = "2.8.0"
 dependencies = [
  "actix-cors",
  "actix-web",
@@ -3919,6 +3930,7 @@ dependencies = [
  "opentelemetry 0.31.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "opentelemetry-otlp",
  "opentelemetry-proto 0.31.0 (git+https://github.com/open-telemetry/opentelemetry-rust/?rev=b096b70b2ffe9beb65a716cf47d5e5db80a9e930)",
+ "opentelemetry-stdout",
  "opentelemetry_sdk 0.31.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "parking_lot",
  "parquet",
@@ -3933,6 +3945,7 @@ dependencies = [
  "relative-path",
  "reqwest",
  "rstest",
+ "rustc-hash",
  "rustls",
  "rustls-pemfile",
  "sasl2-sys",

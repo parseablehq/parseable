@@ -43,7 +43,7 @@ use datafusion::sql::parser::DFParser;
 use datafusion::sql::resolve::resolve_table_references;
 use datafusion::sql::sqlparser::dialect::PostgreSqlDialect;
 use futures::Stream;
-use futures::stream::select_all;
+use futures::StreamExt;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
@@ -55,6 +55,8 @@ use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
 use sysinfo::System;
 use tokio::runtime::Runtime;
+use tokio_stream::wrappers::UnboundedReceiverStream;
+use tracing::Instrument;
 
 use self::error::ExecuteError;
 use self::stream_schema_provider::GlobalSchemaProvider;
@@ -74,21 +76,7 @@ use crate::storage::{ObjectStorageProvider, ObjectStoreFormat};
 use crate::utils::time::TimeRange;
 
 /// Boxed record-batch stream used as the streaming half of query results.
-type BoxedBatchStream = Pin<
-    Box<
-        RecordBatchStreamAdapter<
-            select_all::SelectAll<
-                Pin<
-                    Box<
-                        dyn RecordBatchStream<
-                                Item = Result<RecordBatch, datafusion::error::DataFusionError>,
-                            > + Send,
-                    >,
-                >,
-            >,
-        >,
-    >,
->;
+type BoxedBatchStream = SendableRecordBatchStream;
 
 /// Result type returned by query execution: either collected batches or a streaming adapter, plus field names.
 type QueryResult = Result<(Either<Vec<RecordBatch>, BoxedBatchStream>, Vec<String>), ExecuteError>;
@@ -230,7 +218,8 @@ impl Query {
             .with_prefer_existing_sort(true)
             //batch size has been made configurable via environment variable
             //default value is 20000
-            .with_batch_size(PARSEABLE.options.execution_batch_size);
+            .with_batch_size(PARSEABLE.options.execution_batch_size)
+            .with_target_partitions(PARSEABLE.options.target_partitions as usize);
 
         // Pushdown filters allows DF to push the filters as far down in the plan as possible
         // and thus, reducing the number of rows decoded
@@ -239,10 +228,22 @@ impl Query {
         // Reorder filters allows DF to decide the order of filters minimizing the cost of filter evaluation
         config.options_mut().execution.parquet.reorder_filters = true;
         config.options_mut().execution.parquet.binary_as_string = true;
+        // Bump footer-read hint from the 512 KiB default. Streams with
+        // many label columns + page-indexed value columns can have
+        // parquet footers in the 1-2 MiB range; sizing the hint above
+        // the actual footer collapses the two-read fallback into a
+        // single GET per file, saving a round trip on every file open.
+        config.options_mut().execution.parquet.metadata_size_hint = Some(2 * 1024 * 1024);
         config
             .options_mut()
             .execution
             .use_row_number_estimates_to_optimize_partitioning = true;
+        config.options_mut().execution.parquet.enable_page_index = true;
+        config
+            .options_mut()
+            .execution
+            .parquet
+            .max_predicate_cache_size = Some(1024 * 1024 * 1024);
 
         //adding this config as it improves query performance as explained here -
         // https://github.com/apache/datafusion/pull/13101
@@ -320,19 +321,34 @@ impl Query {
                 active_streams: AtomicUsize::new(output_partitions),
             });
 
-            let streams = execute_stream_partitioned(plan.clone(), task_ctx.clone())?
-                .into_iter()
-                .map(|s| {
-                    let wrapped =
-                        PartitionedMetricMonitor::new(s, monitor_state.clone(), tenant_id.clone());
-                    Box::pin(wrapped) as SendableRecordBatchStream
-                })
-                .collect_vec();
+            let partition_streams = execute_stream_partitioned(plan.clone(), task_ctx.clone())?;
 
-            let merged_stream = futures::stream::select_all(streams);
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
+                Result<RecordBatch, datafusion::error::DataFusionError>,
+            >();
 
-            let final_stream = RecordBatchStreamAdapter::new(plan.schema(), merged_stream);
-            Either::Right(Box::pin(final_stream))
+            for s in partition_streams.into_iter() {
+                let wrapped =
+                    PartitionedMetricMonitor::new(s, monitor_state.clone(), tenant_id.clone());
+                let tx = tx.clone();
+                let span = tracing::Span::current();
+                tokio::spawn(
+                    async move {
+                        let mut stream: SendableRecordBatchStream = Box::pin(wrapped);
+                        while let Some(batch) = stream.next().await {
+                            if tx.send(batch).is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    .instrument(span),
+                );
+            }
+            drop(tx);
+
+            let merged = UnboundedReceiverStream::new(rx);
+            let final_stream = RecordBatchStreamAdapter::new(plan.schema(), merged);
+            Either::Right(Box::pin(final_stream) as SendableRecordBatchStream)
         };
 
         Ok((results, fields))

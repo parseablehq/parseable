@@ -40,7 +40,16 @@ use actix_web::http::header::HeaderMap;
 use actix_web::{FromRequest, HttpRequest};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use once_cell::sync::Lazy;
 use regex::Regex;
+
+/// Compiled once at startup; reused for every `extract_datetime` call.
+/// Recompiling per call was the hot-path bottleneck for hot-tier work-list
+/// construction (~50μs per call * 100k+ files per tick).
+static PARTITION_DATETIME_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"date=(\d{4}-\d{2}-\d{2})/hour=(\d{2})/minute=(\d{2})")
+        .expect("partition datetime regex is valid")
+});
 use sha2::{Digest, Sha256};
 
 pub fn get_node_id() -> String {
@@ -49,8 +58,7 @@ pub fn get_node_id() -> String {
 }
 
 pub fn extract_datetime(path: &str) -> Option<NaiveDateTime> {
-    let re = Regex::new(r"date=(\d{4}-\d{2}-\d{2})/hour=(\d{2})/minute=(\d{2})").unwrap();
-    if let Some(caps) = re.captures(path) {
+    if let Some(caps) = PARTITION_DATETIME_RE.captures(path) {
         let date_str = caps.get(1)?.as_str();
         let hour_str = caps.get(2)?.as_str();
         let minute_str = caps.get(3)?.as_str();

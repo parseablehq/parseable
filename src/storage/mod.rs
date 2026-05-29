@@ -48,6 +48,44 @@ pub mod retention;
 mod s3;
 pub mod store_metadata;
 
+/// Cross-platform positional write: pwrite(2) on Unix, seek_write+loop on Windows.
+/// Both APIs accept `&File`, so concurrent ranged downloads can share an Arc<File>.
+#[inline(always)]
+pub(crate) fn write_all_at(file: &std::fs::File, buf: &[u8], offset: u64) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileExt;
+        file.write_all_at(buf, offset)
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::FileExt;
+        let mut buf = buf;
+        let mut offset = offset;
+        while !buf.is_empty() {
+            match file.seek_write(buf, offset) {
+                Ok(0) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::WriteZero,
+                        "failed to write whole buffer",
+                    ));
+                }
+                Ok(n) => {
+                    buf = &buf[n..];
+                    offset += n as u64;
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(())
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        compile_error!("write_all_at: unsupported platform");
+    }
+}
+
 use self::retention::Retention;
 pub use azure_blob::AzureBlobConfig;
 pub use gcs::GcsConfig;
@@ -83,7 +121,7 @@ pub const CURRENT_OBJECT_STORE_VERSION: &str = "v7";
 pub const CURRENT_SCHEMA_VERSION: &str = "v7";
 
 const CONNECT_TIMEOUT_SECS: u64 = 5;
-const REQUEST_TIMEOUT_SECS: u64 = 300;
+const REQUEST_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectStoreFormat {
@@ -343,4 +381,19 @@ pub enum ObjectStorageError {
 
 pub fn to_object_store_path(path: &RelativePath) -> Path {
     Path::from(path.as_str())
+}
+
+/// Append `.partial` to the file name of a local path. Used by hot-tier
+/// downloaders to write to a sibling path and atomically rename on success.
+pub fn partial_path(
+    write_path: &std::path::Path,
+) -> Result<std::path::PathBuf, ObjectStorageError> {
+    let name = write_path
+        .file_name()
+        .ok_or_else(|| ObjectStorageError::Custom("download write_path has no file name".into()))?;
+    let mut next = std::ffi::OsString::from(name);
+    next.push(".partial");
+    let mut buf = write_path.to_path_buf();
+    buf.set_file_name(next);
+    Ok(buf)
 }

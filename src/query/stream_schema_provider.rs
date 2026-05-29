@@ -55,7 +55,7 @@ use crate::{
         snapshot::{ManifestItem, Snapshot},
     },
     event::DEFAULT_TIMESTAMP_KEY,
-    hottier::HotTierManager,
+    hottier::{GLOBAL_HOTTIER, HotTierManager},
     metrics::{QUERY_CACHE_HIT, increment_files_scanned_in_query_by_date},
     option::Mode,
     parseable::{DEFAULT_TENANT, PARSEABLE, STREAM_EXISTS},
@@ -150,14 +150,19 @@ impl StandardTableProvider {
 
         // parquet file source, default table parquet options
         let file_source = if let Some(phyiscal_expr) = filters {
-            ParquetSource::new(self.schema.clone()).with_predicate(phyiscal_expr)
+            ParquetSource::new(self.schema.clone())
+                .with_predicate(phyiscal_expr)
+                .with_pushdown_filters(true)
+                .with_reorder_filters(true)
         } else {
             ParquetSource::new(self.schema.clone())
+                .with_pushdown_filters(true)
+                .with_reorder_filters(true)
         };
 
         let mut conf_builder = FileScanConfigBuilder::new(object_store_url, file_source.into())
             .with_statistics(statistics)
-            .with_batch_size(Some(20000))
+            .with_batch_size(Some(PARSEABLE.options.execution_batch_size))
             .with_constraints(Constraints::default())
             .with_file_groups(file_groups)
             .with_output_ordering(vec![LexOrdering::new([sort_expr]).unwrap()]);
@@ -253,7 +258,9 @@ impl StandardTableProvider {
         };
 
         // Staging arrow exection plan
-        let records = staging.recordbatches_cloned(&self.schema);
+        let records = staging
+            .recordbatches_cloned(&self.schema)
+            .map_err(|e| DataFusionError::Internal(format!("Error during staging exec- {e}")))?;
         let arrow_exec = reversed_mem_table(records, self.schema.clone())?
             .scan(state, projection, filters, limit)
             .await?;
@@ -613,7 +620,7 @@ impl TableProvider for StandardTableProvider {
         }
 
         // Hot tier data fetch
-        if let Some(hot_tier_manager) = HotTierManager::global()
+        if let Some(hot_tier_manager) = GLOBAL_HOTTIER.get()
             && hot_tier_manager.check_stream_hot_tier_exists(&self.stream, &self.tenant_id)
         {
             self.get_hottier_exectuion_plan(

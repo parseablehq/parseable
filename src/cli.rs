@@ -17,7 +17,7 @@
  */
 
 use clap::{Parser, value_parser};
-use std::{env, fs, path::PathBuf};
+use std::{env, fs, ops::Div, path::PathBuf};
 
 use url::Url;
 
@@ -194,6 +194,16 @@ pub struct Options {
     )]
     pub max_connections: usize,
 
+    // DataFusion target partitions
+    #[arg(
+        long,
+        env = "P_DATAFUSION_TARGET_PARTITIONS",
+        default_value_t = num_cpus::get().div(2).max(1) as u64,
+        value_parser = value_parser!(u64).range(1..),
+        help = "Number of partitions for DF to split execution into"
+    )]
+    pub target_partitions: u64,
+
     #[arg(
         long = "origin",
         env = "P_ORIGIN_URI",
@@ -313,6 +323,60 @@ pub struct Options {
         help = "Local path on this device to be used for hot tier data"
     )]
     pub hot_tier_storage_path: Option<PathBuf>,
+
+    #[arg(
+        long = "hot-tier-download-chunk-size",
+        env = "P_HOT_TIER_DOWNLOAD_CHUNK_SIZE",
+        value_parser = clap::value_parser!(u64).range(5242880..),
+        default_value = "8388608",
+        help = "Chunk size in bytes for parallel hot tier downloads (default 8 MiB)"
+    )]
+    pub hot_tier_download_chunk_size: u64,
+
+    #[arg(
+        long = "hot-tier-download-concurrency",
+        env = "P_HOT_TIER_DOWNLOAD_CONCURRENCY",
+        value_parser = clap::value_parser!(u64).range(1..),
+        default_value = "16",
+        help = "Number of concurrent range requests per hot tier download"
+    )]
+    pub hot_tier_download_concurrency: u64,
+
+    #[arg(
+        long = "hot-tier-files-per-stream-concurrency",
+        env = "P_HOT_TIER_FILES_PER_STREAM_CONCURRENCY",
+        value_parser = clap::value_parser!(u32).range(1..),
+        default_value = "4",
+        help = "Number of concurrent parquet file downloads per stream during hot tier sync"
+    )]
+    pub hot_tier_files_per_stream_concurrency: u32,
+
+    #[arg(
+        long = "hot-tier-latest-minutes",
+        env = "P_HOT_TIER_LATEST_MINUTES",
+        value_parser = clap::value_parser!(u64).range(1..),
+        default_value = "10",
+        help = "Files whose timestamp is within the last N minutes are 'latest'; rest are 'historic'."
+    )]
+    pub hot_tier_latest_minutes: u64,
+
+    #[arg(
+        long = "hot-tier-per-tick-cap",
+        env = "P_HISTORIC_PER_TICK_CAP",
+        value_parser = clap::value_parser!(u32).range(10..),
+        default_value = "100",
+        help = "Maximum files to download per historic tick."
+    )]
+    pub historic_per_tick_cap: u32,
+
+    #[arg(
+        long = "hot-tier-historic-sync-minutes",
+        env = "P_HOT_TIER_HISTORIC_SYNC_MINUTES",
+        value_parser = clap::value_parser!(u32).range(1..),
+        default_value = "5",
+        help = "Interval (minutes) at which the historic hot-tier sync runs."
+    )]
+    pub hot_tier_historic_sync_minutes: u32,
 
     //TODO: remove this when smart cache is implemented
     #[arg(

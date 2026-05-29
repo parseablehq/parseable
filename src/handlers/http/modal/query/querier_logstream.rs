@@ -32,6 +32,7 @@ use tracing::{error, warn};
 pub static CREATE_STREAM_LOCK: Mutex<()> = Mutex::const_new(());
 
 use crate::handlers::http::middleware::{CLUSTER_SECRET, CLUSTER_SECRET_HEADER};
+use crate::hottier::GLOBAL_HOTTIER;
 use crate::parseable::DEFAULT_TENANT;
 use crate::utils::get_user_from_request;
 use crate::{
@@ -47,7 +48,6 @@ use crate::{
             modal::{NodeMetadata, NodeType},
         },
     },
-    hottier::HotTierManager,
     parseable::{PARSEABLE, StreamNotFound},
     stats,
     storage::{ObjectStoreFormat, StreamType},
@@ -85,7 +85,7 @@ pub async fn delete(
         )
     }
 
-    if let Some(hot_tier_manager) = HotTierManager::global()
+    if let Some(hot_tier_manager) = GLOBAL_HOTTIER.get()
         && hot_tier_manager.check_stream_hot_tier_exists(&stream_name, &tenant_id)
     {
         hot_tier_manager

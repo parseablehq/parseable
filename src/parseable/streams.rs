@@ -17,7 +17,7 @@
  *
  */
 
-use arrow_array::RecordBatch;
+use arrow_array::{ArrayRef, RecordBatch};
 use arrow_ipc::reader::StreamReader;
 use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
@@ -186,8 +186,7 @@ impl Stream {
                         OBJECT_STORE_DATA_GRANULARITY,
                     );
                     let file_path = self.data_path.join(&filename);
-                    let mut writer = DiskWriter::try_new(file_path, &record.schema(), range)
-                        .expect("File and RecordBatch both are checked");
+                    let mut writer = DiskWriter::try_new(file_path, &record.schema(), range)?;
 
                     writer.write(record)?;
                     guard.disk.insert(filename, writer);
@@ -195,7 +194,7 @@ impl Stream {
             };
         }
 
-        guard.mem.push(schema_key, record);
+        guard.mem.push(schema_key, record)?;
 
         Ok(())
     }
@@ -532,26 +531,46 @@ impl Stream {
         Ok(())
     }
 
-    pub fn recordbatches_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
-        self.writer.lock().unwrap().mem.recordbatch_cloned(schema)
+    pub fn recordbatches_cloned(
+        &self,
+        schema: &Arc<Schema>,
+    ) -> Result<Vec<RecordBatch>, StagingError> {
+        let writer = self.writer.lock().map_err(|poisoned| {
+            StagingError::PoisonError(PoisonError::new(format!(
+                "Writer lock poisoned while cloning record batches for stream {} - {}",
+                self.stream_name, poisoned
+            )))
+        })?;
+
+        writer.mem.recordbatch_cloned(schema)
     }
 
-    pub fn clear(&self) {
-        self.writer.lock().unwrap().mem.clear();
+    pub fn clear(&self) -> Result<(), StagingError> {
+        self.writer
+            .lock()
+            .map_err(|poisoned| {
+                StagingError::PoisonError(PoisonError::new(format!(
+                    "Writer lock poisoned while clearing stream {} - {}",
+                    self.stream_name, poisoned
+                )))
+            })?
+            .mem
+            .clear();
+        Ok(())
     }
 
-    pub fn flush(&self, forced: bool) {
+    pub fn flush(&self, forced: bool) -> Result<(), StagingError> {
         let _span = info_span!("flush", stream_name = %self.stream_name, forced).entered();
         // Swap out stale writers under the lock, drop them after releasing it.
         // DiskWriter::Drop does I/O (IPC finish + file rename) so dropping
         // outside the lock avoids blocking concurrent push() calls.
         let stale_writers = {
-            let mut writer = self.writer.lock().unwrap_or_else(|_| {
-                panic!(
-                    "Writer lock poisoned while flushing data for stream {}",
-                    self.stream_name
-                )
-            });
+            let mut writer = self.writer.lock().map_err(|poisoned| {
+                StagingError::PoisonError(PoisonError::new(format!(
+                    "Writer lock poisoned while flushing data for stream {} - {}",
+                    self.stream_name, poisoned
+                )))
+            })?;
             writer.mem.clear();
 
             let mut old_disk = HashMap::new();
@@ -567,6 +586,7 @@ impl Stream {
         };
         // DiskWriter::Drop I/O happens here, outside the lock
         drop(stale_writers);
+        Ok(())
     }
 
     fn parquet_writer_props(
@@ -589,12 +609,26 @@ impl Stream {
                 Encoding::DELTA_BINARY_PACKED,
             );
 
-        // Create sorting columns
-        let mut sorting_column_vec = vec![SortingColumn {
+        // Build sorting columns. For OTel-metrics streams, put
+        // `metric_name` ahead of the time partition so per-page parquet
+        // min/max stats can prune by metric (PromQL's universal selector
+        // predicate). The actual row order is enforced at write time
+        // (`sort_batch_for_metric_pruning`) — this just advertises the
+        // sort in parquet footer metadata so readers can rely on it.
+        let is_otel_metrics = self.is_otel_metrics();
+        let mut sorting_column_vec: Vec<SortingColumn> = Vec::new();
+        if is_otel_metrics && let Ok(name_idx) = merged_schema.index_of("metric_name") {
+            sorting_column_vec.push(SortingColumn {
+                column_idx: name_idx as i32,
+                descending: false,
+                nulls_first: false,
+            });
+        }
+        sorting_column_vec.push(SortingColumn {
             column_idx: time_partition_idx as i32,
             descending: true,
-            nulls_first: true,
-        }];
+            nulls_first: false,
+        });
 
         // Describe custom partition column encodings and sorting
         if let Some(custom_partition) = custom_partition {
@@ -614,6 +648,66 @@ impl Stream {
 
         // Set sorting columns
         props.set_sorting_columns(Some(sorting_column_vec)).build()
+    }
+
+    /// True if this stream's log_source carries the OTel-metrics
+    /// format. Determines whether per-batch sort and metric_name-first
+    /// SortingColumn metadata get applied at write time.
+    fn is_otel_metrics(&self) -> bool {
+        self.get_log_source()
+            .iter()
+            .any(|s| matches!(s.log_source_format, LogSource::OtelMetrics))
+    }
+
+    /// Permute a `RecordBatch` so rows are ordered by
+    /// `(metric_name ASC, time_partition DESC)`. Required for parquet
+    /// page-index pruning to be effective on PromQL's
+    /// `metric_name = 'X'` selector — without this, pages within a row
+    /// group hold interleaved metrics and per-page min/max stats span
+    /// every metric in the stream, killing pruning.
+    ///
+    /// Bails out without sorting when either source column is missing
+    /// (non-metric stream, schema drift) so the caller can write the
+    /// batch unchanged.
+    fn sort_batch_for_metric_pruning(
+        batch: &RecordBatch,
+        time_partition_field: &str,
+    ) -> Result<RecordBatch, StagingError> {
+        use arrow::compute::{SortColumn, kernels::sort::SortOptions, lexsort_to_indices, take};
+        let schema = batch.schema();
+        let Some(name_idx) = schema.index_of("metric_name").ok() else {
+            return Ok(batch.clone());
+        };
+        let Some(time_idx) = schema.index_of(time_partition_field).ok() else {
+            return Ok(batch.clone());
+        };
+        if batch.num_rows() < 2 {
+            return Ok(batch.clone());
+        }
+
+        let sort_cols = vec![
+            SortColumn {
+                values: batch.column(name_idx).clone(),
+                options: Some(SortOptions {
+                    descending: false,
+                    nulls_first: false,
+                }),
+            },
+            SortColumn {
+                values: batch.column(time_idx).clone(),
+                options: Some(SortOptions {
+                    descending: true,
+                    nulls_first: false,
+                }),
+            },
+        ];
+        let indices = lexsort_to_indices(&sort_cols, None)?;
+        let columns: Vec<ArrayRef> = batch
+            .columns()
+            .iter()
+            .map(|c| take(c.as_ref(), &indices, None))
+            .collect::<Result<_, _>>()?;
+        Ok(RecordBatch::try_new(schema, columns)?)
     }
 
     fn reset_staging_metrics(&self, tenant_id: &Option<String>) {
@@ -739,8 +833,43 @@ impl Stream {
             .open(part_path)
             .map_err(|_| StagingError::Create)?;
         let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
-        for ref record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
-            writer.write(record)?;
+        let sort_for_metric_pruning = self.is_otel_metrics();
+        let time_partition_field = time_partition.map_or_else(
+            || DEFAULT_TIMESTAMP_KEY.to_string(),
+            |s| s.as_str().to_string(),
+        );
+
+        if sort_for_metric_pruning {
+            // Buffer batches up to the row-group target, then
+            // concat + sort + write as a single contiguous batch. The
+            // ArrowWriter splits the sorted batch into row groups at the
+            // same boundary, so the row order survives intact and
+            // per-page (metric_name min, max) stats narrow to the slice
+            // each page actually carries.
+            let target = self.options.row_group_size;
+            let mut buffer: Vec<RecordBatch> = Vec::new();
+            let mut buffered_rows: usize = 0;
+            for record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
+                buffered_rows += record.num_rows();
+                buffer.push(record);
+                if buffered_rows >= target {
+                    let combined = arrow::compute::concat_batches(schema, &buffer)?;
+                    let sorted =
+                        Self::sort_batch_for_metric_pruning(&combined, &time_partition_field)?;
+                    writer.write(&sorted)?;
+                    buffer.clear();
+                    buffered_rows = 0;
+                }
+            }
+            if !buffer.is_empty() {
+                let combined = arrow::compute::concat_batches(schema, &buffer)?;
+                let sorted = Self::sort_batch_for_metric_pruning(&combined, &time_partition_field)?;
+                writer.write(&sorted)?;
+            }
+        } else {
+            for ref record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
+                writer.write(record)?;
+            }
         }
         writer.close()?;
 
@@ -1197,7 +1326,7 @@ impl Stream {
         // Force flush for init or shutdown signals to convert all .part files to .arrows
         // For regular cycles, use false to only flush non-current writers
         let forced = init_signal || shutdown_signal;
-        self.flush(forced);
+        self.flush(forced)?;
         info!(
             "Flushing stream ({}) took: {}s",
             self.stream_name,
@@ -1608,7 +1737,7 @@ mod tests {
                 StreamType::UserDefined,
             )
             .unwrap();
-        staging.flush(true);
+        staging.flush(true).unwrap();
     }
 
     #[test]

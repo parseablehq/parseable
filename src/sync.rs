@@ -277,34 +277,42 @@ pub fn local_sync() -> (
 /// local and object store sync at the start of the server
 #[tokio::main(flavor = "current_thread")]
 pub async fn sync_start() -> anyhow::Result<()> {
-    // Monitor local sync duration at startup
-    monitor_task_duration(
-        "startup_local_sync",
-        Duration::from_secs(PARSEABLE.options.local_sync_threshold),
-        || async {
-            let mut local_sync_joinset = JoinSet::new();
-            PARSEABLE
-                .streams
-                .flush_and_convert(&mut local_sync_joinset, true, false);
-            while let Some(res) = local_sync_joinset.join_next().await {
-                log_join_result(res, "flush and convert");
-            }
-        },
-    )
+    async {
+        // Monitor local sync duration at startup
+        monitor_task_duration(
+            "startup_local_sync",
+            Duration::from_secs(PARSEABLE.options.local_sync_threshold),
+            || async {
+                let mut local_sync_joinset = JoinSet::new();
+                PARSEABLE
+                    .streams
+                    .flush_and_convert(&mut local_sync_joinset, true, false);
+                while let Some(res) = local_sync_joinset.join_next().await {
+                    log_join_result(res, "flush and convert");
+                }
+            },
+        )
+        .await;
+    }
+    .instrument(info_span!("local_sync_startup"))
     .await;
 
-    // Monitor object store sync duration at startup
-    monitor_task_duration(
-        "startup_object_store_sync",
-        Duration::from_secs(PARSEABLE.options.object_store_sync_threshold),
-        || async {
-            let mut object_store_joinset = JoinSet::new();
-            sync_all_streams(&mut object_store_joinset);
-            while let Some(res) = object_store_joinset.join_next().await {
-                log_join_result(res, "object store sync");
-            }
-        },
-    )
+    async {
+        // Monitor object store sync duration at startup
+        monitor_task_duration(
+            "startup_object_store_sync",
+            Duration::from_secs(PARSEABLE.options.object_store_sync_threshold),
+            || async {
+                let mut object_store_joinset = JoinSet::new();
+                sync_all_streams(&mut object_store_joinset);
+                while let Some(res) = object_store_joinset.join_next().await {
+                    log_join_result(res, "object store sync");
+                }
+            },
+        )
+        .await;
+    }
+    .instrument(info_span!("object_store_sync_startup"))
     .await;
 
     Ok(())

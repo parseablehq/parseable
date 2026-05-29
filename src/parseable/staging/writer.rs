@@ -135,16 +135,17 @@ impl<const N: usize> Default for MemWriter<N> {
 }
 
 impl<const N: usize> MemWriter<N> {
-    pub fn push(&mut self, schema_key: &str, rb: &RecordBatch) {
+    pub fn push(&mut self, schema_key: &str, rb: &RecordBatch) -> Result<(), StagingError> {
         if !self.schema_map.contains(schema_key) {
             self.schema_map.insert(schema_key.to_owned());
-            self.schema = Schema::try_merge([self.schema.clone(), (*rb.schema()).clone()]).unwrap();
+            self.schema = Schema::try_merge([self.schema.clone(), (*rb.schema()).clone()])?;
         }
 
         if let Some(record) = self.mutable_buffer.push(rb) {
-            let record = concat_records(&Arc::new(self.schema.clone()), &record);
+            let record = concat_records(&Arc::new(self.schema.clone()), &record)?;
             self.read_buffer.push(record);
         }
+        Ok(())
     }
 
     pub fn clear(&mut self) {
@@ -154,23 +155,29 @@ impl<const N: usize> MemWriter<N> {
         self.mutable_buffer.inner.clear();
     }
 
-    pub fn recordbatch_cloned(&self, schema: &Arc<Schema>) -> Vec<RecordBatch> {
+    pub fn recordbatch_cloned(
+        &self,
+        schema: &Arc<Schema>,
+    ) -> Result<Vec<RecordBatch>, StagingError> {
         let mut read_buffer = self.read_buffer.clone();
         if !self.mutable_buffer.inner.is_empty() {
-            let rb = concat_records(schema, &self.mutable_buffer.inner);
+            let rb = concat_records(schema, &self.mutable_buffer.inner)?;
             read_buffer.push(rb)
         }
 
-        read_buffer
+        Ok(read_buffer
             .into_iter()
             .map(|rb| adapt_batch(schema, &rb))
-            .collect()
+            .collect())
     }
 }
 
-fn concat_records(schema: &Arc<Schema>, record: &[RecordBatch]) -> RecordBatch {
+fn concat_records(
+    schema: &Arc<Schema>,
+    record: &[RecordBatch],
+) -> Result<RecordBatch, StagingError> {
     let records = record.iter().map(|x| adapt_batch(schema, x)).collect_vec();
-    concat_batches(schema, records.iter()).unwrap()
+    Ok(concat_batches(schema, records.iter())?)
 }
 
 #[derive(Debug, Default)]

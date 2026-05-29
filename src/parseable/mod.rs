@@ -75,8 +75,8 @@ use crate::{
     },
     static_schema::{StaticSchema, convert_static_schema_to_arrow_schema},
     storage::{
-        ObjectStorageError, ObjectStorageProvider, ObjectStoreFormat, Owner, Permisssion,
-        StorageMetadata, StreamType, put_remote_metadata,
+        ObjectStorage, ObjectStorageError, ObjectStorageProvider, ObjectStoreFormat, Owner,
+        Permisssion, StorageMetadata, StreamType, put_remote_metadata,
     },
     tenants::{Service, TENANT_METADATA},
     validator,
@@ -173,13 +173,14 @@ pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| {
             let metastore = ObjectStoreMetastore {
                 storage: args.storage.construct_client(),
             };
-
+            let hottier_connection_pool = args.storage.construct_client();
             Parseable::new(
                 args.options,
                 #[cfg(feature = "kafka")]
                 args.kafka,
                 Arc::new(args.storage),
                 Arc::new(metastore),
+                hottier_connection_pool,
             )
         }
         StorageOptions::S3(args) => {
@@ -187,12 +188,14 @@ pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| {
             let metastore = ObjectStoreMetastore {
                 storage: args.storage.construct_client(),
             };
+            let hottier_connection_pool = args.storage.construct_client();
             Parseable::new(
                 args.options,
                 #[cfg(feature = "kafka")]
                 args.kafka,
                 Arc::new(args.storage),
                 Arc::new(metastore),
+                hottier_connection_pool,
             )
         }
         StorageOptions::Blob(args) => {
@@ -200,12 +203,14 @@ pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| {
             let metastore = ObjectStoreMetastore {
                 storage: args.storage.construct_client(),
             };
+            let hottier_connection_pool = args.storage.construct_client();
             Parseable::new(
                 args.options,
                 #[cfg(feature = "kafka")]
                 args.kafka,
                 Arc::new(args.storage),
                 Arc::new(metastore),
+                hottier_connection_pool,
             )
         }
         StorageOptions::Gcs(args) => {
@@ -213,12 +218,14 @@ pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| {
             let metastore = ObjectStoreMetastore {
                 storage: args.storage.construct_client(),
             };
+            let hottier_connection_pool = args.storage.construct_client();
             Parseable::new(
                 args.options,
                 #[cfg(feature = "kafka")]
                 args.kafka,
                 Arc::new(args.storage),
                 Arc::new(metastore),
+                hottier_connection_pool,
             )
         }
     }
@@ -238,6 +245,8 @@ pub struct Parseable {
     pub tenants: Arc<RwLock<Vec<String>>>,
     /// metastore
     pub metastore: Arc<dyn Metastore>,
+    /// Hot-tier connection pool
+    pub hottier_connection_pool: Arc<dyn ObjectStorage>,
     /// Used to configure the kafka connector
     #[cfg(feature = "kafka")]
     pub kafka_config: KafkaConfig,
@@ -249,11 +258,13 @@ impl Parseable {
         #[cfg(feature = "kafka")] kafka_config: KafkaConfig,
         storage: Arc<dyn ObjectStorageProvider>,
         metastore: Arc<dyn Metastore>,
+        hottier_connection_pool: Arc<dyn ObjectStorage>,
     ) -> Self {
         Parseable {
             options: Arc::new(options),
             storage,
             metastore,
+            hottier_connection_pool,
             streams: Streams::default(),
             tenants: Arc::new(RwLock::new(vec![])),
             #[cfg(feature = "kafka")]

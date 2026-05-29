@@ -38,7 +38,7 @@ use crate::{
     alerts::{ALERTS, get_alert_manager, target::TARGETS},
     cli::Options,
     correlation::CORRELATIONS,
-    hottier::{HotTierManager, StreamHotTier},
+    hottier::{GLOBAL_HOTTIER, HotTierManager, StreamHotTier},
     metastore::metastore_traits::MetastoreObject,
     oauth::{OAuthProvider, connect_oidc},
     option::Mode,
@@ -159,6 +159,11 @@ pub trait ParseableServer {
 
             // Shutdown resource monitor
             let _ = resource_shutdown_tx.send(());
+
+            // Shutdown hottier
+            if let Some(htm) = GLOBAL_HOTTIER.get() {
+                htm.abort_all().await;
+            }
 
             // Initiate graceful shutdown
             info!("Graceful shutdown of HTTP server triggered");
@@ -627,7 +632,7 @@ pub type PrismMetadata = NodeMetadata;
 /// in their stream metadata but don't have local hot tier metadata files yet.
 /// This function is called once during query server startup.
 pub async fn initialize_hot_tier_metadata_on_startup(
-    hot_tier_manager: &HotTierManager,
+    hot_tier_manager: &'static HotTierManager,
 ) -> anyhow::Result<()> {
     // Collect hot tier configurations from streams before doing async operations
     let hot_tier_configs: Vec<(String, Option<String>, StreamHotTier)> = {
@@ -653,21 +658,6 @@ pub async fn initialize_hot_tier_metadata_on_startup(
                 })
             })
             .collect()
-        // let streams_guard = PARSEABLE.streams.read().unwrap();
-        // streams_guard
-        //     .iter()
-        //     .filter_map(|(stream_name, stream)| {
-        //         // Skip if hot tier metadata file already exists for this stream
-        //         if hot_tier_manager.check_stream_hot_tier_exists(stream_name) {
-        //             return None;
-        //         }
-
-        //         // Get the hot tier configuration from the in-memory stream metadata
-        //         stream
-        //             .get_hot_tier()
-        //             .map(|config| (stream_name.clone(), config))
-        //     })
-        //     .collect()
     };
 
     for (stream_name, tenant_id, hot_tier_config) in hot_tier_configs {
