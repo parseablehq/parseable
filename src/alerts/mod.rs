@@ -42,6 +42,7 @@ pub mod alert_structs;
 pub mod alert_traits;
 pub mod alert_types;
 pub mod alerts_utils;
+pub mod outbound_http_policy;
 pub mod target;
 
 pub use crate::alerts::alert_enums::{
@@ -976,6 +977,8 @@ pub enum AlertError {
     Metadata(&'static str),
     #[error("User is not authorized to run this query")]
     Unauthorized,
+    #[error("Alert target outbound policy rejected request:{0}")]
+    OutboundPolicy(#[from] outbound_http_policy::OutboundPolicyError),
     #[error("ActixError: {0}")]
     Error(#[from] actix_web::Error),
     #[error("DataFusion Error: {0}")]
@@ -1042,6 +1045,7 @@ impl actix_web::ResponseError for AlertError {
             Self::Unimplemented(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::NotPresentInOSS(_) => StatusCode::BAD_REQUEST,
             Self::MetastoreError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::OutboundPolicy(_) => StatusCode::BAD_REQUEST,
         }
     }
 
