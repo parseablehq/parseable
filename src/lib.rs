@@ -66,8 +66,8 @@ use once_cell::sync::Lazy;
 pub use openid;
 use parseable::PARSEABLE;
 use reqwest::{Client, ClientBuilder};
+pub use {hotpath, tracing_actix_web, tracing_opentelemetry, tracing_subscriber};
 pub use {opentelemetry, opentelemetry_otlp, opentelemetry_proto, opentelemetry_sdk};
-pub use {tracing_actix_web, tracing_opentelemetry, tracing_subscriber};
 
 // It is very unlikely that panic will occur when dealing with locks.
 pub const LOCK_EXPECT: &str = "Thread shouldn't panic while holding a lock";

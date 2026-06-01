@@ -72,6 +72,7 @@ impl Event {
             is_first_event = self.is_first_event
         )
     )]
+    #[hotpath::measure]
     pub fn process(self) -> Result<(), EventError> {
         let mut key = get_schema_key(&self.rb.schema().fields);
         if self.time_partition.is_some() {

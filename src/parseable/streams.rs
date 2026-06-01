@@ -43,7 +43,7 @@ use std::{
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
 use tokio::task::JoinSet;
-use tracing::{Instrument, error, info, info_span, instrument, trace, warn};
+use tracing::{error, info, info_span, instrument, trace, warn};
 use ulid::Ulid;
 
 use crate::{
@@ -65,11 +65,7 @@ use crate::{
 
 use super::{
     ARROW_FILE_EXTENSION, LogStream, PART_FILE_EXTENSION,
-    staging::{
-        StagingError,
-        reader::MergedReverseRecordReader,
-        writer::{DiskWriter, Writer},
-    },
+    staging::{StagingError, reader::MergedReverseRecordReader, writer::Writer},
 };
 
 const INPROCESS_DIR_PREFIX: &str = "processing_";
@@ -115,7 +111,6 @@ pub struct Stream {
     pub writer: Mutex<Writer>,
     pub ingestor_id: Option<String>,
 }
-
 impl Stream {
     pub fn new(
         options: Arc<Options>,
@@ -138,6 +133,7 @@ impl Stream {
     }
 
     // Concatenates record batches and puts them in memory store for each event.
+    #[hotpath::measure]
     pub fn push(
         &self,
         schema_key: &str,
@@ -173,25 +169,13 @@ impl Stream {
         if self.options.mode != Mode::Query || stream_type == StreamType::Internal {
             let filename =
                 self.filename_by_partition(schema_key, parsed_timestamp, custom_partition_values);
-            match guard.disk.get_mut(&filename) {
-                Some(writer) => {
-                    writer.write(record)?;
-                }
-                None => {
-                    // entry is not present thus we create it
-                    std::fs::create_dir_all(&self.data_path)?;
+            let range = TimeRange::granularity_range(
+                parsed_timestamp.and_local_timezone(Utc).unwrap(),
+                OBJECT_STORE_DATA_GRANULARITY,
+            );
+            let file_path = self.data_path.join(&filename);
 
-                    let range = TimeRange::granularity_range(
-                        parsed_timestamp.and_local_timezone(Utc).unwrap(),
-                        OBJECT_STORE_DATA_GRANULARITY,
-                    );
-                    let file_path = self.data_path.join(&filename);
-                    let mut writer = DiskWriter::try_new(file_path, &record.schema(), range)?;
-
-                    writer.write(record)?;
-                    guard.disk.insert(filename, writer);
-                }
-            };
+            guard.push_disk(filename, record, file_path, range)?;
         }
 
         guard.mem.push(schema_key, record)?;
@@ -420,6 +404,7 @@ impl Stream {
         base.join(format!("{INPROCESS_DIR_PREFIX}{minute}"))
     }
 
+    #[hotpath::measure]
     pub fn parquet_files(&self) -> Vec<PathBuf> {
         let Ok(dir) = self.data_path.read_dir() else {
             return vec![];
@@ -480,6 +465,7 @@ impl Stream {
         skip(self, tenant_id),
         fields(stream_name = %self.stream_name)
     )]
+    #[hotpath::measure]
     pub fn prepare_parquet(
         &self,
         init_signal: bool,
@@ -559,6 +545,7 @@ impl Stream {
         Ok(())
     }
 
+    #[hotpath::measure]
     pub fn flush(&self, forced: bool) -> Result<(), StagingError> {
         let _span = info_span!("flush", stream_name = %self.stream_name, forced).entered();
         // Swap out stale writers under the lock, drop them after releasing it.
@@ -571,6 +558,7 @@ impl Stream {
                     self.stream_name, poisoned
                 )))
             })?;
+            writer.flush_all_pending_disk(&self.data_path)?;
             writer.mem.clear();
 
             let mut old_disk = HashMap::new();
@@ -669,6 +657,7 @@ impl Stream {
     /// Bails out without sorting when either source column is missing
     /// (non-metric stream, schema drift) so the caller can write the
     /// batch unchanged.
+    #[hotpath::measure]
     fn sort_batch_for_metric_pruning(
         batch: &RecordBatch,
         time_partition_field: &str,
@@ -750,6 +739,7 @@ impl Stream {
     /// This function reads arrow files, groups their schemas
     ///
     /// converts them into parquet files and returns a merged schema
+    #[hotpath::measure]
     pub fn convert_disk_files_to_parquet(
         &self,
         time_partition: Option<&String>,
@@ -806,7 +796,6 @@ impl Stream {
                 self.cleanup_arrow_files_and_dir(&arrow_files, tenant_id);
             }
         }
-
         if schemas.is_empty() {
             return Ok(None);
         }
@@ -814,6 +803,7 @@ impl Stream {
         Ok(Some(Schema::try_merge(schemas)?))
     }
 
+    #[hotpath::measure]
     fn write_parquet_part_file(
         &self,
         part_path: &Path,
@@ -847,10 +837,11 @@ impl Stream {
             // per-page (metric_name min, max) stats narrow to the slice
             // each page actually carries.
             let target = self.options.row_group_size;
-            let mut buffer: Vec<RecordBatch> = Vec::new();
+            let mut buffer: Vec<RecordBatch> = Vec::with_capacity(record_reader.readers.len());
             let mut buffered_rows: usize = 0;
             for record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
-                buffered_rows += record.num_rows();
+                let record_rows = record.num_rows();
+                buffered_rows += record_rows;
                 buffer.push(record);
                 if buffered_rows >= target {
                     let combined = arrow::compute::concat_batches(schema, &buffer)?;
@@ -886,6 +877,7 @@ impl Stream {
     }
 
     /// function to validate parquet files
+    #[hotpath::measure]
     fn is_valid_parquet_file(path: &Path, stream_name: &str) -> bool {
         // First check file size as a quick validation
         match path.metadata() {
@@ -928,6 +920,7 @@ impl Stream {
         }
     }
 
+    #[hotpath::measure]
     fn cleanup_arrow_files_and_dir(&self, arrow_files: &[PathBuf], tenant_id: &Option<String>) {
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         for (i, file) in arrow_files.iter().enumerate() {
@@ -1311,6 +1304,7 @@ impl Stream {
         skip(self, tenant_id),
         fields(stream_name = %self.stream_name)
     )]
+    #[hotpath::measure]
     pub fn flush_and_convert(
         &self,
         init_signal: bool,
@@ -1481,12 +1475,10 @@ impl Streams {
             for stream in streams {
                 let tenant = tenant_id.clone();
                 let span = info_span!("stream_sync", stream_name = %stream.stream_name);
-                joinset.spawn(
-                    async move {
-                        stream.flush_and_convert(init_signal, shutdown_signal, &Some(tenant))
-                    }
-                    .instrument(span),
-                );
+                joinset.spawn_blocking(move || {
+                    let _guard = span.enter();
+                    stream.flush_and_convert(init_signal, shutdown_signal, &Some(tenant))
+                });
             }
         }
     }

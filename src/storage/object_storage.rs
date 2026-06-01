@@ -1295,6 +1295,12 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
     };
     for tenant_id in tenants {
         for stream_name in PARSEABLE.streams.list(&tenant_id) {
+            if let Ok(stream) = PARSEABLE.get_stream(&stream_name, &tenant_id)
+                && stream.parquet_files().is_empty()
+                && stream.schema_files().is_empty()
+            {
+                continue;
+            }
             let object_store = object_store.clone();
             let id = tenant_id.clone();
             let span = info_span!("stream_upload", stream_name = %stream_name);

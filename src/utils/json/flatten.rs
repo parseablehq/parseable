@@ -63,6 +63,7 @@ pub enum JsonFlattenError {
 
 // Recursively flattens JSON objects and arrays, e.g. with the separator `.`, starting from the TOP
 // `{"key": "value", "nested_key": {"key":"value"}}` becomes `{"key": "value", "nested_key.key": "value"}`
+#[hotpath::measure]
 pub fn flatten(
     nested_value: &mut Value,
     separator: &str,

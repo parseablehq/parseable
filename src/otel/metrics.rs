@@ -640,6 +640,7 @@ fn process_resource_metrics<T, S, M>(
 
 /// this function performs the custom flattening of the otel metrics
 /// and returns a `Vec` of `Value::Object` of the flattened json
+#[hotpath::measure]
 pub fn flatten_otel_metrics(message: MetricsData, tenant_id: &str) -> Vec<Value> {
     process_resource_metrics(
         &message.resource_metrics,

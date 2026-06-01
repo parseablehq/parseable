@@ -90,6 +90,14 @@ tokio = { version = "^1.43", default-features = false, features = [
 tokio-stream = { version = "0.1.17", features = ["fs"] }
 tokio-util = { version = "0.7" }
 
+# perf
+hotpath = { version = "0.16.0", features = [
+    "hotpath",
+    "hotpath-cpu",
+    "hotpath-alloc",
+    "tokio"
+] }
+
 # # Logging and Metrics
 # opentelemetry-proto = { version = "0.30.0", features = [
 #     "gen-tonic",
