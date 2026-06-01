@@ -197,6 +197,7 @@ fn operator_allowlist_matches(
     Ok(domain_allowed || cidrs_allowed)
 }
 
+// reject the whole target if any resolved address is blocked
 fn validate_resolved_addrs(host: &str, addrs: &[SocketAddr]) -> Result<(), OutboundPolicyError> {
     let denied_cidrs = cidrs_from_env("P_ALERT_TARGET_DENIED_CIDRS")?;
     let private_allowed = env_bool("P_ALERT_TARGET_ALLOW_PRIVATE", false);

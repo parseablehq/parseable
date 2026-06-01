@@ -38,6 +38,7 @@ pub async fn post(
 ) -> Result<impl Responder, AlertError> {
     let tenant_id = get_tenant_id_from_request(&req);
     target.tenant = tenant_id;
+    target.target.validate_outbound_policy().await?;
     // should check for duplicacy and liveness (??)
     // add to the map
     TARGETS.update(target.clone()).await?;
