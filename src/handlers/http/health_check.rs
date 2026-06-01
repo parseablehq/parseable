@@ -32,6 +32,7 @@ use once_cell::sync::Lazy;
 use tokio::{sync::Mutex, task::JoinSet};
 use tracing::{error, info};
 
+use crate::sync::shutdown_local_sync_flush_and_convert;
 use crate::utils::get_tenant_id_from_request;
 use crate::{parseable::PARSEABLE, storage::object_storage::sync_all_streams};
 
@@ -84,20 +85,7 @@ async fn perform_sync_operations() {
 }
 
 async fn perform_local_sync() {
-    let mut local_sync_joinset = JoinSet::new();
-
-    // Sync staging
-    PARSEABLE
-        .streams
-        .flush_and_convert(&mut local_sync_joinset, false, true);
-
-    while let Some(res) = local_sync_joinset.join_next().await {
-        match res {
-            Ok(Ok(_)) => info!("Successfully converted arrow files to parquet."),
-            Ok(Err(err)) => error!("Failed to convert arrow files to parquet. {err:?}"),
-            Err(err) => error!("Failed to join async task: {err}"),
-        }
-    }
+    shutdown_local_sync_flush_and_convert().await;
 }
 
 async fn perform_object_store_sync() {

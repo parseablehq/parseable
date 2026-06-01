@@ -35,6 +35,7 @@ use parquet::{
 use relative_path::RelativePathBuf;
 use std::sync::PoisonError;
 use std::{
+    collections::VecDeque,
     collections::{HashMap, HashSet},
     fs::{self, File, OpenOptions, remove_file, write},
     num::NonZeroU32,
@@ -69,6 +70,11 @@ use super::{
 };
 
 const INPROCESS_DIR_PREFIX: &str = "processing_";
+const METRIC_ROW_GROUP_PREP_IN_FLIGHT: usize = 1;
+
+struct PreparedMetricRowGroup {
+    batch: RecordBatch,
+}
 
 /// Returns the filename for parquet if provided arrows file path is valid as per our expectation
 fn arrow_path_to_parquet(
@@ -352,14 +358,13 @@ impl Stream {
         let mut arrow_files = self.arrow_files();
         if !shutdown_signal {
             arrow_files.retain(|path| {
-                let creation = path
-                    .metadata()
+                path.metadata()
                     .ok()
                     .and_then(|meta| meta.created().or_else(|_| meta.modified()).ok())
-                    .expect("Arrow file should have a valid creation or modified time");
-
-                // Compare if creation time is actually from previous minute
-                minute_from_system_time(creation) < minute_from_system_time(exclude)
+                    .is_some_and(|creation| {
+                        // Compare if creation time is actually from previous minute
+                        minute_from_system_time(creation) < minute_from_system_time(exclude)
+                    })
             });
         }
         arrow_files
@@ -551,27 +556,17 @@ impl Stream {
         // Swap out stale writers under the lock, drop them after releasing it.
         // DiskWriter::Drop does I/O (IPC finish + file rename) so dropping
         // outside the lock avoids blocking concurrent push() calls.
-        let stale_writers = {
+        let (mut stale_writers, pending_writes) = {
             let mut writer = self.writer.lock().map_err(|poisoned| {
                 StagingError::PoisonError(PoisonError::new(format!(
                     "Writer lock poisoned while flushing data for stream {} - {}",
                     self.stream_name, poisoned
                 )))
             })?;
-            writer.flush_all_pending_disk(&self.data_path)?;
             writer.mem.clear();
-
-            let mut old_disk = HashMap::new();
-            std::mem::swap(&mut writer.disk, &mut old_disk);
-            if !forced {
-                for (k, v) in old_disk.drain() {
-                    if v.is_current() {
-                        writer.disk.insert(k, v);
-                    }
-                }
-            }
-            old_disk
+            writer.take_flushable_disk(forced)
         };
+        pending_writes.flush_into(&mut stale_writers, &self.data_path)?;
         // DiskWriter::Drop I/O happens here, outside the lock
         drop(stale_writers);
         Ok(())
@@ -697,6 +692,44 @@ impl Stream {
             .map(|c| take(c.as_ref(), &indices, None))
             .collect::<Result<_, _>>()?;
         Ok(RecordBatch::try_new(schema, columns)?)
+    }
+
+    #[hotpath::measure]
+    fn prepare_metric_row_group(
+        schema: Arc<Schema>,
+        buffer: Vec<RecordBatch>,
+        time_partition_field: String,
+    ) -> Result<PreparedMetricRowGroup, StagingError> {
+        let combined = arrow::compute::concat_batches(&schema, &buffer)?;
+        let batch = Self::sort_batch_for_metric_pruning(&combined, &time_partition_field)?;
+
+        Ok(PreparedMetricRowGroup { batch })
+    }
+
+    fn spawn_metric_row_group_prepare(
+        schema: Arc<Schema>,
+        buffer: Vec<RecordBatch>,
+        time_partition_field: String,
+    ) -> std::sync::mpsc::Receiver<Result<PreparedMetricRowGroup, StagingError>> {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        rayon::spawn(move || {
+            let _ = tx.send(Self::prepare_metric_row_group(
+                schema,
+                buffer,
+                time_partition_field,
+            ));
+        });
+        rx
+    }
+
+    fn receive_prepared_metric_row_group(
+        rx: std::sync::mpsc::Receiver<Result<PreparedMetricRowGroup, StagingError>>,
+    ) -> Result<PreparedMetricRowGroup, StagingError> {
+        rx.recv().map_err(|err| {
+            StagingError::ObjectStorage(std::io::Error::other(format!(
+                "Metric row-group preparation worker failed: {err}"
+            )))
+        })?
     }
 
     fn reset_staging_metrics(&self, tenant_id: &Option<String>) {
@@ -837,32 +870,63 @@ impl Stream {
             // per-page (metric_name min, max) stats narrow to the slice
             // each page actually carries.
             let target = self.options.row_group_size;
-            let mut buffer: Vec<RecordBatch> = Vec::with_capacity(record_reader.readers.len());
+            let buffer_capacity = record_reader.readers.len();
+            let mut pending_row_groups = VecDeque::with_capacity(METRIC_ROW_GROUP_PREP_IN_FLIGHT);
+            let mut buffer: Vec<RecordBatch> = Vec::with_capacity(buffer_capacity);
             let mut buffered_rows: usize = 0;
-            for record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
+            let mut merged_iter =
+                record_reader.merged_iter(schema.clone(), time_partition.cloned());
+            loop {
+                let Some(record) = merged_iter.next() else {
+                    break;
+                };
                 let record_rows = record.num_rows();
                 buffered_rows += record_rows;
                 buffer.push(record);
                 if buffered_rows >= target {
-                    let combined = arrow::compute::concat_batches(schema, &buffer)?;
-                    let sorted =
-                        Self::sort_batch_for_metric_pruning(&combined, &time_partition_field)?;
-                    writer.write(&sorted)?;
+                    let row_group_buffer =
+                        std::mem::replace(&mut buffer, Vec::with_capacity(buffer_capacity));
+                    let next_row_group = Self::spawn_metric_row_group_prepare(
+                        schema.clone(),
+                        row_group_buffer,
+                        time_partition_field.clone(),
+                    );
+                    pending_row_groups.push_back(next_row_group);
+                    if pending_row_groups.len() > METRIC_ROW_GROUP_PREP_IN_FLIGHT
+                        && let Some(rx) = pending_row_groups.pop_front()
+                    {
+                        let prepared = Self::receive_prepared_metric_row_group(rx)?;
+                        writer.write(&prepared.batch)?;
+                    }
                     buffer.clear();
                     buffered_rows = 0;
                 }
             }
             if !buffer.is_empty() {
-                let combined = arrow::compute::concat_batches(schema, &buffer)?;
-                let sorted = Self::sort_batch_for_metric_pruning(&combined, &time_partition_field)?;
-                writer.write(&sorted)?;
+                let next_row_group = Self::spawn_metric_row_group_prepare(
+                    schema.clone(),
+                    buffer,
+                    time_partition_field.clone(),
+                );
+                pending_row_groups.push_back(next_row_group);
+                if pending_row_groups.len() > METRIC_ROW_GROUP_PREP_IN_FLIGHT
+                    && let Some(rx) = pending_row_groups.pop_front()
+                {
+                    let prepared = Self::receive_prepared_metric_row_group(rx)?;
+                    writer.write(&prepared.batch)?;
+                }
             }
+            while let Some(rx) = pending_row_groups.pop_front() {
+                let prepared = Self::receive_prepared_metric_row_group(rx)?;
+                writer.write(&prepared.batch)?;
+            }
+            writer.close()?;
         } else {
             for ref record in record_reader.merged_iter(schema.clone(), time_partition.cloned()) {
                 writer.write(record)?;
             }
+            writer.close()?;
         }
-        writer.close()?;
 
         if !Self::is_valid_parquet_file(part_path, &self.stream_name) {
             error!(

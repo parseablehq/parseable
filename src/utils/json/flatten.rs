@@ -78,8 +78,9 @@ pub fn flatten(
                 validate_time_partition(nested_dict, time_partition, time_partition_limit)?;
                 validate_custom_partition(nested_dict, custom_partition)?;
             }
-            let mut map = Map::new();
-            flatten_object(&mut map, None, nested_dict, separator)?;
+            let original = std::mem::take(nested_dict);
+            let mut map = Map::with_capacity(original.len());
+            flatten_object(&mut map, None, original, separator)?;
             *nested_dict = map;
         }
         Value::Array(arr) => {
@@ -222,24 +223,25 @@ pub fn validate_time_partition(
 fn flatten_object(
     output_map: &mut Map<String, Value>,
     parent_key: Option<&str>,
-    nested_map: &mut Map<String, Value>,
+    nested_map: Map<String, Value>,
     separator: &str,
 ) -> Result<(), JsonFlattenError> {
     for (key, mut value) in nested_map {
         let new_key = match parent_key {
             Some(parent) => format!("{parent}{separator}{key}"),
-            None => key.to_string(),
+            None => key,
         };
 
         match &mut value {
             Value::Object(obj) => {
+                let obj = std::mem::take(obj);
                 flatten_object(output_map, Some(&new_key), obj, separator)?;
             }
             Value::Array(arr) if arr.iter().any(Value::is_object) => {
                 flatten_array_objects(output_map, &new_key, arr, separator)?;
             }
             _ => {
-                output_map.insert(new_key, std::mem::take(value));
+                output_map.insert(new_key, value);
             }
         }
     }
@@ -259,6 +261,7 @@ pub fn flatten_array_objects(
         match value {
             Value::Object(nested_object) => {
                 let mut output_map = Map::new();
+                let nested_object = std::mem::take(nested_object);
                 flatten_object(&mut output_map, Some(parent_key), nested_object, separator)?;
                 for (key, value) in output_map {
                     let column = columns

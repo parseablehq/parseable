@@ -15,6 +15,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  *
  */
+use once_cell::sync::Lazy;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::metrics::v1::number_data_point::Value as NumberDataPointValue;
 use opentelemetry_proto::tonic::metrics::v1::{
@@ -24,6 +25,8 @@ use opentelemetry_proto::tonic::metrics::v1::{
 use serde_json::{Map, Value};
 
 use rustc_hash::FxHasher;
+use std::borrow::Cow;
+use std::collections::HashSet;
 use std::hash::Hasher;
 use tracing::info_span;
 
@@ -81,6 +84,9 @@ pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 37] = [
     "__series_hash",
 ];
 
+static OTEL_METRICS_KNOWN_FIELDS: Lazy<HashSet<&'static str>> =
+    Lazy::new(|| OTEL_METRICS_KNOWN_FIELD_LIST.iter().copied().collect());
+
 /// Compute a stable u64 identifier for the physical series a sample
 /// belongs to. Hashes `metric_name` plus every attribute key/value pair
 /// that survived OTel flattening — everything in the flattened data
@@ -91,19 +97,17 @@ pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 37] = [
 /// non-cryptographic) and feeds keys in sorted order so the hash
 /// doesn't depend on JSON Map iteration order.
 fn compute_series_hash(dp: &Map<String, Value>) -> u64 {
-    let known: std::collections::HashSet<&str> =
-        OTEL_METRICS_KNOWN_FIELD_LIST.iter().copied().collect();
-    let mut label_pairs: Vec<(&str, String)> = dp
-        .iter()
-        .filter(|(k, _)| !known.contains(k.as_str()))
-        .map(|(k, v)| {
-            let v_str = match v {
-                Value::String(s) => s.clone(),
-                other => other.to_string(),
-            };
-            (k.as_str(), v_str)
-        })
-        .collect();
+    let mut label_pairs: Vec<(&str, Cow<'_, str>)> = Vec::with_capacity(dp.len());
+    for (key, value) in dp {
+        if OTEL_METRICS_KNOWN_FIELDS.contains(key.as_str()) {
+            continue;
+        }
+        let value = match value {
+            Value::String(s) => Cow::Borrowed(s.as_str()),
+            other => Cow::Owned(other.to_string()),
+        };
+        label_pairs.push((key.as_str(), value));
+    }
     label_pairs.sort_by(|a, b| a.0.cmp(b.0));
 
     let mut hasher = FxHasher::default();
@@ -122,51 +126,42 @@ fn compute_series_hash(dp: &Map<String, Value>) -> u64 {
     hasher.finish()
 }
 
-/// otel metrics event has json array for exemplar
-/// this function flatten the exemplar json array
-/// and returns a `Map` of the exemplar json
-/// this function is reused in all json objects that have exemplar
-fn flatten_exemplar(exemplars: &[Exemplar]) -> Vec<Map<String, Value>> {
-    exemplars
-        .iter()
-        .map(|exemplar| {
-            let mut exemplar_json = Map::new();
-            insert_attributes(&mut exemplar_json, &exemplar.filtered_attributes);
-            exemplar_json.insert(
-                "exemplar_time_unix_nano".to_string(),
-                Value::String(convert_epoch_nano_to_timestamp(
-                    exemplar.time_unix_nano as i64,
-                )),
-            );
-            exemplar_json.insert(
-                "exemplar_span_id".to_string(),
-                Value::String(hex::encode(&exemplar.span_id)),
-            );
-            exemplar_json.insert(
-                "exemplar_trace_id".to_string(),
-                Value::String(hex::encode(&exemplar.trace_id)),
-            );
-            if let Some(value) = &exemplar.value {
-                match value {
-                    ExemplarValue::AsDouble(double_val) => {
-                        exemplar_json.insert(
-                            "exemplar_value".to_string(),
-                            serde_json::Number::from_f64(*double_val)
-                                .map(Value::Number)
-                                .unwrap_or(Value::Null),
-                        );
-                    }
-                    ExemplarValue::AsInt(int_val) => {
-                        exemplar_json.insert(
-                            "exemplar_value".to_string(),
-                            Value::Number(serde_json::Number::from(*int_val)),
-                        );
-                    }
+fn insert_exemplars(map: &mut Map<String, Value>, exemplars: &[Exemplar]) {
+    for exemplar in exemplars {
+        insert_attributes(map, &exemplar.filtered_attributes);
+        map.insert(
+            "exemplar_time_unix_nano".to_string(),
+            Value::String(convert_epoch_nano_to_timestamp(
+                exemplar.time_unix_nano as i64,
+            )),
+        );
+        map.insert(
+            "exemplar_span_id".to_string(),
+            Value::String(hex::encode(&exemplar.span_id)),
+        );
+        map.insert(
+            "exemplar_trace_id".to_string(),
+            Value::String(hex::encode(&exemplar.trace_id)),
+        );
+        if let Some(value) = &exemplar.value {
+            match value {
+                ExemplarValue::AsDouble(double_val) => {
+                    map.insert(
+                        "exemplar_value".to_string(),
+                        serde_json::Number::from_f64(*double_val)
+                            .map(Value::Number)
+                            .unwrap_or(Value::Null),
+                    );
+                }
+                ExemplarValue::AsInt(int_val) => {
+                    map.insert(
+                        "exemplar_value".to_string(),
+                        Value::Number(serde_json::Number::from(*int_val)),
+                    );
                 }
             }
-            exemplar_json
-        })
-        .collect()
+        }
+    }
 }
 
 /// otel metrics event has json array for number data points
@@ -177,7 +172,7 @@ fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<Map<String
     data_points
         .iter()
         .map(|data_point| {
-            let mut data_point_json = Map::new();
+            let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 8);
             insert_attributes(&mut data_point_json, &data_point.attributes);
             data_point_json.insert(
                 "start_time_unix_nano".to_string(),
@@ -192,16 +187,9 @@ fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<Map<String
                 )),
             );
 
-            let exemplar_json = flatten_exemplar(&data_point.exemplars);
-            if !exemplar_json.is_empty() {
-                for exemplar in exemplar_json {
-                    for (key, value) in exemplar {
-                        data_point_json.insert(key, value);
-                    }
-                }
-            }
+            insert_exemplars(&mut data_point_json, &data_point.exemplars);
 
-            data_point_json.extend(flatten_data_point_flags(data_point.flags));
+            insert_data_point_flags(&mut data_point_json, data_point.flags);
             if let Some(value) = &data_point.value {
                 match value {
                     NumberDataPointValue::AsDouble(double_val) => {
@@ -239,11 +227,8 @@ fn flatten_gauge(gauge: &Gauge) -> Vec<Map<String, Value>> {
 /// and returns a `Vec` of `Map` for each data point
 fn flatten_sum(sum: &Sum) -> Vec<Map<String, Value>> {
     let mut data_points = flatten_number_data_points(&sum.data_points);
-    let agg_temp = flatten_aggregation_temporality(sum.aggregation_temporality);
     for dp in &mut data_points {
-        for (k, v) in &agg_temp {
-            dp.insert(k.clone(), v.clone());
-        }
+        insert_aggregation_temporality(dp, sum.aggregation_temporality);
         dp.insert("is_monotonic".to_string(), Value::Bool(sum.is_monotonic));
     }
     data_points
@@ -254,9 +239,9 @@ fn flatten_sum(sum: &Sum) -> Vec<Map<String, Value>> {
 /// this function flatten the histogram json object
 /// and returns a `Vec` of `Map` for each data point
 fn flatten_histogram(histogram: &Histogram) -> Vec<Map<String, Value>> {
-    let mut data_points_json = Vec::new();
+    let mut data_points_json = Vec::with_capacity(histogram.data_points.len());
     for data_point in &histogram.data_points {
-        let mut data_point_json = Map::new();
+        let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 10);
         insert_attributes(&mut data_point_json, &data_point.attributes);
         data_point_json.insert(
             "start_time_unix_nano".to_string(),
@@ -301,28 +286,13 @@ fn flatten_histogram(histogram: &Histogram) -> Vec<Map<String, Value>> {
             "data_point_explicit_bounds".to_string(),
             data_point_explicit_bounds,
         );
-        let exemplar_json = flatten_exemplar(&data_point.exemplars);
-        if !exemplar_json.is_empty() {
-            for exemplar in exemplar_json {
-                for (key, value) in exemplar {
-                    data_point_json.insert(key, value);
-                }
-            }
-        }
+        insert_exemplars(&mut data_point_json, &data_point.exemplars);
 
-        data_point_json.extend(flatten_data_point_flags(data_point.flags));
+        insert_data_point_flags(&mut data_point_json, data_point.flags);
         insert_number_if_some(&mut data_point_json, "min", &data_point.min);
         insert_number_if_some(&mut data_point_json, "max", &data_point.max);
+        insert_aggregation_temporality(&mut data_point_json, histogram.aggregation_temporality);
         data_points_json.push(data_point_json);
-    }
-    let mut histogram_json = Map::new();
-    histogram_json.extend(flatten_aggregation_temporality(
-        histogram.aggregation_temporality,
-    ));
-    for data_point_json in &mut data_points_json {
-        for (key, value) in &histogram_json {
-            data_point_json.insert(key.clone(), value.clone());
-        }
     }
     data_points_json
 }
@@ -331,7 +301,7 @@ fn flatten_histogram(histogram: &Histogram) -> Vec<Map<String, Value>> {
 /// this function flatten the buckets json object
 /// and returns a `Map` of the flattened json
 fn flatten_buckets(bucket: &Buckets) -> Map<String, Value> {
-    let mut bucket_json = Map::new();
+    let mut bucket_json = Map::with_capacity(2);
     bucket_json.insert("offset".to_string(), Value::Number(bucket.offset.into()));
     bucket_json.insert(
         "bucket_count".to_string(),
@@ -351,9 +321,9 @@ fn flatten_buckets(bucket: &Buckets) -> Map<String, Value> {
 /// this function flatten the exponential histogram json object
 /// and returns a `Vec` of `Map` for each data point
 fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<Map<String, Value>> {
-    let mut data_points_json = Vec::new();
+    let mut data_points_json = Vec::with_capacity(exp_histogram.data_points.len());
     for data_point in &exp_histogram.data_points {
-        let mut data_point_json = Map::new();
+        let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 12);
         insert_attributes(&mut data_point_json, &data_point.attributes);
         data_point_json.insert(
             "start_time_unix_nano".to_string(),
@@ -392,25 +362,10 @@ fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<Map<String
                 data_point_json.insert(format!("negative_{key}"), value);
             }
         }
-        let exemplar_json = flatten_exemplar(&data_point.exemplars);
-        if !exemplar_json.is_empty() {
-            for exemplar in exemplar_json {
-                for (key, value) in exemplar {
-                    data_point_json.insert(key, value);
-                }
-            }
-        }
+        insert_exemplars(&mut data_point_json, &data_point.exemplars);
 
+        insert_aggregation_temporality(&mut data_point_json, exp_histogram.aggregation_temporality);
         data_points_json.push(data_point_json);
-    }
-    let mut exp_histogram_json = Map::new();
-    exp_histogram_json.extend(flatten_aggregation_temporality(
-        exp_histogram.aggregation_temporality,
-    ));
-    for data_point_json in &mut data_points_json {
-        for (key, value) in &exp_histogram_json {
-            data_point_json.insert(key.clone(), value.clone());
-        }
     }
     data_points_json
 }
@@ -420,9 +375,9 @@ fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<Map<String
 /// this function flatten the summary json object
 /// and returns a `Vec` of `Map` for each data point
 fn flatten_summary(summary: &Summary) -> Vec<Map<String, Value>> {
-    let mut data_points_json = Vec::new();
+    let mut data_points_json = Vec::with_capacity(summary.data_points.len());
     for data_point in &summary.data_points {
-        let mut data_point_json = Map::new();
+        let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 6);
         insert_attributes(&mut data_point_json, &data_point.attributes);
         data_point_json.insert(
             "start_time_unix_nano".to_string(),
@@ -453,25 +408,20 @@ fn flatten_summary(summary: &Summary) -> Vec<Map<String, Value>> {
                     .quantile_values
                     .iter()
                     .map(|quantile_value| {
-                        Value::Object(
-                            vec![
-                                (
-                                    "quantile",
-                                    serde_json::Number::from_f64(quantile_value.quantile)
-                                        .map(Value::Number)
-                                        .unwrap_or(Value::Null),
-                                ),
-                                (
-                                    "value",
-                                    serde_json::Number::from_f64(quantile_value.value)
-                                        .map(Value::Number)
-                                        .unwrap_or(Value::Null),
-                                ),
-                            ]
-                            .into_iter()
-                            .map(|(k, v)| (k.to_string(), v))
-                            .collect(),
-                        )
+                        let mut quantile_map = Map::with_capacity(2);
+                        quantile_map.insert(
+                            "quantile".to_string(),
+                            serde_json::Number::from_f64(quantile_value.quantile)
+                                .map(Value::Number)
+                                .unwrap_or(Value::Null),
+                        );
+                        quantile_map.insert(
+                            "value".to_string(),
+                            serde_json::Number::from_f64(quantile_value.value)
+                                .map(Value::Number)
+                                .unwrap_or(Value::Null),
+                        );
+                        Value::Object(quantile_map)
                     })
                     .collect(),
             ),
@@ -505,29 +455,25 @@ pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<Map<String, Value>
     let metric_desc = Value::String(metrics_record.description.clone());
     let metric_unit = Value::String(metrics_record.unit.clone());
     let metric_type_val = Value::String(metric_type.to_string());
-    let mut metadata = Map::new();
+    let mut metadata = Map::with_capacity(metrics_record.metadata.len());
     insert_attributes(&mut metadata, &metrics_record.metadata);
 
     if data_points.is_empty() {
-        let mut single = Map::new();
+        let mut single = Map::with_capacity(metadata.len() + 8);
         single.insert("metric_name".to_string(), metric_name);
         single.insert("metric_description".to_string(), metric_desc);
         single.insert("metric_unit".to_string(), metric_unit);
         single.insert("metric_type".to_string(), metric_type_val);
         match &metrics_record.data {
             Some(metric::Data::Sum(sum)) => {
-                single.extend(flatten_aggregation_temporality(sum.aggregation_temporality));
+                insert_aggregation_temporality(&mut single, sum.aggregation_temporality);
                 single.insert("is_monotonic".to_string(), Value::Bool(sum.is_monotonic));
             }
             Some(metric::Data::Histogram(histogram)) => {
-                single.extend(flatten_aggregation_temporality(
-                    histogram.aggregation_temporality,
-                ));
+                insert_aggregation_temporality(&mut single, histogram.aggregation_temporality);
             }
             Some(metric::Data::ExponentialHistogram(exp_histogram)) => {
-                single.extend(flatten_aggregation_temporality(
-                    exp_histogram.aggregation_temporality,
-                ));
+                insert_aggregation_temporality(&mut single, exp_histogram.aggregation_temporality);
             }
             _ => {}
         }
@@ -547,6 +493,17 @@ pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<Map<String, Value>
     }
 
     data_points
+}
+
+fn metric_data_point_count(metric: &Metric) -> usize {
+    match &metric.data {
+        Some(metric::Data::Gauge(gauge)) => gauge.data_points.len(),
+        Some(metric::Data::Sum(sum)) => sum.data_points.len(),
+        Some(metric::Data::Histogram(histogram)) => histogram.data_points.len(),
+        Some(metric::Data::ExponentialHistogram(exp_histogram)) => exp_histogram.data_points.len(),
+        Some(metric::Data::Summary(summary)) => summary.data_points.len(),
+        None => 0,
+    }
 }
 
 /// Common function to process resource metrics and merge resource-level fields
@@ -571,7 +528,12 @@ fn process_resource_metrics<T, S, M>(
 
     for resource_metric in resource_metrics {
         // Build resource-level fields once per resource
-        let mut resource_fields = Map::new();
+        let mut resource_fields = Map::with_capacity(
+            get_resource(resource_metric)
+                .map(|resource| resource.attributes.len())
+                .unwrap_or_default()
+                + 2,
+        );
         if let Some(resource) = get_resource(resource_metric) {
             insert_attributes(&mut resource_fields, &resource.attributes);
             resource_fields.insert(
@@ -606,6 +568,12 @@ fn process_resource_metrics<T, S, M>(
             );
 
             let metrics = get_metrics(scope_metric);
+            vec_otel_json.reserve(
+                metrics
+                    .iter()
+                    .map(|metric| metric_data_point_count(get_metric(metric)).max(1))
+                    .sum::<usize>(),
+            );
             let date = chrono::Utc::now().date_naive().to_string();
             increment_metrics_collected_by_date(metrics.len() as u64, &date, tenant_id);
 
@@ -683,13 +651,8 @@ pub fn flatten_otel_metrics_protobuf(
     result
 }
 
-/// otel metrics event has json object for aggregation temporality
-/// there is a mapping of aggregation temporality to its description provided in proto
-/// this function fetches the description from the aggregation temporality
-/// and adds it to the flattened json
-fn flatten_aggregation_temporality(aggregation_temporality: i32) -> Map<String, Value> {
-    let mut aggregation_temporality_json = Map::new();
-    aggregation_temporality_json.insert(
+fn insert_aggregation_temporality(map: &mut Map<String, Value>, aggregation_temporality: i32) {
+    map.insert(
         "aggregation_temporality".to_string(),
         Value::Number(aggregation_temporality.into()),
     );
@@ -699,27 +662,23 @@ fn flatten_aggregation_temporality(aggregation_temporality: i32) -> Map<String, 
         2 => "CUMULATIVE",
         _ => "",
     };
-    aggregation_temporality_json.insert(
+    map.insert(
         "aggregation_temporality_description".to_string(),
         Value::String(description.to_string()),
     );
-
-    aggregation_temporality_json
 }
 
-fn flatten_data_point_flags(flags: u32) -> Map<String, Value> {
-    let mut data_point_flags_json = Map::new();
-    data_point_flags_json.insert("data_point_flags".to_string(), Value::Number(flags.into()));
+fn insert_data_point_flags(map: &mut Map<String, Value>, flags: u32) {
+    map.insert("data_point_flags".to_string(), Value::Number(flags.into()));
     let description = match flags {
         0 => "DO_NOT_USE",
         1 => "NO_RECORDED_VALUE_MASK",
         _ => "",
     };
-    data_point_flags_json.insert(
+    map.insert(
         "data_point_flags_description".to_string(),
         Value::String(description.to_string()),
     );
-    data_point_flags_json
 }
 
 #[cfg(test)]
