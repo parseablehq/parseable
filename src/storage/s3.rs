@@ -69,6 +69,9 @@ use super::{
 // in bytes
 // const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
 const AWS_CONTAINER_CREDENTIALS_RELATIVE_URI: &str = "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI";
+const AWS_WEB_IDENTITY_TOKEN_FILE: &str = "AWS_WEB_IDENTITY_TOKEN_FILE";
+const AWS_ROLE_ARN: &str = "AWS_ROLE_ARN";
+const AWS_ROLE_SESSION_NAME: &str = "AWS_ROLE_SESSION_NAME";
 
 #[derive(Debug, Clone, clap::Args)]
 #[command(
@@ -261,12 +264,35 @@ impl S3Config {
             builder = builder.with_checksum_algorithm(Checksum::SHA256)
         }
 
+        assert!(
+            self.access_key_id.is_some() == self.secret_key.is_some(),
+            "P_S3_ACCESS_KEY and P_S3_SECRET_KEY must be set together"
+        );
+
         if let Some((access_key, secret_key)) =
             self.access_key_id.as_ref().zip(self.secret_key.as_ref())
         {
             builder = builder
                 .with_access_key_id(access_key)
                 .with_secret_access_key(secret_key);
+        } else {
+            let token_file = std::env::var(AWS_WEB_IDENTITY_TOKEN_FILE).ok();
+            let role_arn = std::env::var(AWS_ROLE_ARN).ok();
+
+            assert!(
+                token_file.is_some() == role_arn.is_some(),
+                "{AWS_WEB_IDENTITY_TOKEN_FILE} and {AWS_ROLE_ARN} must be set together"
+            );
+
+            if let Some((token_file, role_arn)) = token_file.zip(role_arn) {
+                builder = builder
+                    .with_config(AmazonS3ConfigKey::WebIdentityTokenFile, token_file)
+                    .with_config(AmazonS3ConfigKey::RoleArn, role_arn);
+
+                if let Ok(session_name) = std::env::var(AWS_ROLE_SESSION_NAME) {
+                    builder = builder.with_config(AmazonS3ConfigKey::RoleSessionName, session_name);
+                }
+            }
         }
 
         if let Some(ssec_encryption_key) = &self.ssec_encryption_key {
