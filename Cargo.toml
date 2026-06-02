@@ -86,7 +86,9 @@ tokio = { version = "^1.43", default-features = false, features = [
     "macros",
     "fs",
     "rt-multi-thread",
+    "net"
 ] }
+ipnet = "2"
 tokio-stream = { version = "0.1.17", features = ["fs"] }
 tokio-util = { version = "0.7" }
 

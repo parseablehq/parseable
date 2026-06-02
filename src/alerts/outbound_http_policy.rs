@@ -1,5 +1,6 @@
 use http::{HeaderMap, HeaderValue, header::HeaderName};
 use ipnet::IpNet;
+use once_cell::sync::Lazy;
 use reqwest::ClientBuilder;
 use std::{
     collections::HashMap,
@@ -7,6 +8,7 @@ use std::{
     time::Duration,
 };
 use tokio::net::lookup_host;
+use tokio::sync::RwLock;
 use url::Url;
 
 #[derive(Debug, Clone, Copy)]
@@ -14,6 +16,66 @@ pub enum AlertTargetKind {
     Slack,
     Webhook,
     AlertManager,
+}
+
+// policy for alert-target egress
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AlertTargetPolicyConfig {
+    pub allow_private: bool,
+    pub allowed_domains: Vec<String>,
+    pub allowed_cidrs: Vec<String>,
+    pub denied_domains: Vec<String>,
+    pub denied_cidrs: Vec<String>,
+    pub allow_invalid_tls: bool,
+}
+
+impl Default for AlertTargetPolicyConfig {
+    fn default() -> Self {
+        Self {
+            allow_private: false,
+            allowed_domains: vec![],
+            allowed_cidrs: vec![],
+            denied_domains: vec![],
+            denied_cidrs: vec![],
+            allow_invalid_tls: false,
+        }
+    }
+}
+
+pub static ALERT_TARGET_POLICY: Lazy<RwLock<AlertTargetPolicyConfig>> =
+    Lazy::new(|| RwLock::new(AlertTargetPolicyConfig::default()));
+
+// Read one policy snapshot per validation
+pub async fn active_policy() -> AlertTargetPolicyConfig {
+    ALERT_TARGET_POLICY.read().await.clone()
+}
+
+// Replace atomically only after validation
+pub async fn replace_policy(policy: AlertTargetPolicyConfig) -> Result<(), OutboundPolicyError> {
+    validate_policy(&policy)?;
+    *ALERT_TARGET_POLICY.write().await = policy;
+    Ok(())
+}
+
+// Validate admin-supplied policy before it is stored or used for target checks.
+pub fn validate_policy(policy: &AlertTargetPolicyConfig) -> Result<(), OutboundPolicyError> {
+    parse_cidrs(&policy.allowed_cidrs)?;
+    parse_cidrs(&policy.denied_cidrs)?;
+    Ok(())
+}
+
+fn parse_cidrs(values: &[String]) -> Result<Vec<IpNet>, OutboundPolicyError> {
+    values
+        .iter()
+        .map(|val| {
+            val.parse::<IpNet>()
+                .map_err(|source| OutboundPolicyError::InvalidCidr {
+                    value: val.clone(),
+                    source,
+                })
+        })
+        .collect()
 }
 
 pub struct PreparedAlertTarget {
@@ -49,7 +111,7 @@ pub enum OutboundPolicyError {
     #[error("target domain is denied by outbound policy: {0}")]
     DeniedDomain(String),
 
-    #[error("private target requires P_ALERT_TARGET_ALLOW_PRIVATE=true and an allowlist match:{0}")]
+    #[error("private target requires allowPrivate=true and an allowlist match:{0}")]
     PrivateAddressNotAllowed(IpAddr),
 
     #[error("invalid outbound policy CIDR{value}:{source}")]
@@ -71,8 +133,8 @@ pub enum OutboundPolicyError {
     InvalidSlackHost(String),
 }
 
-// All Alert-target outbound networking must enter here
-// Policy authorizes the resolved destination, then pins exact DNS result into reqwest
+// All alert-target outbound networking must enter here.
+// The policy authorizes the resolved destination, then pins that exact DNS result into reqwest
 pub async fn prepare_alert_target(
     endpoint: &Url,
     kind: AlertTargetKind,
@@ -80,18 +142,19 @@ pub async fn prepare_alert_target(
     headers: Option<&HashMap<String, String>>,
 ) -> Result<PreparedAlertTarget, OutboundPolicyError> {
     validate_scheme(endpoint, kind)?;
-    validate_tls_policy(kind, skip_tls_check)?;
+    let policy = active_policy().await;
+    validate_tls_policy(kind, skip_tls_check, &policy)?;
     let host = endpoint
         .host_str()
         .ok_or(OutboundPolicyError::MissingHost)?
         .to_string();
-    validate_domain_policy(&host, kind)?;
+    validate_domain_policy(&host, kind, &policy)?;
     let port = endpoint
         .port_or_known_default()
         .ok_or_else(|| OutboundPolicyError::UnsupportedScheme(endpoint.scheme().to_string()))?;
     let resolved_addrs = resolve_endpoint_addrs(&host, port).await?;
-    validate_resolved_addrs(&host, &resolved_addrs)?;
-    let authorization_allowed = operator_allowlist_matches(&host, &resolved_addrs)?;
+    validate_resolved_addrs(&host, &resolved_addrs, &policy)?;
+    let authorization_allowed = operator_allowlist_matches(&host, &resolved_addrs, &policy)?;
     let validated_headers = validate_header(headers, authorization_allowed)?;
     let mut builder = default_client_builder()
         .redirect(reqwest::redirect::Policy::none())
@@ -109,7 +172,7 @@ pub async fn prepare_alert_target(
     })
 }
 
-// create http client with timeouts to prevent resource exhaustion
+// Keep alert delivery bounded so a slow or stuck target cannot hold workers forever.
 fn default_client_builder() -> ClientBuilder {
     ClientBuilder::new()
         .connect_timeout(Duration::from_secs(3))
@@ -120,10 +183,8 @@ fn default_client_builder() -> ClientBuilder {
         .http1_only()
 }
 
-// We Only Accept http & https scheme
 fn validate_scheme(endpoint: &Url, kind: AlertTargetKind) -> Result<(), OutboundPolicyError> {
     match (kind, endpoint.scheme()) {
-        // for slack we must use https
         (AlertTargetKind::Slack, "https") => Ok(()),
         (AlertTargetKind::Slack, _) => Err(OutboundPolicyError::SlackRequiresHttps),
         (_, "http" | "https") => Ok(()),
@@ -134,24 +195,29 @@ fn validate_scheme(endpoint: &Url, kind: AlertTargetKind) -> Result<(), Outbound
 fn validate_tls_policy(
     kind: AlertTargetKind,
     skip_tls_check: bool,
+    policy: &AlertTargetPolicyConfig,
 ) -> Result<(), OutboundPolicyError> {
-    // for slack we must ensure tls is enabled
+    // Slack webhooks are always HTTPS-only; do not let per-target config weaken that.
     if matches!(kind, AlertTargetKind::Slack) && skip_tls_check {
         return Err(OutboundPolicyError::InvalidTlsDisabled);
     }
-    // both tls flags need to align
-    if skip_tls_check && !env_bool("P_ALERT_TARGET_ALLOW_INVALID_TLS", false) {
+    // Invalid TLS is a deployment-level exception, not a user-controlled toggle.
+    if skip_tls_check && !policy.allow_invalid_tls {
         return Err(OutboundPolicyError::InvalidTlsDisabled);
     }
     Ok(())
 }
 
-fn validate_domain_policy(host: &str, kind: AlertTargetKind) -> Result<(), OutboundPolicyError> {
-    // block explicitly denied domains
-    if matches_domain_list(host, "P_ALERT_TARGET_DENIED_DOMAINS") {
+fn validate_domain_policy(
+    host: &str,
+    kind: AlertTargetKind,
+    policy: &AlertTargetPolicyConfig,
+) -> Result<(), OutboundPolicyError> {
+    // Denied domains win before DNS resolution, which avoids needless egress.
+    if matches_domain_list(host, &policy.denied_domains) {
         return Err(OutboundPolicyError::DeniedDomain(host.to_string()));
     }
-    // slack target restricted to official webhook domains only
+    // Slack targets are not generic webhooks; keep them pinned to Slack-owned hosts.
     if matches!(kind, AlertTargetKind::Slack)
         && host != "hooks.slack.com"
         && host != "hooks.slack-gov.com"
@@ -161,16 +227,13 @@ fn validate_domain_policy(host: &str, kind: AlertTargetKind) -> Result<(), Outbo
     Ok(())
 }
 
-// resolve hostname to ip
 async fn resolve_endpoint_addrs(
     host: &str,
     port: u16,
 ) -> Result<Vec<SocketAddr>, OutboundPolicyError> {
-    // if host is ip, create socket directly
     if let Ok(ip) = host.parse::<IpAddr>() {
         return Ok(vec![SocketAddr::new(ip, port)]);
     }
-    // perform async dns resolution
     let addrs = lookup_host((host, port))
         .await
         .map_err(|source| OutboundPolicyError::ResolveFailed {
@@ -178,38 +241,41 @@ async fn resolve_endpoint_addrs(
             source,
         })?
         .collect::<Vec<_>>();
-    // fail if no address found
     if addrs.is_empty() {
         return Err(OutboundPolicyError::NoResolvedAddresses(host.to_string()));
     }
     Ok(addrs)
 }
-// check if target is explicitly allowlisted for private address access
+
+// Private/internal targets must match admin-owned allowlists before they may be used.
 fn operator_allowlist_matches(
     host: &str,
     addrs: &[SocketAddr],
+    policy: &AlertTargetPolicyConfig,
 ) -> Result<bool, OutboundPolicyError> {
-    let allowed_cidrs = cidrs_from_env("P_ALERT_TARGET_ALLOWED_CIDRS")?;
-    let domain_allowed = matches_domain_list(host, "P_ALERT_TARGET_ALLOWED_DOMAINS");
+    let allowed_cidrs = parse_cidrs(&policy.allowed_cidrs)?;
+    let domain_allowed = matches_domain_list(host, &policy.allowed_domains);
     let cidrs_allowed = addrs
         .iter()
         .any(|addr| allowed_cidrs.iter().any(|cidr| cidr.contains(&addr.ip())));
     Ok(domain_allowed || cidrs_allowed)
 }
 
-// reject the whole target if any resolved address is blocked
-fn validate_resolved_addrs(host: &str, addrs: &[SocketAddr]) -> Result<(), OutboundPolicyError> {
-    let denied_cidrs = cidrs_from_env("P_ALERT_TARGET_DENIED_CIDRS")?;
-    let private_allowed = env_bool("P_ALERT_TARGET_ALLOW_PRIVATE", false);
-    let explicitly_allowlisted = operator_allowlist_matches(host, addrs)?;
+// Fail closed for multi-address DNS responses. If any resolved address is
+// denied or non-public without an allowlist match, reject the target.
+fn validate_resolved_addrs(
+    host: &str,
+    addrs: &[SocketAddr],
+    policy: &AlertTargetPolicyConfig,
+) -> Result<(), OutboundPolicyError> {
+    let denied_cidrs = parse_cidrs(&policy.denied_cidrs)?;
+    let explicitly_allowlisted = operator_allowlist_matches(host, addrs, policy)?;
     for addr in addrs {
         let ip = addr.ip();
-        // deny ip addr which  fall in the cidr range
         if denied_cidrs.iter().any(|cidr| cidr.contains(&ip)) {
             return Err(OutboundPolicyError::DeniedAddress(ip));
         }
-        // Private addresses require explicit opt-in plus allowlist match
-        if builtin_denied_ip(ip) && !(private_allowed && explicitly_allowlisted) {
+        if builtin_denied_ip(ip) && !(policy.allow_private && explicitly_allowlisted) {
             return Err(OutboundPolicyError::PrivateAddressNotAllowed(ip));
         }
     }
@@ -217,7 +283,6 @@ fn validate_resolved_addrs(host: &str, addrs: &[SocketAddr]) -> Result<(), Outbo
 }
 
 fn builtin_denied_ip(ip: IpAddr) -> bool {
-    // route to appropriate ip validation
     match ip {
         IpAddr::V4(ip) => denied_ipv4(ip),
         IpAddr::V6(ip) => denied_ipv6(ip),
@@ -225,7 +290,7 @@ fn builtin_denied_ip(ip: IpAddr) -> bool {
 }
 
 fn denied_ipv4(ip: Ipv4Addr) -> bool {
-    // Check against RFC-defined special-use IPv4 address ranges
+    // Covers private, loopback, link-local, multicast, carrier NAT, and reserved ranges.
     ip.is_unspecified()
         || ip.is_loopback()
         || ip.is_private()
@@ -237,7 +302,7 @@ fn denied_ipv4(ip: Ipv4Addr) -> bool {
 }
 
 fn denied_ipv6(ip: Ipv6Addr) -> bool {
-    // Check against RFC-defined special-use IPv6 address ranges
+    // Covers loopback, link-local, unique-local, multicast, and mapped IPv4 ranges.
     if ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() {
         return true;
     }
@@ -265,7 +330,7 @@ fn validate_header(
     };
     for (name, value) in headers {
         let normalized = name.to_ascii_lowercase();
-        // Block headers that can bypass security controls or proxy behavior
+        // Block headers that can bypass connection policy or smuggle credentials.
         if denied_header(&normalized, authorization_allowed) {
             return Err(OutboundPolicyError::DeniedHeader(name.clone()));
         }
@@ -280,7 +345,7 @@ fn validate_header(
 }
 
 fn denied_header(name: &str, authorization_allowed: bool) -> bool {
-    // These headers are always blocked because they control connection routing or proxy behavior
+    // These headers are always blocked because they control routing or proxy behavior.
     let always_denied = matches!(
         name,
         "host"
@@ -293,47 +358,16 @@ fn denied_header(name: &str, authorization_allowed: bool) -> bool {
             | "cookie"
     );
 
-    // Authorization header is only allowed for explicitly allowlisted destinations.
+    // Authorization is allowed only after the destination matches admin policy.
     let authorization_denied = name == "authorization" && !authorization_allowed;
     always_denied || authorization_denied
 }
 
-// parse cidr blocks from env for ip allowlist/denylist
-fn cidrs_from_env(name: &str) -> Result<Vec<IpNet>, OutboundPolicyError> {
-    env_list(name)
-        .into_iter()
-        .map(|value| {
-            value
-                .parse::<IpNet>()
-                .map_err(|source| OutboundPolicyError::InvalidCidr { value, source })
-        })
-        .collect()
-}
-
-// check if host matches allowed domain,supporting subdomain
-fn matches_domain_list(host: &str, env_name: &str) -> bool {
+// Domain entries match the exact host and its subdomains.
+fn matches_domain_list(host: &str, domains: &[String]) -> bool {
     let host = host.trim_end_matches('.').to_ascii_lowercase();
-    env_list(env_name).into_iter().any(|domain| {
+    domains.iter().any(|domain| {
         let domain = domain.trim_end_matches('.').to_ascii_lowercase();
         host == domain || host.ends_with(&format!(".{domain}"))
     })
-}
-
-// read comma-seperated values from env for config parsing
-fn env_list(name: &str) -> Vec<String> {
-    std::env::var(name)
-        .unwrap_or_default()
-        .split(',')
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-// read bool values from env
-fn env_bool(name: &str, default: bool) -> bool {
-    std::env::var(name)
-        .ok()
-        .and_then(|value| value.parse::<bool>().ok())
-        .unwrap_or(default)
 }

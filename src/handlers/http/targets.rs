@@ -92,6 +92,7 @@ pub async fn update(
     // esnure that the supplied target id is assigned to the target config
     target.id = target_id;
     target.tenant = tenant_id;
+    target.target.validate_outbound_policy().await?;
     // should check for duplicacy and liveness (??)
     // add to the map
     TARGETS.update(target.clone()).await?;
