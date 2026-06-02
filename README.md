@@ -6,73 +6,50 @@
     </picture>
 </h2>
 
-<div align="center">
+<div class="title-block" style="text-align: center;" align="center">
 
-[![Docker Pulls](https://img.shields.io/docker/pulls/parseable/parseable?logo=docker&label=Docker%20Pulls)](https://hub.docker.com/r/parseable/parseable)
 [![Slack](https://img.shields.io/badge/slack-brightgreen.svg?logo=slack&label=Community&style=flat&color=%2373DC8C&)](https://logg.ing/community)
 [![Docs](https://img.shields.io/badge/stable%20docs-parseable.com%2Fdocs-brightgreen?style=flat&color=%2373DC8C&label=Docs)](https://logg.ing/docs)
-[![Build](https://img.shields.io/github/checks-status/parseablehq/parseable/main?style=flat&color=%2373DC8C&label=Checks)](https://github.com/parseablehq/parseable/actions)
+[![Build](https://img.shields.io/github/checks-status/parseablehq/parseable/main?style=flat&color=%2373DC8C&label=Build)](https://github.com/parseablehq/parseable/actions)
 
-[Key Concepts](https://www.parseable.com/docs/key-concepts) | [Features](https://www.parseable.com/docs/features/alerts) | [Documentation](https://www.parseable.com/docs) | [Demo](https://app.parseable.com) | [FAQ](https://www.parseable.com/docs/key-concepts/data-model#faq)
+**[Introduction](https://www.parseable.com/docs/introduction) &nbsp;&nbsp;&bull;&nbsp;&nbsp;**
+**[Docs](https://parseable.com/docs) &nbsp;&nbsp;&bull;&nbsp;&nbsp;**
+**[Features](https://www.parseable.com/docs/features) &nbsp;&nbsp;&bull;&nbsp;&nbsp;**
+**[Benchmarks](https://www.parseable.com/docs/benchmarks) &nbsp;&nbsp;&nbsp;&nbsp;**
 
 </div>
 
-Parseable is a full-stack observability platform built to ingest, analyze and extract insights from all types of telemetry (MELT) data. You can run Parseable on your local machine, in the cloud, or use [Parseable Cloud](https://app.parseable.com) — the fully managed service. To experience Parseable UI, checkout [app.parseable.com ↗︎](https://app.parseable.com).
+Parseable is an open source, columnar data lake platform - purpose built for observability. Send logs, metrics & traces to Parseable via popular logging agents, OpenTelemetry, Kafka, eBPF or other integrations. Use native observability features like alerting, dashboards, anomaly detection, APM, PromQL & SQL - all within a single binary.
 
-<div align="center">
-<h3>
-  <a href="https://app.parseable.com">Try Parseable Cloud — Start Free ↗︎</a>
-</h3>
-<p><i>The fastest way to get started. No infrastructure to manage.</i></p>
-</div>
+## Why Parseable?
 
-<div align="center">
-  <a href="http://www.youtube.com/watch?feature=player_embedded&v=gYn3pFAfrVA" target="_blank">
-  <img src="http://img.youtube.com/vi/gYn3pFAfrVA/mqdefault.jpg" alt="Watch the video" width="300" height="240" />
-  </a>
-</div>
+Purpose built for observability and designed around proven data lake engineering patterns, Parseable gives you everything you need to make sense of your telemetry data, right out of the box, with no external dependencies or stitching together of multiple tools.
 
-## Quickstart :zap:
+Some of the key highlights include:
 
-### Run Parseable
+- [Data lake architecture](https://www.parseable.com/docs/architecture): Parseable Data lake architecture allows running stateless compute with object storage as the backing storage. This allows scaling storage and compute independently, and avoids the pitfalls of traditional observability systems.
 
-<details>
-<summary><a href="https://www.parseable.com/docs/quickstart/docker">Docker Image</a></summary>
-<p>
+- [Fully featured](https://www.parseable.com/docs/features): Parseable is feature complete with alerting, dashboards, anomaly detection, APM, and more. You can do all of this and more from a single binary, without needing to stitch together multiple tools.
 
-Get started with Parseable Docker image with a single command:
+- [Agent ready](https://www.parseable.com/docs/integrations#ai-agents--llms): Whether you need to observe your AI agents or use LLMs to analyze your telemetry data, Parseable has you covered with native support for AI agents and LLMs.
 
-```bash
-docker run -p 8000:8000 \
-  parseable/parseable:latest \
-  parseable local-store
-```
+- [OpenTelemetry native](https://www.parseable.com/docs/ingest-data/otel): With native OTel support, you can send telemetry data to Parseable without any custom modifications or plugins. Parseable can be used as a drop-in replacement for your existing OpenTelemetry Collector setup.
 
-</p>
-</details>
-
-<details>
-<summary><a href="https://www.parseable.com/docs/quickstart/binary">Executable Binary</a></summary>
-<p>
+## Quickstart
 
 Download and run the Parseable binary on your laptop:
-
-- Linux or MacOS
 
 ```bash
 curl -fsSL https://logg.ing/install | bash
 ```
 
-- Windows
+<details> 
+<summary>For Windows</summary>
 
 ```pwsh
 powershell -c "irm https://logg.ing/install-windows | iex"
 ```
-
-</p>
 </details>
-
-### Ingestion and query
 
 Once you have Parseable running, ingest data with the below command. This will send logs to the `demo` stream. You can see the logs in the dashboard.
 
@@ -90,47 +67,23 @@ curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
 ]'
 ```
 
-Access the UI at [http://localhost:8000 ↗︎](http://localhost:8000). You can login to the dashboard default credentials `admin`, `admin`.
+Access the UI at http://localhost:8000. You can login to the dashboard default credentials `admin`, `admin`.
 
-## Getting started :bulb:
+For production deployments, refer the [installation guide ↗︎](https://www.parseable.com/docs/self-hosted/installation) for best practices and hardening tips.
 
-For quickstart, refer the [quickstart section ↗︎](#quickstart-zap).
+> [!TIP]
+> Try out the [Parseable cloud](https://app.parseable.com) — 14 days free trial, no credit card required.
 
-This section elaborates available options to run Parseable in production or development environments.
+## Contributing
 
-- Distributed Parseable on Kubernetes: [Helm Installation](https://www.parseable.com/docs/installation/distributed/k8s-helm).
-- Distributed Parseable on AWS EC2 / VMs / Linux: [Binary Installation](https://www.parseable.com/docs/installation/distributed/linux).
+<a href="https://github.com/parseablehq/parseable/graphs/contributors"><img src="https://contrib.rocks/image?repo=parseablehq/parseable" alt="Contributors" /></a>
 
-## Features :rocket:
+[Contribution guide ↗︎](https://github.com/parseablehq/parseable/blob/main/CONTRIBUTING.md)
 
-- [High availability & Cluster mode ↗︎](https://www.parseable.com/docs/key-concepts/high-availability)
-- [Smart cache ↗︎](https://www.parseable.com/docs/features/smart-cache)
-- [Alerts ↗︎](https://www.parseable.com/docs/features/alerts)
-- [Role based access control ↗︎](https://www.parseable.com/docs/features/rbac)
-- [OAuth2 support ↗︎](https://www.parseable.com/docs/features/oepnid)
-- [OpenTelemetry support ↗︎](https://www.parseable.com/docs/OpenTelemetry/logs)
-
-## Adopters :handshake:
-
-Organizations using Parseable in production. [Add yours here](https://github.com/parseablehq/parseable/issues/new?template=add-adopter.yml) — no fork needed!
-
-<!-- ADOPTERS:START -->
-| Organization | Description of Use |
-| --- | --- |
-| [HireXL](https://www.hirexl.in/) | Frontend application logging |
-| [Elfsquad](https://elfsquad.io) | Centralized application/infrastructure logging |
-<!-- ADOPTERS:END -->
-
-## Verify images :writing_hand:
+## Verify images
 
 Parseable builds are attested for build provenance and integrity using the [attest-build-provenance](https://github.com/actions/attest-build-provenance) action. The attestations can be verified by having the latest version of [GitHub CLI](https://github.com/cli/cli/releases/latest) installed in your system. Then, execute the following command:
 
 ```sh
 gh attestation verify PATH/TO/YOUR/PARSEABLE/ARTIFACT-BINARY -R parseablehq/parseable
 ```
-
-## Contributing :trophy:
-
-<a href="https://github.com/parseablehq/parseable/graphs/contributors"><img src="https://contrib.rocks/image?repo=parseablehq/parseable" /></a>
-
-[Contribution guide ↗︎](https://github.com/parseablehq/parseable/blob/main/CONTRIBUTING.md)
