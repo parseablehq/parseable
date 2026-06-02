@@ -18,6 +18,8 @@
 
 use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeDelta, TimeZone, Timelike, Utc};
 
+pub const DATE_BIN_EPOCH_ANCHOR: &str = "1970-01-01 00:00:00+00";
+
 #[derive(Debug, thiserror::Error)]
 pub enum TimeParseError {
     #[error("Parsing humantime")]
@@ -53,6 +55,69 @@ impl TimeBounds {
 pub struct TimeRange {
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
+}
+
+pub fn count_api_bin_interval(start: &DateTime<Utc>, end: &DateTime<Utc>) -> &'static str {
+    let dur = end.signed_duration_since(*start);
+
+    if dur.num_minutes() <= 60 * 5 {
+        "1m"
+    } else if dur.num_minutes() <= 60 * 24 {
+        "5m"
+    } else if dur.num_minutes() < 60 * 24 * 10 {
+        "1h"
+    } else {
+        "1d"
+    }
+}
+
+pub fn interval_for_num_bins(start: &DateTime<Utc>, end: &DateTime<Utc>, num_bins: u64) -> String {
+    let total_seconds = end.signed_duration_since(*start).num_seconds().max(1) as u64;
+    let bin_seconds = (total_seconds / num_bins).max(1);
+    format!("{bin_seconds} seconds")
+}
+
+pub fn expected_time_bins(time_range: &TimeRange, num_bins: u64) -> Vec<(String, String)> {
+    let total_seconds = time_range
+        .end
+        .signed_duration_since(time_range.start)
+        .num_seconds()
+        .max(1) as u64;
+    let bin_seconds = (total_seconds / num_bins).max(1);
+
+    (0..num_bins)
+        .map(|i| {
+            let bin_start = time_range.start + chrono::Duration::seconds((i * bin_seconds) as i64);
+            let bin_end = if i == num_bins - 1 {
+                time_range.end
+            } else {
+                time_range.start + chrono::Duration::seconds(((i + 1) * bin_seconds) as i64)
+            };
+            (bin_start.to_rfc3339(), bin_end.to_rfc3339())
+        })
+        .collect()
+}
+
+pub fn match_time_bin_key(sql_bin_start: &str, expected_bins: &[(String, String)]) -> String {
+    let normalized = if !sql_bin_start.contains('+') && !sql_bin_start.ends_with('Z') {
+        format!("{sql_bin_start}+00:00")
+    } else {
+        sql_bin_start.to_string()
+    };
+
+    if let Ok(sql_ts) = DateTime::parse_from_rfc3339(&normalized) {
+        let sql_ts = sql_ts.with_timezone(&Utc);
+        for (bs, _) in expected_bins {
+            if let Ok(expected_ts) = DateTime::parse_from_rfc3339(bs) {
+                let expected_ts = expected_ts.with_timezone(&Utc);
+                if (sql_ts - expected_ts).num_seconds().abs() <= 1 {
+                    return bs.clone();
+                }
+            }
+        }
+    }
+
+    sql_bin_start.to_string()
 }
 
 impl TimeRange {

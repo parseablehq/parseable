@@ -73,7 +73,7 @@ use crate::metrics::increment_bytes_scanned_in_query_by_date;
 use crate::option::Mode;
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
 use crate::storage::{ObjectStorageProvider, ObjectStoreFormat};
-use crate::utils::time::TimeRange;
+use crate::utils::time::{DATE_BIN_EPOCH_ANCHOR, TimeRange, count_api_bin_interval};
 
 /// Boxed record-batch stream used as the streaming half of query results.
 type BoxedBatchStream = SendableRecordBatchStream;
@@ -638,32 +638,13 @@ impl CountsRequest {
 
         let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
 
-        let dur = time_range.end.signed_duration_since(time_range.start);
-
         let table_name = &self.stream;
         let start_time_col_name = "_bin_start_time_";
         let end_time_col_name = "_bin_end_time_";
-        let date_bin = if dur.num_minutes() <= 60 * 5 {
-            // less than 5 hour = 1 min bin
-            format!(
-                "CAST(DATE_BIN('1m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('1m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1m' as {end_time_col_name}"
-            )
-        } else if dur.num_minutes() <= 60 * 24 {
-            // 1 day = 5 min bin
-            format!(
-                "CAST(DATE_BIN('5m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('5m', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '5m' as {end_time_col_name}"
-            )
-        } else if dur.num_minutes() < 60 * 24 * 10 {
-            // 10 days = 1 hour bin
-            format!(
-                "CAST(DATE_BIN('1h', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('1h', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1h' as {end_time_col_name}"
-            )
-        } else {
-            // 1 day
-            format!(
-                "CAST(DATE_BIN('1d', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') AS TEXT) as {start_time_col_name}, DATE_BIN('1d', \"{table_name}\".\"{time_column}\", TIMESTAMP '1970-01-01 00:00:00+00') + INTERVAL '1d' as {end_time_col_name}"
-            )
-        };
+        let bin_interval = count_api_bin_interval(&time_range.start, &time_range.end);
+        let date_bin = format!(
+            "CAST(DATE_BIN('{bin_interval}', \"{table_name}\".\"{time_column}\", TIMESTAMP '{DATE_BIN_EPOCH_ANCHOR}') AS TEXT) as {start_time_col_name}, DATE_BIN('{bin_interval}', \"{table_name}\".\"{time_column}\", TIMESTAMP '{DATE_BIN_EPOCH_ANCHOR}') + INTERVAL '{bin_interval}' as {end_time_col_name}"
+        );
 
         let group_by_cols = count_conditions
             .group_by
