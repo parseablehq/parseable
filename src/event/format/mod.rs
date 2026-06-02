@@ -162,7 +162,7 @@ pub trait EventFormat: Sized {
     /// Returns the UTC time at ingestion
     fn get_p_timestamp(&self) -> DateTime<Utc>;
 
-    #[hotpath::measure]
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     fn into_recordbatch(
         self,
         storage_schema: &HashMap<String, Arc<Field>>,

@@ -51,7 +51,7 @@ pub struct Writer {
 }
 
 impl Writer {
-    #[hotpath::measure]
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn push_disk(
         &mut self,
         filename: String,
@@ -204,7 +204,7 @@ impl DiskWriter {
     }
 
     /// Write a single recordbatch into file
-    #[hotpath::measure]
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn write(&mut self, rb: &RecordBatch) -> Result<(), StagingError> {
         self.inner.write(rb).map_err(StagingError::Arrow)
     }

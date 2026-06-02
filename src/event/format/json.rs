@@ -60,7 +60,7 @@ impl EventFormat for Event {
 
     // convert the incoming json to a vector of json values
     // also extract the arrow schema, tags and metadata from the incoming json
-    #[hotpath::measure]
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     fn to_data(
         self,
         schema: &HashMap<String, Arc<Field>>,

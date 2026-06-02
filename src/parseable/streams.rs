@@ -139,7 +139,7 @@ impl Stream {
     }
 
     // Concatenates record batches and puts them in memory store for each event.
-    #[hotpath::measure]
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn push(
         &self,
         schema_key: &str,
@@ -409,7 +409,7 @@ impl Stream {
         base.join(format!("{INPROCESS_DIR_PREFIX}{minute}"))
     }
 
-    #[hotpath::measure]
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn parquet_files(&self) -> Vec<PathBuf> {
         let Ok(dir) = self.data_path.read_dir() else {
             return vec![];
@@ -470,7 +470,7 @@ impl Stream {
         skip(self, tenant_id),
         fields(stream_name = %self.stream_name)
     )]
-    #[hotpath::measure]
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn prepare_parquet(
         &self,
         init_signal: bool,
@@ -550,7 +550,7 @@ impl Stream {
         Ok(())
     }
 
-    #[hotpath::measure]
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn flush(&self, forced: bool) -> Result<(), StagingError> {
         let _span = info_span!("flush", stream_name = %self.stream_name, forced).entered();
         // Swap out stale writers under the lock, drop them after releasing it.
@@ -652,7 +652,7 @@ impl Stream {
     /// Bails out without sorting when either source column is missing
     /// (non-metric stream, schema drift) so the caller can write the
     /// batch unchanged.
-    #[hotpath::measure]
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     fn sort_batch_for_metric_pruning(
         batch: &RecordBatch,
         time_partition_field: &str,
@@ -694,7 +694,7 @@ impl Stream {
         Ok(RecordBatch::try_new(schema, columns)?)
     }
 
-    #[hotpath::measure]
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     fn prepare_metric_row_group(
         schema: Arc<Schema>,
         buffer: Vec<RecordBatch>,
@@ -772,7 +772,7 @@ impl Stream {
     /// This function reads arrow files, groups their schemas
     ///
     /// converts them into parquet files and returns a merged schema
-    #[hotpath::measure]
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn convert_disk_files_to_parquet(
         &self,
         time_partition: Option<&String>,
@@ -836,7 +836,7 @@ impl Stream {
         Ok(Some(Schema::try_merge(schemas)?))
     }
 
-    #[hotpath::measure]
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     fn write_parquet_part_file(
         &self,
         part_path: &Path,
@@ -941,7 +941,7 @@ impl Stream {
     }
 
     /// function to validate parquet files
-    #[hotpath::measure]
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     fn is_valid_parquet_file(path: &Path, stream_name: &str) -> bool {
         // First check file size as a quick validation
         match path.metadata() {
@@ -984,7 +984,7 @@ impl Stream {
         }
     }
 
-    #[hotpath::measure]
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     fn cleanup_arrow_files_and_dir(&self, arrow_files: &[PathBuf], tenant_id: &Option<String>) {
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         for (i, file) in arrow_files.iter().enumerate() {
@@ -1368,7 +1368,7 @@ impl Stream {
         skip(self, tenant_id),
         fields(stream_name = %self.stream_name)
     )]
-    #[hotpath::measure]
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn flush_and_convert(
         &self,
         init_signal: bool,
