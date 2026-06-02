@@ -23,15 +23,15 @@ Parseable is an open source, columnar data lake platform - purpose built for obs
 
 ## Why Parseable?
 
-Purpose built for observability and designed around proven data lake engineering patterns, Parseable gives you everything you need to make sense of your telemetry data, right out of the box, with no external dependencies or stitching together of multiple tools.
+Purpose built for observability and designed around proven data engineering patterns, Parseable gives you everything you need to make sense of your telemetry data, right out of the box.
 
 Some of the key highlights include:
 
-- [Data lake architecture](https://www.parseable.com/docs/architecture): Parseable Data lake architecture allows running stateless compute with object storage as the backing storage. This allows scaling storage and compute independently, and avoids the pitfalls of traditional observability systems.
+- [Data lake architecture](https://www.parseable.com/docs/architecture): Stateless compute over object storage as the backing store. Storage and compute scale independently, so you're not paying for one to grow the other.
 
-- [Fully featured](https://www.parseable.com/docs/features): Parseable is feature complete with alerting, dashboards, anomaly detection, APM, and more. You can do all of this and more from a single binary, without needing to stitch together multiple tools.
+- [Fully featured](https://www.parseable.com/docs/features): Parseable is feature complete with alerting, dashboards, anomaly detection, APM, and more, all from a single binary without stitching together multiple tools.
 
-- [Agent ready](https://www.parseable.com/docs/integrations#ai-agents--llms): Whether you need to observe your AI agents or use LLMs to analyze your telemetry data, Parseable has you covered with native support for AI agents and LLMs.
+- [Agent ready](https://www.parseable.com/docs/integrations#ai-agents--llms): Whether you need to observe your AI agents or use LLMs to analyze your telemetry data, Parseable supports both natively.
 
 - [OpenTelemetry native](https://www.parseable.com/docs/ingest-data/otel): With native OTel support, you can send telemetry data to Parseable without any custom modifications or plugins. Parseable can be used as a drop-in replacement for your existing OpenTelemetry Collector setup.
 
@@ -51,7 +51,7 @@ powershell -c "irm https://logg.ing/install-windows | iex"
 ```
 </details>
 
-Once you have Parseable running, ingest data with the below command. This will send logs to the `demo` stream. You can see the logs in the dashboard.
+Once you have Parseable running, ingest data with the command below. This will send logs to the `demo` stream. You can see the logs in the dashboard.
 
 ```bash
 curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
@@ -67,9 +67,9 @@ curl --location --request POST 'http://localhost:8000/api/v1/ingest' \
 ]'
 ```
 
-Access the UI at http://localhost:8000. You can login to the dashboard default credentials `admin`, `admin`.
+Access the UI at http://localhost:8000. Log in with the default credentials `admin` / `admin`.
 
-For production deployments, refer the [installation guide ↗︎](https://www.parseable.com/docs/self-hosted/installation) for best practices and hardening tips.
+For production deployments, refer to the [installation guide ↗︎](https://www.parseable.com/docs/self-hosted/installation) for best practices and hardening tips.
 
 > [!TIP]
 > Try out the [Parseable cloud](https://app.parseable.com) — 14 days free trial, no credit card required.
