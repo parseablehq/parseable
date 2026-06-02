@@ -45,6 +45,7 @@ use crate::storage::field_stats::get_dataset_stats;
 use crate::sync;
 use crate::sync::sync_start;
 
+use crate::handlers::http::alert_target_policy;
 use actix_web::Resource;
 use actix_web::Scope;
 use actix_web::web;
@@ -99,6 +100,7 @@ impl ParseableServer for Server {
                     .service(Self::get_counts_webscope())
                     .service(Self::get_alerts_webscope())
                     .service(Self::get_targets_webscope())
+                    .service(Self::get_alert_target_policy())
                     .service(Self::get_metrics_webscope())
                     .service(Self::get_demo_data_webscope()),
             )
@@ -339,6 +341,30 @@ impl Server {
                     web::put()
                         .to(alerts::evaluate_alert)
                         .authorize(Action::PutAlert),
+                ),
+            )
+    }
+
+    pub fn get_alert_target_policy() -> Scope {
+        web::scope("/admin/alert-target-policy")
+            .service(
+                web::resource("")
+                    .route(
+                        web::get()
+                            .to(alert_target_policy::get)
+                            .authorize(Action::SuperAdmin),
+                    )
+                    .route(
+                        web::put()
+                            .to(alert_target_policy::put)
+                            .authorize(Action::SuperAdmin),
+                    ),
+            )
+            .service(
+                web::resource("/validate").route(
+                    web::post()
+                        .to(alert_target_policy::validate)
+                        .authorize(Action::SuperAdmin),
                 ),
             )
     }
