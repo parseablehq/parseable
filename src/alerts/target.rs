@@ -483,13 +483,20 @@ impl TargetType {
                 .await?;
             }
             TargetType::AlertManager(target) => {
-                outbound_http_policy::prepare_alert_target(
+                let prepared = outbound_http_policy::prepare_alert_target(
                     &target.endpoint,
                     AlertTargetKind::AlertManager,
                     target.skip_tls_check,
                     None,
                 )
                 .await?;
+                // Alert Manager auth becomes an Authorization header at delivery time
+                if target.auth.is_some() && !prepared.authorization_allowed {
+                    return Err(outbound_http_policy::OutboundPolicyError::DeniedHeader(
+                        AUTHORIZATION.as_str().to_string(),
+                    )
+                    .into());
+                }
             }
         }
         Ok(())
@@ -643,6 +650,14 @@ impl CallableTarget for AlertManager {
 
         let mut request = prepared.client.post(self.endpoint.clone()).json(&alerts);
         if let Some(Auth { username, password }) = &self.auth {
+            // Credentials are only safe when the destination itself is explicitly allowlisted.
+            if !prepared.authorization_allowed {
+                error!(
+                    "Alertmanager credentials blocked by outbound policy for destination:{}",
+                    self.endpoint
+                );
+                return;
+            }
             let basic_auth_value = "Basic ".to_string()
                 + &base64::prelude::BASE64_STANDARD.encode(format!("{username}:{password}"));
             request = request.header(AUTHORIZATION, basic_auth_value);
