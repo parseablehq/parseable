@@ -138,7 +138,7 @@ pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
 
     if log_record.body.is_some() {
         let body = &log_record.body;
-        let body_json = collect_json_from_values(body, &"body".to_string());
+        let body_json = collect_json_from_values(body, "body");
         for (key, value) in &body_json {
             // Always insert the original body field as is
             log_record_json.insert(key.clone(), value.clone());

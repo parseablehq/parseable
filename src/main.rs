@@ -32,6 +32,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Registry, fmt};
 
 #[actix_web::main]
+#[cfg_attr(feature = "hotpath", hotpath::main)]
 async fn main() -> anyhow::Result<()> {
     init_logger();
     // Install the rustls crypto provider before any TLS operations.

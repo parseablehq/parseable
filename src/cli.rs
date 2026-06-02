@@ -559,6 +559,15 @@ pub struct Options {
     )]
     pub max_field_statistics: usize,
 
+    // collect statistics for dataset fields
+    #[arg(
+        long,
+        env = "P_COLLECT_DATASET_STATS",
+        default_value = "true",
+        help = "Collect statistics for dataset fields"
+    )]
+    pub collect_dataset_stats: bool,
+
     #[arg(
         long,
         env = "P_MAX_EVENT_PAYLOAD_SIZE",

@@ -62,6 +62,8 @@ pub use datafusion;
 pub use handlers::http::modal::{
     ParseableServer, ingest_server::IngestServer, query_server::QueryServer, server::Server,
 };
+#[cfg(feature = "hotpath")]
+pub use hotpath;
 use once_cell::sync::Lazy;
 pub use openid;
 use parseable::PARSEABLE;

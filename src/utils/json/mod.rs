@@ -34,6 +34,7 @@ pub mod strict;
 /// calls the function `flatten_json` which results Vec<Value> or Error
 /// in case when Vec<Value> is returned, converts the Vec<Value> to Value of Array
 /// this is to ensure recursive flattening does not happen for heavily nested jsons
+#[cfg_attr(feature = "hotpath", hotpath::measure)]
 pub fn flatten_json_body(
     body: Value,
     time_partition: Option<&String>,
@@ -194,6 +195,7 @@ fn process_partitioned_non_array(
 }
 
 /// Processes data when no partitioning is configured (original logic)
+#[cfg_attr(feature = "hotpath", hotpath::measure)]
 fn process_non_partitioned(
     body: Value,
     time_partition: Option<&String>,
@@ -217,6 +219,7 @@ fn process_non_partitioned(
     Ok(vec![data])
 }
 
+#[cfg_attr(feature = "hotpath", hotpath::measure)]
 pub fn convert_array_to_object(
     body: Value,
     time_partition: Option<&String>,

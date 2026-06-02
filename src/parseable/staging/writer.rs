@@ -19,7 +19,7 @@
 
 use std::{
     collections::{HashMap, HashSet},
-    fs::{File, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::BufWriter,
     path::PathBuf,
     sync::Arc,
@@ -41,10 +41,137 @@ use crate::{
 
 use super::StagingError;
 
+const DISK_WRITE_BATCH_ROWS: usize = 32_768;
+
 #[derive(Default)]
 pub struct Writer {
     pub mem: MemWriter<16384>,
     pub disk: HashMap<String, DiskWriter>,
+    disk_pending: HashMap<String, PendingDiskBatch>,
+}
+
+impl Writer {
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
+    pub fn push_disk(
+        &mut self,
+        filename: String,
+        rb: &RecordBatch,
+        file_path: PathBuf,
+        range: TimeRange,
+    ) -> Result<(), StagingError> {
+        let pending = self.disk_pending.entry(filename.clone()).or_default();
+        pending.rows += rb.num_rows();
+        pending.range.get_or_insert(range);
+        pending.batches.push(rb.clone());
+
+        if pending.rows >= DISK_WRITE_BATCH_ROWS {
+            self.flush_pending_disk(&filename, file_path)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn flush_pending_disk(
+        &mut self,
+        filename: &str,
+        file_path: PathBuf,
+    ) -> Result<(), StagingError> {
+        let Some(pending) = self.disk_pending.remove(filename) else {
+            return Ok(());
+        };
+        if pending.batches.is_empty() {
+            return Ok(());
+        }
+
+        write_pending_disk_batch(&mut self.disk, filename.to_owned(), pending, file_path)?;
+
+        Ok(())
+    }
+
+    pub fn take_flushable_disk(
+        &mut self,
+        forced: bool,
+    ) -> (HashMap<String, DiskWriter>, PendingDiskWrites) {
+        let mut flushable_disk = HashMap::new();
+        let old_disk = std::mem::take(&mut self.disk);
+        for (filename, writer) in old_disk {
+            if !forced && writer.is_current() {
+                self.disk.insert(filename, writer);
+            } else {
+                flushable_disk.insert(filename, writer);
+            }
+        }
+
+        let mut flushable_pending = HashMap::new();
+        let old_pending = std::mem::take(&mut self.disk_pending);
+        for (filename, pending) in old_pending {
+            if !forced && pending.is_current() {
+                self.disk_pending.insert(filename, pending);
+            } else {
+                flushable_pending.insert(filename, pending);
+            }
+        }
+
+        (flushable_disk, PendingDiskWrites(flushable_pending))
+    }
+}
+
+pub struct PendingDiskWrites(HashMap<String, PendingDiskBatch>);
+
+impl PendingDiskWrites {
+    pub fn flush_into(
+        self,
+        disk: &mut HashMap<String, DiskWriter>,
+        data_path: &std::path::Path,
+    ) -> Result<(), StagingError> {
+        for (filename, pending) in self.0 {
+            write_pending_disk_batch(disk, filename.clone(), pending, data_path.join(filename))?;
+        }
+        Ok(())
+    }
+}
+
+fn write_pending_disk_batch(
+    disk: &mut HashMap<String, DiskWriter>,
+    filename: String,
+    pending: PendingDiskBatch,
+    file_path: PathBuf,
+) -> Result<(), StagingError> {
+    if pending.batches.is_empty() {
+        return Ok(());
+    }
+
+    let schema = pending.batches[0].schema();
+    let batch = concat_batches(&schema, pending.batches.iter())?;
+    match disk.get_mut(&filename) {
+        Some(writer) => writer.write(&batch)?,
+        None => {
+            let range = pending.range.expect("pending disk batch must have range");
+            if let Some(parent) = file_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut writer = DiskWriter::try_new(file_path, &schema, range)?;
+            writer.write(&batch)?;
+            disk.insert(filename, writer);
+        }
+    }
+
+    Ok(())
+}
+
+#[derive(Default)]
+struct PendingDiskBatch {
+    rows: usize,
+    batches: Vec<RecordBatch>,
+    range: Option<TimeRange>,
+}
+
+impl PendingDiskBatch {
+    fn is_current(&self) -> bool {
+        self.range
+            .as_ref()
+            .is_some_and(|range| range.contains(Utc::now()))
+    }
 }
 
 pub struct DiskWriter {
@@ -77,6 +204,7 @@ impl DiskWriter {
     }
 
     /// Write a single recordbatch into file
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn write(&mut self, rb: &RecordBatch) -> Result<(), StagingError> {
         self.inner.write(rb).map_err(StagingError::Arrow)
     }
