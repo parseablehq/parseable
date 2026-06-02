@@ -497,27 +497,34 @@ impl Stream {
         // check if there is already a schema file in staging pertaining to this stream
         // if yes, then merge them and save
 
-        if let Some(mut schema) = schema {
+        if let Some(schema) = schema {
             let static_schema_flag = self.get_static_schema_flag();
             if !static_schema_flag {
-                // schema is dynamic, read from staging and merge if present
-
-                // need to add something before .schema to make the file have an extension of type `schema`
-                let path = RelativePathBuf::from_iter([format!("{}.schema", self.stream_name)])
-                    .to_path(&self.data_path);
-
-                let staging_schemas = self.get_schemas_if_present();
-                if let Some(mut staging_schemas) = staging_schemas {
-                    staging_schemas.push(schema);
-                    schema = Schema::try_merge(staging_schemas)?;
-                }
-
-                // save the merged schema on staging disk
-                // the path should be stream/.ingestor.{id}.schema
-                info!("writing schema to path - {path:?}");
-                write(path, to_bytes(&schema))?;
+                self.stage_schema_file(schema)?;
             }
         }
+
+        Ok(())
+    }
+
+    pub fn stage_schema_file(&self, mut schema: Schema) -> Result<(), StagingError> {
+        // schema is dynamic, read from staging and merge if present
+        fs::create_dir_all(&self.data_path)?;
+
+        // need to add something before .schema to make the file have an extension of type `schema`
+        let path = RelativePathBuf::from_iter([format!("{}.schema", self.stream_name)])
+            .to_path(&self.data_path);
+
+        let staging_schemas = self.get_schemas_if_present();
+        if let Some(mut staging_schemas) = staging_schemas {
+            staging_schemas.push(schema);
+            schema = Schema::try_merge(staging_schemas)?;
+        }
+
+        // save the merged schema on staging disk
+        // the path should be stream/.ingestor.{id}.schema
+        info!("writing schema to path - {path:?}");
+        write(path, to_bytes(&schema))?;
 
         Ok(())
     }
