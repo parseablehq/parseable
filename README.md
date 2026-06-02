@@ -1,8 +1,8 @@
 <h2 align="center">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo-dark.png">
-      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/parseablehq/.github/refs/heads/main/images/logo.svg">
-      <a href="https://www.parseable.com" target="_blank"><img src="https://raw.githubusercontent.com/parseablehq/.github/refs/heads/main/images/logo.svg" alt="Parseable logo" /></a>
+      <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg">
+      <a href="https://www.parseable.com" target="_blank"><img src="https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg" alt="Parseable logo" /></a>
     </picture>
 </h2>
 
@@ -76,7 +76,7 @@ For production deployments, refer the [installation guide ↗︎](https://www.pa
 
 ## Contributing
 
-<a href="https://github.com/parseablehq/parseable/graphs/contributors"><img src="https://contrib.rocks/image?repo=parseablehq/parseable" /></a>
+<a href="https://github.com/parseablehq/parseable/graphs/contributors"><img src="https://contrib.rocks/image?repo=parseablehq/parseable" alt="Contributors" /></a>
 
 [Contribution guide ↗︎](https://github.com/parseablehq/parseable/blob/main/CONTRIBUTING.md)
 
