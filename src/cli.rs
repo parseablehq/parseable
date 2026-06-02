@@ -40,9 +40,9 @@ pub const DATASET_FIELD_COUNT_LIMIT: usize = 1000;
 #[command(
     name = "parseable",
     bin_name = "parseable",
-    about = "Cloud Native, log analytics platform for modern applications.",
+    about = "The open source observability data lake",
     long_about = r#"
-Cloud Native, log analytics platform for modern applications.
+Open source observability data lake — logs, metrics, and traces in a single binary.
 
 Usage:
 parseable [command] [options..]
@@ -57,9 +57,11 @@ parseable [command] --help
     version = env!("CARGO_PKG_VERSION"),
     propagate_version = true,
     next_line_help = false,
-    help_template = r#"{name} v{version}
-{about}
-Join the community at https://logg.ing/community.
+    help_template = r#"
+
+{about}. Join the community at https://logg.ing/community.
+
+Version: v{version}
 
 {all-args}
         "#,
