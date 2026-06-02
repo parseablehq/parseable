@@ -156,6 +156,7 @@ pub async fn flatten_and_push_logs(
     skip(json, log_source, p_custom_fields, time_partition, telemetry_type, tenant_id),
     fields(stream_name, record_count = tracing::field::Empty)
 )]
+#[cfg_attr(feature = "hotpath", hotpath::measure)]
 pub fn push_logs(
     stream_name: &str,
     json: Value,

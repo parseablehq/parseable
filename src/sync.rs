@@ -47,6 +47,41 @@ impl Drop for SyncRunningGuard {
     }
 }
 
+async fn wait_for_local_sync_guard() -> SyncRunningGuard {
+    let mut warned = false;
+    loop {
+        if LOCAL_SYNC_RUNNING
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            return SyncRunningGuard(&LOCAL_SYNC_RUNNING);
+        }
+
+        if !warned {
+            warn!("Waiting for existing local_sync cycle before shutdown sync");
+            warned = true;
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+}
+
+pub async fn shutdown_local_sync_flush_and_convert() {
+    let _guard = wait_for_local_sync_guard().await;
+    let mut local_sync_joinset = JoinSet::new();
+
+    PARSEABLE
+        .streams
+        .flush_and_convert(&mut local_sync_joinset, false, true);
+
+    while let Some(res) = local_sync_joinset.join_next().await {
+        match res {
+            Ok(Ok(_)) => info!("Successfully converted arrow files to parquet."),
+            Ok(Err(err)) => error!("Failed to convert arrow files to parquet. {err:?}"),
+            Err(err) => error!("Failed to join async task: {err}"),
+        }
+    }
+}
+
 use crate::alerts::alert_enums::AlertTask;
 use crate::alerts::alerts_utils;
 use crate::parseable::PARSEABLE;

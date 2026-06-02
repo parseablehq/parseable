@@ -162,6 +162,7 @@ pub trait EventFormat: Sized {
     /// Returns the UTC time at ingestion
     fn get_p_timestamp(&self) -> DateTime<Utc>;
 
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     fn into_recordbatch(
         self,
         storage_schema: &HashMap<String, Arc<Field>>,
@@ -606,6 +607,28 @@ pub fn rename_per_record_type_mismatches(
             let Value::Object(map) = value else {
                 return value;
             };
+            let needs_rename = map.iter().any(|(key, val)| {
+                if val.is_null() {
+                    return false;
+                }
+                let target_type = existing_schema
+                    .get(key)
+                    .map(|f| f.data_type())
+                    .or_else(|| inferred_types.get(key.as_str()).copied());
+                let Some(target_type) = target_type else {
+                    return false;
+                };
+                if (val.is_array() || val.is_object())
+                    && (target_type.is_list()
+                        || matches!(target_type, DataType::Struct(_) | DataType::Map(_, _)))
+                {
+                    return false;
+                }
+                !value_compatible_with_type(val, target_type, schema_version)
+            });
+            if !needs_rename {
+                return Value::Object(map);
+            }
             let new_map: serde_json::Map<String, Value> = map
                 .into_iter()
                 .map(|(key, val)| {

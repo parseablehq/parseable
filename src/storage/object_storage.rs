@@ -184,8 +184,10 @@ async fn upload_single_parquet_file(
     let manifest = catalog::create_from_parquet_file(absolute_path, &path)
         .map_err(|e| (path.clone(), ObjectStorageError::from(e)))?;
 
-    // Calculate field stats if enabled
-    calculate_stats_if_enabled(&stream_name, &path, &schema, tenant_id).await;
+    if PARSEABLE.options.collect_dataset_stats {
+        // collect field stats if enabled
+        calculate_stats_if_enabled(&stream_name, &path, &schema, tenant_id).await;
+    }
 
     Ok(UploadResult {
         file_path: path,
@@ -1293,6 +1295,12 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
     };
     for tenant_id in tenants {
         for stream_name in PARSEABLE.streams.list(&tenant_id) {
+            if let Ok(stream) = PARSEABLE.get_stream(&stream_name, &tenant_id)
+                && stream.parquet_files().is_empty()
+                && stream.schema_files().is_empty()
+            {
+                continue;
+            }
             let object_store = object_store.clone();
             let id = tenant_id.clone();
             let span = info_span!("stream_upload", stream_name = %stream_name);

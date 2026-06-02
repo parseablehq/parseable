@@ -91,6 +91,14 @@ tokio = { version = "^1.43", default-features = false, features = [
 tokio-stream = { version = "0.1.17", features = ["fs"] }
 tokio-util = { version = "0.7" }
 
+# perf
+hotpath = { version = "0.16.0", optional = true, features = [
+    "hotpath",
+    "hotpath-cpu",
+    "hotpath-alloc",
+    "tokio"
+] }
+
 # # Logging and Metrics
 # opentelemetry-proto = { version = "0.30.0", features = [
 #     "gen-tonic",
@@ -212,6 +220,15 @@ assets-sha1 = "a7523ef819d38678275ae165c443564b2f9a3fc1"
 
 [features]
 debug = []
+hotpath = [
+    "dep:hotpath",
+    "hotpath/hotpath",
+    "hotpath/hotpath-cpu",
+    "hotpath/hotpath-alloc",
+    "hotpath/tokio",
+]
+hotpath-alloc = ["hotpath"]
+hotpath-cpu = ["hotpath"]
 kafka = [
     "rdkafka",
     "rdkafka/ssl-vendored",

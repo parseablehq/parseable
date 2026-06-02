@@ -60,6 +60,7 @@ impl EventFormat for Event {
 
     // convert the incoming json to a vector of json values
     // also extract the arrow schema, tags and metadata from the incoming json
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     fn to_data(
         self,
         schema: &HashMap<String, Arc<Field>>,
@@ -156,7 +157,7 @@ impl EventFormat for Event {
                     infer_schema.clone(),
                 ]).map_err(|err| anyhow!("Could not merge schema of this event with that of the existing stream. {:?}", err))?;
                 is_first = true;
-                let schema = infer_schema
+                let schema: Vec<Arc<Field>> = infer_schema
                     .fields
                     .iter()
                     .filter(|field| !field.data_type().is_null())
@@ -327,6 +328,10 @@ fn rename_json_keys(values: Vec<Value>) -> Result<Vec<Value>, anyhow::Error> {
         .into_iter()
         .map(|value| {
             if let Value::Object(map) = value {
+                if !map.keys().any(|key| key.starts_with('@')) {
+                    return Ok(Value::Object(map));
+                }
+
                 // Collect original keys to check for collisions
                 let original_keys: HashSet<String> = map.keys().cloned().collect();
 
