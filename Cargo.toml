@@ -219,7 +219,15 @@ assets-sha1 = "a7523ef819d38678275ae165c443564b2f9a3fc1"
 
 [features]
 debug = []
-hotpath = ["dep:hotpath"]
+hotpath = [
+    "dep:hotpath",
+    "hotpath/hotpath",
+    "hotpath/hotpath-cpu",
+    "hotpath/hotpath-alloc",
+    "hotpath/tokio",
+]
+hotpath-alloc = ["hotpath"]
+hotpath-cpu = ["hotpath"]
 kafka = [
     "rdkafka",
     "rdkafka/ssl-vendored",

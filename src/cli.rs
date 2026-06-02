@@ -559,14 +559,14 @@ pub struct Options {
     )]
     pub max_field_statistics: usize,
 
-    // maximum limit to store the statistics for a field
+    // collect statistics for dataset fields
     #[arg(
         long,
-        env = "P_CALCULATE_FIELD_STATISTICS",
+        env = "P_COLLECT_DATASET_STATS",
         default_value = "true",
-        help = "Maximum number of field statistics to store"
+        help = "Collect statistics for dataset fields"
     )]
-    pub calculate_field_statistics: bool,
+    pub collect_dataset_stats: bool,
 
     #[arg(
         long,
