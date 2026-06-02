@@ -3921,6 +3921,7 @@ dependencies = [
  "humantime",
  "humantime-serde",
  "indexmap",
+ "ipnet",
  "itertools 0.14.0",
  "lazy_static",
  "num_cpus",
