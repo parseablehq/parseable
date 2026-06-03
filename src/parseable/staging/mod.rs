@@ -40,4 +40,6 @@ pub enum StagingError {
     TenantNotFound(#[from] TenantNotFound),
     #[error("{0}")]
     PoisonError(#[from] PoisonError<String>),
+    #[error("JSON Error {0}")]
+    Json(#[from] serde_json::Error),
 }

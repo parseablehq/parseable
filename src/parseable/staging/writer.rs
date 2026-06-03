@@ -29,8 +29,9 @@ use arrow_array::RecordBatch;
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
-use chrono::Utc;
+use chrono::{TimeDelta, Utc};
 use itertools::Itertools;
+use once_cell::sync::Lazy;
 use rand::distributions::{Alphanumeric, DistString};
 use tracing::error;
 
@@ -41,7 +42,16 @@ use crate::{
 
 use super::StagingError;
 
-const DISK_WRITE_BATCH_ROWS: usize = 32_768;
+const DISK_WRITE_BATCH_MAX_AGE_SECS_VAR: &str = "DISK_WRITE_BATCH_MAX_AGE_SECS";
+static DISK_WRITE_BATCH_MAX_AGE_SECS: Lazy<i64> = Lazy::new(|| {
+    if let Ok(var) = std::env::var(DISK_WRITE_BATCH_MAX_AGE_SECS_VAR)
+        && let Ok(var) = var.parse::<i64>()
+    {
+        var
+    } else {
+        1
+    }
+});
 
 #[derive(Default)]
 pub struct Writer {
@@ -58,13 +68,18 @@ impl Writer {
         rb: &RecordBatch,
         file_path: PathBuf,
         range: TimeRange,
+        batch_rows: usize,
     ) -> Result<(), StagingError> {
+        let now = Utc::now();
         let pending = self.disk_pending.entry(filename.clone()).or_default();
         pending.rows += rb.num_rows();
         pending.range.get_or_insert(range);
+        pending.first_seen.get_or_insert(now);
         pending.batches.push(rb.clone());
 
-        if pending.rows >= DISK_WRITE_BATCH_ROWS {
+        let should_flush = pending.rows >= batch_rows.max(1)
+            || pending.is_older_than(now, TimeDelta::seconds(*DISK_WRITE_BATCH_MAX_AGE_SECS));
+        if should_flush {
             self.flush_pending_disk(&filename, file_path)?;
         }
 
@@ -104,8 +119,12 @@ impl Writer {
 
         let mut flushable_pending = HashMap::new();
         let old_pending = std::mem::take(&mut self.disk_pending);
+        let now = Utc::now();
         for (filename, pending) in old_pending {
-            if !forced && pending.is_current() {
+            if !forced
+                && pending.is_current()
+                && !pending.is_older_than(now, TimeDelta::seconds(*DISK_WRITE_BATCH_MAX_AGE_SECS))
+            {
                 self.disk_pending.insert(filename, pending);
             } else {
                 flushable_pending.insert(filename, pending);
@@ -164,6 +183,7 @@ struct PendingDiskBatch {
     rows: usize,
     batches: Vec<RecordBatch>,
     range: Option<TimeRange>,
+    first_seen: Option<chrono::DateTime<Utc>>,
 }
 
 impl PendingDiskBatch {
@@ -171,6 +191,11 @@ impl PendingDiskBatch {
         self.range
             .as_ref()
             .is_some_and(|range| range.contains(Utc::now()))
+    }
+
+    fn is_older_than(&self, now: chrono::DateTime<Utc>, age: TimeDelta) -> bool {
+        self.first_seen
+            .is_some_and(|first_seen| now.signed_duration_since(first_seen) >= age)
     }
 }
 
