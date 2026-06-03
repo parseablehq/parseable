@@ -23,6 +23,7 @@ use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::derive::{Deref, DerefMut};
 use itertools::Itertools;
+use once_cell::sync::Lazy;
 use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
@@ -68,6 +69,16 @@ use super::{
     ARROW_FILE_EXTENSION, LogStream, PART_FILE_EXTENSION,
     staging::{StagingError, reader::MergedReverseRecordReader, writer::Writer},
 };
+
+static DISK_WRITE_BATCH_ROWS: Lazy<usize> = Lazy::new(|| {
+    if let Ok(var) = std::env::var("P_DISK_WRITE_BATCH_ROWS")
+        && let Ok(var) = var.parse::<usize>()
+    {
+        var
+    } else {
+        1
+    }
+});
 
 const INPROCESS_DIR_PREFIX: &str = "processing_";
 const METRIC_ROW_GROUP_PREP_IN_FLIGHT: usize = 1;
@@ -115,6 +126,7 @@ pub struct Stream {
     pub data_path: PathBuf,
     pub options: Arc<Options>,
     pub writer: Mutex<Writer>,
+    schema_writer: Mutex<()>,
     pub ingestor_id: Option<String>,
 }
 impl Stream {
@@ -134,6 +146,7 @@ impl Stream {
             data_path,
             options,
             writer: Mutex::new(Writer::default()),
+            schema_writer: Mutex::new(()),
             ingestor_id,
         })
     }
@@ -181,7 +194,7 @@ impl Stream {
             );
             let file_path = self.data_path.join(&filename);
 
-            guard.push_disk(filename, record, file_path, range)?;
+            guard.push_disk(filename, record, file_path, range, *DISK_WRITE_BATCH_ROWS)?;
         }
 
         guard.mem.push(schema_key, record)?;
@@ -435,9 +448,9 @@ impl Stream {
             .collect()
     }
 
-    pub fn get_schemas_if_present(&self) -> Option<Vec<Schema>> {
+    pub fn get_schemas_if_present(&self) -> Result<Vec<Schema>, StagingError> {
         let Ok(dir) = self.data_path.read_dir() else {
-            return None;
+            return Ok(vec![]);
         };
 
         let mut schemas: Vec<Schema> = Vec::new();
@@ -448,19 +461,11 @@ impl Stream {
             {
                 let file = File::open(file.path()).expect("Schema File should exist");
 
-                let schema = match serde_json::from_reader(file) {
-                    Ok(schema) => schema,
-                    Err(_) => continue,
-                };
-                schemas.push(schema);
+                schemas.push(serde_json::from_reader(file)?);
             }
         }
 
-        if !schemas.is_empty() {
-            Some(schemas)
-        } else {
-            None
-        }
+        Ok(schemas)
     }
 
     /// Converts arrow files in staging into parquet files, does so only for past minutes when run with `!shutdown_signal`
@@ -508,15 +513,28 @@ impl Stream {
     }
 
     pub fn stage_schema_file(&self, mut schema: Schema) -> Result<(), StagingError> {
+        let _schema_writer = self.schema_writer.lock().map_err(|poisoned| {
+            StagingError::PoisonError(PoisonError::new(format!(
+                "Schema writer lock poisoned while staging schema for stream {} - {}",
+                self.stream_name, poisoned
+            )))
+        })?;
+
         // schema is dynamic, read from staging and merge if present
         fs::create_dir_all(&self.data_path)?;
 
         // need to add something before .schema to make the file have an extension of type `schema`
-        let path = RelativePathBuf::from_iter([format!("{}.schema", self.stream_name)])
-            .to_path(&self.data_path);
+        let file_name = self
+            .ingestor_id
+            .as_ref()
+            .map(|id| format!(".ingestor.{id}.schema"))
+            .unwrap_or_else(|| ".schema".to_owned());
+        let path = RelativePathBuf::from_iter([file_name]).to_path(&self.data_path);
+        let tmp_path = path.with_extension("schema.tmp");
 
-        let staging_schemas = self.get_schemas_if_present();
-        if let Some(mut staging_schemas) = staging_schemas {
+        let staging_schemas = self.get_schemas_if_present()?;
+        if !staging_schemas.is_empty() {
+            let mut staging_schemas = staging_schemas;
             staging_schemas.push(schema);
             schema = Schema::try_merge(staging_schemas)?;
         }
@@ -524,7 +542,8 @@ impl Stream {
         // save the merged schema on staging disk
         // the path should be stream/.ingestor.{id}.schema
         info!("writing schema to path - {path:?}");
-        write(path, to_bytes(&schema))?;
+        write(&tmp_path, to_bytes(&schema))?;
+        fs::rename(tmp_path, path)?;
 
         Ok(())
     }
