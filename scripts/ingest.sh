@@ -2,15 +2,11 @@
 
 # Fluent Bit Setup and Management Script
 # Usage: 
-#   Setup:   ./fluent-bit.sh <host> <base64_encoded_credentials>
-#            Where credentials = base64(username:password)
-#   Stop:    ./fluent-bit.sh stop
-#   Restart: ./fluent-bit.sh restart
-#   Status:  ./fluent-bit.sh status
-#   Logs:    ./fluent-bit.sh logs
-#
-# To encode credentials:
-#   echo -n 'username:password' | base64
+#   Setup:   ./ingest.sh <host[:port]> <api_key> [tenant_id]
+#   Stop:    ./ingest.sh stop
+#   Restart: ./ingest.sh restart
+#   Status:  ./ingest.sh status
+#   Logs:    ./ingest.sh logs
 
 set -e
 
@@ -135,10 +131,7 @@ start_fluent_bit() {
     
     if [ ! -f "$CONFIG_FILE" ]; then
         print_error "Configuration file not found: $CONFIG_FILE"
-        print_error "Please run setup first with: $0 <host> <base64_credentials>"
-        print_error ""
-        print_error "To encode credentials:"
-        print_error "  echo -n 'username:password' | base64"
+        print_error "Please run setup first with: $0 <host[:port]> <api_key> [tenant_id]"
         exit 1
     fi
     
@@ -248,29 +241,51 @@ install_fluent_bit() {
 # Setup function
 setup_fluent_bit() {
     local INGESTOR_HOST="$1"
-    local CREDENTIALS_B64="$2"
-    
-    # Decode base64 credentials
-    if ! CREDENTIALS=$(echo "$CREDENTIALS_B64" | base64 -d 2>/dev/null); then
-        print_error "Failed to decode base64 credentials"
-        print_error "Please provide credentials in base64 format: username:password"
-        print_error ""
-        print_error "To encode your credentials, run:"
-        print_error "  echo -n 'username:password' | base64"
-        exit 1
-    fi
-    
-    # Split credentials by colon
-    IFS=':' read -r INGESTOR_USERNAME INGESTOR_PASSWORD <<< "$CREDENTIALS"
+    local API_KEY="$2"
+    local TENANT_ID="${3:-}"
+    local TENANT_HEADER=""
+    local TLS_SETTING="On"
+    local DEFAULT_PORT="443"
+    local PORT=""
     
     # Validate all fields are present
-    if [ -z "$INGESTOR_HOST" ] || [ -z "$INGESTOR_USERNAME" ] || [ -z "$INGESTOR_PASSWORD" ]; then
-        print_error "Invalid credentials format"
-        print_error "Expected format: username:password"
-        print_error ""
-        print_error "To encode your credentials, run:"
-        print_error "  echo -n 'username:password' | base64"
+    if [ -z "$INGESTOR_HOST" ] || [ -z "$API_KEY" ]; then
+        print_error "Invalid setup parameters"
+        print_error "Expected format: $0 <host[:port]> <api_key> [tenant_id]"
         exit 1
+    fi
+
+    if [[ "$INGESTOR_HOST" =~ ^[Hh][Tt][Tt][Pp][Ss]:// ]]; then
+        INGESTOR_HOST="${INGESTOR_HOST#*://}"
+        TLS_SETTING="On"
+        DEFAULT_PORT="443"
+    elif [[ "$INGESTOR_HOST" =~ ^[Hh][Tt][Tt][Pp]:// ]]; then
+        INGESTOR_HOST="${INGESTOR_HOST#*://}"
+        TLS_SETTING="Off"
+        DEFAULT_PORT="80"
+    fi
+    INGESTOR_HOST="${INGESTOR_HOST%%/*}"
+
+    if [[ "$INGESTOR_HOST" == *:* ]]; then
+        PORT="${INGESTOR_HOST##*:}"
+        INGESTOR_HOST="${INGESTOR_HOST%:*}"
+    else
+        PORT="$DEFAULT_PORT"
+    fi
+
+    if [ -z "$INGESTOR_HOST" ]; then
+        print_error "Invalid host"
+        exit 1
+    fi
+
+    if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+        print_error "Invalid port: $PORT"
+        print_error "Port must be a number between 1 and 65535"
+        exit 1
+    fi
+
+    if [ -n "$TENANT_ID" ]; then
+        TENANT_HEADER="    Header                    X-P-Tenant $TENANT_ID"
     fi
     
     OS=$(detect_os)
@@ -309,17 +324,17 @@ setup_fluent_bit() {
     Name                      opentelemetry
     Match                     node_metrics
     Host                      $INGESTOR_HOST
-    Port                      443
+    Port                      $PORT
     Metrics_uri               /v1/metrics
     Log_response_payload      True
-    TLS                       On
-    Http_User                 $INGESTOR_USERNAME
-    Http_Passwd               $INGESTOR_PASSWORD
+    TLS                       $TLS_SETTING
+    Header                    X-API-Key $API_KEY
+${TENANT_HEADER}
     Header                    X-P-Stream node-metrics
     Header                    X-P-Log-Source otel-metrics
 EOF
     chmod 600 "$CONFIG_FILE"
-    sed "s/Http_Passwd.*/Http_Passwd               [REDACTED]/" "$CONFIG_FILE"
+    sed "s/Header                    X-API-Key.*/Header                    X-API-Key [REDACTED]/" "$CONFIG_FILE"
     
     # Start Fluent Bit
     echo ""
@@ -348,9 +363,7 @@ case "${1:-}" in
         echo ""
         echo "Usage:"
         echo "  Setup and start:"
-        echo "    $0 <host> <base64_encoded_credentials>"
-        echo ""
-        echo "  Credentials format: base64(username:password)"
+        echo "    $0 <host[:port]> <api_key> [tenant_id]"
         echo ""
         echo "  Management commands:"
         echo "    $0 start    - Start Fluent Bit (if config exists)"
@@ -359,27 +372,19 @@ case "${1:-}" in
         echo "    $0 status   - Show Fluent Bit status"
         echo "    $0 logs     - Show Fluent Bit logs"
         echo ""
-        echo "To encode your credentials:"
-        echo "  echo -n 'username:password' | base64"
-        echo ""
         echo "Example:"
-        echo "  CREDS=\$(echo -n 'user@email.com:password123' | base64)"
-        echo "  $0 example.parseable.com \$CREDS"
+        echo "  $0 https://example.parseable.com:443 px_api_key"
+        echo "  $0 http://localhost:8000 px_api_key tenant-id"
         ;;
     *)
         # If not a command, treat as setup parameters
-        if [ $# -ne 2 ]; then
-            print_error "Usage: $0 <host> <base64_encoded_credentials>"
+        if [ $# -lt 2 ] || [ $# -gt 3 ]; then
+            print_error "Usage: $0 <host[:port]> <api_key> [tenant_id]"
             print_error "   Or: $0 [start|stop|restart|status|logs|help]"
             print_error ""
-            print_error "Credentials format: base64(username:password)"
-            print_error ""
-            print_error "To encode your credentials:"
-            print_error "  echo -n 'username:password' | base64"
-            print_error ""
             print_error "Example:"
-            print_error "  CREDS=\$(echo -n 'hello@parseable.com:NH7oCUju' | base64)"
-            print_error "  $0 ec9cfee0-2fd4-45eb-8209-d7cd992c4bcc-ingestor.workspace-staging.parseable.com \$CREDS"
+            print_error "  $0 https://ec9cfee0-2fd4-45eb-8209-d7cd992c4bcc-ingestor.workspace-staging.parseable.com:443 px_api_key"
+            print_error "  $0 http://localhost:8000 px_api_key tenant-id"
             print_error ""
             print_error "Management commands:"
             print_error "  $0 status   - Check if running"
@@ -388,6 +393,6 @@ case "${1:-}" in
             print_error "  $0 logs     - View logs"
             exit 1
         fi
-        setup_fluent_bit "$1" "$2"
+        setup_fluent_bit "$1" "$2" "${3:-}"
         ;;
 esac

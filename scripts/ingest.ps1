@@ -5,7 +5,10 @@ param(
     [string]$Param1,
     
     [Parameter(Position=1)]
-    [string]$Param2
+    [string]$Param2,
+
+    [Parameter(Position=2)]
+    [string]$Param3
 )
 
 $ProgressPreference = 'SilentlyContinue'
@@ -80,7 +83,7 @@ function Show-Status {
         Write-Host ""
         Write-Info "Config file: $CONFIG_FILE"
         Write-Host ""
-        Write-Info "To see output, run: .\fluent-bit.ps1 debug"
+        Write-Info "To see output, run: .\ingest.ps1 debug"
     }
     else {
         Write-Warning "Fluent Bit is not running"
@@ -172,7 +175,7 @@ function Start-FluentBit {
     if (Test-FluentBitRunning) {
         $processId = Get-Content $PID_FILE
         Write-Warning "Fluent Bit is already running (PID: $processId)"
-        Write-Info "Use 'fluent-bit.ps1 stop' to stop it first"
+        Write-Info "Use 'ingest.ps1 stop' to stop it first"
         return
     }
     
@@ -207,16 +210,16 @@ function Start-FluentBit {
     
     if (-not $stillRunning) {
         Write-ErrorMsg "Fluent Bit exited immediately"
-        Write-ErrorMsg "Run '.\fluent-bit.ps1 debug' to see error details"
+        Write-ErrorMsg "Run '.\ingest.ps1 debug' to see error details"
         Remove-Item $PID_FILE -ErrorAction SilentlyContinue
         exit 1
     }
     else {
         Write-Info "Fluent Bit started successfully (PID: $($process.Id))"
         Write-Host ""
-        Write-Info "To debug: .\fluent-bit.ps1 debug"
-        Write-Info "To check status: .\fluent-bit.ps1 status"
-        Write-Info "To stop: .\fluent-bit.ps1 stop"
+        Write-Info "To debug: .\ingest.ps1 debug"
+        Write-Info "To check status: .\ingest.ps1 status"
+        Write-Info "To stop: .\ingest.ps1 stop"
     }
 }
 
@@ -229,30 +232,52 @@ function Restart-FluentBit {
 function Setup-FluentBit {
     param(
         [string]$IngestorHost,
-        [string]$CredentialsBase64
+        [string]$ApiKey,
+        [string]$TenantId
     )
     
-    try {
-        $credBytes = [Convert]::FromBase64String($CredentialsBase64)
-        $credentials = [Text.Encoding]::UTF8.GetString($credBytes)
-    }
-    catch {
-        Write-ErrorMsg "Failed to decode base64 credentials"
+    if ([string]::IsNullOrWhiteSpace($IngestorHost) -or [string]::IsNullOrWhiteSpace($ApiKey)) {
+        Write-ErrorMsg "Invalid setup parameters"
         exit 1
     }
-    
-    $parts = $credentials -split ':', 2
-    if ($parts.Length -ne 2) {
-        Write-ErrorMsg "Invalid credentials format"
+
+    $tlsSetting = "On"
+    $defaultPort = "443"
+    if ($IngestorHost -like "https://*") {
+        $IngestorHost = $IngestorHost.Substring("https://".Length)
+        $tlsSetting = "On"
+        $defaultPort = "443"
+    }
+    elseif ($IngestorHost -like "http://*") {
+        $IngestorHost = $IngestorHost.Substring("http://".Length)
+        $tlsSetting = "Off"
+        $defaultPort = "80"
+    }
+    $IngestorHost = ($IngestorHost -split '/', 2)[0]
+
+    if ($IngestorHost -match '^(.*):([0-9]+)$') {
+        $Port = $Matches[2]
+        $IngestorHost = $Matches[1]
+    }
+    else {
+        $Port = $defaultPort
+    }
+
+    if ([string]::IsNullOrWhiteSpace($IngestorHost)) {
+        Write-ErrorMsg "Invalid host"
         exit 1
     }
-    
-    $username = $parts[0]
-    $password = $parts[1]
-    
-    if ([string]::IsNullOrWhiteSpace($IngestorHost) -or [string]::IsNullOrWhiteSpace($username) -or [string]::IsNullOrWhiteSpace($password)) {
-        Write-ErrorMsg "Invalid credentials"
+
+    $portNumber = 0
+    if (-not [int]::TryParse($Port, [ref]$portNumber) -or $portNumber -lt 1 -or $portNumber -gt 65535) {
+        Write-ErrorMsg "Invalid port: $Port"
+        Write-ErrorMsg "Port must be a number between 1 and 65535"
         exit 1
+    }
+
+    $tenantHeader = ""
+    if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
+        $tenantHeader = "    Header                    X-P-Tenant $TenantId"
     }
     
     Install-FluentBit
@@ -273,12 +298,12 @@ function Setup-FluentBit {
     Name                      opentelemetry
     Match                     node_metrics
     Host                      $IngestorHost
-    Port                      443
+    Port                      $Port
     Metrics_uri               /v1/metrics
     Log_response_payload      False
-    TLS                       On
-    Http_User                 $username
-    Http_Passwd               $password
+    TLS                       $tlsSetting
+    Header                    X-API-Key $ApiKey
+$tenantHeader
     Header                    X-P-Stream node-metrics
     Header                    X-P-Log-Source otel-metrics
     Compress                  gzip
@@ -297,16 +322,16 @@ function Show-Help {
 Fluent Bit Setup and Management Script for Windows
 
 Usage:
-  Setup:   .\fluent-bit.ps1 [host] [base64_credentials]
-  Stop:    .\fluent-bit.ps1 stop
-  Start:   .\fluent-bit.ps1 start
-  Restart: .\fluent-bit.ps1 restart
-  Status:  .\fluent-bit.ps1 status
-  Debug:   .\fluent-bit.ps1 debug     - Run in foreground to see output
+  Setup:   .\ingest.ps1 [host[:port]] [api_key] [tenant_id]
+  Stop:    .\ingest.ps1 stop
+  Start:   .\ingest.ps1 start
+  Restart: .\ingest.ps1 restart
+  Status:  .\ingest.ps1 status
+  Debug:   .\ingest.ps1 debug     - Run in foreground to see output
 
-To encode credentials:
-  `$creds = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("username:password"))
-  .\fluent-bit.ps1 your-host.com `$creds
+Example:
+  .\ingest.ps1 https://your-host.com:443 px_api_key
+  .\ingest.ps1 http://localhost:8000 px_api_key tenant-id
 "@
 }
 
@@ -358,10 +383,10 @@ switch ($Param1.ToLower()) {
     }
     default {
         if ([string]::IsNullOrWhiteSpace($Param2)) {
-            Write-ErrorMsg "Usage: .\fluent-bit.ps1 [host] [base64_credentials]"
-            Write-ErrorMsg "   Or: .\fluent-bit.ps1 [start|stop|restart|status|debug|help]"
+            Write-ErrorMsg "Usage: .\ingest.ps1 [host[:port]] [api_key] [tenant_id]"
+            Write-ErrorMsg "   Or: .\ingest.ps1 [start|stop|restart|status|debug|help]"
             exit 1
         }
-        Setup-FluentBit -IngestorHost $Param1 -CredentialsBase64 $Param2
+        Setup-FluentBit -IngestorHost $Param1 -ApiKey $Param2 -TenantId $Param3
     }
 }
