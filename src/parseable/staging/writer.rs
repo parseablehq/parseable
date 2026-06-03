@@ -42,8 +42,9 @@ use crate::{
 
 use super::StagingError;
 
+const DISK_WRITE_BATCH_MAX_AGE_SECS_VAR: &str = "DISK_WRITE_BATCH_MAX_AGE_SECS";
 static DISK_WRITE_BATCH_MAX_AGE_SECS: Lazy<i64> = Lazy::new(|| {
-    if let Ok(var) = std::env::var("P_DISK_WRITE_BATCH_MAX_AGE_SECS")
+    if let Ok(var) = std::env::var(DISK_WRITE_BATCH_MAX_AGE_SECS_VAR)
         && let Ok(var) = var.parse::<i64>()
     {
         var

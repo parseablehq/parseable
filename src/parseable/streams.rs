@@ -70,8 +70,9 @@ use super::{
     staging::{StagingError, reader::MergedReverseRecordReader, writer::Writer},
 };
 
+const DISK_WRITE_BATCH_ROWS_VAR: &str = "DISK_WRITE_BATCH_ROWS";
 static DISK_WRITE_BATCH_ROWS: Lazy<usize> = Lazy::new(|| {
-    if let Ok(var) = std::env::var("P_DISK_WRITE_BATCH_ROWS")
+    if let Ok(var) = std::env::var(DISK_WRITE_BATCH_ROWS_VAR)
         && let Ok(var) = var.parse::<usize>()
     {
         var
@@ -449,9 +450,7 @@ impl Stream {
     }
 
     pub fn get_schemas_if_present(&self) -> Result<Vec<Schema>, StagingError> {
-        let Ok(dir) = self.data_path.read_dir() else {
-            return Ok(vec![]);
-        };
+        let dir = self.data_path.read_dir()?;
 
         let mut schemas: Vec<Schema> = Vec::new();
 
@@ -459,7 +458,7 @@ impl Stream {
             if let Some(ext) = file.path().extension()
                 && ext.eq("schema")
             {
-                let file = File::open(file.path()).expect("Schema File should exist");
+                let file = File::open(file.path())?;
 
                 schemas.push(serde_json::from_reader(file)?);
             }
@@ -524,11 +523,10 @@ impl Stream {
         fs::create_dir_all(&self.data_path)?;
 
         // need to add something before .schema to make the file have an extension of type `schema`
-        let file_name = self
-            .ingestor_id
-            .as_ref()
-            .map(|id| format!(".ingestor.{id}.schema"))
-            .unwrap_or_else(|| ".schema".to_owned());
+        let file_name = self.ingestor_id.as_ref().map_or_else(
+            || ".schema".to_owned(),
+            |id| format!(".ingestor.{id}.schema"),
+        );
         let path = RelativePathBuf::from_iter([file_name]).to_path(&self.data_path);
         let tmp_path = path.with_extension("schema.tmp");
 
