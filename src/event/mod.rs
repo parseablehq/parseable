@@ -86,19 +86,22 @@ impl Event {
             }
         }
 
+        let stream = PARSEABLE.get_or_create_stream(&self.stream_name, &self.tenant_id);
+
         if self.is_first_event {
             commit_schema(&self.stream_name, self.rb.schema(), &self.tenant_id)?;
+            if !stream.get_static_schema_flag() {
+                stream.stage_schema_file(stream.get_schema().as_ref().clone())?;
+            }
         }
 
-        PARSEABLE
-            .get_or_create_stream(&self.stream_name, &self.tenant_id)
-            .push(
-                &key,
-                &self.rb,
-                self.parsed_timestamp,
-                &self.custom_partition_values,
-                self.stream_type,
-            )?;
+        stream.push(
+            &key,
+            &self.rb,
+            self.parsed_timestamp,
+            &self.custom_partition_values,
+            self.stream_type,
+        )?;
 
         let tenant = self.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         update_stats(
