@@ -114,7 +114,12 @@ pub fn expected_time_bins(
     let first_bin_start =
         DateTime::from_timestamp(first_bin_start, 0).ok_or(TimeBinError::IntervalOutOfRange)?;
 
-    (0..num_bins)
+    let seconds_to_cover = time_range.end.timestamp() - first_bin_start.timestamp();
+    let bins_to_cover_range = (seconds_to_cover + bin_seconds_i64 - 1) / bin_seconds_i64;
+    let bins_to_cover_range =
+        u64::try_from(bins_to_cover_range).map_err(|_| TimeBinError::IntervalOutOfRange)?;
+
+    (0..bins_to_cover_range)
         .map(|i| {
             let offset = i64::try_from(i)
                 .ok()
@@ -123,13 +128,10 @@ pub fn expected_time_bins(
             let bin_start = first_bin_start
                 .checked_add_signed(chrono::Duration::seconds(offset))
                 .ok_or(TimeBinError::IntervalOutOfRange)?;
-            let bin_end = if i == num_bins - 1 {
-                time_range.end
-            } else {
-                bin_start
-                    .checked_add_signed(chrono::Duration::seconds(bin_seconds_i64))
-                    .ok_or(TimeBinError::IntervalOutOfRange)?
-            };
+            let next_bin_start = bin_start
+                .checked_add_signed(chrono::Duration::seconds(bin_seconds_i64))
+                .ok_or(TimeBinError::IntervalOutOfRange)?;
+            let bin_end = next_bin_start.min(time_range.end);
             Ok((bin_start.to_rfc3339(), bin_end.to_rfc3339()))
         })
         .collect()
@@ -576,10 +578,24 @@ mod tests {
 
         let bins = expected_time_bins(&time_range, 2).unwrap();
 
+        assert_eq!(bins.len(), 3);
         assert_eq!(bins[0].0, "2023-01-01T12:00:00+00:00");
         assert_eq!(bins[0].1, "2023-01-01T12:05:00+00:00");
         assert_eq!(bins[1].0, "2023-01-01T12:05:00+00:00");
-        assert_eq!(bins[1].1, "2023-01-01T12:12:00+00:00");
+        assert_eq!(bins[1].1, "2023-01-01T12:10:00+00:00");
+        assert_eq!(bins[2].0, "2023-01-01T12:10:00+00:00");
+        assert_eq!(bins[2].1, "2023-01-01T12:12:00+00:00");
+    }
+
+    #[test]
+    fn expected_time_bins_covers_full_range_when_start_is_mid_bin() {
+        let time_range = time_period_from_str("2026-06-01T05:56:00Z", "2026-06-04T05:56:00Z");
+
+        let bins = expected_time_bins(&time_range, 60).unwrap();
+
+        assert_eq!(bins.len(), 61);
+        assert_eq!(bins.last().unwrap().0, "2026-06-04T04:48:00+00:00");
+        assert_eq!(bins.last().unwrap().1, "2026-06-04T05:56:00+00:00");
     }
 
     #[test]
