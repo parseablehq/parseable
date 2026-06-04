@@ -523,7 +523,7 @@ impl CountsRequest {
         let time_range = TimeRange::parse_human_time(&self.start_time, &self.end_time)?;
         let all_manifest_files = get_manifest_list(&self.stream, &time_range, tenant_id).await?;
         // get bounds
-        let counts = self.get_bounds(&time_range);
+        let counts = self.get_bounds(&time_range)?;
 
         // we have start and end times for each bin
         // we also have all the manifest files for the given time range
@@ -566,7 +566,7 @@ impl CountsRequest {
     }
 
     /// Calculate the end time for each bin based on the number of bins
-    fn get_bounds(&self, time_range: &TimeRange) -> Vec<TimeBounds> {
+    fn get_bounds(&self, time_range: &TimeRange) -> Result<Vec<TimeBounds>, QueryError> {
         let total_minutes = time_range
             .end
             .signed_duration_since(time_range.start)
@@ -590,6 +590,12 @@ impl CountsRequest {
                 total_minutes.div_ceil(1440)
             }
         };
+
+        if num_bins == 0 {
+            return Err(QueryError::CustomError(
+                "numBins must be greater than 0".to_string(),
+            ));
+        }
 
         // divide minutes by num bins to get minutes per bin
         let quotient = total_minutes / num_bins;
@@ -628,7 +634,7 @@ impl CountsRequest {
             });
         }
 
-        bounds
+        Ok(bounds)
     }
 
     /// This function will get executed only if self.conditions is some

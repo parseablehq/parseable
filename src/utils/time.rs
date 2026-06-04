@@ -32,6 +32,14 @@ pub enum TimeParseError {
     StartTimeAfterEndTime,
 }
 
+#[derive(Debug, thiserror::Error)]
+pub enum TimeBinError {
+    #[error("num_bins must be greater than 0")]
+    InvalidNumBins,
+    #[error("time bin interval is out of range")]
+    IntervalOutOfRange,
+}
+
 type Prefix = String;
 
 #[derive(Clone, Copy)]
@@ -71,35 +79,71 @@ pub fn count_api_bin_interval(start: &DateTime<Utc>, end: &DateTime<Utc>) -> &'s
     }
 }
 
-pub fn interval_for_num_bins(start: &DateTime<Utc>, end: &DateTime<Utc>, num_bins: u64) -> String {
+pub fn interval_for_num_bins(
+    start: &DateTime<Utc>,
+    end: &DateTime<Utc>,
+    num_bins: u64,
+) -> Result<String, TimeBinError> {
+    if num_bins == 0 {
+        return Err(TimeBinError::InvalidNumBins);
+    }
+
     let total_seconds = end.signed_duration_since(*start).num_seconds().max(1) as u64;
     let bin_seconds = (total_seconds / num_bins).max(1);
-    format!("{bin_seconds} seconds")
+    Ok(format!("{bin_seconds} seconds"))
 }
 
-pub fn expected_time_bins(time_range: &TimeRange, num_bins: u64) -> Vec<(String, String)> {
+pub fn expected_time_bins(
+    time_range: &TimeRange,
+    num_bins: u64,
+) -> Result<Vec<(String, String)>, TimeBinError> {
+    if num_bins == 0 {
+        return Err(TimeBinError::InvalidNumBins);
+    }
+
     let total_seconds = time_range
         .end
         .signed_duration_since(time_range.start)
         .num_seconds()
         .max(1) as u64;
     let bin_seconds = (total_seconds / num_bins).max(1);
+    let bin_seconds_i64 =
+        i64::try_from(bin_seconds).map_err(|_| TimeBinError::IntervalOutOfRange)?;
+    let first_bin_start =
+        time_range.start.timestamp().div_euclid(bin_seconds_i64) * bin_seconds_i64;
+    let first_bin_start =
+        DateTime::from_timestamp(first_bin_start, 0).ok_or(TimeBinError::IntervalOutOfRange)?;
 
     (0..num_bins)
         .map(|i| {
-            let bin_start = time_range.start + chrono::Duration::seconds((i * bin_seconds) as i64);
+            let offset = i64::try_from(i)
+                .ok()
+                .and_then(|i| i.checked_mul(bin_seconds_i64))
+                .ok_or(TimeBinError::IntervalOutOfRange)?;
+            let bin_start = first_bin_start
+                .checked_add_signed(chrono::Duration::seconds(offset))
+                .ok_or(TimeBinError::IntervalOutOfRange)?;
             let bin_end = if i == num_bins - 1 {
                 time_range.end
             } else {
-                time_range.start + chrono::Duration::seconds(((i + 1) * bin_seconds) as i64)
+                bin_start
+                    .checked_add_signed(chrono::Duration::seconds(bin_seconds_i64))
+                    .ok_or(TimeBinError::IntervalOutOfRange)?
             };
-            (bin_start.to_rfc3339(), bin_end.to_rfc3339())
+            Ok((bin_start.to_rfc3339(), bin_end.to_rfc3339()))
         })
         .collect()
 }
 
 pub fn match_time_bin_key(sql_bin_start: &str, expected_bins: &[(String, String)]) -> String {
-    let normalized = if !sql_bin_start.contains('+') && !sql_bin_start.ends_with('Z') {
+    let has_timezone = sql_bin_start.ends_with('Z')
+        || DateTime::parse_from_rfc3339(sql_bin_start).is_ok()
+        || sql_bin_start
+            .rsplit_once(['+', '-'])
+            .is_some_and(|(_, suffix)| {
+                suffix.len() == 5 && suffix.as_bytes().get(2) == Some(&b':')
+            });
+    let normalized = if !has_timezone {
         format!("{sql_bin_start}+00:00")
     } else {
         sql_bin_start.to_string()
@@ -505,6 +549,49 @@ mod tests {
 
         let result = TimeRange::parse_human_time(start_time, end_time);
         assert!(matches!(result, Err(TimeParseError::HumanTime(_))));
+    }
+
+    #[test]
+    fn interval_for_num_bins_rejects_zero_bins() {
+        let start = Utc.with_ymd_and_hms(2023, 1, 1, 12, 0, 0).unwrap();
+        let end = Utc.with_ymd_and_hms(2023, 1, 1, 12, 10, 0).unwrap();
+
+        let result = interval_for_num_bins(&start, &end, 0);
+
+        assert!(matches!(result, Err(TimeBinError::InvalidNumBins)));
+    }
+
+    #[test]
+    fn expected_time_bins_rejects_zero_bins() {
+        let time_range = time_period_from_str("2023-01-01T12:00:00Z", "2023-01-01T12:10:00Z");
+
+        let result = expected_time_bins(&time_range, 0);
+
+        assert!(matches!(result, Err(TimeBinError::InvalidNumBins)));
+    }
+
+    #[test]
+    fn expected_time_bins_aligns_to_epoch_anchor() {
+        let time_range = time_period_from_str("2023-01-01T12:02:00Z", "2023-01-01T12:12:00Z");
+
+        let bins = expected_time_bins(&time_range, 2).unwrap();
+
+        assert_eq!(bins[0].0, "2023-01-01T12:00:00+00:00");
+        assert_eq!(bins[0].1, "2023-01-01T12:05:00+00:00");
+        assert_eq!(bins[1].0, "2023-01-01T12:05:00+00:00");
+        assert_eq!(bins[1].1, "2023-01-01T12:12:00+00:00");
+    }
+
+    #[test]
+    fn match_time_bin_key_handles_negative_timezone_offsets() {
+        let expected_bins = vec![(
+            "2023-01-01T05:00:00+00:00".to_string(),
+            "2023-01-01T06:00:00+00:00".to_string(),
+        )];
+
+        let matched = match_time_bin_key("2023-01-01T00:00:00-05:00", &expected_bins);
+
+        assert_eq!(matched, "2023-01-01T05:00:00+00:00");
     }
 
     fn time_period_from_str(start: &str, end: &str) -> TimeRange {
