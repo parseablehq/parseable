@@ -36,7 +36,6 @@ pub fn set_cookie_cross_site(enabled: bool) {
 }
 use chrono::{Duration, TimeDelta};
 use openid::Bearer;
-use regex::Regex;
 use serde::Deserialize;
 use ulid::Ulid;
 use url::Url;
@@ -65,37 +64,38 @@ pub struct Login {
     pub code: String,
     pub state: Option<String>,
 }
-
 /// Struct representing query param when visiting /login
 /// Caller can set the state for code auth flow and this is
 /// at the end used as target for redirect
 #[derive(Deserialize, Debug)]
 pub struct RedirectAfterLogin {
-    pub redirect: Url,
+    #[serde(default)]
+    pub redirect: String,
 }
 
 pub async fn login(
     req: HttpRequest,
     query: web::Query<RedirectAfterLogin>,
 ) -> Result<HttpResponse, OIDCError> {
-    let conn = req.connection_info().clone();
-    let base_url_without_scheme = format!("{}/", conn.host());
-    if !is_valid_redirect_url(&base_url_without_scheme, query.redirect.as_str()) {
-        return Err(OIDCError::BadRequest(
-            "Bad Request, Invalid Redirect URL!".to_string(),
-        ));
-    }
+    let canonical_origin = get_canonical_origin();
+    let redirect =
+        is_valid_redirect_url_safe(&canonical_origin, &query.redirect).map_err(|_| {
+            tracing::warn!("Invalid redirect URL provided: '{}'", query.redirect);
+            OIDCError::BadRequest("Invalid Redirect URL".to_string())
+        })?;
 
     let oidc_client = OIDC_CLIENT.get();
 
     let session_key = extract_session_key_from_req(&req).ok();
     let (session_key, oidc_client) = match (session_key, oidc_client) {
-        (None, None) => return Ok(redirect_no_oauth_setup(query.redirect.clone())),
+        (None, None) => return Ok(redirect_no_oauth_setup(&canonical_origin)),
         (None, Some(client)) => {
-            let redirect = query.into_inner().redirect.to_string();
-
             let scope = PARSEABLE.options.scope.to_string();
-            let mut auth_url: String = client.read().await.auth_url(&scope, Some(redirect)).into();
+            let mut auth_url: String = client
+                .read()
+                .await
+                .auth_url(&scope, Some(redirect.clone()))
+                .into();
 
             auth_url.push_str("&access_type=offline&prompt=consent");
             return Ok(HttpResponse::TemporaryRedirect()
@@ -134,7 +134,7 @@ pub async fn login(
                 );
 
                 Ok(redirect_to_client(
-                    query.redirect.as_str(),
+                    &redirect,
                     [user_cookie, user_id_cookie, session_cookie],
                 ))
             }
@@ -143,23 +143,22 @@ pub async fn login(
         // if it's a valid active session, just redirect back
         key @ SessionKey::SessionId(_) => {
             let resp = if Users.session_exists(&key) {
-                redirect_to_client(query.redirect.as_str(), None)
+                redirect_to_client(&redirect, None)
             } else {
                 Users.remove_session(&key);
                 if let Some(oidc_client) = oidc_client {
-                    let redirect = query.into_inner().redirect.to_string();
                     let scope = PARSEABLE.options.scope.to_string();
                     let mut auth_url: String = oidc_client
                         .read()
                         .await
-                        .auth_url(&scope, Some(redirect))
+                        .auth_url(&scope, Some(redirect.clone()))
                         .into();
                     auth_url.push_str("&access_type=offline&prompt=consent");
                     HttpResponse::TemporaryRedirect()
                         .insert_header((actix_web::http::header::LOCATION, auth_url))
                         .finish()
                 } else {
-                    redirect_to_client(query.redirect.as_str(), None)
+                    redirect_to_client(&redirect, None)
                 }
             };
             Ok(resp)
@@ -167,11 +166,22 @@ pub async fn login(
     }
 }
 
-pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> HttpResponse {
+pub async fn logout(
+    req: HttpRequest,
+    query: web::Query<RedirectAfterLogin>,
+) -> Result<HttpResponse, OIDCError> {
     let oidc_client = OIDC_CLIENT.get();
-
+    let canonical_origin = get_canonical_origin();
+    let redirect =
+        is_valid_redirect_url_safe(&canonical_origin, &query.redirect).map_err(|_| {
+            tracing::warn!(
+                "Invalid redirect URL provided in logout: '{}'",
+                query.redirect
+            );
+            OIDCError::BadRequest("Invalid Redirect URL".to_string())
+        })?;
     let Some(session) = extract_session_key_from_req(&req).ok() else {
-        return redirect_to_client(query.redirect.as_str(), None);
+        return Ok(redirect_to_client(&redirect, None));
     };
     let tenant_id = get_tenant_id_from_key(&session);
     let user = Users.remove_session(&session);
@@ -181,14 +191,14 @@ pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> 
         None
     };
 
-    match (user, logout_endpoint) {
+    Ok(match (user, logout_endpoint) {
         (Some(username), Some(logout_endpoint))
             if Users.is_oauth(&username, &tenant_id).unwrap_or_default() =>
         {
-            redirect_to_oidc_logout(logout_endpoint, &query.redirect)
+            redirect_to_oidc_logout(logout_endpoint, &redirect, &canonical_origin)
         }
-        _ => redirect_to_client(query.redirect.as_str(), None),
-    }
+        _ => redirect_to_client(&redirect, None),
+    })
 }
 
 /// Handler for code callback
@@ -364,11 +374,18 @@ fn build_login_response(
             "user_id": user_id,
         }))
     } else {
-        let redirect_url = login_query
-            .state
-            .clone()
-            .unwrap_or_else(|| PARSEABLE.options.address.to_string());
-
+        let canonical_origin = get_canonical_origin();
+        let redirect_url = match login_query.state.as_deref() {
+            Some(state) => match is_valid_redirect_url_safe(&canonical_origin, state) {
+                Ok(redirect_url) => redirect_url,
+                Err(_) => {
+                    return HttpResponse::BadRequest().json(serde_json::json!({
+                        "error":"Invalid redirect URL"
+                    }));
+                }
+            },
+            None => canonical_origin.to_string(),
+        };
         redirect_to_client(&redirect_url, cookies)
     }
 }
@@ -409,8 +426,17 @@ fn exchange_basic_for_cookie(
     cookie_session(id)
 }
 
-fn redirect_to_oidc_logout(mut logout_endpoint: Url, redirect: &Url) -> HttpResponse {
-    logout_endpoint.set_query(Some(&format!("post_logout_redirect_uri={redirect}")));
+fn redirect_to_oidc_logout(
+    mut logout_endpoint: Url,
+    redirect: &str,
+    canonical: &Url,
+) -> HttpResponse {
+    let post_logout_redirect =
+        absolute_redirect_url(canonical, redirect).unwrap_or_else(|| canonical.to_string());
+    logout_endpoint.set_query(None);
+    logout_endpoint
+        .query_pairs_mut()
+        .append_pair("post_logout_redirect_uri", &post_logout_redirect);
     HttpResponse::TemporaryRedirect()
         .insert_header((actix_web::http::header::CACHE_CONTROL, "no-store"))
         .insert_header((
@@ -434,8 +460,10 @@ pub fn redirect_to_client(
     response.finish()
 }
 
-fn redirect_no_oauth_setup(mut url: Url) -> HttpResponse {
-    url.set_path("oidc-not-configured");
+fn redirect_no_oauth_setup(canonical: &Url) -> HttpResponse {
+    let url = canonical
+        .join("/oidc-not-configured")
+        .unwrap_or_else(|_| canonical.clone());
     let mut response = HttpResponse::MovedPermanently();
     response.insert_header((actix_web::http::header::LOCATION, url.as_str()));
     response.insert_header((actix_web::http::header::CACHE_CONTROL, "no-store"));
@@ -627,10 +655,82 @@ impl actix_web::ResponseError for OIDCError {
             .body(self.to_string())
     }
 }
+// get the canonical origin for this PARSEABLE instance
+fn get_canonical_origin() -> Url {
+    if let Some(origin_url) = &PARSEABLE.options.domain_address {
+        return origin_url.clone();
+    }
+    crate::oidc::canonical_local_origin(
+        &PARSEABLE.options.address,
+        PARSEABLE.options.tls_cert_path.is_some() && PARSEABLE.options.tls_key_path.is_some(),
+    )
+}
 
-fn is_valid_redirect_url(base_url_without_scheme: &str, redirect_url: &str) -> bool {
-    let http_scheme_match_regex = Regex::new(r"^(https?://)").unwrap();
-    let redirect_url_without_scheme = http_scheme_match_regex.replace(redirect_url, "");
+fn is_valid_redirect_url_safe(canonical: &Url, redirect: &str) -> Result<String, ()> {
+    if redirect.is_empty() {
+        return Ok(canonical.to_string());
+    }
+    if redirect.starts_with('/') && !redirect.starts_with("//") {
+        return Ok(redirect.to_string());
+    }
+    let url = Url::parse(redirect).map_err(|_| ())?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(());
+    }
+    if url.origin() != canonical.origin() {
+        return Err(());
+    }
+    Ok(url.to_string())
+}
 
-    base_url_without_scheme == redirect_url_without_scheme
+fn absolute_redirect_url(canonical: &Url, redirect: &str) -> Option<String> {
+    if redirect.is_empty() {
+        return Some(canonical.to_string());
+    }
+    if redirect.starts_with('/') && !redirect.starts_with("//") {
+        canonical.join(redirect).ok().map(|url| url.to_string())
+    } else {
+        Url::parse(redirect).ok().map(|url| url.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_redirect_uses_canonical_origin() {
+        let canonical = Url::parse("https://parseable.example.com/").unwrap();
+
+        assert_eq!(
+            is_valid_redirect_url_safe(&canonical, "").unwrap(),
+            canonical.to_string()
+        );
+        assert_eq!(
+            absolute_redirect_url(&canonical, "").unwrap(),
+            canonical.to_string()
+        );
+    }
+
+    #[test]
+    fn relative_redirect_is_allowed_and_can_be_made_absolute() {
+        let canonical = Url::parse("https://parseable.example.com/").unwrap();
+
+        assert_eq!(
+            is_valid_redirect_url_safe(&canonical, "/dashboard").unwrap(),
+            "/dashboard"
+        );
+        assert_eq!(
+            absolute_redirect_url(&canonical, "/dashboard").unwrap(),
+            "https://parseable.example.com/dashboard"
+        );
+    }
+
+    #[test]
+    fn cross_origin_redirect_is_rejected() {
+        let canonical = Url::parse("https://parseable.example.com/").unwrap();
+
+        assert!(is_valid_redirect_url_safe(&canonical, "https://evil.example.com/").is_err());
+        assert!(is_valid_redirect_url_safe(&canonical, "//evil.example.com/").is_err());
+    }
 }
