@@ -85,17 +85,6 @@ static DISK_WRITE_BATCH_ROWS: Lazy<usize> = Lazy::new(|| {
     }
 });
 
-const SORT_FOR_METRIC_PRUNING_VAR: &str = "SORT_FOR_METRIC_PRUNING";
-static SORT_FOR_METRIC_PRUNING: Lazy<bool> = Lazy::new(|| {
-    if let Ok(var) = std::env::var(SORT_FOR_METRIC_PRUNING_VAR)
-        && let Ok(var) = var.parse::<bool>()
-    {
-        var
-    } else {
-        true
-    }
-});
-
 const INPROCESS_DIR_PREFIX: &str = "processing_";
 const METRIC_ROW_GROUP_PREP_IN_FLIGHT: usize = 1;
 
@@ -928,7 +917,7 @@ impl Stream {
             |s| s.as_str().to_string(),
         );
 
-        if sort_for_metric_pruning && *SORT_FOR_METRIC_PRUNING {
+        if sort_for_metric_pruning {
             // Buffer batches up to the row-group target, then
             // concat + sort + write as a single contiguous batch. The
             // ArrowWriter splits the sorted batch into row groups at the
