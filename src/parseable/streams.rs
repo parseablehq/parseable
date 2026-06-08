@@ -23,7 +23,7 @@ use arrow_schema::{Field, Fields, Schema};
 use chrono::{NaiveDateTime, Timelike, Utc};
 use derive_more::derive::{Deref, DerefMut};
 use itertools::Itertools;
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
@@ -33,6 +33,7 @@ use parquet::{
     },
     schema::types::ColumnPath,
 };
+use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use relative_path::RelativePathBuf;
 use std::sync::PoisonError;
 use std::{
@@ -62,6 +63,7 @@ use crate::{
     option::Mode,
     parseable::{DEFAULT_TENANT, PARSEABLE},
     storage::{StreamType, object_storage::to_bytes, retention::Retention},
+    sync::FLUSH_AND_CONVERT_RUNTIME,
     utils::time::{Minute, TimeRange},
 };
 
@@ -69,6 +71,8 @@ use super::{
     ARROW_FILE_EXTENSION, LogStream, PART_FILE_EXTENSION,
     staging::{StagingError, reader::MergedReverseRecordReader, writer::Writer},
 };
+
+static HOSTNAME: OnceCell<String> = OnceCell::new();
 
 const DISK_WRITE_BATCH_ROWS_VAR: &str = "DISK_WRITE_BATCH_ROWS";
 static DISK_WRITE_BATCH_ROWS: Lazy<usize> = Lazy::new(|| {
@@ -209,12 +213,16 @@ impl Stream {
         parsed_timestamp: NaiveDateTime,
         custom_partition_values: &HashMap<String, String>,
     ) -> String {
-        let mut hostname = hostname::get()
-            .unwrap_or_else(|_| std::ffi::OsString::from(&Ulid::new().to_string()))
-            .into_string()
-            .unwrap_or_else(|_| Ulid::new().to_string())
-            .matches(|c: char| c.is_alphanumeric() || c == '-' || c == '_')
-            .collect::<String>();
+        let mut hostname = HOSTNAME
+            .get_or_init(|| {
+                hostname::get()
+                    .unwrap_or_else(|_| std::ffi::OsString::from(&Ulid::new().to_string()))
+                    .into_string()
+                    .unwrap_or_else(|_| Ulid::new().to_string())
+                    .matches(|c: char| c.is_alphanumeric() || c == '-' || c == '_')
+                    .collect::<String>()
+            })
+            .clone();
 
         if let Some(id) = &self.ingestor_id {
             hostname.push_str(id);
@@ -257,7 +265,7 @@ impl Stream {
             return vec![];
         };
 
-        //iterate through all the inprocess_ directories and collect all arrow files
+        // iterate through all the inprocess_ directories and collect all arrow files
         dir.filter_map(|entry| {
             let path = entry.ok()?.path();
             if path.is_dir()
@@ -587,6 +595,7 @@ impl Stream {
                     self.stream_name, poisoned
                 )))
             })?;
+            // why clean Writer.MemWriter?
             writer.mem.clear();
             writer.take_flushable_disk(forced)
         };
@@ -825,32 +834,52 @@ impl Stream {
         }
 
         self.update_staging_metrics(&staging_files, tenant_id);
-        for (parquet_path, arrow_files) in staging_files {
-            let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
-            if record_reader.readers.is_empty() {
-                continue;
-            }
-            let merged_schema = record_reader.merged_schema();
-            let props = self.parquet_writer_props(&merged_schema, time_partition, custom_partition);
-            schemas.push(merged_schema.clone());
-            let schema = Arc::new(merged_schema);
 
-            let part_path = parquet_path.with_extension("part");
+        let _schemas: Vec<Result<Option<Schema>, StagingError>> = staging_files.into_par_iter().map(
+            |(parquet_path, arrow_files)| -> Result<Option<Schema>, StagingError> {
+                let record_reader = MergedReverseRecordReader::try_new(&arrow_files);
+                if record_reader.readers.is_empty() {
+                    Ok(None)
+                } else {
+                    let merged_schema = record_reader.merged_schema();
+                    let props =
+                        self.parquet_writer_props(&merged_schema, time_partition, custom_partition);
+                    // schemas.push(merged_schema.clone());
+                    let schema = Arc::new(merged_schema.clone());
 
-            if !self.write_parquet_part_file(
-                &part_path,
-                record_reader,
-                &schema,
-                &props,
-                time_partition,
-            )? {
-                continue;
-            }
+                    let part_path = parquet_path.with_extension("part");
 
-            if let Err(e) = std::fs::rename(&part_path, &parquet_path) {
-                error!("Couldn't rename part file: {part_path:?} -> {parquet_path:?}, error = {e}");
-            } else {
-                self.cleanup_arrow_files_and_dir(&arrow_files, tenant_id);
+                    if !self.write_parquet_part_file(
+                        &part_path,
+                        record_reader,
+                        &schema,
+                        &props,
+                        time_partition,
+                    )? {
+                        return Ok(None)
+                    }
+
+                    if let Err(e) = std::fs::rename(&part_path, &parquet_path) {
+                    error!(
+                        "Couldn't rename part file: {part_path:?} -> {parquet_path:?}, error = {e}"
+                    );
+                } else {
+                    self.cleanup_arrow_files_and_dir(&arrow_files, tenant_id);
+                }
+                Ok(Some(merged_schema))
+                }
+            },
+        )
+        .collect();
+
+        for res in _schemas {
+            match res {
+                Ok(s) => {
+                    if let Some(s) = s {
+                        schemas.push(s)
+                    }
+                }
+                Err(e) => return Err(e),
             }
         }
         if schemas.is_empty() {
@@ -880,6 +909,8 @@ impl Stream {
             .open(part_path)
             .map_err(|_| StagingError::Create)?;
         let mut writer = ArrowWriter::try_new(&mut part_file, schema.clone(), Some(props.clone()))?;
+
+        // does pruning help with query?
         let sort_for_metric_pruning = self.is_otel_metrics();
         let time_partition_field = time_partition.map_or_else(
             || DEFAULT_TIMESTAMP_KEY.to_string(),
@@ -1409,20 +1440,24 @@ impl Stream {
         // For regular cycles, use false to only flush non-current writers
         let forced = init_signal || shutdown_signal;
         self.flush(forced)?;
-        info!(
-            "Flushing stream ({}) took: {}s",
-            self.stream_name,
-            start_flush.elapsed().as_secs_f64()
-        );
+        if self.get_stream_type().eq(&StreamType::UserDefined) {
+            info!(
+                "Flushing stream ({}) took: {}s",
+                self.stream_name,
+                start_flush.elapsed().as_secs_f64()
+            );
+        }
 
         let start_convert = Instant::now();
 
         self.prepare_parquet(init_signal, shutdown_signal, tenant_id)?;
-        info!(
-            "Converting arrows to parquet on stream ({}) took: {}s",
-            self.stream_name,
-            start_convert.elapsed().as_secs_f64()
-        );
+        if self.get_stream_type().eq(&StreamType::UserDefined) {
+            info!(
+                "Converting arrows to parquet on stream ({}) took: {}s",
+                self.stream_name,
+                start_convert.elapsed().as_secs_f64()
+            );
+        }
 
         Ok(())
     }
@@ -1512,15 +1547,6 @@ impl Streams {
         } else {
             vec![]
         }
-
-        // self.read()
-        //     .expect(LOCK_EXPECT)
-        //     .get(&tenant_id)
-        //     .and_then(|v|v.keys())
-        //     .map(f)
-        //     .keys()
-        //     .map(String::clone)
-        //     .collect()
     }
 
     pub fn list_internal_streams(&self, tenant_id: &Option<String>) -> Vec<String> {
@@ -1553,6 +1579,7 @@ impl Streams {
             vec![DEFAULT_TENANT.to_owned()]
         };
 
+        let handle = FLUSH_AND_CONVERT_RUNTIME.handle();
         for tenant_id in tenants {
             let guard = self.read().expect(LOCK_EXPECT);
             let streams: Vec<Arc<Stream>> = if let Some(tenant_streams) = guard.get(&tenant_id) {
@@ -1563,10 +1590,13 @@ impl Streams {
             for stream in streams {
                 let tenant = tenant_id.clone();
                 let span = info_span!("stream_sync", stream_name = %stream.stream_name);
-                joinset.spawn_blocking(move || {
-                    let _guard = span.enter();
-                    stream.flush_and_convert(init_signal, shutdown_signal, &Some(tenant))
-                });
+                joinset.spawn_blocking_on(
+                    move || {
+                        let _guard = span.enter();
+                        stream.flush_and_convert(init_signal, shutdown_signal, &Some(tenant))
+                    },
+                    handle,
+                );
             }
         }
     }

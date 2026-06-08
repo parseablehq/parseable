@@ -26,11 +26,15 @@ use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use tokio::runtime::Runtime;
 use tokio::sync::{RwLock, mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, interval_at, sleep};
 use tokio::{select, task};
 use tracing::{Instrument, error, info, info_span, trace, warn};
+
+pub static FLUSH_AND_CONVERT_RUNTIME: Lazy<Runtime> =
+    Lazy::new(|| Runtime::new().expect("Runtime should be constructible"));
 
 static LOCAL_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 static REMOTE_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
