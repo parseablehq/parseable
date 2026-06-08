@@ -17,16 +17,15 @@
  */
 
 use chrono::{TimeDelta, Timelike};
-use datafusion::common::HashSet;
+use dashmap::DashMap;
 use futures::FutureExt;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::future::Future;
 use std::panic::AssertUnwindSafe;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::{RwLock, mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinSet;
 use tokio::time::{Duration, Instant, interval_at, sleep};
 use tokio::{select, task};
@@ -35,8 +34,8 @@ use tracing::{Instrument, error, info, info_span, trace, warn};
 static LOCAL_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 static REMOTE_SYNC_RUNNING: AtomicBool = AtomicBool::new(false);
 
-pub static ACTIVE_OBJECT_STORE_SYNC_FILES: Lazy<Arc<RwLock<HashSet<PathBuf>>>> =
-    Lazy::new(|| Arc::new(RwLock::new(HashSet::new())));
+pub static ACTIVE_OBJECT_STORE_SYNC_FILES: Lazy<DashMap<PathBuf, std::time::Instant>> =
+    Lazy::new(DashMap::new);
 /// RAII guard that clears a sync-running flag on drop, so a panic inside the
 /// sync body cannot leave the flag stuck at `true` and wedge future ticks.
 struct SyncRunningGuard(&'static AtomicBool);
