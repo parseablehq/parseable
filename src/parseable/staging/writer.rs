@@ -38,6 +38,7 @@ use itertools::Itertools;
 use once_cell::sync::Lazy;
 use rand::distributions::{Alphanumeric, DistString};
 use tracing::error;
+use ulid::Ulid;
 
 use crate::{
     parseable::{ARROW_FILE_EXTENSION, PART_FILE_EXTENSION},
@@ -65,6 +66,17 @@ static ARROW_FLUSH_SIZE_LIMIT: Lazy<usize> = Lazy::new(|| {
         var
     } else {
         1024 * 1024 * 1024 * 10
+    }
+});
+
+const ONE_PARQUET_PER_ARROW_VAR: &str = "ONE_PARQUET_PER_ARROW";
+static ONE_PARQUET_PER_ARROW: Lazy<bool> = Lazy::new(|| {
+    if let Ok(var) = std::env::var(ONE_PARQUET_PER_ARROW_VAR)
+        && let Ok(var) = var.parse::<bool>()
+    {
+        var
+    } else {
+        false
     }
 });
 
@@ -279,7 +291,15 @@ impl Drop for DiskWriter {
         }
 
         let mut arrow_path = self.path.to_owned();
-        arrow_path.set_extension(ARROW_FILE_EXTENSION);
+
+        // a rudimentary way to ensure one parquet per arrow file
+        if *ONE_PARQUET_PER_ARROW {
+            arrow_path.set_extension(Ulid::new().to_string());
+            #[allow(clippy::incompatible_msrv)]
+            arrow_path.add_extension(ARROW_FILE_EXTENSION);
+        } else {
+            arrow_path.set_extension(ARROW_FILE_EXTENSION);
+        }
 
         // If file exists, append a random string before .date to avoid overwriting
         if arrow_path.exists() {
