@@ -64,6 +64,7 @@ use crate::storage::field_stats::DATASET_STATS_STREAM_NAME;
 use crate::storage::field_stats::calculate_field_stats;
 use crate::storage::field_stats::extract_datetime_from_parquet_path_regex;
 use crate::sync::ACTIVE_OBJECT_STORE_SYNC_FILES;
+use crate::sync::FLUSH_AND_CONVERT_RUNTIME;
 
 use super::{
     ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, ObjectStorageError, ObjectStoreFormat,
@@ -1079,13 +1080,14 @@ async fn process_parquet_files(
         let parquet_paths: Vec<PathBuf> = upload_context
             .stream
             .parquet_files()
-            .into_par_iter()
+            .into_iter()
             .filter(|p| !guard.contains(p))
             .collect();
 
         let mut ret = Vec::with_capacity(parquet_paths.len());
         ret.clone_from(&parquet_paths);
         guard.extend(parquet_paths);
+        tracing::info!(ACTIVE_OBJECT_STORE_SYNC_FILES=?ACTIVE_OBJECT_STORE_SYNC_FILES);
         ret
     };
 
@@ -1153,20 +1155,23 @@ async fn spawn_parquet_upload_task(
 
     let stream_name = stream_name.to_string();
     let schema = upload_context.schema.clone();
+    let handle = FLUSH_AND_CONVERT_RUNTIME.handle();
+    join_set.spawn_on(
+        async move {
+            let _permit = semaphore.acquire().await.expect("semaphore is not closed");
 
-    join_set.spawn(async move {
-        let _permit = semaphore.acquire().await.expect("semaphore is not closed");
-
-        upload_single_parquet_file(
-            store,
-            path,
-            stream_relative_path,
-            stream_name,
-            schema,
-            tenant_id,
-        )
-        .await
-    });
+            upload_single_parquet_file(
+                store,
+                path,
+                stream_relative_path,
+                stream_name,
+                schema,
+                tenant_id,
+            )
+            .await
+        },
+        handle,
+    );
 }
 
 /// Collects results from all upload tasks
@@ -1293,6 +1298,7 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
     } else {
         vec![None]
     };
+    let handle = FLUSH_AND_CONVERT_RUNTIME.handle();
     for tenant_id in tenants {
         for stream_name in PARSEABLE.streams.list(&tenant_id) {
             if let Ok(stream) = PARSEABLE.get_stream(&stream_name, &tenant_id)
@@ -1304,7 +1310,7 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
             let object_store = object_store.clone();
             let id = tenant_id.clone();
             let span = info_span!("stream_upload", stream_name = %stream_name);
-            joinset.spawn(
+            joinset.spawn_on(
                 async move {
                     let start = Instant::now();
                     let result = object_store
@@ -1321,6 +1327,7 @@ pub fn sync_all_streams(joinset: &mut JoinSet<Result<(), ObjectStorageError>>) {
                     result
                 }
                 .instrument(span),
+                handle,
             );
         }
     }
