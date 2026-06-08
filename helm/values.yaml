@@ -159,7 +159,8 @@ parseable:
     httpGet:
       path: /api/v1/readiness
       port: 8000
-  toleration: []
+  tolerations: []
+  affinity: {}
   resources:
     limits:
       cpu: 500m
@@ -212,11 +213,9 @@ parseable:
     fsGroupChangePolicy: "Always"
   nameOverride: ""
   fullnameOverride: ""
-  affinity: {}
   podLabels:
     app: parseable
     component: query
-  tolerations: []
   ## Use this section to create ServiceMonitor object for
   ## this Parseable deployment. Read more on ServiceMonitor
   ## here: https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.ServiceMonitor
