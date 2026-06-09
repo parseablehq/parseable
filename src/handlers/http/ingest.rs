@@ -152,9 +152,7 @@ pub async fn ingest(
         None,
         telemetry_type,
         &tenant_id,
-    )
-    .await
-    {
+    ) {
         error!("Ingestion failed for stream {stream_name}: {e}");
         return Err(e);
     }
@@ -320,9 +318,7 @@ async fn process_otel_content(
                     None,
                     telemetry_type,
                     &tenant_id,
-                )
-                .await
-                {
+                ) {
                     error!("Ingestion failed for stream {stream_name}: {e}");
                     return Err(e);
                 }
@@ -519,9 +515,7 @@ pub async fn post_event(
         None,
         TelemetryType::Logs,
         &tenant_id,
-    )
-    .await
-    {
+    ) {
         error!("Ingestion failed for stream {stream_name}: {e}");
         return Err(e);
     }

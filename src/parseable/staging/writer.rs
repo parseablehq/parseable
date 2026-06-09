@@ -80,6 +80,17 @@ static ONE_PARQUET_PER_ARROW: Lazy<bool> = Lazy::new(|| {
     }
 });
 
+const ENABLE_MEMORY_STAGING_VAR: &str = "ENABLE_MEMORY_STAGING";
+pub static ENABLE_MEMORY_STAGING: Lazy<bool> = Lazy::new(|| {
+    if let Ok(var) = std::env::var(ENABLE_MEMORY_STAGING_VAR)
+        && let Ok(var) = var.parse::<bool>()
+    {
+        var
+    } else {
+        true
+    }
+});
+
 #[derive(Default)]
 pub struct Writer {
     pub mem: MemWriter<4096>,
@@ -245,7 +256,14 @@ impl DiskWriter {
         range: TimeRange,
     ) -> Result<Self, StagingError> {
         let mut path = path.into();
-        path.set_extension(PART_FILE_EXTENSION);
+        // a rudimentary way to ensure one parquet per arrow file
+        if *ONE_PARQUET_PER_ARROW {
+            path.set_extension(Ulid::new().to_string());
+            #[allow(clippy::incompatible_msrv)]
+            path.add_extension(PART_FILE_EXTENSION);
+        } else {
+            path.set_extension(PART_FILE_EXTENSION);
+        }
         let file = OpenOptions::new()
             .write(true)
             .truncate(true)
@@ -292,15 +310,7 @@ impl Drop for DiskWriter {
 
         let mut arrow_path = self.path.to_owned();
 
-        // a rudimentary way to ensure one parquet per arrow file
-        if *ONE_PARQUET_PER_ARROW {
-            arrow_path.set_extension(Ulid::new().to_string());
-            #[allow(clippy::incompatible_msrv)]
-            arrow_path.add_extension(ARROW_FILE_EXTENSION);
-        } else {
-            arrow_path.set_extension(ARROW_FILE_EXTENSION);
-        }
-
+        arrow_path.set_extension(ARROW_FILE_EXTENSION);
         // If file exists, append a random string before .date to avoid overwriting
         if arrow_path.exists() {
             let file_name = arrow_path.file_name().unwrap().to_string_lossy();

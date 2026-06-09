@@ -61,7 +61,7 @@ use crate::{
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
-    parseable::{DEFAULT_TENANT, PARSEABLE},
+    parseable::{DEFAULT_TENANT, PARSEABLE, staging::writer::ENABLE_MEMORY_STAGING},
     storage::{StreamType, object_storage::to_bytes, retention::Retention},
     sync::FLUSH_AND_CONVERT_RUNTIME,
     utils::time::{Minute, TimeRange},
@@ -202,7 +202,9 @@ impl Stream {
             guard.push_disk(filename, record, file_path, range, *DISK_WRITE_BATCH_ROWS)?;
         }
 
-        guard.mem.push(schema_key, record)?;
+        if *ENABLE_MEMORY_STAGING {
+            guard.mem.push(schema_key, record)?;
+        }
 
         Ok(())
     }
@@ -565,7 +567,11 @@ impl Stream {
             )))
         })?;
 
-        writer.mem.recordbatch_cloned(schema)
+        if *ENABLE_MEMORY_STAGING {
+            writer.mem.recordbatch_cloned(schema)
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     pub fn clear(&self) -> Result<(), StagingError> {
@@ -596,7 +602,9 @@ impl Stream {
                 )))
             })?;
             // why clean Writer.MemWriter?
-            writer.mem.clear();
+            if *ENABLE_MEMORY_STAGING {
+                writer.mem.clear();
+            }
             writer.take_flushable_disk(forced)
         };
         pending_writes.flush_into(&mut stale_writers, &self.data_path)?;

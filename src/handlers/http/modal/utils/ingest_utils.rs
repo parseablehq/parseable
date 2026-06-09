@@ -62,7 +62,7 @@ const MAX_FIELD_VALUE_LENGTH: usize = 100;
     ),
     fields(stream_name)
 )]
-pub async fn flatten_and_push_logs(
+pub fn flatten_and_push_logs(
     json: Value,
     stream_name: &str,
     log_source: &LogSource,
@@ -79,7 +79,7 @@ pub async fn flatten_and_push_logs(
         LogSource::Kinesis => {
             //custom flattening required for Amazon Kinesis
             let message: Message = serde_json::from_value(json)?;
-            let flattened_kinesis_data = flatten_kinesis_logs(message).await?;
+            let flattened_kinesis_data = flatten_kinesis_logs(message)?;
             let record = convert_to_array(flattened_kinesis_data)?;
             push_logs(
                 stream_name,
