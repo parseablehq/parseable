@@ -259,7 +259,6 @@ impl DiskWriter {
         // a rudimentary way to ensure one parquet per arrow file
         if *ONE_PARQUET_PER_ARROW {
             path.set_extension(Ulid::new().to_string());
-            #[allow(clippy::incompatible_msrv)]
             path.add_extension(PART_FILE_EXTENSION);
         } else {
             path.set_extension(PART_FILE_EXTENSION);
