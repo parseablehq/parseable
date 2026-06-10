@@ -56,7 +56,7 @@ use crate::{
         DEFAULT_TIMESTAMP_KEY,
         format::{LogSource, LogSourceEntry},
     },
-    handlers::DatasetTag,
+    handlers::{DatasetTag, http::ingest::INGESTION_THREADPOOL},
     hottier::StreamHotTier,
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
@@ -757,7 +757,7 @@ impl Stream {
         time_partition_field: String,
     ) -> std::sync::mpsc::Receiver<Result<PreparedMetricRowGroup, StagingError>> {
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
-        rayon::spawn(move || {
+        INGESTION_THREADPOOL.spawn(move || {
             let _ = tx.send(Self::prepare_metric_row_group(
                 schema,
                 buffer,

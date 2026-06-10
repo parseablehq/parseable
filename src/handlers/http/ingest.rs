@@ -24,6 +24,8 @@ use actix_web::{HttpRequest, HttpResponse, http::header::ContentType};
 use arrow_array::RecordBatch;
 use bytes::Bytes;
 use chrono::Utc;
+use once_cell::sync::Lazy;
+use rayon::{ThreadPool, ThreadPoolBuilder};
 use tokio::sync::oneshot;
 use tracing::error;
 
@@ -54,6 +56,9 @@ use super::logstream::error::{CreateStreamError, StreamError};
 use super::modal::utils::ingest_utils::{flatten_and_push_logs, get_custom_fields_from_header};
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
+
+pub static INGESTION_THREADPOOL: Lazy<ThreadPool> =
+    Lazy::new(|| ThreadPoolBuilder::new().build().unwrap());
 
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
