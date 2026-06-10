@@ -69,17 +69,6 @@ static ARROW_FLUSH_SIZE_LIMIT: Lazy<usize> = Lazy::new(|| {
     }
 });
 
-const ONE_PARQUET_PER_ARROW_VAR: &str = "ONE_PARQUET_PER_ARROW";
-static ONE_PARQUET_PER_ARROW: Lazy<bool> = Lazy::new(|| {
-    if let Ok(var) = std::env::var(ONE_PARQUET_PER_ARROW_VAR)
-        && let Ok(var) = var.parse::<bool>()
-    {
-        var
-    } else {
-        false
-    }
-});
-
 const ENABLE_MEMORY_STAGING_VAR: &str = "ENABLE_MEMORY_STAGING";
 pub static ENABLE_MEMORY_STAGING: Lazy<bool> = Lazy::new(|| {
     if let Ok(var) = std::env::var(ENABLE_MEMORY_STAGING_VAR)
@@ -91,11 +80,37 @@ pub static ENABLE_MEMORY_STAGING: Lazy<bool> = Lazy::new(|| {
     }
 });
 
-#[derive(Default)]
+const ONE_PARQUET_PER_ARROW_VAR: &str = "ONE_PARQUET_PER_ARROW";
+static ONE_PARQUET_PER_ARROW: Lazy<bool> = Lazy::new(|| {
+    if let Ok(var) = std::env::var(ONE_PARQUET_PER_ARROW_VAR)
+        && let Ok(var) = var.parse::<bool>()
+    {
+        var
+    } else {
+        false
+    }
+});
+
+// #[derive(Default)]
 pub struct Writer {
-    pub mem: MemWriter<4096>,
+    pub mem: Option<MemWriter<4096>>,
     pub disk: HashMap<String, DiskWriter>,
     disk_pending: HashMap<String, PendingDiskBatch>,
+}
+
+impl Default for Writer {
+    fn default() -> Self {
+        let mem = if *ENABLE_MEMORY_STAGING {
+            Some(MemWriter::default())
+        } else {
+            None
+        };
+        Self {
+            mem,
+            disk: HashMap::default(),
+            disk_pending: HashMap::default(),
+        }
+    }
 }
 
 impl Writer {
@@ -256,6 +271,7 @@ impl DiskWriter {
         range: TimeRange,
     ) -> Result<Self, StagingError> {
         let mut path = path.into();
+
         // a rudimentary way to ensure one parquet per arrow file
         if *ONE_PARQUET_PER_ARROW {
             path.set_extension(Ulid::new().to_string());
@@ -263,6 +279,7 @@ impl DiskWriter {
         } else {
             path.set_extension(PART_FILE_EXTENSION);
         }
+
         let file = OpenOptions::new()
             .write(true)
             .truncate(true)

@@ -61,7 +61,7 @@ use crate::{
     metadata::{LogStreamMetadata, SchemaVersion},
     metrics,
     option::Mode,
-    parseable::{DEFAULT_TENANT, PARSEABLE, staging::writer::ENABLE_MEMORY_STAGING},
+    parseable::{DEFAULT_TENANT, PARSEABLE},
     storage::{StreamType, object_storage::to_bytes, retention::Retention},
     sync::FLUSH_AND_CONVERT_RUNTIME,
     utils::time::{Minute, TimeRange},
@@ -202,8 +202,8 @@ impl Stream {
             guard.push_disk(filename, record, file_path, range, *DISK_WRITE_BATCH_ROWS)?;
         }
 
-        if *ENABLE_MEMORY_STAGING {
-            guard.mem.push(schema_key, record)?;
+        if let Some(mem) = guard.mem.as_mut() {
+            mem.push(schema_key, record)?;
         }
 
         Ok(())
@@ -560,22 +560,23 @@ impl Stream {
         &self,
         schema: &Arc<Schema>,
     ) -> Result<Vec<RecordBatch>, StagingError> {
-        let writer = self.writer.lock().map_err(|poisoned| {
+        let mut writer = self.writer.lock().map_err(|poisoned| {
             StagingError::PoisonError(PoisonError::new(format!(
                 "Writer lock poisoned while cloning record batches for stream {} - {}",
                 self.stream_name, poisoned
             )))
         })?;
 
-        if *ENABLE_MEMORY_STAGING {
-            writer.mem.recordbatch_cloned(schema)
+        if let Some(mem) = writer.mem.as_mut() {
+            mem.recordbatch_cloned(schema)
         } else {
             Ok(Vec::new())
         }
     }
 
     pub fn clear(&self) -> Result<(), StagingError> {
-        self.writer
+        if let Some(m) = self
+            .writer
             .lock()
             .map_err(|poisoned| {
                 StagingError::PoisonError(PoisonError::new(format!(
@@ -584,7 +585,10 @@ impl Stream {
                 )))
             })?
             .mem
-            .clear();
+            .as_mut()
+        {
+            m.clear()
+        }
         Ok(())
     }
 
@@ -601,9 +605,9 @@ impl Stream {
                     self.stream_name, poisoned
                 )))
             })?;
-            // why clean Writer.MemWriter?
-            if *ENABLE_MEMORY_STAGING {
-                writer.mem.clear();
+
+            if let Some(mem) = writer.mem.as_mut() {
+                mem.clear();
             }
             writer.take_flushable_disk(forced)
         };
