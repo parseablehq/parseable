@@ -16,8 +16,8 @@
  *
  */
 
-use actix_web::HttpRequest;
 use actix_web::http::header::USER_AGENT;
+use actix_web::{HttpRequest, web};
 use chrono::Utc;
 use opentelemetry_proto::tonic::{
     logs::v1::LogsData, metrics::v1::MetricsData, trace::v1::TracesData,
@@ -25,7 +25,8 @@ use opentelemetry_proto::tonic::{
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use serde_json::Value;
 use std::collections::HashMap;
-use tracing::{instrument, warn};
+use tokio::sync::oneshot;
+use tracing::{error, instrument, warn};
 
 use crate::{
     event::{
@@ -33,7 +34,8 @@ use crate::{
         format::{EventFormat, LogSource, json},
     },
     handlers::{
-        EXTRACT_LOG_KEY, LOG_SOURCE_KEY, STREAM_NAME_HEADER_KEY, TelemetryType,
+        CONTENT_TYPE_JSON, CONTENT_TYPE_PROTOBUF, EXTRACT_LOG_KEY, LOG_SOURCE_KEY,
+        STREAM_NAME_HEADER_KEY, TelemetryType,
         http::{
             ingest::PostError,
             kinesis::{Message, flatten_kinesis_logs},
@@ -42,12 +44,141 @@ use crate::{
     otel::{logs::flatten_otel_logs, metrics::flatten_otel_metrics, traces::flatten_otel_traces},
     parseable::{DEFAULT_TENANT, PARSEABLE},
     storage::StreamType,
-    utils::json::{convert_array_to_object, flatten::convert_to_array},
+    utils::{
+        get_tenant_id_from_request,
+        json::{convert_array_to_object, flatten::convert_to_array},
+    },
 };
 
 const IGNORE_HEADERS: [&str; 3] = [STREAM_NAME_HEADER_KEY, LOG_SOURCE_KEY, EXTRACT_LOG_KEY];
 const MAX_CUSTOM_FIELDS: usize = 10;
 const MAX_FIELD_VALUE_LENGTH: usize = 100;
+
+pub fn ingest_helper(
+    stream_name: String,
+    tenant_id: Option<String>,
+    log_source: LogSource,
+    telemetry_type: TelemetryType,
+    p_custom_fields: HashMap<String, String>,
+    json: Value,
+    time_partition: Option<String>,
+) -> Result<(), PostError> {
+    if let Err(e) = flatten_and_push_logs(
+        json,
+        &stream_name,
+        &log_source,
+        &p_custom_fields,
+        time_partition,
+        telemetry_type,
+        &tenant_id,
+    ) {
+        error!("Ingestion failed for stream {stream_name}: {e}");
+        return Err(e);
+    }
+
+    Ok(())
+}
+
+// Common content processing for OTEL ingestion
+pub async fn process_otel_content(
+    req: &HttpRequest,
+    body: web::Bytes,
+    stream_name: &str,
+    log_source: &LogSource,
+    telemetry_type: TelemetryType,
+) -> Result<(), PostError> {
+    let p_custom_fields = get_custom_fields_from_header(req);
+    let content_type = req
+        .headers()
+        .get("Content-Type")
+        .and_then(|h| h.to_str().ok())
+        .map(str::to_owned);
+    let tenant_id = get_tenant_id_from_request(req);
+    let (s, r) = oneshot::channel();
+    let stream_name = stream_name.to_string();
+    let log_source = log_source.clone();
+
+    rayon::spawn(move || {
+        let r = handle_otel_ingestion(
+            body,
+            p_custom_fields,
+            stream_name,
+            log_source,
+            telemetry_type,
+            content_type,
+            tenant_id,
+        );
+        let _ = s.send(r);
+    });
+
+    if let Err(e) = r.await.map_err(|e| PostError::CustomError(e.to_string()))? {
+        Err(e)
+    } else {
+        Ok(())
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_otel_ingestion(
+    body: web::Bytes,
+    p_custom_fields: HashMap<String, String>,
+    stream_name: String,
+    log_source: LogSource,
+    telemetry_type: TelemetryType,
+    content_type: Option<String>,
+    tenant_id: Option<String>,
+) -> Result<(), PostError> {
+    match content_type {
+        Some(content_type) => {
+            if content_type == CONTENT_TYPE_JSON {
+                let json: serde_json::Value = match serde_json::from_slice(&body) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        error!(
+                            "Ingestion failed for stream {stream_name}: malformed JSON in request body"
+                        );
+                        return Err(PostError::SerdeError(e));
+                    }
+                };
+                if let Err(e) = flatten_and_push_logs(
+                    json,
+                    &stream_name,
+                    &log_source,
+                    &p_custom_fields,
+                    None,
+                    telemetry_type,
+                    &tenant_id,
+                ) {
+                    error!("Ingestion failed for stream {stream_name}: {e}");
+                    return Err(e);
+                }
+            } else if content_type == CONTENT_TYPE_PROTOBUF {
+                error!(
+                    "Ingestion failed for stream {stream_name}: Protobuf ingestion is not supported in Parseable OSS"
+                );
+                return Err(PostError::Invalid(anyhow::anyhow!(
+                    "Ingestion failed for stream {stream_name}: Protobuf ingestion is not supported in Parseable OSS"
+                )));
+            } else {
+                error!(
+                    "Ingestion failed for stream {stream_name}: Unsupported Content-Type: {content_type}. Expected application/json or application/x-protobuf"
+                );
+                return Err(PostError::Invalid(anyhow::anyhow!(
+                    "Ingestion failed for stream {stream_name}: Unsupported Content-Type: {content_type}. Expected application/json or application/x-protobuf"
+                )));
+            }
+        }
+        None => {
+            error!(
+                "Ingestion failed for stream {stream_name}: Missing Content-Type header. Expected application/json or application/x-protobuf"
+            );
+            return Err(PostError::Invalid(anyhow::anyhow!(
+                "Ingestion failed for stream {stream_name}: Missing Content-Type header. Expected application/json or application/x-protobuf"
+            )));
+        }
+    }
+    Ok(())
+}
 
 #[instrument(
     name = "flatten_and_push_logs",
@@ -62,7 +193,7 @@ const MAX_FIELD_VALUE_LENGTH: usize = 100;
     ),
     fields(stream_name)
 )]
-pub async fn flatten_and_push_logs(
+pub fn flatten_and_push_logs(
     json: Value,
     stream_name: &str,
     log_source: &LogSource,
@@ -79,7 +210,7 @@ pub async fn flatten_and_push_logs(
         LogSource::Kinesis => {
             //custom flattening required for Amazon Kinesis
             let message: Message = serde_json::from_value(json)?;
-            let flattened_kinesis_data = flatten_kinesis_logs(message).await?;
+            let flattened_kinesis_data = flatten_kinesis_logs(message)?;
             let record = convert_to_array(flattened_kinesis_data)?;
             push_logs(
                 stream_name,

@@ -140,7 +140,7 @@ pub fn collect_json_from_anyvalue(key: &str, value: AnyValue) -> Map<String, Val
     collect_json_from_value(key, value.value.unwrap())
 }
 
-//traverse through Value by calling function ollect_json_from_any_value
+// traverse through Value by calling function ollect_json_from_any_value
 pub fn collect_json_from_values(values: &Option<AnyValue>, key: &str) -> Map<String, Value> {
     let mut value_json: Map<String, Value> = Map::with_capacity(1);
 

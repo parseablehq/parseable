@@ -59,7 +59,7 @@ struct Data {
 //     "requestId": "b858288a-f5d8-4181-a746-3f3dd716be8a",
 //     "timestamp": "1704964113659"
 // }
-pub async fn flatten_kinesis_logs(message: Message) -> Result<Vec<Value>, anyhow::Error> {
+pub fn flatten_kinesis_logs(message: Message) -> Result<Vec<Value>, anyhow::Error> {
     let mut vec_kinesis_json = Vec::new();
 
     for record in message.records.iter() {
