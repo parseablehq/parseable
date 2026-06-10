@@ -202,7 +202,9 @@ impl Stream {
             guard.push_disk(filename, record, file_path, range, *DISK_WRITE_BATCH_ROWS)?;
         }
 
-        guard.mem.push(schema_key, record)?;
+        if let Some(mem) = guard.mem.as_mut() {
+            mem.push(schema_key, record)?;
+        }
 
         Ok(())
     }
@@ -558,18 +560,23 @@ impl Stream {
         &self,
         schema: &Arc<Schema>,
     ) -> Result<Vec<RecordBatch>, StagingError> {
-        let writer = self.writer.lock().map_err(|poisoned| {
+        let mut writer = self.writer.lock().map_err(|poisoned| {
             StagingError::PoisonError(PoisonError::new(format!(
                 "Writer lock poisoned while cloning record batches for stream {} - {}",
                 self.stream_name, poisoned
             )))
         })?;
 
-        writer.mem.recordbatch_cloned(schema)
+        if let Some(mem) = writer.mem.as_mut() {
+            mem.recordbatch_cloned(schema)
+        } else {
+            Ok(Vec::new())
+        }
     }
 
     pub fn clear(&self) -> Result<(), StagingError> {
-        self.writer
+        if let Some(m) = self
+            .writer
             .lock()
             .map_err(|poisoned| {
                 StagingError::PoisonError(PoisonError::new(format!(
@@ -578,7 +585,10 @@ impl Stream {
                 )))
             })?
             .mem
-            .clear();
+            .as_mut()
+        {
+            m.clear()
+        }
         Ok(())
     }
 
@@ -595,8 +605,10 @@ impl Stream {
                     self.stream_name, poisoned
                 )))
             })?;
-            // why clean Writer.MemWriter?
-            writer.mem.clear();
+
+            if let Some(mem) = writer.mem.as_mut() {
+                mem.clear();
+            }
             writer.take_flushable_disk(forced)
         };
         pending_writes.flush_into(&mut stale_writers, &self.data_path)?;
