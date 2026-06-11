@@ -57,8 +57,11 @@ use super::modal::utils::ingest_utils::{flatten_and_push_logs, get_custom_fields
 use super::users::dashboards::DashboardError;
 use super::users::filters::FiltersError;
 
-pub static INGESTION_THREADPOOL: Lazy<ThreadPool> =
-    Lazy::new(|| ThreadPoolBuilder::new().build().unwrap());
+pub static INGESTION_THREADPOOL: Lazy<ThreadPool> = Lazy::new(|| {
+    ThreadPoolBuilder::new()
+        .build()
+        .expect("Unable to create Rayon thread pool")
+});
 
 // Handler for POST /api/v1/ingest
 // ingests events by extracting stream name from header
