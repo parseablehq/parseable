@@ -1025,6 +1025,12 @@ impl Stream {
                 buffered_rows += record_rows;
                 buffer.push(record);
                 if buffered_rows >= target {
+                    if pending_row_groups.len() >= *METRIC_ROW_GROUP_PREP_IN_FLIGHT
+                        && let Some(rx) = pending_row_groups.pop_front()
+                    {
+                        let prepared = Self::receive_prepared_metric_row_group(rx)?;
+                        writer.write(&prepared.batch)?;
+                    }
                     let row_group_buffer =
                         std::mem::replace(&mut buffer, Vec::with_capacity(buffer_capacity));
                     let next_row_group = Self::spawn_metric_row_group_prepare(
@@ -1033,29 +1039,23 @@ impl Stream {
                         time_partition_field.clone(),
                     );
                     pending_row_groups.push_back(next_row_group);
-                    if pending_row_groups.len() > *METRIC_ROW_GROUP_PREP_IN_FLIGHT
-                        && let Some(rx) = pending_row_groups.pop_front()
-                    {
-                        let prepared = Self::receive_prepared_metric_row_group(rx)?;
-                        writer.write(&prepared.batch)?;
-                    }
                     buffer.clear();
                     buffered_rows = 0;
                 }
             }
             if !buffer.is_empty() {
+                if pending_row_groups.len() >= *METRIC_ROW_GROUP_PREP_IN_FLIGHT
+                    && let Some(rx) = pending_row_groups.pop_front()
+                {
+                    let prepared = Self::receive_prepared_metric_row_group(rx)?;
+                    writer.write(&prepared.batch)?;
+                }
                 let next_row_group = Self::spawn_metric_row_group_prepare(
                     schema.clone(),
                     buffer,
                     time_partition_field.clone(),
                 );
                 pending_row_groups.push_back(next_row_group);
-                if pending_row_groups.len() > *METRIC_ROW_GROUP_PREP_IN_FLIGHT
-                    && let Some(rx) = pending_row_groups.pop_front()
-                {
-                    let prepared = Self::receive_prepared_metric_row_group(rx)?;
-                    writer.write(&prepared.batch)?;
-                }
             }
             while let Some(rx) = pending_row_groups.pop_front() {
                 let prepared = Self::receive_prepared_metric_row_group(rx)?;
