@@ -26,14 +26,19 @@ use std::{
 };
 
 use arrow_array::RecordBatch;
-use arrow_ipc::writer::StreamWriter;
+use arrow_ipc::{
+    CompressionType,
+    writer::{IpcWriteOptions, StreamWriter},
+};
 use arrow_schema::Schema;
 use arrow_select::concat::concat_batches;
 use chrono::{TimeDelta, Utc};
+use datafusion::physical_plan::buffer::SizedMessage;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
 use rand::distributions::{Alphanumeric, DistString};
 use tracing::error;
+use ulid::Ulid;
 
 use crate::{
     parseable::{ARROW_FILE_EXTENSION, PART_FILE_EXTENSION},
@@ -53,11 +58,59 @@ static DISK_WRITE_BATCH_MAX_AGE_SECS: Lazy<i64> = Lazy::new(|| {
     }
 });
 
-#[derive(Default)]
+const ARROW_FLUSH_SIZE_LIMIT_VAR: &str = "ARROW_FLUSH_SIZE_LIMIT";
+static ARROW_FLUSH_SIZE_LIMIT: Lazy<usize> = Lazy::new(|| {
+    if let Ok(var) = std::env::var(ARROW_FLUSH_SIZE_LIMIT_VAR)
+        && let Ok(var) = var.parse::<usize>()
+    {
+        var
+    } else {
+        1024 * 1024 * 1024 * 10
+    }
+});
+
+const ENABLE_MEMORY_STAGING_VAR: &str = "ENABLE_MEMORY_STAGING";
+pub static ENABLE_MEMORY_STAGING: Lazy<bool> = Lazy::new(|| {
+    if let Ok(var) = std::env::var(ENABLE_MEMORY_STAGING_VAR)
+        && let Ok(var) = var.parse::<bool>()
+    {
+        var
+    } else {
+        true
+    }
+});
+
+const ONE_PARQUET_PER_ARROW_VAR: &str = "ONE_PARQUET_PER_ARROW";
+static ONE_PARQUET_PER_ARROW: Lazy<bool> = Lazy::new(|| {
+    if let Ok(var) = std::env::var(ONE_PARQUET_PER_ARROW_VAR)
+        && let Ok(var) = var.parse::<bool>()
+    {
+        var
+    } else {
+        false
+    }
+});
+
+// #[derive(Default)]
 pub struct Writer {
-    pub mem: MemWriter<16384>,
+    pub mem: Option<MemWriter<4096>>,
     pub disk: HashMap<String, DiskWriter>,
     disk_pending: HashMap<String, PendingDiskBatch>,
+}
+
+impl Default for Writer {
+    fn default() -> Self {
+        let mem = if *ENABLE_MEMORY_STAGING {
+            Some(MemWriter::default())
+        } else {
+            None
+        };
+        Self {
+            mem,
+            disk: HashMap::default(),
+            disk_pending: HashMap::default(),
+        }
+    }
 }
 
 impl Writer {
@@ -162,7 +215,7 @@ fn write_pending_disk_batch(
 
     let schema = pending.batches[0].schema();
     let batch = concat_batches(&schema, pending.batches.iter())?;
-    match disk.get_mut(&filename) {
+    let s = match disk.get_mut(&filename) {
         Some(writer) => writer.write(&batch)?,
         None => {
             let range = pending.range.expect("pending disk batch must have range");
@@ -170,9 +223,13 @@ fn write_pending_disk_batch(
                 fs::create_dir_all(parent)?;
             }
             let mut writer = DiskWriter::try_new(file_path, &schema, range)?;
-            writer.write(&batch)?;
-            disk.insert(filename, writer);
+            let s = writer.write(&batch)?;
+            disk.insert(filename.clone(), writer);
+            s
         }
+    };
+    if s >= *ARROW_FLUSH_SIZE_LIMIT {
+        disk.remove(&filename);
     }
 
     Ok(())
@@ -203,6 +260,7 @@ pub struct DiskWriter {
     inner: StreamWriter<BufWriter<File>>,
     path: PathBuf,
     range: TimeRange,
+    size: usize,
 }
 
 impl DiskWriter {
@@ -213,15 +271,36 @@ impl DiskWriter {
         range: TimeRange,
     ) -> Result<Self, StagingError> {
         let mut path = path.into();
-        path.set_extension(PART_FILE_EXTENSION);
+
+        // a rudimentary way to ensure one parquet per arrow file
+        if *ONE_PARQUET_PER_ARROW {
+            path.set_extension(Ulid::new().to_string());
+            path.add_extension(PART_FILE_EXTENSION);
+        } else {
+            path.set_extension(PART_FILE_EXTENSION);
+        }
+
         let file = OpenOptions::new()
             .write(true)
             .truncate(true)
             .create(true)
             .open(&path)?;
-        let inner = StreamWriter::try_new_buffered(file, schema)?;
+        let inner = StreamWriter::try_new_with_options(
+            BufWriter::new(file),
+            schema,
+            IpcWriteOptions::default()
+                .try_with_compression(Some(CompressionType::LZ4_FRAME))
+                .unwrap(),
+        )?;
 
-        Ok(Self { inner, path, range })
+        let size = 0;
+
+        Ok(Self {
+            inner,
+            path,
+            range,
+            size,
+        })
     }
 
     pub fn is_current(&self) -> bool {
@@ -230,8 +309,10 @@ impl DiskWriter {
 
     /// Write a single recordbatch into file
     #[cfg_attr(feature = "hotpath", hotpath::measure)]
-    pub fn write(&mut self, rb: &RecordBatch) -> Result<(), StagingError> {
-        self.inner.write(rb).map_err(StagingError::Arrow)
+    pub fn write(&mut self, rb: &RecordBatch) -> Result<usize, StagingError> {
+        self.size += rb.size();
+        self.inner.write(rb).map_err(StagingError::Arrow)?;
+        Ok(self.size)
     }
 }
 
@@ -244,8 +325,8 @@ impl Drop for DiskWriter {
         }
 
         let mut arrow_path = self.path.to_owned();
-        arrow_path.set_extension(ARROW_FILE_EXTENSION);
 
+        arrow_path.set_extension(ARROW_FILE_EXTENSION);
         // If file exists, append a random string before .date to avoid overwriting
         if arrow_path.exists() {
             let file_name = arrow_path.file_name().unwrap().to_string_lossy();
@@ -260,6 +341,11 @@ impl Drop for DiskWriter {
         if let Err(err) = std::fs::rename(&self.path, &arrow_path) {
             error!("Couldn't rename file {:?}, error = {err}", self.path);
         }
+        tracing::info!(
+            "flushing {:?} due to drop with size {}\n",
+            self.path,
+            self.size
+        );
     }
 }
 

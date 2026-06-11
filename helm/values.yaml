@@ -28,6 +28,7 @@ parseable:
         app: parseable
         component: ingestor
       count: 3
+      terminationGracePeriodSeconds: 30
       env:
         RUST_LOG: warn
       ## Use this endpoint to send events to ingestors
@@ -50,6 +51,7 @@ parseable:
   ## Add environment variables to the Parseable Deployment
   env:
     RUST_LOG: warn
+  terminationGracePeriodSeconds: 30
   ## Enable to create a log stream and then add retention configuration
   ## for that log stream
   # logstream:
@@ -159,7 +161,8 @@ parseable:
     httpGet:
       path: /api/v1/readiness
       port: 8000
-  toleration: []
+  tolerations: []
+  affinity: {}
   resources:
     limits:
       cpu: 500m
@@ -212,11 +215,9 @@ parseable:
     fsGroupChangePolicy: "Always"
   nameOverride: ""
   fullnameOverride: ""
-  affinity: {}
   podLabels:
     app: parseable
     component: query
-  tolerations: []
   ## Use this section to create ServiceMonitor object for
   ## this Parseable deployment. Read more on ServiceMonitor
   ## here: https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.ServiceMonitor

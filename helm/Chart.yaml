@@ -2,8 +2,8 @@ apiVersion: v2
 name: parseable
 description: Helm chart for Parseable OSS version. Columnar data lake platform - purpose built for observability
 type: application
-version: 2.8.1
-appVersion: "v2.8.1"
+version: 2.8.3
+appVersion: "v2.8.0"
 icon: "https://raw.githubusercontent.com/parseablehq/.github/main/images/logo.svg"
 
 maintainers:
