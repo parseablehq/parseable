@@ -320,8 +320,7 @@ impl BlobStore {
     #[tracing::instrument(
         name = "azure.get_object",
         skip(self),
-        fields(path = %path, tenant = ?tenant_id, bytes = tracing::field::Empty),
-        err
+        fields(path = %path, tenant = ?tenant_id, bytes = tracing::field::Empty)
     )]
     async fn _get_object(
         &self,
@@ -446,8 +445,7 @@ impl BlobStore {
     #[tracing::instrument(
         name = "azure.list_dates",
         skip(self),
-        fields(stream = %stream, tenant = ?tenant_id, dates = tracing::field::Empty),
-        err
+        fields(stream = %stream, tenant = ?tenant_id, dates = tracing::field::Empty)
     )]
     async fn _list_dates(
         &self,
@@ -651,8 +649,7 @@ impl ObjectStorage for BlobStore {
     #[tracing::instrument(
         name = "azure.head",
         skip(self),
-        fields(path = %path, tenant = ?tenant_id),
-        err
+        fields(path = %path, tenant = ?tenant_id)
     )]
     async fn head(
         &self,
@@ -827,8 +824,7 @@ impl ObjectStorage for BlobStore {
     #[tracing::instrument(
         name = "azure.check",
         skip(self),
-        fields(tenant = ?tenant_id, ok = tracing::field::Empty),
-        err
+        fields(tenant = ?tenant_id, ok = tracing::field::Empty)
     )]
     async fn check(&self, tenant_id: &Option<String>) -> Result<(), ObjectStorageError> {
         let result = self

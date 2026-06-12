@@ -453,7 +453,7 @@ impl FieldCountState {
 
             if !self.approximate {
                 self.approximate = true;
-                warn!(
+                debug!(
                     "Field stats cardinality cap reached for stream {} field {}. Tracking bounded top-value candidates with max_tracked_values={}",
                     self.stream_name, self.field_name, self.max_tracked_values
                 );

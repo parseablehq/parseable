@@ -26,6 +26,7 @@ use actix_web::{
 use bytes::Bytes;
 use tracing::warn;
 
+use crate::option::Mode;
 use crate::{
     catalog::remove_manifest_from_snapshot,
     handlers::http::logstream::error::StreamError,
@@ -77,7 +78,12 @@ pub async fn delete(
     let tenant_id = get_tenant_id_from_request(&req);
     // Delete from staging
     let stream_dir = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
-    if let Err(err) = fs::remove_dir_all(&stream_dir.data_path) {
+
+    // delete staging only for ingest server or standalone server
+    // else skip
+    if (PARSEABLE.options.mode == Mode::Ingest || PARSEABLE.options.mode == Mode::All)
+        && let Err(err) = fs::remove_dir_all(&stream_dir.data_path)
+    {
         warn!(
             "failed to delete local data for stream {} with error {err}. Clean {} manually",
             stream_name,
