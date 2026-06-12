@@ -477,8 +477,7 @@ impl S3 {
     #[tracing::instrument(
         name = "s3.get_object",
         skip(self),
-        fields(path = %path, tenant = ?tenant_id, bytes = tracing::field::Empty),
-        err
+        fields(path = %path, tenant = ?tenant_id, bytes = tracing::field::Empty)
     )]
     async fn _get_object(
         &self,
@@ -615,8 +614,7 @@ impl S3 {
     #[tracing::instrument(
         name = "s3.list_dates",
         skip(self),
-        fields(stream = %stream, tenant = ?tenant_id, dates = tracing::field::Empty),
-        err
+        fields(stream = %stream, tenant = ?tenant_id, dates = tracing::field::Empty)
     )]
     async fn _list_dates(
         &self,
@@ -848,8 +846,7 @@ impl ObjectStorage for S3 {
     #[tracing::instrument(
         name = "s3.head",
         skip(self),
-        fields(path = %path, tenant = ?tenant_id),
-        err
+        fields(path = %path, tenant = ?tenant_id)
     )]
     async fn head(
         &self,
@@ -1046,8 +1043,7 @@ impl ObjectStorage for S3 {
     #[tracing::instrument(
         name = "s3.check",
         skip(self),
-        fields(tenant = ?tenant_id, ok = tracing::field::Empty),
-        err
+        fields(tenant = ?tenant_id, ok = tracing::field::Empty)
     )]
     async fn check(&self, tenant_id: &Option<String>) -> Result<(), ObjectStorageError> {
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);

@@ -65,6 +65,14 @@ pub struct ObjectStoreMetastore {
     pub storage: Arc<dyn ObjectStorage>,
 }
 
+fn is_missing_optional_dir(err: &ObjectStorageError) -> bool {
+    match err {
+        ObjectStorageError::NoSuchKey(_) => true,
+        ObjectStorageError::IoError(err) => err.kind() == std::io::ErrorKind::NotFound,
+        _ => false,
+    }
+}
+
 #[async_trait]
 impl Metastore for ObjectStoreMetastore {
     /// Since Parseable already starts with a connection to an object store, no need to implement this
@@ -263,7 +271,7 @@ impl Metastore for ObjectStoreMetastore {
         let mut all_alerts = HashMap::new();
         for mut tenant in base_paths {
             let alerts_path = RelativePathBuf::from_iter([&tenant, ALERTS_ROOT_DIRECTORY]);
-            let alerts = self
+            let alerts = match self
                 .storage
                 .get_objects(
                     Some(&alerts_path),
@@ -272,7 +280,12 @@ impl Metastore for ObjectStoreMetastore {
                     }),
                     &Some(tenant.clone()),
                 )
-                .await?;
+                .await
+            {
+                Ok(alerts) => alerts,
+                Err(err) if is_missing_optional_dir(&err) => Vec::new(),
+                Err(err) => return Err(MetastoreError::ObjectStorageError(err)),
+            };
             if tenant.is_empty() {
                 tenant.clone_from(&DEFAULT_TENANT.to_string());
             }
@@ -1122,14 +1135,20 @@ impl Metastore for ObjectStoreMetastore {
                 SETTINGS_ROOT_DIRECTORY,
                 TARGETS_ROOT_DIRECTORY,
             ]);
-            let targets = self
+            let target_bytes = match self
                 .storage
                 .get_objects(
                     Some(&targets_path),
                     Box::new(|file_name| file_name.ends_with(".json")),
                     &Some(tenant.clone()),
                 )
-                .await?
+                .await
+            {
+                Ok(targets) => targets,
+                Err(err) if is_missing_optional_dir(&err) => Vec::new(),
+                Err(err) => return Err(MetastoreError::ObjectStorageError(err)),
+            };
+            let targets = target_bytes
                 .iter()
                 .filter_map(|bytes| {
                     serde_json::from_slice(bytes)
