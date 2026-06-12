@@ -5,7 +5,10 @@ param(
     [string]$Param1,
     
     [Parameter(Position=1)]
-    [string]$Param2
+    [string]$Param2,
+
+    [Parameter(Position=2)]
+    [string]$Param3
 )
 
 $ProgressPreference = 'SilentlyContinue'
@@ -15,6 +18,8 @@ $BIN_DIR = "$INSTALL_DIR\bin"
 $FLUENT_BIT_EXE = "$BIN_DIR\fluent-bit.exe"
 $CONFIG_FILE = "$PSScriptRoot\fluent-bit.conf"
 $PID_FILE = "$PSScriptRoot\fluent-bit.pid"
+$LOG_FILE = "$PSScriptRoot\fluent-bit.log"
+$ERROR_LOG_FILE = "$PSScriptRoot\fluent-bit.err.log"
 
 $SUPPORTED_ARCH = @("AMD64", "ARM64")
 
@@ -79,8 +84,11 @@ function Show-Status {
         Get-Process -Id $processId | Format-Table Id, ProcessName, CPU, WS, StartTime -AutoSize
         Write-Host ""
         Write-Info "Config file: $CONFIG_FILE"
+        Write-Info "Log file: $LOG_FILE"
+        Write-Info "Error log file: $ERROR_LOG_FILE"
         Write-Host ""
-        Write-Info "To see output, run: .\fluent-bit.ps1 debug"
+        Write-Info "To see logs: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 logs"
+        Write-Info "To stop: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 stop"
     }
     else {
         Write-Warning "Fluent Bit is not running"
@@ -88,6 +96,25 @@ function Show-Status {
             Write-Info "Cleaning up stale PID file..."
             Remove-Item $PID_FILE -ErrorAction SilentlyContinue
         }
+    }
+}
+
+function Show-Logs {
+    if (Test-Path $LOG_FILE) {
+        Write-Info "Showing last 80 stdout log lines from $LOG_FILE"
+        Get-Content -Path $LOG_FILE -Tail 80
+    }
+    else {
+        Write-Warning "Stdout log file not found: $LOG_FILE"
+    }
+
+    if (Test-Path $ERROR_LOG_FILE) {
+        Write-Host ""
+        Write-Info "Showing last 80 stderr log lines from $ERROR_LOG_FILE"
+        Get-Content -Path $ERROR_LOG_FILE -Tail 80
+    }
+    else {
+        Write-Warning "Stderr log file not found: $ERROR_LOG_FILE"
     }
 }
 
@@ -172,7 +199,7 @@ function Start-FluentBit {
     if (Test-FluentBitRunning) {
         $processId = Get-Content $PID_FILE
         Write-Warning "Fluent Bit is already running (PID: $processId)"
-        Write-Info "Use 'fluent-bit.ps1 stop' to stop it first"
+        Write-Info "Use 'ingest.ps1 stop' to stop it first"
         return
     }
     
@@ -189,11 +216,15 @@ function Start-FluentBit {
     
     $version = & $FLUENT_BIT_EXE --version 2>$null | Select-Object -First 1
     
-    # Start Fluent Bit process in background (no logging)
+    Remove-Item $LOG_FILE, $ERROR_LOG_FILE -ErrorAction SilentlyContinue
+
+    # Start Fluent Bit process in background and capture logs
     $process = Start-Process -FilePath $FLUENT_BIT_EXE `
         -ArgumentList "-c", "`"$CONFIG_FILE`"" `
         -WorkingDirectory $BIN_DIR `
         -WindowStyle Hidden `
+        -RedirectStandardOutput $LOG_FILE `
+        -RedirectStandardError $ERROR_LOG_FILE `
         -PassThru
     
     # Save PID
@@ -207,16 +238,17 @@ function Start-FluentBit {
     
     if (-not $stillRunning) {
         Write-ErrorMsg "Fluent Bit exited immediately"
-        Write-ErrorMsg "Run '.\fluent-bit.ps1 debug' to see error details"
+        Write-ErrorMsg "Run '.\ingest.ps1 debug' to see error details"
         Remove-Item $PID_FILE -ErrorAction SilentlyContinue
         exit 1
     }
     else {
         Write-Info "Fluent Bit started successfully (PID: $($process.Id))"
         Write-Host ""
-        Write-Info "To debug: .\fluent-bit.ps1 debug"
-        Write-Info "To check status: .\fluent-bit.ps1 status"
-        Write-Info "To stop: .\fluent-bit.ps1 stop"
+        Write-Info "To debug: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 debug"
+        Write-Info "To check status: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 status"
+        Write-Info "To see logs: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 logs"
+        Write-Info "To stop: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 stop"
     }
 }
 
@@ -229,60 +261,86 @@ function Restart-FluentBit {
 function Setup-FluentBit {
     param(
         [string]$IngestorHost,
-        [string]$CredentialsBase64
+        [string]$ApiKey,
+        [string]$TenantId
     )
     
-    try {
-        $credBytes = [Convert]::FromBase64String($CredentialsBase64)
-        $credentials = [Text.Encoding]::UTF8.GetString($credBytes)
-    }
-    catch {
-        Write-ErrorMsg "Failed to decode base64 credentials"
+    if ([string]::IsNullOrWhiteSpace($IngestorHost) -or [string]::IsNullOrWhiteSpace($ApiKey)) {
+        Write-ErrorMsg "Invalid setup parameters"
         exit 1
     }
-    
-    $parts = $credentials -split ':', 2
-    if ($parts.Length -ne 2) {
-        Write-ErrorMsg "Invalid credentials format"
+
+    $tlsSetting = "On"
+    $defaultPort = "443"
+    if ($IngestorHost -like "https://*") {
+        $IngestorHost = $IngestorHost.Substring("https://".Length)
+        $tlsSetting = "On"
+        $defaultPort = "443"
+    }
+    elseif ($IngestorHost -like "http://*") {
+        $IngestorHost = $IngestorHost.Substring("http://".Length)
+        $tlsSetting = "Off"
+        $defaultPort = "80"
+    }
+    $IngestorHost = ($IngestorHost -split '/', 2)[0]
+
+    if ($IngestorHost -match '^(.*):([0-9]+)$') {
+        $Port = $Matches[2]
+        $IngestorHost = $Matches[1]
+    }
+    else {
+        $Port = $defaultPort
+    }
+
+    if ([string]::IsNullOrWhiteSpace($IngestorHost)) {
+        Write-ErrorMsg "Invalid host"
         exit 1
     }
-    
-    $username = $parts[0]
-    $password = $parts[1]
-    
-    if ([string]::IsNullOrWhiteSpace($IngestorHost) -or [string]::IsNullOrWhiteSpace($username) -or [string]::IsNullOrWhiteSpace($password)) {
-        Write-ErrorMsg "Invalid credentials"
+
+    $portNumber = 0
+    if (-not [int]::TryParse($Port, [ref]$portNumber) -or $portNumber -lt 1 -or $portNumber -gt 65535) {
+        Write-ErrorMsg "Invalid port: $Port"
+        Write-ErrorMsg "Port must be a number between 1 and 65535"
         exit 1
     }
-    
+
     Install-FluentBit
-    
-    $configContent = @"
-[SERVICE]
-    flush                     1
-    log_level                 info
 
-[INPUT]
-    Name                      windows_exporter_metrics
-    Tag                       node_metrics
-    Scrape_interval           1
-    # Collect only essential metrics
-    metrics          cpu
+    $configLines = @(
+        "[SERVICE]",
+        "    flush                     1",
+        "    log_level                 info",
+        "",
+        "[INPUT]",
+        "    Name                      windows_exporter_metrics",
+        "    Tag                       node_metrics",
+        "    Scrape_interval           1",
+        "    # Collect only essential metrics",
+        "    metrics                   cpu",
+        "",
+        "[OUTPUT]",
+        "    Name                      opentelemetry",
+        "    Match                     node_metrics",
+        "    Host                      $IngestorHost",
+        "    Port                      $Port",
+        "    Metrics_uri               /v1/metrics",
+        "    Log_response_payload      True",
+        "    TLS                       $tlsSetting",
+        "    Grpc                      Off",
+        "    Http2                     Off",
+        "    Header                    X-API-Key $ApiKey"
+    )
 
-[OUTPUT]
-    Name                      opentelemetry
-    Match                     node_metrics
-    Host                      $IngestorHost
-    Port                      443
-    Metrics_uri               /v1/metrics
-    Log_response_payload      False
-    TLS                       On
-    Http_User                 $username
-    Http_Passwd               $password
-    Header                    X-P-Stream node-metrics
-    Header                    X-P-Log-Source otel-metrics
-    Compress                  gzip
-"@
+    if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
+        $configLines += "    Header                    X-P-Tenant $TenantId"
+    }
+
+    $configLines += @(
+        "    Header                    X-P-Stream node-metrics",
+        "    Header                    X-P-Log-Source otel-metrics"
+    )
+
+    $configContent = ($configLines -join [Environment]::NewLine) + [Environment]::NewLine
     
     # Use UTF8 without BOM (important for Fluent Bit)
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
@@ -297,16 +355,18 @@ function Show-Help {
 Fluent Bit Setup and Management Script for Windows
 
 Usage:
-  Setup:   .\fluent-bit.ps1 [host] [base64_credentials]
-  Stop:    .\fluent-bit.ps1 stop
-  Start:   .\fluent-bit.ps1 start
-  Restart: .\fluent-bit.ps1 restart
-  Status:  .\fluent-bit.ps1 status
-  Debug:   .\fluent-bit.ps1 debug     - Run in foreground to see output
+  Setup:   powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 [host[:port]] [api_key] [tenant_id]
+  Stop:    powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 stop
+  Start:   powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 start
+  Restart: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 restart
+  Status:  powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 status
+  Logs:    powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 logs
+  Debug:   powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 debug
 
-To encode credentials:
-  `$creds = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("username:password"))
-  .\fluent-bit.ps1 your-host.com `$creds
+Example:
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 https://your-host.com:443 px_api_key
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 http://localhost:8000 px_api_key tenant-id
+
 "@
 }
 
@@ -344,6 +404,9 @@ switch ($Param1.ToLower()) {
     "status" {
         Show-Status
     }
+    "logs" {
+        Show-Logs
+    }
     "debug" {
         Debug-FluentBit
     }
@@ -358,10 +421,10 @@ switch ($Param1.ToLower()) {
     }
     default {
         if ([string]::IsNullOrWhiteSpace($Param2)) {
-            Write-ErrorMsg "Usage: .\fluent-bit.ps1 [host] [base64_credentials]"
-            Write-ErrorMsg "   Or: .\fluent-bit.ps1 [start|stop|restart|status|debug|help]"
+            Write-ErrorMsg "Usage: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 [host[:port]] [api_key] [tenant_id]"
+            Write-ErrorMsg "   Or: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 [start|stop|restart|status|logs|debug|help]"
             exit 1
         }
-        Setup-FluentBit -IngestorHost $Param1 -CredentialsBase64 $Param2
+        Setup-FluentBit -IngestorHost $Param1 -ApiKey $Param2 -TenantId $Param3
     }
 }

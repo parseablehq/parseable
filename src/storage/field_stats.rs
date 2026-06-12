@@ -33,7 +33,6 @@ use crate::metadata::SchemaVersion;
 use crate::option::Mode;
 use crate::parseable::DEFAULT_TENANT;
 use crate::parseable::PARSEABLE;
-use crate::query::QUERY_SESSION_STATE;
 use crate::storage::ObjectStorageError;
 use crate::storage::StreamType;
 use crate::tenants::TENANT_METADATA;
@@ -65,25 +64,40 @@ use arrow_schema::TimeUnit;
 use chrono::DateTime;
 use chrono::NaiveDateTime;
 use chrono::Utc;
-use datafusion::prelude::ParquetReadOptions;
-use datafusion::prelude::SessionContext;
-use futures::StreamExt;
 use indexmap::IndexMap;
+use once_cell::sync::Lazy;
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use rayon::prelude::*;
+use rayon::{ThreadPool, ThreadPoolBuilder};
 use regex::Regex;
 use serde::Deserialize;
 use serde::Serialize;
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
+use std::fs::File;
 use std::path::Path;
-use tracing::error;
-use tracing::trace;
-use tracing::warn;
-use ulid::Ulid;
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::sync::Semaphore;
+use tracing::{debug, error, warn};
 
 pub const DATASET_STATS_STREAM_NAME: &str = "pstats";
 const DATASET_STATS_CUSTOM_PARTITION: &str = "dataset_name";
-const MAX_CONCURRENT_FIELD_STATS: usize = 10;
+const MAX_CONCURRENT_FIELD_STATS: usize = 4;
+const PARALLEL_FIELD_STATS_MIN_FIELDS: usize = 16;
+const MIN_TRACKED_DISTINCT_VALUES_PER_FIELD: usize = 1024;
+const MAX_TRACKED_DISTINCT_VALUES_PER_FIELD: usize = 10_000;
+const HLL_PRECISION_BITS: u32 = 12;
+const HLL_REGISTER_COUNT: usize = 1 << HLL_PRECISION_BITS;
+static FIELD_STATS_QUERY_SEMAPHORE: Lazy<Arc<Semaphore>> =
+    Lazy::new(|| Arc::new(Semaphore::new(MAX_CONCURRENT_FIELD_STATS)));
+static FIELD_STATS_RAYON_POOL: Lazy<ThreadPool> = Lazy::new(|| {
+    ThreadPoolBuilder::new()
+        .num_threads(MAX_CONCURRENT_FIELD_STATS)
+        .thread_name(|index| format!("field-stats-{index}"))
+        .build()
+        .expect("field stats rayon pool should initialize")
+});
 
 #[derive(Serialize, Debug)]
 struct DistinctStat {
@@ -102,6 +116,7 @@ struct FieldStat {
 #[derive(Serialize, Debug)]
 struct DatasetStats {
     dataset_name: String,
+    stats_id: String,
     field_stats: Vec<FieldStat>,
 }
 
@@ -115,6 +130,27 @@ pub async fn calculate_field_stats(
     max_field_statistics: usize,
     tenant_id: &Option<String>,
 ) -> Result<bool, PostError> {
+    let started_at = Instant::now();
+    let result = calculate_field_stats_inner(
+        stream_name,
+        parquet_path,
+        schema,
+        max_field_statistics,
+        tenant_id,
+    )
+    .await;
+    log_stats_calculation_time(stream_name, parquet_path, started_at, result.is_ok());
+
+    result
+}
+
+async fn calculate_field_stats_inner(
+    stream_name: &str,
+    parquet_path: &Path,
+    schema: &Schema,
+    max_field_statistics: usize,
+    tenant_id: &Option<String>,
+) -> Result<bool, PostError> {
     // create datetime from timestamp present in parquet path
     let parquet_ts = extract_datetime_from_parquet_path_regex(parquet_path).map_err(|e| {
         PostError::Invalid(anyhow::anyhow!(
@@ -122,26 +158,17 @@ pub async fn calculate_field_stats(
             e
         ))
     })?;
-    let field_stats = {
-        let session_state = QUERY_SESSION_STATE.clone();
-
-        let ctx = SessionContext::new_with_state(session_state);
-        let table_name = Ulid::new().to_string();
-        ctx.register_parquet(
-            &table_name,
-            parquet_path
-                .to_str()
-                .ok_or_else(|| PostError::Invalid(anyhow::anyhow!("Invalid UTF-8 in path")))?,
-            ParquetReadOptions::default(),
-        )
-        .await
-        .map_err(|e| PostError::Invalid(e.into()))?;
-
-        collect_all_field_stats(&table_name, &ctx, schema, max_field_statistics).await
-    };
+    let field_stats = collect_all_field_stats_from_parquet(
+        stream_name,
+        parquet_path,
+        schema,
+        max_field_statistics,
+    )
+    .await?;
     let mut stats_calculated = false;
     let stats = DatasetStats {
         dataset_name: stream_name.to_string(),
+        stats_id: parquet_path.to_string_lossy().to_string(),
         field_stats,
     };
     if stats.field_stats.is_empty() {
@@ -150,19 +177,7 @@ pub async fn calculate_field_stats(
     stats_calculated = true;
     let stats_value =
         serde_json::to_value(&stats).map_err(|e| ObjectStorageError::Invalid(e.into()))?;
-    let log_source_entry = LogSourceEntry::new(LogSource::Json, HashSet::new());
-    PARSEABLE
-        .create_stream_if_not_exists(
-            DATASET_STATS_STREAM_NAME,
-            StreamType::Internal,
-            Some(&DATASET_STATS_CUSTOM_PARTITION.to_string()),
-            vec![log_source_entry],
-            TelemetryType::Logs,
-            tenant_id,
-            vec![],
-            vec![],
-        )
-        .await?;
+    ensure_dataset_stats_stream(tenant_id).await?;
     let vec_json = apply_generic_flattening_for_partition(
         stats_value,
         None,
@@ -199,134 +214,358 @@ pub async fn calculate_field_stats(
     Ok(stats_calculated)
 }
 
-/// Collects statistics for all fields in the stream.
-/// Returns a vector of `FieldStat` for each field with non-zero count.
-/// Uses `buffer_unordered` to run up to `MAX_CONCURRENT_FIELD_STATS` queries concurrently.
-async fn collect_all_field_stats(
+fn log_stats_calculation_time(
     stream_name: &str,
-    ctx: &SessionContext,
+    parquet_path: &Path,
+    started_at: Instant,
+    success: bool,
+) {
+    let parquet_file = parquet_path
+        .file_name()
+        .and_then(|filename| filename.to_str())
+        .unwrap_or("<unknown>");
+    let elapsed_ms = started_at.elapsed().as_millis();
+    if success {
+        debug!(
+            "Field stats calculation completed for parquet file {parquet_file} in {elapsed_ms} ms. stream={stream_name}"
+        );
+    } else {
+        warn!(
+            "Field stats calculation failed for parquet file {parquet_file} after {elapsed_ms} ms. stream={stream_name}"
+        );
+    }
+}
+
+async fn ensure_dataset_stats_stream(tenant_id: &Option<String>) -> Result<(), PostError> {
+    let log_source_entry = LogSourceEntry::new(LogSource::Json, HashSet::new());
+    PARSEABLE
+        .create_stream_if_not_exists(
+            DATASET_STATS_STREAM_NAME,
+            StreamType::Internal,
+            Some(&DATASET_STATS_CUSTOM_PARTITION.to_string()),
+            vec![log_source_entry],
+            TelemetryType::Logs,
+            tenant_id,
+            vec![],
+            vec![],
+        )
+        .await?;
+
+    Ok(())
+}
+
+async fn collect_all_field_stats_from_parquet(
+    stream_name: &str,
+    parquet_path: &Path,
     schema: &Schema,
     max_field_statistics: usize,
-) -> Vec<FieldStat> {
-    // Collect field names into an owned Vec<String> to avoid lifetime issues
+) -> Result<Vec<FieldStat>, PostError> {
+    let permit = FIELD_STATS_QUERY_SEMAPHORE
+        .clone()
+        .acquire_owned()
+        .await
+        .map_err(|e| {
+            PostError::Invalid(anyhow::anyhow!(
+                "Failed to acquire field stats query permit: {}",
+                e
+            ))
+        })?;
+    let stream_name = stream_name.to_string();
+    let parquet_path = parquet_path.to_path_buf();
+    let schema = schema.clone();
+
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        collect_all_field_stats_from_parquet_blocking(
+            &stream_name,
+            &parquet_path,
+            &schema,
+            max_field_statistics,
+        )
+    })
+    .await
+    .map_err(|e| PostError::Invalid(anyhow::anyhow!("Field stats task failed: {}", e)))?
+}
+
+fn collect_all_field_stats_from_parquet_blocking(
+    stream_name: &str,
+    parquet_path: &Path,
+    schema: &Schema,
+    max_field_statistics: usize,
+) -> Result<Vec<FieldStat>, PostError> {
+    let file = File::open(parquet_path).map_err(|e| {
+        PostError::Invalid(anyhow::anyhow!(
+            "Failed to open parquet file for field stats: {}",
+            e
+        ))
+    })?;
+    let mut reader = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|e| PostError::Invalid(anyhow::anyhow!(e)))?
+        .build()
+        .map_err(|e| PostError::Invalid(anyhow::anyhow!(e)))?;
     let field_names: Vec<String> = schema
         .fields()
         .iter()
         .map(|field| field.name().clone())
         .collect();
-    let field_futures = field_names.into_iter().map(|field_name| {
-        let ctx = ctx.clone();
-        async move {
-            calculate_single_field_stats(ctx, stream_name, &field_name, max_field_statistics).await
-        }
-    });
+    let mut field_counts: HashMap<String, FieldCountState> = field_names
+        .iter()
+        .map(|field_name| {
+            (
+                field_name.clone(),
+                FieldCountState::new(
+                    stream_name.to_string(),
+                    field_name.clone(),
+                    max_field_statistics,
+                ),
+            )
+        })
+        .collect();
 
-    futures::stream::iter(field_futures)
-        .buffer_unordered(MAX_CONCURRENT_FIELD_STATS)
-        .filter_map(std::future::ready)
-        .collect::<Vec<_>>()
-        .await
-}
-
-/// This function is used to fetch distinct values and their counts for a field in the stream.
-/// Returns a vector of `DistinctStat` containing distinct values and their counts.
-/// The query groups by the field and orders by the count in descending order, limiting the results to `PARSEABLE.options.max_field_statistics`.
-async fn calculate_single_field_stats(
-    ctx: SessionContext,
-    stream_name: &str,
-    field_name: &str,
-    max_field_statistics: usize,
-) -> Option<FieldStat> {
-    let mut total_count = 0;
-    let mut distinct_count = 0;
-    let mut distinct_stats = Vec::new();
-
-    let combined_sql = get_stats_sql(stream_name, field_name, max_field_statistics);
-    match ctx.sql(&combined_sql).await {
-        Ok(df) => {
-            let mut stream = match df.execute_stream().await {
-                Ok(stream) => stream,
-                Err(e) => {
-                    trace!("Failed to execute distinct stats query: {e}");
-                    return None; // Return empty if query fails
-                }
-            };
-            while let Some(batch_result) = stream.next().await {
-                let rb = match batch_result {
-                    Ok(batch) => batch,
-                    Err(e) => {
-                        trace!("Failed to fetch batch in distinct stats query: {e}");
-                        continue; // Skip this batch if there's an error
-                    }
-                };
-                let total_count_array = rb.column(0).as_any().downcast_ref::<Int64Array>()?;
-                let distinct_count_array = rb.column(1).as_any().downcast_ref::<Int64Array>()?;
-
-                total_count = total_count_array.value(0);
-                distinct_count = distinct_count_array.value(0);
-                if distinct_count == 0 {
-                    return None;
-                }
-
-                let field_value_array = rb.column(2).as_ref();
-                let value_count_array = rb.column(3).as_any().downcast_ref::<Int64Array>()?;
-
-                for i in 0..rb.num_rows() {
-                    let value = format_arrow_value(field_value_array, i);
-                    let count = value_count_array.value(i);
-
-                    distinct_stats.push(DistinctStat {
-                        distinct_value: value,
-                        count,
-                    });
-                }
+    for batch in &mut reader {
+        let batch = match batch {
+            Ok(batch) => batch,
+            Err(e) => {
+                warn!(
+                    "Skipping undecodable parquet batch while calculating field stats for {}: {}",
+                    parquet_path.display(),
+                    e
+                );
+                continue;
             }
-        }
-        Err(e) => {
-            trace!("Failed to execute distinct stats query for field: {field_name}, error: {e}");
-            return None;
+        };
+
+        let batch_counts = if field_names.len() >= PARALLEL_FIELD_STATS_MIN_FIELDS {
+            collect_batch_field_counts_parallel(&batch, &field_names)
+        } else {
+            collect_batch_field_counts_serial(&batch, &field_names)
+        };
+
+        for (field_name, counts) in batch_counts {
+            merge_field_counts(&mut field_counts, &field_name, counts);
         }
     }
-    Some(FieldStat {
-        field_name: field_name.to_string(),
-        count: total_count,
-        distinct_count,
-        distinct_stats,
+
+    Ok(field_names
+        .into_iter()
+        .filter_map(|field_name| {
+            let state = field_counts.remove(&field_name)?;
+            if state.total_count == 0 {
+                return None;
+            }
+
+            Some(FieldStat {
+                field_name,
+                count: state.total_count,
+                distinct_count: state.distinct_count(),
+                distinct_stats: state.into_distinct_stats(max_field_statistics),
+            })
+        })
+        .collect())
+}
+
+fn collect_batch_field_counts_serial(
+    batch: &arrow_array::RecordBatch,
+    field_names: &[String],
+) -> Vec<(String, HashMap<String, i64>)> {
+    field_names
+        .iter()
+        .filter_map(|field_name| collect_field_counts(batch, field_name))
+        .collect()
+}
+
+fn collect_batch_field_counts_parallel(
+    batch: &arrow_array::RecordBatch,
+    field_names: &[String],
+) -> Vec<(String, HashMap<String, i64>)> {
+    FIELD_STATS_RAYON_POOL.install(|| {
+        field_names
+            .par_iter()
+            .filter_map(|field_name| collect_field_counts(batch, field_name))
+            .collect()
     })
 }
 
-fn get_stats_sql(stream_name: &str, field_name: &str, max_field_statistics: usize) -> String {
-    let escaped_field_name = field_name.replace('"', "\"\"");
-    let escaped_stream_name = stream_name.replace('"', "\"\"");
+fn collect_field_counts(
+    batch: &arrow_array::RecordBatch,
+    field_name: &str,
+) -> Option<(String, HashMap<String, i64>)> {
+    let array = batch.column_by_name(field_name)?;
+    let mut counts = HashMap::new();
 
-    format!(
-        r#"
-        WITH field_groups AS (
-            SELECT 
-                "{escaped_field_name}" as field_value,
-                COUNT(*) as value_count
-            FROM "{escaped_stream_name}"
-            GROUP BY "{escaped_field_name}"
-        ),
-        field_summary AS (
-            SELECT 
-                field_value,
-                value_count,
-                SUM(value_count) OVER () as total_count,
-                COUNT(*) OVER () as distinct_count,
-                ROW_NUMBER() OVER (ORDER BY value_count DESC) as rn
-            FROM field_groups
-        )
-        SELECT 
-            total_count,
-            distinct_count,
-            field_value,
-            value_count
-        FROM field_summary 
-        WHERE rn <= {max_field_statistics}
-        ORDER BY value_count DESC
-        "#
+    for row_index in 0..array.len() {
+        let value = format_arrow_value(array.as_ref(), row_index);
+        *counts.entry(value).or_default() += 1;
+    }
+
+    Some((field_name.to_string(), counts))
+}
+
+fn merge_field_counts(
+    field_counts: &mut HashMap<String, FieldCountState>,
+    field_name: &str,
+    counts: HashMap<String, i64>,
+) {
+    let field_total = field_counts
+        .get_mut(field_name)
+        .expect("field_counts initialized for each field");
+
+    field_total.merge_counts(counts);
+}
+
+struct FieldCountState {
+    stream_name: String,
+    field_name: String,
+    total_count: i64,
+    counts: HashMap<String, i64>,
+    hll: HyperLogLog,
+    max_tracked_values: usize,
+    approximate: bool,
+}
+
+impl FieldCountState {
+    fn new(stream_name: String, field_name: String, max_field_statistics: usize) -> Self {
+        Self {
+            stream_name,
+            field_name,
+            total_count: 0,
+            counts: HashMap::new(),
+            hll: HyperLogLog::new(),
+            max_tracked_values: tracked_distinct_value_limit(max_field_statistics),
+            approximate: false,
+        }
+    }
+
+    fn merge_counts(&mut self, counts: HashMap<String, i64>) {
+        for (value, count) in counts {
+            self.hll.add(&value);
+            self.total_count += count;
+
+            if let Some(existing_count) = self.counts.get_mut(&value) {
+                *existing_count += count;
+                continue;
+            }
+
+            if self.counts.len() < self.max_tracked_values {
+                self.counts.insert(value, count);
+                continue;
+            }
+
+            if !self.approximate {
+                self.approximate = true;
+                warn!(
+                    "Field stats cardinality cap reached for stream {} field {}. Tracking bounded top-value candidates with max_tracked_values={}",
+                    self.stream_name, self.field_name, self.max_tracked_values
+                );
+            }
+
+            if let Some((min_value, min_count)) = self.current_min_value()
+                && count > min_count
+            {
+                self.counts.remove(&min_value);
+                self.counts.insert(value, count);
+            }
+        }
+    }
+
+    fn current_min_value(&self) -> Option<(String, i64)> {
+        self.counts
+            .iter()
+            .min_by(|(left_value, left_count), (right_value, right_count)| {
+                left_count
+                    .cmp(right_count)
+                    .then_with(|| right_value.cmp(left_value))
+            })
+            .map(|(value, count)| (value.clone(), *count))
+    }
+
+    fn distinct_count(&self) -> i64 {
+        if self.approximate {
+            (self.hll.estimate().round() as i64).max(self.counts.len() as i64)
+        } else {
+            self.counts.len() as i64
+        }
+    }
+
+    fn into_distinct_stats(self, max_field_statistics: usize) -> Vec<DistinctStat> {
+        let mut distinct_stats = self
+            .counts
+            .into_iter()
+            .map(|(distinct_value, count)| DistinctStat {
+                distinct_value,
+                count,
+            })
+            .collect::<Vec<_>>();
+        distinct_stats.sort_by(|left, right| {
+            right
+                .count
+                .cmp(&left.count)
+                .then_with(|| left.distinct_value.cmp(&right.distinct_value))
+        });
+        distinct_stats.truncate(max_field_statistics);
+        distinct_stats
+    }
+}
+
+fn tracked_distinct_value_limit(max_field_statistics: usize) -> usize {
+    max_field_statistics.clamp(
+        MIN_TRACKED_DISTINCT_VALUES_PER_FIELD,
+        MAX_TRACKED_DISTINCT_VALUES_PER_FIELD,
     )
+}
+
+struct HyperLogLog {
+    registers: Vec<u8>,
+}
+
+impl HyperLogLog {
+    fn new() -> Self {
+        Self {
+            registers: vec![0; HLL_REGISTER_COUNT],
+        }
+    }
+
+    fn add(&mut self, value: &str) {
+        let hash = hash_field_value(value);
+        let register_index = (hash >> (u64::BITS - HLL_PRECISION_BITS)) as usize;
+        let rank = ((hash << HLL_PRECISION_BITS).leading_zeros() + 1)
+            .min(u64::BITS - HLL_PRECISION_BITS + 1) as u8;
+        self.registers[register_index] = self.registers[register_index].max(rank);
+    }
+
+    fn estimate(&self) -> f64 {
+        let register_count = HLL_REGISTER_COUNT as f64;
+        let zero_registers = self
+            .registers
+            .iter()
+            .filter(|register| **register == 0)
+            .count();
+        let harmonic_sum = self
+            .registers
+            .iter()
+            .map(|register| 2_f64.powi(-(*register as i32)))
+            .sum::<f64>();
+        let raw_estimate = hll_alpha(register_count) * register_count.powi(2) / harmonic_sum;
+
+        if raw_estimate <= 2.5 * register_count && zero_registers > 0 {
+            register_count * (register_count / zero_registers as f64).ln()
+        } else {
+            raw_estimate
+        }
+    }
+}
+
+fn hll_alpha(register_count: f64) -> f64 {
+    match HLL_REGISTER_COUNT {
+        16 => 0.673,
+        32 => 0.697,
+        64 => 0.709,
+        _ => 0.7213 / (1.0 + 1.079 / register_count),
+    }
+}
+
+fn hash_field_value(value: &str) -> u64 {
+    xxhash_rust::xxh3::xxh3_64(value.as_bytes())
 }
 
 macro_rules! try_downcast {
@@ -706,11 +945,7 @@ pub fn build_stats_sql(
         ORDER BY
           SUM(field_stats_distinct_stats_count) DESC,
           field_stats_distinct_stats_distinct_value ASC
-      ) AS rn,
-      COUNT(*) OVER (
-        PARTITION BY
-          field_stats_field_name
-      ) AS distinct_count
+      ) AS rn
     FROM
       {DATASET_STATS_STREAM_NAME}
     WHERE
@@ -730,26 +965,49 @@ pub fn build_stats_sql(
       rn > {rn_start}
       AND rn <= {rn_end}
   ),
+  field_distincts AS (
+    SELECT
+      field_name,
+      COUNT(*) AS total_distinct_count
+    FROM
+      ranked_values
+    GROUP BY
+      field_name
+  ),
   field_totals AS (
     SELECT
       field_stats_field_name,
-      SUM(field_stats_count) AS total_field_count
+      SUM(field_count) AS total_field_count
     FROM
-      {DATASET_STATS_STREAM_NAME}
-    WHERE
-      dataset_name = '{dataset_name}'
+      (
+        SELECT
+          field_stats_field_name,
+          stats_id,
+          p_timestamp,
+          MAX(field_stats_count) AS field_count
+        FROM
+          {DATASET_STATS_STREAM_NAME}
+        WHERE
+          dataset_name = '{dataset_name}'
+          {fields_filter}
+        GROUP BY
+          field_stats_field_name,
+          stats_id,
+          p_timestamp
+      ) field_file_totals
     GROUP BY
       field_stats_field_name
   )
 SELECT
   tv.field_name,
   ft.total_field_count AS field_count,
-  tv.distinct_count,
+  fd.total_distinct_count AS distinct_count,
   tv.distinct_value,
   tv.distinct_value_count
 FROM
   top_values tv
   JOIN field_totals ft ON tv.field_name = ft.field_stats_field_name
+  JOIN field_distincts fd ON tv.field_name = fd.field_name
 ORDER BY
   tv.field_name,
   tv.distinct_value_count DESC"
@@ -757,7 +1015,7 @@ ORDER BY
 }
 #[cfg(test)]
 mod tests {
-    use std::{fs::OpenOptions, sync::Arc};
+    use std::{collections::HashMap, fs::OpenOptions, sync::Arc};
 
     use arrow::buffer::OffsetBuffer;
     use arrow_array::{
@@ -765,12 +1023,12 @@ mod tests {
         TimestampMillisecondArray,
     };
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
-    use datafusion::prelude::{ParquetReadOptions, SessionContext};
     use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
     use temp_dir::TempDir;
-    use ulid::Ulid;
 
-    use crate::storage::field_stats::calculate_single_field_stats;
+    use crate::storage::field_stats::{
+        FieldCountState, build_stats_sql, collect_all_field_stats_from_parquet_blocking,
+    };
 
     async fn create_test_parquet_with_data() -> (TempDir, std::path::PathBuf) {
         let temp_dir = TempDir::new().unwrap();
@@ -923,523 +1181,120 @@ mod tests {
         ])
     }
 
-    #[tokio::test]
-    async fn test_calculate_single_field_stats_with_multiple_values() {
-        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
+    #[test]
+    fn test_build_stats_sql_uses_file_ids_and_deduped_distinct_values() {
+        let sql = build_stats_sql(
+            "astronomy-shop-logs",
+            Some(&["p_log_category".to_string()]),
+            0,
+            5,
+        );
 
-        let random_suffix = Ulid::new().to_string();
-        let ctx = SessionContext::new();
-        ctx.register_parquet(
-            &random_suffix,
-            parquet_path.to_str().expect("valid path"),
-            ParquetReadOptions::default(),
+        assert!(sql.contains("COUNT(*) AS total_distinct_count"));
+        assert!(sql.contains("stats_id"));
+        assert!(sql.contains("MAX(field_stats_count) AS field_count"));
+        assert!(sql.contains("SUM(field_count) AS total_field_count"));
+        assert!(sql.contains("AND field_stats_distinct_stats_distinct_value IS NOT NULL"));
+        assert!(sql.contains("field_stats_field_name IN ('p_log_category')"));
+        assert!(sql.contains("fd.total_distinct_count AS distinct_count"));
+        assert!(!sql.contains("SUM(field_stats_distinct_stats_count) AS total_field_count"));
+        assert!(!sql.contains("SUM(field_stats_distinct_count)"));
+    }
+
+    #[test]
+    fn test_collect_all_field_stats_from_parquet_single_pass() {
+        let (_temp_dir, parquet_path) = tokio::runtime::Runtime::new()
+            .unwrap()
+            .block_on(create_test_parquet_with_data());
+        let schema = create_test_schema();
+
+        let field_stats = collect_all_field_stats_from_parquet_blocking(
+            "test_stream",
+            &parquet_path,
+            &schema,
+            50,
         )
-        .await
         .unwrap();
-
-        // Test name field with multiple distinct values and different frequencies
-        let result = calculate_single_field_stats(ctx.clone(), &random_suffix, "name", 50).await;
-        assert!(result.is_some());
-        let stats = result.unwrap();
-
-        assert_eq!(stats.field_name, "name");
-        assert_eq!(stats.count, 10);
-        assert_eq!(stats.distinct_count, 7);
-        assert_eq!(stats.distinct_stats.len(), 7);
-
-        // Verify ordering by count (descending)
-        assert!(stats.distinct_stats[0].count >= stats.distinct_stats[1].count);
-        assert!(stats.distinct_stats[1].count >= stats.distinct_stats[2].count);
-
-        // Verify specific counts
-        let alice_stat = stats
-            .distinct_stats
+        let name_stats = field_stats
             .iter()
-            .find(|s| s.distinct_value == "Alice");
-        assert!(alice_stat.is_some());
-        assert_eq!(alice_stat.unwrap().count, 3);
+            .find(|stats| stats.field_name == "name")
+            .unwrap();
+        assert_eq!(name_stats.count, 10);
+        assert_eq!(name_stats.distinct_count, 7);
+        assert_eq!(name_stats.distinct_stats[0].distinct_value, "Alice");
+        assert_eq!(name_stats.distinct_stats[0].count, 3);
+        assert!(
+            name_stats
+                .distinct_stats
+                .iter()
+                .any(|stat| stat.distinct_value == "NULL" && stat.count == 1)
+        );
 
-        let bob_stat = stats
-            .distinct_stats
+        let active_stats = field_stats
             .iter()
-            .find(|s| s.distinct_value == "Bob");
-        assert!(bob_stat.is_some());
-        assert_eq!(bob_stat.unwrap().count, 2);
+            .find(|stats| stats.field_name == "active")
+            .unwrap();
+        assert_eq!(active_stats.count, 10);
+        assert_eq!(active_stats.distinct_count, 3);
+        assert_eq!(active_stats.distinct_stats[0].distinct_value, "true");
+        assert_eq!(active_stats.distinct_stats[0].count, 6);
 
-        let charlie_stat = stats
-            .distinct_stats
+        let int_list_stats = field_stats
             .iter()
-            .find(|s| s.distinct_value == "Charlie");
-        assert!(charlie_stat.is_some());
-        assert_eq!(charlie_stat.unwrap().count, 1);
+            .find(|stats| stats.field_name == "int_list")
+            .unwrap();
+        assert_eq!(int_list_stats.count, 10);
+        assert_eq!(int_list_stats.distinct_count, 8);
+        assert!(
+            int_list_stats
+                .distinct_stats
+                .iter()
+                .any(|stat| stat.distinct_value == "[]" && stat.count == 1)
+        );
     }
 
-    #[tokio::test]
-    async fn test_calculate_single_field_stats_with_numeric_field() {
-        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
+    #[test]
+    fn test_field_count_state_caps_high_cardinality_values() {
+        let mut state =
+            FieldCountState::new("test_stream".to_string(), "request_id".to_string(), 2);
+        state.max_tracked_values = 8;
 
-        let ctx = SessionContext::new();
-        let table_name = ulid::Ulid::new().to_string();
-
-        ctx.register_parquet(
-            &table_name,
-            parquet_path.to_str().unwrap(),
-            ParquetReadOptions::default(),
-        )
-        .await
-        .unwrap();
-
-        // Test score field (Float64)
-        let result = calculate_single_field_stats(ctx.clone(), &table_name, "score", 50).await;
-
-        assert!(result.is_some());
-        let stats = result.unwrap();
-
-        assert_eq!(stats.field_name, "score");
-        assert_eq!(stats.count, 10);
-        assert_eq!(stats.distinct_count, 9);
-
-        // Verify that 95.5 appears twice (should be first due to highest count)
-        let highest_count_stat = &stats.distinct_stats[0];
-        assert_eq!(highest_count_stat.distinct_value, "95.5");
-        assert_eq!(highest_count_stat.count, 2);
-    }
-
-    #[tokio::test]
-    async fn test_calculate_single_field_stats_with_boolean_field() {
-        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
-
-        let ctx = SessionContext::new();
-        let table_name = ulid::Ulid::new().to_string();
-        ctx.register_parquet(
-            &table_name,
-            parquet_path.to_str().unwrap(),
-            ParquetReadOptions::default(),
-        )
-        .await
-        .unwrap();
-
-        // Test active field (Boolean)
-        let result = calculate_single_field_stats(ctx.clone(), &table_name, "active", 50).await;
-
-        assert!(result.is_some());
-        let stats = result.unwrap();
-
-        assert_eq!(stats.field_name, "active");
-        assert_eq!(stats.count, 10);
-        assert_eq!(stats.distinct_count, 3);
-        assert_eq!(stats.distinct_stats.len(), 3);
-
-        assert_eq!(stats.distinct_stats[0].distinct_value, "true");
-        assert_eq!(stats.distinct_stats[0].count, 6);
-        assert_eq!(stats.distinct_stats[1].distinct_value, "false");
-        assert_eq!(stats.distinct_stats[1].count, 3);
-    }
-
-    #[tokio::test]
-    async fn test_calculate_single_field_stats_with_timestamp_field() {
-        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
-
-        let ctx = SessionContext::new();
-        let table_name = ulid::Ulid::new().to_string();
-        ctx.register_parquet(
-            &table_name,
-            parquet_path.to_str().unwrap(),
-            ParquetReadOptions::default(),
-        )
-        .await
-        .unwrap();
-
-        // Test created_at field (Timestamp)
-        let result = calculate_single_field_stats(ctx.clone(), &table_name, "created_at", 50).await;
-
-        assert!(result.is_some());
-        let stats = result.unwrap();
-
-        assert_eq!(stats.field_name, "created_at");
-        assert_eq!(stats.count, 10);
-        assert_eq!(stats.distinct_count, 9);
-
-        // Verify that the duplicate timestamp appears twice
-        let duplicate_timestamp = &stats.distinct_stats[0];
-        assert_eq!(duplicate_timestamp.count, 2);
-    }
-
-    #[tokio::test]
-    async fn test_calculate_single_field_stats_single_value_field() {
-        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
-
-        let ctx = SessionContext::new();
-        let table_name = ulid::Ulid::new().to_string();
-        ctx.register_parquet(
-            &table_name,
-            parquet_path.to_str().unwrap(),
-            ParquetReadOptions::default(),
-        )
-        .await
-        .unwrap();
-
-        // Test field with single distinct value
-        let result =
-            calculate_single_field_stats(ctx.clone(), &table_name, "single_value", 50).await;
-
-        assert!(result.is_some());
-        let stats = result.unwrap();
-
-        assert_eq!(stats.field_name, "single_value");
-        assert_eq!(stats.count, 10);
-        assert_eq!(stats.distinct_count, 1);
-        assert_eq!(stats.distinct_stats.len(), 1);
-        assert_eq!(stats.distinct_stats[0].distinct_value, "constant");
-        assert_eq!(stats.distinct_stats[0].count, 10);
-    }
-
-    #[tokio::test]
-    async fn test_calculate_single_field_stats_nonexistent_table() {
-        let ctx = SessionContext::new();
-
-        // Test with non-existent table
-        let result =
-            calculate_single_field_stats(ctx.clone(), "non_existent_table", "field", 50).await;
-
-        // Should return None due to SQL execution failure
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_calculate_single_field_stats_nonexistent_field() {
-        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
-
-        let ctx = SessionContext::new();
-        let table_name = ulid::Ulid::new().to_string();
-        ctx.register_parquet(
-            &table_name,
-            parquet_path.to_str().unwrap(),
-            ParquetReadOptions::default(),
-        )
-        .await
-        .unwrap();
-
-        // Test with non-existent field
-        let result =
-            calculate_single_field_stats(ctx.clone(), &table_name, "non_existent_field", 50).await;
-
-        // Should return None due to SQL execution failure
-        assert!(result.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_calculate_single_field_stats_with_special_characters() {
-        // Create a schema with field names containing special characters
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("field with spaces", DataType::Utf8, true),
-            Field::new("field\"with\"quotes", DataType::Utf8, true),
-            Field::new("field'with'apostrophes", DataType::Utf8, true),
-        ]));
-
-        let temp_dir = TempDir::new().unwrap();
-        let file_path = temp_dir.path().join("special_chars.parquet");
-
-        use parquet::arrow::AsyncArrowWriter;
-        use tokio::fs::File;
-
-        let space_array = StringArray::from(vec![Some("value1"), Some("value2"), Some("value1")]);
-        let quote_array = StringArray::from(vec![Some("quote1"), Some("quote2"), Some("quote1")]);
-        let apostrophe_array = StringArray::from(vec![Some("apos1"), Some("apos2"), Some("apos1")]);
-
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(space_array),
-                Arc::new(quote_array),
-                Arc::new(apostrophe_array),
-            ],
-        )
-        .unwrap();
-
-        let file = File::create(&file_path).await.unwrap();
-        let mut writer = AsyncArrowWriter::try_new(file, schema, None).unwrap();
-        writer.write(&batch).await.unwrap();
-        writer.close().await.unwrap();
-
-        let ctx = SessionContext::new();
-        let table_name = ulid::Ulid::new().to_string();
-        ctx.register_parquet(
-            &table_name,
-            file_path.to_str().unwrap(),
-            ParquetReadOptions::default(),
-        )
-        .await
-        .unwrap();
-
-        // Test field with spaces
-        let result =
-            calculate_single_field_stats(ctx.clone(), &table_name, "field with spaces", 50).await;
-        assert!(result.is_some());
-        let stats = result.unwrap();
-        assert_eq!(stats.field_name, "field with spaces");
-        assert_eq!(stats.count, 3);
-        assert_eq!(stats.distinct_count, 2);
-
-        // Test field with quotes
-        let result =
-            calculate_single_field_stats(ctx.clone(), &table_name, "field\"with\"quotes", 50).await;
-        assert!(result.is_some());
-        let stats = result.unwrap();
-        assert_eq!(stats.field_name, "field\"with\"quotes");
-        assert_eq!(stats.count, 3);
-        assert_eq!(stats.distinct_count, 2);
-    }
-
-    #[tokio::test]
-    async fn test_calculate_single_field_stats_empty_table() {
-        // Create empty table
-        let schema = Arc::new(create_test_schema());
-        let temp_dir = TempDir::new().unwrap();
-        let file_path = temp_dir.path().join("empty_data.parquet");
-
-        use parquet::arrow::AsyncArrowWriter;
-        use tokio::fs::File;
-
-        let file = File::create(&file_path).await.unwrap();
-        let mut writer = AsyncArrowWriter::try_new(file, schema.clone(), None).unwrap();
-
-        // Create empty batch
-        let empty_batch = RecordBatch::new_empty(schema.clone());
-        writer.write(&empty_batch).await.unwrap();
-        writer.close().await.unwrap();
-
-        let ctx = SessionContext::new();
-        let table_name = ulid::Ulid::new().to_string();
-        ctx.register_parquet(
-            &table_name,
-            file_path.to_str().unwrap(),
-            ParquetReadOptions::default(),
-        )
-        .await
-        .unwrap();
-
-        let result = calculate_single_field_stats(ctx.clone(), &table_name, "name", 50).await;
-        assert!(result.unwrap().distinct_stats.is_empty());
-    }
-
-    #[tokio::test]
-    async fn test_calculate_single_field_stats_streaming_behavior() {
-        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
-
-        let ctx = SessionContext::new();
-        let table_name = ulid::Ulid::new().to_string();
-        ctx.register_parquet(
-            &table_name,
-            parquet_path.to_str().unwrap(),
-            ParquetReadOptions::default(),
-        )
-        .await
-        .unwrap();
-
-        // Test that the function handles streaming properly by checking
-        // that all data is collected correctly across multiple batches
-        let result = calculate_single_field_stats(ctx.clone(), &table_name, "name", 50).await;
-
-        assert!(result.is_some());
-        let stats = result.unwrap();
-
-        // Verify that the streaming collected all the data
-        let total_distinct_count: i64 = stats.distinct_stats.iter().map(|s| s.count).sum();
-        assert_eq!(total_distinct_count, stats.count);
-
-        // Verify that distinct_stats are properly ordered by count
-        for i in 1..stats.distinct_stats.len() {
-            assert!(stats.distinct_stats[i - 1].count >= stats.distinct_stats[i].count);
+        for index in 0..100 {
+            let mut counts = HashMap::new();
+            counts.insert(format!("uuid-{index}"), 1);
+            state.merge_counts(counts);
         }
+
+        assert!(state.approximate);
+        assert_eq!(state.total_count, 100);
+        assert_eq!(state.counts.len(), 8);
+        assert!(state.distinct_count() > 80);
+        assert_eq!(state.into_distinct_stats(50).len(), 8);
     }
 
-    #[tokio::test]
-    async fn test_calculate_single_field_stats_large_dataset() {
-        // Create a larger dataset to test streaming behavior
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("id", DataType::Int64, false),
-            Field::new("category", DataType::Utf8, true),
-        ]));
+    #[test]
+    fn test_field_count_state_only_evicts_for_stronger_candidate() {
+        let mut state = FieldCountState::new("test_stream".to_string(), "status".to_string(), 3);
+        state.max_tracked_values = 3;
 
-        let temp_dir = TempDir::new().unwrap();
-        let file_path = temp_dir.path().join("large_data.parquet");
+        let mut initial_counts = HashMap::new();
+        initial_counts.insert("A".to_string(), 100);
+        initial_counts.insert("B".to_string(), 50);
+        initial_counts.insert("C".to_string(), 30);
+        state.merge_counts(initial_counts);
 
-        use parquet::arrow::AsyncArrowWriter;
-        use tokio::fs::File;
+        let mut weak_candidate = HashMap::new();
+        weak_candidate.insert("D".to_string(), 1);
+        state.merge_counts(weak_candidate);
 
-        // Create 1000 rows with 10 distinct categories
-        let ids: Vec<i64> = (0..1000).collect();
-        let categories: Vec<Option<&str>> = (0..1000)
-            .map(|i| {
-                Some(match i % 10 {
-                    0 => "cat_0",
-                    1 => "cat_1",
-                    2 => "cat_2",
-                    3 => "cat_3",
-                    4 => "cat_4",
-                    5 => "cat_5",
-                    6 => "cat_6",
-                    7 => "cat_7",
-                    8 => "cat_8",
-                    _ => "cat_9",
-                })
-            })
-            .collect();
+        assert!(state.counts.contains_key("C"));
+        assert!(!state.counts.contains_key("D"));
 
-        let id_array = Int64Array::from(ids);
-        let category_array = StringArray::from(categories);
+        let mut strong_candidate = HashMap::new();
+        strong_candidate.insert("E".to_string(), 31);
+        state.merge_counts(strong_candidate);
 
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![Arc::new(id_array), Arc::new(category_array)],
-        )
-        .unwrap();
-
-        let file = File::create(&file_path).await.unwrap();
-        let mut writer = AsyncArrowWriter::try_new(file, schema, None).unwrap();
-        writer.write(&batch).await.unwrap();
-        writer.close().await.unwrap();
-
-        let ctx = SessionContext::new();
-        let table_name = ulid::Ulid::new().to_string();
-        ctx.register_parquet(
-            &table_name,
-            file_path.to_str().unwrap(),
-            ParquetReadOptions::default(),
-        )
-        .await
-        .unwrap();
-
-        let result = calculate_single_field_stats(ctx.clone(), &table_name, "category", 50).await;
-
-        assert!(result.is_some());
-        let stats = result.unwrap();
-
-        assert_eq!(stats.count, 1000);
-        assert_eq!(stats.distinct_count, 10);
-        assert_eq!(stats.distinct_stats.len(), 10);
-
-        // Each category should appear 100 times
-        for distinct_stat in &stats.distinct_stats {
-            assert_eq!(distinct_stat.count, 100);
-        }
-    }
-
-    #[tokio::test]
-    async fn test_calculate_single_field_stats_with_int_list_field() {
-        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
-
-        let ctx = SessionContext::new();
-        let table_name = ulid::Ulid::new().to_string();
-
-        ctx.register_parquet(
-            &table_name,
-            parquet_path.to_str().unwrap(),
-            ParquetReadOptions::default(),
-        )
-        .await
-        .unwrap();
-
-        // Test int_list field (List<Int64>)
-        let result = calculate_single_field_stats(ctx.clone(), &table_name, "int_list", 50).await;
-
-        assert!(result.is_some());
-        let stats = result.unwrap();
-
-        assert_eq!(stats.field_name, "int_list");
-        assert_eq!(stats.count, 10);
-
-        // Verify we have the expected distinct lists
-        // Expected: [1, 2, 3], [4, 5], [6, 7, 8, 9], [1], [10, 11], [], [12, 13, 14], [1, 2]
-        assert_eq!(stats.distinct_count, 8);
-
-        // Check for duplicate lists - [1, 2, 3] appears twice, [4, 5] appears twice
-        let list_123_stat = stats
-            .distinct_stats
-            .iter()
-            .find(|s| s.distinct_value == "[1, 2, 3]");
-        assert!(list_123_stat.is_some());
-        assert_eq!(list_123_stat.unwrap().count, 2);
-
-        let list_45_stat = stats
-            .distinct_stats
-            .iter()
-            .find(|s| s.distinct_value == "[4, 5]");
-        assert!(list_45_stat.is_some());
-        assert_eq!(list_45_stat.unwrap().count, 2);
-
-        // Check single occurrence lists
-        let list_6789_stat = stats
-            .distinct_stats
-            .iter()
-            .find(|s| s.distinct_value == "[6, 7, 8, 9]");
-        assert!(list_6789_stat.is_some());
-        assert_eq!(list_6789_stat.unwrap().count, 1);
-
-        let empty_list_stat = stats
-            .distinct_stats
-            .iter()
-            .find(|s| s.distinct_value == "[]");
-        assert!(empty_list_stat.is_some());
-        assert_eq!(empty_list_stat.unwrap().count, 1);
-    }
-
-    #[tokio::test]
-    async fn test_calculate_single_field_stats_with_float_list_field() {
-        let (_temp_dir, parquet_path) = create_test_parquet_with_data().await;
-
-        let ctx = SessionContext::new();
-        let table_name = ulid::Ulid::new().to_string();
-
-        ctx.register_parquet(
-            &table_name,
-            parquet_path.to_str().unwrap(),
-            ParquetReadOptions::default(),
-        )
-        .await
-        .unwrap();
-
-        // Test float_list field (List<Float64>)
-        let result = calculate_single_field_stats(ctx.clone(), &table_name, "float_list", 50).await;
-
-        assert!(result.is_some());
-        let stats = result.unwrap();
-
-        assert_eq!(stats.field_name, "float_list");
-        assert_eq!(stats.count, 10);
-
-        // Expected distinct lists: [1.1, 2.2], [3.3, 4.4, 5.5], [6.6], [7.7, 8.8, 9.9], [10.0], [], [11.1, 12.2], [13.3]
-        assert_eq!(stats.distinct_count, 8);
-
-        // Check for duplicate lists - [1.1, 2.2] appears twice, [3.3, 4.4, 5.5] appears twice
-        let list_11_22_stat = stats
-            .distinct_stats
-            .iter()
-            .find(|s| s.distinct_value == "[1.1, 2.2]");
-        assert!(list_11_22_stat.is_some());
-        assert_eq!(list_11_22_stat.unwrap().count, 2);
-
-        let list_33_44_55_stat = stats
-            .distinct_stats
-            .iter()
-            .find(|s| s.distinct_value == "[3.3, 4.4, 5.5]");
-        assert!(list_33_44_55_stat.is_some());
-        assert_eq!(list_33_44_55_stat.unwrap().count, 2);
-
-        // Check single occurrence lists
-        let list_66_stat = stats
-            .distinct_stats
-            .iter()
-            .find(|s| s.distinct_value == "[6.6]");
-        assert!(list_66_stat.is_some());
-        assert_eq!(list_66_stat.unwrap().count, 1);
-
-        let empty_list_stat = stats
-            .distinct_stats
-            .iter()
-            .find(|s| s.distinct_value == "[]");
-        assert!(empty_list_stat.is_some());
-        assert_eq!(empty_list_stat.unwrap().count, 1);
+        assert!(!state.counts.contains_key("C"));
+        assert!(state.counts.contains_key("E"));
     }
 }
