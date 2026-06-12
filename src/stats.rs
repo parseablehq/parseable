@@ -31,7 +31,8 @@ use crate::metrics::{
     EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
     LIFETIME_EVENTS_STORAGE_SIZE, STORAGE_SIZE,
 };
-use crate::parseable::DEFAULT_TENANT;
+use crate::option::Mode;
+use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
 use crate::storage::{ObjectStorage, ObjectStorageError, ObjectStoreFormat};
 
 /// Helper struct type created by copying stats values from metadata
@@ -187,6 +188,11 @@ pub fn delete_stats(
     format: &'static str,
     tenant_id: &Option<String>,
 ) -> prometheus::Result<()> {
+    // delete stats only for ingest server or standalone server
+    // else skip
+    if PARSEABLE.options.mode != Mode::Ingest && PARSEABLE.options.mode != Mode::All {
+        return Ok(());
+    }
     let event_labels = event_labels(stream_name, format, tenant_id);
     let storage_size_labels = storage_size_labels(stream_name, tenant_id);
 
