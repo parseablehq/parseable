@@ -26,7 +26,7 @@ use ulid::Ulid;
 use crate::{
     alerts::{
         AlertError,
-        target::{TARGETS, Target},
+        target::{TARGETS, Target, validate_target_endpoint},
     },
     utils::get_tenant_id_from_request,
 };
@@ -38,8 +38,7 @@ pub async fn post(
 ) -> Result<impl Responder, AlertError> {
     let tenant_id = get_tenant_id_from_request(&req);
     target.tenant = tenant_id;
-    // should check for duplicacy and liveness (??)
-    // add to the map
+    validate_target_endpoint(target.target.endpoint_url()).await?;
     TARGETS.update(target.clone()).await?;
 
     // Ok(web::Json(target.mask()))
@@ -88,11 +87,10 @@ pub async fn update(
         ));
     }
 
-    // esnure that the supplied target id is assigned to the target config
+    // ensure that the supplied target id is assigned to the target config
     target.id = target_id;
     target.tenant = tenant_id;
-    // should check for duplicacy and liveness (??)
-    // add to the map
+    validate_target_endpoint(target.target.endpoint_url()).await?;
     TARGETS.update(target.clone()).await?;
 
     // Ok(web::Json(target.mask()))
