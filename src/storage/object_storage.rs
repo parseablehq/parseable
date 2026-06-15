@@ -98,10 +98,15 @@ pub(crate) struct UploadResult {
     manifest_file: Option<catalog::manifest::File>,
 }
 
+struct UploadedParquetFile {
+    file_path: std::path::PathBuf,
+    manifest_file: catalog::manifest::File,
+}
+
 /// Handles the upload of a single parquet file
 #[tracing::instrument(
     name = "object_store.upload_single_parquet",
-    skip(store, schema),
+    skip(store),
     fields(stream = %stream_name, tenant = ?tenant_id, path = %path.display(), key = %stream_relative_path)
 )]
 async fn upload_single_parquet_file(
@@ -109,7 +114,6 @@ async fn upload_single_parquet_file(
     path: std::path::PathBuf,
     stream_relative_path: String,
     stream_name: String,
-    schema: Arc<Schema>,
     tenant_id: Option<String>,
 ) -> Result<UploadResult, (PathBuf, ObjectStorageError)> {
     let filename = path
@@ -184,11 +188,6 @@ async fn upload_single_parquet_file(
 
     let manifest = catalog::create_from_parquet_file(absolute_path, &path)
         .map_err(|e| (path.clone(), ObjectStorageError::from(e)))?;
-
-    if PARSEABLE.options.collect_dataset_stats {
-        // collect field stats if enabled
-        calculate_stats_if_enabled(&stream_name, &path, &schema, tenant_id).await;
-    }
 
     Ok(UploadResult {
         file_path: path,
@@ -1038,11 +1037,22 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         let upload_context = UploadContext::new(stream);
 
         // Process parquet files concurrently and collect results
-        let manifest_files =
+        let uploaded_files =
             process_parquet_files(&upload_context, stream_name, tenant_id.clone()).await?;
 
         // Update snapshot with collected manifest files
-        update_snapshot_with_manifests(stream_name, manifest_files, &tenant_id).await?;
+        update_snapshot_with_manifests(stream_name, &uploaded_files, &tenant_id).await?;
+
+        // Calculate stats after snapshot update so uploads are visible before stats work starts.
+        calculate_stats_for_uploaded_files(
+            &uploaded_files,
+            stream_name,
+            &upload_context,
+            &tenant_id,
+        )
+        .await;
+
+        cleanup_uploaded_staged_files(uploaded_files).await;
 
         // Process schema files
         process_schema_files(&upload_context, stream_name, &tenant_id).await?;
@@ -1068,7 +1078,7 @@ async fn process_parquet_files(
     upload_context: &UploadContext,
     stream_name: &str,
     tenant_id: Option<String>,
-) -> Result<Vec<catalog::manifest::File>, ObjectStorageError> {
+) -> Result<Vec<UploadedParquetFile>, ObjectStorageError> {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(100));
     let mut join_set = JoinSet::new();
     let object_store = PARSEABLE.storage().get_object_store();
@@ -1154,21 +1164,13 @@ async fn spawn_parquet_upload_task(
     );
 
     let stream_name = stream_name.to_string();
-    let schema = upload_context.schema.clone();
     let handle = FLUSH_AND_CONVERT_RUNTIME.handle();
     join_set.spawn_on(
         async move {
             let _permit = semaphore.acquire().await.expect("semaphore is not closed");
 
-            upload_single_parquet_file(
-                store,
-                path,
-                stream_relative_path,
-                stream_name,
-                schema,
-                tenant_id,
-            )
-            .await
+            upload_single_parquet_file(store, path, stream_relative_path, stream_name, tenant_id)
+                .await
         },
         handle,
     );
@@ -1177,14 +1179,17 @@ async fn spawn_parquet_upload_task(
 /// Collects results from all upload tasks
 async fn collect_upload_results(
     mut join_set: JoinSet<Result<UploadResult, (PathBuf, ObjectStorageError)>>,
-) -> Result<Vec<catalog::manifest::File>, ObjectStorageError> {
+) -> Result<Vec<UploadedParquetFile>, ObjectStorageError> {
     let mut uploaded_files = Vec::new();
 
     while let Some(result) = join_set.join_next().await {
         match result {
             Ok(Ok(upload_result)) => {
                 if let Some(manifest_file) = upload_result.manifest_file {
-                    uploaded_files.push((upload_result.file_path, manifest_file));
+                    uploaded_files.push(UploadedParquetFile {
+                        file_path: upload_result.file_path,
+                        manifest_file,
+                    });
                 } else {
                     // File failed in upload size validation, preserve staging file for retry
                     error!(
@@ -1212,10 +1217,69 @@ async fn collect_upload_results(
         }
     }
 
-    // successfully uploaded files, remove from in-mem hashset
+    Ok(uploaded_files)
+}
+
+/// Updates snapshot with collected manifest files
+async fn update_snapshot_with_manifests(
+    stream_name: &str,
+    uploaded_files: &[UploadedParquetFile],
+    tenant_id: &Option<String>,
+) -> Result<(), ObjectStorageError> {
+    let manifest_files: Vec<_> = uploaded_files
+        .iter()
+        .map(|uploaded_file| uploaded_file.manifest_file.clone())
+        .collect();
+
+    if !manifest_files.is_empty() {
+        catalog::update_snapshot(stream_name, manifest_files, tenant_id).await?;
+    }
+    Ok(())
+}
+
+async fn calculate_stats_for_uploaded_files(
+    uploaded_files: &[UploadedParquetFile],
+    stream_name: &str,
+    upload_context: &UploadContext,
+    tenant_id: &Option<String>,
+) {
+    if !PARSEABLE.options.collect_dataset_stats {
+        return;
+    }
+
+    let mut join_set = JoinSet::new();
+    let handle = FLUSH_AND_CONVERT_RUNTIME.handle();
+
+    for uploaded_file in uploaded_files {
+        let stream_name = stream_name.to_string();
+        let path = uploaded_file.file_path.clone();
+        let schema = upload_context.schema.clone();
+        let tenant_id = tenant_id.clone();
+
+        join_set.spawn_on(
+            async move {
+                calculate_stats_if_enabled(&stream_name, &path, &schema, tenant_id).await;
+            },
+            handle,
+        );
+    }
+
+    while let Some(result) = join_set.join_next().await {
+        if let Err(err) = result {
+            warn!("Field stats task join failed after parquet upload: {err}");
+        }
+    }
+}
+
+async fn cleanup_uploaded_staged_files(uploaded_files: Vec<UploadedParquetFile>) {
+    let paths: Vec<_> = uploaded_files
+        .into_iter()
+        .map(|uploaded_file| uploaded_file.file_path)
+        .collect();
+
     {
         let mut guard = ACTIVE_OBJECT_STORE_SYNC_FILES.write().await;
-        for (path, _) in uploaded_files.iter() {
+        for path in paths.iter() {
             guard.remove(path);
         }
 
@@ -1226,29 +1290,12 @@ async fn collect_upload_results(
                 .is_ok_and(|ts| (now - ts).num_minutes() >= 5)
         });
     }
-    let manifest_files: Vec<_> = uploaded_files
-        .into_par_iter()
-        .map(|(path, manifest_file)| {
-            if let Err(e) = remove_file(&path) {
-                warn!("Failed to remove staged file: {e}");
-            }
-            manifest_file
-        })
-        .collect();
 
-    Ok(manifest_files)
-}
-
-/// Updates snapshot with collected manifest files
-async fn update_snapshot_with_manifests(
-    stream_name: &str,
-    manifest_files: Vec<catalog::manifest::File>,
-    tenant_id: &Option<String>,
-) -> Result<(), ObjectStorageError> {
-    if !manifest_files.is_empty() {
-        catalog::update_snapshot(stream_name, manifest_files, tenant_id).await?;
-    }
-    Ok(())
+    paths.into_par_iter().for_each(|path| {
+        if let Err(e) = remove_file(&path) {
+            warn!("Failed to remove staged file: {e}");
+        }
+    });
 }
 
 /// Processes schema files
