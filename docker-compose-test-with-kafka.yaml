@@ -70,19 +70,21 @@ services:
     image: ghcr.io/parseablehq/quest:main
     platform: linux/amd64
     pull_policy: always
-    command: [
-      "load",
-      "http://parseable:8000",
-      "parseableadmin",
-      "parseableadmin",
-      "20",
-      "10",
-      "5m",
-      "minio:9000",
-      "parseable",
-      "supersecret",
-      "parseable"
-    ]
+    entrypoint:
+      - sh
+      - -c
+      - |
+        STREAM=$$(head /dev/urandom | tr -dc a-z | head -c10) && \
+        ./quest.test -test.v -test.parallel=10 \
+          -mode=load \
+          -query-url=http://parseable:8000 \
+          -stream=$$STREAM \
+          -query-user=parseableadmin \
+          -query-pass=parseableadmin \
+          -minio-url=minio:9000 \
+          -minio-user=parseable \
+          -minio-pass=supersecret \
+          -minio-bucket=parseable
     depends_on:
       parseable:
         condition: service_healthy
