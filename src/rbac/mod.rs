@@ -59,9 +59,14 @@ pub struct Users;
 
 impl Users {
     pub fn put_user(&self, user: User) {
-        let tenant_id = user.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
-        mut_sessions().remove_user(user.userid(), tenant_id);
-        mut_users().insert(user);
+        let userid = user.userid().to_owned(); // 1. Clone userid BEFORE moving user
+        let tenant_id = user.tenant.clone().unwrap_or(DEFAULT_TENANT.to_owned());
+        // Lock USERS, insert, and DROP IT
+        {
+            let mut users = mut_users();
+            users.insert(user);
+        }
+        mut_sessions().remove_user(&userid, &tenant_id);
     }
 
     pub fn get_user_groups(&self, userid: &str, tenant_id: &Option<String>) -> HashSet<String> {
@@ -136,7 +141,10 @@ impl Users {
 
     pub fn delete_user(&mut self, userid: &str, tenant_id: &Option<String>) {
         let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        self.remove_user(userid, tenant_id);
+        // Lock USERS, remove, and DROP IT
+        {
+            self.remove_user(userid, tenant_id);
+        }
         mut_sessions().remove_user(userid, tenant_id);
     }
 
@@ -149,38 +157,59 @@ impl Users {
     // caller ensures that this operation is valid for the user
     pub fn change_password_hash(&self, userid: &str, hash: &String, tenant_id: &Option<String>) {
         let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        if let Some(users) = mut_users().get_mut(tenant_id)
-            && let Some(User {
-                ty: UserType::Native(user),
-                ..
-            }) = users.get_mut(userid)
-        {
-            user.password_hash.clone_from(hash);
-            mut_sessions().remove_user(userid, tenant_id);
+        let password_updated = {
+            if let Some(users) = mut_users().get_mut(tenant_id)
+                && let Some(User {
+                    ty: UserType::Native(user),
+                    ..
+                }) = users.get_mut(userid)
+            {
+                user.password_hash.clone_from(hash);
+                true
+            } else {
+                false
+            }
         };
+        if password_updated {
+            mut_sessions().remove_user(userid, tenant_id);
+        }
     }
 
     pub fn add_roles(&self, userid: &str, roles: HashSet<String>, tenant_id: &Option<String>) {
         let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        if let Some(users) = mut_users().get_mut(tenant_id)
-            && let Some(user) = users.get_mut(userid)
-        {
-            user.roles.extend(roles);
-            let new_perms = roles_to_permission(user.roles(), tenant_id);
-            mut_sessions().refresh_user_permissions(userid, tenant_id, &new_perms);
+        let new_roles = {
+            if let Some(users) = mut_users().get_mut(tenant_id)
+                && let Some(user) = users.get_mut(userid)
+            {
+                user.roles.extend(roles);
+                Some(user.roles())
+            } else {
+                None
+            }
         };
+        if let Some(new_roles) = new_roles {
+            let new_perms = roles_to_permission(new_roles, tenant_id);
+            mut_sessions().refresh_user_permissions(userid, tenant_id, &new_perms);
+        }
     }
 
     pub fn remove_roles(&self, userid: &str, roles: HashSet<String>, tenant_id: &Option<String>) {
         let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
-        if let Some(users) = mut_users().get_mut(tenant_id)
-            && let Some(user) = users.get_mut(userid)
-        {
-            let diff = HashSet::from_iter(user.roles.difference(&roles).cloned());
-            user.roles = diff;
-            let new_perms = roles_to_permission(user.roles(), tenant_id);
-            mut_sessions().refresh_user_permissions(userid, tenant_id, &new_perms);
+        let new_roles = {
+            if let Some(users) = mut_users().get_mut(tenant_id)
+                && let Some(user) = users.get_mut(userid)
+            {
+                let diff = HashSet::from_iter(user.roles.difference(&roles).cloned());
+                user.roles = diff;
+                Some(user.roles())
+            } else {
+                None
+            }
         };
+        if let Some(new_roles) = new_roles {
+            let new_perms = roles_to_permission(new_roles, tenant_id);
+            mut_sessions().refresh_user_permissions(userid, tenant_id, &new_perms);
+        }
     }
 
     pub fn contains(&self, userid: &str, tenant_id: &Option<String>) -> bool {
@@ -200,18 +229,27 @@ impl Users {
 
         let user_groups = self.get_user_groups(&userid, &Some(tenant_id.clone()));
         for group in user_groups {
-            if let Some(groups) = read_user_groups().get(&tenant_id)
-                && let Some(group) = groups.get(&group)
-            {
-                let group_roles = &group.roles;
-                for role in group_roles {
-                    if let Some(roles) = roles().get(&tenant_id)
-                        && let Some(privilege_list) = roles.get(role)
+            let group_roles: HashSet<String> = {
+                if let Some(groups) = read_user_groups().get(&tenant_id)
+                    && let Some(group) = groups.get(&group)
+                {
+                    group.roles.clone()
+                } else {
+                    continue;
+                }
+            };
+            for role_name in group_roles {
+                let role_privileges: Vec<_> = {
+                    if let Some(tenant_roles) = roles().get(&tenant_id)
+                        && let Some(role) = tenant_roles.get(&role_name)
                     {
-                        for privelege in privilege_list.privileges() {
-                            permissions.extend(RoleBuilder::from(privelege).build());
-                        }
+                        role.privileges().to_vec()
+                    } else {
+                        continue;
                     }
+                };
+                for privs in role_privileges {
+                    permissions.extend(RoleBuilder::from(&privs).build());
                 }
             }
         }
@@ -230,11 +268,13 @@ impl Users {
         let tenant_id = &user.tenant;
         let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
+        let perms = roles_to_permission(user.roles(), tenant);
+
         mut_sessions().track_new(
             user.userid().to_owned(),
             session,
             Utc::now() + expires_in,
-            roles_to_permission(user.roles(), tenant),
+            perms,
             tenant_id,
         );
     }
@@ -246,10 +286,16 @@ impl Users {
         context_stream: Option<&str>,
         context_user: Option<&str>,
     ) -> Response {
-        // try fetch from auth map for faster auth flow
-        if let Some(res) = sessions().check_auth(&key, action, context_stream, context_user) {
-            return res;
+        // Get snap shot and drop session read lock
+        let snapshot = {
+            let sess = sessions();
+            sess.auth_snapshot(&key)
+        };
+        // Evaluate permissions completely lock-free
+        if let Some(snapshot) = snapshot {
+            return map::check_auth_snapshot(snapshot, action, context_stream, context_user);
         }
+
         // attempt reloading permissions into new session for basic auth user
         // id user will be reloaded only through login endpoint
         let SessionKey::BasicAuth { username, password } = &key else {
@@ -273,16 +319,25 @@ impl Users {
             // if user exists and password matches
             // add this user to auth map
             if basic_user.verify_password(password) {
-                let mut sessions = mut_sessions();
-                sessions.track_new(
-                    username.clone(),
-                    key.clone(),
-                    DateTime::<Utc>::MAX_UTC,
-                    roles_to_permission(user.roles(), tenant),
-                    &user.tenant,
-                );
-                return sessions
-                    .check_auth(&key, action, context_stream, context_user)
+                let perms = roles_to_permission(user.roles(), tenant);
+                {
+                    let mut sessions = mut_sessions();
+                    sessions.track_new(
+                        username.clone(),
+                        key.clone(),
+                        DateTime::<Utc>::MAX_UTC,
+                        perms,
+                        &user.tenant,
+                    );
+                }
+                let snapshot = {
+                    let sess = sessions();
+                    sess.auth_snapshot(&key)
+                };
+                return snapshot
+                    .map(|snap| {
+                        map::check_auth_snapshot(snap, action, context_stream, context_user)
+                    })
                     .expect("entry for this key just added");
             }
         }
@@ -378,8 +433,7 @@ pub struct UsersPrism {
 pub fn roles_to_permission(roles: Vec<String>, tenant_id: &str) -> Vec<Permission> {
     let mut perms = HashSet::new();
     for role in &roles {
-        let role_map = &map::roles();
-        if let Some(roles) = role_map.get(tenant_id)
+        if let Some(roles) = map::roles().get(tenant_id)
             && let Some(privilege_list) = roles.get(role)
         {
             for privs in privilege_list.privileges() {
