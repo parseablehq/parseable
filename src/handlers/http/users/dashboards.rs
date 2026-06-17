@@ -127,9 +127,7 @@ pub async fn update_dashboard(
 
     // Validate: either query params OR body, not both
     let has_query_params = !query_map.is_empty();
-    let has_body_update = dashboard
-        .as_ref()
-        .is_some_and(|d| d.title != existing_dashboard.title || d.tiles.is_some());
+    let has_body_update = dashboard.is_some();
 
     if has_query_params && has_body_update {
         return Err(DashboardError::Metadata(
