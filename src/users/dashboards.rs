@@ -68,6 +68,9 @@ pub struct Dashboard {
     dashboard_type: Option<DashboardType>,
     pub tiles: Option<Vec<Tile>>,
     pub tenant_id: Option<String>,
+    /// all other fields are variable and can be added as needed
+    #[serde(flatten)]
+    pub other_fields: Option<serde_json::Map<String, Value>>,
 }
 
 impl MetastoreObject for Dashboard {
