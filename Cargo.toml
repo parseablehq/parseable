@@ -63,7 +63,7 @@ base64 = "0.22.0"
 cookie = "0.18.1"
 hex = "0.4"
 openid = { version = "0.18.3", default-features = false, features = ["rustls"] }
-rustls = { version = "0.23", default-features = false, features = [
+rustls = { version = "0.23.40", default-features = false, features = [
     "ring",
     "std",
 ] }
@@ -71,44 +71,35 @@ rustls-pemfile = "2.1.2"
 sha2 = "0.10.8"
 
 # Serialization and Data Formats
-byteorder = "1.4.3"
+byteorder = "1.5.0"
 erased-serde = "=0.3.16"
-serde = { version = "1.0", features = ["rc", "derive"] }
-serde_json = "1.0"
-serde_repr = "0.1.17"
+serde = { version = "1.0.228", features = ["rc", "derive"] }
+serde_json = "1.0.150"
+serde_repr = "0.1.20"
 
 # Async and Runtime
-async-trait = "0.1"
-futures = "0.3"
-futures-util = "0.3"
-tokio = { version = "^1.43", default-features = false, features = [
+async-trait = "0.1.89"
+futures = "0.3.32"
+futures-util = "0.3.32"
+tokio = { version = "^1.52.3", default-features = false, features = [
     "sync",
     "macros",
     "fs",
     "rt-multi-thread",
 ] }
-tokio-stream = { version = "0.1.17", features = ["fs"] }
-tokio-util = { version = "0.7" }
+tokio-stream = { version = "0.1.18", features = ["fs"] }
+tokio-util = { version = "0.7.18" }
 
 # perf
 hotpath = { version = "0.16.0", optional = true, features = [
     "hotpath",
     "hotpath-cpu",
     "hotpath-alloc",
-    "tokio"
+    "tokio",
 ] }
 
 # # Logging and Metrics
-# opentelemetry-proto = { version = "0.30.0", features = [
-#     "gen-tonic",
-#     "with-serde",
-#     "logs",
-#     "metrics",
-#     "trace",
-# ] }
-
-# add custom branch with fix until it gets merged
-opentelemetry-proto = { git = "https://github.com/open-telemetry/opentelemetry-rust/", rev = "b096b70b2ffe9beb65a716cf47d5e5db80a9e930", features = [
+opentelemetry-proto = { version = "0.32.0", features = [
     "gen-tonic",
     "with-serde",
     "logs",
@@ -147,7 +138,7 @@ humantime-serde = "1.1"
 # File System and I/O
 fs_extra = "1.3"
 path-clean = "1.0.1"
-relative-path = { version = "1.7", features = ["serde"] }
+relative-path = { version = "2.0.1", features = ["serde"] }
 
 # CLI and System
 clap = { version = "4.5", default-features = false, features = [
@@ -159,11 +150,11 @@ clap = { version = "4.5", default-features = false, features = [
     "cargo",
     "error-context",
 ] }
-crossterm = "0.28.1"
+crossterm = "0.29.0"
 hostname = "0.4.0"
 human-size = "0.4"
 num_cpus = "1.15"
-sysinfo = "0.33.1"
+sysinfo = { version = "0.34.2", features = ["multithread"] }
 uptime_lib = "0.3.0"
 
 # Utility Libraries
@@ -171,9 +162,9 @@ anyhow = { version = "1.0", features = ["backtrace"] }
 bytes = "1.11"
 clokwerk = "0.4"
 derive_more = { version = "1", features = ["full"] }
-itertools = "0.14"
+itertools = "0.15.0"
 once_cell = "1.20"
-rayon = "1.8"
+rayon = "1.12.0"
 rand = "0.8.5"
 regex = "1.12.2"
 reqwest = { version = "0.12", default-features = false, features = [
@@ -186,30 +177,43 @@ reqwest = { version = "0.12", default-features = false, features = [
 semver = "1.0"
 static-files = "0.2"
 thiserror = "2.0"
-ulid = { version = "1.0", features = ["serde"] }
-uuid = { version = "1", features = ["v4"] }
-xxhash-rust = { version = "0.8", features = ["xxh3"] }
-rustc-hash = "2"
+ulid = { version = "1.2.1", features = ["serde"] }
+uuid = { version = "1.23.3", features = ["v4"] }
+xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
+rustc-hash = "2.1.2"
 futures-core = "0.3.31"
 tempfile = "3.20.0"
 lazy_static = "1.4.0"
 prost = "0.13.1"
-dashmap = "6.1.0"
+dashmap = "6.2.1"
 parking_lot = "0.12.5"
-indexmap = { version = "2.13.0", features = ["serde"] }
+indexmap = { version = "2.14.0", features = ["serde"] }
+
+[target.'cfg(not(target_env = "msvc"))'.dependencies]
+tikv-jemallocator = { version = "0.7.0", features = [
+    "profiling",
+    "stats",
+    "background_threads",
+] }
+tikv-jemalloc-ctl = { version = "0.7.0", features = ["stats"] }
 
 [build-dependencies]
-cargo_toml = "0.21"
+cargo_toml = "0.22.3"
 sha1_smol = { version = "1.0", features = ["std"] }
 static-files = "0.2"
 ureq = "2.12"
 url = "2.5"
-vergen-gitcl = { version = "1.0", features = ["build", "cargo", "rustc", "si"] }
-zip = { version = "2.3", default-features = false, features = ["deflate"] }
+vergen-gitcl = { version = "9.1.0", features = [
+    "build",
+    "cargo",
+    "rustc",
+    "si",
+] }
+zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 anyhow = "1.0"
 
 [dev-dependencies]
-rstest = "0.23.0"
+rstest = "0.26.1"
 arrow = "58.0.0"
 temp-dir = "0.1.14"
 

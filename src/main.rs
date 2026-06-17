@@ -35,6 +35,14 @@ use tracing_subscriber::{EnvFilter, Registry, fmt};
 #[cfg_attr(feature = "hotpath", hotpath::main)]
 async fn main() -> anyhow::Result<()> {
     init_logger();
+
+    #[cfg(all(not(target_env = "msvc"), not(feature = "hotpath")))]
+    use tikv_jemallocator::Jemalloc;
+
+    #[cfg(all(not(target_env = "msvc"), not(feature = "hotpath")))]
+    #[global_allocator]
+    static GLOBAL: Jemalloc = Jemalloc;
+
     // Install the rustls crypto provider before any TLS operations.
     // This is required for rustls 0.23+ which needs an explicit crypto provider.
     // If the installation fails, log a warning but continue execution.
