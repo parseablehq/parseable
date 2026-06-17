@@ -196,6 +196,16 @@ pub struct Options {
     )]
     pub max_connections: usize,
 
+    // SQL timeout in seconds
+    #[arg(
+        long,
+        env = "P_SQL_TIMEOUT",
+        default_value = "300",
+        value_parser = value_parser!(u64).range(5..),
+        help = "SQL execution timeout"
+    )]
+    pub sql_timeout: u64,
+
     // DataFusion target partitions
     #[arg(
         long,
