@@ -166,7 +166,14 @@ impl InMemorySessionContext {
 pub async fn execute(query: Query, is_streaming: bool, tenant_id: &Option<String>) -> QueryResult {
     let id = tenant_id.clone();
     QUERY_RUNTIME
-        .spawn(async move { query.execute(is_streaming, &id).await })
+        .spawn(async move {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(PARSEABLE.options.sql_timeout),
+                query.execute(is_streaming, &id),
+            )
+            .await
+            .map_err(|e| ExecuteError::Timeout(e, PARSEABLE.options.sql_timeout))?
+        })
         .await
         .expect("The Join should have been successful")
 }
@@ -943,6 +950,7 @@ pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
 pub mod error {
     use crate::{parseable::StreamNotFound, storage::ObjectStorageError};
     use datafusion::error::DataFusionError;
+    use tokio::time::error::Elapsed;
 
     #[derive(Debug, thiserror::Error)]
     pub enum ExecuteError {
@@ -952,6 +960,8 @@ pub mod error {
         Datafusion(#[from] DataFusionError),
         #[error("{0}")]
         StreamNotFound(#[from] StreamNotFound),
+        #[error("{0}: {1}s")]
+        Timeout(Elapsed, u64),
     }
 }
 
