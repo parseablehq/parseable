@@ -529,7 +529,11 @@ impl Stream {
 
         dir.flatten()
             .map(|file| file.path())
-            .filter(|file| file.extension().is_some_and(|ext| ext.eq("schema")))
+            .filter(|file| {
+                file.file_name()
+                    .and_then(|n| n.to_str())
+                    .is_some_and(|n| n.ends_with(".schema"))
+            })
             .collect()
     }
 
@@ -539,8 +543,11 @@ impl Stream {
         let mut schemas: Vec<Schema> = Vec::new();
 
         for file in dir.flatten() {
-            if let Some(ext) = file.path().extension()
-                && ext.eq("schema")
+            if file
+                .path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".schema"))
             {
                 let file = File::open(file.path())?;
 
