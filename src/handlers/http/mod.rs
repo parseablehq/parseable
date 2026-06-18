@@ -44,6 +44,7 @@ pub mod oidc;
 pub mod prism_home;
 pub mod prism_logstream;
 pub mod query;
+pub mod query_context;
 pub mod rbac;
 pub mod resource_check;
 pub mod role;
