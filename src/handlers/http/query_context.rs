@@ -44,7 +44,7 @@ const LOG_CONTEXT_ANCHORED_DUPLICATE: &str = "first";
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LogContextRequest {
-    pub stream: String,
+    pub dataset: String,
     pub context_window: String,
     pub p_timestamp: String,
     pub log: Option<String>,
@@ -88,6 +88,7 @@ pub struct LogContextQueryPayload {
     pub start_time: String,
     pub end_time: String,
     pub send_null: bool,
+    pub reverse_records: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,7 +107,7 @@ struct LogContextCursor {
     name = "query_context",
     skip(req, context_request),
     fields(
-        stream = tracing::field::Empty,
+        dataset = tracing::field::Empty,
         tenant = tracing::field::Empty,
         page_size = tracing::field::Empty,
         scope = tracing::field::Empty
@@ -119,7 +120,7 @@ pub async fn query_context(
     let context_request = context_request.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
     let span = Span::current();
-    span.record("stream", tracing::field::display(&context_request.stream));
+    span.record("dataset", tracing::field::display(&context_request.dataset));
     span.record("tenant", tracing::field::debug(&tenant_id));
     info!(
         has_log = context_request.log.is_some(),
@@ -132,11 +133,11 @@ pub async fn query_context(
     let creds = extract_session_key_from_req(&req)?;
     let permissions = Users.get_permissions(&creds);
 
-    create_streams_for_distributed(vec![context_request.stream.clone()], &tenant_id).await?;
-    let authorized_streams = vec![context_request.stream.clone()];
+    create_streams_for_distributed(vec![context_request.dataset.clone()], &tenant_id).await?;
+    let authorized_datasets = vec![context_request.dataset.clone()];
     user_auth_for_datasets(
         &permissions,
-        std::slice::from_ref(&context_request.stream),
+        std::slice::from_ref(&context_request.dataset),
         &tenant_id,
     )
     .await?;
@@ -154,8 +155,8 @@ pub async fn query_context(
         "query context request normalized"
     );
 
-    let stream = PARSEABLE.get_stream(&context_request.stream, &tenant_id)?;
-    let schema = stream.get_schema();
+    let dataset = PARSEABLE.get_stream(&context_request.dataset, &tenant_id)?;
+    let schema = dataset.get_schema();
     validate_log_context_schema(schema.as_ref(), DEFAULT_TIMESTAMP_KEY)?;
     let match_fields = normalize_log_context_match_fields(
         &context_request.log,
@@ -169,7 +170,7 @@ pub async fn query_context(
     let context_end_time_str = format_log_context_api_time(context_end_time);
 
     let anchor_count_query = build_log_context_anchor_count_query(
-        &context_request.stream,
+        &context_request.dataset,
         anchor_timestamp,
         context_start_time,
         context_end_time,
@@ -178,7 +179,7 @@ pub async fn query_context(
     );
     let duplicate_anchor_count = execute_log_context_anchor_count(
         &anchor_count_query,
-        &authorized_streams,
+        &authorized_datasets,
         &context_start_time_str,
         &context_end_time_str,
         &tenant_id,
@@ -209,7 +210,7 @@ pub async fn query_context(
 
     let fetch_limit = page_size;
     let newer_payload = build_log_context_newer_query_payload(
-        &context_request.stream,
+        &context_request.dataset,
         anchor_timestamp,
         context_start_time,
         context_end_time,
@@ -220,7 +221,7 @@ pub async fn query_context(
         fetch_limit,
     );
     let older_payload = build_log_context_anchor_and_older_query_payload(
-        &context_request.stream,
+        &context_request.dataset,
         anchor_timestamp,
         context_start_time,
         context_end_time,
@@ -232,14 +233,14 @@ pub async fn query_context(
     );
 
     let (newer_records, older_records) = tokio::try_join!(
-        execute_log_context_rows(&newer_payload, &authorized_streams, &tenant_id),
-        execute_log_context_rows(&older_payload, &authorized_streams, &tenant_id),
+        execute_log_context_rows(&newer_payload, &authorized_datasets, &tenant_id),
+        execute_log_context_rows(&older_payload, &authorized_datasets, &tenant_id),
     )?;
     let (records, anchor_index) =
         build_log_context_records_window(newer_records, older_records, page_size)?;
 
     let queries = build_log_context_cursor_queries(
-        &context_request.stream,
+        &context_request.dataset,
         context_start_time,
         context_end_time,
         &match_fields,
@@ -378,7 +379,7 @@ fn validate_log_context_schema(
     }
 
     Err(QueryError::CustomError(format!(
-        "Field '{field_name}' does not exist in stream schema"
+        "Field '{field_name}' does not exist in dataset schema"
     )))
 }
 
@@ -392,7 +393,7 @@ fn validate_log_context_match_field_schema(
         .find(|field| field.name() == field_name)
         .ok_or_else(|| {
             QueryError::CustomError(format!(
-                "Field '{field_name}' does not exist in stream schema"
+                "Field '{field_name}' does not exist in dataset schema"
             ))
         })?;
 
@@ -418,7 +419,7 @@ fn log_context_additional_filter(
 }
 
 fn build_log_context_anchor_count_query(
-    stream: &str,
+    dataset: &str,
     anchor_timestamp: DateTime<Utc>,
     context_start_time: DateTime<Utc>,
     context_end_time: DateTime<Utc>,
@@ -429,18 +430,18 @@ fn build_log_context_anchor_count_query(
         build_log_context_scope_filter(context_start_time, context_end_time, additional_filter);
     let anchor_match_predicate =
         build_log_context_anchor_match_predicate(anchor_timestamp, match_fields);
-    let stream = quote_sql_identifier(stream);
+    let dataset = quote_sql_identifier(dataset);
 
     format!(
         r#"SELECT
   COUNT(*) AS duplicate_anchor_count
-FROM {stream}
+FROM {dataset}
 WHERE {scope_filter} AND ({anchor_match_predicate})"#
     )
 }
 
 fn build_log_context_newer_query_payload(
-    stream: &str,
+    dataset: &str,
     anchor_timestamp: DateTime<Utc>,
     context_start_time: DateTime<Utc>,
     context_end_time: DateTime<Utc>,
@@ -452,7 +453,7 @@ fn build_log_context_newer_query_payload(
 ) -> LogContextQueryPayload {
     LogContextQueryPayload {
         query: build_log_context_neighbor_query(
-            stream,
+            dataset,
             context_start_time,
             context_end_time,
             &LogContextCursor {
@@ -460,19 +461,20 @@ fn build_log_context_newer_query_payload(
                 match_field: match_fields[0].clone(),
             },
             LogContextSeekDirection::Newer,
-            false,
             match_fields,
             additional_filter,
-            limit,
+            Some(limit),
+            None,
         ),
         start_time: start_time.to_string(),
         end_time: end_time.to_string(),
         send_null: false,
+        reverse_records: false,
     }
 }
 
 fn build_log_context_anchor_and_older_query_payload(
-    stream: &str,
+    dataset: &str,
     anchor_timestamp: DateTime<Utc>,
     context_start_time: DateTime<Utc>,
     context_end_time: DateTime<Utc>,
@@ -484,7 +486,7 @@ fn build_log_context_anchor_and_older_query_payload(
 ) -> LogContextQueryPayload {
     LogContextQueryPayload {
         query: build_log_context_anchor_and_older_query(
-            stream,
+            dataset,
             anchor_timestamp,
             context_start_time,
             context_end_time,
@@ -495,6 +497,7 @@ fn build_log_context_anchor_and_older_query_payload(
         start_time: start_time.to_string(),
         end_time: end_time.to_string(),
         send_null: false,
+        reverse_records: false,
     }
 }
 
@@ -505,7 +508,7 @@ enum LogContextSeekDirection {
 }
 
 fn build_log_context_anchor_and_older_query(
-    stream: &str,
+    dataset: &str,
     anchor_timestamp: DateTime<Utc>,
     context_start_time: DateTime<Utc>,
     context_end_time: DateTime<Utc>,
@@ -521,24 +524,24 @@ fn build_log_context_anchor_and_older_query(
         build_log_context_scope_filter(context_start_time, context_end_time, additional_filter);
     let predicate = build_log_context_anchor_and_older_predicate(&anchor_cursor);
     let order_by = build_log_context_order_by(match_fields);
-    let stream = quote_sql_identifier(stream);
+    let dataset = quote_sql_identifier(dataset);
 
     format!(
-        "SELECT * FROM {stream} WHERE ({scope_filter}) AND ({predicate}) {order_by} LIMIT {limit}"
+        "SELECT * FROM {dataset} WHERE ({scope_filter}) AND ({predicate}) {order_by} LIMIT {limit}"
     )
 }
 
 #[allow(clippy::too_many_arguments)]
 fn build_log_context_neighbor_query(
-    stream: &str,
+    dataset: &str,
     context_start_time: DateTime<Utc>,
     context_end_time: DateTime<Utc>,
     cursor: &LogContextCursor,
     direction: LogContextSeekDirection,
-    wrap_for_display_order: bool,
     match_fields: &[LogContextMatchField],
     additional_filter: Option<&str>,
-    limit: u64,
+    limit: Option<u64>,
+    offset: Option<u64>,
 ) -> String {
     let scope_filter =
         build_log_context_scope_filter(context_start_time, context_end_time, additional_filter);
@@ -547,21 +550,21 @@ fn build_log_context_neighbor_query(
         LogContextSeekDirection::Newer => build_log_context_reverse_order_by(match_fields),
         LogContextSeekDirection::Older => build_log_context_order_by(match_fields),
     };
-    let stream = quote_sql_identifier(stream);
-    let query = format!(
-        "SELECT * FROM {stream} WHERE ({scope_filter}) AND ({predicate}) {order_by} LIMIT {limit}"
-    );
+    let dataset = quote_sql_identifier(dataset);
+    let limit_clause = limit
+        .map(|limit| format!(" LIMIT {limit}"))
+        .unwrap_or_default();
+    let offset_clause = offset
+        .map(|offset| format!(" OFFSET {offset}"))
+        .unwrap_or_default();
 
-    if wrap_for_display_order {
-        let display_order_by = build_log_context_order_by(match_fields);
-        format!("SELECT * FROM ({query}) AS log_context_seek_page {display_order_by}")
-    } else {
-        query
-    }
+    format!(
+        "SELECT * FROM {dataset} WHERE ({scope_filter}) AND ({predicate}) {order_by}{limit_clause}{offset_clause}"
+    )
 }
 
 fn build_log_context_cursor_query_payload(
-    stream: &str,
+    dataset: &str,
     context_start_time: DateTime<Utc>,
     context_end_time: DateTime<Utc>,
     match_fields: &[LogContextMatchField],
@@ -572,27 +575,29 @@ fn build_log_context_cursor_query_payload(
     cursor: &LogContextCursor,
     direction: LogContextSeekDirection,
 ) -> LogContextQueryPayload {
+    let reverse_records = matches!(direction, LogContextSeekDirection::Newer);
     LogContextQueryPayload {
         query: build_log_context_neighbor_query(
-            stream,
+            dataset,
             context_start_time,
             context_end_time,
             cursor,
             direction,
-            matches!(direction, LogContextSeekDirection::Newer),
             match_fields,
             additional_filter,
-            limit,
+            Some(limit),
+            Some(0),
         ),
         start_time: start_time.to_string(),
         end_time: end_time.to_string(),
         send_null: false,
+        reverse_records,
     }
 }
 
 #[allow(clippy::too_many_arguments)]
 fn build_log_context_cursor_queries(
-    stream: &str,
+    dataset: &str,
     context_start_time: DateTime<Utc>,
     context_end_time: DateTime<Utc>,
     match_fields: &[LogContextMatchField],
@@ -608,7 +613,7 @@ fn build_log_context_cursor_queries(
         .transpose()?
         .map(|cursor| {
             build_log_context_cursor_query_payload(
-                stream,
+                dataset,
                 context_start_time,
                 context_end_time,
                 match_fields,
@@ -626,7 +631,7 @@ fn build_log_context_cursor_queries(
         .transpose()?
         .map(|cursor| {
             build_log_context_cursor_query_payload(
-                stream,
+                dataset,
                 context_start_time,
                 context_end_time,
                 match_fields,
@@ -784,18 +789,18 @@ fn build_log_context_reverse_order_by(match_fields: &[LogContextMatchField]) -> 
 
 #[tracing::instrument(
     name = "query_context.execute_anchor_count",
-    skip(sql, authorized_streams, tenant_id),
+    skip(sql, authorized_datasets, tenant_id),
     fields(
         tenant = tracing::field::Empty,
         start_time = %start_time,
         end_time = %end_time,
         sql_len = sql.len(),
-        authorized_stream_count = authorized_streams.len()
+        authorized_dataset_count = authorized_datasets.len()
     )
 )]
 async fn execute_log_context_anchor_count(
     sql: &str,
-    authorized_streams: &[String],
+    authorized_datasets: &[String],
     start_time: &str,
     end_time: &str,
     tenant_id: &Option<String>,
@@ -814,7 +819,7 @@ async fn execute_log_context_anchor_count(
     };
 
     let (records, _) =
-        get_records_and_fields_for_authorized_query(&query_request, authorized_streams, tenant_id)
+        get_records_and_fields_for_authorized_query(&query_request, authorized_datasets, tenant_id)
             .await?;
     let records = records.unwrap_or_default();
     let rows = record_batches_to_json(&records)?;
@@ -832,18 +837,18 @@ async fn execute_log_context_anchor_count(
 
 #[tracing::instrument(
     name = "query_context.execute_rows",
-    skip(payload, authorized_streams, tenant_id),
+    skip(payload, authorized_datasets, tenant_id),
     fields(
         tenant = tracing::field::Empty,
         start_time = %payload.start_time,
         end_time = %payload.end_time,
         sql_len = payload.query.len(),
-        authorized_stream_count = authorized_streams.len()
+        authorized_dataset_count = authorized_datasets.len()
     )
 )]
 async fn execute_log_context_rows(
     payload: &LogContextQueryPayload,
-    authorized_streams: &[String],
+    authorized_datasets: &[String],
     tenant_id: &Option<String>,
 ) -> Result<Vec<Value>, QueryError> {
     Span::current().record("tenant", tracing::field::debug(tenant_id));
@@ -860,7 +865,7 @@ async fn execute_log_context_rows(
     };
 
     let (records, _) =
-        get_records_and_fields_for_authorized_query(&query_request, authorized_streams, tenant_id)
+        get_records_and_fields_for_authorized_query(&query_request, authorized_datasets, tenant_id)
             .await?;
     let records = records.unwrap_or_default();
     let records: Vec<Value> = record_batches_to_json(&records)?
@@ -1158,15 +1163,15 @@ mod tests {
             end,
             &cursor,
             LogContextSeekDirection::Newer,
-            true,
             &match_fields,
             None,
-            500,
+            None,
+            None,
         );
         assert!(previous_sql.contains("\"p_timestamp\" > TIMESTAMP '2026-06-17 10:15:42.123'"));
         assert!(previous_sql.contains("\"message\" < 'alpha'"));
-        assert!(previous_sql.contains("ORDER BY \"p_timestamp\" ASC, \"message\" DESC LIMIT 500"));
-        assert!(previous_sql.ends_with("ORDER BY \"p_timestamp\" DESC, \"message\" ASC"));
+        assert!(previous_sql.ends_with("ORDER BY \"p_timestamp\" ASC, \"message\" DESC"));
+        assert!(!previous_sql.contains("LIMIT"));
         assert!(!previous_sql.contains("OFFSET"));
 
         let next_sql = build_log_context_neighbor_query(
@@ -1175,14 +1180,45 @@ mod tests {
             end,
             &cursor,
             LogContextSeekDirection::Older,
-            false,
             &match_fields,
             None,
-            500,
+            None,
+            None,
         );
         assert!(next_sql.contains("\"p_timestamp\" < TIMESTAMP '2026-06-17 10:15:42.123'"));
         assert!(next_sql.contains("\"message\" > 'alpha'"));
-        assert!(next_sql.contains("ORDER BY \"p_timestamp\" DESC, \"message\" ASC LIMIT 500"));
+        assert!(next_sql.ends_with("ORDER BY \"p_timestamp\" DESC, \"message\" ASC"));
+        assert!(!next_sql.contains("LIMIT"));
         assert!(!next_sql.contains("OFFSET"));
+
+        let previous_payload = build_log_context_cursor_query_payload(
+            "logs",
+            start,
+            end,
+            &match_fields,
+            None,
+            "2026-06-17T10:14:00Z",
+            "2026-06-17T10:16:00Z",
+            500,
+            &cursor,
+            LogContextSeekDirection::Newer,
+        );
+        assert!(previous_payload.query.ends_with("LIMIT 500 OFFSET 0"));
+        assert!(previous_payload.reverse_records);
+
+        let next_payload = build_log_context_cursor_query_payload(
+            "logs",
+            start,
+            end,
+            &match_fields,
+            None,
+            "2026-06-17T10:14:00Z",
+            "2026-06-17T10:16:00Z",
+            500,
+            &cursor,
+            LogContextSeekDirection::Older,
+        );
+        assert!(next_payload.query.ends_with("LIMIT 500 OFFSET 0"));
+        assert!(!next_payload.reverse_records);
     }
 }
