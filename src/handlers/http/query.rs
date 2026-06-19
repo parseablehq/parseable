@@ -115,6 +115,45 @@ pub async fn get_records_and_fields(
     Ok((Some(records), Some(fields)))
 }
 
+/// Executes a query after the caller has already loaded and authorized the streams.
+///
+/// This keeps structured APIs that fan out into multiple internal SQL queries from repeating
+/// distributed stream loading and RBAC checks for every generated query.
+pub async fn get_records_and_fields_for_authorized_query(
+    query_request: &Query,
+    authorized_tables: &[String],
+    tenant_id: &Option<String>,
+) -> Result<(Option<Vec<RecordBatch>>, Option<Vec<String>>), QueryError> {
+    let mut session_state = QUERY_SESSION.get_ctx().state();
+    let time_range =
+        TimeRange::parse_human_time(&query_request.start_time, &query_request.end_time)?;
+    let tables = resolve_stream_names(&query_request.query)?;
+    if tables
+        .iter()
+        .any(|table| !authorized_tables.contains(table))
+    {
+        return Err(QueryError::Unauthorized);
+    }
+
+    session_state
+        .config_mut()
+        .options_mut()
+        .catalog
+        .default_schema = tenant_id.as_deref().unwrap_or("public").to_owned();
+
+    let query: LogicalQuery = into_query(query_request, &session_state, time_range).await?;
+    let (records, fields) = execute(query, false, tenant_id).await?;
+
+    let records = match records {
+        Either::Left(vec_rb) => vec_rb,
+        Either::Right(_) => {
+            return Err(QueryError::CustomError("Reject streaming response".into()));
+        }
+    };
+
+    Ok((Some(records), Some(fields)))
+}
+
 pub async fn query(req: HttpRequest, query_request: Query) -> Result<HttpResponse, QueryError> {
     let mut session_state = QUERY_SESSION.get_ctx().state();
     let time_range =

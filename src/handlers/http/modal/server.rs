@@ -29,6 +29,7 @@ use crate::handlers::http::max_event_payload_size;
 use crate::handlers::http::middleware::IntraClusterRequest;
 use crate::handlers::http::prism_base_path;
 use crate::handlers::http::query;
+use crate::handlers::http::query_context;
 use crate::handlers::http::targets;
 use crate::handlers::http::users::dashboards;
 use crate::handlers::http::users::filters;
@@ -80,6 +81,7 @@ impl ParseableServer for Server {
                 web::scope(&base_path())
                     .service(Self::get_correlation_webscope())
                     .service(Self::get_query_factory())
+                    .service(Self::get_query_context_factory())
                     .service(Self::get_ingest_factory())
                     .service(Self::get_liveness_factory())
                     .service(Self::get_readiness_factory())
@@ -419,6 +421,16 @@ impl Server {
         web::resource("/query").route(
             web::post()
                 .to(query::query)
+                .authorize(Action::Query)
+                .wrap(IntraClusterRequest),
+        )
+    }
+
+    // POST "/query/context" ==> Get a page of logs around a selected log line
+    pub fn get_query_context_factory() -> Resource {
+        web::resource("/query/context").route(
+            web::post()
+                .to(query_context::query_context)
                 .authorize(Action::Query)
                 .wrap(IntraClusterRequest),
         )
