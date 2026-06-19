@@ -440,6 +440,7 @@ WHERE {scope_filter} AND ({anchor_match_predicate})"#
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_log_context_newer_query_payload(
     dataset: &str,
     anchor_timestamp: DateTime<Utc>,
@@ -473,6 +474,7 @@ fn build_log_context_newer_query_payload(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_log_context_anchor_and_older_query_payload(
     dataset: &str,
     anchor_timestamp: DateTime<Utc>,
@@ -563,6 +565,7 @@ fn build_log_context_neighbor_query(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_log_context_cursor_query_payload(
     dataset: &str,
     context_start_time: DateTime<Utc>,
