@@ -66,6 +66,7 @@ impl TenantMetadata {
         self.tenants.get(tenant_id).map(|t| t.meta.clone())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_tenant_meta(
         &self,
         tenant_id: &str,
