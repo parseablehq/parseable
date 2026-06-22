@@ -23,7 +23,10 @@ use itertools::Itertools;
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
 
-use crate::{rbac::role::Action, storage::StorageMetadata};
+use crate::{
+    rbac::role::Action,
+    storage::{IngestionQuota, QuotaPeriod, StorageMetadata},
+};
 
 pub static TENANT_METADATA: Lazy<Arc<TenantMetadata>> =
     Lazy::new(|| Arc::new(TenantMetadata::default()));
@@ -63,6 +66,7 @@ impl TenantMetadata {
         self.tenants.get(tenant_id).map(|t| t.meta.clone())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn update_tenant_meta(
         &self,
         tenant_id: &str,
@@ -70,12 +74,16 @@ impl TenantMetadata {
         start_date: Option<String>,
         end_date: Option<String>,
         plan: Option<String>,
+        ingestion_quota: Option<IngestionQuota>,
+        quota_period: Option<QuotaPeriod>,
     ) -> bool {
         if let Some(mut tenant) = self.tenants.get_mut(tenant_id) {
             tenant.meta.customer_name = customer_name;
             tenant.meta.start_date = start_date;
             tenant.meta.end_date = end_date;
             tenant.meta.plan = plan;
+            tenant.meta.ingestion_quota = ingestion_quota;
+            tenant.meta.quota_period = quota_period;
             true
         } else {
             false

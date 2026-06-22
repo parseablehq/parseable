@@ -53,6 +53,28 @@ pub struct StaticStorageMetadata {
 
 // Type for serialization and deserialization
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IngestionQuota {
+    #[serde(rename = "type")]
+    pub quota_type: IngestionQuotaType,
+    pub limit: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IngestionQuotaType {
+    SizeBytes,
+    EventCount,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum QuotaPeriod {
+    Monthly,
+    Yearly,
+    Lifetime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct StorageMetadata {
     pub version: String,
     pub mode: String,
@@ -79,6 +101,10 @@ pub struct StorageMetadata {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ingestion_quota: Option<IngestionQuota>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_period: Option<QuotaPeriod>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<String>,
 }
 
@@ -102,6 +128,8 @@ impl Default for StorageMetadata {
             start_date: None,
             end_date: None,
             plan: None,
+            ingestion_quota: None,
+            quota_period: None,
             owner: None,
         }
     }
