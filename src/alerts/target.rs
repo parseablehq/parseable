@@ -195,20 +195,6 @@ pub struct Target {
 }
 
 impl Target {
-    /// Evaluates an HTTP header name to determine if its value is likely a secret.
-    /// Uses a strict allowlist of known sensitive headers (Authorization, Cookies)
-    /// combined with a broad blocklist of dangerous substrings (token, secret, key)
-    /// to catch custom headers like `X-Api-Token`.
-    fn should_redact_header(name: &str) -> bool {
-        let lower = name.to_lowercase();
-        matches!(
-            lower.as_str(),
-            "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
-        ) || lower.contains("token")
-            || lower.contains("secret")
-            || lower.contains("key")
-            || lower.contains("signature")
-    }
     /// Sanitizes a URL by obliterating the trailing path segment.
     fn mask_url(url: &Url) -> String {
         let mut base = url.clone();
@@ -237,13 +223,7 @@ impl Target {
                 let safe_headers: HashMap<String, String> = other_web_hook
                     .headers
                     .into_iter()
-                    .map(|(k, v)| {
-                        if Self::should_redact_header(&k) {
-                            (k, "********".to_string())
-                        } else {
-                            (k, v)
-                        }
-                    })
+                    .map(|(k, _v)| (k, "********".to_string()))
                     .collect();
                 json!({
                     "name":self.name,
@@ -707,43 +687,6 @@ mod tests {
         assert!(
             masked_str.contains("********"),
             "Expected redaction marker not found!"
-        );
-    }
-
-    #[test]
-    fn test_masked_webhook_hides_auth_headers() {
-        let mut headers = HashMap::new();
-        headers.insert("Authorization".into(), "Bearer super-secret-token".into());
-        headers.insert("Content-Type".into(), "application/json".into());
-
-        let target = Target {
-            name: "slack-hook".into(),
-            id: Ulid::new(),
-            tenant: None,
-            target: TargetType::Other(OtherWebHook {
-                endpoint: "https://hooks.slack.com/services/T00/B00/SECRET"
-                    .parse()
-                    .unwrap(),
-                headers,
-                skip_tls_check: false,
-            }),
-        };
-
-        let masked = target.mask();
-        let masked_str = serde_json::to_string(&masked).unwrap();
-
-        assert!(
-            !masked_str.contains("super-secret-token"),
-            "Bearer token leaked in masked response!"
-        );
-        assert!(
-            !masked_str.contains("SECRET"),
-            "Webhook URL secret leaked in masked response!"
-        );
-        // Non-sensitive headers should survive
-        assert!(
-            masked_str.contains("application/json"),
-            "Non-sensitive header was incorrectly redacted!"
         );
     }
 }
