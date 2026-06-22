@@ -42,8 +42,7 @@ pub async fn post(
     // add to the map
     TARGETS.update(target.clone()).await?;
 
-    // Ok(web::Json(target.mask()))
-    Ok(web::Json(target))
+    Ok(web::Json(target.mask()))
 }
 
 // GET /targets
@@ -54,7 +53,7 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
         .list(&tenant_id)
         .await?
         .into_iter()
-        // .map(|t| t.mask())
+        .map(|t| t.mask())
         .collect_vec();
 
     Ok(web::Json(list))
@@ -66,8 +65,7 @@ pub async fn get(req: HttpRequest, target_id: Path<Ulid>) -> Result<impl Respond
     let tenant_id = get_tenant_id_from_request(&req);
     let target = TARGETS.get_target_by_id(&target_id, &tenant_id).await?;
 
-    // Ok(web::Json(target.mask()))
-    Ok(web::Json(target))
+    Ok(web::Json(target.mask()))
 }
 
 // PUT /targets/{target_id}
@@ -95,8 +93,7 @@ pub async fn update(
     // add to the map
     TARGETS.update(target.clone()).await?;
 
-    // Ok(web::Json(target.mask()))
-    Ok(web::Json(target))
+    Ok(web::Json(target.mask()))
 }
 
 // DELETE /targets/{target_id}
@@ -105,6 +102,5 @@ pub async fn delete(req: HttpRequest, target_id: Path<Ulid>) -> Result<impl Resp
     let tenant_id = get_tenant_id_from_request(&req);
     let target = TARGETS.delete(&target_id, &tenant_id).await?;
 
-    // Ok(web::Json(target.mask()))
-    Ok(web::Json(target))
+    Ok(web::Json(target.mask()))
 }
