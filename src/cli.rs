@@ -368,27 +368,9 @@ pub struct Options {
         env = "P_HOT_TIER_LATEST_MINUTES",
         value_parser = clap::value_parser!(u64).range(1..),
         default_value = "10",
-        help = "Files whose timestamp is within the last N minutes are 'latest'; rest are 'historic'."
+        help = "Files whose timestamp is within the last N minutes are 'latest'"
     )]
     pub hot_tier_latest_minutes: u64,
-
-    #[arg(
-        long = "hot-tier-per-tick-cap",
-        env = "P_HISTORIC_PER_TICK_CAP",
-        value_parser = clap::value_parser!(u32).range(10..),
-        default_value = "100",
-        help = "Maximum files to download per historic tick."
-    )]
-    pub historic_per_tick_cap: u32,
-
-    #[arg(
-        long = "hot-tier-historic-sync-minutes",
-        env = "P_HOT_TIER_HISTORIC_SYNC_MINUTES",
-        value_parser = clap::value_parser!(u32).range(1..),
-        default_value = "5",
-        help = "Interval (minutes) at which the historic hot-tier sync runs."
-    )]
-    pub hot_tier_historic_sync_minutes: u32,
 
     //TODO: remove this when smart cache is implemented
     #[arg(
