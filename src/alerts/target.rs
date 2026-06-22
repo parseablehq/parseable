@@ -195,51 +195,73 @@ pub struct Target {
 }
 
 impl Target {
+    /// Evaluates an HTTP header name to determine if its value is likely a secret.
+    /// Uses a strict allowlist of known sensitive headers (Authorization, Cookies)
+    /// combined with a broad blocklist of dangerous substrings (token, secret, key)
+    /// to catch custom headers like `X-Api-Token`.
+    fn should_redact_header(name: &str) -> bool {
+        let lower = name.to_lowercase();
+        matches!(
+            lower.as_str(),
+            "authorization" | "proxy-authorization" | "cookie" | "set-cookie"
+        ) || lower.contains("token")
+            || lower.contains("secret")
+            || lower.contains("key")
+            || lower.contains("signature")
+    }
+    /// Sanitizes a URL by obliterating the trailing path segment.
+    fn mask_url(url: &Url) -> String {
+        let mut base = url.clone();
+        if let Ok(mut segments) = base.path_segments_mut() {
+            segments.clear();
+        }
+        base.set_query(None);
+        base.set_fragment(None);
+        base.set_path("/********");
+        base.to_string()
+    }
+
     pub fn mask(self) -> Value {
         match self.target {
             TargetType::Slack(slack_web_hook) => {
-                let endpoint = slack_web_hook.endpoint.to_string();
-                let masked_endpoint = if endpoint.len() > 20 {
-                    format!("{}********", &endpoint[..20])
-                } else {
-                    "********".to_string()
-                };
+                let endpoint = Self::mask_url(&slack_web_hook.endpoint);
                 json!({
                    "name":self.name,
                    "type":"slack",
-                   "endpoint":masked_endpoint,
+                   "endpoint": endpoint,
                    "id":self.id
                 })
             }
             TargetType::Other(other_web_hook) => {
-                let endpoint = other_web_hook.endpoint.to_string();
-                let masked_endpoint = if endpoint.len() > 20 {
-                    format!("{}********", &endpoint[..20])
-                } else {
-                    "********".to_string()
-                };
+                let endpoint = Self::mask_url(&other_web_hook.endpoint);
+                let safe_headers: HashMap<String, String> = other_web_hook
+                    .headers
+                    .into_iter()
+                    .map(|(k, v)| {
+                        if Self::should_redact_header(&k) {
+                            (k, "********".to_string())
+                        } else {
+                            (k, v)
+                        }
+                    })
+                    .collect();
                 json!({
                     "name":self.name,
                     "type":"webhook",
-                    "endpoint":masked_endpoint,
-                    "headers":other_web_hook.headers,
+                    "endpoint":endpoint,
+                    "headers":safe_headers,
                     "skipTlsCheck":other_web_hook.skip_tls_check,
                     "id":self.id
                 })
             }
             TargetType::AlertManager(alert_manager) => {
-                let endpoint = alert_manager.endpoint.to_string();
-                let masked_endpoint = if endpoint.len() > 20 {
-                    format!("{}********", &endpoint[..20])
-                } else {
-                    "********".to_string()
-                };
+                let endpoint = Self::mask_url(&alert_manager.endpoint);
                 if let Some(auth) = alert_manager.auth {
                     let password = "********";
                     json!({
                         "name":self.name,
                         "type":"webhook",
-                        "endpoint":masked_endpoint,
+                        "endpoint":endpoint,
                         "username":auth.username,
                         "password":password,
                         "skipTlsCheck":alert_manager.skip_tls_check,
@@ -249,7 +271,7 @@ impl Target {
                     json!({
                         "name":self.name,
                         "type":"webhook",
-                        "endpoint":masked_endpoint,
+                        "endpoint":endpoint,
                         "username":Value::Null,
                         "password":Value::Null,
                         "skipTlsCheck":alert_manager.skip_tls_check,
@@ -651,4 +673,77 @@ pub struct TimeoutState {
 pub struct Auth {
     username: String,
     password: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_masked_target_hides_secrets() {
+        let target = Target {
+            name: "test-target".into(),
+            id: Ulid::new(),
+            tenant: None,
+            target: TargetType::AlertManager(AlertManager {
+                endpoint: "https://internal.corp/api".parse().unwrap(),
+                auth: Some(Auth {
+                    username: "admin".into(),
+                    password: "SuperSecretPassword123".into(),
+                }),
+                skip_tls_check: false,
+            }),
+        };
+
+        let masked = target.mask();
+
+        let masked_str = serde_json::to_string(&masked).unwrap();
+
+        // These assertions MUST pass, or the build fails
+        assert!(
+            !masked_str.contains("SuperSecretPassword123"),
+            "Password leaked in masked response!"
+        );
+        assert!(
+            masked_str.contains("********"),
+            "Expected redaction marker not found!"
+        );
+    }
+
+    #[test]
+    fn test_masked_webhook_hides_auth_headers() {
+        let mut headers = HashMap::new();
+        headers.insert("Authorization".into(), "Bearer super-secret-token".into());
+        headers.insert("Content-Type".into(), "application/json".into());
+
+        let target = Target {
+            name: "slack-hook".into(),
+            id: Ulid::new(),
+            tenant: None,
+            target: TargetType::Other(OtherWebHook {
+                endpoint: "https://hooks.slack.com/services/T00/B00/SECRET"
+                    .parse()
+                    .unwrap(),
+                headers,
+                skip_tls_check: false,
+            }),
+        };
+
+        let masked = target.mask();
+        let masked_str = serde_json::to_string(&masked).unwrap();
+
+        assert!(
+            !masked_str.contains("super-secret-token"),
+            "Bearer token leaked in masked response!"
+        );
+        assert!(
+            !masked_str.contains("SECRET"),
+            "Webhook URL secret leaked in masked response!"
+        );
+        // Non-sensitive headers should survive
+        assert!(
+            masked_str.contains("application/json"),
+            "Non-sensitive header was incorrectly redacted!"
+        );
+    }
 }
