@@ -23,6 +23,14 @@ $CONFIG_FILE = "$PSScriptRoot\fluent-bit.conf"
 $PID_FILE = "$PSScriptRoot\fluent-bit.pid"
 $LOG_FILE = "$PSScriptRoot\fluent-bit.log"
 $ERROR_LOG_FILE = "$PSScriptRoot\fluent-bit.err.log"
+$SCRIPT_PATH = $PSCommandPath
+if ([string]::IsNullOrWhiteSpace($SCRIPT_PATH)) {
+    $SCRIPT_PATH = $MyInvocation.MyCommand.Path
+}
+if ([string]::IsNullOrWhiteSpace($SCRIPT_PATH)) {
+    $SCRIPT_PATH = ".\ingest.ps1"
+}
+$SCRIPT_CMD = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$SCRIPT_PATH`""
 
 $SUPPORTED_ARCH = @("AMD64", "ARM64")
 
@@ -90,8 +98,8 @@ function Show-Status {
         Write-Info "Log file: $LOG_FILE"
         Write-Info "Error log file: $ERROR_LOG_FILE"
         Write-Host ""
-        Write-Info "To see logs: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 logs"
-        Write-Info "To stop: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 stop"
+        Write-Info "To see logs: $SCRIPT_CMD logs"
+        Write-Info "To stop: $SCRIPT_CMD stop"
     }
     else {
         Write-Warning "Fluent Bit is not running"
@@ -202,7 +210,7 @@ function Start-FluentBit {
     if (Test-FluentBitRunning) {
         $processId = Get-Content $PID_FILE
         Write-Warning "Fluent Bit is already running (PID: $processId)"
-        Write-Info "Use 'ingest.ps1 stop' to stop it first"
+        Write-Info "Use '$SCRIPT_CMD stop' to stop it first"
         return
     }
     
@@ -241,17 +249,17 @@ function Start-FluentBit {
     
     if (-not $stillRunning) {
         Write-ErrorMsg "Fluent Bit exited immediately"
-        Write-ErrorMsg "Run '.\ingest.ps1 debug' to see error details"
+        Write-ErrorMsg "Run '$SCRIPT_CMD debug' to see error details"
         Remove-Item $PID_FILE -ErrorAction SilentlyContinue
         exit 1
     }
     else {
         Write-Info "Fluent Bit started successfully (PID: $($process.Id))"
         Write-Host ""
-        Write-Info "To debug: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 debug"
-        Write-Info "To check status: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 status"
-        Write-Info "To see logs: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 logs"
-        Write-Info "To stop: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 stop"
+        Write-Info "To debug: $SCRIPT_CMD debug"
+        Write-Info "To check status: $SCRIPT_CMD status"
+        Write-Info "To see logs: $SCRIPT_CMD logs"
+        Write-Info "To stop: $SCRIPT_CMD stop"
     }
 }
 
@@ -359,17 +367,17 @@ function Show-Help {
 Fluent Bit Setup and Management Script for Windows
 
 Usage:
-  Setup:   powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 [host[:port]] [stream] [api_key] [tenant_id]
-  Stop:    powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 stop
-  Start:   powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 start
-  Restart: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 restart
-  Status:  powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 status
-  Logs:    powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 logs
-  Debug:   powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 debug
+  Setup:   $SCRIPT_CMD [host[:port]] [stream] [api_key] [tenant_id]
+  Stop:    $SCRIPT_CMD stop
+  Start:   $SCRIPT_CMD start
+  Restart: $SCRIPT_CMD restart
+  Status:  $SCRIPT_CMD status
+  Logs:    $SCRIPT_CMD logs
+  Debug:   $SCRIPT_CMD debug
 
 Example:
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 https://your-host.com:443 node-metrics px_api_key
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 http://localhost:8000 node-metrics px_api_key tenant-id
+  $SCRIPT_CMD https://your-host.com:443 node-metrics px_api_key
+  $SCRIPT_CMD http://localhost:8000 node-metrics px_api_key tenant-id
 
 "@
 }
@@ -425,8 +433,8 @@ switch ($Param1.ToLower()) {
     }
     default {
         if ([string]::IsNullOrWhiteSpace($Param2) -or [string]::IsNullOrWhiteSpace($Param3)) {
-            Write-ErrorMsg "Usage: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 [host[:port]] [stream] [api_key] [tenant_id]"
-            Write-ErrorMsg "   Or: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 [start|stop|restart|status|logs|debug|help]"
+            Write-ErrorMsg "Usage: $SCRIPT_CMD [host[:port]] [stream] [api_key] [tenant_id]"
+            Write-ErrorMsg "   Or: $SCRIPT_CMD [start|stop|restart|status|logs|debug|help]"
             exit 1
         }
         Setup-FluentBit -IngestorHost $Param1 -StreamName $Param2 -ApiKey $Param3 -TenantId $Param4
