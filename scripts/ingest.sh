@@ -2,7 +2,7 @@
 
 # Fluent Bit Setup and Management Script
 # Usage: 
-#   Setup:   ./ingest.sh <host[:port]> <api_key> [tenant_id]
+#   Setup:   ./ingest.sh <host[:port]> <stream> <api_key> [tenant_id]
 #   Stop:    ./ingest.sh stop
 #   Restart: ./ingest.sh restart
 #   Status:  ./ingest.sh status
@@ -241,17 +241,18 @@ install_fluent_bit() {
 # Setup function
 setup_fluent_bit() {
     local INGESTOR_HOST="$1"
-    local API_KEY="$2"
-    local TENANT_ID="${3:-}"
+    local STREAM_NAME="$2"
+    local API_KEY="$3"
+    local TENANT_ID="${4:-}"
     local TENANT_HEADER=""
     local TLS_SETTING="On"
     local DEFAULT_PORT="443"
     local PORT=""
     
     # Validate all fields are present
-    if [ -z "$INGESTOR_HOST" ] || [ -z "$API_KEY" ]; then
+    if [ -z "$INGESTOR_HOST" ] || [ -z "$STREAM_NAME" ] || [ -z "$API_KEY" ]; then
         print_error "Invalid setup parameters"
-        print_error "Expected format: $0 <host[:port]> <api_key> [tenant_id]"
+        print_error "Expected format: $0 <host[:port]> <stream> <api_key> [tenant_id]"
         exit 1
     fi
 
@@ -330,7 +331,7 @@ setup_fluent_bit() {
     TLS                       $TLS_SETTING
     Header                    X-API-Key $API_KEY
 ${TENANT_HEADER}
-    Header                    X-P-Stream node-metrics
+    Header                    X-P-Stream $STREAM_NAME
     Header                    X-P-Log-Source otel-metrics
 EOF
     chmod 600 "$CONFIG_FILE"
@@ -363,7 +364,7 @@ case "${1:-}" in
         echo ""
         echo "Usage:"
         echo "  Setup and start:"
-        echo "    $0 <host[:port]> <api_key> [tenant_id]"
+        echo "    $0 <host[:port]> <stream> <api_key> [tenant_id]"
         echo ""
         echo "  Management commands:"
         echo "    $0 start    - Start Fluent Bit (if config exists)"
@@ -373,18 +374,18 @@ case "${1:-}" in
         echo "    $0 logs     - Show Fluent Bit logs"
         echo ""
         echo "Example:"
-        echo "  $0 https://example.parseable.com:443 px_api_key"
-        echo "  $0 http://localhost:8000 px_api_key tenant-id"
+        echo "  $0 https://example.parseable.com:443 node-metrics px_api_key"
+        echo "  $0 http://localhost:8000 node-metrics px_api_key tenant-id"
         ;;
     *)
         # If not a command, treat as setup parameters
-        if [ $# -lt 2 ] || [ $# -gt 3 ]; then
-            print_error "Usage: $0 <host[:port]> <api_key> [tenant_id]"
+        if [ $# -lt 3 ] || [ $# -gt 4 ]; then
+            print_error "Usage: $0 <host[:port]> <stream> <api_key> [tenant_id]"
             print_error "   Or: $0 [start|stop|restart|status|logs|help]"
             print_error ""
             print_error "Example:"
-            print_error "  $0 https://ec9cfee0-2fd4-45eb-8209-d7cd992c4bcc-ingestor.workspace-staging.parseable.com:443 px_api_key"
-            print_error "  $0 http://localhost:8000 px_api_key tenant-id"
+            print_error "  $0 https://ec9cfee0-2fd4-45eb-8209-d7cd992c4bcc-ingestor.workspace-staging.parseable.com:443 node-metrics px_api_key"
+            print_error "  $0 http://localhost:8000 node-metrics px_api_key tenant-id"
             print_error ""
             print_error "Management commands:"
             print_error "  $0 status   - Check if running"
@@ -393,6 +394,6 @@ case "${1:-}" in
             print_error "  $0 logs     - View logs"
             exit 1
         fi
-        setup_fluent_bit "$1" "$2" "${3:-}"
+        setup_fluent_bit "$1" "$2" "$3" "${4:-}"
         ;;
 esac
