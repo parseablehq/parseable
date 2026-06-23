@@ -8,7 +8,10 @@ param(
     [string]$Param2,
 
     [Parameter(Position=2)]
-    [string]$Param3
+    [string]$Param3,
+
+    [Parameter(Position=3)]
+    [string]$Param4
 )
 
 $ProgressPreference = 'SilentlyContinue'
@@ -261,11 +264,12 @@ function Restart-FluentBit {
 function Setup-FluentBit {
     param(
         [string]$IngestorHost,
+        [string]$StreamName,
         [string]$ApiKey,
         [string]$TenantId
     )
     
-    if ([string]::IsNullOrWhiteSpace($IngestorHost) -or [string]::IsNullOrWhiteSpace($ApiKey)) {
+    if ([string]::IsNullOrWhiteSpace($IngestorHost) -or [string]::IsNullOrWhiteSpace($StreamName) -or [string]::IsNullOrWhiteSpace($ApiKey)) {
         Write-ErrorMsg "Invalid setup parameters"
         exit 1
     }
@@ -336,7 +340,7 @@ function Setup-FluentBit {
     }
 
     $configLines += @(
-        "    Header                    X-P-Stream node-metrics",
+        "    Header                    X-P-Stream $StreamName",
         "    Header                    X-P-Log-Source otel-metrics"
     )
 
@@ -355,7 +359,7 @@ function Show-Help {
 Fluent Bit Setup and Management Script for Windows
 
 Usage:
-  Setup:   powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 [host[:port]] [api_key] [tenant_id]
+  Setup:   powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 [host[:port]] [stream] [api_key] [tenant_id]
   Stop:    powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 stop
   Start:   powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 start
   Restart: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 restart
@@ -364,8 +368,8 @@ Usage:
   Debug:   powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 debug
 
 Example:
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 https://your-host.com:443 px_api_key
-  powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 http://localhost:8000 px_api_key tenant-id
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 https://your-host.com:443 node-metrics px_api_key
+  powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 http://localhost:8000 node-metrics px_api_key tenant-id
 
 "@
 }
@@ -420,11 +424,11 @@ switch ($Param1.ToLower()) {
         Show-Help
     }
     default {
-        if ([string]::IsNullOrWhiteSpace($Param2)) {
-            Write-ErrorMsg "Usage: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 [host[:port]] [api_key] [tenant_id]"
+        if ([string]::IsNullOrWhiteSpace($Param2) -or [string]::IsNullOrWhiteSpace($Param3)) {
+            Write-ErrorMsg "Usage: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 [host[:port]] [stream] [api_key] [tenant_id]"
             Write-ErrorMsg "   Or: powershell -NoProfile -ExecutionPolicy Bypass -File .\ingest.ps1 [start|stop|restart|status|logs|debug|help]"
             exit 1
         }
-        Setup-FluentBit -IngestorHost $Param1 -ApiKey $Param2 -TenantId $Param3
+        Setup-FluentBit -IngestorHost $Param1 -StreamName $Param2 -ApiKey $Param3 -TenantId $Param4
     }
 }
