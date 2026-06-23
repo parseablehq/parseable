@@ -198,48 +198,36 @@ impl Target {
     pub fn mask(self) -> Value {
         match self.target {
             TargetType::Slack(slack_web_hook) => {
-                let endpoint = slack_web_hook.endpoint.to_string();
-                let masked_endpoint = if endpoint.len() > 20 {
-                    format!("{}********", &endpoint[..20])
-                } else {
-                    "********".to_string()
-                };
                 json!({
                    "name":self.name,
                    "type":"slack",
-                   "endpoint":masked_endpoint,
+                   "endpoint":format!("{}://********", slack_web_hook.endpoint.scheme()),
                    "id":self.id
                 })
             }
             TargetType::Other(other_web_hook) => {
-                let endpoint = other_web_hook.endpoint.to_string();
-                let masked_endpoint = if endpoint.len() > 20 {
-                    format!("{}********", &endpoint[..20])
-                } else {
-                    "********".to_string()
-                };
+                let safe_headers: HashMap<String, String> = other_web_hook
+                    .headers
+                    .into_keys()
+                    .map(|k| (k, "********".to_string()))
+                    .collect();
                 json!({
                     "name":self.name,
                     "type":"webhook",
-                    "endpoint":masked_endpoint,
-                    "headers":other_web_hook.headers,
+                    "endpoint": format!("{}://********", other_web_hook.endpoint.scheme()),
+                    "headers":safe_headers,
                     "skipTlsCheck":other_web_hook.skip_tls_check,
                     "id":self.id
                 })
             }
             TargetType::AlertManager(alert_manager) => {
-                let endpoint = alert_manager.endpoint.to_string();
-                let masked_endpoint = if endpoint.len() > 20 {
-                    format!("{}********", &endpoint[..20])
-                } else {
-                    "********".to_string()
-                };
+                let endpoint = format!("{}://********", alert_manager.endpoint.scheme());
                 if let Some(auth) = alert_manager.auth {
                     let password = "********";
                     json!({
                         "name":self.name,
                         "type":"webhook",
-                        "endpoint":masked_endpoint,
+                        "endpoint":endpoint,
                         "username":auth.username,
                         "password":password,
                         "skipTlsCheck":alert_manager.skip_tls_check,
@@ -249,7 +237,7 @@ impl Target {
                     json!({
                         "name":self.name,
                         "type":"webhook",
-                        "endpoint":masked_endpoint,
+                        "endpoint":endpoint,
                         "username":Value::Null,
                         "password":Value::Null,
                         "skipTlsCheck":alert_manager.skip_tls_check,
@@ -651,4 +639,40 @@ pub struct TimeoutState {
 pub struct Auth {
     username: String,
     password: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_masked_target_hides_secrets() {
+        let target = Target {
+            name: "test-target".into(),
+            id: Ulid::new(),
+            tenant: None,
+            target: TargetType::AlertManager(AlertManager {
+                endpoint: "https://internal.corp/api".parse().unwrap(),
+                auth: Some(Auth {
+                    username: "admin".into(),
+                    password: "SuperSecretPassword123".into(),
+                }),
+                skip_tls_check: false,
+            }),
+        };
+
+        let masked = target.mask();
+
+        let masked_str = serde_json::to_string(&masked).unwrap();
+
+        // These assertions MUST pass, or the build fails
+        assert!(
+            !masked_str.contains("SuperSecretPassword123"),
+            "Password leaked in masked response!"
+        );
+        assert!(
+            masked_str.contains("********"),
+            "Expected redaction marker not found!"
+        );
+    }
 }
