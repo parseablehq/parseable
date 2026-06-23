@@ -28,9 +28,9 @@ if ([string]::IsNullOrWhiteSpace($SCRIPT_PATH)) {
     $SCRIPT_PATH = $MyInvocation.MyCommand.Path
 }
 if ([string]::IsNullOrWhiteSpace($SCRIPT_PATH)) {
-    $SCRIPT_PATH = ".\ingest.ps1"
+    $SCRIPT_PATH = Join-Path $PSScriptRoot "ingest.ps1"
 }
-$SCRIPT_CMD = "powershell -NoProfile -ExecutionPolicy Bypass -File `"$SCRIPT_PATH`""
+$SCRIPT_CMD = "powershell -NoProfile -ExecutionPolicy Bypass -File '$SCRIPT_PATH'"
 
 $SUPPORTED_ARCH = @("AMD64", "ARM64")
 
