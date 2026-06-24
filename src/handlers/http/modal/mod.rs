@@ -286,6 +286,7 @@ pub struct NodeMetadata {
     pub token: String,
     pub node_id: String,
     pub flight_port: String,
+    pub query_grpc_port: String,
     pub node_type: NodeType,
 }
 
@@ -309,6 +310,7 @@ impl NodeMetadata {
         password: &str,
         node_id: String,
         flight_port: String,
+        query_grpc_port: String,
         node_type: NodeType,
     ) -> Self {
         let token = base64::prelude::BASE64_STANDARD.encode(format!("{username}:{password}"));
@@ -321,6 +323,7 @@ impl NodeMetadata {
             token: format!("Basic {token}"),
             node_id,
             flight_port,
+            query_grpc_port,
             node_type,
         }
     }
@@ -510,6 +513,7 @@ impl NodeMetadata {
             &options.password,
             get_node_id(),
             options.flight_port.to_string(),
+            options.query_grpc_port.to_string(),
             node_type,
         )
     }
@@ -704,6 +708,7 @@ mod test {
             "admin",
             "ingestor_id".to_owned(),
             "8002".to_string(),
+            "8003".to_string(),
             NodeType::Ingestor,
         );
 
@@ -736,6 +741,7 @@ mod test {
             "admin",
             "ingestor_id".to_owned(),
             "8002".to_string(),
+            "8003".to_string(),
             NodeType::Ingestor,
         );
 

@@ -407,6 +407,14 @@ pub struct Options {
     )]
     pub flight_port: u16,
 
+    #[arg(
+        long,
+        env = "P_QUERY_GRPC_PORT",
+        default_value = "8003",
+        help = "Port for query gRPC server"
+    )]
+    pub query_grpc_port: u16,
+
     // Performance settings
     #[arg(
         long,
