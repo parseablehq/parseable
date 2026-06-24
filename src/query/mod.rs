@@ -82,8 +82,6 @@ type BoxedBatchStream = SendableRecordBatchStream;
 /// Result type returned by query execution: either collected batches or a streaming adapter, plus field names.
 type QueryResult = Result<(Either<Vec<RecordBatch>, BoxedBatchStream>, Vec<String>), ExecuteError>;
 
-// pub static QUERY_SESSION: Lazy<SessionContext> =
-//     Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
 pub static SCHEMA_PROVIDER: OnceCell<Box<dyn ParseableSchemaProvider>> = OnceCell::new();
 
 /// Additional physical optimizer rules registered by enterprise/plugins.

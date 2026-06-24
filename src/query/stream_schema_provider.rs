@@ -55,11 +55,11 @@ use crate::{
         snapshot::{ManifestItem, Snapshot},
     },
     event::DEFAULT_TIMESTAMP_KEY,
+    hottier::{GLOBAL_HOTTIER, HotTierManager},
     metrics::{
         QUERY_CACHE_HIT, increment_files_scanned_in_hottier_by_date,
         increment_files_scanned_in_query_by_date,
     },
-    hottier::{GLOBAL_HOTTIER, HotTierManager},
     option::Mode,
     parseable::{DEFAULT_TENANT, PARSEABLE, STREAM_EXISTS},
     storage::{ObjectStorage, ObjectStoreFormat},

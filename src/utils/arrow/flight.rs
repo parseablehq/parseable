@@ -149,9 +149,9 @@ pub fn into_flight_data_stream(
     stream: datafusion::execution::SendableRecordBatchStream,
 ) -> Result<Response<DoGetStream>, Box<Status>> {
     let record_stream = stream.map_err(|e| {
-        arrow_flight::error::FlightError::Arrow(arrow_schema::ArrowError::ExternalError(
-            Box::new(e),
-        ))
+        arrow_flight::error::FlightError::Arrow(arrow_schema::ArrowError::ExternalError(Box::new(
+            e,
+        )))
     });
 
     let write_options = IpcWriteOptions::default()
