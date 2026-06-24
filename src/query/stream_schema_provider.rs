@@ -119,7 +119,7 @@ struct StandardTableProvider {
     tenant_id: Option<String>,
 }
 
-fn exact_source_filters(filters: &[Expr]) -> Vec<Expr> {
+pub fn exact_source_filters(filters: &[Expr]) -> Vec<Expr> {
     filters
         .iter()
         .filter(|filter| expr_in_boundary(filter))
@@ -127,7 +127,7 @@ fn exact_source_filters(filters: &[Expr]) -> Vec<Expr> {
         .collect()
 }
 
-fn build_parquet_scan_components(
+pub fn build_parquet_scan_components(
     schema: SchemaRef,
     filters: &[Expr],
     state: &dyn Session,
@@ -146,7 +146,7 @@ fn build_parquet_scan_components(
     Ok((file_format, file_source))
 }
 
-fn balanced_file_groups(manifest_files: Vec<File>, target_partitions: usize) -> Vec<Vec<File>> {
+pub fn balanced_file_groups(manifest_files: Vec<File>, target_partitions: usize) -> Vec<Vec<File>> {
     let group_count = target_partitions.min(manifest_files.len());
     if group_count == 0 {
         return Vec::new();

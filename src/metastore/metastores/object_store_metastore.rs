@@ -914,7 +914,6 @@ impl Metastore for ObjectStoreMetastore {
         tenant_id: &Option<String>,
         dates: &[String],
     ) -> Result<BTreeMap<String, Vec<Manifest>>, MetastoreError> {
-        let total_start = std::time::Instant::now();
         let inventory_limit = Arc::new(tokio::sync::Semaphore::new(16));
         let date_futures = dates.iter().map(|date| {
             let stream = stream_name.to_string();
@@ -1009,14 +1008,7 @@ impl Metastore for ObjectStoreMetastore {
                 result_file_list.insert(date, manifests);
             }
         }
-        info!(
-            stream = %stream_name,
-            tenant = ?tenant_id,
-            dates = dates.len(),
-            populated = result_file_list.len(),
-            total_ms = total_start.elapsed().as_millis() as u64,
-            "get_manifest_files_for_dates done"
-        );
+
         Ok(result_file_list)
     }
 
@@ -1044,18 +1036,6 @@ impl Metastore for ObjectStoreMetastore {
             Err(ObjectStorageError::NoSuchKey(_)) => Ok(None),
             Err(err) => Err(MetastoreError::ObjectStorageError(err)),
         }
-        // let path = partition_path(stream_name, lower_bound, upper_bound);
-        // // // need a 'ends with `manifest.json` condition here'
-        // // let obs = self
-        // //     .storage
-        // //     .get_objects(
-        // //         path,
-        // //         Box::new(|file_name| file_name.ends_with("manifest.json")),
-        // //     )
-        // //     .await?;
-        // warn!(partition_path=?path);
-        // let path = manifest_path(path.as_str());
-        // warn!(manifest_path=?path);
     }
 
     /// Get the path for a specific `Manifest` file
