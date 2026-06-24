@@ -327,6 +327,8 @@ jobs:
     steps:
       - name: Download artifacts created
         uses: actions/download-artifact@v4.1.7
+        with:
+          pattern: Parseable_OSS_*
 
       - name: Run shasum command
         run: |
