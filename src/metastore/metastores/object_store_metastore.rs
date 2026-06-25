@@ -65,7 +65,7 @@ pub struct ObjectStoreMetastore {
     pub storage: Arc<dyn ObjectStorage>,
 }
 
-fn is_missing_optional_dir(err: &ObjectStorageError) -> bool {
+pub fn is_missing_optional_dir(err: &ObjectStorageError) -> bool {
     match err {
         ObjectStorageError::NoSuchKey(_) => true,
         ObjectStorageError::IoError(err) => err.kind() == std::io::ErrorKind::NotFound,
