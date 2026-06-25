@@ -543,7 +543,7 @@ impl TableProvider for StandardTableProvider {
         let object_store_format: ObjectStoreFormat = serde_json::from_slice(
             &PARSEABLE
                 .metastore
-                .get_stream_json(&self.stream, false, &self.tenant_id)
+                .get_stream_json(&self.stream, false, &self.tenant_id, false)
                 .await
                 .map_err(|e| DataFusionError::Plan(e.to_string()))?,
         )

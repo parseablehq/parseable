@@ -870,6 +870,7 @@ impl Metastore for ObjectStoreMetastore {
         stream_name: &str,
         get_base: bool,
         tenant_id: &Option<String>,
+        _is_migration: bool,
     ) -> Result<Bytes, MetastoreError> {
         let tenant = tenant_id.as_deref().unwrap_or("");
         let path = if get_base {

@@ -758,7 +758,7 @@ pub async fn get_manifest_list(
     let object_store_format: ObjectStoreFormat = serde_json::from_slice(
         &PARSEABLE
             .metastore
-            .get_stream_json(stream_name, false, tenant_id)
+            .get_stream_json(stream_name, false, tenant_id, false)
             .await?,
     )?;
 
