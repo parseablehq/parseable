@@ -49,6 +49,9 @@ pub enum ApiKeyError {
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
 
+    #[error("API key revocation could not be synced to all live nodes: {0}")]
+    RevocationSyncFailed(String),
+
     #[error("{0}")]
     Storage(#[from] crate::storage::ObjectStorageError),
 
@@ -65,6 +68,9 @@ impl actix_web::ResponseError for ApiKeyError {
             ApiKeyError::KeyNotFound(_) => actix_web::http::StatusCode::NOT_FOUND,
             ApiKeyError::DuplicateKeyName(_) => actix_web::http::StatusCode::CONFLICT,
             ApiKeyError::Unauthorized(_) => actix_web::http::StatusCode::FORBIDDEN,
+            ApiKeyError::RevocationSyncFailed(_) => {
+                actix_web::http::StatusCode::SERVICE_UNAVAILABLE
+            }
             ApiKeyError::Rbac(err) => actix_web::ResponseError::status_code(err),
             ApiKeyError::Storage(_) | ApiKeyError::Anyhow(_) => {
                 actix_web::http::StatusCode::INTERNAL_SERVER_ERROR

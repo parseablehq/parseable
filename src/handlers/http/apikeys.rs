@@ -17,7 +17,7 @@ use crate::{
         map::{roles, users},
         user::{User, UserType},
     },
-    utils::get_user_and_tenant_from_request,
+    utils::{get_user_and_tenant_from_request, is_admin},
 };
 
 /// Verify the caller is an admin of their tenant or a super-admin.
@@ -25,17 +25,7 @@ fn verify_admin(req: &HttpRequest) -> Result<(String, Option<String>), ApiKeyErr
     let (userid, tenant_id) = get_user_and_tenant_from_request(req)
         .map_err(|_| ApiKeyError::Unauthorized("Missing user identity".into()))?;
 
-    let user = Users
-        .get_user(&userid, &tenant_id)
-        .ok_or_else(|| ApiKeyError::Unauthorized("User not found".into()))?;
-
-    // Super-admin can always manage keys
-    if user.is_super_admin() {
-        return Ok((userid, tenant_id));
-    }
-
-    // Tenant admin (has "admin" role) can manage keys for their tenant
-    if user.roles.contains("admin") {
+    if is_admin(req).map_err(|err| ApiKeyError::Unauthorized(err.to_string()))? {
         return Ok((userid, tenant_id));
     }
 
@@ -180,11 +170,11 @@ pub async fn create_api_key(
 ) -> Result<impl Responder, ApiKeyError> {
     let (created_by, tenant_id) = verify_admin(&req)?;
 
-    // Reject any role names that don't exist in this tenant before we acquire
-    // the update lock or touch storage.
-    validate_roles(&body.roles, &tenant_id)?;
-
     let guard = UPDATE_LOCK.lock().await;
+
+    // Reject any role names that don't exist in this tenant while holding the
+    // update lock so a concurrent role update cannot invalidate the check.
+    validate_roles(&body.roles, &tenant_id)?;
 
     // Duplicate key-name detection inside the same tenant.
     let existing = collect_tenant_api_keys(&tenant_id);
@@ -262,19 +252,8 @@ pub async fn delete_api_key(
         })
         .ok_or_else(|| ApiKeyError::KeyNotFound(key_id.to_string()))?;
 
-    // Remove from parseable.json.
-    let mut metadata = get_metadata(&tenant_id).await?;
-    metadata.users.retain(|u| u.userid() != userid.as_str());
-    put_metadata(&metadata, &tenant_id).await?;
-
-    // Remove from in-memory map on this node.
-    Users.delete_user(&userid, &tenant_id);
-
-    // Drop the lock once local state is durable; the cluster fan-out below
-    // can be slow and must not block other create/delete requests.
-    drop(guard);
-
-    // Best-effort sync the deletion to other live nodes.
+    // Make cluster revocation part of the success contract. If this fails, we
+    // leave the local key intact so the caller can retry the same revocation.
     if let Err(e) = crate::handlers::http::cluster::sync_user_deletion_with_ingestors(
         &req,
         &userid,
@@ -284,7 +263,18 @@ pub async fn delete_api_key(
     .await
     {
         tracing::error!("Failed to sync API-key user deletion: {e}");
+        return Err(ApiKeyError::RevocationSyncFailed(e.to_string()));
     }
+
+    // Remove from parseable.json.
+    let mut metadata = get_metadata(&tenant_id).await?;
+    metadata.users.retain(|u| u.userid() != userid.as_str());
+    put_metadata(&metadata, &tenant_id).await?;
+
+    // Remove from in-memory map on this node.
+    Users.delete_user(&userid, &tenant_id);
+
+    drop(guard);
 
     Ok(HttpResponse::Ok().json(serde_json::json!({
         "keyId": key_id,
