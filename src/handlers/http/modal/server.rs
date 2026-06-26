@@ -22,6 +22,7 @@ use crate::analytics;
 use crate::handlers;
 use crate::handlers::http::about;
 use crate::handlers::http::alerts;
+use crate::handlers::http::apikeys;
 use crate::handlers::http::base_path;
 use crate::handlers::http::demo_data::get_demo_data;
 use crate::handlers::http::health_check;
@@ -106,6 +107,7 @@ impl ParseableServer for Server {
                     .service(Server::get_prism_home())
                     .service(Server::get_prism_logstream())
                     .service(Server::get_prism_datasets())
+                    .service(Server::get_apikeys_webscope())
                     .service(Self::get_dataset_stats_webscope()),
             )
             .service(Self::get_ingest_otel_factory())
@@ -207,6 +209,35 @@ impl Server {
                 .authorize_for_resource(Action::GetStats)
                 .authorize_for_resource(Action::GetRetention),
         )
+    }
+
+    pub fn get_apikeys_webscope() -> Scope {
+        web::scope("/apikeys")
+            .service(
+                resource("")
+                    .route(
+                        web::post()
+                            .to(apikeys::create_api_key)
+                            .authorize(Action::All),
+                    )
+                    .route(web::get().to(apikeys::list_api_keys).authorize(Action::All)),
+            )
+            .service(
+                resource("/validate").route(
+                    web::post()
+                        .to(apikeys::validate_api_key)
+                        .authorize(Action::All),
+                ),
+            )
+            .service(
+                resource("/{key_id}")
+                    .route(web::get().to(apikeys::get_api_key).authorize(Action::All))
+                    .route(
+                        web::delete()
+                            .to(apikeys::delete_api_key)
+                            .authorize(Action::All),
+                    ),
+            )
     }
 
     pub fn get_demo_data_webscope() -> Scope {
