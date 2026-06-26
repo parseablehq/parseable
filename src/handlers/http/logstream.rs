@@ -466,7 +466,7 @@ pub async fn put_stream_hot_tier(
     let mut stream_metadata: ObjectStoreFormat = serde_json::from_slice(
         &PARSEABLE
             .metastore
-            .get_stream_json(&stream_name, false, &tenant_id)
+            .get_stream_json(&stream_name, false, &tenant_id, false)
             .await?,
     )?;
     stream_metadata.hot_tier_enabled = true;
@@ -572,7 +572,7 @@ pub async fn delete_stream_hot_tier(
     let mut stream_metadata: ObjectStoreFormat = serde_json::from_slice(
         &PARSEABLE
             .metastore
-            .get_stream_json(&stream_name, false, &tenant_id)
+            .get_stream_json(&stream_name, false, &tenant_id, false)
             .await?,
     )?;
     stream_metadata.hot_tier_enabled = false;

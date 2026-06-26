@@ -65,7 +65,7 @@ pub struct ObjectStoreMetastore {
     pub storage: Arc<dyn ObjectStorage>,
 }
 
-fn is_missing_optional_dir(err: &ObjectStorageError) -> bool {
+pub fn is_missing_optional_dir(err: &ObjectStorageError) -> bool {
     match err {
         ObjectStorageError::NoSuchKey(_) => true,
         ObjectStorageError::IoError(err) => err.kind() == std::io::ErrorKind::NotFound,
@@ -870,6 +870,7 @@ impl Metastore for ObjectStoreMetastore {
         stream_name: &str,
         get_base: bool,
         tenant_id: &Option<String>,
+        _is_migration: bool,
     ) -> Result<Bytes, MetastoreError> {
         let tenant = tenant_id.as_deref().unwrap_or("");
         let path = if get_base {

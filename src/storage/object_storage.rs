@@ -467,7 +467,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         let mut format: ObjectStoreFormat = serde_json::from_slice(
             &PARSEABLE
                 .metastore
-                .get_stream_json(stream_name, false, tenant_id)
+                .get_stream_json(stream_name, false, tenant_id, false)
                 .await
                 .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
         )?;
@@ -490,7 +490,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         let mut format: ObjectStoreFormat = serde_json::from_slice(
             &PARSEABLE
                 .metastore
-                .get_stream_json(stream_name, false, tenant_id)
+                .get_stream_json(stream_name, false, tenant_id, false)
                 .await
                 .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
         )?;
@@ -513,7 +513,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         let mut format: ObjectStoreFormat = serde_json::from_slice(
             &PARSEABLE
                 .metastore
-                .get_stream_json(stream_name, false, tenant_id)
+                .get_stream_json(stream_name, false, tenant_id, false)
                 .await
                 .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
         )?;
@@ -537,7 +537,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         let mut format: ObjectStoreFormat = serde_json::from_slice(
             &PARSEABLE
                 .metastore
-                .get_stream_json(stream_name, false, tenant_id)
+                .get_stream_json(stream_name, false, tenant_id, false)
                 .await
                 .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
         )?;
@@ -583,7 +583,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         let mut format: ObjectStoreFormat = serde_json::from_slice(
             &PARSEABLE
                 .metastore
-                .get_stream_json(stream_name, false, tenant_id)
+                .get_stream_json(stream_name, false, tenant_id, false)
                 .await
                 .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
         )?;
@@ -606,7 +606,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         let mut stream_metadata: ObjectStoreFormat = serde_json::from_slice(
             &PARSEABLE
                 .metastore
-                .get_stream_json(stream_name, false, tenant_id)
+                .get_stream_json(stream_name, false, tenant_id, false)
                 .await
                 .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
         )?;
@@ -629,7 +629,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         let mut stream_metadata: ObjectStoreFormat = serde_json::from_slice(
             &PARSEABLE
                 .metastore
-                .get_stream_json(stream_name, false, tenant_id)
+                .get_stream_json(stream_name, false, tenant_id, false)
                 .await
                 .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
         )?;
@@ -649,7 +649,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     ) -> Result<ObjectStoreFormat, ObjectStorageError> {
         let stream_metadata = match PARSEABLE
             .metastore
-            .get_stream_json(stream_name, false, tenant_id)
+            .get_stream_json(stream_name, false, tenant_id, false)
             .await
         {
             Ok(data) => data,
@@ -657,7 +657,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
                 // get the base stream metadata
                 let bytes = PARSEABLE
                     .metastore
-                    .get_stream_json(stream_name, true, tenant_id)
+                    .get_stream_json(stream_name, true, tenant_id, false)
                     .await
                     .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
@@ -705,7 +705,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
     ) -> Result<Bytes, ObjectStorageError> {
         if let Ok(querier_stream_json_bytes) = PARSEABLE
             .metastore
-            .get_stream_json(stream_name, true, tenant_id)
+            .get_stream_json(stream_name, true, tenant_id, false)
             .await
         {
             let querier_stream_metadata =
@@ -737,7 +737,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         if PARSEABLE.get_stream(stream_name, tenant_id).is_ok() {
             let stream_metadata_bytes = PARSEABLE
                 .metastore
-                .get_stream_json(stream_name, false, tenant_id)
+                .get_stream_json(stream_name, false, tenant_id, false)
                 .await
                 .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
             return Ok(stream_metadata_bytes);

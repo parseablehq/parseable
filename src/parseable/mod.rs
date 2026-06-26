@@ -33,7 +33,7 @@ use arrow_schema::{Field, Schema};
 use bytes::Bytes;
 use chrono::Utc;
 use clap::{Parser, error::ErrorKind};
-use once_cell::sync::Lazy;
+use once_cell::sync::{Lazy, OnceCell};
 use relative_path::RelativePathBuf;
 pub use staging::StagingError;
 use streams::StreamRef;
@@ -99,6 +99,9 @@ pub const JOIN_COMMUNITY: &str =
     "Join us on Parseable Slack community for questions : https://logg.ing/community";
 pub const STREAM_EXISTS: &str = "Stream exists";
 
+/// OnceCell to return metastore
+pub static METASTORE: OnceCell<Arc<dyn Metastore>> = OnceCell::new();
+
 /// For OTel log sources the telemetry_type is fully determined by the log_source.
 /// When the user explicitly sets x-p-telemetry-type and it disagrees with the
 /// implied type for an otel-* source, reject the request. When they don't set it,
@@ -134,6 +137,34 @@ fn resolve_telemetry_type(
 
 /// Shared state of the Parseable server.
 pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| {
+    let metastore = METASTORE.get_or_init(|| {
+        // Prompt user for missing env vars before clap validates them.
+        // Values are set in env but NOT saved to disk yet.
+        let collected_envs = crate::interactive::prompt_missing_envs();
+
+        // Use try_parse so we can avoid persisting bad values on failure.
+        let cli = match Cli::try_parse() {
+            Ok(cli) => {
+                // Clap accepted all values — safe to persist to .parseable.env
+                crate::interactive::save_collected_envs(&collected_envs);
+                cli
+            }
+            Err(e) => {
+                // Clap rejected something — don't save, just show the error and exit.
+                e.exit();
+            }
+        };
+        let storage = match &cli.storage {
+            StorageOptions::Local(args) => args.storage.construct_client(),
+            StorageOptions::S3(args) => args.storage.construct_client(),
+            StorageOptions::Blob(args) => args.storage.construct_client(),
+            StorageOptions::Gcs(args) => args.storage.construct_client(),
+        };
+        tracing::warn!("creating objectstoremetastore");
+        let metastore = ObjectStoreMetastore { storage };
+        Arc::new(metastore)
+    });
+
     // Prompt user for missing env vars before clap validates them.
     // Values are set in env but NOT saved to disk yet.
     let collected_envs = crate::interactive::prompt_missing_envs();
@@ -150,7 +181,6 @@ pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| {
             e.exit();
         }
     };
-
     match cli.storage {
         StorageOptions::Local(args) => {
             if args.options.staging_dir() == &args.storage.root {
@@ -169,62 +199,46 @@ pub static PARSEABLE: Lazy<Parseable> = Lazy::new(|| {
                 .exit();
             }
 
-            // for now create a metastore without using a CLI arg
-            let metastore = ObjectStoreMetastore {
-                storage: args.storage.construct_client(),
-            };
             let hottier_connection_pool = args.storage.construct_client();
             Parseable::new(
                 args.options,
                 #[cfg(feature = "kafka")]
                 args.kafka,
                 Arc::new(args.storage),
-                Arc::new(metastore),
+                metastore.clone(),
                 hottier_connection_pool,
             )
         }
         StorageOptions::S3(args) => {
-            // for now create a metastore without using a CLI arg
-            let metastore = ObjectStoreMetastore {
-                storage: args.storage.construct_client(),
-            };
             let hottier_connection_pool = args.storage.construct_client();
             Parseable::new(
                 args.options,
                 #[cfg(feature = "kafka")]
                 args.kafka,
                 Arc::new(args.storage),
-                Arc::new(metastore),
+                metastore.clone(),
                 hottier_connection_pool,
             )
         }
         StorageOptions::Blob(args) => {
-            // for now create a metastore without using a CLI arg
-            let metastore = ObjectStoreMetastore {
-                storage: args.storage.construct_client(),
-            };
             let hottier_connection_pool = args.storage.construct_client();
             Parseable::new(
                 args.options,
                 #[cfg(feature = "kafka")]
                 args.kafka,
                 Arc::new(args.storage),
-                Arc::new(metastore),
+                metastore.clone(),
                 hottier_connection_pool,
             )
         }
         StorageOptions::Gcs(args) => {
-            // for now create a metastore without using a CLI arg
-            let metastore = ObjectStoreMetastore {
-                storage: args.storage.construct_client(),
-            };
             let hottier_connection_pool = args.storage.construct_client();
             Parseable::new(
                 args.options,
                 #[cfg(feature = "kafka")]
                 args.kafka,
                 Arc::new(args.storage),
-                Arc::new(metastore),
+                metastore.clone(),
                 hottier_connection_pool,
             )
         }

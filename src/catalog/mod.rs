@@ -117,7 +117,7 @@ pub async fn update_snapshot(
     let mut meta: ObjectStoreFormat = serde_json::from_slice(
         &PARSEABLE
             .metastore
-            .get_stream_json(stream_name, false, tenant_id)
+            .get_stream_json(stream_name, false, tenant_id, false)
             .await
             .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
     )?;
@@ -507,7 +507,7 @@ pub async fn remove_manifest_from_snapshot(
         let mut meta: ObjectStoreFormat = serde_json::from_slice(
             &PARSEABLE
                 .metastore
-                .get_stream_json(stream_name, false, tenant_id)
+                .get_stream_json(stream_name, false, tenant_id, false)
                 .await
                 .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
         )?;

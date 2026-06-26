@@ -307,7 +307,7 @@ async fn fetch_or_create_stream_metadata(
 ) -> anyhow::Result<Bytes> {
     if let Ok(stream_metadata) = PARSEABLE
         .metastore
-        .get_stream_json(stream, false, tenant_id)
+        .get_stream_json(stream, false, tenant_id, true)
         .await
     {
         Ok(stream_metadata)

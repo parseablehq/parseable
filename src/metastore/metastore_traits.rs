@@ -229,6 +229,7 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         stream_name: &str,
         get_base: bool,
         tenant_id: &Option<String>,
+        is_migration: bool
     ) -> Result<Bytes, MetastoreError>;
     async fn put_stream_json(
         &self,

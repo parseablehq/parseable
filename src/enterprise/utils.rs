@@ -84,7 +84,7 @@ pub async fn fetch_parquet_file_paths(
     let object_store_format: ObjectStoreFormat = serde_json::from_slice(
         &PARSEABLE
             .metastore
-            .get_stream_json(stream, false, tenant_id)
+            .get_stream_json(stream, false, tenant_id, false)
             .await
             .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?,
     )?;
