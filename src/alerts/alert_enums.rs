@@ -231,6 +231,68 @@ impl Display for WhereConfigOperator {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::AlertQueryType;
+
+    #[test]
+    fn alert_query_type_deserializes_supported_modes() {
+        assert_eq!(
+            serde_json::from_str::<AlertQueryType>("\"builder\"").unwrap(),
+            AlertQueryType::Builder
+        );
+        assert_eq!(
+            serde_json::from_str::<AlertQueryType>("\"code\"").unwrap(),
+            AlertQueryType::Code
+        );
+        assert_eq!(
+            serde_json::from_str::<AlertQueryType>("\"promql\"").unwrap(),
+            AlertQueryType::Promql
+        );
+    }
+
+    #[test]
+    fn alert_query_type_accepts_legacy_sql_as_code() {
+        assert_eq!(
+            serde_json::from_str::<AlertQueryType>("\"sql\"").unwrap(),
+            AlertQueryType::Code
+        );
+    }
+
+    #[test]
+    fn alert_query_type_rejects_unknown_mode() {
+        assert!(serde_json::from_str::<AlertQueryType>("\"rawSql\"").is_err());
+    }
+
+    #[test]
+    fn alert_request_deserializes_promql_query_type() {
+        let request: crate::alerts::alert_structs::AlertRequest = serde_json::from_value(
+            serde_json::json!({
+                "severity": "high",
+                "title": "Test alert",
+                "alertType": "threshold",
+                "queryType": "promql",
+                "query": "sum({\"k8s.pod.cpu.usage\"}) by (\"k8s.namespace.name\")",
+                "thresholdConfig": {"operator": ">", "value": -1.0},
+                "evalConfig": {
+                    "rollingWindow": {
+                        "evalStart": "10 minutes",
+                        "evalEnd": "now",
+                        "evalFrequency": 10
+                    }
+                },
+                "targets": [],
+                "notificationConfig": {"interval": 1},
+                "datasets": ["azure-prod-cluster-metrics"]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(request.query_type, AlertQueryType::Promql);
+        assert_eq!(request.datasets, vec!["azure-prod-cluster-metrics"]);
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum AggregateFunction {

@@ -20,7 +20,7 @@ use std::{collections::HashMap, str::FromStr};
 
 use crate::{
     alerts::{
-        ALERTS, AlertError, AlertState, Severity,
+        ALERTS, AlertError, AlertState, Severity, user_auth_for_alert_config,
         alert_enums::{AlertType, NotificationState},
         alert_structs::{AlertConfig, AlertRequest, AlertStateEntry, NotificationStateRequest},
         alert_traits::AlertTrait,
@@ -29,7 +29,7 @@ use crate::{
     },
     metastore::metastore_traits::MetastoreObject,
     parseable::PARSEABLE,
-    utils::{actix::extract_session_key_from_req, get_tenant_id_from_request, user_auth_for_query},
+    utils::{actix::extract_session_key_from_req, get_tenant_id_from_request},
 };
 use actix_web::{
     HttpRequest, Responder,
@@ -343,7 +343,7 @@ pub async fn get(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Responde
 
     let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
     // validate that the user has access to the tables mentioned in the query
-    user_auth_for_query(&session_key, alert.get_query()).await?;
+    user_auth_for_alert_config(&session_key, &alert.to_alert_config()).await?;
 
     Ok(web::Json(alert.to_alert_config().to_response()))
 }
@@ -364,7 +364,7 @@ pub async fn delete(req: HttpRequest, alert_id: Path<Ulid>) -> Result<impl Respo
     let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
 
     // validate that the user has access to the tables mentioned in the query
-    user_auth_for_query(&session_key, alert.get_query()).await?;
+    user_auth_for_alert_config(&session_key, &alert.to_alert_config()).await?;
 
     PARSEABLE
         .metastore
@@ -436,7 +436,7 @@ pub async fn update_notification_state(
     // check if alert id exists in map
     let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
     // validate that the user has access to the tables mentioned in the query
-    user_auth_for_query(&session_key, alert.get_query()).await?;
+    user_auth_for_alert_config(&session_key, &alert.to_alert_config()).await?;
 
     alerts
         .update_notification_state(alert_id, new_notification_state, &tenant_id)
@@ -466,7 +466,7 @@ pub async fn disable_alert(
     // check if alert id exists in map
     let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
     // validate that the user has access to the tables mentioned in the query
-    user_auth_for_query(&session_key, alert.get_query()).await?;
+    user_auth_for_alert_config(&session_key, &alert.to_alert_config()).await?;
 
     alerts
         .update_state(alert_id, AlertState::Disabled, Some("".into()), &tenant_id)
@@ -504,7 +504,7 @@ pub async fn enable_alert(
     }
 
     // validate that the user has access to the tables mentioned in the query
-    user_auth_for_query(&session_key, alert.get_query()).await?;
+    user_auth_for_alert_config(&session_key, &alert.to_alert_config()).await?;
 
     alerts
         .update_state(
@@ -542,14 +542,14 @@ pub async fn modify_alert(
 
     // Validate and prepare the new alert
     let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
-    user_auth_for_query(&session_key, alert.get_query()).await?;
+    user_auth_for_alert_config(&session_key, &alert.to_alert_config()).await?;
 
     let mut new_config = alert_request.into(tenant_id.clone()).await?;
     if &new_config.alert_type != alert.get_alert_type() {
         return Err(AlertError::InvalidAlertModifyRequest);
     }
 
-    user_auth_for_query(&session_key, &new_config.query).await?;
+    user_auth_for_alert_config(&session_key, &new_config).await?;
 
     // Calculate notification config
     let eval_freq = new_config.get_eval_frequency();
@@ -568,6 +568,7 @@ pub async fn modify_alert(
     old_config.eval_config = new_config.eval_config;
     old_config.notification_config = new_config.notification_config;
     old_config.query = new_config.query;
+    old_config.query_type = new_config.query_type;
     old_config.severity = new_config.severity;
     old_config.tags = new_config.tags;
     old_config.targets = new_config.targets;
@@ -623,7 +624,7 @@ pub async fn evaluate_alert(
 
     let alert = alerts.get_alert_by_id(alert_id, &tenant_id).await?;
 
-    user_auth_for_query(&session_key, alert.get_query()).await?;
+    user_auth_for_alert_config(&session_key, &alert.to_alert_config()).await?;
 
     let config = alert.to_alert_config().to_response();
 
