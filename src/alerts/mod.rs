@@ -150,15 +150,11 @@ async fn migrate_v1_alert(
     }
 }
 
-fn alert_from_config_oss(alert: AlertConfig) -> anyhow::Result<Box<dyn AlertTrait>> {
+fn alert_from_config_oss(alert: AlertConfig) -> Result<Box<dyn AlertTrait>, AlertError> {
     match &alert.alert_type {
         AlertType::Threshold => Ok(Box::new(ThresholdAlert::from(alert)) as Box<dyn AlertTrait>),
-        AlertType::Anomaly(_) => Err(anyhow::Error::msg(
-            AlertError::NotPresentInOSS("anomaly").to_string(),
-        )),
-        AlertType::Forecast(_) => Err(anyhow::Error::msg(
-            AlertError::NotPresentInOSS("forecast").to_string(),
-        )),
+        AlertType::Anomaly(_) => Err(AlertError::NotPresentInOSS("anomaly")),
+        AlertType::Forecast(_) => Err(AlertError::NotPresentInOSS("forecast")),
     }
 }
 
@@ -1173,7 +1169,14 @@ impl AlertManagerTrait for Alerts {
                 // ensure that alert config's tenant is correctly set
                 alert.tenant_id.clone_from(tenant);
 
-                let alert = alert_from_config_oss(alert)?;
+                let alert = match alert_from_config_oss(alert) {
+                    Ok(alert) => alert,
+                    Err(e @ AlertError::NotPresentInOSS(_)) => {
+                        warn!("Skipping unsupported OSS alert: {e}");
+                        continue;
+                    }
+                    Err(e) => return Err(anyhow::Error::msg(e.to_string())),
+                };
 
                 // Create alert task iff alert's state is not paused
                 if alert.get_state().eq(&AlertState::Disabled) {
