@@ -108,7 +108,9 @@ pub async fn user_auth_for_alert_config(
     alert: &AlertConfig,
 ) -> Result<(), actix_web::Error> {
     match alert.query_type {
-        AlertQueryType::Builder | AlertQueryType::Code => user_auth_for_query(session, &alert.query).await,
+        AlertQueryType::Builder | AlertQueryType::Code => {
+            user_auth_for_query(session, &alert.query).await
+        }
         AlertQueryType::Promql => {
             let [dataset] = alert.datasets.as_slice() else {
                 return Err(actix_web::error::ErrorUnauthorized(

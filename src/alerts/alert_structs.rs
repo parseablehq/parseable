@@ -346,7 +346,9 @@ impl AlertRequest {
             )));
         }
         if self.query_type == AlertQueryType::Promql
-            && !PARSEABLE.check_or_load_stream(&datasets[0], &tenant_id).await
+            && !PARSEABLE
+                .check_or_load_stream(&datasets[0], &tenant_id)
+                .await
         {
             return Err(AlertError::ValidationFailure(format!(
                 "Invalid PromQL metrics stream: {}",

@@ -266,8 +266,8 @@ mod tests {
 
     #[test]
     fn alert_request_deserializes_promql_query_type() {
-        let request: crate::alerts::alert_structs::AlertRequest = serde_json::from_value(
-            serde_json::json!({
+        let request: crate::alerts::alert_structs::AlertRequest =
+            serde_json::from_value(serde_json::json!({
                 "severity": "high",
                 "title": "Test alert",
                 "alertType": "threshold",
@@ -284,9 +284,8 @@ mod tests {
                 "targets": [],
                 "notificationConfig": {"interval": 1},
                 "datasets": ["azure-prod-cluster-metrics"]
-            }),
-        )
-        .unwrap();
+            }))
+            .unwrap();
 
         assert_eq!(request.query_type, AlertQueryType::Promql);
         assert_eq!(request.datasets, vec!["azure-prod-cluster-metrics"]);
