@@ -45,8 +45,8 @@ pub mod alerts_utils;
 pub mod target;
 
 pub use crate::alerts::alert_enums::{
-    AggregateFunction, AlertOperator, AlertState, AlertTask, AlertType, AlertVersion, EvalConfig,
-    LogicalOperator, NotificationState, Severity, WhereConfigOperator,
+    AggregateFunction, AlertOperator, AlertQueryType, AlertState, AlertTask, AlertType,
+    AlertVersion, EvalConfig, LogicalOperator, NotificationState, Severity, WhereConfigOperator,
 };
 pub use crate::alerts::alert_structs::{
     AlertConfig, AlertInfo, AlertRequest, AlertStateEntry, Alerts, AlertsInfo, AlertsInfoByState,
@@ -61,6 +61,7 @@ use crate::metastore::MetastoreError;
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE, StreamNotFound};
 use crate::query::{QUERY_SESSION, resolve_stream_names};
 use crate::rbac::map::{SessionKey, sessions};
+use crate::rbac::{Response, Users, role::Action};
 use crate::sse::{SSE_HANDLER, SSEAlertInfo, SSEEvent};
 use crate::storage;
 use crate::storage::ObjectStorageError;
@@ -102,6 +103,31 @@ pub fn create_default_alerts_manager() -> Alerts {
     alerts
 }
 
+pub async fn user_auth_for_alert_config(
+    session: &SessionKey,
+    alert: &AlertConfig,
+) -> Result<(), actix_web::Error> {
+    match alert.query_type {
+        AlertQueryType::Builder | AlertQueryType::Code => user_auth_for_query(session, &alert.query).await,
+        AlertQueryType::Promql => {
+            let [dataset] = alert.datasets.as_slice() else {
+                return Err(actix_web::error::ErrorUnauthorized(
+                    "User does not have access to PromQL alert stream",
+                ));
+            };
+
+            if Users.authorize(session.clone(), Action::Query, Some(dataset), None)
+                != Response::Authorized
+            {
+                return Err(actix_web::error::ErrorUnauthorized(format!(
+                    "User does not have access to stream- {dataset}"
+                )));
+            }
+            Ok(())
+        }
+    }
+}
+
 impl AlertConfig {
     /// Migration function to convert v1 alerts to v2 structure
     pub async fn migrate_from_v1(
@@ -125,6 +151,7 @@ impl AlertConfig {
             severity: basic_fields.severity,
             title: basic_fields.title,
             query,
+            query_type: AlertQueryType::Builder,
             datasets,
             alert_type: AlertType::Threshold,
             threshold_config,
@@ -627,7 +654,7 @@ impl AlertConfig {
         let active_session = sessions().get_active_sessions();
         let mut broadcast_to = vec![];
         for (session, _, _) in active_session {
-            if user_auth_for_query(&session, &self.query).await.is_ok()
+            if user_auth_for_alert_config(&session, self).await.is_ok()
                 && let SessionKey::SessionId(id) = &session
             {
                 broadcast_to.push(*id);
@@ -1193,7 +1220,7 @@ impl AlertManagerTrait for Alerts {
             let futures: Vec<_> = all_alerts
                 .into_iter()
                 .map(|alert| async {
-                    if user_auth_for_query(&session.clone(), &alert.query)
+                    if user_auth_for_alert_config(&session.clone(), &alert)
                         .await
                         .is_ok()
                     {
@@ -1214,7 +1241,7 @@ impl AlertManagerTrait for Alerts {
             let futures: Vec<_> = all_alerts
                 .into_iter()
                 .map(|alert| async {
-                    if user_auth_for_query(&session, &alert.query).await.is_ok() {
+                    if user_auth_for_alert_config(&session, &alert).await.is_ok() {
                         Some(alert)
                     } else {
                         None

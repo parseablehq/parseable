@@ -27,8 +27,8 @@ use ulid::Ulid;
 
 use crate::{
     alerts::{
-        AlertConfig, AlertError, AlertState, AlertType, AlertVersion, EvalConfig, Severity,
-        ThresholdConfig,
+        AlertConfig, AlertError, AlertQueryType, AlertState, AlertType, AlertVersion, EvalConfig,
+        Severity, ThresholdConfig,
         alert_enums::NotificationState,
         alert_structs::{AlertStateEntry, GroupResult},
         alert_traits::{AlertTrait, MessageCreation},
@@ -58,6 +58,8 @@ pub struct ThresholdAlert {
     pub severity: Severity,
     pub title: String,
     pub query: String,
+    #[serde(default)]
+    pub query_type: AlertQueryType,
     pub alert_type: AlertType,
     pub threshold_config: ThresholdConfig,
     pub eval_config: EvalConfig,
@@ -89,6 +91,10 @@ impl MetastoreObject for ThresholdAlert {
 #[async_trait]
 impl AlertTrait for ThresholdAlert {
     async fn eval_alert(&self) -> Result<Option<String>, AlertError> {
+        if self.query_type == AlertQueryType::Promql {
+            return Err(AlertError::NotPresentInOSS("promql alerts"));
+        }
+
         let time_range = extract_time_range(&self.eval_config)?;
 
         let tenant = self.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
@@ -186,6 +192,10 @@ impl AlertTrait for ThresholdAlert {
         // validate that the query is valid
         if self.query.is_empty() {
             return Err(AlertError::InvalidAlertQuery("Empty query".into()));
+        }
+
+        if self.query_type == AlertQueryType::Promql {
+            return Err(AlertError::NotPresentInOSS("promql alerts"));
         }
 
         let tables = resolve_stream_names(&self.query)?;
@@ -315,6 +325,10 @@ impl AlertTrait for ThresholdAlert {
         &self.query
     }
 
+    fn get_query_type(&self) -> AlertQueryType {
+        self.query_type
+    }
+
     fn get_severity(&self) -> &Severity {
         &self.severity
     }
@@ -436,6 +450,7 @@ impl From<AlertConfig> for ThresholdAlert {
             severity: value.severity,
             title: value.title,
             query: value.query,
+            query_type: value.query_type,
             alert_type: value.alert_type,
             threshold_config: value.threshold_config,
             eval_config: value.eval_config,
@@ -461,6 +476,7 @@ impl From<ThresholdAlert> for AlertConfig {
             severity: val.severity,
             title: val.title,
             query: val.query,
+            query_type: val.query_type,
             alert_type: val.alert_type,
             threshold_config: val.threshold_config,
             eval_config: val.eval_config,
