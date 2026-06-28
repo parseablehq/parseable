@@ -91,9 +91,7 @@ impl MetastoreObject for ThresholdAlert {
 #[async_trait]
 impl AlertTrait for ThresholdAlert {
     async fn eval_alert(&self) -> Result<Option<String>, AlertError> {
-        if self.query_type == AlertQueryType::Promql {
-            return Err(AlertError::NotPresentInOSS("promql alerts"));
-        }
+        self.validate_oss_query_type()?;
 
         let time_range = extract_time_range(&self.eval_config)?;
 
@@ -194,9 +192,7 @@ impl AlertTrait for ThresholdAlert {
             return Err(AlertError::InvalidAlertQuery("Empty query".into()));
         }
 
-        if self.query_type == AlertQueryType::Promql {
-            return Err(AlertError::NotPresentInOSS("promql alerts"));
-        }
+        self.validate_oss_query_type()?;
 
         let tables = resolve_stream_names(&self.query)?;
         if tables.is_empty() {
@@ -495,6 +491,14 @@ impl From<ThresholdAlert> for AlertConfig {
 }
 
 impl ThresholdAlert {
+    pub(crate) fn validate_oss_query_type(&self) -> Result<(), AlertError> {
+        if self.query_type == AlertQueryType::Promql {
+            return Err(AlertError::NotPresentInOSS("promql alerts"));
+        }
+
+        Ok(())
+    }
+
     fn create_group_message(&self, breached_groups: &[GroupResult]) -> Result<String, AlertError> {
         let header = self.get_message_header()?;
         let mut message = format!("{header}\n");

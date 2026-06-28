@@ -93,6 +93,16 @@ pub async fn set_alert_manager(manager: Arc<dyn AlertManagerTrait>) {
     *ALERTS.write().await = Some(manager);
 }
 
+fn ensure_schedulable_in_oss(alert: &dyn AlertTrait) -> Result<(), AlertError> {
+    if matches!(alert.get_alert_type(), AlertType::Threshold)
+        && alert.get_query_type() == AlertQueryType::Promql
+    {
+        return Err(AlertError::NotPresentInOSS("promql alerts"));
+    }
+
+    Ok(())
+}
+
 pub fn create_default_alerts_manager() -> Alerts {
     let (tx, rx) = mpsc::channel::<AlertTask>(1000);
     let alerts = Alerts {
@@ -1147,7 +1157,19 @@ impl AlertManagerTrait for Alerts {
 
                 let alert: Box<dyn AlertTrait> = match &alert.alert_type {
                     AlertType::Threshold => {
-                        Box::new(ThresholdAlert::from(alert)) as Box<dyn AlertTrait>
+                        let alert = ThresholdAlert::from(alert);
+                        if let Err(e) = alert.validate_oss_query_type() {
+                            warn!(
+                                "Skipping unsupported alert task for alert {}: {e}",
+                                alert.id
+                            );
+                            map.entry(tenant_id.clone())
+                                .or_default()
+                                .insert(alert.id, Box::new(alert) as Box<dyn AlertTrait>);
+                            continue;
+                        }
+
+                        Box::new(alert) as Box<dyn AlertTrait>
                     }
                     AlertType::Anomaly(_) => {
                         return Err(anyhow::Error::msg(
@@ -1366,6 +1388,7 @@ impl AlertManagerTrait for Alerts {
                 .await
                 .map_err(|e| AlertError::CustomError(e.to_string()))?;
         } else if should_create_task {
+            ensure_schedulable_in_oss(alert.as_ref())?;
             self.sender
                 .send(AlertTask::Create(alert.clone_box()))
                 .await
@@ -1464,6 +1487,7 @@ impl AlertManagerTrait for Alerts {
 
     /// Start a scheduled alert task
     async fn start_task(&self, alert: Box<dyn AlertTrait>) -> Result<(), AlertError> {
+        ensure_schedulable_in_oss(alert.as_ref())?;
         self.sender
             .send(AlertTask::Create(alert))
             .await
