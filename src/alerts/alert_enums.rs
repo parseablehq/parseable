@@ -116,6 +116,26 @@ impl Display for AlertType {
     }
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum AlertQueryType {
+    #[default]
+    Builder,
+    #[serde(alias = "sql")]
+    Code,
+    Promql,
+}
+
+impl Display for AlertQueryType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AlertQueryType::Builder => write!(f, "builder"),
+            AlertQueryType::Code => write!(f, "code"),
+            AlertQueryType::Promql => write!(f, "promql"),
+        }
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum AlertOperator {

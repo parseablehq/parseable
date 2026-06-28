@@ -28,13 +28,14 @@ use crate::{
     alerts::{
         AlertError, CURRENT_ALERTS_VERSION,
         alert_enums::{
-            AlertOperator, AlertState, AlertTask, AlertType, AlertVersion, EvalConfig,
-            LogicalOperator, NotificationState, Severity, WhereConfigOperator,
+            AlertOperator, AlertQueryType, AlertState, AlertTask, AlertType, AlertVersion,
+            EvalConfig, LogicalOperator, NotificationState, Severity, WhereConfigOperator,
         },
         alert_traits::AlertTrait,
         target::{NotificationConfig, TARGETS},
     },
     metastore::metastore_traits::MetastoreObject,
+    parseable::PARSEABLE,
     query::resolve_stream_names,
     storage::object_storage::{alert_json_path, alert_state_json_path, mttr_json_path},
 };
@@ -45,6 +46,10 @@ const RESERVED_FIELDS: &[&str] = &[
     "severity",
     "title",
     "query",
+    "queryType",
+    "query_type",
+    "creationType",
+    "creation_type",
     "datasets",
     "alertType",
     "alert_type",
@@ -282,6 +287,10 @@ pub struct AlertRequest {
     pub severity: Severity,
     pub title: String,
     pub query: String,
+    #[serde(default)]
+    pub query_type: AlertQueryType,
+    #[serde(default)]
+    pub datasets: Vec<String>,
     pub alert_type: String,
     pub anomaly_config: Option<AnomalyConfig>,
     pub forecast_config: Option<ForecastConfig>,
@@ -326,11 +335,22 @@ impl AlertRequest {
         for id in &self.targets {
             TARGETS.get_target_by_id(id, &tenant_id).await?;
         }
-        let datasets = resolve_stream_names(&self.query)?;
+        let datasets = match self.query_type {
+            AlertQueryType::Builder | AlertQueryType::Code => resolve_stream_names(&self.query)?,
+            AlertQueryType::Promql => self.datasets,
+        };
 
         if datasets.len() != 1 {
             return Err(AlertError::ValidationFailure(format!(
-                "Query should include only one dataset. Found: {datasets:?}"
+                "Alert should include only one dataset. Found: {datasets:?}"
+            )));
+        }
+        if self.query_type == AlertQueryType::Promql
+            && !PARSEABLE.check_or_load_stream(&datasets[0], &tenant_id).await
+        {
+            return Err(AlertError::ValidationFailure(format!(
+                "Invalid PromQL metrics stream: {}",
+                datasets[0]
             )));
         }
 
@@ -342,6 +362,7 @@ impl AlertRequest {
             severity: self.severity,
             title: self.title,
             query: self.query,
+            query_type: self.query_type,
             datasets,
             alert_type: {
                 match self.alert_type.as_str() {
@@ -393,6 +414,8 @@ pub struct AlertConfig {
     pub severity: Severity,
     pub title: String,
     pub query: String,
+    #[serde(default)]
+    pub query_type: AlertQueryType,
     pub datasets: Vec<String>,
     pub alert_type: AlertType,
     pub threshold_config: ThresholdConfig,
@@ -420,6 +443,7 @@ pub struct AlertConfigResponse {
     pub severity: Severity,
     pub title: String,
     pub query: String,
+    pub query_type: AlertQueryType,
     pub datasets: Vec<String>,
     pub alert_type: &'static str,
     pub anomaly_config: Option<AnomalyConfig>,
@@ -466,6 +490,7 @@ impl AlertConfig {
             severity: self.severity,
             title: self.title,
             query: self.query,
+            query_type: self.query_type,
             datasets: self.datasets,
             alert_type: {
                 match self.alert_type {
