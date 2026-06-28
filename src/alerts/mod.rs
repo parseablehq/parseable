@@ -103,6 +103,65 @@ fn ensure_schedulable_in_oss(alert: &dyn AlertTrait) -> Result<(), AlertError> {
     Ok(())
 }
 
+async fn parse_alert_config(alert_bytes: &[u8], tenant: &Option<String>) -> Option<AlertConfig> {
+    let json_value: JsonValue = match serde_json::from_slice(alert_bytes) {
+        Ok(val) => val,
+        Err(e) => {
+            error!("Failed to parse alert JSON: {e}");
+            return None;
+        }
+    };
+
+    match json_value["version"].as_str() {
+        Some("v1") => migrate_v1_alert(&json_value, tenant, "Failed to migrate v1 alert").await,
+        Some(_) if json_value["query"].is_null() || json_value.get("stream").is_some() => {
+            migrate_v1_alert(&json_value, tenant, "Failed to migrate v1 alert").await
+        }
+        Some(_) => match serde_json::from_value::<AlertConfig>(json_value) {
+            Ok(alert) => Some(alert),
+            Err(e) => {
+                error!("Failed to parse v2 alert: {e}");
+                None
+            }
+        },
+        None => {
+            warn!("Found alert without version field, assuming v1 and migrating");
+            migrate_v1_alert(
+                &json_value,
+                tenant,
+                "Failed to migrate alert without version",
+            )
+            .await
+        }
+    }
+}
+
+async fn migrate_v1_alert(
+    json_value: &JsonValue,
+    tenant: &Option<String>,
+    error_context: &str,
+) -> Option<AlertConfig> {
+    match AlertConfig::migrate_from_v1(json_value, tenant).await {
+        Ok(migrated) => Some(migrated),
+        Err(e) => {
+            error!("{error_context}: {e}");
+            None
+        }
+    }
+}
+
+fn alert_from_config_oss(alert: AlertConfig) -> anyhow::Result<Box<dyn AlertTrait>> {
+    match &alert.alert_type {
+        AlertType::Threshold => Ok(Box::new(ThresholdAlert::from(alert)) as Box<dyn AlertTrait>),
+        AlertType::Anomaly(_) => Err(anyhow::Error::msg(
+            AlertError::NotPresentInOSS("anomaly").to_string(),
+        )),
+        AlertType::Forecast(_) => Err(anyhow::Error::msg(
+            AlertError::NotPresentInOSS("forecast").to_string(),
+        )),
+    }
+}
+
 pub fn create_default_alerts_manager() -> Alerts {
     let (tx, rx) = mpsc::channel::<AlertTask>(1000);
     let alerts = Alerts {
@@ -1107,84 +1166,28 @@ impl AlertManagerTrait for Alerts {
                 &Some(tenant_id.clone())
             };
             for alert_bytes in raw_bytes {
-                // First, try to parse as JSON Value to check version
-                let json_value: JsonValue = match serde_json::from_slice(&alert_bytes) {
-                    Ok(val) => val,
-                    Err(e) => {
-                        error!("Failed to parse alert JSON: {e}");
-                        continue;
-                    }
-                };
-
-                // Check version and handle migration
-                let mut alert = if let Some(version_str) = json_value["version"].as_str() {
-                    if version_str == "v1"
-                        || json_value["query"].is_null()
-                        || json_value.get("stream").is_some()
-                    {
-                        // This is a v1 alert that needs migration
-                        match AlertConfig::migrate_from_v1(&json_value, tenant).await {
-                            Ok(migrated) => migrated,
-                            Err(e) => {
-                                error!("Failed to migrate v1 alert: {e}");
-                                continue;
-                            }
-                        }
-                    } else {
-                        // Try to parse as v2
-                        match serde_json::from_value::<AlertConfig>(json_value) {
-                            Ok(alert) => alert,
-                            Err(e) => {
-                                error!("Failed to parse v2 alert: {e}");
-                                continue;
-                            }
-                        }
-                    }
-                } else {
-                    // No version field, assume v1 and migrate
-                    warn!("Found alert without version field, assuming v1 and migrating");
-                    match AlertConfig::migrate_from_v1(&json_value, tenant).await {
-                        Ok(migrated) => migrated,
-                        Err(e) => {
-                            error!("Failed to migrate alert without version: {e}");
-                            continue;
-                        }
-                    }
+                let Some(mut alert) = parse_alert_config(&alert_bytes, tenant).await else {
+                    continue;
                 };
 
                 // ensure that alert config's tenant is correctly set
                 alert.tenant_id.clone_from(tenant);
 
-                let alert: Box<dyn AlertTrait> = match &alert.alert_type {
-                    AlertType::Threshold => {
-                        let alert = ThresholdAlert::from(alert);
-                        if let Err(e) = alert.validate_oss_query_type() {
-                            warn!(
-                                "Skipping unsupported alert task for alert {}: {e}",
-                                alert.id
-                            );
-                            map.entry(tenant_id.clone())
-                                .or_default()
-                                .insert(alert.id, Box::new(alert) as Box<dyn AlertTrait>);
-                            continue;
-                        }
-
-                        Box::new(alert) as Box<dyn AlertTrait>
-                    }
-                    AlertType::Anomaly(_) => {
-                        return Err(anyhow::Error::msg(
-                            AlertError::NotPresentInOSS("anomaly").to_string(),
-                        ));
-                    }
-                    AlertType::Forecast(_) => {
-                        return Err(anyhow::Error::msg(
-                            AlertError::NotPresentInOSS("forecast").to_string(),
-                        ));
-                    }
-                };
+                let alert = alert_from_config_oss(alert)?;
 
                 // Create alert task iff alert's state is not paused
                 if alert.get_state().eq(&AlertState::Disabled) {
+                    map.entry(tenant_id.clone())
+                        .or_default()
+                        .insert(*alert.get_id(), alert);
+                    continue;
+                }
+
+                if let Err(e) = ensure_schedulable_in_oss(alert.as_ref()) {
+                    warn!(
+                        "Skipping unsupported alert task for alert {}: {e}",
+                        alert.get_id()
+                    );
                     map.entry(tenant_id.clone())
                         .or_default()
                         .insert(*alert.get_id(), alert);
