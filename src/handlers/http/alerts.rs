@@ -20,12 +20,13 @@ use std::{collections::HashMap, str::FromStr};
 
 use crate::{
     alerts::{
-        ALERTS, AlertError, AlertState, Severity, user_auth_for_alert_config,
+        ALERTS, AlertError, AlertState, Severity,
         alert_enums::{AlertType, NotificationState},
         alert_structs::{AlertConfig, AlertRequest, AlertStateEntry, NotificationStateRequest},
         alert_traits::AlertTrait,
         alert_types::ThresholdAlert,
         target::Retry,
+        user_auth_for_alert_config,
     },
     metastore::metastore_traits::MetastoreObject,
     parseable::PARSEABLE,
