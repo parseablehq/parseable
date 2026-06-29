@@ -26,6 +26,7 @@ object_store = { version = "0.13.1", features = [
     "azure",
     "gcp",
 ] }
+datafusion-proto = "53.1.0"
 parquet = "58.0.0"
 
 # Web server and HTTP-related

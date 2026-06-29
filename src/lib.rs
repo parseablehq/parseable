@@ -58,7 +58,12 @@ pub mod validator;
 use std::time::Duration;
 
 // Public re-exports of crates being used in enterprise
+pub use arrow_array;
+pub use arrow_flight;
+pub use arrow_ipc;
+pub use catalog as parseable_catalog;
 pub use datafusion;
+pub use datafusion_proto;
 pub use handlers::http::modal::{
     ParseableServer, ingest_server::IngestServer, query_server::QueryServer, server::Server,
 };
@@ -68,6 +73,7 @@ use once_cell::sync::Lazy;
 pub use openid;
 use parseable::PARSEABLE;
 use reqwest::{Client, ClientBuilder};
+pub use utils as parseable_utils;
 pub use {opentelemetry, opentelemetry_otlp, opentelemetry_proto, opentelemetry_sdk};
 pub use {tracing_actix_web, tracing_opentelemetry, tracing_subscriber, clap};
 
