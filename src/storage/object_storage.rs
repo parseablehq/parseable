@@ -746,7 +746,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
 
         if let Some(stream_metadata_obs) = PARSEABLE
             .metastore
-            .get_all_stream_jsons(stream_name, Some(Mode::Ingest), tenant_id)
+            .get_all_stream_jsons(stream_name, Some(Mode::Ingest), tenant_id, false)
             .await
             .into_iter()
             .next()
@@ -837,7 +837,7 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         let mut all_log_sources: Vec<LogSourceEntry> = Vec::new();
         let stream_metas = PARSEABLE
             .metastore
-            .get_all_stream_jsons(stream_name, None, tenant_id)
+            .get_all_stream_jsons(stream_name, None, tenant_id, false)
             .await;
         if let Ok(stream_metas) = stream_metas {
             for stream_meta in stream_metas.iter() {

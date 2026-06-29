@@ -99,7 +99,7 @@ pub async fn fetch_parquet_file_paths(
 
     let obs = PARSEABLE
         .metastore
-        .get_all_stream_jsons(stream, None, tenant_id)
+        .get_all_stream_jsons(stream, None, tenant_id, false)
         .await;
     if let Ok(obs) = obs {
         for ob in obs {

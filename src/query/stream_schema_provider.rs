@@ -566,7 +566,7 @@ impl TableProvider for StandardTableProvider {
         if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
             let obs = PARSEABLE
                 .metastore
-                .get_all_stream_jsons(&self.stream, None, &self.tenant_id)
+                .get_all_stream_jsons(&self.stream, None, &self.tenant_id, false)
                 .await;
             if let Ok(obs) = obs {
                 for ob in obs {

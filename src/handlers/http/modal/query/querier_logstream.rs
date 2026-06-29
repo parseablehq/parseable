@@ -197,7 +197,7 @@ pub async fn get_stats(
         if !date_value.is_empty() {
             let obs = PARSEABLE
                 .metastore
-                .get_all_stream_jsons(&stream_name, None, &tenant_id)
+                .get_all_stream_jsons(&stream_name, None, &tenant_id, false)
                 .await?;
 
             let mut stream_jsons = Vec::new();

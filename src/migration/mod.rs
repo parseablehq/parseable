@@ -272,6 +272,14 @@ async fn migration_stream(
     let schema = storage
         .create_schema_from_metastore(stream, tenant_id)
         .await?;
+
+    if PARSEABLE.options.mode == Mode::Prism {
+        // read stream jsons once
+        PARSEABLE
+            .metastore
+            .get_all_stream_jsons(stream, None, tenant_id, true)
+            .await?;
+    }
     let stream_metadata = fetch_or_create_stream_metadata(stream, storage, tenant_id).await?;
 
     let mut stream_meta_found = true;
@@ -327,7 +335,7 @@ async fn fetch_or_create_stream_metadata(
     }
 }
 
-async fn migrate_stream_metadata(
+pub async fn migrate_stream_metadata(
     mut stream_metadata_value: Value,
     stream: &str,
     schema: &Bytes,
@@ -432,7 +440,7 @@ async fn migrate_stream_metadata(
     Ok(stream_metadata_value)
 }
 
-async fn setup_logstream_metadata(
+pub async fn setup_logstream_metadata(
     stream: &str,
     arrow_schema: &mut Schema,
     stream_metadata_value: Value,
