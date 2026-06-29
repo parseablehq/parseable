@@ -32,7 +32,7 @@ use datafusion::execution::{
 };
 use datafusion::logical_expr::expr::Alias;
 use datafusion::logical_expr::{
-    Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ToStringifiedPlan,
+    Aggregate, Explain, Filter, LogicalPlan, PlanType, Projection, ScalarUDF, ToStringifiedPlan,
 };
 use datafusion::physical_plan::stream::RecordBatchStreamAdapter;
 use datafusion::physical_plan::{
@@ -110,6 +110,13 @@ impl InMemorySessionContext {
             .read()
             .expect("SessionContext should be readable");
         ctx.clone()
+    }
+
+    pub fn register_udf(&self, udf: ScalarUDF) {
+        self.session_context
+            .write()
+            .expect("SessionContext should be writeable")
+            .register_udf(udf);
     }
 
     pub fn add_schema(&self, tenant_id: &str) {
