@@ -20,11 +20,12 @@ use crate::{
     handlers::http::rbac::RBACError,
     metastore::MetastoreError,
     parseable::PARSEABLE,
-    storage::ObjectStorageError,
+    storage::{ObjectStorageError, StreamType},
     users::filters::{CURRENT_FILTER_VERSION, FILTERS, Filter},
     utils::{
         actix::extract_session_key_from_req, get_hash, get_user_and_tenant_from_request, is_admin,
     },
+    validator,
 };
 use actix_web::http::StatusCode;
 use actix_web::{
@@ -65,6 +66,8 @@ pub async fn post(
     req: HttpRequest,
     Json(mut filter): Json<Filter>,
 ) -> Result<impl Responder, FiltersError> {
+    validate_stream_name(&filter.stream_name)?;
+
     let (mut user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
     user_id = get_hash(&user_id);
     let filter_id = Ulid::new().to_string();
@@ -83,6 +86,8 @@ pub async fn update(
     filter_id: Path<String>,
     Json(mut filter): Json<Filter>,
 ) -> Result<impl Responder, FiltersError> {
+    validate_stream_name(&filter.stream_name)?;
+
     let (mut user_id, tenant_id) = get_user_and_tenant_from_request(&req)?;
     user_id = get_hash(&user_id);
     let filter_id = filter_id.into_inner();
@@ -132,6 +137,11 @@ pub async fn delete(
     Ok(HttpResponse::Ok().finish())
 }
 
+fn validate_stream_name(stream_name: &str) -> Result<(), FiltersError> {
+    validator::stream_name(stream_name, StreamType::UserDefined)
+        .map_err(FiltersError::InvalidStreamName)
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum FiltersError {
     #[error("Failed to connect to storage: {0}")]
@@ -144,6 +154,8 @@ pub enum FiltersError {
     UserDoesNotExist(#[from] RBACError),
     #[error("Error: {0}")]
     Custom(String),
+    #[error("Invalid stream name: {0}")]
+    InvalidStreamName(#[from] validator::error::StreamNameValidationError),
     #[error(transparent)]
     MetastoreError(#[from] MetastoreError),
 }
@@ -156,6 +168,7 @@ impl actix_web::ResponseError for FiltersError {
             Self::Metadata(_) => StatusCode::BAD_REQUEST,
             Self::UserDoesNotExist(_) => StatusCode::NOT_FOUND,
             Self::Custom(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::InvalidStreamName(_) => StatusCode::BAD_REQUEST,
             Self::MetastoreError(e) => e.status_code(),
         }
     }
@@ -171,5 +184,30 @@ impl actix_web::ResponseError for FiltersError {
                 .insert_header(ContentType::plaintext())
                 .body(self.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_stream_name;
+    use crate::validator::error::StreamNameValidationError;
+
+    #[test]
+    fn accepts_flat_stream_names() {
+        assert!(validate_stream_name("team1").is_ok());
+        assert!(validate_stream_name("orders-prod").is_ok());
+        assert!(validate_stream_name("user_events_v2").is_ok());
+    }
+
+    #[test]
+    fn rejects_path_like_stream_names() {
+        let err =
+            validate_stream_name("team1/serviceA").expect_err("path-like names must be rejected");
+        assert!(matches!(
+            err,
+            super::FiltersError::InvalidStreamName(
+                StreamNameValidationError::NameSpecialChar { c: '/' }
+            )
+        ));
     }
 }
