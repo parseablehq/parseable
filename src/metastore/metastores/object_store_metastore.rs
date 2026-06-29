@@ -892,7 +892,7 @@ impl Metastore for ObjectStoreMetastore {
         stream_name: &str,
         mode: Option<Mode>,
         tenant_id: &Option<String>,
-        _is_migration: bool
+        _is_migration: bool,
     ) -> Result<Vec<Bytes>, MetastoreError> {
         let root = tenant_id.as_deref().unwrap_or("");
         let path = RelativePathBuf::from_iter([root, stream_name, STREAM_ROOT_DIRECTORY]);
