@@ -109,7 +109,12 @@ impl EventFormat for Event {
 
             // If there are conflicts, rename the fields in JSON values
             let value_arr = if !conflicts.is_empty() {
-                rename_conflicting_fields_in_json(value_arr, &conflicts)
+                rename_conflicting_fields_in_json(
+                    value_arr,
+                    &conflicts,
+                    stream_schema,
+                    schema_version,
+                )
             } else {
                 value_arr
             };
