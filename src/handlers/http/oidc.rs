@@ -44,7 +44,7 @@ use url::Url;
 use crate::{
     handlers::{
         COOKIE_AGE_DAYS, SESSION_COOKIE_NAME, USER_COOKIE_NAME, USER_ID_COOKIE_NAME,
-        http::modal::OIDC_CLIENT,
+        http::{cluster::sync_user_creation, modal::OIDC_CLIENT},
     },
     oauth::OAuthSession,
     parseable::{DEFAULT_TENANT, PARSEABLE},
@@ -237,6 +237,21 @@ pub async fn reply_login(
             .await?
         }
     };
+
+    if !PARSEABLE.options.is_multi_tenant() {
+        let roles = Some(user.roles.clone());
+        if let Err(e) = sync_user_creation(
+            &req,
+            user.clone(),
+            &roles,
+            &tenant_id,
+            &PARSEABLE.options.username,
+        )
+        .await
+        {
+            tracing::error!("Failed to sync OAuth user with roles to cluster nodes: {e}");
+        }
+    }
 
     let id = Ulid::new();
     Users.new_session(&user, SessionKey::SessionId(id), expires_in);
