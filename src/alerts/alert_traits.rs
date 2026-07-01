@@ -124,5 +124,5 @@ pub trait AlertManagerTrait: Send + Sync {
 
 #[async_trait]
 pub trait CallableTarget {
-    async fn call(&self, payload: &Context);
+    async fn call(&self, tenant_id: &Option<String>, payload: &Context);
 }

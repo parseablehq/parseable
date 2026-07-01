@@ -196,6 +196,49 @@ pub struct Target {
 }
 
 impl Target {
+    pub async fn validate_outbound_policy(&self) -> Result<(), AlertError> {
+        let tenant_id = &self.tenant;
+        match &self.target {
+            TargetType::Slack(target) => {
+                outbound_http_policy::prepare_alert_target(
+                    tenant_id,
+                    &target.endpoint,
+                    AlertTargetKind::Slack,
+                    false,
+                    None,
+                )
+                .await?;
+            }
+            TargetType::Other(target) => {
+                outbound_http_policy::prepare_alert_target(
+                    tenant_id,
+                    &target.endpoint,
+                    AlertTargetKind::Webhook,
+                    target.skip_tls_check,
+                    Some(&target.headers),
+                )
+                .await?;
+            }
+            TargetType::AlertManager(target) => {
+                let prepared = outbound_http_policy::prepare_alert_target(
+                    tenant_id,
+                    &target.endpoint,
+                    AlertTargetKind::AlertManager,
+                    target.skip_tls_check,
+                    None,
+                )
+                .await?;
+                if target.auth.is_some() && !prepared.authorization_allowed {
+                    return Err(outbound_http_policy::OutboundPolicyError::DeniedHeader(
+                        AUTHORIZATION.as_str().to_string(),
+                    )
+                    .into());
+                }
+            }
+        }
+
+        Ok(())
+    }
     pub fn mask(self) -> Value {
         match self.target {
             TargetType::Slack(slack_web_hook) => {
@@ -262,7 +305,7 @@ impl Target {
                 if !state.timed_out {
                     // call once and then start sleeping
                     // reduce repeats by 1
-                    call_target(self.target.clone(), context.clone());
+                    call_target(self.target.clone(), self.tenant.clone(), context.clone());
                     // set state
                     state.timed_out = true;
                     state.awaiting_resolve = true;
@@ -282,7 +325,7 @@ impl Target {
                     }
                 }
 
-                call_target(self.target.clone(), context);
+                call_target(self.target.clone(), self.tenant.clone(), context);
             }
             // do not send out any notifs
             // (an eval should not have run!)
@@ -345,7 +388,7 @@ impl Target {
                     let should_call =
                         sleep_and_check_if_call(Arc::clone(&state), current_state).await;
                     if should_call {
-                        call_target(target.clone(), alert_context.clone())
+                        call_target(target.clone(), tenant_id.clone(), alert_context.clone())
                     }
                 },
                 Retry::Finite(times) => {
@@ -365,7 +408,7 @@ impl Target {
                         let should_call =
                             sleep_and_check_if_call(Arc::clone(&state), current_state).await;
                         if should_call {
-                            call_target(target.clone(), alert_context.clone())
+                            call_target(target.clone(), tenant_id.clone(), alert_context.clone())
                         }
                     }
                 }
@@ -385,9 +428,9 @@ impl MetastoreObject for Target {
     }
 }
 
-fn call_target(target: TargetType, context: Context) {
+fn call_target(target: TargetType, tenant_id: Option<String>, context: Context) {
     trace!("Calling target with context- {context:?}");
-    tokio::spawn(async move { target.call(&context).await });
+    tokio::spawn(async move { target.call(&tenant_id, &context).await });
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -455,51 +498,12 @@ pub enum TargetType {
 }
 
 impl TargetType {
-    pub async fn call(&self, payload: &Context) {
+    pub async fn call(&self, tenant_id: &Option<String>, payload: &Context) {
         match self {
-            TargetType::Slack(target) => target.call(payload).await,
-            TargetType::Other(target) => target.call(payload).await,
-            TargetType::AlertManager(target) => target.call(payload).await,
+            TargetType::Slack(target) => target.call(tenant_id, payload).await,
+            TargetType::Other(target) => target.call(tenant_id, payload).await,
+            TargetType::AlertManager(target) => target.call(tenant_id, payload).await,
         }
-    }
-    pub async fn validate_outbound_policy(&self) -> Result<(), AlertError> {
-        match self {
-            TargetType::Slack(target) => {
-                outbound_http_policy::prepare_alert_target(
-                    &target.endpoint,
-                    AlertTargetKind::Slack,
-                    false,
-                    None,
-                )
-                .await?;
-            }
-            TargetType::Other(target) => {
-                outbound_http_policy::prepare_alert_target(
-                    &target.endpoint,
-                    AlertTargetKind::Webhook,
-                    target.skip_tls_check,
-                    Some(&target.headers),
-                )
-                .await?;
-            }
-            TargetType::AlertManager(target) => {
-                let prepared = outbound_http_policy::prepare_alert_target(
-                    &target.endpoint,
-                    AlertTargetKind::AlertManager,
-                    target.skip_tls_check,
-                    None,
-                )
-                .await?;
-                // Alert Manager auth becomes an Authorization header at delivery time
-                if target.auth.is_some() && !prepared.authorization_allowed {
-                    return Err(outbound_http_policy::OutboundPolicyError::DeniedHeader(
-                        AUTHORIZATION.as_str().to_string(),
-                    )
-                    .into());
-                }
-            }
-        }
-        Ok(())
     }
 }
 
@@ -510,7 +514,7 @@ pub struct SlackWebHook {
 
 #[async_trait]
 impl CallableTarget for SlackWebHook {
-    async fn call(&self, payload: &Context) {
+    async fn call(&self, tenant_id: &Option<String>, payload: &Context) {
         let alert = match payload.alert_info.alert_state {
             AlertState::Triggered => {
                 serde_json::json!({ "text": payload.message })
@@ -524,6 +528,7 @@ impl CallableTarget for SlackWebHook {
         };
         // Revalidate immediately before delivery because stored targets and DNS can change.
         let prepared = match outbound_http_policy::prepare_alert_target(
+            tenant_id,
             &self.endpoint,
             AlertTargetKind::Slack,
             false,
@@ -560,13 +565,14 @@ pub struct OtherWebHook {
 
 #[async_trait]
 impl CallableTarget for OtherWebHook {
-    async fn call(&self, payload: &Context) {
+    async fn call(&self, tenant_id: &Option<String>, payload: &Context) {
         let alert = match payload.alert_info.alert_state {
             AlertState::Triggered => payload.message.clone(),
             AlertState::NotTriggered => payload.default_resolved_string(),
             AlertState::Disabled => payload.default_disabled_string(),
         };
         let prepared = match outbound_http_policy::prepare_alert_target(
+            tenant_id,
             &self.endpoint,
             AlertTargetKind::Webhook,
             self.skip_tls_check,
@@ -602,7 +608,7 @@ pub struct AlertManager {
 
 #[async_trait]
 impl CallableTarget for AlertManager {
-    async fn call(&self, payload: &Context) {
+    async fn call(&self, tenant_id: &Option<String>, payload: &Context) {
         let mut alerts = serde_json::json!([{
           "labels": {
             "alertname": payload.alert_info.alert_name,
@@ -634,6 +640,7 @@ impl CallableTarget for AlertManager {
         };
 
         let prepared = match outbound_http_policy::prepare_alert_target(
+            tenant_id,
             &self.endpoint,
             AlertTargetKind::AlertManager,
             self.skip_tls_check,

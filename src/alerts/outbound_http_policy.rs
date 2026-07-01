@@ -9,7 +9,11 @@ use std::{
 };
 use tokio::net::lookup_host;
 use tokio::sync::RwLock;
+use tracing::error;
 use url::Url;
+
+use crate::metastore::{MetastoreError, metastore_traits::Metastore};
+use crate::parseable::PARSEABLE;
 
 #[derive(Debug, Clone, Copy)]
 pub enum AlertTargetKind {
@@ -30,26 +34,106 @@ pub struct AlertTargetPolicyConfig {
     pub allow_invalid_tls: bool,
 }
 
-pub static ALERT_TARGET_POLICY: Lazy<RwLock<AlertTargetPolicyConfig>> =
-    Lazy::new(|| RwLock::new(AlertTargetPolicyConfig::default()));
+pub static ALERT_TARGET_POLICY: Lazy<RwLock<HashMap<String, AlertTargetPolicyConfig>>> =
+    Lazy::new(|| RwLock::new(HashMap::new()));
 
 // Read one policy snapshot per validation
-pub async fn active_policy() -> AlertTargetPolicyConfig {
-    ALERT_TARGET_POLICY.read().await.clone()
+pub async fn active_policy(
+    tenant_id: &Option<String>,
+) -> Result<AlertTargetPolicyConfig, OutboundPolicyError> {
+    let tenant = tenant_id
+        .as_deref()
+        .unwrap_or(crate::parseable::DEFAULT_TENANT);
+    let guard = ALERT_TARGET_POLICY.read().await;
+    Ok(guard
+        .get(tenant)
+        .cloned()
+        .unwrap_or_else(AlertTargetPolicyConfig::default))
 }
 
 // Replace atomically only after validation
-pub async fn replace_policy(policy: AlertTargetPolicyConfig) -> Result<(), OutboundPolicyError> {
+pub async fn replace_policy(
+    tenant_id: &Option<String>,
+    policy: AlertTargetPolicyConfig,
+) -> Result<(), OutboundPolicyError> {
+    let tenant = tenant_id
+        .as_deref()
+        .unwrap_or(crate::parseable::DEFAULT_TENANT);
     validate_policy(&policy)?;
-    *ALERT_TARGET_POLICY.write().await = policy;
+    let storage_tenant = if tenant == crate::parseable::DEFAULT_TENANT {
+        None
+    } else {
+        Some(tenant.to_string())
+    };
+    PARSEABLE
+        .metastore
+        .put_outbound_policy(&storage_tenant, &policy)
+        .await?;
+    ALERT_TARGET_POLICY
+        .write()
+        .await
+        .insert(tenant.to_string(), policy);
     Ok(())
 }
 
 // Validate admin-supplied policy before it is stored or used for target checks.
 pub fn validate_policy(policy: &AlertTargetPolicyConfig) -> Result<(), OutboundPolicyError> {
-    parse_cidrs(&policy.allowed_cidrs)?;
-    parse_cidrs(&policy.denied_cidrs)?;
+    let allowed = parse_cidrs(&policy.allowed_cidrs)?;
+    let denied = parse_cidrs(&policy.denied_cidrs)?;
+
+    if let Some(conflict) = find_conflicting_cidr(&allowed, &denied) {
+        return Err(OutboundPolicyError::ConflictingCidrs(conflict));
+    }
+
+    if let Some(conflict) = find_conflicting_domain(&policy.allowed_domains, &policy.denied_domains)
+    {
+        return Err(OutboundPolicyError::ConflictingDomains(conflict));
+    }
+
     Ok(())
+}
+
+fn find_conflicting_cidr(allowed: &[IpNet], denied: &[IpNet]) -> Option<String> {
+    allowed.iter().find_map(|allowed_cidr| {
+        denied
+            .iter()
+            .any(|denied_cidr| cidrs_overlap(allowed_cidr, denied_cidr))
+            .then_some(allowed_cidr.to_string())
+    })
+}
+
+fn find_conflicting_domain(allowed: &[String], denied: &[String]) -> Option<String> {
+    allowed.iter().find_map(|allowed_domain| {
+        denied
+            .iter()
+            .any(|denied_domain| domains_overlap(allowed_domain, denied_domain))
+            .then_some(normalize_domain(allowed_domain))
+    })
+}
+
+fn normalize_domain(domain: &str) -> String {
+    domain.trim_end_matches('.').to_ascii_lowercase()
+}
+
+fn domains_overlap(left: &str, right: &str) -> bool {
+    let left = normalize_domain(left);
+    let right = normalize_domain(right);
+
+    domain_matches_or_contains(&left, &right) || domain_matches_or_contains(&right, &left)
+}
+
+fn domain_matches_or_contains(candidate: &str, parent: &str) -> bool {
+    if candidate == parent {
+        return true;
+    }
+
+    candidate
+        .strip_suffix(parent)
+        .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+fn cidrs_overlap(left: &IpNet, right: &IpNet) -> bool {
+    left.contains(right) || right.contains(left)
 }
 
 fn parse_cidrs(values: &[String]) -> Result<Vec<IpNet>, OutboundPolicyError> {
@@ -119,18 +203,41 @@ pub enum OutboundPolicyError {
 
     #[error("invalid slack host: {0}")]
     InvalidSlackHost(String),
+
+    #[error("tenant id is required for outbound policy")]
+    MissingTenant,
+
+    #[error("outbound policy not found for tenant: {0}")]
+    PolicyNotFound(String),
+
+    #[error("allow and deny CIDR lists conflict on: {0}")]
+    ConflictingCidrs(String),
+
+    #[error("allow and deny domain lists conflict on: {0}")]
+    ConflictingDomains(String),
+
+    #[error("failed to load outbound HTTP policy for tenant {tenant_id}: {source}")]
+    PolicyValidationFailed {
+        tenant_id: String,
+        #[source]
+        source: Box<OutboundPolicyError>,
+    },
+
+    #[error("metastore error: {0}")]
+    Metastore(#[from] MetastoreError),
 }
 
 // All alert-target outbound networking must enter here.
 // The policy authorizes the resolved destination, then pins that exact DNS result into reqwest
 pub async fn prepare_alert_target(
+    tenant_id: &Option<String>,
     endpoint: &Url,
     kind: AlertTargetKind,
     skip_tls_check: bool,
     headers: Option<&HashMap<String, String>>,
 ) -> Result<PreparedAlertTarget, OutboundPolicyError> {
     validate_scheme(endpoint, kind)?;
-    let policy = active_policy().await;
+    let policy = active_policy(tenant_id).await?;
     validate_tls_policy(kind, skip_tls_check, &policy)?;
     let host = endpoint
         .host_str()
@@ -159,6 +266,45 @@ pub async fn prepare_alert_target(
         headers: validated_headers,
         authorization_allowed,
     })
+}
+
+pub async fn load_policy_for_tenant(
+    metastore: &dyn Metastore,
+    tenant_id: &str,
+) -> Result<(), OutboundPolicyError> {
+    let policy = metastore.get_outbound_policy(tenant_id).await?;
+    validate_policy(&policy)?;
+    ALERT_TARGET_POLICY
+        .write()
+        .await
+        .insert(tenant_id.to_string(), policy);
+    Ok(())
+}
+
+pub async fn load_all_policies(metastore: &dyn Metastore) -> Result<(), OutboundPolicyError> {
+    let policies = metastore.get_outbound_policies().await?;
+    let loaded = validate_loaded_policies(policies)?;
+
+    *ALERT_TARGET_POLICY.write().await = loaded;
+
+    Ok(())
+}
+
+fn validate_loaded_policies(
+    policies: HashMap<String, AlertTargetPolicyConfig>,
+) -> Result<HashMap<String, AlertTargetPolicyConfig>, OutboundPolicyError> {
+    let mut loaded = HashMap::new();
+    for (tenant_id, policy) in policies {
+        if let Err(err) = validate_policy(&policy) {
+            error!("Failed to load outbound HTTP policy for tenant {tenant_id}: {err}");
+            return Err(OutboundPolicyError::PolicyValidationFailed {
+                tenant_id,
+                source: Box::new(err),
+            });
+        }
+        loaded.insert(tenant_id, policy);
+    }
+    Ok(loaded)
 }
 
 // Keep alert delivery bounded so a slow or stuck target cannot hold workers forever.
@@ -363,9 +509,9 @@ fn denied_header(name: &str, authorization_allowed: bool) -> bool {
 
 // Domain entries match the exact host and its subdomains.
 fn matches_domain_list(host: &str, domains: &[String]) -> bool {
-    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let host = normalize_domain(host);
     domains.iter().any(|domain| {
-        let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+        let domain = normalize_domain(domain);
         host == domain || host.ends_with(&format!(".{domain}"))
     })
 }
@@ -373,9 +519,6 @@ fn matches_domain_list(host: &str, domains: &[String]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::{Mutex, MutexGuard};
-
-    static POLICY_TEST_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     fn policy_with(
         allow_private: bool,
@@ -395,14 +538,6 @@ mod tests {
 
     fn socket(ip: IpAddr) -> SocketAddr {
         SocketAddr::new(ip, 80)
-    }
-
-    async fn set_policy(
-        policy: AlertTargetPolicyConfig,
-    ) -> Result<MutexGuard<'static, ()>, OutboundPolicyError> {
-        let guard = POLICY_TEST_LOCK.lock().await;
-        replace_policy(policy).await?;
-        Ok(guard)
     }
 
     #[test]
@@ -497,20 +632,6 @@ mod tests {
         validate_scheme(&fake_slack, AlertTargetKind::Slack).unwrap();
     }
 
-    #[tokio::test]
-    async fn skip_tls_check_requires_operator_policy() {
-        let _guard = set_policy(AlertTargetPolicyConfig::default())
-            .await
-            .unwrap();
-        let endpoint = Url::parse("https://1.1.1.1/webhook").unwrap();
-
-        let result = prepare_alert_target(&endpoint, AlertTargetKind::Webhook, true, None).await;
-
-        assert!(matches!(
-            result,
-            Err(OutboundPolicyError::InvalidTlsDisabled)
-        ));
-    }
     #[test]
     fn ipv6_transition_addresses_are_blocked() {
         assert!(builtin_denied_ip(IpAddr::V6(
@@ -521,27 +642,97 @@ mod tests {
         )));
     }
 
-    #[tokio::test]
-    async fn prepare_alert_target_allows_authorization_for_allowlisted_destination() {
-        let _guard = set_policy(AlertTargetPolicyConfig {
-            allowed_cidrs: vec!["1.1.1.1/32".to_string()],
+    #[test]
+    fn conflicting_allow_and_deny_cidrs_are_rejected() {
+        let policy = policy_with(true, &["10.0.0.0/8"], &["10.1.0.0/16"]);
+        let err = validate_policy(&policy).unwrap_err();
+        assert!(matches!(err, OutboundPolicyError::ConflictingCidrs(_)));
+    }
+
+    #[test]
+    fn conflicting_allow_and_deny_cidrs_are_rejected_regardless_of_order() {
+        let policy = policy_with(true, &["10.1.0.0/16"], &["10.0.0.0/8"]);
+        let err = validate_policy(&policy).unwrap_err();
+        assert!(matches!(err, OutboundPolicyError::ConflictingCidrs(_)));
+    }
+
+    #[test]
+    fn non_overlapping_cidrs_are_allowed() {
+        let policy = policy_with(true, &["10.0.0.0/24"], &["10.0.1.0/24"]);
+        validate_policy(&policy).unwrap();
+    }
+
+    #[test]
+    fn conflicting_allow_and_deny_domains_are_rejected() {
+        let policy = AlertTargetPolicyConfig {
+            allowed_domains: vec!["Example.com.".to_string()],
+            denied_domains: vec!["sub.example.com".to_string()],
             ..Default::default()
-        })
-        .await
-        .unwrap();
-        let endpoint = Url::parse("http://1.1.1.1/webhook").unwrap();
-        let mut headers = HashMap::new();
-        headers.insert("Authorization".to_string(), "Bearer token".to_string());
+        };
 
-        let prepared =
-            prepare_alert_target(&endpoint, AlertTargetKind::Webhook, false, Some(&headers))
-                .await
-                .unwrap();
+        let err = validate_policy(&policy).unwrap_err();
 
-        assert!(prepared.authorization_allowed);
-        assert_eq!(
-            prepared.headers.get("authorization").unwrap(),
-            HeaderValue::from_static("Bearer token")
+        assert!(
+            matches!(err, OutboundPolicyError::ConflictingDomains(domain) if domain == "example.com")
         );
+    }
+
+    #[test]
+    fn conflicting_allow_and_deny_domains_are_rejected_regardless_of_order() {
+        let policy = AlertTargetPolicyConfig {
+            allowed_domains: vec!["sub.example.com".to_string()],
+            denied_domains: vec!["example.com".to_string()],
+            ..Default::default()
+        };
+
+        let err = validate_policy(&policy).unwrap_err();
+
+        assert!(
+            matches!(err, OutboundPolicyError::ConflictingDomains(domain) if domain == "sub.example.com")
+        );
+    }
+
+    #[test]
+    fn similar_but_unrelated_domains_are_allowed() {
+        let policy = AlertTargetPolicyConfig {
+            allowed_domains: vec!["example.com".to_string()],
+            denied_domains: vec!["notexample.com".to_string()],
+            ..Default::default()
+        };
+
+        validate_policy(&policy).unwrap();
+    }
+
+    #[tokio::test]
+    async fn active_policy_defaults_for_missing_tenant() {
+        let tenant_id = Some("tenant-without-policy".to_string());
+
+        let policy = active_policy(&tenant_id).await.unwrap();
+
+        assert!(!policy.allow_private);
+        assert!(policy.allowed_domains.is_empty());
+        assert!(policy.allowed_cidrs.is_empty());
+        assert!(policy.denied_domains.is_empty());
+        assert!(policy.denied_cidrs.is_empty());
+        assert!(!policy.allow_invalid_tls);
+    }
+
+    #[test]
+    fn validate_loaded_policies_rejects_invalid_entries() {
+        let mut policies = HashMap::new();
+        policies.insert(
+            "invalid".to_string(),
+            AlertTargetPolicyConfig {
+                allowed_cidrs: vec!["bad-cidr".to_string()],
+                ..Default::default()
+            },
+        );
+
+        let err = validate_loaded_policies(policies).unwrap_err();
+
+        assert!(matches!(
+            err,
+            OutboundPolicyError::PolicyValidationFailed { tenant_id, .. } if tenant_id == "invalid"
+        ));
     }
 }

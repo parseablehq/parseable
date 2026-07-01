@@ -1482,6 +1482,14 @@ pub fn target_json_path(target_id: &Ulid, tenant_id: &Option<String>) -> Relativ
     ])
 }
 
+/// Constructs the path for storing outbound HTTP policy JSON files
+/// Format: "<tenant>/settings/outbound_http_policy.json"
+#[inline(always)]
+pub fn outbound_http_policy_json_path(tenant_id: &Option<String>) -> RelativePathBuf {
+    let root = tenant_id.as_deref().unwrap_or("");
+    RelativePathBuf::from_iter([root, SETTINGS_ROOT_DIRECTORY, "outbound_http_policy.json"])
+}
+
 /// Constructs the path for storing alert state JSON files
 /// Format: ".alerts/alert_state_{alert_id}.json"
 #[inline(always)]

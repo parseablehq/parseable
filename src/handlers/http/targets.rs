@@ -28,17 +28,23 @@ use crate::{
         AlertError,
         target::{TARGETS, Target},
     },
-    utils::get_tenant_id_from_request,
+    utils::get_user_and_tenant_from_request,
 };
+
+fn tenant_from_request(req: &HttpRequest) -> Result<Option<String>, AlertError> {
+    get_user_and_tenant_from_request(req)
+        .map(|(_, tenant)| tenant)
+        .map_err(|err| AlertError::CustomError(err.to_string()))
+}
 
 // POST /targets
 pub async fn post(
     req: HttpRequest,
     Json(mut target): Json<Target>,
 ) -> Result<impl Responder, AlertError> {
-    let tenant_id = get_tenant_id_from_request(&req);
+    let tenant_id = tenant_from_request(&req)?;
     target.tenant = tenant_id;
-    target.target.validate_outbound_policy().await?;
+    target.validate_outbound_policy().await?;
     // should check for duplicacy and liveness (??)
     // add to the map
     TARGETS.update(target.clone()).await?;
@@ -48,7 +54,7 @@ pub async fn post(
 
 // GET /targets
 pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
-    let tenant_id = get_tenant_id_from_request(&req);
+    let tenant_id = tenant_from_request(&req)?;
     // add to the map
     let list = TARGETS
         .list(&tenant_id)
@@ -63,7 +69,7 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
 // GET /targets/{target_id}
 pub async fn get(req: HttpRequest, target_id: Path<Ulid>) -> Result<impl Responder, AlertError> {
     let target_id = target_id.into_inner();
-    let tenant_id = get_tenant_id_from_request(&req);
+    let tenant_id = tenant_from_request(&req)?;
     let target = TARGETS.get_target_by_id(&target_id, &tenant_id).await?;
 
     Ok(web::Json(target.mask()))
@@ -76,7 +82,7 @@ pub async fn update(
     Json(mut target): Json<Target>,
 ) -> Result<impl Responder, AlertError> {
     let target_id = target_id.into_inner();
-    let tenant_id = get_tenant_id_from_request(&req);
+    let tenant_id = tenant_from_request(&req)?;
     // if target_id does not exist, error
     let old_target = TARGETS.get_target_by_id(&target_id, &tenant_id).await?;
 
@@ -90,7 +96,7 @@ pub async fn update(
     // esnure that the supplied target id is assigned to the target config
     target.id = target_id;
     target.tenant = tenant_id;
-    target.target.validate_outbound_policy().await?;
+    target.validate_outbound_policy().await?;
     // should check for duplicacy and liveness (??)
     // add to the map
     TARGETS.update(target.clone()).await?;
@@ -101,7 +107,7 @@ pub async fn update(
 // DELETE /targets/{target_id}
 pub async fn delete(req: HttpRequest, target_id: Path<Ulid>) -> Result<impl Responder, AlertError> {
     let target_id = target_id.into_inner();
-    let tenant_id = get_tenant_id_from_request(&req);
+    let tenant_id = tenant_from_request(&req)?;
     let target = TARGETS.delete(&target_id, &tenant_id).await?;
 
     Ok(web::Json(target.mask()))

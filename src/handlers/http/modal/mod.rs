@@ -35,7 +35,7 @@ use tokio::sync::{RwLock, oneshot};
 use tracing::{error, info, warn};
 
 use crate::{
-    alerts::{ALERTS, get_alert_manager, target::TARGETS},
+    alerts::{ALERTS, get_alert_manager, outbound_http_policy, target::TARGETS},
     cli::Options,
     correlation::CORRELATIONS,
     hottier::{GLOBAL_HOTTIER, HotTierManager, StreamHotTier},
@@ -232,6 +232,10 @@ pub async fn load_on_init() -> anyhow::Result<()> {
 
     if let Err(err) = targets_result {
         error!("{err}");
+    }
+
+    if let Err(err) = outbound_http_policy::load_all_policies(PARSEABLE.metastore.as_ref()).await {
+        error!("Failed to load outbound policies: {err}");
     }
 
     Ok(())
