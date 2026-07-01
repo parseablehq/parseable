@@ -63,7 +63,10 @@ use crate::{
     },
     event::DEFAULT_TIMESTAMP_KEY,
     hottier::{GLOBAL_HOTTIER, HotTierManager},
-    metrics::{QUERY_CACHE_HIT, increment_files_scanned_in_query_by_date},
+    metrics::{
+        QUERY_CACHE_HIT, increment_files_scanned_in_hottier_by_date,
+        increment_files_scanned_in_query_by_date,
+    },
     option::Mode,
     parseable::{DEFAULT_TENANT, PARSEABLE, STREAM_EXISTS},
     storage::{ObjectStorage, ObjectStoreFormat},
@@ -246,6 +249,13 @@ impl StandardTableProvider {
             .await
             .map_err(|err| DataFusionError::External(Box::new(err)))?;
 
+        increment_files_scanned_in_hottier_by_date(
+            hot_tier_files.len() as u64,
+            &chrono::Utc::now().date_naive().to_string(),
+            self.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
+            &self.stream,
+        );
+
         let hot_tier_files: Vec<File> = hot_tier_files
             .into_iter()
             .map(|mut file| {
@@ -406,103 +416,116 @@ impl StandardTableProvider {
         target_partitions: usize,
         _is_hot_tier: bool,
     ) -> (Vec<Vec<PartitionedFile>>, datafusion::common::Statistics) {
-        let file_groups = balanced_file_groups(manifest_files, target_partitions);
-        let mut partitioned_files = Vec::with_capacity(file_groups.len());
-        let mut column_statistics = HashMap::<String, Option<TypedStatistics>>::new();
-        let mut count = 0;
-        let mut file_count = 0u64;
-        for group in file_groups {
-            let mut partition = Vec::with_capacity(group.len());
-            for file in group {
-                #[allow(unused_mut)]
-                let File {
-                    mut file_path,
-                    num_rows,
-                    columns,
-                    file_size,
-                    ..
-                } = file;
-
-                // Track billing metrics for files scanned in query
-                file_count += 1;
-
-                // object_store::path::Path doesn't automatically deal with Windows path separators
-                // to do that, we are using from_absolute_path() which takes into consideration the underlying filesystem
-                // before sending the file path to PartitionedFile
-                // the github issue- https://github.com/parseablehq/parseable/issues/824
-                // For some reason, the `from_absolute_path()` doesn't work for macos, hence the ugly solution
-                // TODO: figure out an elegant solution to this
-                #[cfg(windows)]
-                {
-                    if !_is_hot_tier && PARSEABLE.storage.name() == "drive" {
-                        file_path = object_store::path::Path::from_absolute_path(file_path)
-                            .unwrap()
-                            .to_string();
-                    }
-                }
-                let pf = PartitionedFile::new(file_path, file_size);
-                partition.push(pf);
-
-                columns.into_iter().for_each(|col| {
-                    column_statistics
-                        .entry(col.name)
-                        .and_modify(|x| {
-                            if let Some((stats, col_stats)) =
-                                x.as_ref().cloned().zip(col.stats.clone())
-                            {
-                                // update() returns None on type mismatch (e.g. column
-                                // historically written as both Utf8 and Timestamp(ms)).
-                                // Dropping to None here makes the planner skip min/max
-                                // pushdown for this column instead of crashing the worker.
-                                *x = stats.update(col_stats);
-                            }
-                        })
-                        .or_insert_with(|| col.stats.as_ref().cloned());
-                });
-                count += num_rows;
-            }
-            partitioned_files.push(partition);
-        }
-        let statistics = self
-            .schema
-            .fields()
-            .iter()
-            .map(|field| {
-                column_statistics
-                    .get(field.name())
-                    .and_then(|stats| stats.as_ref())
-                    .and_then(|stats| stats.clone().min_max_as_scalar(field.data_type()))
-                    .map(|(min, max)| datafusion::common::ColumnStatistics {
-                        null_count: Precision::Absent,
-                        max_value: Precision::Exact(max),
-                        min_value: Precision::Exact(min),
-                        distinct_count: Precision::Absent,
-                        sum_value: Precision::Absent,
-                        byte_size: Precision::Absent,
-                    })
-                    .unwrap_or_default()
-            })
-            .collect();
-
-        let statistics = datafusion::common::Statistics {
-            num_rows: Precision::Exact(count as usize),
-            total_byte_size: Precision::Absent,
-            column_statistics: statistics,
-        };
-
-        // Track billing metrics for query scan
-        let current_date = chrono::Utc::now().date_naive().to_string();
-        increment_files_scanned_in_query_by_date(
-            file_count,
-            &current_date,
-            self.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
-        );
-
-        (partitioned_files, statistics)
+        partitioned_files(
+            &self.schema,
+            &self.tenant_id,
+            manifest_files,
+            target_partitions,
+        )
     }
 }
 
-async fn collect_from_snapshot(
+#[inline(always)]
+pub fn partitioned_files(
+    schema: &SchemaRef,
+    tenant_id: &Option<String>,
+    manifest_files: Vec<File>,
+    target_partitions: usize,
+) -> (Vec<Vec<PartitionedFile>>, datafusion::common::Statistics) {
+    let file_groups = balanced_file_groups(manifest_files, target_partitions);
+    let mut partitioned_files = Vec::with_capacity(file_groups.len());
+    let mut column_statistics = HashMap::<String, Option<TypedStatistics>>::new();
+    let mut count = 0;
+    let mut file_count = 0u64;
+    for group in file_groups {
+        let mut partition = Vec::with_capacity(group.len());
+        for file in group {
+            #[allow(unused_mut)]
+            let File {
+                mut file_path,
+                num_rows,
+                columns,
+                file_size,
+                ..
+            } = file;
+
+            // Track billing metrics for files scanned in query
+            file_count += 1;
+
+            // object_store::path::Path doesn't automatically deal with Windows path separators
+            // to do that, we are using from_absolute_path() which takes into consideration the underlying filesystem
+            // before sending the file path to PartitionedFile
+            // the github issue- https://github.com/parseablehq/parseable/issues/824
+            // For some reason, the `from_absolute_path()` doesn't work for macos, hence the ugly solution
+            // TODO: figure out an elegant solution to this
+            #[cfg(windows)]
+            {
+                if !_is_hot_tier && PARSEABLE.storage.name() == "drive" {
+                    file_path = object_store::path::Path::from_absolute_path(file_path)
+                        .unwrap()
+                        .to_string();
+                }
+            }
+            let pf = PartitionedFile::new(file_path, file_size);
+            partition.push(pf);
+
+            columns.into_iter().for_each(|col| {
+                column_statistics
+                    .entry(col.name)
+                    .and_modify(|x| {
+                        if let Some((stats, col_stats)) = x.as_ref().cloned().zip(col.stats.clone())
+                        {
+                            // update() returns None on type mismatch (e.g. column
+                            // historically written as both Utf8 and Timestamp(ms)).
+                            // Dropping to None here makes the planner skip min/max
+                            // pushdown for this column instead of crashing the worker.
+                            *x = stats.update(col_stats);
+                        }
+                    })
+                    .or_insert_with(|| col.stats.as_ref().cloned());
+            });
+            count += num_rows;
+        }
+        partitioned_files.push(partition);
+    }
+    let statistics = schema
+        .fields()
+        .iter()
+        .map(|field| {
+            column_statistics
+                .get(field.name())
+                .and_then(|stats| stats.as_ref())
+                .and_then(|stats| stats.clone().min_max_as_scalar(field.data_type()))
+                .map(|(min, max)| datafusion::common::ColumnStatistics {
+                    null_count: Precision::Absent,
+                    max_value: Precision::Exact(max),
+                    min_value: Precision::Exact(min),
+                    distinct_count: Precision::Absent,
+                    sum_value: Precision::Absent,
+                    byte_size: Precision::Absent,
+                })
+                .unwrap_or_default()
+        })
+        .collect();
+
+    let statistics = datafusion::common::Statistics {
+        num_rows: Precision::Exact(count as usize),
+        total_byte_size: Precision::Absent,
+        column_statistics: statistics,
+    };
+
+    // Track billing metrics for query scan
+    let current_date = chrono::Utc::now().date_naive().to_string();
+    increment_files_scanned_in_query_by_date(
+        file_count,
+        &current_date,
+        tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
+    );
+
+    (partitioned_files, statistics)
+}
+
+pub async fn collect_from_snapshot(
     snapshot: &Snapshot,
     time_filters: &[PartialTimeFilter],
     filters: &[Expr],
@@ -777,7 +800,8 @@ impl TableProvider for StandardTableProvider {
     }
 }
 
-fn reversed_mem_table(
+#[inline(always)]
+pub fn reversed_mem_table(
     mut records: Vec<RecordBatch>,
     schema: Arc<Schema>,
 ) -> Result<MemTable, DataFusionError> {
@@ -796,7 +820,7 @@ pub enum PartialTimeFilter {
 }
 
 impl PartialTimeFilter {
-    fn try_from_expr(expr: &Expr, time_partition: &Option<String>) -> Option<Self> {
+    pub fn try_from_expr(expr: &Expr, time_partition: &Option<String>) -> Option<Self> {
         let Expr::BinaryExpr(binexpr) = expr else {
             return None;
         };
@@ -957,7 +981,7 @@ pub fn is_within_staging_window(time_filters: &[PartialTimeFilter]) -> bool {
     !has_upper_bound
 }
 
-fn expr_in_boundary(filter: &Expr) -> bool {
+pub fn expr_in_boundary(filter: &Expr) -> bool {
     let Expr::BinaryExpr(binexpr) = filter else {
         return false;
     };
@@ -975,7 +999,7 @@ fn expr_in_boundary(filter: &Expr) -> bool {
         )
 }
 
-fn extract_timestamp_bound(
+pub fn extract_timestamp_bound(
     binexpr: &BinaryExpr,
     time_partition: &Option<String>,
 ) -> Option<(Operator, NaiveDateTime)> {
