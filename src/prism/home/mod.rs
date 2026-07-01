@@ -212,7 +212,7 @@ pub async fn generate_home_response(
 async fn get_stream_metadata(stream: String, tenant_id: &Option<String>) -> StreamMetadataResponse {
     let obs = PARSEABLE
         .metastore
-        .get_all_stream_jsons(&stream, None, tenant_id)
+        .get_all_stream_jsons(&stream, None, tenant_id, false)
         .await?;
     let mut stream_jsons = Vec::new();
     for ob in obs {

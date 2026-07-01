@@ -186,6 +186,10 @@ where
                         permissions,
                         &user.tenant,
                     );
+                    req.headers_mut().insert(
+                        HeaderName::from_static(TENANT_ID),
+                        HeaderValue::from_str(tenant).unwrap(),
+                    );
                     req.extensions_mut().insert(session_key);
                     Some(session_id)
                 }

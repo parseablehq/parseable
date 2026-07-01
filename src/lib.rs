@@ -32,7 +32,7 @@ pub mod handlers;
 pub mod hottier;
 pub mod interactive;
 mod livetail;
-mod metadata;
+pub mod metadata;
 pub mod metastore;
 pub mod metrics;
 pub mod migration;

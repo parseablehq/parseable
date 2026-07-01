@@ -872,7 +872,7 @@ pub async fn fetch_stats_from_ingestors(
 ) -> Result<Vec<utils::QueriedStats>, StreamError> {
     let obs = PARSEABLE
         .metastore
-        .get_all_stream_jsons(stream_name, Some(Mode::Ingest), tenant_id)
+        .get_all_stream_jsons(stream_name, Some(Mode::Ingest), tenant_id, false)
         .await?;
 
     let mut ingestion_size = 0u64;
