@@ -461,10 +461,12 @@ fn condition_to_expr(condition: &ConditionConfig) -> Result<String, String> {
 /// Each element must be one of:
 /// - A valid numeric literal (integer or float)
 /// - A valid boolean literal (`true` or `false`)
-/// - A single-quoted string with internal single quotes escaped as `''`
+/// - A single-quoted string (internal single quotes escaped as `''`)
+/// - A bare unquoted string (automatically wrapped in single quotes, mirrors
+///   the behaviour of `scalar_condition_expr`)
 ///
-/// Any element containing unquoted bracket characters `[` or `]` is rejected
-/// outright to prevent escaping the `ARRAY[...]` context.
+/// Any element containing bracket characters `[` or `]` is rejected outright
+/// to prevent escaping the `ARRAY[...]` context, regardless of quoting.
 ///
 /// Returns the sanitized, comma-joined string ready for interpolation, or an
 /// `Err` describing the first offending element.
@@ -474,7 +476,9 @@ fn sanitize_array_elements(value: &str) -> Result<String, String> {
         .map(|elem| {
             let elem = elem.trim();
 
-            // Reject bracket characters that could escape the ARRAY[...] context
+            // Reject bracket characters that could escape the ARRAY[...] context.
+            // This is the primary injection guard; the quoting logic below is
+            // consistent with scalar_condition_expr and does not rely on this check.
             if elem.contains('[') || elem.contains(']') {
                 return Err(format!(
                     "Invalid array element: '{elem}' contains bracket characters"
@@ -491,24 +495,18 @@ fn sanitize_array_elements(value: &str) -> Result<String, String> {
                 return Ok(elem.to_string());
             }
 
-            // String literal — must be single-quoted; strip outer quotes and re-escape internals
+            // Single-quoted string — strip outer quotes, re-escape internals, re-wrap.
+            // Mirrors how scalar_condition_expr handles the Some(_) column_type branch.
             if elem.starts_with('\'') && elem.ends_with('\'') && elem.len() >= 2 {
                 let inner = &elem[1..elem.len() - 1];
                 let escaped = inner.replace('\'', "''");
                 return Ok(format!("'{escaped}'"));
             }
 
-            // Bare unquoted string — treat as a string literal and quote it safely
-            if elem
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
-            {
-                return Ok(format!("'{}'", elem.replace('\'', "''")));
-            }
-
-            Err(format!(
-                "Invalid array element: '{elem}' is not a valid numeric, boolean, or quoted string literal"
-            ))
+            // Bare unquoted string — escape single quotes and wrap in single quotes.
+            // Mirrors the ValueType::String arm in scalar_condition_expr (None branch):
+            //   format!("'{}'", val.replace("'", "''"))
+            Ok(format!("'{}'", elem.replace('\'', "''")))
         })
         .collect();
 
