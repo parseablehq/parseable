@@ -487,17 +487,14 @@ fn split_array_elements(value: &str) -> Result<Vec<&str>, String> {
                 in_quote = true;
             }
             ',' if !in_quote => {
-                // Find byte offset for this char-level slice
                 let byte_start = value
                     .char_indices()
                     .nth(start)
-                    .map(|(b, _)| b)
-                    .unwrap_or(value.len());
+                    .map_or(value.len(), |(b, _)| b);
                 let byte_end = value
                     .char_indices()
                     .nth(i)
-                    .map(|(b, _)| b)
-                    .unwrap_or(value.len());
+                    .map_or(value.len(), |(b, _)| b);
                 elements.push(&value[byte_start..byte_end]);
                 start = i + 1;
             }
@@ -514,8 +511,7 @@ fn split_array_elements(value: &str) -> Result<Vec<&str>, String> {
     let byte_start = value
         .char_indices()
         .nth(start)
-        .map(|(b, _)| b)
-        .unwrap_or(value.len());
+        .map_or(value.len(), |(b, _)| b);
     elements.push(&value[byte_start..]);
 
     Ok(elements)
@@ -567,7 +563,6 @@ fn sanitize_array_elements(value: &str) -> Result<String, String> {
             }
 
             // Single-quoted string — strip outer quotes, re-escape internals, re-wrap.
-            // Mirrors how scalar_condition_expr handles the Some(_) column_type branch.
             if elem.starts_with('\'') && elem.ends_with('\'') && elem.len() >= 2 {
                 let inner = &elem[1..elem.len() - 1];
                 let escaped = inner.replace('\'', "''");
@@ -575,8 +570,6 @@ fn sanitize_array_elements(value: &str) -> Result<String, String> {
             }
 
             // Bare unquoted string — escape single quotes and wrap in single quotes.
-            // Mirrors the ValueType::String arm in scalar_condition_expr (None branch):
-            //   format!("'{}'", val.replace("'", "''"))
             Ok(format!("'{}'", elem.replace('\'', "''")))
         })
         .collect();
@@ -764,31 +757,24 @@ mod tests {
 
     #[test]
     fn test_sanitize_quoted_string_with_comma() {
-        // A quoted element containing a comma must be treated as one element,
-        // not split into two fragments.
         let result = sanitize_array_elements("'New York, NY'").unwrap();
         assert_eq!(result, "'New York, NY'");
     }
 
     #[test]
     fn test_sanitize_quoted_string_with_comma_mixed() {
-        // Quoted element with comma alongside plain numeric elements.
         let result = sanitize_array_elements("'New York, NY', 42").unwrap();
         assert_eq!(result, "'New York, NY', 42");
     }
 
     #[test]
     fn test_sanitize_quoted_string_with_comma_and_escaped_quote() {
-        // Quoted element containing both a doubled-quote escape and a comma.
-        // 'it''s here, really' -> inner is: it''s here, really
-        // After re-escaping the already-doubled quote: it''''s here, really
         let result = sanitize_array_elements("'it''s here, really'").unwrap();
         assert_eq!(result, "'it''''s here, really'");
     }
 
     #[test]
     fn test_sanitize_multiple_quoted_with_commas() {
-        // Two separate quoted elements each containing commas.
         let result =
             sanitize_array_elements("'hello, world', 'foo, bar'").unwrap();
         assert_eq!(result, "'hello, world', 'foo, bar'");
@@ -796,7 +782,6 @@ mod tests {
 
     #[test]
     fn test_sanitize_unterminated_quote_returns_error() {
-        // An unterminated quoted string should surface as an Err.
         let result = sanitize_array_elements("'unterminated");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("Unterminated"));
@@ -892,7 +877,6 @@ mod tests {
 
     #[test]
     fn test_list_condition_expr_quoted_element_with_comma() {
-        // Quoted element containing a comma should produce a single array entry.
         let result = list_condition_expr(
             "cities",
             &WhereConfigOperator::Contains,
