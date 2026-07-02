@@ -455,6 +455,72 @@ fn condition_to_expr(condition: &ConditionConfig) -> Result<String, String> {
     }
 }
 
+/// Split a comma-separated list of array elements in a quote-aware manner.
+///
+/// A plain `str::split(',')` breaks on commas that appear inside single-quoted
+/// strings (e.g. `'New York, NY'`). This function walks the input char-by-char
+/// and only treats a comma as a delimiter when it appears *outside* of a
+/// single-quoted string. Doubled single quotes (`''`) inside a quoted string
+/// are treated as an escaped quote character, not as a string terminator.
+///
+/// Returns `Err` if the input ends while still inside an open quoted string.
+fn split_array_elements(value: &str) -> Result<Vec<&str>, String> {
+    let mut elements = Vec::new();
+    let mut in_quote = false;
+    let mut start = 0;
+    let chars: Vec<char> = value.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        match chars[i] {
+            '\'' if in_quote => {
+                // Check for escaped quote: '' inside a quoted string
+                if i + 1 < len && chars[i + 1] == '\'' {
+                    i += 2; // skip both quotes, stay in_quote
+                    continue;
+                }
+                // Closing quote
+                in_quote = false;
+            }
+            '\'' => {
+                in_quote = true;
+            }
+            ',' if !in_quote => {
+                // Find byte offset for this char-level slice
+                let byte_start = value
+                    .char_indices()
+                    .nth(start)
+                    .map(|(b, _)| b)
+                    .unwrap_or(value.len());
+                let byte_end = value
+                    .char_indices()
+                    .nth(i)
+                    .map(|(b, _)| b)
+                    .unwrap_or(value.len());
+                elements.push(&value[byte_start..byte_end]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if in_quote {
+        return Err("Unterminated quoted string in array value".to_string());
+    }
+
+    // Push the final element
+    let byte_start = value
+        .char_indices()
+        .nth(start)
+        .map(|(b, _)| b)
+        .unwrap_or(value.len());
+    elements.push(&value[byte_start..]);
+
+    Ok(elements)
+}
+
 /// Sanitize and validate each element of a comma-separated array value intended
 /// for interpolation into an SQL `ARRAY[...]` literal.
 ///
@@ -468,11 +534,16 @@ fn condition_to_expr(condition: &ConditionConfig) -> Result<String, String> {
 /// Any element containing bracket characters `[` or `]` is rejected outright
 /// to prevent escaping the `ARRAY[...]` context, regardless of quoting.
 ///
+/// The input is split using a quote-aware splitter so that commas inside
+/// single-quoted strings (e.g. `'New York, NY'`) are not treated as delimiters.
+///
 /// Returns the sanitized, comma-joined string ready for interpolation, or an
 /// `Err` describing the first offending element.
 fn sanitize_array_elements(value: &str) -> Result<String, String> {
-    let sanitized: Result<Vec<String>, String> = value
-        .split(',')
+    let raw_elements = split_array_elements(value)?;
+
+    let sanitized: Result<Vec<String>, String> = raw_elements
+        .into_iter()
         .map(|elem| {
             let elem = elem.trim();
 
@@ -650,7 +721,6 @@ mod tests {
 
     #[test]
     fn test_sanitize_numeric_elements() {
-        // Plain integers and floats should pass through unchanged
         assert_eq!(sanitize_array_elements("1, 2, 3").unwrap(), "1, 2, 3");
         assert_eq!(
             sanitize_array_elements("3.14, 2.71").unwrap(),
@@ -668,7 +738,6 @@ mod tests {
 
     #[test]
     fn test_sanitize_bare_string_elements() {
-        // Bare strings must be wrapped in single quotes
         assert_eq!(sanitize_array_elements("foo").unwrap(), "'foo'");
         assert_eq!(
             sanitize_array_elements("foo, bar").unwrap(),
@@ -678,17 +747,59 @@ mod tests {
 
     #[test]
     fn test_sanitize_pre_quoted_string_elements() {
-        // Pre-quoted strings should be accepted and returned normalised
         assert_eq!(sanitize_array_elements("'hello'").unwrap(), "'hello'");
     }
 
     #[test]
     fn test_sanitize_mixed_elements() {
-        // Mixed numeric + string values in one array
         assert_eq!(
             sanitize_array_elements("42, foo, 3.14").unwrap(),
             "42, 'foo', 3.14"
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // sanitize_array_elements — quote-aware comma splitting
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_sanitize_quoted_string_with_comma() {
+        // A quoted element containing a comma must be treated as one element,
+        // not split into two fragments.
+        let result = sanitize_array_elements("'New York, NY'").unwrap();
+        assert_eq!(result, "'New York, NY'");
+    }
+
+    #[test]
+    fn test_sanitize_quoted_string_with_comma_mixed() {
+        // Quoted element with comma alongside plain numeric elements.
+        let result = sanitize_array_elements("'New York, NY', 42").unwrap();
+        assert_eq!(result, "'New York, NY', 42");
+    }
+
+    #[test]
+    fn test_sanitize_quoted_string_with_comma_and_escaped_quote() {
+        // Quoted element containing both a doubled-quote escape and a comma.
+        // 'it''s here, really' -> inner is: it''s here, really
+        // After re-escaping the already-doubled quote: it''''s here, really
+        let result = sanitize_array_elements("'it''s here, really'").unwrap();
+        assert_eq!(result, "'it''''s here, really'");
+    }
+
+    #[test]
+    fn test_sanitize_multiple_quoted_with_commas() {
+        // Two separate quoted elements each containing commas.
+        let result =
+            sanitize_array_elements("'hello, world', 'foo, bar'").unwrap();
+        assert_eq!(result, "'hello, world', 'foo, bar'");
+    }
+
+    #[test]
+    fn test_sanitize_unterminated_quote_returns_error() {
+        // An unterminated quoted string should surface as an Err.
+        let result = sanitize_array_elements("'unterminated");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unterminated"));
     }
 
     // -------------------------------------------------------------------------
@@ -697,10 +808,6 @@ mod tests {
 
     #[test]
     fn test_sanitize_bare_string_with_single_quote_injection() {
-        // A bare string containing a single quote must have it escaped as ''
-        // so it cannot break out of the surrounding ARRAY[...] literal.
-        // The assert_eq on the exact escaped output is sufficient to prove safety —
-        // the correctly escaped form 'foo'' OR ''1''=''1' is valid SQL and harmless.
         let input = "foo' OR '1'='1";
         let result = sanitize_array_elements(input).unwrap();
         assert_eq!(result, "'foo'' OR ''1''=''1'");
@@ -708,8 +815,6 @@ mod tests {
 
     #[test]
     fn test_sanitize_pre_quoted_string_with_internal_single_quote() {
-        // A pre-quoted string whose interior contains a single quote must
-        // have that quote doubled before re-wrapping.
         let input = "'it''s fine'";
         let result = sanitize_array_elements(input).unwrap();
         assert_eq!(result, "'it''''s fine'");
@@ -734,7 +839,6 @@ mod tests {
 
     #[test]
     fn test_sanitize_rejects_injection_via_brackets() {
-        // Classic injection: close the ARRAY, inject SQL, re-open
         let malicious = "1] OR 1=1 --";
         let result = sanitize_array_elements(malicious);
         assert!(
@@ -763,7 +867,6 @@ mod tests {
 
     #[test]
     fn test_list_condition_expr_strips_outer_brackets() {
-        // Input already wrapped in [] — should strip and sanitize correctly
         let result =
             list_condition_expr("tags", &WhereConfigOperator::Equal, "[1, 2]").unwrap();
         assert_eq!(result, "\"tags\" = ARRAY[1, 2]");
@@ -788,8 +891,22 @@ mod tests {
     }
 
     #[test]
+    fn test_list_condition_expr_quoted_element_with_comma() {
+        // Quoted element containing a comma should produce a single array entry.
+        let result = list_condition_expr(
+            "cities",
+            &WhereConfigOperator::Contains,
+            "'New York, NY'",
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            "array_has_all(\"cities\", ARRAY['New York, NY'])"
+        );
+    }
+
+    #[test]
     fn test_list_condition_expr_rejects_injection() {
-        // Injection attempt via bracket characters must surface as an error
         let result = list_condition_expr(
             "tags",
             &WhereConfigOperator::Contains,
@@ -803,7 +920,6 @@ mod tests {
 
     #[test]
     fn test_list_condition_expr_unsupported_operator() {
-        // Operators that make no sense on list columns should return Err
         let result =
             list_condition_expr("tags", &WhereConfigOperator::GreaterThan, "1");
         assert!(result.is_err());
