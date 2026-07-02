@@ -455,6 +455,66 @@ fn condition_to_expr(condition: &ConditionConfig) -> Result<String, String> {
     }
 }
 
+/// Sanitize and validate each element of a comma-separated array value intended
+/// for interpolation into an SQL `ARRAY[...]` literal.
+///
+/// Each element must be one of:
+/// - A valid numeric literal (integer or float)
+/// - A valid boolean literal (`true` or `false`)
+/// - A single-quoted string with internal single quotes escaped as `''`
+///
+/// Any element containing unquoted bracket characters `[` or `]` is rejected
+/// outright to prevent escaping the `ARRAY[...]` context.
+///
+/// Returns the sanitized, comma-joined string ready for interpolation, or an
+/// `Err` describing the first offending element.
+fn sanitize_array_elements(value: &str) -> Result<String, String> {
+    let sanitized: Result<Vec<String>, String> = value
+        .split(',')
+        .map(|elem| {
+            let elem = elem.trim();
+
+            // Reject bracket characters that could escape the ARRAY[...] context
+            if elem.contains('[') || elem.contains(']') {
+                return Err(format!(
+                    "Invalid array element: '{elem}' contains bracket characters"
+                ));
+            }
+
+            // Numeric literal — pass through as-is
+            if elem.parse::<f64>().is_ok() {
+                return Ok(elem.to_string());
+            }
+
+            // Boolean literal — pass through as-is
+            if elem.parse::<bool>().is_ok() {
+                return Ok(elem.to_string());
+            }
+
+            // String literal — must be single-quoted; strip outer quotes and re-escape internals
+            if elem.starts_with('\'') && elem.ends_with('\'') && elem.len() >= 2 {
+                let inner = &elem[1..elem.len() - 1];
+                let escaped = inner.replace('\'', "''");
+                return Ok(format!("'{escaped}'"));
+            }
+
+            // Bare unquoted string — treat as a string literal and quote it safely
+            if elem
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '-' || c == '.')
+            {
+                return Ok(format!("'{}'", elem.replace('\'', "''")));
+            }
+
+            Err(format!(
+                "Invalid array element: '{elem}' is not a valid numeric, boolean, or quoted string literal"
+            ))
+        })
+        .collect();
+
+    Ok(sanitized?.join(", "))
+}
+
 fn list_condition_expr(
     column: &str,
     operator: &WhereConfigOperator,
@@ -467,15 +527,18 @@ fn list_condition_expr(
         .and_then(|s| s.strip_suffix(']'))
         .unwrap_or(value);
 
+    // Sanitize each element before interpolating into the SQL ARRAY literal
+    let safe_value = sanitize_array_elements(inner_value)?;
+
     match operator {
         WhereConfigOperator::Contains => {
-            Ok(format!("array_has_all(\"{column}\", ARRAY[{inner_value}])"))
+            Ok(format!("array_has_all(\"{column}\", ARRAY[{safe_value}])"))
         }
         WhereConfigOperator::DoesNotContain => Ok(format!(
-            "NOT array_has_all(\"{column}\", ARRAY[{inner_value}])"
+            "NOT array_has_all(\"{column}\", ARRAY[{safe_value}])"
         )),
-        WhereConfigOperator::Equal => Ok(format!("\"{column}\" = ARRAY[{inner_value}]")),
-        WhereConfigOperator::NotEqual => Ok(format!("\"{column}\" != ARRAY[{inner_value}]")),
+        WhereConfigOperator::Equal => Ok(format!("\"{column}\" = ARRAY[{safe_value}]")),
+        WhereConfigOperator::NotEqual => Ok(format!("\"{column}\" != ARRAY[{safe_value}]")),
         _ => Err(format!(
             "Operator '{operator}' is not supported for list type columns"
         )),
