@@ -699,11 +699,11 @@ mod tests {
     fn test_sanitize_bare_string_with_single_quote_injection() {
         // A bare string containing a single quote must have it escaped as ''
         // so it cannot break out of the surrounding ARRAY[...] literal.
+        // The assert_eq on the exact escaped output is sufficient to prove safety —
+        // the correctly escaped form 'foo'' OR ''1''=''1' is valid SQL and harmless.
         let input = "foo' OR '1'='1";
         let result = sanitize_array_elements(input).unwrap();
         assert_eq!(result, "'foo'' OR ''1''=''1'");
-        // The output must not contain an unescaped lone single quote
-        assert!(!result.contains("' OR '"));
     }
 
     #[test]
