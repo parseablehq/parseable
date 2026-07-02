@@ -638,3 +638,175 @@ impl Display for ValueType {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::alerts::WhereConfigOperator;
+
+    // -------------------------------------------------------------------------
+    // sanitize_array_elements — happy-path cases
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_sanitize_numeric_elements() {
+        // Plain integers and floats should pass through unchanged
+        assert_eq!(sanitize_array_elements("1, 2, 3").unwrap(), "1, 2, 3");
+        assert_eq!(
+            sanitize_array_elements("3.14, 2.71").unwrap(),
+            "3.14, 2.71"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_boolean_elements() {
+        assert_eq!(
+            sanitize_array_elements("true, false").unwrap(),
+            "true, false"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_bare_string_elements() {
+        // Bare strings must be wrapped in single quotes
+        assert_eq!(sanitize_array_elements("foo").unwrap(), "'foo'");
+        assert_eq!(
+            sanitize_array_elements("foo, bar").unwrap(),
+            "'foo', 'bar'"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_pre_quoted_string_elements() {
+        // Pre-quoted strings should be accepted and returned normalised
+        assert_eq!(sanitize_array_elements("'hello'").unwrap(), "'hello'");
+    }
+
+    #[test]
+    fn test_sanitize_mixed_elements() {
+        // Mixed numeric + string values in one array
+        assert_eq!(
+            sanitize_array_elements("42, foo, 3.14").unwrap(),
+            "42, 'foo', 3.14"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // sanitize_array_elements — single-quote injection
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_sanitize_bare_string_with_single_quote_injection() {
+        // A bare string containing a single quote must have it escaped as ''
+        // so it cannot break out of the surrounding ARRAY[...] literal.
+        let input = "foo' OR '1'='1";
+        let result = sanitize_array_elements(input).unwrap();
+        assert_eq!(result, "'foo'' OR ''1''=''1'");
+        // The output must not contain an unescaped lone single quote
+        assert!(!result.contains("' OR '"));
+    }
+
+    #[test]
+    fn test_sanitize_pre_quoted_string_with_internal_single_quote() {
+        // A pre-quoted string whose interior contains a single quote must
+        // have that quote doubled before re-wrapping.
+        let input = "'it''s fine'";
+        let result = sanitize_array_elements(input).unwrap();
+        assert_eq!(result, "'it''''s fine'");
+    }
+
+    // -------------------------------------------------------------------------
+    // sanitize_array_elements — bracket injection (primary guard)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_sanitize_rejects_element_with_open_bracket() {
+        let result = sanitize_array_elements("foo[bar");
+        assert!(result.is_err(), "Expected Err for element containing '['");
+        assert!(result.unwrap_err().contains("bracket characters"));
+    }
+
+    #[test]
+    fn test_sanitize_rejects_element_with_close_bracket() {
+        let result = sanitize_array_elements("foo]bar");
+        assert!(result.is_err(), "Expected Err for element containing ']'");
+    }
+
+    #[test]
+    fn test_sanitize_rejects_injection_via_brackets() {
+        // Classic injection: close the ARRAY, inject SQL, re-open
+        let malicious = "1] OR 1=1 --";
+        let result = sanitize_array_elements(malicious);
+        assert!(
+            result.is_err(),
+            "Bracket injection attempt should be rejected"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // list_condition_expr — output shape
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_list_condition_expr_contains_numeric() {
+        let result =
+            list_condition_expr("tags", &WhereConfigOperator::Contains, "1, 2, 3").unwrap();
+        assert_eq!(result, "array_has_all(\"tags\", ARRAY[1, 2, 3])");
+    }
+
+    #[test]
+    fn test_list_condition_expr_contains_strings() {
+        let result =
+            list_condition_expr("tags", &WhereConfigOperator::Contains, "foo, bar").unwrap();
+        assert_eq!(result, "array_has_all(\"tags\", ARRAY['foo', 'bar'])");
+    }
+
+    #[test]
+    fn test_list_condition_expr_strips_outer_brackets() {
+        // Input already wrapped in [] — should strip and sanitize correctly
+        let result =
+            list_condition_expr("tags", &WhereConfigOperator::Equal, "[1, 2]").unwrap();
+        assert_eq!(result, "\"tags\" = ARRAY[1, 2]");
+    }
+
+    #[test]
+    fn test_list_condition_expr_does_not_contain() {
+        let result = list_condition_expr(
+            "tags",
+            &WhereConfigOperator::DoesNotContain,
+            "foo",
+        )
+        .unwrap();
+        assert_eq!(result, "NOT array_has_all(\"tags\", ARRAY['foo'])");
+    }
+
+    #[test]
+    fn test_list_condition_expr_not_equal() {
+        let result =
+            list_condition_expr("tags", &WhereConfigOperator::NotEqual, "42").unwrap();
+        assert_eq!(result, "\"tags\" != ARRAY[42]");
+    }
+
+    #[test]
+    fn test_list_condition_expr_rejects_injection() {
+        // Injection attempt via bracket characters must surface as an error
+        let result = list_condition_expr(
+            "tags",
+            &WhereConfigOperator::Contains,
+            "1] OR 1=1 --",
+        );
+        assert!(
+            result.is_err(),
+            "Injection via bracket characters must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_list_condition_expr_unsupported_operator() {
+        // Operators that make no sense on list columns should return Err
+        let result =
+            list_condition_expr("tags", &WhereConfigOperator::GreaterThan, "1");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not supported"));
+    }
+}
