@@ -150,6 +150,17 @@ pub struct Options {
     )]
     pub address: String,
 
+    // Origins to allow for cors
+    #[arg(
+        long,
+        env = "P_ALLOW_ORIGINS",
+        required = false,
+        value_delimiter = ',',
+        value_parser = validation::url,
+        help = "Comma separated URLs to allow as origins"
+    )]
+    pub allow_origins: Vec<Url>,
+
     // Actix request timeout in seconds
     #[arg(
         long,
@@ -805,5 +816,61 @@ impl Options {
                     "{err}, failed to parse `{address}` as Url. Please set the environment variable `P_ADDR` to `<ip address>:<port>` without the scheme (e.g., 192.168.1.1:8000). Please refer to the documentation: https://logg.ing/env for more details."
                 );
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Cli, StorageOptions};
+    use clap::Parser;
+
+    #[test]
+    fn parses_comma_separated_allowed_origins() {
+        let cli = Cli::parse_from([
+            "parseable",
+            "local-store",
+            "--allowed-origins",
+            "https://www.google.com/,https://app-staging.parseable.com/",
+        ]);
+
+        let StorageOptions::Local(args) = cli.storage else {
+            panic!("expected local-store args");
+        };
+
+        assert_eq!(args.options.allow_origins.len(), 2);
+        assert_eq!(
+            args.options.allow_origins[0].as_str(),
+            "https://www.google.com/"
+        );
+        assert_eq!(
+            args.options.allow_origins[1].as_str(),
+            "https://app-staging.parseable.com/"
+        );
+    }
+
+    #[test]
+    fn parses_repeated_allowed_origins() {
+        let cli = Cli::parse_from([
+            "parseable",
+            "local-store",
+            "--allowed-origins",
+            "https://www.google.com/",
+            "--allowed-origins",
+            "https://app-staging.parseable.com/",
+        ]);
+
+        let StorageOptions::Local(args) = cli.storage else {
+            panic!("expected local-store args");
+        };
+
+        assert_eq!(args.options.allow_origins.len(), 2);
+        assert_eq!(
+            args.options.allow_origins[0].as_str(),
+            "https://www.google.com/"
+        );
+        assert_eq!(
+            args.options.allow_origins[1].as_str(),
+            "https://app-staging.parseable.com/"
+        );
     }
 }

@@ -93,10 +93,9 @@ pub mod validation {
         path::{Path, PathBuf},
     };
 
+    use super::{Compression, Mode};
     use crate::cli::DATASET_FIELD_COUNT_LIMIT;
     use path_clean::PathClean;
-
-    use super::{Compression, Mode};
 
     pub fn file_path(s: &str) -> Result<PathBuf, String> {
         if s.is_empty() {

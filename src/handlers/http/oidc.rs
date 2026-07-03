@@ -36,7 +36,6 @@ pub fn set_cookie_cross_site(enabled: bool) {
 }
 use chrono::{Duration, TimeDelta};
 use openid::Bearer;
-use regex::Regex;
 use serde::Deserialize;
 use ulid::Ulid;
 use url::Url;
@@ -79,8 +78,8 @@ pub async fn login(
     query: web::Query<RedirectAfterLogin>,
 ) -> Result<HttpResponse, OIDCError> {
     let conn = req.connection_info().clone();
-    let base_url_without_scheme = format!("{}/", conn.host());
-    if !is_valid_redirect_url(&base_url_without_scheme, query.redirect.as_str()) {
+    let base_url = format!("{}://{}/", conn.scheme(), conn.host());
+    if !is_valid_redirect_url(&base_url, query.redirect.as_str()) {
         return Err(OIDCError::BadRequest(
             "Bad Request, Invalid Redirect URL!".to_string(),
         ));
@@ -167,11 +166,22 @@ pub async fn login(
     }
 }
 
-pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> HttpResponse {
+pub async fn logout(
+    req: HttpRequest,
+    query: web::Query<RedirectAfterLogin>,
+) -> Result<HttpResponse, OIDCError> {
     let oidc_client = OIDC_CLIENT.get();
+    let conn = req.connection_info().clone();
+    let base_url = format!("{}://{}/", conn.scheme(), conn.host());
+
+    if !is_valid_redirect_url(&base_url, query.redirect.as_str()) {
+        return Err(OIDCError::BadRequest(
+            "Bad Request, Invalid Redirect URL!".to_string(),
+        ));
+    }
 
     let Some(session) = extract_session_key_from_req(&req).ok() else {
-        return redirect_to_client(query.redirect.as_str(), None);
+        return Ok(redirect_to_client(query.redirect.as_str(), None));
     };
     let tenant_id = get_tenant_id_from_key(&session);
     let user = Users.remove_session(&session);
@@ -185,9 +195,9 @@ pub async fn logout(req: HttpRequest, query: web::Query<RedirectAfterLogin>) -> 
         (Some(username), Some(logout_endpoint))
             if Users.is_oauth(&username, &tenant_id).unwrap_or_default() =>
         {
-            redirect_to_oidc_logout(logout_endpoint, &query.redirect)
+            Ok(redirect_to_oidc_logout(logout_endpoint, &query.redirect))
         }
-        _ => redirect_to_client(query.redirect.as_str(), None),
+        _ => Ok(redirect_to_client(query.redirect.as_str(), None)),
     }
 }
 
@@ -643,9 +653,17 @@ impl actix_web::ResponseError for OIDCError {
     }
 }
 
-fn is_valid_redirect_url(base_url_without_scheme: &str, redirect_url: &str) -> bool {
-    let http_scheme_match_regex = Regex::new(r"^(https?://)").unwrap();
-    let redirect_url_without_scheme = http_scheme_match_regex.replace(redirect_url, "");
-
-    base_url_without_scheme == redirect_url_without_scheme
+fn is_valid_redirect_url(base_url: &str, redirect_url: &str) -> bool {
+    // check if redirect_url is part of allowed origins
+    if let allowed_origins = &PARSEABLE.options.allow_origins
+        && (allowed_origins
+            .iter()
+            .any(|url| url.as_str().eq(redirect_url)))
+    {
+        true
+    }
+    // if redirect_url is not part of allowed origins, then it must be equal to base url
+    else {
+        base_url == redirect_url
+    }
 }
