@@ -654,16 +654,22 @@ impl actix_web::ResponseError for OIDCError {
 }
 
 fn is_valid_redirect_url(base_url: &str, redirect_url: &str) -> bool {
-    // check if redirect_url is part of allowed origins
-    if let allowed_origins = &PARSEABLE.options.allow_origins
-        && (allowed_origins
-            .iter()
-            .any(|url| url.as_str().eq(redirect_url)))
+    let Ok(redirect_url) = Url::parse(redirect_url) else {
+        return false;
+    };
+
+    let redirect_origin = redirect_url.origin();
+
+    if PARSEABLE
+        .options
+        .allow_origins
+        .iter()
+        .any(|url| url.origin() == redirect_origin)
     {
-        true
+        return true;
     }
-    // if redirect_url is not part of allowed origins, then it must be equal to base url
-    else {
-        base_url == redirect_url
-    }
+
+    Url::parse(base_url)
+        .map(|url| url.origin() == redirect_origin)
+        .unwrap_or(false)
 }
