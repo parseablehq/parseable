@@ -455,6 +455,128 @@ fn condition_to_expr(condition: &ConditionConfig) -> Result<String, String> {
     }
 }
 
+/// Split a comma-separated list of array elements in a quote-aware manner.
+///
+/// A plain `str::split(',')` breaks on commas that appear inside single-quoted
+/// strings (e.g. `'New York, NY'`). This function walks the input char-by-char
+/// and only treats a comma as a delimiter when it appears *outside* of a
+/// single-quoted string. Doubled single quotes (`''`) inside a quoted string
+/// are treated as an escaped quote character, not as a string terminator.
+///
+/// Returns `Err` if the input ends while still inside an open quoted string.
+fn split_array_elements(value: &str) -> Result<Vec<&str>, String> {
+    let mut elements = Vec::new();
+    let mut in_quote = false;
+    let mut start = 0;
+    let chars: Vec<char> = value.chars().collect();
+    let len = chars.len();
+    let mut i = 0;
+
+    while i < len {
+        match chars[i] {
+            '\'' if in_quote => {
+                // Check for escaped quote: '' inside a quoted string
+                if i + 1 < len && chars[i + 1] == '\'' {
+                    i += 2; // skip both quotes, stay in_quote
+                    continue;
+                }
+                // Closing quote
+                in_quote = false;
+            }
+            '\'' => {
+                in_quote = true;
+            }
+            ',' if !in_quote => {
+                let byte_start = value
+                    .char_indices()
+                    .nth(start)
+                    .map_or(value.len(), |(b, _)| b);
+                let byte_end = value
+                    .char_indices()
+                    .nth(i)
+                    .map_or(value.len(), |(b, _)| b);
+                elements.push(&value[byte_start..byte_end]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    if in_quote {
+        return Err("Unterminated quoted string in array value".to_string());
+    }
+
+    // Push the final element
+    let byte_start = value
+        .char_indices()
+        .nth(start)
+        .map_or(value.len(), |(b, _)| b);
+    elements.push(&value[byte_start..]);
+
+    Ok(elements)
+}
+
+/// Sanitize and validate each element of a comma-separated array value intended
+/// for interpolation into an SQL `ARRAY[...]` literal.
+///
+/// Each element must be one of:
+/// - A valid numeric literal (integer or float)
+/// - A valid boolean literal (`true` or `false`)
+/// - A single-quoted string (internal single quotes escaped as `''`)
+/// - A bare unquoted string (automatically wrapped in single quotes, mirrors
+///   the behaviour of `scalar_condition_expr`)
+///
+/// Any element containing bracket characters `[` or `]` is rejected outright
+/// to prevent escaping the `ARRAY[...]` context, regardless of quoting.
+///
+/// The input is split using a quote-aware splitter so that commas inside
+/// single-quoted strings (e.g. `'New York, NY'`) are not treated as delimiters.
+///
+/// Returns the sanitized, comma-joined string ready for interpolation, or an
+/// `Err` describing the first offending element.
+fn sanitize_array_elements(value: &str) -> Result<String, String> {
+    let raw_elements = split_array_elements(value)?;
+
+    let sanitized: Result<Vec<String>, String> = raw_elements
+        .into_iter()
+        .map(|elem| {
+            let elem = elem.trim();
+
+            // Reject bracket characters that could escape the ARRAY[...] context.
+            // This is the primary injection guard; the quoting logic below is
+            // consistent with scalar_condition_expr and does not rely on this check.
+            if elem.contains('[') || elem.contains(']') {
+                return Err(format!(
+                    "Invalid array element: '{elem}' contains bracket characters"
+                ));
+            }
+
+            // Numeric literal — pass through as-is
+            if elem.parse::<f64>().is_ok() {
+                return Ok(elem.to_string());
+            }
+
+            // Boolean literal — pass through as-is
+            if elem.parse::<bool>().is_ok() {
+                return Ok(elem.to_string());
+            }
+
+            // Single-quoted string — strip outer quotes, re-escape internals, re-wrap.
+            if elem.starts_with('\'') && elem.ends_with('\'') && elem.len() >= 2 {
+                let inner = &elem[1..elem.len() - 1];
+                let escaped = inner.replace('\'', "''");
+                return Ok(format!("'{escaped}'"));
+            }
+
+            // Bare unquoted string — escape single quotes and wrap in single quotes.
+            Ok(format!("'{}'", elem.replace('\'', "''")))
+        })
+        .collect();
+
+    Ok(sanitized?.join(", "))
+}
+
 fn list_condition_expr(
     column: &str,
     operator: &WhereConfigOperator,
@@ -467,15 +589,18 @@ fn list_condition_expr(
         .and_then(|s| s.strip_suffix(']'))
         .unwrap_or(value);
 
+    // Sanitize each element before interpolating into the SQL ARRAY literal
+    let safe_value = sanitize_array_elements(inner_value)?;
+
     match operator {
         WhereConfigOperator::Contains => {
-            Ok(format!("array_has_all(\"{column}\", ARRAY[{inner_value}])"))
+            Ok(format!("array_has_all(\"{column}\", ARRAY[{safe_value}])"))
         }
         WhereConfigOperator::DoesNotContain => Ok(format!(
-            "NOT array_has_all(\"{column}\", ARRAY[{inner_value}])"
+            "NOT array_has_all(\"{column}\", ARRAY[{safe_value}])"
         )),
-        WhereConfigOperator::Equal => Ok(format!("\"{column}\" = ARRAY[{inner_value}]")),
-        WhereConfigOperator::NotEqual => Ok(format!("\"{column}\" != ARRAY[{inner_value}]")),
+        WhereConfigOperator::Equal => Ok(format!("\"{column}\" = ARRAY[{safe_value}]")),
+        WhereConfigOperator::NotEqual => Ok(format!("\"{column}\" != ARRAY[{safe_value}]")),
         _ => Err(format!(
             "Operator '{operator}' is not supported for list type columns"
         )),
@@ -575,5 +700,213 @@ impl Display for ValueType {
             ValueType::String(v) => write!(f, "{v}"),
             ValueType::Boolean(v) => write!(f, "{v}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::alerts::WhereConfigOperator;
+
+    // -------------------------------------------------------------------------
+    // sanitize_array_elements — happy-path cases
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_sanitize_numeric_elements() {
+        assert_eq!(sanitize_array_elements("1, 2, 3").unwrap(), "1, 2, 3");
+        assert_eq!(
+            sanitize_array_elements("3.14, 2.71").unwrap(),
+            "3.14, 2.71"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_boolean_elements() {
+        assert_eq!(
+            sanitize_array_elements("true, false").unwrap(),
+            "true, false"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_bare_string_elements() {
+        assert_eq!(sanitize_array_elements("foo").unwrap(), "'foo'");
+        assert_eq!(
+            sanitize_array_elements("foo, bar").unwrap(),
+            "'foo', 'bar'"
+        );
+    }
+
+    #[test]
+    fn test_sanitize_pre_quoted_string_elements() {
+        assert_eq!(sanitize_array_elements("'hello'").unwrap(), "'hello'");
+    }
+
+    #[test]
+    fn test_sanitize_mixed_elements() {
+        assert_eq!(
+            sanitize_array_elements("42, foo, 3.14").unwrap(),
+            "42, 'foo', 3.14"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // sanitize_array_elements — quote-aware comma splitting
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_sanitize_quoted_string_with_comma() {
+        let result = sanitize_array_elements("'New York, NY'").unwrap();
+        assert_eq!(result, "'New York, NY'");
+    }
+
+    #[test]
+    fn test_sanitize_quoted_string_with_comma_mixed() {
+        let result = sanitize_array_elements("'New York, NY', 42").unwrap();
+        assert_eq!(result, "'New York, NY', 42");
+    }
+
+    #[test]
+    fn test_sanitize_quoted_string_with_comma_and_escaped_quote() {
+        let result = sanitize_array_elements("'it''s here, really'").unwrap();
+        assert_eq!(result, "'it''''s here, really'");
+    }
+
+    #[test]
+    fn test_sanitize_multiple_quoted_with_commas() {
+        let result =
+            sanitize_array_elements("'hello, world', 'foo, bar'").unwrap();
+        assert_eq!(result, "'hello, world', 'foo, bar'");
+    }
+
+    #[test]
+    fn test_sanitize_unterminated_quote_returns_error() {
+        let result = sanitize_array_elements("'unterminated");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("Unterminated"));
+    }
+
+    // -------------------------------------------------------------------------
+    // sanitize_array_elements — single-quote injection
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_sanitize_bare_string_with_single_quote_injection() {
+        let input = "foo' OR '1'='1";
+        let result = sanitize_array_elements(input).unwrap();
+        assert_eq!(result, "'foo'' OR ''1''=''1'");
+    }
+
+    #[test]
+    fn test_sanitize_pre_quoted_string_with_internal_single_quote() {
+        let input = "'it''s fine'";
+        let result = sanitize_array_elements(input).unwrap();
+        assert_eq!(result, "'it''''s fine'");
+    }
+
+    // -------------------------------------------------------------------------
+    // sanitize_array_elements — bracket injection (primary guard)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_sanitize_rejects_element_with_open_bracket() {
+        let result = sanitize_array_elements("foo[bar");
+        assert!(result.is_err(), "Expected Err for element containing '['");
+        assert!(result.unwrap_err().contains("bracket characters"));
+    }
+
+    #[test]
+    fn test_sanitize_rejects_element_with_close_bracket() {
+        let result = sanitize_array_elements("foo]bar");
+        assert!(result.is_err(), "Expected Err for element containing ']'");
+    }
+
+    #[test]
+    fn test_sanitize_rejects_injection_via_brackets() {
+        let malicious = "1] OR 1=1 --";
+        let result = sanitize_array_elements(malicious);
+        assert!(
+            result.is_err(),
+            "Bracket injection attempt should be rejected"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // list_condition_expr — output shape
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_list_condition_expr_contains_numeric() {
+        let result =
+            list_condition_expr("tags", &WhereConfigOperator::Contains, "1, 2, 3").unwrap();
+        assert_eq!(result, "array_has_all(\"tags\", ARRAY[1, 2, 3])");
+    }
+
+    #[test]
+    fn test_list_condition_expr_contains_strings() {
+        let result =
+            list_condition_expr("tags", &WhereConfigOperator::Contains, "foo, bar").unwrap();
+        assert_eq!(result, "array_has_all(\"tags\", ARRAY['foo', 'bar'])");
+    }
+
+    #[test]
+    fn test_list_condition_expr_strips_outer_brackets() {
+        let result =
+            list_condition_expr("tags", &WhereConfigOperator::Equal, "[1, 2]").unwrap();
+        assert_eq!(result, "\"tags\" = ARRAY[1, 2]");
+    }
+
+    #[test]
+    fn test_list_condition_expr_does_not_contain() {
+        let result = list_condition_expr(
+            "tags",
+            &WhereConfigOperator::DoesNotContain,
+            "foo",
+        )
+        .unwrap();
+        assert_eq!(result, "NOT array_has_all(\"tags\", ARRAY['foo'])");
+    }
+
+    #[test]
+    fn test_list_condition_expr_not_equal() {
+        let result =
+            list_condition_expr("tags", &WhereConfigOperator::NotEqual, "42").unwrap();
+        assert_eq!(result, "\"tags\" != ARRAY[42]");
+    }
+
+    #[test]
+    fn test_list_condition_expr_quoted_element_with_comma() {
+        let result = list_condition_expr(
+            "cities",
+            &WhereConfigOperator::Contains,
+            "'New York, NY'",
+        )
+        .unwrap();
+        assert_eq!(
+            result,
+            "array_has_all(\"cities\", ARRAY['New York, NY'])"
+        );
+    }
+
+    #[test]
+    fn test_list_condition_expr_rejects_injection() {
+        let result = list_condition_expr(
+            "tags",
+            &WhereConfigOperator::Contains,
+            "1] OR 1=1 --",
+        );
+        assert!(
+            result.is_err(),
+            "Injection via bracket characters must be rejected"
+        );
+    }
+
+    #[test]
+    fn test_list_condition_expr_unsupported_operator() {
+        let result =
+            list_condition_expr("tags", &WhereConfigOperator::GreaterThan, "1");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("not supported"));
     }
 }
