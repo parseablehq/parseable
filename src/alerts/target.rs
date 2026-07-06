@@ -94,13 +94,6 @@ impl TargetConfigs {
         } else {
             vec![]
         };
-        // let targets = self
-        //     .target_configs
-        //     .read()
-        //     .await
-        //     .values()
-        //     .cloned()
-        //     .collect_vec();
         Ok(targets)
     }
 
@@ -118,13 +111,6 @@ impl TargetConfigs {
         } else {
             return Err(AlertError::InvalidTargetID(target_id.to_string()));
         };
-        // let target = self
-        //     .target_configs
-        //     .read()
-        //     .await
-        //     .get(target_id)
-        //     .ok_or(AlertError::InvalidTargetID(target_id.to_string()))
-        //     .cloned()?;
 
         Ok(target)
     }
@@ -155,12 +141,6 @@ impl TargetConfigs {
         } else {
             return Err(AlertError::InvalidTargetID(target_id.to_string()));
         };
-        // let target = self
-        //     .target_configs
-        //     .write()
-        //     .await
-        //     .remove(target_id)
-        //     .ok_or(AlertError::InvalidTargetID(target_id.to_string()))?;
         PARSEABLE
             .metastore
             .delete_target(&target, tenant_id)

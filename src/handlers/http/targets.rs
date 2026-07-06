@@ -20,7 +20,7 @@ use actix_web::{
     HttpRequest, Responder,
     web::{self, Json, Path},
 };
-use itertools::Itertools;
+use serde_json::json;
 use ulid::Ulid;
 
 use crate::{
@@ -56,12 +56,21 @@ pub async fn post(
 pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
     let tenant_id = tenant_from_request(&req)?;
     // add to the map
-    let list = TARGETS
-        .list(&tenant_id)
-        .await?
-        .into_iter()
-        .map(|t| t.mask())
-        .collect_vec();
+    let mut list = vec![];
+    for target in TARGETS.list(&tenant_id).await? {
+        if let Err(e) = target.validate_outbound_policy().await {
+            list.push(json!({
+                "target": &target.mask(),
+                "enabled": false,
+                "error": &e.to_string()
+            }));
+        } else {
+            list.push(json!({
+                "target": &target.mask(),
+                "enabled": true
+            }));
+        }
+    }
 
     Ok(web::Json(list))
 }
@@ -71,8 +80,19 @@ pub async fn get(req: HttpRequest, target_id: Path<Ulid>) -> Result<impl Respond
     let target_id = target_id.into_inner();
     let tenant_id = tenant_from_request(&req)?;
     let target = TARGETS.get_target_by_id(&target_id, &tenant_id).await?;
-
-    Ok(web::Json(target.mask()))
+    let res = if let Err(e) = target.validate_outbound_policy().await {
+        json!({
+            "target": &target.mask(),
+            "enabled": false,
+            "error": &e.to_string()
+        })
+    } else {
+        json!({
+            "target": &target.mask(),
+            "enabled": true
+        })
+    };
+    Ok(web::Json(res))
 }
 
 // PUT /targets/{target_id}
