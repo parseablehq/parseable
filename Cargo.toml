@@ -118,15 +118,15 @@ tracing-subscriber = { version = "0.3.23", features = [
 ] }
 
 # telemetry
-tracing-opentelemetry = "0.32.1"
-opentelemetry = "0.31.0"
-opentelemetry_sdk = { version = "0.31.0", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.31.1", features = [
+tracing-opentelemetry = "0.33.0"
+opentelemetry = "0.32.0"
+opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio"] }
+opentelemetry-otlp = { version = "0.32.0", features = [
     "grpc-tonic",
     "http-proto",
     "http-json",
 ] }
-opentelemetry-stdout = "0.31.0"
+opentelemetry-stdout = "0.32.0"
 tracing-actix-web = "0.7"
 
 # Time and Date
