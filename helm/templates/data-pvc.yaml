@@ -1,4 +1,5 @@
-{{- if .Values.parseable.persistence.data.enabled }}
+{{- $p := .Values.parseable.nodes.standalone.persistence.data }}
+{{- if and (not .Values.parseable.highAvailability.enabled) $p.enabled }}
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
@@ -7,13 +8,9 @@ metadata:
     {{- include "parseable.labels" . | nindent 4 }}
 spec:
   accessModes:
-    - {{ .Values.parseable.persistence.data.accessMode | quote }}
+    - {{ $p.accessMode | quote }}
   resources:
     requests:
-      storage: {{ .Values.parseable.persistence.data.size | quote }}
-  {{- if .Values.parseable.persistence.data.storageClass }}
-  storageClassName: "{{ .Values.parseable.persistence.data.storageClass }}"
-  {{- else }}
-  storageClassName: ""
-  {{- end }}
+      storage: {{ $p.size | quote }}
+  storageClassName: "{{ $p.storageClass }}"
 {{- end }}

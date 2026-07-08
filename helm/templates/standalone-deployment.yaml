@@ -1,4 +1,10 @@
-{{- if eq .Values.parseable.highAvailability.enabled false }}
+{{- if not .Values.parseable.highAvailability.enabled }}
+{{- $common := .Values.parseable.common }}
+{{- $node := .Values.parseable.nodes.standalone }}
+{{- $secret := .Values.parseable.secrets }}
+{{- $cred := .Values.parseable.credentialFile }}
+{{- $audit := .Values.parseable.auditLogging }}
+{{- $env := merge (deepCopy ($node.env | default dict)) ($common.env | default dict) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -13,12 +19,14 @@ spec:
       {{- include "parseable.labelsSelector" . | nindent 6 }}
   template:
     metadata:
-      {{- with .Values.parseable.podAnnotations }}
+      {{- with ($node.podAnnotations | default $common.podAnnotations) }}
       annotations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- .Values.parseable.podLabels | toYaml | nindent 8 }}
+        {{- with ($node.podLabels | default $common.podLabels) }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
         {{- include "parseable.labelsSelector" . | nindent 8 }}
     spec:
       {{- with .Values.parseable.imagePullSecrets }}
@@ -27,149 +35,97 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "parseable.serviceAccountName" . }}
       securityContext:
-        {{- toYaml .Values.parseable.podSecurityContext | nindent 8 }}
+        {{- toYaml $common.podSecurityContext | nindent 8 }}
       containers:
         - name: {{ .Chart.Name }}
           securityContext:
-            {{- toYaml .Values.parseable.securityContext | nindent 12 }}
+            {{- toYaml $common.securityContext | nindent 12 }}
           image: "{{ .Values.parseable.image.repository }}:{{ .Values.parseable.image.tag | default .Chart.AppVersion }}"
           imagePullPolicy: {{ .Values.parseable.image.pullPolicy }}
-          # Uncomment to debug
-          # command: [ "/bin/sh", "-c", "sleep 1000000" ]
-          args: [ "/usr/bin/parseable", {{ .Values.parseable.store | quote }}]
+          args: [ "/usr/bin/parseable", {{ .Values.parseable.store | quote }} ]
           env:
             - name: HOSTNAME
               valueFrom:
                 fieldRef:
                   apiVersion: v1
                   fieldPath: metadata.name
-            {{- range $key, $value := .Values.parseable.env }}
+            # common.env merged with nodes.standalone.env (node wins)
+            {{- range $key, $value := $env }}
             - name: {{ $key }}
               value: {{ tpl $value $ | quote }}
             {{- end }}
-            {{- if and .Values.parseable.localModeSecret .Values.parseable.localModeSecret.enabled }}
-            {{- range $secret := .Values.parseable.localModeSecret.secrets }}
+            # credentials from the secret in .Values.parseable.secrets
+            {{- if and $secret $secret.name $secret.keys }}
+            {{- $prefix := $secret.prefix | default "" | upper }}
             {{- range $key := $secret.keys }}
-            {{- $envPrefix := $secret.prefix | default "" | upper }}
-            {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
-            - name: {{ $envPrefix }}{{ $envKey }}
+            - name: {{ $prefix }}{{ $key | upper | replace "." "_" | replace "-" "_" }}
               valueFrom:
                 secretKeyRef:
                   name: {{ $secret.name }}
                   key: {{ $key }}
             {{- end }}
             {{- end }}
-            {{- end }}
-
-            {{- if .Values.parseable.auditLogging.enabled }}
-            - name: P_AUDIT_LOGGER
-              value: {{ .Values.parseable.auditLogging.p_server | quote }}
-            - name: P_AUDIT_USERNAME
-              value: {{ .Values.parseable.auditLogging.p_username | quote }}
-            - name: P_AUDIT_PASSWORD
-              value: {{ .Values.parseable.auditLogging.p_password | quote }}
-            {{- end }}
-
-            {{- if .Values.parseable.kafkaConnector.enabled }}
-            {{- range $key, $value := .Values.parseable.kafkaConnector.env }}
-            - name: {{ $key }}
-              value: {{ tpl $value $ | quote }}
-            {{- end }}
-            {{- end }}
-
-            {{- if and .Values.parseable.s3ModeSecret .Values.parseable.s3ModeSecret.enabled }}
-            {{- range $secret := .Values.parseable.s3ModeSecret.secrets }}
-            {{- range $key := $secret.keys }}
-            {{- $envPrefix := $secret.prefix | default "" | upper }}
-            {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
-            - name: {{ $envPrefix }}{{ $envKey }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $secret.name }}
-                  key: {{ $key }}
-            {{- end }}
-            {{- end }}
-            {{- end }}
-
-            {{- if and .Values.parseable.gcsModeSecret .Values.parseable.gcsModeSecret.enabled }}
+            {{- if $cred.enabled }}
             - name: GOOGLE_APPLICATION_CREDENTIALS
-              value: {{ .Values.parseable.gcsModeSecret.auth.mount_path }}
-            {{- range $secret := .Values.parseable.gcsModeSecret.secrets }}
-            {{- range $key := $secret.keys }}
-            {{- $envPrefix := $secret.prefix | default "" | upper }}
-            {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
-            - name: {{ $envPrefix }}{{ $envKey }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $secret.name }}
-                  key: {{ $key }}
+              value: "{{ $cred.mountPath }}/{{ $cred.secretKey }}"
             {{- end }}
+            {{- if $audit.enabled }}
+            - name: P_AUDIT_LOGGER
+              value: {{ $audit.p_server | quote }}
+            - name: P_AUDIT_USERNAME
+              value: {{ $audit.p_username | quote }}
+            - name: P_AUDIT_PASSWORD
+              value: {{ $audit.p_password | quote }}
             {{- end }}
-            {{- end }}
-
-            {{- if and .Values.parseable.blobModeSecret .Values.parseable.blobModeSecret.enabled }}
-            {{- range $secret := .Values.parseable.blobModeSecret.secrets }}
-            {{- range $key := $secret.keys }}
-            {{- $envPrefix := $secret.prefix | default "" | upper }}
-            {{- $envKey := $key | upper | replace "." "_" | replace "-" "_" }}
-            - name: {{ $envPrefix }}{{ $envKey }}
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $secret.name }}
-                  key: {{ $key }}
-            {{- end }}
-            {{- end }}
-            {{- end }}
-
           ports:
             - containerPort: 8000
-          {{- with .Values.readinessProbe }}
+          {{- with ($node.readinessProbe | default $common.readinessProbe) }}
           readinessProbe:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           resources:
-            {{- toYaml .Values.parseable.resources | nindent 12 }}
+            {{- toYaml ($node.resources | default $common.resources) | nindent 12 }}
           volumeMounts:
-          {{- if and .Values.parseable.gcsModeSecret .Values.parseable.gcsModeSecret.enabled }}
-          - mountPath: {{ .Values.parseable.gcsModeSecret.auth.mount_path }}
-            name: {{ .Values.parseable.gcsModeSecret.auth.secret_name }}
-            readOnly: true
-          {{- end }}
-          - mountPath: "/parseable/data"
-            name: data-volume
-          - mountPath: "/parseable/staging"
-            name: stage-volume
+            {{- if $cred.enabled }}
+            - name: {{ $cred.secretName }}
+              mountPath: {{ $cred.mountPath }}
+              readOnly: true
+            {{- end }}
+            - name: data-volume
+              mountPath: "/parseable/data"
+            - name: stage-volume
+              mountPath: "/parseable/staging"
       volumes:
-      {{- if and .Values.parseable.gcsModeSecret .Values.parseable.gcsModeSecret.enabled }}
-        - name: {{ .Values.parseable.gcsModeSecret.auth.secret_name }}
+        {{- if $cred.enabled }}
+        - name: {{ $cred.secretName }}
           secret:
-            secretName: {{ .Values.parseable.gcsModeSecret.auth.secret_name }}
-      {{- end }}
-      {{- if .Values.parseable.persistence.staging.enabled }}
-      - name: stage-volume
-        persistentVolumeClaim:
-          claimName: {{ include "parseable.fullname" . }}-staging-pvc
-      {{- else }}
-      - name: stage-volume
-        emptyDir: {}
-      {{- end }}
-      {{- if .Values.parseable.persistence.data.enabled }}
-      - name: data-volume
-        persistentVolumeClaim:
-          claimName: {{ include "parseable.fullname" . }}-data-pvc
-      {{- else }}
-      - name: data-volume
-        emptyDir: {}
-      {{- end }}
-      {{- with .Values.parseable.nodeSelector }}
+            secretName: {{ $cred.secretName }}
+        {{- end }}
+        {{- if $node.persistence.staging.enabled }}
+        - name: stage-volume
+          persistentVolumeClaim:
+            claimName: {{ include "parseable.fullname" . }}-staging-pvc
+        {{- else }}
+        - name: stage-volume
+          emptyDir: {}
+        {{- end }}
+        {{- if $node.persistence.data.enabled }}
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: {{ include "parseable.fullname" . }}-data-pvc
+        {{- else }}
+        - name: data-volume
+          emptyDir: {}
+        {{- end }}
+      {{- with ($node.nodeSelector | default $common.nodeSelector) }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.parseable.tolerations }}
+      {{- with ($node.tolerations | default $common.tolerations) }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.parseable.affinity }}
+      {{- with ($node.affinity | default $common.affinity) }}
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}

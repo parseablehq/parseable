@@ -1,0 +1,33 @@
+# Parseable on AWS (S3), distributed mode
+parseable:
+  store: s3-store
+  highAvailability:
+    enabled: true
+
+  secrets:
+    name: parseable-env-secret
+    prefix: P_
+    keys:
+      - addr
+      - username
+      - password
+      - staging.dir
+      - fs.dir
+      - s3.url
+      - s3.access.key
+      - s3.secret.key
+      - s3.bucket
+      - s3.region
+
+  nodes:
+    query:
+      persistence:
+        enabled: true
+        storageClass: gp3
+        size: 100Gi
+    ingestor:
+      count: 3
+      persistence:
+        enabled: true
+        storageClass: gp3
+        size: 5Gi

@@ -1,15 +1,16 @@
-{{- if eq .Values.parseable.highAvailability.enabled false }}
+{{- if not .Values.parseable.highAvailability.enabled }}
+{{- $svc := .Values.parseable.nodes.standalone.service }}
 apiVersion: v1
 kind: Service
 metadata:
   name: {{ include "parseable.fullname" . }}
   namespace: {{ .Release.Namespace }}
-  labels: 
+  labels:
     {{- include "parseable.labelsSelector" . | nindent 4 }}
 spec:
-  type: {{ $.Values.parseable.service.type }}
+  type: {{ $svc.type }}
   ports:
-    - port: {{ $.Values.parseable.service.port }}
+    - port: {{ $svc.port }}
       targetPort: 8000
       protocol: TCP
   selector:

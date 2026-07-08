@@ -1,16 +1,17 @@
-{{- if eq .Values.parseable.highAvailability.enabled true }}
+{{- if .Values.parseable.highAvailability.enabled }}
+{{- $node := .Values.parseable.nodes.ingestor }}
 apiVersion: v1
 kind: Service
 metadata:
   name: {{ include "parseable.fullname" . }}-ingestor-service
   namespace: {{ .Release.Namespace }}
-  labels: 
+  labels:
     {{- include "parseable.labelsSelector" . | nindent 4 }}
 spec:
-  type: {{ $.Values.parseable.highAvailability.ingestor.service.type }}
+  type: {{ $node.service.type }}
   ports:
-    - port: {{ $.Values.parseable.highAvailability.ingestor.service.port }}
-      targetPort: {{ .Values.parseable.highAvailability.ingestor.port }}
+    - port: {{ $node.service.port }}
+      targetPort: {{ $node.port }}
       protocol: TCP
   selector:
     {{- include "parseable.ingestorLabelsSelector" . | nindent 4 }}

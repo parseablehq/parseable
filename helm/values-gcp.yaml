@@ -1,0 +1,37 @@
+# Parseable on GCP (GCS), distributed mode
+parseable:
+  store: gcs-store
+  highAvailability:
+    enabled: true
+
+  secrets:
+    name: parseable-env-secret
+    prefix: P_
+    keys:
+      - addr
+      - username
+      - password
+      - staging.dir
+      - fs.dir
+      - gcs.url
+      - gcs.bucket
+
+  # GCS service-account key mounted from the same secret (key.json)
+  credentialFile:
+    enabled: true
+    secretName: parseable-env-secret
+    secretKey: key.json
+    mountPath: /var/secrets/google
+
+  nodes:
+    query:
+      persistence:
+        enabled: true
+        storageClass: standard-rwo
+        size: 100Gi
+    ingestor:
+      count: 3
+      persistence:
+        enabled: true
+        storageClass: standard-rwo
+        size: 5Gi
