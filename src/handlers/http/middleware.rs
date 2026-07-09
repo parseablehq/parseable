@@ -159,7 +159,9 @@ where
         let tenant_id = req
             .headers()
             .get(TENANT_ID)
+            .or_else(|| req.headers().get("intra-cluster-tenant"))
             .and_then(|v| v.to_str().ok())
+            .filter(|tenant| !tenant.eq(&DEFAULT_TENANT))
             .map(String::from);
 
         // an optional error to track the presence of CORRECT tenant header in case of ingestion
@@ -186,10 +188,12 @@ where
                         permissions,
                         &user.tenant,
                     );
-                    req.headers_mut().insert(
-                        HeaderName::from_static(TENANT_ID),
-                        HeaderValue::from_str(tenant).unwrap(),
-                    );
+                    if PARSEABLE.options.is_multi_tenant() {
+                        req.headers_mut().insert(
+                            HeaderName::from_static(TENANT_ID),
+                            HeaderValue::from_str(tenant).unwrap(),
+                        );
+                    }
                     req.extensions_mut().insert(session_key);
                     Some(session_id)
                 }
@@ -311,7 +315,7 @@ fn find_api_key_user(api_key_value: &str, tenant_id: &Option<String>) -> Option<
     let tenant = if PARSEABLE.options.is_multi_tenant() {
         tenant_id.as_deref()?
     } else {
-        tenant_id.as_deref().unwrap_or(DEFAULT_TENANT)
+        DEFAULT_TENANT
     };
 
     let users_guard = users();
