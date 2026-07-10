@@ -1201,37 +1201,14 @@ impl Metastore for ObjectStoreMetastore {
     ) -> Result<HashMap<String, AlertTargetPolicyConfig>, MetastoreError> {
         let mut all_policies = HashMap::new();
 
-        // Preserve the legacy/default-tenant policy at the object-store root.
-        let default_path = outbound_http_policy_json_path(&None);
-        match self.storage.get_object(&default_path, &None).await {
-            Ok(bytes) => match serde_json::from_slice::<AlertTargetPolicyConfig>(&bytes) {
-                Ok(policy) => {
-                    all_policies.insert(DEFAULT_TENANT.to_string(), policy);
-                }
-                Err(err) => {
-                    return Err(MetastoreError::Error {
-                        status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                        message: format!(
-                            "Failed to deserialize outbound HTTP policy for tenant {DEFAULT_TENANT}: {err}"
-                        ),
-                        flow: "get_outbound_policies".to_string(),
-                    });
-                }
-            },
-            Err(err) if is_missing_optional_dir(&err) => {}
-            Err(err) => return Err(MetastoreError::ObjectStorageError(err)),
-        }
-
-        let base_paths = self
-            .storage
-            .list_dirs_relative(&RelativePathBuf::from_iter([""]), &None)
-            .await?
-            .into_iter()
-            .filter(|tenant| !tenant.starts_with('.'))
-            .collect::<Vec<_>>();
+        let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
 
         for tenant in base_paths {
-            let tenant_id = Some(tenant.clone());
+            let tenant_id = if tenant.is_empty() {
+                None
+            } else {
+                Some(tenant.clone())
+            };
             let path = outbound_http_policy_json_path(&tenant_id);
             let policy = match self.storage.get_object(&path, &tenant_id).await {
                 Ok(bytes) => match serde_json::from_slice::<AlertTargetPolicyConfig>(&bytes) {
@@ -1254,26 +1231,6 @@ impl Metastore for ObjectStoreMetastore {
         }
 
         Ok(all_policies)
-    }
-
-    async fn get_outbound_policy(
-        &self,
-        tenant_id: &str,
-    ) -> Result<AlertTargetPolicyConfig, MetastoreError> {
-        let tenant = if tenant_id == DEFAULT_TENANT {
-            None
-        } else {
-            Some(tenant_id.to_string())
-        };
-        let path = outbound_http_policy_json_path(&tenant);
-        let bytes = match self.storage.get_object(&path, &tenant).await {
-            Ok(bytes) => bytes,
-            Err(err) if is_missing_optional_dir(&err) => {
-                return Ok(AlertTargetPolicyConfig::default());
-            }
-            Err(err) => return Err(err.into()),
-        };
-        Ok(serde_json::from_slice::<AlertTargetPolicyConfig>(&bytes)?)
     }
 
     async fn put_outbound_policy(

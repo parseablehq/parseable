@@ -234,7 +234,7 @@ pub async fn load_on_init() -> anyhow::Result<()> {
         error!("{err}");
     }
 
-    if let Err(err) = outbound_http_policy::load_all_policies(PARSEABLE.metastore.as_ref()).await {
+    if let Err(err) = outbound_http_policy::load_all_policies().await {
         error!("Failed to load outbound policies: {err}");
     }
 

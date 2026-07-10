@@ -12,7 +12,7 @@ use tokio::sync::RwLock;
 use tracing::error;
 use url::Url;
 
-use crate::metastore::{MetastoreError, metastore_traits::Metastore};
+use crate::metastore::MetastoreError;
 use crate::parseable::PARSEABLE;
 
 #[derive(Debug, Clone, Copy)]
@@ -268,21 +268,8 @@ pub async fn prepare_alert_target(
     })
 }
 
-pub async fn load_policy_for_tenant(
-    metastore: &dyn Metastore,
-    tenant_id: &str,
-) -> Result<(), OutboundPolicyError> {
-    let policy = metastore.get_outbound_policy(tenant_id).await?;
-    validate_policy(&policy)?;
-    ALERT_TARGET_POLICY
-        .write()
-        .await
-        .insert(tenant_id.to_string(), policy);
-    Ok(())
-}
-
-pub async fn load_all_policies(metastore: &dyn Metastore) -> Result<(), OutboundPolicyError> {
-    let policies = metastore.get_outbound_policies().await?;
+pub async fn load_all_policies() -> Result<(), OutboundPolicyError> {
+    let policies = PARSEABLE.metastore.get_outbound_policies().await?;
     let loaded = validate_loaded_policies(policies)?;
 
     *ALERT_TARGET_POLICY.write().await = loaded;
@@ -458,7 +445,7 @@ fn denied_ipv6(ip: Ipv6Addr) -> bool {
         return true;
     }
 
-    if let Some(mapped) = ip.to_ipv4_mapped() {
+    if let Some(mapped) = ip.to_ipv4() {
         return denied_ipv4(mapped);
     }
     false

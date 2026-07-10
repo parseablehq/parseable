@@ -169,10 +169,6 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
     async fn get_outbound_policies(
         &self,
     ) -> Result<HashMap<String, AlertTargetPolicyConfig>, MetastoreError>;
-    async fn get_outbound_policy(
-        &self,
-        tenant_id: &str,
-    ) -> Result<AlertTargetPolicyConfig, MetastoreError>;
     async fn put_outbound_policy(
         &self,
         tenant_id: &Option<String>,

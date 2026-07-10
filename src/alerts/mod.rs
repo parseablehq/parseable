@@ -621,7 +621,7 @@ impl AlertConfig {
         for target_id in &self.targets {
             let target = TARGETS.get_target_by_id(target_id, &self.tenant_id).await?;
             if let Err(e) = target.validate_outbound_policy().await {
-                tracing::error!("Target {target:?} failed alert policy check- {e}");
+                tracing::error!("Target {} failed alert policy check- {e}", target.id);
                 continue;
             }
             target.call(context.clone());
