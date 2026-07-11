@@ -292,6 +292,14 @@ pub struct Options {
     )]
     pub metrics_endpoint_auth: bool,
 
+    #[arg(
+        long,
+        env = "P_OTEL_FLATTEN_EXEMPLARS",
+        default_value = "false",
+        help = "Use the legacy flat per-exemplar columns (exemplar_time_unix_nano, exemplar_span_id, exemplar_trace_id, exemplar_value) for OTEL metrics. These columns keep only the last exemplar of each data point. When false (default), all exemplars are stored under a single nested `exemplars` array column."
+    )]
+    pub otel_flatten_exemplars: bool,
+
     // TLS/Security
     #[arg(
         long,
