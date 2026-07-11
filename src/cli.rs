@@ -150,6 +150,17 @@ pub struct Options {
     )]
     pub address: String,
 
+    // Origins to allow for cors
+    #[arg(
+        long,
+        env = "P_ALLOW_ORIGINS",
+        required = false,
+        value_delimiter = ',',
+        value_parser = validation::url,
+        help = "Comma separated URLs to allow as origins"
+    )]
+    pub allow_origins: Vec<Url>,
+
     // Actix request timeout in seconds
     #[arg(
         long,

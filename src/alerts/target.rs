@@ -142,7 +142,7 @@ impl TargetConfigs {
             return Err(AlertError::CustomError("No AlertManager set".into()));
         };
 
-        for (_, alert) in alerts.get_all_alerts(tenant_id).await.iter() {
+        for alert in alerts.get_all_alerts(tenant_id).await.values() {
             if alert.get_targets().contains(target_id) {
                 return Err(AlertError::TargetInUse);
             }

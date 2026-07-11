@@ -820,7 +820,7 @@ impl Collector for KafkaMetricsCollector {
         mfs.extend(self.core_metrics.collect_metrics(&stats));
 
         // Collect broker metrics
-        for (_broker_id, broker) in stats.brokers.iter() {
+        for broker in stats.brokers.values() {
             mfs.extend(self.broker_metrics.collect_metrics(broker));
         }
 

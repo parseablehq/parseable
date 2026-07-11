@@ -142,7 +142,7 @@ impl ObjectStorageProvider for GcsConfig {
         let object_store_registry = DefaultObjectStoreRegistry::new();
         // Register GCS client under the "gs://" scheme so DataFusion can route
         // object store calls to our GoogleCloudStorage implementation
-        let url = ObjectStoreUrl::parse(format!("gs://{}", &self.bucket_name)).unwrap();
+        let url = ObjectStoreUrl::parse(format!("gs://{}", self.bucket_name)).unwrap();
         object_store_registry.register_store(url.as_ref(), Arc::new(gcs));
 
         RuntimeEnvBuilder::new().with_object_store_registry(Arc::new(object_store_registry))
@@ -1028,7 +1028,7 @@ impl ObjectStorage for Gcs {
         prefixes
             .into_iter()
             .map(|prefix| {
-                let path = format!("gs://{}/{}", &self.bucket, prefix);
+                let path = format!("gs://{}/{}", self.bucket, prefix);
                 ListingTableUrl::parse(path).unwrap()
             })
             .collect()

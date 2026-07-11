@@ -187,7 +187,7 @@ impl Filters {
                     }
                 } else if *filter_type == FilterType::Search || *filter_type == FilterType::Filter {
                     let dataset_name = &f.stream_name;
-                    if user_auth_for_datasets(&permissions, &[dataset_name.to_string()], &tenant_id)
+                    if user_auth_for_datasets(&permissions, std::slice::from_ref(dataset_name), &tenant_id)
                         .await
                         .is_ok()
                     {
