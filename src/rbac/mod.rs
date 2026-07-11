@@ -336,8 +336,8 @@ impl Users {
     }
 
     pub fn get_user_tenant_from_basic(&self, username: &str, password: &str) -> Option<String> {
-        for (_, usermap) in users().iter() {
-            for (_, user) in usermap.iter() {
+        for usermap in users().values() {
+            for user in usermap.values() {
                 if let UserType::Native(basic) = &user.ty
                     && basic.username.eq(username)
                     && basic.verify_password(password)

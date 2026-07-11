@@ -166,7 +166,7 @@ impl Broadcaster {
         } else {
             // broadcast
             let mut futures = vec![];
-            for (_, clients) in tenant_clients.iter() {
+            for clients in tenant_clients.values() {
                 clients
                     .iter()
                     .for_each(|client| futures.push(client.send(sse::Data::new(msg).into())));

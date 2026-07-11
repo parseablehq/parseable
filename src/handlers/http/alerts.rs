@@ -419,7 +419,7 @@ pub async fn update_notification_state(
             } else {
                 return Err(AlertError::InvalidStateChange(format!(
                     "Invalid notification state change request. Expected `notify`, `indefinite` or human-time or UTC datetime. Got `{}`",
-                    &new_notification_state.state
+                    new_notification_state.state
                 )));
             };
             NotificationState::Mute(till_time)
