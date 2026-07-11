@@ -338,7 +338,7 @@ impl ObjectStorageProvider for S3Config {
         let s3 = MetricLayer::new(s3, "s3");
 
         let object_store_registry = DefaultObjectStoreRegistry::new();
-        let url = ObjectStoreUrl::parse(format!("s3://{}", &self.bucket_name)).unwrap();
+        let url = ObjectStoreUrl::parse(format!("s3://{}", self.bucket_name)).unwrap();
         object_store_registry.register_store(url.as_ref(), Arc::new(s3));
 
         RuntimeEnvBuilder::new().with_object_store_registry(Arc::new(object_store_registry))
@@ -1291,7 +1291,7 @@ impl ObjectStorage for S3 {
         prefixes
             .into_iter()
             .map(|prefix| {
-                let path = format!("s3://{}/{}", &self.bucket, prefix);
+                let path = format!("s3://{}/{}", self.bucket, prefix);
                 ListingTableUrl::parse(path).unwrap()
             })
             .collect()

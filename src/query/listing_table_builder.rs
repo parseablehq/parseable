@@ -91,7 +91,7 @@ impl ListingTableBuilder {
         let prefixes: Vec<_> = prefixes
             .into_iter()
             .map(|prefix| {
-                relative_path::RelativePathBuf::from(format!("{}/{}", &self.stream, prefix))
+                relative_path::RelativePathBuf::from(format!("{}/{}", self.stream, prefix))
             })
             .collect();
 

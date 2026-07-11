@@ -228,7 +228,7 @@ impl Metrics {
     ) -> Result<(String, String), PostError> {
         let uri = Url::parse(&format!(
             "{}{}/about",
-            &metadata.domain_name(),
+            metadata.domain_name(),
             base_path_without_preceding_slash()
         ))
         .map_err(|err| {
@@ -260,7 +260,7 @@ impl Metrics {
             );
             Err(PostError::Invalid(anyhow::anyhow!(
                 "Failed to fetch about API response from server: {}\n",
-                &metadata.domain_name()
+                metadata.domain_name()
             )))
         }
     }

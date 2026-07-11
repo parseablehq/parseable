@@ -1984,7 +1984,7 @@ pub async fn send_query_request(
     let send_null = query_request.send_null;
     let uri = format!(
         "{}api/v1/query?fields={fields}&streaming={streaming}&send_null={send_null}",
-        &querier.domain_name,
+        querier.domain_name,
     );
 
     let body = match serde_json::to_string(&query_request) {

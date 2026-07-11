@@ -966,13 +966,11 @@ impl Stream {
         .collect();
 
         for res in _schemas {
-            match res {
-                Ok(s) => {
-                    if let Some(s) = s {
-                        schemas.push(s)
-                    }
+            {
+                let s = res?;
+                if let Some(s) = s {
+                    schemas.push(s)
                 }
-                Err(e) => return Err(e),
             }
         }
         if schemas.is_empty() {

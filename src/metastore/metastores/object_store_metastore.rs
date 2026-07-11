@@ -965,9 +965,9 @@ impl Metastore for ObjectStoreMetastore {
             async move {
                 let t_start = std::time::Instant::now();
                 let date_path = if let Some(tenant) = tenant.as_ref() {
-                    object_store::path::Path::from(format!("{}/{}/{}", tenant, &stream, &date))
+                    object_store::path::Path::from(format!("{}/{}/{}", tenant, stream, date))
                 } else {
-                    object_store::path::Path::from(format!("{}/{}", &stream, &date))
+                    object_store::path::Path::from(format!("{}/{}", stream, date))
                 };
 
                 let t_list = std::time::Instant::now();
@@ -1420,7 +1420,7 @@ impl Metastore for ObjectStoreMetastore {
                         STREAM_ROOT_DIRECTORY,
                     ])
                 } else {
-                    object_store::path::Path::from(format!("{}/{}", &stream, STREAM_ROOT_DIRECTORY))
+                    object_store::path::Path::from(format!("{}/{}", stream, STREAM_ROOT_DIRECTORY))
                 };
                 let resp = self.storage.list_with_delimiter(Some(stream_path)).await?;
                 if resp
