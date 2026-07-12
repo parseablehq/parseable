@@ -4,16 +4,15 @@
 ## below); which one gets used is controlled by `enterprise.enabled`, not by
 ## the node type.
 ##
-## Node types below map 1:1 to Parseable's P_MODE values:
-##   standalone -> P_MODE=all    (OSS only, single all-in-one pod --> Best for testing)
-##   ingestor   -> P_MODE=ingest (OSS + Enterprise, distributed mode)
-##   querier    -> P_MODE=query  (Maximum 1 in OSS + Enterprise, distributed mode)
-##   prism      -> P_MODE=prism  (Enterprise only, cluster coordinator)
+## Node types map 1:1 to Parseable's P_MODE values and are grouped by mode:
+##   standalone.unified   -> P_MODE=all    (OSS only, single all-in-one pod)
+##   distributed.ingestor -> P_MODE=ingest (OSS + Enterprise)
+##   distributed.querier  -> P_MODE=query  (OSS + Enterprise)
+##   distributed.prism    -> P_MODE=prism  (Enterprise only, cluster coordinator)
 ##
-## Each node type section below is self-contained: its own replicas, env,
-## resources, persistence, service and scheduling. There are no shared
-## "common" blocks to hunt through - what you see in a section is everything
-## that applies to that node type.
+## Each node section is self-contained: its own replicas, env, resources,
+## persistence, service and scheduling. There are no shared "common" blocks -
+## what you see in a section is everything that applies to that node type.
 ##
 ## Docs: https://www.parseable.com/docs/installation/kubernetes-helm
 
@@ -22,12 +21,12 @@ parseable:
   fullnameOverride: ""
 
   ## deploymentMode: standalone | distributed
-  ## standalone  - a single all-in-one pod (the `standalone` section below).
+  ## standalone  - a single all-in-one pod (the `standalone.unified` section).
   ##               Simplest way to run Parseable, does not scale horizontally.
   ##               OSS only.
-  ## distributed - separate ingestor + querier pods (the `ingestor` /
-  ##               `querier` sections below), plus `prism` when
-  ##               `enterprise.enabled` is true. Required for Enterprise.
+  ## distributed - separate ingestor + querier pods (the `distributed.ingestor`
+  ##               / `distributed.querier` sections), plus `distributed.prism`
+  ##               when `enterprise.enabled` is true. Required for Enterprise.
   deploymentMode: standalone
 
   ## OSS image, used by every node type unless enterprise.enabled is true
@@ -103,8 +102,8 @@ parseable:
   ## Enterprise edition
   ## -----------------------------------------------------------------------
   ## Flip `enabled: true` to run Parseable Enterprise instead of OSS. Requires
-  ## deploymentMode: distributed. Unlocks the `prism` node-type
-  ## sections below, plus license validation and audit logging.
+  ## deploymentMode: distributed. Unlocks the `distributed.prism` node type,
+  ## plus license validation and audit logging.
   enterprise:
     enabled: false
 
@@ -152,6 +151,8 @@ parseable:
   securityContext:
     allowPrivilegeEscalation: false
 
+  ## Pod-level security context. Applied to OSS pods only; Enterprise pods run
+  ## as the image's default user (root), which its bundled ML feature needs.
   podSecurityContext:
     runAsUser: 1000
     runAsGroup: 1000
@@ -163,177 +164,177 @@ parseable:
   ## =========================================================================
 
   ## --- standalone --- (deploymentMode: standalone, OSS only) ---------------
-  ## Single pod running every function (ingest + query + storage).
   standalone:
-    env:
-      RUST_LOG: warn
-      P_CHECK_UPDATE: "false"
-    resources:
-      limits:
-        cpu: 500m
-        memory: 4Gi
-      requests:
-        cpu: 250m
-        memory: 1Gi
-    service:
-      type: ClusterIP
-      port: 80
-    persistence:
-      ## Data directory - only needed when store.type is local-store.
-      data:
+    ## Single pod running every function (ingest + query + storage).
+    unified:
+      env:
+        RUST_LOG: warn
+        P_CHECK_UPDATE: "false"
+      resources:
+        limits:
+          cpu: 500m
+          memory: 4Gi
+        requests:
+          cpu: 250m
+          memory: 1Gi
+      service:
+        type: ClusterIP
+        port: 80
+      persistence:
+        ## Data directory - only needed when store.type is local-store.
+        data:
+          enabled: false
+          storageClass: ""
+          accessMode: ReadWriteOnce
+          size: 5Gi
+        staging:
+          enabled: true
+          storageClass: ""
+          accessMode: ReadWriteOnce
+          size: 5Gi
+      podAnnotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "80"
+        prometheus.io/path: "/api/v1/metrics"
+      podLabels:
+        app: parseable
+        component: standalone
+      nodeSelector: {}
+      tolerations: []
+      affinity: {}
+      terminationGracePeriodSeconds: 30
+      readinessProbe:
+        httpGet:
+          path: /api/v1/readiness
+          port: 8000
+
+  ## --- distributed --- (deploymentMode: distributed) ----------------------
+  distributed:
+    ## ingestor (OSS + Enterprise) - receives and stages incoming events.
+    ingestor:
+      replicas: 3
+      env:
+        RUST_LOG: warn
+        P_CHECK_UPDATE: "false"
+        # General Kafka Configuration
+        # P_KAFKA_BOOTSTRAP_SERVERS: "my-kafka.kafka.svc.cluster.local:9092" # Comma-separated list of Kafka bootstrap servers
+        # P_KAFKA_PARTITION_LISTENER_CONCURRENCY: "2" # Number of parallel threads for Kafka partition listeners
+        # P_KAFKA_CONSUMER_TOPICS: "test-log-stream-0,test-log-stream-1"
+        # P_KAFKA_CLIENT_ID: "parseable-connect" # Client ID for Kafka connection
+        # P_CONNECTOR_BAD_DATA_POLICY: "fail" # Default Policy for handling bad data
+        # See https://www.parseable.com/docs for the full list of Kafka consumer/security options.
+      resources:
+        limits:
+          cpu: 500m
+          memory: 4Gi
+        requests:
+          cpu: 250m
+          memory: 1Gi
+      service:
+        type: ClusterIP
+        port: 80
+      ## Local disk for staging incoming events before they are sent to the object store.
+      persistence:
+        staging:
+          enabled: true
+          storageClass: ""
+          accessMode: ReadWriteOnce
+          size: 5Gi
+      podAnnotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "80"
+        prometheus.io/path: "/api/v1/metrics"
+      podLabels:
+        app: parseable
+        component: ingestor
+      nodeSelector: {}
+      tolerations: []
+      affinity: {}
+      terminationGracePeriodSeconds: 30
+      readinessProbe:
+        httpGet:
+          path: /api/v1/readiness
+          port: 8000
+
+    ## querier (OSS + Enterprise) - serves queries and the console. OSS supports
+    ## a single querier; Enterprise can run multiple queriers behind prism.
+    querier:
+      replicas: 1
+      env:
+        RUST_LOG: warn
+        P_CHECK_UPDATE: "false"
+      resources:
+        limits:
+          cpu: 500m
+          memory: 4Gi
+        requests:
+          cpu: 250m
+          memory: 1Gi
+      service:
+        type: ClusterIP
+        port: 80
+      ## Local disk used as the hot-tier query cache, mounted at /parseable/hot-tier.
+      ## Required for Enterprise query nodes; recommended for OSS performance.
+      persistence:
+        hotTier:
+          enabled: true
+          storageClass: ""
+          accessMode: ReadWriteOnce
+          size: 5Gi
+      podAnnotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "80"
+        prometheus.io/path: "/api/v1/metrics"
+      podLabels:
+        app: parseable
+        component: querier
+      nodeSelector: {}
+      tolerations: []
+      affinity: {}
+      terminationGracePeriodSeconds: 30
+      readinessProbe:
+        httpGet:
+          path: /api/v1/readiness
+          port: 8000
+
+    ## prism (Enterprise only) - cluster coordinator, fronts the querier fleet.
+    ## Deployed automatically whenever enterprise.enabled is true.
+    prism:
+      replicas: 1
+      env:
+        RUST_LOG: warn
+        P_CHECK_UPDATE: "false"
+      resources:
+        limits:
+          cpu: "1"
+          memory: 2Gi
+        requests:
+          cpu: 500m
+          memory: 1Gi
+      service:
+        type: ClusterIP
+        port: 80
+      ## Local disk for Prism's own state. Optional.
+      persistence:
         enabled: false
         storageClass: ""
         accessMode: ReadWriteOnce
         size: 5Gi
-      staging:
-        enabled: true
-        storageClass: ""
-        accessMode: ReadWriteOnce
-        size: 5Gi
-    podAnnotations:
-      prometheus.io/scrape: "true"
-      prometheus.io/port: "80"
-      prometheus.io/path: "/api/v1/metrics"
-    podLabels:
-      app: parseable
-      component: standalone
-    nodeSelector: {}
-    tolerations: []
-    affinity: {}
-    terminationGracePeriodSeconds: 30
-    readinessProbe:
-      httpGet:
-        path: /api/v1/readiness
-        port: 8000
-
-  ## --- ingestor --- (deploymentMode: distributed, OSS + Enterprise) --------
-  ## Receives and stages incoming events.
-  ingestor:
-    replicas: 3
-    env:
-      RUST_LOG: warn
-      P_CHECK_UPDATE: "false"
-      # General Kafka Configuration
-      # P_KAFKA_BOOTSTRAP_SERVERS: "my-kafka.kafka.svc.cluster.local:9092" # Comma-separated list of Kafka bootstrap servers
-      # P_KAFKA_PARTITION_LISTENER_CONCURRENCY: "2" # Number of parallel threads for Kafka partition listeners
-      # P_KAFKA_CONSUMER_TOPICS: "test-log-stream-0,test-log-stream-1"
-      # P_KAFKA_CLIENT_ID: "parseable-connect" # Client ID for Kafka connection
-      # P_CONNECTOR_BAD_DATA_POLICY: "fail" # Default Policy for handling bad data
-      # See https://www.parseable.com/docs for the full list of Kafka consumer/security options.
-    resources:
-      limits:
-        cpu: 500m
-        memory: 4Gi
-      requests:
-        cpu: 250m
-        memory: 1Gi
-    service:
-      type: ClusterIP
-      port: 80
-    ## Local disk for staging incoming events before they are sent to the object store.
-    persistence:
-      staging:
-        enabled: true
-        storageClass: ""
-        accessMode: ReadWriteOnce
-        size: 5Gi
-    podAnnotations:
-      prometheus.io/scrape: "true"
-      prometheus.io/port: "80"
-      prometheus.io/path: "/api/v1/metrics"
-    podLabels:
-      app: parseable
-      component: ingestor
-    nodeSelector: {}
-    tolerations: []
-    affinity: {}
-    terminationGracePeriodSeconds: 30
-    readinessProbe:
-      httpGet:
-        path: /api/v1/readiness
-        port: 8000
-
-  ## --- querier --- (deploymentMode: distributed, OSS + Enterprise) ---------
-  ## Serves queries and the console. OSS supports a single querier; Enterprise
-  ## can run multiple queriers behind `prism`.
-  querier:
-    replicas: 1
-    env:
-      RUST_LOG: warn
-      P_CHECK_UPDATE: "false"
-    resources:
-      limits:
-        cpu: 500m
-        memory: 4Gi
-      requests:
-        cpu: 250m
-        memory: 1Gi
-    service:
-      type: ClusterIP
-      port: 80
-    ## Local disk used as the hot-tier query cache, mounted at /parseable/hot-tier.
-    ## Required for Enterprise query nodes; recommended for OSS performance.
-    persistence:
-      hotTier:
-        enabled: true
-        storageClass: ""
-        accessMode: ReadWriteOnce
-        size: 5Gi
-    podAnnotations:
-      prometheus.io/scrape: "true"
-      prometheus.io/port: "80"
-      prometheus.io/path: "/api/v1/metrics"
-    podLabels:
-      app: parseable
-      component: querier
-    nodeSelector: {}
-    tolerations: []
-    affinity: {}
-    terminationGracePeriodSeconds: 30
-    readinessProbe:
-      httpGet:
-        path: /api/v1/readiness
-        port: 8000
-
-  ## --- prism --- (deploymentMode: distributed, Enterprise only) -----------
-  ## Cluster coordinator, fronts the querier fleet. Deployed automatically
-  ## whenever enterprise.enabled is true.
-  prism:
-    replicas: 1
-    env:
-      RUST_LOG: warn
-      P_CHECK_UPDATE: "false"
-    resources:
-      limits:
-        cpu: "1"
-        memory: 2Gi
-      requests:
-        cpu: 500m
-        memory: 1Gi
-    service:
-      type: ClusterIP
-      port: 80
-    ## Local disk for Prism's own state. Optional.
-    persistence:
-      enabled: false
-      storageClass: ""
-      accessMode: ReadWriteOnce
-      size: 5Gi
-    podAnnotations:
-      prometheus.io/scrape: "true"
-      prometheus.io/port: "80"
-      prometheus.io/path: "/api/v1/metrics"
-    podLabels:
-      app: parseable
-      component: prism
-    nodeSelector: {}
-    tolerations: []
-    affinity: {}
-    terminationGracePeriodSeconds: 30
-    readinessProbe:
-      httpGet:
-        path: /api/v1/readiness
-        port: 8000
+      podAnnotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "80"
+        prometheus.io/path: "/api/v1/metrics"
+      podLabels:
+        app: parseable
+        component: prism
+      nodeSelector: {}
+      tolerations: []
+      affinity: {}
+      terminationGracePeriodSeconds: 30
+      readinessProbe:
+        httpGet:
+          path: /api/v1/readiness
+          port: 8000
 
   ## Create datasets and set their retention on install/upgrade.
   ## datasets is a list of objects, each with a name and retention policy. Example:

@@ -9,15 +9,15 @@ parseable:
       secretKey: key.json
       mountPath: /var/secrets/google
 
-  ingestor:
-    replicas: 3
-    persistence:
-      staging:
-        storageClass: standard-rwo
-        size: 5Gi
-
-  querier:
-    persistence:
-      hotTier:
-        storageClass: standard-rwo
-        size: 100Gi
+  distributed:
+    ingestor:
+      replicas: 3
+      persistence:
+        staging:
+          storageClass: standard-rwo
+          size: 5Gi
+    querier:
+      persistence:
+        hotTier:
+          storageClass: standard-rwo
+          size: 100Gi

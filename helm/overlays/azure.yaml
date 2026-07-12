@@ -5,15 +5,15 @@ parseable:
     type: blob-store
     secretName: parseable-env-secret
 
-  ingestor:
-    replicas: 3
-    persistence:
-      staging:
-        storageClass: managed-csi
-        size: 5Gi
-
-  querier:
-    persistence:
-      hotTier:
-        storageClass: managed-csi
-        size: 100Gi
+  distributed:
+    ingestor:
+      replicas: 3
+      persistence:
+        staging:
+          storageClass: managed-csi
+          size: 5Gi
+    querier:
+      persistence:
+        hotTier:
+          storageClass: managed-csi
+          size: 100Gi

@@ -5,15 +5,15 @@ parseable:
     type: s3-store
     secretName: parseable-env-secret
 
-  ingestor:
-    replicas: 3
-    persistence:
-      staging:
-        storageClass: gp3
-        size: 5Gi
-
-  querier:
-    persistence:
-      hotTier:
-        storageClass: gp3
-        size: 100Gi
+  distributed:
+    ingestor:
+      replicas: 3
+      persistence:
+        staging:
+          storageClass: gp3
+          size: 5Gi
+    querier:
+      persistence:
+        hotTier:
+          storageClass: gp3
+          size: 100Gi

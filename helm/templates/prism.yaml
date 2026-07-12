@@ -1,7 +1,7 @@
 {{- if and (eq .Values.parseable.deploymentMode "distributed") .Values.parseable.enterprise.enabled }}
 {{- $p := .Values.parseable }}
 {{- $ent := $p.enterprise }}
-{{- $node := $p.prism }}
+{{- $node := $p.distributed.prism }}
 {{- $store := $p.store }}
 {{- $secret := $store.secretName }}
 {{- $gcs := eq $store.type "gcs-store" }}

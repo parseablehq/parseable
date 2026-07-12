@@ -1,7 +1,7 @@
 {{- if eq .Values.parseable.deploymentMode "distributed" }}
 {{- $p := .Values.parseable }}
 {{- $ent := $p.enterprise }}
-{{- $node := $p.querier }}
+{{- $node := $p.distributed.querier }}
 {{- $store := $p.store }}
 {{- $secret := $store.secretName }}
 {{- $gcs := eq $store.type "gcs-store" }}

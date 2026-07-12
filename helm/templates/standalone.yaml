@@ -3,7 +3,7 @@
 {{- fail "enterprise.enabled requires deploymentMode: distributed (standalone runs P_MODE=all, which Enterprise does not support)" }}
 {{- end }}
 {{- $p := .Values.parseable }}
-{{- $node := $p.standalone }}
+{{- $node := $p.standalone.unified }}
 {{- $store := $p.store }}
 {{- $secret := $store.secretName }}
 {{- $gcs := and (eq $store.type "gcs-store") $store.gcsCredentials }}
