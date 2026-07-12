@@ -1,53 +1,173 @@
+## Parseable Helm chart
+## Single chart for both OSS and Enterprise editions of Parseable. OSS and
+## Enterprise ship as separate images (see `image` vs `enterprise.image`
+## below); which one gets used is controlled by `enterprise.enabled`, not by
+## the node type.
+##
+## Node types below map 1:1 to Parseable's P_MODE values:
+##   standalone -> P_MODE=all    (OSS only, single all-in-one pod --> Best for testing)
+##   ingestor   -> P_MODE=ingest (OSS + Enterprise, distributed mode)
+##   querier    -> P_MODE=query  (Maximum 1 in OSS + Enterprise, distributed mode)
+##   prism      -> P_MODE=prism  (Enterprise only, cluster coordinator)
+##
+## Each node type section below is self-contained: its own replicas, env,
+## resources, persistence, service and scheduling. There are no shared
+## "common" blocks to hunt through - what you see in a section is everything
+## that applies to that node type.
+##
+## Docs: https://www.parseable.com/docs/installation/kubernetes-helm
+
 parseable:
+  nameOverride: ""
+  fullnameOverride: ""
+
+  ## deploymentMode: standalone | distributed
+  ## standalone  - a single all-in-one pod (the `standalone` section below).
+  ##               Simplest way to run Parseable, does not scale horizontally.
+  ##               OSS only.
+  ## distributed - separate ingestor + querier pods (the `ingestor` /
+  ##               `querier` sections below), plus `prism` when
+  ##               `enterprise.enabled` is true. Required for Enterprise.
+  deploymentMode: standalone
+
+  ## OSS image, used by every node type unless enterprise.enabled is true
+  ## (see enterprise.image below, which takes over in that case).
   image:
     repository: quay.io/parseablehq/parseable
-    tag: "v2.8.0"
-    pullPolicy: Always
+    tag: "" # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  ## Names of imagePullSecrets for pulling the image above, e.g. from a private registry.
   imagePullSecrets: []
 
-  # local-store, s3-store, blob-store or gcs-store
-  store: local-store
+  ## -----------------------------------------------------------------------
+  ## Object store
+  ## -----------------------------------------------------------------------
+  store:
+    ## One of: local-store, s3-store, blob-store, gcs-store.
+    ## local-store keeps data on the pod's own volumes and only works with
+    ## deploymentMode: standalone - it is not valid for distributed deployments.
+    type: local-store
 
-  # false = single Deployment; true = querier + ingestors (needs an object store)
-  highAvailability:
+    ## Name of a pre-existing Kubernetes Secret holding the connection details
+    ## for the selected store type, plus the Parseable admin credentials.
+    ## The chart never creates or reads plaintext secrets from values.yaml.
+    ##
+    ## Create it with kubectl, using the keys expected for your store type:
+    ##
+    ## local-store:
+    ##   kubectl create secret generic parseable-env-secret \
+    ##     --from-literal=addr=0.0.0.0:8000 \
+    ##     --from-literal=username=admin \
+    ##     --from-literal=password=admin
+    ##
+    ## s3-store (adds):
+    ##     --from-literal=s3.url=<endpoint> \
+    ##     --from-literal=s3.access.key=<key> \
+    ##     --from-literal=s3.secret.key=<secret> \
+    ##     --from-literal=s3.bucket=<bucket> \
+    ##     --from-literal=s3.region=<region>
+    ##
+    ## blob-store (adds):
+    ##     --from-literal=azr.access_key=<key> \
+    ##     --from-literal=azr.account=<account> \
+    ##     --from-literal=azr.container=<container> \
+    ##     --from-literal=azr.url=<url>
+    ##
+    ## gcs-store (adds):
+    ##     --from-literal=gcs.url=<url> \
+    ##     --from-literal=gcs.bucket=<bucket> \
+    ##     and a service-account key file, see `store.gcsCredentials` below.
+    secretName: parseable-env-secret
+
+    ## Only used when store.type is gcs-store. Points at a Secret containing
+    ## the GCS service-account JSON key, which is mounted into every pod.
+    ##   kubectl create secret generic parseable-gcs-key \
+    ##     --from-file=key.json=<path-to-service-account-key.json>
+    gcsCredentials:
+      secretName: parseable-gcs-key
+      secretKey: key.json
+      mountPath: /var/secrets/google
+
+  ## Optional shared secret to authenticate intra-cluster requests between
+  ## nodes. When enabled, P_CLUSTER_SECRET is injected into every distributed
+  ## node from this secret; leave disabled to authenticate with admin
+  ## credentials only. Not used in standalone mode.
+  ##   kubectl create secret generic parseable-cluster-secret \
+  ##     --from-literal=cluster-secret=<16-char-alphanumeric-string>
+  clusterSecret:
+    enabled: false
+    secretName: parseable-cluster-secret
+    secretKey: cluster-secret
+
+  ## -----------------------------------------------------------------------
+  ## Enterprise edition
+  ## -----------------------------------------------------------------------
+  ## Flip `enabled: true` to run Parseable Enterprise instead of OSS. Requires
+  ## deploymentMode: distributed. Unlocks the `prism` node-type
+  ## sections below, plus license validation and audit logging.
+  enterprise:
     enabled: false
 
+    ## Enterprise runs a different image than OSS. Used by every node type
+    ## instead of the top-level `image` above whenever enabled is true.
+    image:
+      repository: quay.io/parseablehq/parseable-enterprise
+      tag: "" # defaults to .Chart.AppVersion
+      pullPolicy: IfNotPresent
+    imagePullSecrets: []
+
+    ## License is validated at startup; the server refuses to start without one.
+    ## Mounted read-only at `license.mountPath` on every node; the Enterprise
+    ## binary reads the license files from that directory.
+    ##   kubectl create secret generic parseable-license \
+    ##     --from-file=parseable_license.json=resources/parseable_license.json \
+    ##     --from-file=parseable_license.sig=resources/parseable_license.sig
+    license:
+      secretName: parseable-license
+      mountPath: /tmp/license
+      dataKey: parseable_license.json
+      signatureKey: parseable_license.sig
+
+    ## Ships an audit trail of API activity to another Parseable instance/stream.
+    ## Applied to every node type (ingestor/querier/prism).
+    auditLogging:
+      enabled: false
+      server: "http://parseable-querier-service.parseable.svc.cluster.local"
+      username: admin
+      password: admin
+      ## Reference to a Secret key holding the password instead of the
+      ## plaintext `password` field above.
+      existingSecret:
+        name: ""
+        key: ""
+
+  ## -----------------------------------------------------------------------
+  ## Shared identity / security (applies to every node type's pod)
+  ## -----------------------------------------------------------------------
   serviceAccount:
     create: true
     name: "parseable"
     annotations: {}
 
-  nameOverride: ""
-  fullnameOverride: ""
+  securityContext:
+    allowPrivilegeEscalation: false
 
-  # each key is set as an env var: prefix + upper-cased key, "." "-" -> "_"
-  secrets:
-    name: parseable-env-secret
-    prefix: P_
-    keys:
-      - addr
-      - username
-      - password
-      - staging.dir
-      - fs.dir
+  podSecurityContext:
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+    fsGroupChangePolicy: "Always"
 
-  # file credential (e.g. GCS key.json); sets GOOGLE_APPLICATION_CREDENTIALS
-  credentialFile:
-    enabled: false
-    secretName: parseable-env-secret
-    secretKey: key.json
-    mountPath: /var/secrets/google
+  ## =========================================================================
+  ## Node types
+  ## =========================================================================
 
-  auditLogging:
-    enabled: false
-    p_server: ""
-    p_username: ""
-    p_password: ""
-
-  # defaults for every node; a node under nodes: can override any of these
-  common:
+  ## --- standalone --- (deploymentMode: standalone, OSS only) ---------------
+  ## Single pod running every function (ingest + query + storage).
+  standalone:
     env:
       RUST_LOG: warn
+      P_CHECK_UPDATE: "false"
     resources:
       limits:
         cpu: 500m
@@ -55,66 +175,184 @@ parseable:
       requests:
         cpu: 250m
         memory: 1Gi
-    readinessProbe:
-      httpGet:
-        path: /api/v1/readiness
-        port: 8000
-    securityContext:
-      allowPrivilegeEscalation: false
-    podSecurityContext:
-      runAsUser: 1000
-      runAsGroup: 1000
-      fsGroup: 1000
-      fsGroupChangePolicy: "Always"
-    podAnnotations:
-      prometheus.io/scrape: "true"
-      prometheus.io/port: "80"
-      prometheus.io/path: "/api/v1/metrics"
-    podLabels: {}
-    nodeSelector: {}
-    tolerations: []
-    affinity: {}
-
-  # per-node overrides; env is merged with common (node wins), rest replaces
-  nodes:
-    standalone:
-      env: {}
-      service:
-        type: ClusterIP
-        port: 80
-      persistence:
-        staging:
-          enabled: true
-          storageClass: ""
-          accessMode: ReadWriteOnce
-          size: 5Gi
-        data:
-          enabled: false
-          storageClass: ""
-          accessMode: ReadWriteOnce
-          size: 5Gi
-
-    query:
-      env: {}
-      service:
-        type: ClusterIP
-        port: 80
-      # enables the hot tier; not supported with local-store
-      persistence:
-        enabled: false
-        storageClass: ""
-        accessMode: ReadWriteOnce
-        size: 100Gi
-
-    ingestor:
-      count: 3
-      port: 8000
-      env: {}
-      service:
-        type: ClusterIP
-        port: 80
-      persistence:
+    service:
+      type: ClusterIP
+      port: 80
+    persistence:
+      ## Data directory - only needed when store.type is local-store.
+      data:
         enabled: false
         storageClass: ""
         accessMode: ReadWriteOnce
         size: 5Gi
+      staging:
+        enabled: true
+        storageClass: ""
+        accessMode: ReadWriteOnce
+        size: 5Gi
+    podAnnotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "80"
+      prometheus.io/path: "/api/v1/metrics"
+    podLabels:
+      app: parseable
+      component: standalone
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    terminationGracePeriodSeconds: 30
+    readinessProbe:
+      httpGet:
+        path: /api/v1/readiness
+        port: 8000
+
+  ## --- ingestor --- (deploymentMode: distributed, OSS + Enterprise) --------
+  ## Receives and stages incoming events.
+  ingestor:
+    replicas: 3
+    env:
+      RUST_LOG: warn
+      P_CHECK_UPDATE: "false"
+      # General Kafka Configuration
+      # P_KAFKA_BOOTSTRAP_SERVERS: "my-kafka.kafka.svc.cluster.local:9092" # Comma-separated list of Kafka bootstrap servers
+      # P_KAFKA_PARTITION_LISTENER_CONCURRENCY: "2" # Number of parallel threads for Kafka partition listeners
+      # P_KAFKA_CONSUMER_TOPICS: "test-log-stream-0,test-log-stream-1"
+      # P_KAFKA_CLIENT_ID: "parseable-connect" # Client ID for Kafka connection
+      # P_CONNECTOR_BAD_DATA_POLICY: "fail" # Default Policy for handling bad data
+      # See https://www.parseable.com/docs for the full list of Kafka consumer/security options.
+    resources:
+      limits:
+        cpu: 500m
+        memory: 4Gi
+      requests:
+        cpu: 250m
+        memory: 1Gi
+    service:
+      type: ClusterIP
+      port: 80
+    ## Local disk for staging incoming events before they are sent to the object store.
+    persistence:
+      staging:
+        enabled: true
+        storageClass: ""
+        accessMode: ReadWriteOnce
+        size: 5Gi
+    podAnnotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "80"
+      prometheus.io/path: "/api/v1/metrics"
+    podLabels:
+      app: parseable
+      component: ingestor
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    terminationGracePeriodSeconds: 30
+    readinessProbe:
+      httpGet:
+        path: /api/v1/readiness
+        port: 8000
+
+  ## --- querier --- (deploymentMode: distributed, OSS + Enterprise) ---------
+  ## Serves queries and the console. OSS supports a single querier; Enterprise
+  ## can run multiple queriers behind `prism`.
+  querier:
+    replicas: 1
+    env:
+      RUST_LOG: warn
+      P_CHECK_UPDATE: "false"
+    resources:
+      limits:
+        cpu: 500m
+        memory: 4Gi
+      requests:
+        cpu: 250m
+        memory: 1Gi
+    service:
+      type: ClusterIP
+      port: 80
+    ## Local disk used as the hot-tier query cache, mounted at /parseable/hot-tier.
+    ## Required for Enterprise query nodes; recommended for OSS performance.
+    persistence:
+      hotTier:
+        enabled: true
+        storageClass: ""
+        accessMode: ReadWriteOnce
+        size: 5Gi
+    podAnnotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "80"
+      prometheus.io/path: "/api/v1/metrics"
+    podLabels:
+      app: parseable
+      component: querier
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    terminationGracePeriodSeconds: 30
+    readinessProbe:
+      httpGet:
+        path: /api/v1/readiness
+        port: 8000
+
+  ## --- prism --- (deploymentMode: distributed, Enterprise only) -----------
+  ## Cluster coordinator, fronts the querier fleet. Deployed automatically
+  ## whenever enterprise.enabled is true.
+  prism:
+    replicas: 1
+    env:
+      RUST_LOG: warn
+      P_CHECK_UPDATE: "false"
+    resources:
+      limits:
+        cpu: "1"
+        memory: 2Gi
+      requests:
+        cpu: 500m
+        memory: 1Gi
+    service:
+      type: ClusterIP
+      port: 80
+    ## Local disk for Prism's own state. Optional.
+    persistence:
+      enabled: false
+      storageClass: ""
+      accessMode: ReadWriteOnce
+      size: 5Gi
+    podAnnotations:
+      prometheus.io/scrape: "true"
+      prometheus.io/port: "80"
+      prometheus.io/path: "/api/v1/metrics"
+    podLabels:
+      app: parseable
+      component: prism
+    nodeSelector: {}
+    tolerations: []
+    affinity: {}
+    terminationGracePeriodSeconds: 30
+    readinessProbe:
+      httpGet:
+        path: /api/v1/readiness
+        port: 8000
+
+  ## Create datasets and set their retention on install/upgrade.
+  ## datasets is a list of objects, each with a name and retention policy. Example:
+  ##   - name: "sample-dataset"
+  ##     retention:
+  ##       action: "delete"
+  ##       duration: "30d"
+  datasets: []
+
+  ## ServiceMonitor for this Parseable deployment. Read more on ServiceMonitor
+  ## here: https://prometheus-operator.dev/docs/api-reference/api/#monitoring.coreos.com/v1.ServiceMonitor
+  metrics:
+    serviceMonitor:
+      enabled: false
+      labels: {}
+      namespace: ""
+      interval: 30s
+      scrapeTimeout: ""
+      path: /api/v1/metrics
+      port: http
+      relabelings: []
+      metricRelabelings: []

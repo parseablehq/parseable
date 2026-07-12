@@ -7,8 +7,6 @@ Expand the name of the chart.
 
 {{/*
 Create a default fully qualified app name.
-We truncate at 63 chars because some Kubernetes name fields are limited to this (by the DNS naming spec).
-If release name contains chart name it will be used as a full name.
 */}}
 {{- define "parseable.fullname" -}}
 {{- if .Values.parseable.fullnameOverride }}
@@ -24,76 +22,27 @@ If release name contains chart name it will be used as a full name.
 {{- end }}
 
 {{/*
-Create chart name and version as used by the chart label.
+Chart name and version, for the helm.sh/chart label.
 */}}
 {{- define "parseable.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
-Common labels
+Metadata labels attached to every object (no component/selector labels).
 */}}
 {{- define "parseable.labels" -}}
 helm.sh/chart: {{ include "parseable.chart" . }}
-{{ include "parseable.labelsSelector" . }}
+app.kubernetes.io/name: {{ include "parseable.name" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- if .Chart.AppVersion }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 {{- end }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
 
 {{/*
-Ingestor Labels
-*/}}
-{{- define "parseable.ingestorLabels" -}}
-helm.sh/chart: {{ include "parseable.chart" . }}
-{{ include "parseable.ingestorLabelsSelector" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
-{{- end }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-{{- end }}
-
-{{/*
-Querier Labels
-*/}}
-{{- define "parseable.querierLabels" -}}
-helm.sh/chart: {{ include "parseable.chart" . }}
-{{ include "parseable.querierLabelsSelector" . }}
-{{- if .Chart.AppVersion }}
-app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
-{{- end }}
-app.kubernetes.io/managed-by: {{ .Release.Service }}
-{{- end }}
-
-{{/*
-Selector labels
-*/}}
-{{- define "parseable.labelsSelector" -}}
-app.kubernetes.io/name: {{ include "parseable.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-{{- end }}
-
-{{/*
-Ingestor Labels Selector for ingestor statefulset
-*/}}
-{{- define "parseable.ingestorLabelsSelector" -}}
-app.kubernetes.io/name: {{ include "parseable.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.parseable.com/type: ingestor
-{{- end }}
-
-{{/*
-Querier Labels Selector for querier deployment
-*/}}
-{{- define "parseable.querierLabelsSelector" -}}
-app.kubernetes.io/name: {{ include "parseable.name" . }}
-app.kubernetes.io/instance: {{ .Release.Name }}
-app.parseable.com/type: querier
-{{- end }}
-
-{{/*
-Create the name of the service account to use
+Name of the service account to use.
 */}}
 {{- define "parseable.serviceAccountName" -}}
 {{- if .Values.parseable.serviceAccount.create }}

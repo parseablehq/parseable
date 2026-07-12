@@ -1,0 +1,212 @@
+{{- if eq .Values.parseable.deploymentMode "standalone" }}
+{{- if .Values.parseable.enterprise.enabled }}
+{{- fail "enterprise.enabled requires deploymentMode: distributed (standalone runs P_MODE=all, which Enterprise does not support)" }}
+{{- end }}
+{{- $p := .Values.parseable }}
+{{- $node := $p.standalone }}
+{{- $store := $p.store }}
+{{- $secret := $store.secretName }}
+{{- $gcs := and (eq $store.type "gcs-store") $store.gcsCredentials }}
+{{- $image := printf "%s:%s" $p.image.repository ($p.image.tag | default .Chart.AppVersion) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "parseable.fullname" . }}-standalone
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "parseable.labels" . | nindent 4 }}
+    app.parseable.com/type: standalone
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "parseable.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.parseable.com/type: standalone
+  template:
+    metadata:
+      {{- with $node.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- with $node.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        app.kubernetes.io/name: {{ include "parseable.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.parseable.com/type: standalone
+    spec:
+      {{- with $p.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "parseable.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ $node.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml $p.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml $p.securityContext | nindent 12 }}
+          image: "{{ $image }}"
+          imagePullPolicy: {{ $p.image.pullPolicy }}
+          args: [ "/usr/bin/parseable", {{ $store.type | quote }} ]
+          env:
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: P_MODE
+              value: "all"
+            - name: P_STAGING_DIR
+              value: "/parseable/staging"
+            {{- if eq $store.type "local-store" }}
+            - name: P_FS_DIR
+              value: "/parseable/data"
+            {{- end }}
+            {{- range $key, $value := $node.env }}
+            - name: {{ $key }}
+              value: {{ tpl (toString $value) $ | quote }}
+            {{- end }}
+            # object store credentials + admin user from the store secret
+            - name: P_ADDR
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: addr } }
+            - name: P_USERNAME
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: username } }
+            - name: P_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: password } }
+            {{- if eq $store.type "s3-store" }}
+            - name: P_S3_URL
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: s3.url } }
+            - name: P_S3_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: s3.access.key } }
+            - name: P_S3_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: s3.secret.key } }
+            - name: P_S3_BUCKET
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: s3.bucket } }
+            - name: P_S3_REGION
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: s3.region } }
+            {{- else if eq $store.type "blob-store" }}
+            - name: P_AZR_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: azr.access_key } }
+            - name: P_AZR_ACCOUNT
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: azr.account } }
+            - name: P_AZR_CONTAINER
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: azr.container } }
+            - name: P_AZR_URL
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: azr.url } }
+            {{- else if eq $store.type "gcs-store" }}
+            - name: P_GCS_URL
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: gcs.url } }
+            - name: P_GCS_BUCKET
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: gcs.bucket } }
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: "{{ $store.gcsCredentials.mountPath }}/{{ $store.gcsCredentials.secretKey }}"
+            {{- end }}
+          ports:
+            - containerPort: 8000
+          {{- with $node.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml $node.resources | nindent 12 }}
+          volumeMounts:
+            - name: stage-volume
+              mountPath: "/parseable/staging"
+            - name: data-volume
+              mountPath: "/parseable/data"
+            {{- if $gcs }}
+            - name: gcs-credentials
+              mountPath: {{ $store.gcsCredentials.mountPath }}
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- if $node.persistence.staging.enabled }}
+        - name: stage-volume
+          persistentVolumeClaim:
+            claimName: {{ include "parseable.fullname" . }}-standalone-staging
+        {{- else }}
+        - name: stage-volume
+          emptyDir: {}
+        {{- end }}
+        {{- if $node.persistence.data.enabled }}
+        - name: data-volume
+          persistentVolumeClaim:
+            claimName: {{ include "parseable.fullname" . }}-standalone-data
+        {{- else }}
+        - name: data-volume
+          emptyDir: {}
+        {{- end }}
+        {{- if $gcs }}
+        - name: gcs-credentials
+          secret:
+            secretName: {{ $store.gcsCredentials.secretName }}
+        {{- end }}
+      {{- with $node.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $node.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $node.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- if $node.persistence.staging.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "parseable.fullname" . }}-standalone-staging
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "parseable.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ $node.persistence.staging.accessMode | quote }}
+  storageClassName: {{ $node.persistence.staging.storageClass | quote }}
+  resources:
+    requests:
+      storage: {{ $node.persistence.staging.size | quote }}
+{{- end }}
+{{- if $node.persistence.data.enabled }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "parseable.fullname" . }}-standalone-data
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "parseable.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ $node.persistence.data.accessMode | quote }}
+  storageClassName: {{ $node.persistence.data.storageClass | quote }}
+  resources:
+    requests:
+      storage: {{ $node.persistence.data.size | quote }}
+{{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "parseable.fullname" . }}-standalone-service
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "parseable.labels" . | nindent 4 }}
+spec:
+  type: {{ $node.service.type }}
+  ports:
+    - port: {{ $node.service.port }}
+      targetPort: 8000
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: {{ include "parseable.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.parseable.com/type: standalone
+{{- end }}

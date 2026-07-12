@@ -1,0 +1,263 @@
+{{- if eq .Values.parseable.deploymentMode "distributed" }}
+{{- $p := .Values.parseable }}
+{{- $ent := $p.enterprise }}
+{{- $node := $p.querier }}
+{{- $store := $p.store }}
+{{- $secret := $store.secretName }}
+{{- $gcs := eq $store.type "gcs-store" }}
+{{- $hotTier := $node.persistence.hotTier }}
+{{- $image := $ent.enabled | ternary (printf "%s:%s" $ent.image.repository ($ent.image.tag | default .Chart.AppVersion)) (printf "%s:%s" $p.image.repository ($p.image.tag | default .Chart.AppVersion)) }}
+{{- $pullPolicy := $ent.enabled | ternary $ent.image.pullPolicy $p.image.pullPolicy }}
+{{- $pullSecrets := $ent.enabled | ternary $ent.imagePullSecrets $p.imagePullSecrets }}
+{{- $binary := $ent.enabled | ternary "parseable-enterprise" "/usr/bin/parseable" }}
+{{- $fullname := include "parseable.fullname" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-querier-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "parseable.labels" . | nindent 4 }}
+    app.parseable.com/type: querier
+spec:
+  clusterIP: None
+  ports:
+    - port: 8000
+      name: parseable-port
+  selector:
+    app.kubernetes.io/name: {{ include "parseable.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.parseable.com/type: querier
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-querier-service
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "parseable.labels" . | nindent 4 }}
+    app.parseable.com/type: querier
+spec:
+  type: {{ $node.service.type }}
+  ports:
+    - port: {{ $node.service.port }}
+      targetPort: 8000
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: {{ include "parseable.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.parseable.com/type: querier
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}-querier
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "parseable.labels" . | nindent 4 }}
+    app.parseable.com/type: querier
+spec:
+  serviceName: {{ $fullname }}-querier-headless
+  replicas: {{ $node.replicas }}
+  minReadySeconds: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "parseable.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.parseable.com/type: querier
+  template:
+    metadata:
+      {{- with $node.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- with $node.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        app.kubernetes.io/name: {{ include "parseable.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.parseable.com/type: querier
+    spec:
+      {{- with $pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "parseable.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ $node.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml $p.podSecurityContext | nindent 8 }}
+      {{- with $node.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $node.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $node.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if $ent.enabled }}
+      # Enterprise: the querier registers with prism, so wait for it first
+      initContainers:
+        - name: wait-for-prism
+          image: curlimages/curl:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "Waiting for prism at /api/v1/readiness..."
+              for i in $(seq 1 60); do
+                if curl -sf http://{{ $fullname }}-prism-service.{{ .Release.Namespace }}/api/v1/readiness; then
+                  echo "Prism is ready!"; exit 0
+                fi
+                echo "Not ready yet, retrying in 2s..."; sleep 2
+              done
+              echo "Prism did not become ready in time."; exit 1
+      {{- end }}
+      volumes:
+        - name: stage-volume
+          emptyDir: {}
+        {{- if not $hotTier.enabled }}
+        - name: hot-tier-volume
+          emptyDir: {}
+        {{- end }}
+        {{- if $gcs }}
+        - name: gcs-credentials
+          secret:
+            secretName: {{ $store.gcsCredentials.secretName }}
+        {{- end }}
+        {{- if $ent.enabled }}
+        - name: license
+          secret:
+            secretName: {{ $ent.license.secretName }}
+        {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml $p.securityContext | nindent 12 }}
+          image: "{{ $image }}"
+          imagePullPolicy: {{ $pullPolicy }}
+          args: [ {{ $binary | quote }}, {{ $store.type | quote }} ]
+          env:
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: P_MODE
+              value: "query"
+            - name: P_STAGING_DIR
+              value: "/parseable/staging"
+            - name: P_HOT_TIER_DIR
+              value: "/parseable/hot-tier"
+            - name: P_MAX_DISK_USAGE_PERCENT
+              value: "95.0"
+            - name: P_QUERIER_ENDPOINT
+              value: "$(HOSTNAME).{{ $fullname }}-querier-headless.{{ .Release.Namespace }}.svc.cluster.local:8000"
+            {{- if $p.clusterSecret.enabled }}
+            - name: P_CLUSTER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $p.clusterSecret.secretName }}
+                  key: {{ $p.clusterSecret.secretKey }}
+            {{- end }}
+            {{- range $key, $value := $node.env }}
+            - name: {{ $key }}
+              value: {{ tpl (toString $value) $ | quote }}
+            {{- end }}
+            # object store credentials + admin user from the store secret
+            - name: P_ADDR
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: addr } }
+            - name: P_USERNAME
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: username } }
+            - name: P_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: password } }
+            {{- if eq $store.type "s3-store" }}
+            - name: P_S3_URL
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: s3.url } }
+            - name: P_S3_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: s3.access.key } }
+            - name: P_S3_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: s3.secret.key } }
+            - name: P_S3_BUCKET
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: s3.bucket } }
+            - name: P_S3_REGION
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: s3.region } }
+            {{- else if eq $store.type "blob-store" }}
+            - name: P_AZR_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: azr.access_key } }
+            - name: P_AZR_ACCOUNT
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: azr.account } }
+            - name: P_AZR_CONTAINER
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: azr.container } }
+            - name: P_AZR_URL
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: azr.url } }
+            {{- else if eq $store.type "gcs-store" }}
+            - name: P_GCS_URL
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: gcs.url } }
+            - name: P_GCS_BUCKET
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: gcs.bucket } }
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: "{{ $store.gcsCredentials.mountPath }}/{{ $store.gcsCredentials.secretKey }}"
+            {{- end }}
+            {{- if $ent.enabled }}
+            - name: P_LICENSE_DATA_FILE_PATH
+              value: "{{ $ent.license.mountPath }}/{{ $ent.license.dataKey }}"
+            - name: P_LICENSE_SIGNATURE_FILE_PATH
+              value: "{{ $ent.license.mountPath }}/{{ $ent.license.signatureKey }}"
+            {{- if $ent.auditLogging.enabled }}
+            - name: P_AUDIT_LOGGER
+              value: {{ $ent.auditLogging.server | quote }}
+            - name: P_AUDIT_USERNAME
+              value: {{ $ent.auditLogging.username | quote }}
+            {{- if $ent.auditLogging.existingSecret.name }}
+            - name: P_AUDIT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ent.auditLogging.existingSecret.name }}
+                  key: {{ $ent.auditLogging.existingSecret.key }}
+            {{- else }}
+            - name: P_AUDIT_PASSWORD
+              value: {{ $ent.auditLogging.password | quote }}
+            {{- end }}
+            {{- end }}
+            {{- end }}
+          ports:
+            - containerPort: 8000
+          {{- with $node.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml $node.resources | nindent 12 }}
+          volumeMounts:
+            - name: stage-volume
+              mountPath: "/parseable/staging"
+            - name: hot-tier-volume
+              mountPath: "/parseable/hot-tier"
+            {{- if $gcs }}
+            - name: gcs-credentials
+              mountPath: {{ $store.gcsCredentials.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- if $ent.enabled }}
+            - name: license
+              mountPath: {{ $ent.license.mountPath }}
+              readOnly: true
+            {{- end }}
+  {{- if $hotTier.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: hot-tier-volume
+      spec:
+        accessModes:
+          - {{ $hotTier.accessMode | quote }}
+        storageClassName: {{ $hotTier.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ $hotTier.size | quote }}
+  {{- end }}
+{{- end }}

@@ -1,32 +1,19 @@
-# Parseable on Azure (Blob), distributed mode
+# Parseable on Azure (Blob), distributed mode.
 parseable:
-  store: blob-store
-  highAvailability:
-    enabled: true
+  deploymentMode: distributed
+  store:
+    type: blob-store
+    secretName: parseable-env-secret
 
-  secrets:
-    name: parseable-env-secret
-    prefix: P_
-    keys:
-      - addr
-      - username
-      - password
-      - staging.dir
-      - fs.dir
-      - azr.access_key
-      - azr.account
-      - azr.container
-      - azr.url
-
-  nodes:
-    query:
-      persistence:
-        enabled: true
-        storageClass: managed-csi
-        size: 100Gi
-    ingestor:
-      count: 3
-      persistence:
-        enabled: true
+  ingestor:
+    replicas: 3
+    persistence:
+      staging:
         storageClass: managed-csi
         size: 5Gi
+
+  querier:
+    persistence:
+      hotTier:
+        storageClass: managed-csi
+        size: 100Gi

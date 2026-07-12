@@ -1,0 +1,225 @@
+{{- if and (eq .Values.parseable.deploymentMode "distributed") .Values.parseable.enterprise.enabled }}
+{{- $p := .Values.parseable }}
+{{- $ent := $p.enterprise }}
+{{- $node := $p.prism }}
+{{- $store := $p.store }}
+{{- $secret := $store.secretName }}
+{{- $gcs := eq $store.type "gcs-store" }}
+{{- $image := printf "%s:%s" $ent.image.repository ($ent.image.tag | default .Chart.AppVersion) }}
+{{- $fullname := include "parseable.fullname" . }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-prism-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "parseable.labels" . | nindent 4 }}
+    app.parseable.com/type: prism
+spec:
+  clusterIP: None
+  ports:
+    - port: 8000
+      name: parseable-port
+  selector:
+    app.kubernetes.io/name: {{ include "parseable.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.parseable.com/type: prism
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-prism-service
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "parseable.labels" . | nindent 4 }}
+    app.parseable.com/type: prism
+spec:
+  type: {{ $node.service.type }}
+  ports:
+    - port: {{ $node.service.port }}
+      targetPort: 8000
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: {{ include "parseable.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.parseable.com/type: prism
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $fullname }}-prism
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "parseable.labels" . | nindent 4 }}
+    app.parseable.com/type: prism
+spec:
+  serviceName: {{ $fullname }}-prism-headless
+  replicas: {{ $node.replicas }}
+  minReadySeconds: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "parseable.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.parseable.com/type: prism
+  template:
+    metadata:
+      {{- with $node.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      labels:
+        {{- with $node.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        app.kubernetes.io/name: {{ include "parseable.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.parseable.com/type: prism
+    spec:
+      {{- with $ent.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "parseable.serviceAccountName" . }}
+      terminationGracePeriodSeconds: {{ $node.terminationGracePeriodSeconds }}
+      securityContext:
+        {{- toYaml $p.podSecurityContext | nindent 8 }}
+      {{- with $node.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $node.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $node.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      volumes:
+        {{- if not $node.persistence.enabled }}
+        - name: stage-volume
+          emptyDir: {}
+        {{- end }}
+        {{- if $gcs }}
+        - name: gcs-credentials
+          secret:
+            secretName: {{ $store.gcsCredentials.secretName }}
+        {{- end }}
+        - name: license
+          secret:
+            secretName: {{ $ent.license.secretName }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml $p.securityContext | nindent 12 }}
+          image: "{{ $image }}"
+          imagePullPolicy: {{ $ent.image.pullPolicy }}
+          args: [ "parseable-enterprise", {{ $store.type | quote }} ]
+          env:
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: P_MODE
+              value: "prism"
+            - name: P_STAGING_DIR
+              value: "/parseable/staging"
+            {{- if $p.clusterSecret.enabled }}
+            - name: P_CLUSTER_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $p.clusterSecret.secretName }}
+                  key: {{ $p.clusterSecret.secretKey }}
+            {{- end }}
+            {{- range $key, $value := $node.env }}
+            - name: {{ $key }}
+              value: {{ tpl (toString $value) $ | quote }}
+            {{- end }}
+            # object store credentials + admin user from the store secret
+            - name: P_ADDR
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: addr } }
+            - name: P_USERNAME
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: username } }
+            - name: P_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: password } }
+            {{- if eq $store.type "s3-store" }}
+            - name: P_S3_URL
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: s3.url } }
+            - name: P_S3_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: s3.access.key } }
+            - name: P_S3_SECRET_KEY
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: s3.secret.key } }
+            - name: P_S3_BUCKET
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: s3.bucket } }
+            - name: P_S3_REGION
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: s3.region } }
+            {{- else if eq $store.type "blob-store" }}
+            - name: P_AZR_ACCESS_KEY
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: azr.access_key } }
+            - name: P_AZR_ACCOUNT
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: azr.account } }
+            - name: P_AZR_CONTAINER
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: azr.container } }
+            - name: P_AZR_URL
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: azr.url } }
+            {{- else if eq $store.type "gcs-store" }}
+            - name: P_GCS_URL
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: gcs.url } }
+            - name: P_GCS_BUCKET
+              valueFrom: { secretKeyRef: { name: {{ $secret }}, key: gcs.bucket } }
+            - name: GOOGLE_APPLICATION_CREDENTIALS
+              value: "{{ $store.gcsCredentials.mountPath }}/{{ $store.gcsCredentials.secretKey }}"
+            {{- end }}
+            - name: P_LICENSE_DATA_FILE_PATH
+              value: "{{ $ent.license.mountPath }}/{{ $ent.license.dataKey }}"
+            - name: P_LICENSE_SIGNATURE_FILE_PATH
+              value: "{{ $ent.license.mountPath }}/{{ $ent.license.signatureKey }}"
+            {{- if $ent.auditLogging.enabled }}
+            - name: P_AUDIT_LOGGER
+              value: {{ $ent.auditLogging.server | quote }}
+            - name: P_AUDIT_USERNAME
+              value: {{ $ent.auditLogging.username | quote }}
+            {{- if $ent.auditLogging.existingSecret.name }}
+            - name: P_AUDIT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ent.auditLogging.existingSecret.name }}
+                  key: {{ $ent.auditLogging.existingSecret.key }}
+            {{- else }}
+            - name: P_AUDIT_PASSWORD
+              value: {{ $ent.auditLogging.password | quote }}
+            {{- end }}
+            {{- end }}
+          ports:
+            - containerPort: 8000
+          {{- with $node.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml $node.resources | nindent 12 }}
+          volumeMounts:
+            - name: stage-volume
+              mountPath: "/parseable/staging"
+            {{- if $gcs }}
+            - name: gcs-credentials
+              mountPath: {{ $store.gcsCredentials.mountPath }}
+              readOnly: true
+            {{- end }}
+            - name: license
+              mountPath: {{ $ent.license.mountPath }}
+              readOnly: true
+  {{- if $node.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: stage-volume
+      spec:
+        accessModes:
+          - {{ $node.persistence.accessMode | quote }}
+        storageClassName: {{ $node.persistence.storageClass | quote }}
+        resources:
+          requests:
+            storage: {{ $node.persistence.size | quote }}
+  {{- end }}
+{{- end }}

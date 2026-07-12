@@ -1,0 +1,66 @@
+{{- if .Values.parseable.datasets }}
+{{- $p := .Values.parseable }}
+{{- $fullname := include "parseable.fullname" . }}
+{{- $target := ternary (printf "%s-standalone-service" $fullname) (printf "%s-querier-service" $fullname) (eq $p.deploymentMode "standalone") }}
+{{- $url := printf "http://%s.%s" $target .Release.Namespace }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-datasets
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "parseable.labels" . | nindent 4 }}
+data:
+  create-datasets.sh: |-
+    #!/bin/sh
+    set -eu
+    base="{{ $url }}"
+    {{- range $ds := $p.datasets }}
+    echo "Creating dataset {{ $ds.name }}..."
+    curl -sf -X PUT -u "$P_USERNAME:$P_PASSWORD" "$base/api/v1/logstream/{{ $ds.name }}"
+    {{- if $ds.retention }}
+    curl -sf -X PUT -u "$P_USERNAME:$P_PASSWORD" -H "Content-Type: application/json" \
+      -d '[{"description":"created by helm","action":"{{ $ds.retention.action }}","duration":"{{ $ds.retention.duration }}"}]' \
+      "$base/api/v1/logstream/{{ $ds.name }}/retention"
+    {{- end }}
+    {{- end }}
+    echo "Done."
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $fullname }}-datasets
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "parseable.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 10
+  template:
+    metadata:
+      labels:
+        {{- include "parseable.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        {{- toYaml $p.podSecurityContext | nindent 8 }}
+      volumes:
+        - name: script
+          configMap:
+            name: {{ $fullname }}-datasets
+            defaultMode: 0755
+      containers:
+        - name: create-datasets
+          image: curlimages/curl:latest
+          command: [ "/bin/sh", "/scripts/create-datasets.sh" ]
+          env:
+            - name: P_USERNAME
+              valueFrom: { secretKeyRef: { name: {{ $p.store.secretName }}, key: username } }
+            - name: P_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ $p.store.secretName }}, key: password } }
+          volumeMounts:
+            - name: script
+              mountPath: /scripts
+{{- end }}
