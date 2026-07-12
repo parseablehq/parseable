@@ -1,0 +1,13 @@
+# Parseable Enterprise (adds the prism coordinator).
+# Layer this on top of a store overlay, e.g.:
+#   helm install parseable ./ -n parseable -f overlays/aws.yaml -f overlays/enterprise.yaml
+# Requires a license secret (parseable-license) with keys
+# parseable_license.json and parseable_license.sig.
+parseable:
+  deploymentMode: distributed
+  enterprise:
+    enabled: true
+    image:
+      repository: quay.io/parseablehq/parseable-enterprise
+      tag: "" # defaults to .Chart.AppVersion
+      pullPolicy: IfNotPresent
