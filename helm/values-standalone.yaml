@@ -1,0 +1,20 @@
+# Parseable standalone: a single all-in-one pod on local-store.
+# Simplest way to run Parseable; does not scale horizontally (OSS only).
+parseable:
+  deploymentMode: standalone
+  store:
+    type: local-store
+
+  standalone:
+    persistence:
+      # local-store keeps ingested data on this volume, so persist it
+      data:
+        enabled: true
+        storageClass: ""
+        accessMode: ReadWriteOnce
+        size: 10Gi
+      staging:
+        enabled: true
+        storageClass: ""
+        accessMode: ReadWriteOnce
+        size: 5Gi
