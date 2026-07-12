@@ -86,8 +86,12 @@ spec:
       {{- end }}
       serviceAccountName: {{ include "parseable.serviceAccountName" . }}
       terminationGracePeriodSeconds: {{ $node.terminationGracePeriodSeconds }}
+      {{- if not $ent.enabled }}
+      # OSS runs as non-root; the Enterprise image runs as its default user (root),
+      # which it needs for its bundled ML (panorama) cache directories.
       securityContext:
         {{- toYaml $p.podSecurityContext | nindent 8 }}
+      {{- end }}
       {{- with $node.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
