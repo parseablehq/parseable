@@ -1,3 +1,8 @@
+[profile.release]
+codegen-units = 1
+lto = "fat"
+overflow-checks = true
+
 [package]
 name = "parseable"
 version = "2.9.4"
