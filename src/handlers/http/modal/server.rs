@@ -346,27 +346,19 @@ impl Server {
     }
 
     pub fn get_alert_target_policy() -> Scope {
-        web::scope("/admin/alert-target-policy")
-            .service(
-                web::resource("")
-                    .route(
-                        web::get()
-                            .to(alert_target_policy::get)
-                            .authorize(Action::SuperAdmin),
-                    )
-                    .route(
-                        web::put()
-                            .to(alert_target_policy::put)
-                            .authorize(Action::SuperAdmin),
-                    ),
-            )
-            .service(
-                web::resource("/validate").route(
-                    web::post()
-                        .to(alert_target_policy::validate)
-                        .authorize(Action::SuperAdmin),
+        web::scope("/alert-target-policy").service(
+            web::resource("")
+                .route(
+                    web::get()
+                        .to(alert_target_policy::get)
+                        .authorize(Action::All),
+                )
+                .route(
+                    web::put()
+                        .to(alert_target_policy::put)
+                        .authorize(Action::All),
                 ),
-            )
+        )
     }
 
     pub fn get_targets_webscope() -> Scope {

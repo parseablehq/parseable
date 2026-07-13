@@ -28,10 +28,3 @@ pub async fn put(
     replace_policy(&tenant_id, policy.clone()).await?;
     Ok(web::Json(policy))
 }
-
-pub async fn validate(
-    Json(policy): Json<AlertTargetPolicyConfig>,
-) -> Result<impl Responder, AlertError> {
-    validate_policy(&policy)?;
-    Ok(web::Json(policy))
-}
