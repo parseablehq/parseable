@@ -22,6 +22,7 @@ use actix_web::{
 };
 use futures::stream::FuturesUnordered;
 use serde_json::json;
+use tracing::error;
 use ulid::Ulid;
 
 use crate::{
@@ -55,11 +56,16 @@ pub async fn list(req: HttpRequest) -> Result<impl Responder, AlertError> {
     let mut list = vec![];
     for target in TARGETS.list(&tenant_id).await? {
         handles.push(tokio::spawn(async move {
-            if let Err(e) = target.validate_outbound_policy().await {
+            if let Err(err) = target.validate_outbound_policy().await {
+                error!(error = %err, "Alert target rejected during outbound policy validation");
+                let message = match &err {
+                    AlertError::OutboundPolicy(policy_error) => policy_error.sanitized_message(),
+                    _ => "Target validation failed",
+                };
                 json!({
                     "target": &target.mask(),
                     "enabled": false,
-                    "error": &e.to_string()
+                    "error": message
                 })
             } else {
                 json!({
@@ -135,4 +141,60 @@ pub async fn delete(req: HttpRequest, target_id: Path<Ulid>) -> Result<impl Resp
     let target = TARGETS.delete(&target_id, &tenant_id).await?;
 
     Ok(web::Json(target.mask()))
+}
+
+#[cfg(test)]
+mod tests {
+    use actix_web::{App, test};
+    use serde_json::{Value, json};
+
+    use super::*;
+    use crate::alerts::{
+        outbound_http_policy::{ALERT_TARGET_POLICY, AlertTargetPolicyConfig},
+        target::Target,
+    };
+
+    #[actix_web::test]
+    async fn list_hides_outbound_policy_error_details() {
+        let tenant = format!("targets-handler-test-{}", Ulid::new());
+        let denied_domain = "sensitive.internal.example";
+        let target: Target = serde_json::from_value(json!({
+            "name": "sensitive-target",
+            "type": "webhook",
+            "endpoint": format!("https://{denied_domain}/hook"),
+            "tenantId": tenant
+        }))
+        .unwrap();
+
+        TARGETS
+            .target_configs
+            .write()
+            .await
+            .entry(tenant.clone())
+            .or_default()
+            .insert(target.id, target);
+        ALERT_TARGET_POLICY.write().await.insert(
+            tenant.clone(),
+            AlertTargetPolicyConfig {
+                denied_domains: vec![denied_domain.to_string()],
+                ..Default::default()
+            },
+        );
+
+        let app = test::init_service(App::new().route("/targets", web::get().to(list))).await;
+        let request = test::TestRequest::get()
+            .uri("/targets")
+            .insert_header(("x-p-tenant", tenant.clone()))
+            .to_request();
+        let response: Value = test::call_and_read_body_json(&app, request).await;
+
+        TARGETS.target_configs.write().await.remove(&tenant);
+        ALERT_TARGET_POLICY.write().await.remove(&tenant);
+
+        assert_eq!(
+            response[0]["error"],
+            "Target domain is denied by outbound policy"
+        );
+        assert!(!response.to_string().contains(denied_domain));
+    }
 }

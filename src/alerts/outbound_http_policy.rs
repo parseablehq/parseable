@@ -227,6 +227,33 @@ pub enum OutboundPolicyError {
     Metastore(#[from] MetastoreError),
 }
 
+impl OutboundPolicyError {
+    pub const fn sanitized_message(&self) -> &'static str {
+        match self {
+            Self::MissingHost => "Target URL is missing a host",
+            Self::SlackRequiresHttps => "Slack target requires HTTPS",
+            Self::UnsupportedScheme(_) => "Target URL scheme is unsupported",
+            Self::InvalidTlsDisabled => "TLS verification cannot be disabled",
+            Self::ResolveFailed { .. } => "Target host could not be resolved",
+            Self::NoResolvedAddresses(_) => "Target host resolved to no addresses",
+            Self::DeniedAddress(_) => "Target address is denied by outbound policy",
+            Self::DeniedDomain(_) => "Target domain is denied by outbound policy",
+            Self::PrivateAddressNotAllowed(_) => "Private target is not allowed by outbound policy",
+            Self::InvalidCidr { .. } => "Outbound policy contains an invalid CIDR",
+            Self::DeniedHeader(_) => "Target contains a denied header",
+            Self::InvalidHeaderName(_) => "Target contains an invalid header name",
+            Self::InvalidHeaderValue(_) => "Target contains an invalid header value",
+            Self::InvalidSlackHost(_) => "Slack target host is invalid",
+            Self::MissingTenant => "Tenant is required for outbound policy",
+            Self::PolicyNotFound(_) => "Outbound policy was not found",
+            Self::ConflictingCidrs(_) => "Outbound policy contains conflicting CIDRs",
+            Self::ConflictingDomains(_) => "Outbound policy contains conflicting domains",
+            Self::PolicyValidationFailed { .. } => "Outbound policy validation failed",
+            Self::Metastore(_) => "Outbound policy storage operation failed",
+        }
+    }
+}
+
 // All alert-target outbound networking must enter here.
 // The policy authorizes the resolved destination, then pins that exact DNS result into reqwest
 pub async fn prepare_alert_target(
@@ -525,6 +552,38 @@ mod tests {
 
     fn socket(ip: IpAddr) -> SocketAddr {
         SocketAddr::new(ip, 80)
+    }
+
+    #[test]
+    fn sanitized_messages_hide_variant_payloads() {
+        let cases = [
+            (
+                OutboundPolicyError::UnsupportedScheme("secret-scheme".to_string()),
+                "Target URL scheme is unsupported",
+                "secret-scheme",
+            ),
+            (
+                OutboundPolicyError::DeniedDomain("sensitive.internal.example".to_string()),
+                "Target domain is denied by outbound policy",
+                "sensitive.internal.example",
+            ),
+            (
+                OutboundPolicyError::DeniedHeader("Authorization".to_string()),
+                "Target contains a denied header",
+                "Authorization",
+            ),
+            (
+                OutboundPolicyError::PolicyNotFound("secret-tenant".to_string()),
+                "Outbound policy was not found",
+                "secret-tenant",
+            ),
+        ];
+
+        for (error, expected, secret) in cases {
+            let message = error.sanitized_message();
+            assert_eq!(message, expected);
+            assert!(!message.contains(secret));
+        }
     }
 
     #[test]
