@@ -122,6 +122,15 @@ pub struct S3Config {
     )]
     pub set_checksum: bool,
 
+    /// Add `Cache-Control: no-store` to non-Parquet object uploads.
+    #[arg(
+        long,
+        env = "P_S3_CACHE_CONTROL_NO_STORE",
+        value_name = "bool",
+        default_value = "false"
+    )]
+    pub cache_control_no_store: bool,
+
     /// Set client to use virtual hosted style acess
     #[arg(
         long,
@@ -335,7 +344,8 @@ impl ObjectStorageProvider for S3Config {
 
         // limit objectstore to a concurrent request limit
         let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
-        let s3 = MetricLayer::new(s3, "s3");
+        let s3 =
+            MetricLayer::new(s3, "s3").with_cache_control_no_store(self.cache_control_no_store);
 
         let object_store_registry = DefaultObjectStoreRegistry::new();
         let url = ObjectStoreUrl::parse(format!("s3://{}", self.bucket_name)).unwrap();
@@ -348,7 +358,8 @@ impl ObjectStorageProvider for S3Config {
         let s3 = self.get_default_builder().build().unwrap();
         // limit objectstore to a concurrent request limit
         let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
-        let s3 = MetricLayer::new(s3, "s3");
+        let s3 =
+            MetricLayer::new(s3, "s3").with_cache_control_no_store(self.cache_control_no_store);
         Arc::new(S3 {
             client: Arc::new(s3),
             bucket: self.bucket_name.clone(),
