@@ -175,7 +175,9 @@ pub async fn user_auth_for_datasets(
                     Action::Query,
                     Some(ParseableResourceType::Stream(stream)),
                 ) => {
-                    if !PARSEABLE.check_or_load_stream(stream, tenant_id).await {
+                    // `stream` is the role's resource selector and may be the
+                    // wildcard `*`; load the dataset being authorized instead.
+                    if !PARSEABLE.check_or_load_stream(table_name, tenant_id).await {
                         return Err(actix_web::error::ErrorUnauthorized(format!(
                             "Stream not found: {table_name}"
                         )));

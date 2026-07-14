@@ -491,10 +491,7 @@ fn split_array_elements(value: &str) -> Result<Vec<&str>, String> {
                     .char_indices()
                     .nth(start)
                     .map_or(value.len(), |(b, _)| b);
-                let byte_end = value
-                    .char_indices()
-                    .nth(i)
-                    .map_or(value.len(), |(b, _)| b);
+                let byte_end = value.char_indices().nth(i).map_or(value.len(), |(b, _)| b);
                 elements.push(&value[byte_start..byte_end]);
                 start = i + 1;
             }
@@ -715,10 +712,7 @@ mod tests {
     #[test]
     fn test_sanitize_numeric_elements() {
         assert_eq!(sanitize_array_elements("1, 2, 3").unwrap(), "1, 2, 3");
-        assert_eq!(
-            sanitize_array_elements("3.14, 2.71").unwrap(),
-            "3.14, 2.71"
-        );
+        assert_eq!(sanitize_array_elements("3.14, 2.71").unwrap(), "3.14, 2.71");
     }
 
     #[test]
@@ -732,10 +726,7 @@ mod tests {
     #[test]
     fn test_sanitize_bare_string_elements() {
         assert_eq!(sanitize_array_elements("foo").unwrap(), "'foo'");
-        assert_eq!(
-            sanitize_array_elements("foo, bar").unwrap(),
-            "'foo', 'bar'"
-        );
+        assert_eq!(sanitize_array_elements("foo, bar").unwrap(), "'foo', 'bar'");
     }
 
     #[test]
@@ -775,8 +766,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_multiple_quoted_with_commas() {
-        let result =
-            sanitize_array_elements("'hello, world', 'foo, bar'").unwrap();
+        let result = sanitize_array_elements("'hello, world', 'foo, bar'").unwrap();
         assert_eq!(result, "'hello, world', 'foo, bar'");
     }
 
@@ -852,50 +842,34 @@ mod tests {
 
     #[test]
     fn test_list_condition_expr_strips_outer_brackets() {
-        let result =
-            list_condition_expr("tags", &WhereConfigOperator::Equal, "[1, 2]").unwrap();
+        let result = list_condition_expr("tags", &WhereConfigOperator::Equal, "[1, 2]").unwrap();
         assert_eq!(result, "\"tags\" = ARRAY[1, 2]");
     }
 
     #[test]
     fn test_list_condition_expr_does_not_contain() {
-        let result = list_condition_expr(
-            "tags",
-            &WhereConfigOperator::DoesNotContain,
-            "foo",
-        )
-        .unwrap();
+        let result =
+            list_condition_expr("tags", &WhereConfigOperator::DoesNotContain, "foo").unwrap();
         assert_eq!(result, "NOT array_has_all(\"tags\", ARRAY['foo'])");
     }
 
     #[test]
     fn test_list_condition_expr_not_equal() {
-        let result =
-            list_condition_expr("tags", &WhereConfigOperator::NotEqual, "42").unwrap();
+        let result = list_condition_expr("tags", &WhereConfigOperator::NotEqual, "42").unwrap();
         assert_eq!(result, "\"tags\" != ARRAY[42]");
     }
 
     #[test]
     fn test_list_condition_expr_quoted_element_with_comma() {
-        let result = list_condition_expr(
-            "cities",
-            &WhereConfigOperator::Contains,
-            "'New York, NY'",
-        )
-        .unwrap();
-        assert_eq!(
-            result,
-            "array_has_all(\"cities\", ARRAY['New York, NY'])"
-        );
+        let result =
+            list_condition_expr("cities", &WhereConfigOperator::Contains, "'New York, NY'")
+                .unwrap();
+        assert_eq!(result, "array_has_all(\"cities\", ARRAY['New York, NY'])");
     }
 
     #[test]
     fn test_list_condition_expr_rejects_injection() {
-        let result = list_condition_expr(
-            "tags",
-            &WhereConfigOperator::Contains,
-            "1] OR 1=1 --",
-        );
+        let result = list_condition_expr("tags", &WhereConfigOperator::Contains, "1] OR 1=1 --");
         assert!(
             result.is_err(),
             "Injection via bracket characters must be rejected"
@@ -904,8 +878,7 @@ mod tests {
 
     #[test]
     fn test_list_condition_expr_unsupported_operator() {
-        let result =
-            list_condition_expr("tags", &WhereConfigOperator::GreaterThan, "1");
+        let result = list_condition_expr("tags", &WhereConfigOperator::GreaterThan, "1");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not supported"));
     }
