@@ -26,8 +26,8 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt, stream::BoxStream};
 use object_store::{
-    CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore,
-    PutMultipartOptions, PutOptions, PutPayload, PutResult, RenameOptions,
+    Attribute, CopyOptions, GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta,
+    ObjectStore, PutMultipartOptions, PutOptions, PutPayload, PutResult, RenameOptions,
     Result as ObjectStoreResult, path::Path,
 };
 
@@ -93,6 +93,7 @@ pub fn error_to_status_code(err: &object_store::Error) -> &'static str {
 pub struct MetricLayer<T: ObjectStore> {
     inner: T,
     provider: String,
+    cache_control_no_store: bool,
 }
 
 impl<T: ObjectStore> MetricLayer<T> {
@@ -100,6 +101,20 @@ impl<T: ObjectStore> MetricLayer<T> {
         Self {
             inner,
             provider: provider.to_string(),
+            cache_control_no_store: false,
+        }
+    }
+
+    pub fn with_cache_control_no_store(mut self, enabled: bool) -> Self {
+        self.cache_control_no_store = enabled;
+        self
+    }
+
+    fn set_cache_control(&self, location: &Path, attributes: &mut object_store::Attributes) {
+        // Parquet data is immutable and may be cached, while mutable metadata
+        // (manifests, schemas, stream metadata, etc.) must not be cached.
+        if self.cache_control_no_store && !location.as_ref().ends_with(".parquet") {
+            attributes.insert(Attribute::CacheControl, "no-store".into());
         }
     }
 }
@@ -116,8 +131,9 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         &self,
         location: &Path,
         payload: PutPayload,
-        opts: PutOptions,
+        mut opts: PutOptions,
     ) -> ObjectStoreResult<PutResult> {
+        self.set_cache_control(location, &mut opts.attributes);
         let _guard = InflightGuard::new(&self.provider, "PUT");
         let time = time::Instant::now();
         let put_result = self.inner.put_opts(location, payload, opts).await;
@@ -137,8 +153,9 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
     async fn put_multipart_opts(
         &self,
         location: &Path,
-        opts: PutMultipartOptions,
+        mut opts: PutMultipartOptions,
     ) -> ObjectStoreResult<Box<dyn MultipartUpload>> {
+        self.set_cache_control(location, &mut opts.attributes);
         let _guard = InflightGuard::new(&self.provider, "PUT_MULTIPART");
         let time = time::Instant::now();
         let result = self.inner.put_multipart_opts(location, opts).await;
@@ -322,5 +339,45 @@ impl<T> Stream for StreamMetricWrapper<'_, T> {
             }
             t => t,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use object_store::{Attribute, Attributes, memory::InMemory, path::Path};
+
+    use super::MetricLayer;
+
+    #[test]
+    fn s3_metadata_uploads_disable_caching() {
+        let layer = MetricLayer::new(InMemory::new(), "s3").with_cache_control_no_store(true);
+        let mut attributes = Attributes::new();
+
+        layer.set_cache_control(&Path::from("stream/stream.json"), &mut attributes);
+
+        assert_eq!(
+            attributes.get(&Attribute::CacheControl).map(AsRef::as_ref),
+            Some("no-store")
+        );
+    }
+
+    #[test]
+    fn s3_parquet_uploads_remain_cacheable() {
+        let layer = MetricLayer::new(InMemory::new(), "s3").with_cache_control_no_store(true);
+        let mut attributes = Attributes::new();
+
+        layer.set_cache_control(&Path::from("stream/events.parquet"), &mut attributes);
+
+        assert_eq!(attributes.get(&Attribute::CacheControl), None);
+    }
+
+    #[test]
+    fn cache_control_is_disabled_by_default() {
+        let layer = MetricLayer::new(InMemory::new(), "s3");
+        let mut attributes = Attributes::new();
+
+        layer.set_cache_control(&Path::from("stream/stream.json"), &mut attributes);
+
+        assert_eq!(attributes.get(&Attribute::CacheControl), None);
     }
 }
