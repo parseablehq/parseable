@@ -16,8 +16,10 @@
  *
  */
 
-use crate::connectors::kafka::config::KafkaConfig;
+use crate::connectors::kafka::config::{KafkaConfig, SaslMechanism};
 use crate::handlers::TENANT_ID;
+use aws_msk_iam_sasl_signer::generate_auth_token;
+use aws_types::region::Region;
 use derive_more::Constructor;
 use rdkafka::client::OAuthToken;
 use rdkafka::consumer::{ConsumerContext, Rebalance};
@@ -30,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
 use std::sync::{Arc, RwLock};
+use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Receiver;
 use tracing::{error, info, warn};
@@ -53,6 +56,13 @@ pub struct KafkaContext {
     config: Arc<KafkaConfig>,
     statistics: Arc<RwLock<Statistics>>,
     rebalance_tx: mpsc::Sender<RebalanceEvent>,
+    /// Handle to the Tokio runtime, captured at construction time.
+    ///
+    /// librdkafka invokes the OAuth token refresh callback from one of its own
+    /// background threads, which is not a Tokio runtime thread. The MSK IAM
+    /// token signer is async, so we use this handle to drive it to completion
+    /// from that synchronous callback.
+    runtime_handle: Handle,
 }
 
 impl KafkaContext {
@@ -64,6 +74,7 @@ impl KafkaContext {
                 config,
                 statistics,
                 rebalance_tx,
+                runtime_handle: Handle::current(),
             },
             rebalance_rx,
         )
@@ -251,8 +262,10 @@ impl ProducerContext for KafkaContext {
 }
 
 impl ClientContext for KafkaContext {
-    // TODO: when implementing OAuth, set this to true
-    const ENABLE_REFRESH_OAUTH_TOKEN: bool = false;
+    // Enables librdkafka's OAuth token refresh callback. librdkafka only invokes
+    // `generate_oauth_token` when the configured SASL mechanism is OAUTHBEARER,
+    // so leaving this on has no effect for other mechanisms.
+    const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
 
     fn stats(&self, new_stats: Statistics) {
         match self.statistics.write() {
@@ -265,11 +278,51 @@ impl ClientContext for KafkaContext {
         };
     }
 
+    /// Generates a SASL/OAUTHBEARER token for AWS MSK IAM authentication.
+    ///
+    /// librdkafka calls this synchronously from one of its background threads
+    /// whenever it needs a new token (initially and before expiry). The AWS MSK
+    /// IAM signer is async, so we drive it to completion on the captured Tokio
+    /// runtime handle. This thread is not a runtime worker, so blocking on it is
+    /// safe and does not stall async tasks.
     fn generate_oauth_token(
         &self,
         _oauthbearer_config: Option<&str>,
     ) -> Result<OAuthToken, Box<dyn Error>> {
-        // TODO Implement OAuth token generation when needed
-        Err("OAuth token generation is not implemented".into())
+        let security = self.config.security();
+
+        // This callback is only wired up for the OAUTHBEARER mechanism, which we
+        // use exclusively for AWS MSK IAM. Guard against misconfiguration.
+        if !matches!(
+            security.and_then(|s| s.sasl_mechanism.clone()),
+            Some(SaslMechanism::OAuthBearer)
+        ) {
+            return Err(
+                "OAuth token generation is only supported for the OAUTHBEARER (AWS MSK IAM) SASL mechanism"
+                    .into(),
+            );
+        }
+
+        let region = security
+            .and_then(|s| s.resolved_aws_region())
+            .ok_or("AWS region is not configured for MSK IAM authentication")?;
+
+        info!("Generating AWS MSK IAM OAuth token for region {region}");
+
+        // Drive the async signer from this synchronous, non-runtime thread.
+        let (token, expiration_time_ms) = self
+            .runtime_handle
+            .block_on(generate_auth_token(Region::new(region)))
+            .map_err(|e| -> Box<dyn Error> {
+                format!("Failed to generate AWS MSK IAM auth token: {e}").into()
+            })?;
+
+        Ok(OAuthToken {
+            // MSK does not consume the principal name, but librdkafka requires a
+            // non-empty value.
+            principal_name: "parseable".to_string(),
+            token,
+            lifetime_ms: expiration_time_ms,
+        })
     }
 }
