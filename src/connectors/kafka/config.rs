@@ -23,6 +23,12 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// Standard AWS environment variables consulted when resolving the region for
+/// MSK IAM authentication. Kept as named constants to avoid typo-prone string
+/// literals in `std::env` calls.
+const AWS_REGION_ENV: &str = "AWS_REGION";
+const AWS_DEFAULT_REGION_ENV: &str = "AWS_DEFAULT_REGION";
+
 #[derive(Debug, Clone, Parser)]
 pub struct KafkaConfig {
     #[arg(
@@ -810,16 +816,33 @@ impl SecurityConfig {
     /// Resolves the AWS region to use for MSK IAM authentication.
     ///
     /// Precedence: the explicit `--aws-region` flag, then the standard
-    /// `AWS_REGION` / `AWS_DEFAULT_REGION` environment variables.
+    /// `AWS_REGION` / `AWS_DEFAULT_REGION` environment variables. Each source is
+    /// normalized (trimmed and rejected if empty) before falling through, so an
+    /// explicitly-empty flag does not shadow a valid environment variable.
     pub fn resolved_aws_region(&self) -> Option<String> {
-        self.aws_region
-            .clone()
-            .or_else(|| std::env::var("AWS_REGION").ok())
-            .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
+        Self::normalize_region(self.aws_region.clone())
+            .or_else(|| Self::normalize_region(std::env::var(AWS_REGION_ENV).ok()))
+            .or_else(|| Self::normalize_region(std::env::var(AWS_DEFAULT_REGION_ENV).ok()))
+    }
+
+    /// Trims a candidate region value and discards it if it is empty.
+    fn normalize_region(region: Option<String>) -> Option<String> {
+        region
+            .map(|region| region.trim().to_owned())
             .filter(|region| !region.is_empty())
     }
 
     fn validate(&self) -> anyhow::Result<()> {
+        // Resolve the region (including environment fallbacks) once, then defer
+        // to the pure validation logic so it can be tested deterministically.
+        self.validate_with_region(self.resolved_aws_region().as_deref())
+    }
+
+    /// Validates the security configuration against an already-resolved AWS
+    /// region. Kept separate from region resolution (which reads process
+    /// environment variables) so the validation rules can be exercised without
+    /// depending on the ambient environment.
+    fn validate_with_region(&self, resolved_region: Option<&str>) -> anyhow::Result<()> {
         // Pure TLS (mutual auth) requires the full client certificate material.
         // For SASL_SSL, TLS is only used for server authentication and channel
         // encryption, so client certificates are not required — the caller
@@ -845,9 +868,17 @@ impl SecurityConfig {
             match self.sasl_mechanism {
                 None => anyhow::bail!("SASL mechanism is required when SASL is enabled"),
                 Some(SaslMechanism::OAuthBearer) => {
+                    // AWS MSK IAM requires SASL_SSL: the OAUTHBEARER token is a
+                    // signed bearer credential, so transmitting it over an
+                    // unencrypted SASL_PLAINTEXT connection would expose it.
+                    if matches!(self.protocol, SecurityProtocol::SaslPlaintext) {
+                        anyhow::bail!(
+                            "SASL/OAUTHBEARER (MSK IAM) requires the SASL_SSL security protocol; SASL_PLAINTEXT would expose the bearer token"
+                        );
+                    }
                     // AWS MSK IAM mints tokens from the ambient AWS credential
                     // chain, so only a resolvable region is required here.
-                    if self.resolved_aws_region().is_none() {
+                    if resolved_region.is_none() {
                         anyhow::bail!(
                             "AWS region is required for SASL/OAUTHBEARER (MSK IAM); set --aws-region or the AWS_REGION environment variable"
                         );
@@ -1083,11 +1114,36 @@ mod tests {
             ..Default::default()
         };
 
-        // Region resolution also consults AWS_REGION / AWS_DEFAULT_REGION, so
-        // only assert the failure when neither is present in the environment.
-        if security.resolved_aws_region().is_none() {
-            assert!(security.validate().is_err());
-        }
+        // Validate against an explicitly-unresolved region so the failure path
+        // is exercised regardless of the ambient AWS_REGION environment.
+        assert!(security.validate_with_region(None).is_err());
+    }
+
+    #[test]
+    fn oauthbearer_rejects_sasl_plaintext() {
+        // The bearer token must never traverse an unencrypted connection.
+        let security = SecurityConfig {
+            protocol: SecurityProtocol::SaslPlaintext,
+            sasl_mechanism: Some(SaslMechanism::OAuthBearer),
+            aws_region: Some("us-east-1".to_string()),
+            ..Default::default()
+        };
+
+        assert!(security.validate_with_region(Some("us-east-1")).is_err());
+    }
+
+    #[test]
+    fn normalize_region_trims_and_rejects_empty() {
+        assert_eq!(
+            SecurityConfig::normalize_region(Some("  us-east-1  ".to_string())).as_deref(),
+            Some("us-east-1")
+        );
+        assert_eq!(
+            SecurityConfig::normalize_region(Some("   ".to_string())),
+            None
+        );
+        assert_eq!(SecurityConfig::normalize_region(Some(String::new())), None);
+        assert_eq!(SecurityConfig::normalize_region(None), None);
     }
 
     #[test]
