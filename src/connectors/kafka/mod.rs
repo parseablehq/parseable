@@ -16,8 +16,9 @@
  *
  */
 
-use crate::connectors::kafka::config::{KafkaConfig, SaslMechanism};
+use crate::connectors::kafka::config::{KafkaConfig, OAuthProvider, SaslMechanism};
 use crate::handlers::TENANT_ID;
+use aws_config::default_provider::region::DefaultRegionChain;
 use aws_msk_iam_sasl_signer::generate_auth_token;
 use aws_types::region::Region;
 use derive_more::Constructor;
@@ -31,8 +32,8 @@ use rdkafka::{ClientContext, Message, Offset, Statistics};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::error::Error;
-use std::sync::{Arc, RwLock};
-use tokio::runtime::Handle;
+use std::sync::{Arc, OnceLock, RwLock};
+use std::time::Duration;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::Receiver;
 use tracing::{error, info, warn};
@@ -51,18 +52,23 @@ type BaseConsumer = rdkafka::consumer::BaseConsumer<KafkaContext>;
 type FutureProducer = rdkafka::producer::FutureProducer<KafkaContext>;
 type StreamConsumer = rdkafka::consumer::StreamConsumer<KafkaContext>;
 
+/// Principal name reported to librdkafka for MSK IAM tokens. MSK does not
+/// consume it, but librdkafka requires a non-empty value.
+const MSK_OAUTH_PRINCIPAL: &str = "parseable";
+
+/// Upper bound on a single MSK IAM token generation, covering the AWS
+/// credential chain resolution (which may involve IMDS/STS round-trips).
+const MSK_TOKEN_GENERATION_TIMEOUT: Duration = Duration::from_secs(30);
+
 #[derive(Clone, Debug)]
 pub struct KafkaContext {
     config: Arc<KafkaConfig>,
     statistics: Arc<RwLock<Statistics>>,
     rebalance_tx: mpsc::Sender<RebalanceEvent>,
-    /// Handle to the Tokio runtime, captured at construction time.
-    ///
-    /// librdkafka invokes the OAuth token refresh callback from one of its own
-    /// background threads, which is not a Tokio runtime thread. The MSK IAM
-    /// token signer is async, so we use this handle to drive it to completion
-    /// from that synchronous callback.
-    runtime_handle: Handle,
+    /// AWS region for MSK IAM token signing, resolved once on first use.
+    /// Resolution can involve the AWS SDK default region chain (profile
+    /// files, IMDS), so the result is cached for subsequent token refreshes.
+    msk_region: Arc<OnceLock<Region>>,
 }
 
 impl KafkaContext {
@@ -74,7 +80,7 @@ impl KafkaContext {
                 config,
                 statistics,
                 rebalance_tx,
-                runtime_handle: Handle::current(),
+                msk_region: Arc::new(OnceLock::new()),
             },
             rebalance_rx,
         )
@@ -262,9 +268,9 @@ impl ProducerContext for KafkaContext {
 }
 
 impl ClientContext for KafkaContext {
-    // Enables librdkafka's OAuth token refresh callback. librdkafka only invokes
-    // `generate_oauth_token` when the configured SASL mechanism is OAUTHBEARER,
-    // so leaving this on has no effect for other mechanisms.
+    // Handles application-managed OAuth refresh events for AWS MSK. When the
+    // OIDC method is configured, librdkafka uses its own background token
+    // refresh handler instead and does not enqueue these events.
     const ENABLE_REFRESH_OAUTH_TOKEN: bool = true;
 
     fn stats(&self, new_stats: Statistics) {
@@ -280,47 +286,89 @@ impl ClientContext for KafkaContext {
 
     /// Generates a SASL/OAUTHBEARER token for AWS MSK IAM authentication.
     ///
-    /// librdkafka calls this synchronously from one of its background threads
-    /// whenever it needs a new token (initially and before expiry). The AWS MSK
-    /// IAM signer is async, so we drive it to completion on the captured Tokio
-    /// runtime handle. This thread is not a runtime worker, so blocking on it is
-    /// safe and does not stall async tasks.
+    /// librdkafka calls this synchronously whenever it needs a new token
+    /// (initially and before expiry). The invocation can happen on a thread
+    /// that is already executing inside a Tokio runtime — the consumer poll
+    /// loop drives these events from within `block_on` — where nesting
+    /// `Handle::block_on` panics. The async signer therefore runs on a
+    /// dedicated short-lived thread with its own single-use runtime: safe from
+    /// any calling thread, and at one refresh per ~15 minutes the overhead is
+    /// negligible.
     fn generate_oauth_token(
         &self,
         _oauthbearer_config: Option<&str>,
     ) -> Result<OAuthToken, Box<dyn Error>> {
-        let security = self.config.security();
+        let Some(security) = self.config.security() else {
+            return Err("Kafka security configuration is missing".into());
+        };
 
-        // This callback is only wired up for the OAUTHBEARER mechanism, which we
-        // use exclusively for AWS MSK IAM. Guard against misconfiguration.
-        if !matches!(
-            security.and_then(|s| s.sasl_mechanism.clone()),
-            Some(SaslMechanism::OAuthBearer)
-        ) {
+        // The application-managed callback is only used by the AWS MSK provider.
+        // OIDC providers, including Google Managed Kafka's local auth server,
+        // are refreshed by librdkafka's built-in OIDC handler.
+        if !matches!(security.sasl_mechanism, Some(SaslMechanism::OAuthBearer))
+            || !matches!(
+                security.resolved_oauth_provider(),
+                Some(OAuthProvider::AwsMsk)
+            )
+        {
             return Err(
-                "OAuth token generation is only supported for the OAUTHBEARER (AWS MSK IAM) SASL mechanism"
+                "Application-managed OAuth token generation is only supported for the aws-msk provider"
                     .into(),
             );
         }
 
-        let region = security
-            .and_then(|s| s.resolved_aws_region())
-            .ok_or("AWS region is not configured for MSK IAM authentication")?;
+        let explicit_region = security.resolved_aws_region().map(Region::new);
+        let cached_region = Arc::clone(&self.msk_region);
 
-        info!("Generating AWS MSK IAM OAuth token for region {region}");
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("msk-iam-token".to_string())
+            .spawn(move || {
+                let result = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| format!("Failed to build MSK IAM signer runtime: {e}"))
+                    .and_then(|runtime| {
+                        runtime.block_on(async {
+                            let region = match cached_region.get() {
+                                Some(region) => region.clone(),
+                                None => {
+                                    let region = match explicit_region {
+                                        Some(region) => region,
+                                        // Fall back to the AWS SDK default region
+                                        // chain (profile files, IMDS) — the same
+                                        // sources that supply the credentials.
+                                        None => DefaultRegionChain::builder()
+                                            .build()
+                                            .region()
+                                            .await
+                                            .ok_or_else(|| {
+                                                "Unable to resolve an AWS region for MSK IAM; set --aws-region or AWS_REGION"
+                                                    .to_string()
+                                            })?,
+                                    };
+                                    cached_region.get_or_init(|| region).clone()
+                                }
+                            };
 
-        // Drive the async signer from this synchronous, non-runtime thread.
-        let (token, expiration_time_ms) = self
-            .runtime_handle
-            .block_on(generate_auth_token(Region::new(region)))
-            .map_err(|e| -> Box<dyn Error> {
-                format!("Failed to generate AWS MSK IAM auth token: {e}").into()
-            })?;
+                            info!("Generating AWS MSK IAM OAuth token for region {region}");
+
+                            generate_auth_token(region).await.map_err(|e| {
+                                format!("Failed to generate AWS MSK IAM auth token: {e}")
+                            })
+                        })
+                    });
+                // The receiver is dropped if the caller timed out; nothing to do.
+                let _ = tx.send(result);
+            })
+            .map_err(|e| format!("Failed to spawn MSK IAM token thread: {e}"))?;
+
+        let (token, expiration_time_ms) = rx
+            .recv_timeout(MSK_TOKEN_GENERATION_TIMEOUT)
+            .map_err(|e| format!("MSK IAM token generation did not complete: {e}"))??;
 
         Ok(OAuthToken {
-            // MSK does not consume the principal name, but librdkafka requires a
-            // non-empty value.
-            principal_name: "parseable".to_string(),
+            principal_name: MSK_OAUTH_PRINCIPAL.to_string(),
             token,
             lifetime_ms: expiration_time_ms,
         })

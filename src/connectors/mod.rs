@@ -38,7 +38,15 @@ pub async fn init(prometheus: &PrometheusMetrics) -> anyhow::Result<()> {
     if matches!(PARSEABLE.options.mode, Mode::Ingest | Mode::All) {
         match PARSEABLE.kafka_config.validate() {
             Err(e) => {
-                warn!("Kafka connector configuration invalid. {}", e);
+                // A misconfigured connector must abort startup loudly rather
+                // than silently skipping ingestion. Only a completely absent
+                // Kafka configuration is allowed to pass through.
+                let kafka_configured = PARSEABLE.kafka_config.bootstrap_servers.is_some()
+                    || std::env::vars().any(|(key, _)| key.starts_with("P_KAFKA_"));
+                if kafka_configured {
+                    anyhow::bail!("Kafka connector configuration invalid: {e}");
+                }
+                warn!("Kafka connector not configured, skipping. ({e})");
             }
             Ok(_) => {
                 let config = PARSEABLE.kafka_config.clone();

@@ -210,10 +210,9 @@ impl KafkaStreams {
     fn create_consumer(context: KafkaContext) -> Arc<StreamConsumer> {
         let kafka_config = &context.config;
         let consumer_config = kafka_config.to_rdkafka_consumer_config();
-        info!(
-            "Creating Kafka consumer from configs: {:#?}",
-            &consumer_config
-        );
+        // ClientConfig can contain SASL passwords and OAuth client secrets.
+        // Never emit the full configuration into logs.
+        info!("Creating Kafka consumer from configured settings");
 
         let consumer: StreamConsumer = consumer_config
             .create_with_context(context.clone())
