@@ -185,7 +185,7 @@ pub struct ConsumerConfig {
         required = false,
         env = "P_KAFKA_CONSUMER_AUTO_OFFSET_RESET",
         default_value_t = SourceOffset::Earliest,
-        help = "Auto offset reset behavior"
+        help = "Where to start consuming when no committed offset exists: earliest, latest, or group. group resumes from committed offsets and falls back to librdkafka's default (latest) for a brand-new consumer group"
     )]
     pub auto_offset_reset: SourceOffset,
 
@@ -654,7 +654,11 @@ impl KafkaConfig {
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
-        if self.bootstrap_servers.is_none() {
+        if self
+            .bootstrap_servers
+            .as_deref()
+            .is_none_or(|servers| servers.trim().is_empty())
+        {
             anyhow::bail!("Bootstrap servers must not be empty");
         }
 
@@ -711,6 +715,13 @@ impl ConsumerConfig {
             .set("isolation.level", self.isolation_level.to_string())
             .set("group.instance.id", self.group_instance_id.to_string())
             .set("statistics.interval.ms", self.stats_interval_ms.to_string());
+
+        // `auto.offset.reset` only governs where consumption starts when no
+        // committed offset exists. `Group` means "resume from committed
+        // offsets", so it keeps librdkafka's default fallback.
+        if let Some(reset) = self.auto_offset_reset.auto_offset_reset_value() {
+            config.set("auto.offset.reset", reset);
+        }
     }
 
     pub fn topics(&self) -> Vec<&str> {
@@ -1226,6 +1237,22 @@ impl SourceOffset {
             SourceOffset::Group => Offset::Stored,
         }
     }
+
+    /// Value for librdkafka's `auto.offset.reset`, or `None` to keep the
+    /// library default.
+    ///
+    /// `Group` delegates to committed offsets and deliberately sets nothing:
+    /// for a brand-new consumer group (no committed offsets anywhere) it is
+    /// therefore equivalent to `latest`, librdkafka's default fallback. This
+    /// is documented in the CLI help; use `earliest` when a new group must
+    /// consume the full topic history.
+    pub fn auto_offset_reset_value(&self) -> Option<&'static str> {
+        match self {
+            SourceOffset::Earliest => Some("earliest"),
+            SourceOffset::Latest => Some("latest"),
+            SourceOffset::Group => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1263,6 +1290,34 @@ mod tests {
             Some(SaslMechanism::OAuthBearer)
         ));
         assert_eq!(cli.security.oauth_provider, Some(OAuthProvider::Oidc));
+    }
+
+    #[test]
+    fn empty_bootstrap_servers_are_rejected() {
+        for bootstrap in [None, Some(String::new()), Some("   ".to_string())] {
+            let config = KafkaConfig {
+                bootstrap_servers: bootstrap,
+                ..Default::default()
+            };
+            assert!(config.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn auto_offset_reset_is_applied_to_consumer_config() {
+        assert_eq!(
+            SourceOffset::Earliest.auto_offset_reset_value(),
+            Some("earliest")
+        );
+        assert_eq!(
+            SourceOffset::Latest.auto_offset_reset_value(),
+            Some("latest")
+        );
+        assert_eq!(SourceOffset::Group.auto_offset_reset_value(), None);
+
+        // Default consumer config uses Earliest and must propagate it.
+        let config = KafkaConfig::default().to_rdkafka_consumer_config();
+        assert_eq!(config.get("auto.offset.reset"), Some("earliest"));
     }
 
     #[test]

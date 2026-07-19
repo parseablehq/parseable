@@ -23,9 +23,39 @@ use crate::connectors::kafka::processor::StreamWorker;
 use anyhow::Result;
 use futures_util::StreamExt;
 use rdkafka::consumer::Consumer;
+use std::future::Future;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tracing::{error, info};
+
+/// Owns the sink worker runtime and shuts it down without blocking on drop.
+///
+/// Dropping a `Runtime` directly inside an async context panics ("Cannot drop
+/// a runtime in a context where blocking is not allowed") — which is exactly
+/// where the connector future is dropped when the server shuts down or a
+/// sibling future in `try_join!` fails.
+struct WorkerRuntime(Option<Runtime>);
+
+impl WorkerRuntime {
+    fn spawn<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        self.0
+            .as_ref()
+            .expect("worker runtime is only taken on drop")
+            .spawn(future)
+    }
+}
+
+impl Drop for WorkerRuntime {
+    fn drop(&mut self) {
+        if let Some(runtime) = self.0.take() {
+            runtime.shutdown_background();
+        }
+    }
+}
 
 pub struct KafkaSinkConnector<P>
 where
@@ -33,7 +63,7 @@ where
 {
     streams: KafkaStreams,
     stream_processor: Arc<StreamWorker<P>>,
-    runtime: Runtime,
+    runtime: WorkerRuntime,
 }
 
 impl<P> KafkaSinkConnector<P>
@@ -52,12 +82,11 @@ where
             "kafka-sink-worker",
         )
         .expect("Failed to build runtime");
-        let _ = runtime.enter();
 
         Self {
             streams: kafka_streams,
             stream_processor,
-            runtime,
+            runtime: WorkerRuntime(Some(runtime)),
         }
     }
 
@@ -90,5 +119,20 @@ where
             .await;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WorkerRuntime;
+    use crate::connectors::common::build_runtime;
+
+    #[tokio::test]
+    async fn worker_runtime_can_be_dropped_inside_async_context() {
+        // A bare `Runtime` dropped here would panic ("Cannot drop a runtime in
+        // a context where blocking is not allowed"). This is the failure path
+        // hit when the connector future is cancelled by `try_join!`.
+        let runtime = WorkerRuntime(Some(build_runtime(1, "test-worker").unwrap()));
+        drop(runtime);
     }
 }
