@@ -406,9 +406,8 @@ fn get_oidc_prompts() -> Vec<EnvPrompt> {
 /// Kafka has layered dependencies:
 /// - If any `P_KAFKA_*` env is set, `P_KAFKA_BOOTSTRAP_SERVERS` and
 ///   `P_KAFKA_CONSUMER_TOPICS` are required for the server to function.
-/// - If security protocol is SSL or SASL_SSL, SSL cert paths are required.
-/// - If security protocol is SASL_PLAINTEXT or SASL_SSL, SASL credentials
-///   are required.
+/// - Pure SSL requires client certificate material; SASL_SSL does not.
+/// - SASL requirements depend on the selected mechanism and OAuth provider.
 #[cfg(feature = "kafka")]
 fn get_kafka_prompts() -> Vec<EnvPrompt> {
     // Check if any Kafka env var is set
@@ -439,13 +438,13 @@ fn get_kafka_prompts() -> Vec<EnvPrompt> {
         .unwrap_or_default()
         .to_uppercase();
 
-    let needs_ssl = matches!(protocol.as_str(), "SSL" | "SASL_SSL" | "SASL-SSL");
+    let needs_client_cert = protocol == "SSL";
     let needs_sasl = matches!(
         protocol.as_str(),
         "SASL_PLAINTEXT" | "SASL-PLAINTEXT" | "SASL_SSL" | "SASL-SSL"
     );
 
-    if needs_ssl {
+    if needs_client_cert {
         prompts.extend([
             EnvPrompt {
                 env_var: "P_KAFKA_SSL_CA_LOCATION",
@@ -469,26 +468,105 @@ fn get_kafka_prompts() -> Vec<EnvPrompt> {
     }
 
     if needs_sasl {
-        prompts.extend([
-            EnvPrompt {
-                env_var: "P_KAFKA_SASL_MECHANISM",
-                display_name: "Kafka SASL Mechanism (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, GSSAPI)",
+        const KAFKA_SASL_MECHANISM_ENV: &str = "P_KAFKA_SASL_MECHANISM";
+        const KAFKA_OAUTH_PROVIDER_ENV: &str = "P_KAFKA_OAUTH_PROVIDER";
+        const KAFKA_OAUTH_TOKEN_ENDPOINT_URL_ENV: &str = "P_KAFKA_OAUTH_TOKEN_ENDPOINT_URL";
+
+        prompts.push(EnvPrompt {
+            env_var: KAFKA_SASL_MECHANISM_ENV,
+            display_name:
+                "Kafka SASL Mechanism (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, GSSAPI, OAUTHBEARER)",
+            required: true,
+            is_secret: false,
+        });
+
+        let mechanism = std::env::var(KAFKA_SASL_MECHANISM_ENV)
+            .unwrap_or_default()
+            .to_uppercase();
+
+        if matches!(
+            mechanism.as_str(),
+            "OAUTHBEARER" | "OAUTH-BEARER" | "O-AUTH-BEARER"
+        ) {
+            let explicit_provider = std::env::var(KAFKA_OAUTH_PROVIDER_ENV)
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let has_oidc_endpoint = std::env::var(KAFKA_OAUTH_TOKEN_ENDPOINT_URL_ENV).is_ok();
+            let has_aws_region = ["P_KAFKA_AWS_REGION", "AWS_REGION", "AWS_DEFAULT_REGION"]
+                .iter()
+                .any(|name| std::env::var(name).is_ok());
+
+            let provider = if !explicit_provider.is_empty() {
+                explicit_provider.as_str()
+            } else if has_oidc_endpoint {
+                "oidc"
+            } else if has_aws_region {
+                "aws-msk"
+            } else {
+                ""
+            };
+
+            if provider.is_empty() {
+                prompts.push(EnvPrompt {
+                    env_var: KAFKA_OAUTH_PROVIDER_ENV,
+                    display_name: "Kafka OAuth Provider (aws-msk or oidc)",
+                    required: true,
+                    is_secret: false,
+                });
+            } else if matches!(provider, "aws-msk" | "aws_msk" | "aws") {
+                if !has_aws_region {
+                    prompts.push(EnvPrompt {
+                        env_var: "P_KAFKA_AWS_REGION",
+                        display_name: "AWS Region for MSK IAM",
+                        required: true,
+                        is_secret: false,
+                    });
+                }
+            } else if matches!(provider, "oidc" | "gcp" | "gcp-managed-kafka") {
+                prompts.extend([
+                    EnvPrompt {
+                        env_var: KAFKA_OAUTH_TOKEN_ENDPOINT_URL_ENV,
+                        display_name: "OAuth/OIDC Token Endpoint URL",
+                        required: true,
+                        is_secret: false,
+                    },
+                    EnvPrompt {
+                        env_var: "P_KAFKA_OAUTH_CLIENT_ID",
+                        display_name: "OAuth/OIDC Client ID",
+                        required: true,
+                        is_secret: false,
+                    },
+                    EnvPrompt {
+                        env_var: "P_KAFKA_OAUTH_CLIENT_SECRET",
+                        display_name: "OAuth/OIDC Client Secret",
+                        required: true,
+                        is_secret: true,
+                    },
+                ]);
+            }
+        } else if mechanism == "GSSAPI" {
+            prompts.push(EnvPrompt {
+                env_var: "P_KAFKA_KERBEROS_SERVICE_NAME",
+                display_name: "Kafka Kerberos Service Name",
                 required: true,
                 is_secret: false,
-            },
-            EnvPrompt {
-                env_var: "P_KAFKA_SASL_USERNAME",
-                display_name: "Kafka SASL Username",
-                required: true,
-                is_secret: false,
-            },
-            EnvPrompt {
-                env_var: "P_KAFKA_SASL_PASSWORD",
-                display_name: "Kafka SASL Password",
-                required: true,
-                is_secret: true,
-            },
-        ]);
+            });
+        } else if !mechanism.is_empty() {
+            prompts.extend([
+                EnvPrompt {
+                    env_var: "P_KAFKA_SASL_USERNAME",
+                    display_name: "Kafka SASL Username",
+                    required: true,
+                    is_secret: false,
+                },
+                EnvPrompt {
+                    env_var: "P_KAFKA_SASL_PASSWORD",
+                    display_name: "Kafka SASL Password",
+                    required: true,
+                    is_secret: true,
+                },
+            ]);
+        }
     }
 
     prompts

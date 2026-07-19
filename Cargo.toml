@@ -59,6 +59,7 @@ sasl2-sys = { version = "0.1.22", optional = true, features = ["vendored"] }
 # AWS MSK IAM authentication for Kafka (SASL/OAUTHBEARER token signing)
 aws-msk-iam-sasl-signer = { version = "1.0.1", optional = true }
 aws-types = { version = "1", optional = true }
+aws-config = { version = "1", optional = true }
 
 # Authentication and Security
 argon2 = "0.5.0"
@@ -240,10 +241,13 @@ kafka = [
     "rdkafka/ssl-vendored",
     "rdkafka/ssl",
     "rdkafka/sasl",
+    "rdkafka/curl",
+    "rdkafka/curl-static",
     "sasl2-sys",
     "sasl2-sys/vendored",
     "aws-msk-iam-sasl-signer",
     "aws-types",
+    "aws-config",
 ]
 
 [profile.release-lto]

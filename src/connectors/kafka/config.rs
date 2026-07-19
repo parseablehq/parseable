@@ -185,7 +185,7 @@ pub struct ConsumerConfig {
         required = false,
         env = "P_KAFKA_CONSUMER_AUTO_OFFSET_RESET",
         default_value_t = SourceOffset::Earliest,
-        help = "Auto offset reset behavior"
+        help = "Where to start consuming when no committed offset exists: earliest, latest, or group. group resumes from committed offsets and falls back to librdkafka's default (latest) for a brand-new consumer group"
     )]
     pub auto_offset_reset: SourceOffset,
 
@@ -450,7 +450,6 @@ pub struct ProducerConfig {
 #[derive(Debug, Clone, Args)]
 pub struct SecurityConfig {
     #[clap(
-        value_enum,
         long = "security-protocol",
         env = "P_KAFKA_SECURITY_PROTOCOL",
         required = false,
@@ -486,7 +485,6 @@ pub struct SecurityConfig {
 
     // SASL Configuration
     #[arg(
-        value_enum,
         long = "sasl-mechanism",
         env = "P_KAFKA_SASL_MECHANISM",
         required = false,
@@ -510,12 +508,45 @@ pub struct SecurityConfig {
     )]
     pub sasl_password: Option<String>,
 
+    // SASL/OAUTHBEARER provider configuration
+    #[arg(
+        long = "oauth-provider",
+        env = "P_KAFKA_OAUTH_PROVIDER",
+        required = false,
+        help = "OAuth provider: aws-msk for AWS IAM signing, or oidc for a standard token endpoint such as the Google Managed Kafka local auth server"
+    )]
+    pub oauth_provider: Option<OAuthProvider>,
+
+    #[arg(
+        long = "oauth-token-endpoint-url",
+        env = "P_KAFKA_OAUTH_TOKEN_ENDPOINT_URL",
+        required = false,
+        help = "OAuth/OIDC token endpoint URL. Required for the oidc provider"
+    )]
+    pub oauth_token_endpoint_url: Option<String>,
+
+    #[arg(
+        long = "oauth-client-id",
+        env = "P_KAFKA_OAUTH_CLIENT_ID",
+        required = false,
+        help = "OAuth/OIDC client ID. Google Managed Kafka's local auth server accepts 'unused'"
+    )]
+    pub oauth_client_id: Option<String>,
+
+    #[arg(
+        long = "oauth-client-secret",
+        env = "P_KAFKA_OAUTH_CLIENT_SECRET",
+        required = false,
+        help = "OAuth/OIDC client secret. Google Managed Kafka's local auth server accepts 'unused'"
+    )]
+    pub oauth_client_secret: Option<String>,
+
     // AWS MSK IAM configuration (SASL/OAUTHBEARER)
     #[arg(
         long = "aws-region",
         env = "P_KAFKA_AWS_REGION",
         required = false,
-        help = "AWS region for MSK IAM authentication (SASL/OAUTHBEARER). Falls back to AWS_REGION / AWS_DEFAULT_REGION when unset."
+        help = "AWS region for MSK IAM authentication (SASL/OAUTHBEARER). Falls back to AWS_REGION / AWS_DEFAULT_REGION, then the AWS SDK default region chain (profile files, IMDS) when unset."
     )]
     pub aws_region: Option<String>,
 
@@ -623,7 +654,11 @@ impl KafkaConfig {
     }
 
     pub fn validate(&self) -> anyhow::Result<()> {
-        if self.bootstrap_servers.is_none() {
+        if self
+            .bootstrap_servers
+            .as_deref()
+            .is_none_or(|servers| servers.trim().is_empty())
+        {
             anyhow::bail!("Bootstrap servers must not be empty");
         }
 
@@ -680,6 +715,13 @@ impl ConsumerConfig {
             .set("isolation.level", self.isolation_level.to_string())
             .set("group.instance.id", self.group_instance_id.to_string())
             .set("statistics.interval.ms", self.stats_interval_ms.to_string());
+
+        // `auto.offset.reset` only governs where consumption starts when no
+        // committed offset exists. `Group` means "resume from committed
+        // offsets", so it keeps librdkafka's default fallback.
+        if let Some(reset) = self.auto_offset_reset.auto_offset_reset_value() {
+            config.set("auto.offset.reset", reset);
+        }
     }
 
     pub fn topics(&self) -> Vec<&str> {
@@ -806,11 +848,48 @@ impl SecurityConfig {
                 }
             }
 
-            // OAUTHBEARER (used for AWS MSK IAM) requires no static credentials here.
-            // The token is minted on demand by `KafkaContext::generate_oauth_token`,
-            // which rdkafka invokes via the OAuth refresh callback. Setting the
-            // `sasl.mechanism` above is sufficient to enable that callback path.
+            if matches!(self.sasl_mechanism, Some(SaslMechanism::OAuthBearer))
+                && matches!(self.resolved_oauth_provider(), Some(OAuthProvider::Oidc))
+            {
+                // librdkafka's built-in OIDC handler fetches and refreshes tokens
+                // from the configured endpoint. Google Managed Kafka's local auth
+                // server implements this endpoint using Application Default
+                // Credentials.
+                config.set("sasl.oauthbearer.method", "oidc");
+                if let Some(ref endpoint) = self.oauth_token_endpoint_url {
+                    config.set("sasl.oauthbearer.token.endpoint.url", endpoint);
+                }
+                if let Some(ref client_id) = self.oauth_client_id {
+                    config.set("sasl.oauthbearer.client.id", client_id);
+                }
+                if let Some(ref client_secret) = self.oauth_client_secret {
+                    config.set("sasl.oauthbearer.client.secret", client_secret);
+                }
+            }
         }
+    }
+
+    /// Resolves the token provider while preserving the original AWS-only
+    /// configuration. An explicit provider wins, followed by an OIDC endpoint,
+    /// then an AWS region.
+    pub fn resolved_oauth_provider(&self) -> Option<OAuthProvider> {
+        let region = self.resolved_aws_region();
+        self.resolved_oauth_provider_with_region(region.as_deref())
+    }
+
+    fn resolved_oauth_provider_with_region(
+        &self,
+        resolved_region: Option<&str>,
+    ) -> Option<OAuthProvider> {
+        self.oauth_provider.or_else(|| {
+            if Self::has_value(&self.oauth_token_endpoint_url) {
+                Some(OAuthProvider::Oidc)
+            } else if resolved_region.is_some() {
+                Some(OAuthProvider::AwsMsk)
+            } else {
+                None
+            }
+        })
     }
 
     /// Resolves the AWS region to use for MSK IAM authentication.
@@ -820,16 +899,25 @@ impl SecurityConfig {
     /// normalized (trimmed and rejected if empty) before falling through, so an
     /// explicitly-empty flag does not shadow a valid environment variable.
     pub fn resolved_aws_region(&self) -> Option<String> {
-        Self::normalize_region(self.aws_region.clone())
-            .or_else(|| Self::normalize_region(std::env::var(AWS_REGION_ENV).ok()))
-            .or_else(|| Self::normalize_region(std::env::var(AWS_DEFAULT_REGION_ENV).ok()))
+        Self::normalize_region(self.aws_region.as_deref())
+            .or_else(|| Self::normalize_region(std::env::var(AWS_REGION_ENV).ok().as_deref()))
+            .or_else(|| {
+                Self::normalize_region(std::env::var(AWS_DEFAULT_REGION_ENV).ok().as_deref())
+            })
     }
 
     /// Trims a candidate region value and discards it if it is empty.
-    fn normalize_region(region: Option<String>) -> Option<String> {
+    fn normalize_region(region: Option<&str>) -> Option<String> {
         region
-            .map(|region| region.trim().to_owned())
+            .map(str::trim)
             .filter(|region| !region.is_empty())
+            .map(str::to_owned)
+    }
+
+    fn has_value(value: &Option<String>) -> bool {
+        value
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
     }
 
     fn validate(&self) -> anyhow::Result<()> {
@@ -868,20 +956,39 @@ impl SecurityConfig {
             match self.sasl_mechanism {
                 None => anyhow::bail!("SASL mechanism is required when SASL is enabled"),
                 Some(SaslMechanism::OAuthBearer) => {
-                    // AWS MSK IAM requires SASL_SSL: the OAUTHBEARER token is a
-                    // signed bearer credential, so transmitting it over an
-                    // unencrypted SASL_PLAINTEXT connection would expose it.
                     if matches!(self.protocol, SecurityProtocol::SaslPlaintext) {
                         anyhow::bail!(
-                            "SASL/OAUTHBEARER (MSK IAM) requires the SASL_SSL security protocol; SASL_PLAINTEXT would expose the bearer token"
+                            "SASL/OAUTHBEARER requires the SASL_SSL security protocol; SASL_PLAINTEXT would expose the bearer token"
                         );
                     }
-                    // AWS MSK IAM mints tokens from the ambient AWS credential
-                    // chain, so only a resolvable region is required here.
-                    if resolved_region.is_none() {
-                        anyhow::bail!(
-                            "AWS region is required for SASL/OAUTHBEARER (MSK IAM); set --aws-region or the AWS_REGION environment variable"
-                        );
+
+                    match self.resolved_oauth_provider_with_region(resolved_region) {
+                        Some(OAuthProvider::AwsMsk) => {
+                            // No hard region requirement: when unset here, token
+                            // generation falls back to the AWS SDK default
+                            // region chain (profile files, IMDS) — the same
+                            // sources that supply the credentials.
+                        }
+                        Some(OAuthProvider::Oidc) => {
+                            if !Self::has_value(&self.oauth_token_endpoint_url) {
+                                anyhow::bail!(
+                                    "OAuth token endpoint URL is required for the oidc OAuth provider"
+                                );
+                            }
+                            if !Self::has_value(&self.oauth_client_id) {
+                                anyhow::bail!(
+                                    "OAuth client ID is required for the oidc OAuth provider"
+                                );
+                            }
+                            if !Self::has_value(&self.oauth_client_secret) {
+                                anyhow::bail!(
+                                    "OAuth client secret is required for the oidc OAuth provider"
+                                );
+                            }
+                        }
+                        None => anyhow::bail!(
+                            "OAuth provider is required for SASL/OAUTHBEARER; set --oauth-provider to aws-msk or oidc"
+                        ),
                     }
                 }
                 Some(SaslMechanism::Gssapi) => {
@@ -903,7 +1010,7 @@ impl SecurityConfig {
     }
 }
 
-#[derive(ValueEnum, Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SecurityProtocol {
     Plaintext,
     Ssl,
@@ -918,8 +1025,8 @@ impl std::str::FromStr for SecurityProtocol {
         match s.to_uppercase().as_str() {
             "PLAINTEXT" => Ok(SecurityProtocol::Plaintext),
             "SSL" => Ok(SecurityProtocol::Ssl),
-            "SASL_SSL" => Ok(SecurityProtocol::SaslSsl),
-            "SASL_PLAINTEXT" => Ok(SecurityProtocol::SaslPlaintext),
+            "SASL_SSL" | "SASL-SSL" => Ok(SecurityProtocol::SaslSsl),
+            "SASL_PLAINTEXT" | "SASL-PLAINTEXT" => Ok(SecurityProtocol::SaslPlaintext),
             _ => Err(format!("Invalid security protocol: {s}")),
         }
     }
@@ -936,13 +1043,40 @@ impl std::fmt::Display for SecurityProtocol {
     }
 }
 
-#[derive(ValueEnum, Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SaslMechanism {
     Plain,
     ScramSha256,
     ScramSha512,
     Gssapi,
     OAuthBearer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OAuthProvider {
+    AwsMsk,
+    Oidc,
+}
+
+impl std::str::FromStr for OAuthProvider {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_lowercase().as_str() {
+            "aws-msk" | "aws_msk" | "aws" => Ok(Self::AwsMsk),
+            "oidc" | "gcp" | "gcp-managed-kafka" => Ok(Self::Oidc),
+            _ => Err(format!("Invalid OAuth provider: {s}")),
+        }
+    }
+}
+
+impl std::fmt::Display for OAuthProvider {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AwsMsk => write!(f, "aws-msk"),
+            Self::Oidc => write!(f, "oidc"),
+        }
+    }
 }
 
 impl Default for KafkaConfig {
@@ -1040,6 +1174,10 @@ impl Default for SecurityConfig {
             sasl_mechanism: None,
             sasl_username: None,
             sasl_password: None,
+            oauth_provider: None,
+            oauth_token_endpoint_url: None,
+            oauth_client_id: None,
+            oauth_client_secret: None,
             aws_region: None,
             ssl_key_password: None,
             kerberos_service_name: None,
@@ -1058,7 +1196,7 @@ impl std::str::FromStr for SaslMechanism {
             "SCRAM-SHA-256" => Ok(SaslMechanism::ScramSha256),
             "SCRAM-SHA-512" => Ok(SaslMechanism::ScramSha512),
             "GSSAPI" => Ok(SaslMechanism::Gssapi),
-            "OAUTHBEARER" => Ok(SaslMechanism::OAuthBearer),
+            "OAUTHBEARER" | "OAUTH-BEARER" | "O-AUTH-BEARER" => Ok(SaslMechanism::OAuthBearer),
             _ => Err(format!("Invalid SASL mechanism: {s}")),
         }
     }
@@ -1099,23 +1237,115 @@ impl SourceOffset {
             SourceOffset::Group => Offset::Stored,
         }
     }
+
+    /// Value for librdkafka's `auto.offset.reset`, or `None` to keep the
+    /// library default.
+    ///
+    /// `Group` delegates to committed offsets and deliberately sets nothing:
+    /// for a brand-new consumer group (no committed offsets anywhere) it is
+    /// therefore equivalent to `latest`, librdkafka's default fallback. This
+    /// is documented in the CLI help; use `earliest` when a new group must
+    /// consume the full topic history.
+    pub fn auto_offset_reset_value(&self) -> Option<&'static str> {
+        match self {
+            SourceOffset::Earliest => Some("earliest"),
+            SourceOffset::Latest => Some("latest"),
+            SourceOffset::Group => None,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    #[derive(Parser)]
+    struct SecurityCli {
+        #[command(flatten)]
+        security: SecurityConfig,
+    }
+
     #[test]
-    fn oauthbearer_requires_a_region() {
+    fn standard_kafka_security_values_parse() {
+        let cli = SecurityCli::try_parse_from([
+            "test",
+            "--security-protocol",
+            "SASL_SSL",
+            "--sasl-mechanism",
+            "OAUTHBEARER",
+            "--oauth-provider",
+            "oidc",
+            "--oauth-token-endpoint-url",
+            "http://localhost:14293",
+            "--oauth-client-id",
+            "unused",
+            "--oauth-client-secret",
+            "unused",
+        ])
+        .expect("standard Kafka values should parse");
+
+        assert!(matches!(cli.security.protocol, SecurityProtocol::SaslSsl));
+        assert!(matches!(
+            cli.security.sasl_mechanism,
+            Some(SaslMechanism::OAuthBearer)
+        ));
+        assert_eq!(cli.security.oauth_provider, Some(OAuthProvider::Oidc));
+    }
+
+    #[test]
+    fn empty_bootstrap_servers_are_rejected() {
+        for bootstrap in [None, Some("".to_string()), Some("   ".to_string())] {
+            let config = KafkaConfig {
+                bootstrap_servers: bootstrap,
+                ..Default::default()
+            };
+            assert!(config.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn auto_offset_reset_is_applied_to_consumer_config() {
+        assert_eq!(
+            SourceOffset::Earliest.auto_offset_reset_value(),
+            Some("earliest")
+        );
+        assert_eq!(
+            SourceOffset::Latest.auto_offset_reset_value(),
+            Some("latest")
+        );
+        assert_eq!(SourceOffset::Group.auto_offset_reset_value(), None);
+
+        // Default consumer config uses Earliest and must propagate it.
+        let config = KafkaConfig::default().to_rdkafka_consumer_config();
+        assert_eq!(config.get("auto.offset.reset"), Some("earliest"));
+    }
+
+    #[test]
+    fn aws_msk_without_region_defers_to_sdk_chain() {
+        // An explicit aws-msk provider without a region is valid: token
+        // generation resolves the region via the AWS SDK default chain
+        // (profile files, IMDS) at runtime.
         let security = SecurityConfig {
             protocol: SecurityProtocol::SaslSsl,
             sasl_mechanism: Some(SaslMechanism::OAuthBearer),
+            oauth_provider: Some(OAuthProvider::AwsMsk),
             aws_region: None,
             ..Default::default()
         };
 
-        // Validate against an explicitly-unresolved region so the failure path
-        // is exercised regardless of the ambient AWS_REGION environment.
+        assert!(security.validate_with_region(None).is_ok());
+    }
+
+    #[test]
+    fn oauthbearer_requires_a_provider() {
+        // With no explicit provider, no OIDC endpoint, and no resolvable
+        // region, the provider cannot be inferred and validation must fail.
+        let security = SecurityConfig {
+            protocol: SecurityProtocol::SaslSsl,
+            sasl_mechanism: Some(SaslMechanism::OAuthBearer),
+            ..Default::default()
+        };
+
         assert!(security.validate_with_region(None).is_err());
     }
 
@@ -1135,14 +1365,11 @@ mod tests {
     #[test]
     fn normalize_region_trims_and_rejects_empty() {
         assert_eq!(
-            SecurityConfig::normalize_region(Some("  us-east-1  ".to_string())).as_deref(),
+            SecurityConfig::normalize_region(Some("  us-east-1  ")).as_deref(),
             Some("us-east-1")
         );
-        assert_eq!(
-            SecurityConfig::normalize_region(Some("   ".to_string())),
-            None
-        );
-        assert_eq!(SecurityConfig::normalize_region(Some(String::new())), None);
+        assert_eq!(SecurityConfig::normalize_region(Some("   ")), None);
+        assert_eq!(SecurityConfig::normalize_region(Some("")), None);
         assert_eq!(SecurityConfig::normalize_region(None), None);
     }
 
@@ -1157,6 +1384,41 @@ mod tests {
 
         assert!(security.validate().is_ok());
         assert_eq!(security.resolved_aws_region().as_deref(), Some("us-east-1"));
+        assert_eq!(
+            security.resolved_oauth_provider(),
+            Some(OAuthProvider::AwsMsk)
+        );
+    }
+
+    #[test]
+    fn oidc_oauthbearer_does_not_require_an_aws_region() {
+        let security = SecurityConfig {
+            protocol: SecurityProtocol::SaslSsl,
+            sasl_mechanism: Some(SaslMechanism::OAuthBearer),
+            oauth_provider: Some(OAuthProvider::Oidc),
+            oauth_token_endpoint_url: Some("http://localhost:14293".to_string()),
+            oauth_client_id: Some("unused".to_string()),
+            oauth_client_secret: Some("unused".to_string()),
+            aws_region: None,
+            ..Default::default()
+        };
+
+        assert!(security.validate_with_region(None).is_ok());
+    }
+
+    #[test]
+    fn oidc_oauthbearer_requires_complete_endpoint_configuration() {
+        let security = SecurityConfig {
+            protocol: SecurityProtocol::SaslSsl,
+            sasl_mechanism: Some(SaslMechanism::OAuthBearer),
+            oauth_provider: Some(OAuthProvider::Oidc),
+            oauth_token_endpoint_url: Some("http://localhost:14293".to_string()),
+            oauth_client_id: Some("unused".to_string()),
+            oauth_client_secret: None,
+            ..Default::default()
+        };
+
+        assert!(security.validate_with_region(None).is_err());
     }
 
     #[test]
@@ -1221,5 +1483,32 @@ mod tests {
         // No static credentials should be set for OAUTHBEARER.
         assert_eq!(config.get("sasl.username"), None);
         assert_eq!(config.get("sasl.password"), None);
+        assert_eq!(config.get("sasl.oauthbearer.method"), None);
+    }
+
+    #[test]
+    fn oidc_oauthbearer_applies_librdkafka_configuration() {
+        let security = SecurityConfig {
+            protocol: SecurityProtocol::SaslSsl,
+            sasl_mechanism: Some(SaslMechanism::OAuthBearer),
+            oauth_provider: Some(OAuthProvider::Oidc),
+            oauth_token_endpoint_url: Some("http://localhost:14293".to_string()),
+            oauth_client_id: Some("unused".to_string()),
+            oauth_client_secret: Some("unused".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = ClientConfig::new();
+        security.apply_to_config(&mut config);
+
+        assert_eq!(config.get("security.protocol"), Some("SASL_SSL"));
+        assert_eq!(config.get("sasl.mechanism"), Some("OAUTHBEARER"));
+        assert_eq!(config.get("sasl.oauthbearer.method"), Some("oidc"));
+        assert_eq!(
+            config.get("sasl.oauthbearer.token.endpoint.url"),
+            Some("http://localhost:14293")
+        );
+        assert_eq!(config.get("sasl.oauthbearer.client.id"), Some("unused"));
+        assert_eq!(config.get("sasl.oauthbearer.client.secret"), Some("unused"));
     }
 }
