@@ -468,15 +468,19 @@ fn get_kafka_prompts() -> Vec<EnvPrompt> {
     }
 
     if needs_sasl {
+        const KAFKA_SASL_MECHANISM_ENV: &str = "P_KAFKA_SASL_MECHANISM";
+        const KAFKA_OAUTH_PROVIDER_ENV: &str = "P_KAFKA_OAUTH_PROVIDER";
+        const KAFKA_OAUTH_TOKEN_ENDPOINT_URL_ENV: &str = "P_KAFKA_OAUTH_TOKEN_ENDPOINT_URL";
+
         prompts.push(EnvPrompt {
-            env_var: "P_KAFKA_SASL_MECHANISM",
+            env_var: KAFKA_SASL_MECHANISM_ENV,
             display_name:
                 "Kafka SASL Mechanism (PLAIN, SCRAM-SHA-256, SCRAM-SHA-512, GSSAPI, OAUTHBEARER)",
             required: true,
             is_secret: false,
         });
 
-        let mechanism = std::env::var("P_KAFKA_SASL_MECHANISM")
+        let mechanism = std::env::var(KAFKA_SASL_MECHANISM_ENV)
             .unwrap_or_default()
             .to_uppercase();
 
@@ -484,10 +488,10 @@ fn get_kafka_prompts() -> Vec<EnvPrompt> {
             mechanism.as_str(),
             "OAUTHBEARER" | "OAUTH-BEARER" | "O-AUTH-BEARER"
         ) {
-            let explicit_provider = std::env::var("P_KAFKA_OAUTH_PROVIDER")
+            let explicit_provider = std::env::var(KAFKA_OAUTH_PROVIDER_ENV)
                 .unwrap_or_default()
                 .to_ascii_lowercase();
-            let has_oidc_endpoint = std::env::var("P_KAFKA_OAUTH_TOKEN_ENDPOINT_URL").is_ok();
+            let has_oidc_endpoint = std::env::var(KAFKA_OAUTH_TOKEN_ENDPOINT_URL_ENV).is_ok();
             let has_aws_region = ["P_KAFKA_AWS_REGION", "AWS_REGION", "AWS_DEFAULT_REGION"]
                 .iter()
                 .any(|name| std::env::var(name).is_ok());
@@ -504,7 +508,7 @@ fn get_kafka_prompts() -> Vec<EnvPrompt> {
 
             if provider.is_empty() {
                 prompts.push(EnvPrompt {
-                    env_var: "P_KAFKA_OAUTH_PROVIDER",
+                    env_var: KAFKA_OAUTH_PROVIDER_ENV,
                     display_name: "Kafka OAuth Provider (aws-msk or oidc)",
                     required: true,
                     is_secret: false,
@@ -521,7 +525,7 @@ fn get_kafka_prompts() -> Vec<EnvPrompt> {
             } else if matches!(provider, "oidc" | "gcp" | "gcp-managed-kafka") {
                 prompts.extend([
                     EnvPrompt {
-                        env_var: "P_KAFKA_OAUTH_TOKEN_ENDPOINT_URL",
+                        env_var: KAFKA_OAUTH_TOKEN_ENDPOINT_URL_ENV,
                         display_name: "OAuth/OIDC Token Endpoint URL",
                         required: true,
                         is_secret: false,

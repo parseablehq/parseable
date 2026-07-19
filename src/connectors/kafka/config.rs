@@ -1294,7 +1294,7 @@ mod tests {
 
     #[test]
     fn empty_bootstrap_servers_are_rejected() {
-        for bootstrap in [None, Some(String::new()), Some("   ".to_string())] {
+        for bootstrap in [None, Some("".to_string()), Some("   ".to_string())] {
             let config = KafkaConfig {
                 bootstrap_servers: bootstrap,
                 ..Default::default()
