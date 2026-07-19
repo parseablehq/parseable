@@ -23,6 +23,12 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::time::Duration;
 
+/// Standard AWS environment variables consulted when resolving the region for
+/// MSK IAM authentication. Kept as named constants to avoid typo-prone string
+/// literals in `std::env` calls.
+const AWS_REGION_ENV: &str = "AWS_REGION";
+const AWS_DEFAULT_REGION_ENV: &str = "AWS_DEFAULT_REGION";
+
 #[derive(Debug, Clone, Parser)]
 pub struct KafkaConfig {
     #[arg(
@@ -504,6 +510,15 @@ pub struct SecurityConfig {
     )]
     pub sasl_password: Option<String>,
 
+    // AWS MSK IAM configuration (SASL/OAUTHBEARER)
+    #[arg(
+        long = "aws-region",
+        env = "P_KAFKA_AWS_REGION",
+        required = false,
+        help = "AWS region for MSK IAM authentication (SASL/OAUTHBEARER). Falls back to AWS_REGION / AWS_DEFAULT_REGION when unset."
+    )]
+    pub aws_region: Option<String>,
+
     #[arg(
         long = "ssl-key-password",
         env = "P_KAFKA_SSL_KEY_PASSWORD",
@@ -791,39 +806,99 @@ impl SecurityConfig {
                 }
             }
 
-            // TODO: Implement OAuthBearer mechanism for SASL when needed. This depends on the vendor (on-prem, Confluent Kafka, AWS MSK, etc.).
+            // OAUTHBEARER (used for AWS MSK IAM) requires no static credentials here.
+            // The token is minted on demand by `KafkaContext::generate_oauth_token`,
+            // which rdkafka invokes via the OAuth refresh callback. Setting the
+            // `sasl.mechanism` above is sufficient to enable that callback path.
         }
     }
 
-    fn validate(&self) -> anyhow::Result<()> {
-        match self.protocol {
-            SecurityProtocol::Ssl | SecurityProtocol::SaslSsl => {
-                if self.ssl_ca_location.is_none() {
-                    anyhow::bail!("CA certificate location is required for SSL");
-                }
-                if self.ssl_certificate_location.is_none() {
-                    anyhow::bail!("Client certificate location is required for SSL");
-                }
-                if self.ssl_key_location.is_none() {
-                    anyhow::bail!("Client key location is required for SSL");
-                }
-            }
-            SecurityProtocol::SaslPlaintext => {
-                if self.sasl_mechanism.is_none() {
-                    anyhow::bail!("SASL mechanism is required when SASL is enabled");
-                }
-                if self.sasl_username.is_none() || self.sasl_password.is_none() {
-                    anyhow::bail!("SASL username and password are required");
-                }
+    /// Resolves the AWS region to use for MSK IAM authentication.
+    ///
+    /// Precedence: the explicit `--aws-region` flag, then the standard
+    /// `AWS_REGION` / `AWS_DEFAULT_REGION` environment variables. Each source is
+    /// normalized (trimmed and rejected if empty) before falling through, so an
+    /// explicitly-empty flag does not shadow a valid environment variable.
+    pub fn resolved_aws_region(&self) -> Option<String> {
+        Self::normalize_region(self.aws_region.clone())
+            .or_else(|| Self::normalize_region(std::env::var(AWS_REGION_ENV).ok()))
+            .or_else(|| Self::normalize_region(std::env::var(AWS_DEFAULT_REGION_ENV).ok()))
+    }
 
-                if matches!(self.sasl_mechanism, Some(SaslMechanism::Gssapi))
-                    && self.kerberos_service_name.is_none()
-                {
-                    anyhow::bail!("Kerberos service name is required for GSSAPI");
+    /// Trims a candidate region value and discards it if it is empty.
+    fn normalize_region(region: Option<String>) -> Option<String> {
+        region
+            .map(|region| region.trim().to_owned())
+            .filter(|region| !region.is_empty())
+    }
+
+    fn validate(&self) -> anyhow::Result<()> {
+        // Resolve the region (including environment fallbacks) once, then defer
+        // to the pure validation logic so it can be tested deterministically.
+        self.validate_with_region(self.resolved_aws_region().as_deref())
+    }
+
+    /// Validates the security configuration against an already-resolved AWS
+    /// region. Kept separate from region resolution (which reads process
+    /// environment variables) so the validation rules can be exercised without
+    /// depending on the ambient environment.
+    fn validate_with_region(&self, resolved_region: Option<&str>) -> anyhow::Result<()> {
+        // Pure TLS (mutual auth) requires the full client certificate material.
+        // For SASL_SSL, TLS is only used for server authentication and channel
+        // encryption, so client certificates are not required — the caller
+        // authenticates through the SASL mechanism instead.
+        if matches!(self.protocol, SecurityProtocol::Ssl) {
+            if self.ssl_ca_location.is_none() {
+                anyhow::bail!("CA certificate location is required for SSL");
+            }
+            if self.ssl_certificate_location.is_none() {
+                anyhow::bail!("Client certificate location is required for SSL");
+            }
+            if self.ssl_key_location.is_none() {
+                anyhow::bail!("Client key location is required for SSL");
+            }
+        }
+
+        // SASL-bearing protocols must specify a mechanism and satisfy the
+        // credential requirements specific to that mechanism.
+        if matches!(
+            self.protocol,
+            SecurityProtocol::SaslSsl | SecurityProtocol::SaslPlaintext
+        ) {
+            match self.sasl_mechanism {
+                None => anyhow::bail!("SASL mechanism is required when SASL is enabled"),
+                Some(SaslMechanism::OAuthBearer) => {
+                    // AWS MSK IAM requires SASL_SSL: the OAUTHBEARER token is a
+                    // signed bearer credential, so transmitting it over an
+                    // unencrypted SASL_PLAINTEXT connection would expose it.
+                    if matches!(self.protocol, SecurityProtocol::SaslPlaintext) {
+                        anyhow::bail!(
+                            "SASL/OAUTHBEARER (MSK IAM) requires the SASL_SSL security protocol; SASL_PLAINTEXT would expose the bearer token"
+                        );
+                    }
+                    // AWS MSK IAM mints tokens from the ambient AWS credential
+                    // chain, so only a resolvable region is required here.
+                    if resolved_region.is_none() {
+                        anyhow::bail!(
+                            "AWS region is required for SASL/OAUTHBEARER (MSK IAM); set --aws-region or the AWS_REGION environment variable"
+                        );
+                    }
+                }
+                Some(SaslMechanism::Gssapi) => {
+                    if self.kerberos_service_name.is_none() {
+                        anyhow::bail!("Kerberos service name is required for GSSAPI");
+                    }
+                }
+                Some(
+                    SaslMechanism::Plain | SaslMechanism::ScramSha256 | SaslMechanism::ScramSha512,
+                ) => {
+                    if self.sasl_username.is_none() || self.sasl_password.is_none() {
+                        anyhow::bail!("SASL username and password are required");
+                    }
                 }
             }
-            SecurityProtocol::Plaintext => {} // No validation needed for PLAINTEXT
         }
+
         Ok(())
     }
 }
@@ -965,6 +1040,7 @@ impl Default for SecurityConfig {
             sasl_mechanism: None,
             sasl_username: None,
             sasl_password: None,
+            aws_region: None,
             ssl_key_password: None,
             kerberos_service_name: None,
             kerberos_principal: None,
@@ -1022,5 +1098,128 @@ impl SourceOffset {
             SourceOffset::Latest => Offset::End,
             SourceOffset::Group => Offset::Stored,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oauthbearer_requires_a_region() {
+        let security = SecurityConfig {
+            protocol: SecurityProtocol::SaslSsl,
+            sasl_mechanism: Some(SaslMechanism::OAuthBearer),
+            aws_region: None,
+            ..Default::default()
+        };
+
+        // Validate against an explicitly-unresolved region so the failure path
+        // is exercised regardless of the ambient AWS_REGION environment.
+        assert!(security.validate_with_region(None).is_err());
+    }
+
+    #[test]
+    fn oauthbearer_rejects_sasl_plaintext() {
+        // The bearer token must never traverse an unencrypted connection.
+        let security = SecurityConfig {
+            protocol: SecurityProtocol::SaslPlaintext,
+            sasl_mechanism: Some(SaslMechanism::OAuthBearer),
+            aws_region: Some("us-east-1".to_string()),
+            ..Default::default()
+        };
+
+        assert!(security.validate_with_region(Some("us-east-1")).is_err());
+    }
+
+    #[test]
+    fn normalize_region_trims_and_rejects_empty() {
+        assert_eq!(
+            SecurityConfig::normalize_region(Some("  us-east-1  ".to_string())).as_deref(),
+            Some("us-east-1")
+        );
+        assert_eq!(
+            SecurityConfig::normalize_region(Some("   ".to_string())),
+            None
+        );
+        assert_eq!(SecurityConfig::normalize_region(Some(String::new())), None);
+        assert_eq!(SecurityConfig::normalize_region(None), None);
+    }
+
+    #[test]
+    fn oauthbearer_with_explicit_region_is_valid() {
+        let security = SecurityConfig {
+            protocol: SecurityProtocol::SaslSsl,
+            sasl_mechanism: Some(SaslMechanism::OAuthBearer),
+            aws_region: Some("us-east-1".to_string()),
+            ..Default::default()
+        };
+
+        assert!(security.validate().is_ok());
+        assert_eq!(security.resolved_aws_region().as_deref(), Some("us-east-1"));
+    }
+
+    #[test]
+    fn oauthbearer_does_not_require_username_or_password() {
+        let security = SecurityConfig {
+            protocol: SecurityProtocol::SaslSsl,
+            sasl_mechanism: Some(SaslMechanism::OAuthBearer),
+            aws_region: Some("eu-west-1".to_string()),
+            sasl_username: None,
+            sasl_password: None,
+            ..Default::default()
+        };
+
+        assert!(security.validate().is_ok());
+    }
+
+    #[test]
+    fn sasl_ssl_does_not_require_client_certificates() {
+        // SASL_SSL uses TLS only for the server side; client certs are a
+        // mutual-TLS concern and must not be required here.
+        let security = SecurityConfig {
+            protocol: SecurityProtocol::SaslSsl,
+            sasl_mechanism: Some(SaslMechanism::ScramSha512),
+            sasl_username: Some("user".to_string()),
+            sasl_password: Some("pass".to_string()),
+            ssl_ca_location: None,
+            ssl_certificate_location: None,
+            ssl_key_location: None,
+            ..Default::default()
+        };
+
+        assert!(security.validate().is_ok());
+    }
+
+    #[test]
+    fn scram_still_requires_username_and_password() {
+        let security = SecurityConfig {
+            protocol: SecurityProtocol::SaslSsl,
+            sasl_mechanism: Some(SaslMechanism::ScramSha512),
+            sasl_username: None,
+            sasl_password: None,
+            ..Default::default()
+        };
+
+        assert!(security.validate().is_err());
+    }
+
+    #[test]
+    fn oauthbearer_applies_mechanism_without_credentials() {
+        let security = SecurityConfig {
+            protocol: SecurityProtocol::SaslSsl,
+            sasl_mechanism: Some(SaslMechanism::OAuthBearer),
+            aws_region: Some("us-east-2".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = ClientConfig::new();
+        security.apply_to_config(&mut config);
+
+        assert_eq!(config.get("security.protocol"), Some("SASL_SSL"));
+        assert_eq!(config.get("sasl.mechanism"), Some("OAUTHBEARER"));
+        // No static credentials should be set for OAUTHBEARER.
+        assert_eq!(config.get("sasl.username"), None);
+        assert_eq!(config.get("sasl.password"), None);
     }
 }
