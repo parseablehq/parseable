@@ -504,6 +504,7 @@ impl ObjectStorage for LocalFS {
     async fn list_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
         let ignore_dir = &[
             "lost+found",
+            DEFAULT_TENANT,
             PARSEABLE_ROOT_DIRECTORY,
             USERS_ROOT_DIR,
             ALERTS_ROOT_DIRECTORY,
@@ -541,6 +542,7 @@ impl ObjectStorage for LocalFS {
     async fn list_old_streams(&self) -> Result<HashSet<LogStream>, ObjectStorageError> {
         let ignore_dir = &[
             "lost+found",
+            DEFAULT_TENANT,
             PARSEABLE_ROOT_DIRECTORY,
             ALERTS_ROOT_DIRECTORY,
             SETTINGS_ROOT_DIRECTORY,

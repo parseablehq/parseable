@@ -448,6 +448,7 @@ pub mod model {
                 Action::CreateDashboard,
                 Action::DeleteDashboard,
                 Action::GetRetention,
+                Action::GetHotTierEnabled,
                 Action::GetStreamInfo,
                 Action::GetUserRoles,
                 Action::GetAlert,

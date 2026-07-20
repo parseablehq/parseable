@@ -34,6 +34,7 @@ use ulid::Ulid;
 use crate::{
     alerts::{
         alert_structs::{AlertStateEntry, MTTRHistory},
+        outbound_http_policy::AlertTargetPolicyConfig,
         target::Target,
     },
     catalog::{manifest::Manifest, partition_path},
@@ -53,7 +54,8 @@ use crate::{
         TARGETS_ROOT_DIRECTORY,
         object_storage::{
             alert_json_path, alert_state_json_path, filter_path, manifest_path, mttr_json_path,
-            parseable_json_path, schema_path, stream_json_path, to_bytes,
+            outbound_http_policy_json_path, parseable_json_path, schema_path, stream_json_path,
+            to_bytes,
         },
     },
     users::filters::{Filter, migrate_v1_v2},
@@ -1191,6 +1193,52 @@ impl Metastore for ObjectStoreMetastore {
         Ok(self
             .storage
             .delete_object(&RelativePathBuf::from(path), tenant_id)
+            .await?)
+    }
+
+    async fn get_outbound_policies(
+        &self,
+    ) -> Result<HashMap<String, AlertTargetPolicyConfig>, MetastoreError> {
+        let mut all_policies = HashMap::new();
+
+        let base_paths = PARSEABLE.list_tenants().unwrap_or_else(|| vec!["".into()]);
+
+        for tenant in base_paths {
+            let tenant_id = if tenant.is_empty() {
+                None
+            } else {
+                Some(tenant.clone())
+            };
+            let path = outbound_http_policy_json_path(&tenant_id);
+            let policy = match self.storage.get_object(&path, &tenant_id).await {
+                Ok(bytes) => match serde_json::from_slice::<AlertTargetPolicyConfig>(&bytes) {
+                    Ok(policy) => policy,
+                    Err(err) => {
+                        warn!(
+                            "Failed to deserialize outbound HTTP policy for tenant {tenant}: {err}"
+                        );
+                        continue;
+                    }
+                },
+                Err(err) if is_missing_optional_dir(&err) => continue,
+                Err(err) => return Err(MetastoreError::ObjectStorageError(err)),
+            };
+
+            all_policies.insert(tenant, policy);
+        }
+
+        Ok(all_policies)
+    }
+
+    async fn put_outbound_policy(
+        &self,
+        tenant_id: &Option<String>,
+        policy: &AlertTargetPolicyConfig,
+    ) -> Result<(), MetastoreError> {
+        let path = outbound_http_policy_json_path(tenant_id);
+        Ok(self
+            .storage
+            .put_object(&path, to_bytes(policy), tenant_id)
             .await?)
     }
 

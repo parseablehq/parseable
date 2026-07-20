@@ -22,9 +22,9 @@ use error::HotTierValidationError;
 use once_cell::sync::Lazy;
 
 use self::error::{StreamNameValidationError, UsernameValidationError};
-use crate::hottier::MIN_STREAM_HOT_TIER_SIZE_BYTES;
 use crate::storage::StreamType;
 use crate::utils::human_size::bytes_to_human_size;
+use crate::{hottier::MIN_STREAM_HOT_TIER_SIZE_BYTES, parseable::DEFAULT_TENANT};
 
 // Add more sql keywords here in lower case
 const DENIED_NAMES: &[&str] = &[
@@ -57,6 +57,12 @@ pub fn stream_name(
 
     if DENIED_NAMES.contains(&stream_name) {
         return Err(StreamNameValidationError::SQLKeyword(
+            stream_name.to_owned(),
+        ));
+    }
+
+    if stream_name == DEFAULT_TENANT {
+        return Err(StreamNameValidationError::ReservedName(
             stream_name.to_owned(),
         ));
     }
@@ -176,6 +182,8 @@ pub mod error {
         NameSpecialChar { c: char },
         #[error("SQL keyword cannot be used as stream name")]
         SQLKeyword(String),
+        #[error("The stream name {0} is reserved for internal use")]
+        ReservedName(String),
         #[error(
             "The stream {0} is reserved for internal use and cannot be used for user defined streams"
         )]
@@ -220,5 +228,18 @@ pub mod error {
 
         #[error("Hot tier not found for stream {0}")]
         NotFound(String),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stream_name_rejects_default_tenant() {
+        let err = stream_name(DEFAULT_TENANT, StreamType::UserDefined).unwrap_err();
+        assert!(
+            matches!(err, StreamNameValidationError::ReservedName(name) if name == DEFAULT_TENANT)
+        );
     }
 }

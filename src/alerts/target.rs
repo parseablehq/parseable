@@ -25,24 +25,25 @@ use std::{
 use async_trait::async_trait;
 use base64::Engine;
 use chrono::Utc;
-use http::{HeaderMap, HeaderValue, header::AUTHORIZATION};
+use http::header::AUTHORIZATION;
 use itertools::Itertools;
 use once_cell::sync::Lazy;
-use reqwest::ClientBuilder;
 use serde_json::{Value, json};
 use tokio::sync::RwLock;
 use tracing::{error, trace, warn};
 use ulid::Ulid;
 use url::Url;
 
+use super::{
+    ALERTS,
+    outbound_http_policy::{self, AlertTargetKind},
+};
 use crate::{
     alerts::{AlertError, AlertState, Context, alert_traits::CallableTarget},
     metastore::metastore_traits::MetastoreObject,
     parseable::{DEFAULT_TENANT, PARSEABLE},
     storage::object_storage::target_json_path,
 };
-
-use super::ALERTS;
 
 pub static TARGETS: Lazy<TargetConfigs> = Lazy::new(|| TargetConfigs {
     target_configs: RwLock::new(HashMap::new()),
@@ -93,13 +94,6 @@ impl TargetConfigs {
         } else {
             vec![]
         };
-        // let targets = self
-        //     .target_configs
-        //     .read()
-        //     .await
-        //     .values()
-        //     .cloned()
-        //     .collect_vec();
         Ok(targets)
     }
 
@@ -117,13 +111,6 @@ impl TargetConfigs {
         } else {
             return Err(AlertError::InvalidTargetID(target_id.to_string()));
         };
-        // let target = self
-        //     .target_configs
-        //     .read()
-        //     .await
-        //     .get(target_id)
-        //     .ok_or(AlertError::InvalidTargetID(target_id.to_string()))
-        //     .cloned()?;
 
         Ok(target)
     }
@@ -154,12 +141,6 @@ impl TargetConfigs {
         } else {
             return Err(AlertError::InvalidTargetID(target_id.to_string()));
         };
-        // let target = self
-        //     .target_configs
-        //     .write()
-        //     .await
-        //     .remove(target_id)
-        //     .ok_or(AlertError::InvalidTargetID(target_id.to_string()))?;
         PARSEABLE
             .metastore
             .delete_target(&target, tenant_id)
@@ -195,6 +176,49 @@ pub struct Target {
 }
 
 impl Target {
+    pub async fn validate_outbound_policy(&self) -> Result<(), AlertError> {
+        let tenant_id = &self.tenant;
+        match &self.target {
+            TargetType::Slack(target) => {
+                outbound_http_policy::prepare_alert_target(
+                    tenant_id,
+                    &target.endpoint,
+                    AlertTargetKind::Slack,
+                    false,
+                    None,
+                )
+                .await?;
+            }
+            TargetType::Other(target) => {
+                outbound_http_policy::prepare_alert_target(
+                    tenant_id,
+                    &target.endpoint,
+                    AlertTargetKind::Webhook,
+                    target.skip_tls_check,
+                    Some(&target.headers),
+                )
+                .await?;
+            }
+            TargetType::AlertManager(target) => {
+                let prepared = outbound_http_policy::prepare_alert_target(
+                    tenant_id,
+                    &target.endpoint,
+                    AlertTargetKind::AlertManager,
+                    target.skip_tls_check,
+                    None,
+                )
+                .await?;
+                if target.auth.is_some() && !prepared.authorization_allowed {
+                    return Err(outbound_http_policy::OutboundPolicyError::DeniedHeader(
+                        AUTHORIZATION.as_str().to_string(),
+                    )
+                    .into());
+                }
+            }
+        }
+
+        Ok(())
+    }
     pub fn mask(self) -> Value {
         match self.target {
             TargetType::Slack(slack_web_hook) => {
@@ -261,7 +285,7 @@ impl Target {
                 if !state.timed_out {
                     // call once and then start sleeping
                     // reduce repeats by 1
-                    call_target(self.target.clone(), context.clone());
+                    call_target(self.target.clone(), self.tenant.clone(), context.clone());
                     // set state
                     state.timed_out = true;
                     state.awaiting_resolve = true;
@@ -281,7 +305,7 @@ impl Target {
                     }
                 }
 
-                call_target(self.target.clone(), context);
+                call_target(self.target.clone(), self.tenant.clone(), context);
             }
             // do not send out any notifs
             // (an eval should not have run!)
@@ -344,7 +368,7 @@ impl Target {
                     let should_call =
                         sleep_and_check_if_call(Arc::clone(&state), current_state).await;
                     if should_call {
-                        call_target(target.clone(), alert_context.clone())
+                        call_target(target.clone(), tenant_id.clone(), alert_context.clone())
                     }
                 },
                 Retry::Finite(times) => {
@@ -364,7 +388,7 @@ impl Target {
                         let should_call =
                             sleep_and_check_if_call(Arc::clone(&state), current_state).await;
                         if should_call {
-                            call_target(target.clone(), alert_context.clone())
+                            call_target(target.clone(), tenant_id.clone(), alert_context.clone())
                         }
                     }
                 }
@@ -384,9 +408,9 @@ impl MetastoreObject for Target {
     }
 }
 
-fn call_target(target: TargetType, context: Context) {
+fn call_target(target: TargetType, tenant_id: Option<String>, context: Context) {
     trace!("Calling target with context- {context:?}");
-    tokio::spawn(async move { target.call(&context).await });
+    tokio::spawn(async move { target.call(&tenant_id, &context).await });
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -454,17 +478,13 @@ pub enum TargetType {
 }
 
 impl TargetType {
-    pub async fn call(&self, payload: &Context) {
+    pub async fn call(&self, tenant_id: &Option<String>, payload: &Context) {
         match self {
-            TargetType::Slack(target) => target.call(payload).await,
-            TargetType::Other(target) => target.call(payload).await,
-            TargetType::AlertManager(target) => target.call(payload).await,
+            TargetType::Slack(target) => target.call(tenant_id, payload).await,
+            TargetType::Other(target) => target.call(tenant_id, payload).await,
+            TargetType::AlertManager(target) => target.call(tenant_id, payload).await,
         }
     }
-}
-
-fn default_client_builder() -> ClientBuilder {
-    ClientBuilder::new()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -474,11 +494,7 @@ pub struct SlackWebHook {
 
 #[async_trait]
 impl CallableTarget for SlackWebHook {
-    async fn call(&self, payload: &Context) {
-        let client = default_client_builder()
-            .build()
-            .expect("Client can be constructed on this system");
-
+    async fn call(&self, tenant_id: &Option<String>, payload: &Context) {
         let alert = match payload.alert_info.alert_state {
             AlertState::Triggered => {
                 serde_json::json!({ "text": payload.message })
@@ -490,13 +506,33 @@ impl CallableTarget for SlackWebHook {
                 serde_json::json!({ "text": payload.default_disabled_string() })
             }
         };
-
-        if let Err(e) = client.post(self.endpoint.clone()).json(&alert).send().await {
-            error!("Couldn't make call to webhook, error: {}", e)
+        // Revalidate immediately before delivery because stored targets and DNS can change.
+        let prepared = match outbound_http_policy::prepare_alert_target(
+            tenant_id,
+            &self.endpoint,
+            AlertTargetKind::Slack,
+            false,
+            None,
+        )
+        .await
+        {
+            Ok(prepared) => prepared,
+            Err(err) => {
+                error!("Slack alert target rejected by outbound policy:{err}");
+                return;
+            }
+        };
+        if let Err(e) = prepared
+            .client
+            .post(self.endpoint.clone())
+            .json(&alert)
+            .send()
+            .await
+        {
+            error!("Couldn't make call to webhook, error:{}", e)
         }
     }
 }
-
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OtherWebHook {
@@ -509,28 +545,33 @@ pub struct OtherWebHook {
 
 #[async_trait]
 impl CallableTarget for OtherWebHook {
-    async fn call(&self, payload: &Context) {
-        let mut builder = default_client_builder();
-        if self.skip_tls_check {
-            builder = builder.danger_accept_invalid_certs(true)
-        }
-
-        let client = builder
-            .build()
-            .expect("Client can be constructed on this system");
-
+    async fn call(&self, tenant_id: &Option<String>, payload: &Context) {
         let alert = match payload.alert_info.alert_state {
             AlertState::Triggered => payload.message.clone(),
             AlertState::NotTriggered => payload.default_resolved_string(),
             AlertState::Disabled => payload.default_disabled_string(),
         };
-
-        let request = client
+        let prepared = match outbound_http_policy::prepare_alert_target(
+            tenant_id,
+            &self.endpoint,
+            AlertTargetKind::Webhook,
+            self.skip_tls_check,
+            Some(&self.headers),
+        )
+        .await
+        {
+            Ok(prepared) => prepared,
+            Err(err) => {
+                error!("Webhook alert target rejected by outbound policy:{err}");
+                return;
+            }
+        };
+        let request = prepared
+            .client
             .post(self.endpoint.clone())
-            .headers((&self.headers).try_into().expect("valid_headers"));
-
+            .headers(prepared.headers);
         if let Err(e) = request.body(alert).send().await {
-            error!("Couldn't make call to webhook, error: {}", e)
+            error!("Couldn't make call to webhook, error:{}", e)
         }
     }
 }
@@ -547,27 +588,7 @@ pub struct AlertManager {
 
 #[async_trait]
 impl CallableTarget for AlertManager {
-    async fn call(&self, payload: &Context) {
-        let mut builder = default_client_builder();
-
-        if self.skip_tls_check {
-            builder = builder.danger_accept_invalid_certs(true)
-        }
-
-        if let Some(Auth { username, password }) = &self.auth {
-            let basic_auth_value = "Basic ".to_string()
-                + &base64::prelude::BASE64_STANDARD.encode(format!("{username}:{password}"));
-            let headers = HeaderMap::from_iter([(
-                AUTHORIZATION,
-                HeaderValue::try_from(basic_auth_value).expect("valid value"),
-            )]);
-            builder = builder.default_headers(headers)
-        }
-
-        let client = builder
-            .build()
-            .expect("Client can be constructed on this system");
-
+    async fn call(&self, tenant_id: &Option<String>, payload: &Context) {
         let mut alerts = serde_json::json!([{
           "labels": {
             "alertname": payload.alert_info.alert_name,
@@ -598,13 +619,38 @@ impl CallableTarget for AlertManager {
             AlertState::Disabled => alert["labels"]["status"] = "disabled".into(),
         };
 
-        if let Err(e) = client
-            .post(self.endpoint.clone())
-            .json(&alerts)
-            .send()
-            .await
+        let prepared = match outbound_http_policy::prepare_alert_target(
+            tenant_id,
+            &self.endpoint,
+            AlertTargetKind::AlertManager,
+            self.skip_tls_check,
+            None,
+        )
+        .await
         {
-            error!("Couldn't make call to alertmanager, error: {}", e)
+            Ok(prepared) => prepared,
+            Err(err) => {
+                error!("Alertmanager target rejected by outbound policy:{err}");
+                return;
+            }
+        };
+
+        let mut request = prepared.client.post(self.endpoint.clone()).json(&alerts);
+        if let Some(Auth { username, password }) = &self.auth {
+            // Credentials are only safe when the destination itself is explicitly allowlisted.
+            if !prepared.authorization_allowed {
+                error!(
+                    "Alertmanager credentials blocked by outbound policy for destination:{}",
+                    self.endpoint
+                );
+                return;
+            }
+            let basic_auth_value = "Basic ".to_string()
+                + &base64::prelude::BASE64_STANDARD.encode(format!("{username}:{password}"));
+            request = request.header(AUTHORIZATION, basic_auth_value);
+        }
+        if let Err(e) = request.send().await {
+            error!("Couldn't make call to alertmanager, error:{}", e)
         }
     }
 }

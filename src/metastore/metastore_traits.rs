@@ -29,6 +29,7 @@ use ulid::Ulid;
 use crate::{
     alerts::{
         alert_structs::{AlertStateEntry, MTTRHistory},
+        outbound_http_policy::AlertTargetPolicyConfig,
         target::Target,
     },
     catalog::manifest::Manifest,
@@ -164,7 +165,15 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError>;
-
+    /// outbound_policy
+    async fn get_outbound_policies(
+        &self,
+    ) -> Result<HashMap<String, AlertTargetPolicyConfig>, MetastoreError>;
+    async fn put_outbound_policy(
+        &self,
+        tenant_id: &Option<String>,
+        policy: &AlertTargetPolicyConfig,
+    ) -> Result<(), MetastoreError>;
     /// dashboards
     async fn get_dashboards(&self) -> Result<HashMap<String, Vec<Bytes>>, MetastoreError>;
     async fn put_dashboard(

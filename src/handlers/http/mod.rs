@@ -29,6 +29,7 @@ use crate::{INTRA_CLUSTER_CLIENT, parseable::PARSEABLE};
 use self::query::Query;
 
 pub mod about;
+pub mod alert_target_policy;
 pub mod alerts;
 pub mod apikeys;
 pub mod cluster;

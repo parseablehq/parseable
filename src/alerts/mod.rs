@@ -42,6 +42,7 @@ pub mod alert_structs;
 pub mod alert_traits;
 pub mod alert_types;
 pub mod alerts_utils;
+pub mod outbound_http_policy;
 pub mod target;
 
 pub use crate::alerts::alert_enums::{
@@ -619,7 +620,10 @@ impl AlertConfig {
 
         for target_id in &self.targets {
             let target = TARGETS.get_target_by_id(target_id, &self.tenant_id).await?;
-            trace!("Target (trigger_notifications)-\n{target:?}");
+            if let Err(e) = target.validate_outbound_policy().await {
+                tracing::error!("Target {} failed alert policy check- {e}", target.id);
+                continue;
+            }
             target.call(context.clone());
         }
 
@@ -976,6 +980,8 @@ pub enum AlertError {
     Metadata(&'static str),
     #[error("User is not authorized to run this query")]
     Unauthorized,
+    #[error("Alert target outbound policy rejected request:{0}")]
+    OutboundPolicy(#[from] outbound_http_policy::OutboundPolicyError),
     #[error("ActixError: {0}")]
     Error(#[from] actix_web::Error),
     #[error("DataFusion Error: {0}")]
@@ -1042,13 +1048,23 @@ impl actix_web::ResponseError for AlertError {
             Self::Unimplemented(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::NotPresentInOSS(_) => StatusCode::BAD_REQUEST,
             Self::MetastoreError(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::OutboundPolicy(_) => StatusCode::BAD_REQUEST,
         }
     }
 
     fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
-        actix_web::HttpResponse::build(self.status_code())
-            .insert_header(ContentType::plaintext())
-            .body(self.to_string())
+        match self {
+            Self::OutboundPolicy(_) => actix_web::HttpResponse::build(self.status_code())
+                .insert_header(ContentType::json())
+                .json(serde_json::json!({
+                    "error": "Alert target blocked by outbound security policy",
+                    "message": self.to_string(),
+                    "hint": "Ask admin to allow this destination using the alert target policy."
+                })),
+            _ => actix_web::HttpResponse::build(self.status_code())
+                .insert_header(ContentType::plaintext())
+                .body(self.to_string()),
+        }
     }
 }
 
