@@ -61,7 +61,7 @@ services:
         max_attempts: 3
 
   quest:
-    image: ghcr.io/parseablehq/quest:main
+    image: quay.io/parseablehq/quest:main
     platform: linux/amd64
     pull_policy: always
     command: [
