@@ -311,10 +311,7 @@ fn validate_loaded_policies(
     for (tenant_id, policy) in policies {
         if let Err(err) = validate_policy(&policy) {
             error!("Failed to load outbound HTTP policy for tenant {tenant_id}: {err}");
-            return Err(OutboundPolicyError::PolicyValidationFailed {
-                tenant_id,
-                source: Box::new(err),
-            });
+            continue;
         }
         loaded.insert(tenant_id, policy);
     }
@@ -445,6 +442,7 @@ fn denied_ipv4(ip: Ipv4Addr) -> bool {
         || ip.is_private()
         || ip.is_link_local()
         || ip.is_multicast()
+        || ip.octets()[0] == 0
         || ip.octets()[0] == 100 && (64..=127).contains(&ip.octets()[1])
         || ip.octets()[0] >= 240
         || ip == Ipv4Addr::new(255, 255, 255, 255)
@@ -764,8 +762,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_loaded_policies_rejects_invalid_entries() {
+    fn validate_loaded_policies_skips_invalid_entries() {
         let mut policies = HashMap::new();
+        policies.insert("valid".to_string(), AlertTargetPolicyConfig::default());
         policies.insert(
             "invalid".to_string(),
             AlertTargetPolicyConfig {
@@ -774,11 +773,9 @@ mod tests {
             },
         );
 
-        let err = validate_loaded_policies(policies).unwrap_err();
+        let loaded = validate_loaded_policies(policies).unwrap();
 
-        assert!(matches!(
-            err,
-            OutboundPolicyError::PolicyValidationFailed { tenant_id, .. } if tenant_id == "invalid"
-        ));
+        assert!(loaded.contains_key("valid"));
+        assert!(!loaded.contains_key("invalid"));
     }
 }

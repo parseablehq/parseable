@@ -1214,13 +1214,10 @@ impl Metastore for ObjectStoreMetastore {
                 Ok(bytes) => match serde_json::from_slice::<AlertTargetPolicyConfig>(&bytes) {
                     Ok(policy) => policy,
                     Err(err) => {
-                        return Err(MetastoreError::Error {
-                            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-                            message: format!(
-                                "Failed to deserialize outbound HTTP policy for tenant {tenant}: {err}"
-                            ),
-                            flow: "get_outbound_policies".to_string(),
-                        });
+                        warn!(
+                            "Failed to deserialize outbound HTTP policy for tenant {tenant}: {err}"
+                        );
+                        continue;
                     }
                 },
                 Err(err) if is_missing_optional_dir(&err) => continue,

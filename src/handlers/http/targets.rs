@@ -91,10 +91,14 @@ pub async fn get(req: HttpRequest, target_id: Path<Ulid>) -> Result<impl Respond
     let tenant_id = get_tenant_id_from_request(&req);
     let target = TARGETS.get_target_by_id(&target_id, &tenant_id).await?;
     let res = if let Err(e) = target.validate_outbound_policy().await {
+        let message = match &e {
+            AlertError::OutboundPolicy(policy_error) => policy_error.sanitized_message(),
+            _ => "Target validation failed",
+        };
         json!({
             "target": &target.mask(),
             "enabled": false,
-            "error": &e.to_string()
+            "error": message
         })
     } else {
         json!({
