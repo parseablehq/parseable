@@ -128,6 +128,7 @@ impl ObjectStorage for LocalFS {
             }
         }
     }
+
     async fn upload_multipart(
         &self,
         key: &RelativePath,
@@ -139,6 +140,7 @@ impl ObjectStorage for LocalFS {
         file.read_to_end(&mut data).await?;
         self.put_object(key, data.into(), tenant_id).await
     }
+
     async fn get_buffered_reader(
         &self,
         _path: &RelativePath,
@@ -151,6 +153,7 @@ impl ObjectStorage for LocalFS {
             ),
         )))
     }
+
     async fn head(
         &self,
         path: &RelativePath,
@@ -181,6 +184,7 @@ impl ObjectStorage for LocalFS {
             Err(e) => Err(ObjectStorageError::IoError(e)),
         }
     }
+
     async fn get_object(
         &self,
         path: &RelativePath,
@@ -424,6 +428,16 @@ impl ObjectStorage for LocalFS {
         path: &RelativePath,
         tenant_id: &Option<String>,
     ) -> Result<(), ObjectStorageError> {
+        if path
+            .components()
+            .any(|component| matches!(component, relative_path::Component::ParentDir))
+        {
+            return Err(ObjectStorageError::PathTraversal {
+                attempted: path.to_path(&self.root),
+                root: self.root.clone(),
+            });
+        }
+
         let path = self.path_in_root(path);
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
 
@@ -737,6 +751,7 @@ impl ObjectStorage for LocalFS {
             ..CopyOptions::default()
         };
         let to_path = self.root.join(key);
+
         let tenant_str = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if let Some(path) = to_path.parent() {
             fs::create_dir_all(path).await?;

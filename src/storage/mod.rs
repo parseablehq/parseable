@@ -378,6 +378,12 @@ pub enum ObjectStorageError {
 
     #[error("MetastoreError: {0:?}")]
     MetastoreError(Box<MetastoreErrorDetail>),
+
+    #[error("Path traversal detected: attempted path '{attempted}' escapes root '{root}'")]
+    PathTraversal {
+        attempted: std::path::PathBuf,
+        root: std::path::PathBuf,
+    },
 }
 
 pub fn to_object_store_path(path: &RelativePath) -> Path {
