@@ -36,7 +36,7 @@ use super::otel_utils::{
     convert_epoch_nano_to_timestamp, insert_attributes, insert_number_if_some,
 };
 
-pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 37] = [
+pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 36] = [
     "metric_name",
     "metric_description",
     "metric_unit",
@@ -51,8 +51,15 @@ pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 37] = [
     "data_point_sum",
     "data_point_bucket_counts",
     "data_point_explicit_bounds",
-    "data_point_quantile_values_quantile",
-    "data_point_quantile_values_value",
+    // Nested array of summary quantile objects, each carrying `quantile`
+    // and `value`. Stored under this single key and kept out of the
+    // series hash so per-sample quantile values never fragment series
+    // identity. (The bare `quantile`/`value` keys only ever appear nested
+    // inside this array, never as top-level data-point fields.)
+    "data_point_quantile_values",
+    // Histogram per-sample min/max statistics.
+    "min",
+    "max",
     "data_point_scale",
     "data_point_zero_count",
     "data_point_flags",
@@ -61,8 +68,6 @@ pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 37] = [
     "positive_bucket_count",
     "negative_offset",
     "negative_bucket_count",
-    "quantile",
-    "value",
     "is_monotonic",
     "aggregation_temporality",
     "aggregation_temporality_description",
@@ -785,5 +790,88 @@ mod tests {
         b.insert("cd".to_string(), Value::String("e".into()));
 
         assert_ne!(compute_series_hash(&a), compute_series_hash(&b));
+    }
+
+    fn number(value: f64) -> Value {
+        serde_json::Number::from_f64(value)
+            .map(Value::Number)
+            .unwrap_or(Value::Null)
+    }
+
+    #[test]
+    fn series_hash_ignores_histogram_min_max() {
+        // `min`/`max` are per-sample histogram statistics, not series
+        // labels. Two samples of the same series with different min/max
+        // must hash identically, otherwise histogram series fragment on
+        // every scrape.
+        let mut a = make_dp();
+        a.insert("min".to_string(), number(1.0));
+        a.insert("max".to_string(), number(9.0));
+        let mut b = make_dp();
+        b.insert("min".to_string(), number(2.0));
+        b.insert("max".to_string(), number(8.0));
+        assert_eq!(compute_series_hash(&a), compute_series_hash(&b));
+    }
+
+    #[test]
+    fn series_hash_ignores_summary_quantile_values() {
+        // `data_point_quantile_values` is the nested per-sample quantile
+        // array. Differing quantile values must not change series identity.
+        let mut a = make_dp();
+        a.insert(
+            "data_point_quantile_values".to_string(),
+            Value::Array(vec![number(0.5), number(0.9)]),
+        );
+        let mut b = make_dp();
+        b.insert(
+            "data_point_quantile_values".to_string(),
+            Value::Array(vec![number(0.7), number(0.99)]),
+        );
+        assert_eq!(compute_series_hash(&a), compute_series_hash(&b));
+    }
+
+    #[test]
+    fn series_hash_distinguishes_attribute_named_value_or_quantile() {
+        // `value` and `quantile` are only ever emitted nested inside the
+        // quantile array, never as top-level fields. They must NOT be
+        // treated as known fields: a user attribute literally named
+        // `value` or `quantile` is a real label and must affect series
+        // identity (previously it was wrongly excluded, colliding series).
+        let mut a = make_dp();
+        a.insert("value".to_string(), Value::String("x".into()));
+        let mut b = make_dp();
+        b.insert("value".to_string(), Value::String("y".into()));
+        assert_ne!(compute_series_hash(&a), compute_series_hash(&b));
+
+        let mut c = make_dp();
+        c.insert("quantile".to_string(), Value::String("p50".into()));
+        let mut d = make_dp();
+        d.insert("quantile".to_string(), Value::String("p99".into()));
+        assert_ne!(compute_series_hash(&c), compute_series_hash(&d));
+    }
+
+    #[test]
+    fn known_field_list_matches_emitted_keys() {
+        // Guard the list against drifting from the keys the flatteners
+        // actually emit as top-level data-point fields.
+        assert_eq!(OTEL_METRICS_KNOWN_FIELD_LIST.len(), 36);
+        for field in ["min", "max", "data_point_quantile_values"] {
+            assert!(
+                OTEL_METRICS_KNOWN_FIELDS.contains(field),
+                "expected `{field}` to be a known field"
+            );
+        }
+        // Removed dead entries that were never emitted as top-level keys.
+        for field in [
+            "quantile",
+            "value",
+            "data_point_quantile_values_quantile",
+            "data_point_quantile_values_value",
+        ] {
+            assert!(
+                !OTEL_METRICS_KNOWN_FIELDS.contains(field),
+                "`{field}` must not be a known field"
+            );
+        }
     }
 }
