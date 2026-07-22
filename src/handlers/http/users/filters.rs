@@ -205,9 +205,9 @@ mod tests {
             validate_stream_name("team1/serviceA").expect_err("path-like names must be rejected");
         assert!(matches!(
             err,
-            super::FiltersError::InvalidStreamName(
-                StreamNameValidationError::NameSpecialChar { c: '/' }
-            )
+            super::FiltersError::InvalidStreamName(StreamNameValidationError::NameSpecialChar {
+                c: '/'
+            })
         ));
     }
 }

@@ -19,13 +19,15 @@
 use crate::{
     connectors::common::processor::Processor,
     event::{
-        Event as ParseableEvent, USER_AGENT_KEY,
+        USER_AGENT_KEY,
         format::{EventFormat, LogSourceEntry, json},
     },
     handlers::TelemetryType,
+    metadata::SchemaVersion,
     parseable::PARSEABLE,
     storage::StreamType,
 };
+use arrow_schema::Field;
 use async_trait::async_trait;
 use chrono::Utc;
 use futures_util::StreamExt;
@@ -42,19 +44,14 @@ use super::{ConsumerRecord, StreamConsumer, TopicPartition, config::BufferConfig
 pub struct ParseableSinkProcessor;
 
 impl ParseableSinkProcessor {
-    async fn build_event_from_chunk(
+    /// Ensures the destination stream exists and fetches the metadata needed
+    /// to build an event from a chunk. Stays on the (small, I/O-focused)
+    /// kafka tokio runtime since it does async catalog/metadata lookups.
+    async fn prepare_stream(
         &self,
-        records: &[ConsumerRecord],
-    ) -> anyhow::Result<ParseableEvent> {
-        let stream_name = records
-            .first()
-            .map(|r| r.topic.as_str())
-            .unwrap_or_default();
-        let tenant_id = if let Some(r) = records.first() {
-            &r.tenant_id
-        } else {
-            &None
-        };
+        stream_name: &str,
+        tenant_id: &Option<String>,
+    ) -> anyhow::Result<StreamMeta> {
         let log_source_entry = LogSourceEntry::default();
         PARSEABLE
             .create_stream_if_not_exists(
@@ -70,43 +67,68 @@ impl ParseableSinkProcessor {
             .await?;
 
         let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
-        let schema = stream.get_schema_raw();
-        let time_partition = stream.get_time_partition();
-        let custom_partition = stream.get_custom_partition();
-        let static_schema_flag = stream.get_static_schema_flag();
-        let schema_version = stream.get_schema_version();
-        let infer_timestamp = stream.get_infer_timestamp();
+        Ok(StreamMeta {
+            schema: stream.get_schema_raw(),
+            time_partition: stream.get_time_partition(),
+            custom_partition: stream.get_custom_partition(),
+            static_schema_flag: stream.get_static_schema_flag(),
+            schema_version: stream.get_schema_version(),
+            infer_timestamp: stream.get_infer_timestamp(),
+        })
+    }
+}
 
-        let mut json_vec = Vec::with_capacity(records.len());
-        let mut total_payload_size = 0u64;
+struct StreamMeta {
+    schema: HashMap<String, Arc<Field>>,
+    time_partition: Option<String>,
+    custom_partition: Option<String>,
+    static_schema_flag: bool,
+    schema_version: SchemaVersion,
+    infer_timestamp: bool,
+}
 
-        for record in records.iter().filter_map(|r| r.payload.as_ref()) {
-            total_payload_size += record.len() as u64;
-            if let Ok(value) = serde_json::from_slice::<Value>(record) {
-                json_vec.push(value);
-            }
+/// JSON parse + Arrow record-batch encode for a chunk of records. CPU-bound,
+/// so it must run off the kafka connector's dedicated tokio runtime (sized to
+/// `partition_listener_concurrency`, default 2 — shared by every partition's
+/// poll/commit/recv), same reasoning as the rayon offload used for otel and
+/// prometheus remote-write ingestion.
+fn build_and_process_event(
+    records: Vec<ConsumerRecord>,
+    stream_name: String,
+    tenant_id: Option<String>,
+    meta: StreamMeta,
+) -> anyhow::Result<()> {
+    let mut json_vec = Vec::with_capacity(records.len());
+    let mut total_payload_size = 0u64;
+
+    for record in records.iter().filter_map(|r| r.payload.as_ref()) {
+        total_payload_size += record.len() as u64;
+        if let Ok(value) = serde_json::from_slice::<Value>(record) {
+            json_vec.push(value);
         }
+    }
 
-        let mut p_custom_fields = HashMap::new();
-        p_custom_fields.insert(USER_AGENT_KEY.to_string(), "kafka".to_string());
+    let mut p_custom_fields = HashMap::new();
+    p_custom_fields.insert(USER_AGENT_KEY.to_string(), "kafka".to_string());
 
-        let p_event = json::Event::new(Value::Array(json_vec), Utc::now()).into_event(
-            stream_name.to_string(),
+    json::Event::new(Value::Array(json_vec), Utc::now())
+        .into_event(
+            stream_name,
             total_payload_size,
-            &schema,
-            static_schema_flag,
-            custom_partition.as_ref(),
-            time_partition.as_ref(),
-            schema_version,
+            &meta.schema,
+            meta.static_schema_flag,
+            meta.custom_partition.as_ref(),
+            meta.time_partition.as_ref(),
+            meta.schema_version,
             StreamType::UserDefined,
             &p_custom_fields,
             TelemetryType::Logs,
-            tenant_id,
-            infer_timestamp,
-        )?;
+            &tenant_id,
+            meta.infer_timestamp,
+        )?
+        .process()?;
 
-        Ok(p_event)
-    }
+    Ok(())
 }
 
 #[async_trait]
@@ -115,7 +137,17 @@ impl Processor<Vec<ConsumerRecord>, ()> for ParseableSinkProcessor {
         let len = records.len();
         debug!("Processing {len} records");
 
-        self.build_event_from_chunk(&records).await?.process()?;
+        let stream_name = records.first().map(|r| r.topic.clone()).unwrap_or_default();
+        let tenant_id = records.first().and_then(|r| r.tenant_id.clone());
+
+        let meta = self.prepare_stream(&stream_name, &tenant_id).await?;
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        rayon::spawn(move || {
+            let res = build_and_process_event(records, stream_name, tenant_id, meta);
+            let _ = tx.send(res);
+        });
+        rx.await??;
 
         debug!("Processed {len} records");
         Ok(())
