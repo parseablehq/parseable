@@ -50,16 +50,16 @@ tower-http = { version = "0.6.1", features = ["cors"] }
 url = "2.4.0"
 
 # Connectors dependencies
-rdkafka = { version = "0.37", optional = true, features = [
+rdkafka = { version = "0.39.0", optional = true, features = [
     "cmake-build",
     "tracing",
     "libz-static",
 ] }
-sasl2-sys = { version = "0.1.22", optional = true, features = ["vendored"] }
+sasl2-sys = { version = "0.1.22+2.1.28", optional = true, features = ["vendored"] }
 # AWS MSK IAM authentication for Kafka (SASL/OAUTHBEARER token signing)
 aws-msk-iam-sasl-signer = { version = "1.0.1", optional = true }
-aws-types = { version = "1", optional = true }
-aws-config = { version = "1", optional = true }
+aws-types = { version = "1.4.0", optional = true }
+aws-config = { version = "1.9.0", optional = true }
 
 # Authentication and Security
 argon2 = "0.5.0"
@@ -242,6 +242,7 @@ kafka = [
     "rdkafka",
     "rdkafka/ssl-vendored",
     "rdkafka/ssl",
+    "rdkafka/zstd",
     "rdkafka/sasl",
     "rdkafka/curl",
     "rdkafka/curl-static",
