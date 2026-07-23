@@ -17,7 +17,8 @@
  */
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, VecDeque},
+    future::Future,
     io,
     path::{Path, PathBuf},
     sync::{
@@ -62,6 +63,136 @@ use local_state::{
 };
 use planner::{WorkItem, build_work, reconcile_local_file};
 
+async fn run_bounded_newest_first<T, P, O, Prepare, PrepareFut, Start, StartFut>(
+    work: Vec<T>,
+    concurrency: usize,
+    mut prepare: Prepare,
+    mut start: Start,
+) -> Vec<O>
+where
+    Prepare: FnMut(T) -> PrepareFut,
+    PrepareFut: Future<Output = Result<P, O>>,
+    Start: FnMut(P) -> StartFut,
+    StartFut: Future<Output = O>,
+{
+    let mut pending = VecDeque::from(work);
+    let mut in_flight = futures::stream::FuturesUnordered::new();
+    let mut outcomes = Vec::new();
+    let concurrency = concurrency.max(1);
+
+    loop {
+        while in_flight.len() < concurrency {
+            let Some(item) = pending.pop_front() else {
+                break;
+            };
+            let prepared = match prepare(item).await {
+                Ok(prepared) => prepared,
+                Err(outcome) => {
+                    outcomes.push(outcome);
+                    continue;
+                }
+            };
+            let start_future = start(prepared);
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let future = Box::pin(async move {
+                let _ = started_tx.send(());
+                start_future.await
+            });
+            match futures::future::select(started_rx, future).await {
+                futures::future::Either::Left((_started, future)) => in_flight.push(future),
+                futures::future::Either::Right((outcome, _started)) => outcomes.push(outcome),
+            }
+        }
+
+        let Some(outcome) = in_flight.next().await else {
+            if pending.is_empty() {
+                break;
+            }
+            continue;
+        };
+        outcomes.push(outcome);
+    }
+
+    outcomes
+}
+
+fn manifest_check_concurrency(files: usize, cpus: usize) -> Option<usize> {
+    let cpus = cpus.max(1);
+    if files <= cpus.saturating_mul(4) {
+        None
+    } else {
+        Some(files.min(cpus.saturating_mul(16).max(64)).min(512))
+    }
+}
+
+async fn classify_local_file_with<GetSize, GetSizeFut>(
+    root: PathBuf,
+    file: File,
+    get_size: GetSize,
+) -> (File, bool)
+where
+    GetSize: Fn(PathBuf) -> GetSizeFut,
+    GetSizeFut: Future<Output = io::Result<u64>>,
+{
+    let hot_tier_path = root.join(&file.file_path);
+    match get_size(hot_tier_path.clone()).await {
+        Ok(size) if size == file.file_size => (file, true),
+        Ok(_) => {
+            tracing::error!(
+                "hot tier file metadata check failed for {hot_tier_path:?} - meta.len() != file.file_size"
+            );
+            (file, false)
+        }
+        Err(error) => {
+            tracing::error!("hot tier file metadata check failed for {hot_tier_path:?} - {error}");
+            (file, false)
+        }
+    }
+}
+
+async fn classify_manifest_files_with<GetSize, GetSizeFut>(
+    root: &Path,
+    files: Vec<File>,
+    concurrency: Option<usize>,
+    get_size: GetSize,
+) -> (Vec<File>, Vec<File>)
+where
+    GetSize: Fn(PathBuf) -> GetSizeFut + Clone,
+    GetSizeFut: Future<Output = io::Result<u64>>,
+{
+    let root = root.to_path_buf();
+    let checked = if let Some(concurrency) = concurrency {
+        futures::stream::iter(files)
+            .map(|file| classify_local_file_with(root.clone(), file, get_size.clone()))
+            .buffer_unordered(concurrency.max(1))
+            .collect::<Vec<_>>()
+            .await
+    } else {
+        let mut checked = Vec::with_capacity(files.len());
+        for file in files {
+            checked.push(classify_local_file_with(root.clone(), file, get_size.clone()).await);
+        }
+        checked
+    };
+
+    let mut hot_tier_files = Vec::new();
+    let mut remaining = Vec::new();
+    for (file, valid) in checked {
+        if valid {
+            hot_tier_files.push(file);
+        } else {
+            remaining.push(file);
+        }
+    }
+    hot_tier_files.sort_unstable_by(|left, right| right.file_path.cmp(&left.file_path));
+    remaining.sort_unstable_by(|left, right| right.file_path.cmp(&left.file_path));
+    (hot_tier_files, remaining)
+}
+
+async fn local_file_size(path: PathBuf) -> io::Result<u64> {
+    fs::metadata(path).await.map(|metadata| metadata.len())
+}
+
 pub enum HotTierMessage {
     StartTask(StreamKey),
     KillTask(StreamKey),
@@ -103,6 +234,7 @@ struct StreamSyncState {
     runtime: AsyncMutex<RuntimeState>,
 }
 
+#[derive(Clone)]
 struct DownloadContext {
     stream: String,
     tenant_id: Option<String>,
@@ -112,6 +244,12 @@ struct DownloadContext {
     quota: u64,
     active: Arc<AtomicUsize>,
     maximum: Arc<AtomicUsize>,
+}
+
+struct PreparedWork {
+    item: WorkItem,
+    minute: String,
+    evicted_bytes: u64,
 }
 
 #[derive(Debug, Default)]
@@ -207,6 +345,7 @@ pub struct HotTierManager {
     filesystem: LocalFileSystem,
     hot_tier_path: &'static Path,
     state_cache: AsyncRwLock<HashMap<StreamKey, Arc<StreamSyncState>>>,
+    state_init_locks: AsyncMutex<HashMap<StreamKey, Arc<AsyncMutex<()>>>>,
     tasks: AsyncRwLock<HashMap<StreamKey, StreamTasks>>,
     sender: mpsc::UnboundedSender<HotTierMessage>,
 }
@@ -319,6 +458,7 @@ impl HotTierManager {
             filesystem: LocalFileSystem::new(),
             hot_tier_path,
             state_cache: AsyncRwLock::new(HashMap::new()),
+            state_init_locks: AsyncMutex::new(HashMap::new()),
             tasks: AsyncRwLock::new(HashMap::new()),
             sender,
         }
@@ -334,6 +474,15 @@ impl HotTierManager {
     }
 
     /// Lazy-load and cache reconstructible local state for a (tenant, stream) pair.
+    async fn state_init_lock(&self, key: &StreamKey) -> Arc<AsyncMutex<()>> {
+        self.state_init_locks
+            .lock()
+            .await
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(AsyncMutex::new(())))
+            .clone()
+    }
+
     async fn get_or_load_state(
         &self,
         stream: &str,
@@ -345,32 +494,28 @@ impl HotTierManager {
                 return Ok(state);
             }
         }
+        let init_lock = self.state_init_lock(&key).await;
+        let _init_guard = init_lock.lock().await;
+        if let Some(state) = self.state_cache.read().await.get(&key).cloned() {
+            return Ok(state);
+        }
         // Ensure the stream configuration exists before creating runtime state.
         self.read_hot_tier_config(stream, tenant_id).await?;
         let stream_root = self.stream_root(stream, tenant_id);
+        match cleanup_stale_partials(stream_root.clone()).await {
+            Ok(removed) if removed > 0 => info!(removed, "removed stale hot-tier partials"),
+            Ok(_) => {}
+            Err(error) => return Err(error.into()),
+        }
         let runtime = load_or_rebuild(&stream_root).await?;
-        let loaded = Arc::new(StreamSyncState {
+        let state = Arc::new(StreamSyncState {
             runtime: AsyncMutex::new(runtime),
         });
-        let (state, inserted) = {
-            let mut cache = self.state_cache.write().await;
-            match cache.entry(key) {
-                std::collections::hash_map::Entry::Occupied(entry) => (entry.get().clone(), false),
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(loaded.clone());
-                    (loaded, true)
-                }
-            }
-        };
-        if inserted {
-            tokio::spawn(async move {
-                match cleanup_stale_partials(stream_root).await {
-                    Ok(removed) if removed > 0 => info!(removed, "removed stale hot-tier partials"),
-                    Ok(_) => {}
-                    Err(error) => error!(%error, "failed to clean stale hot-tier partials"),
-                }
-            });
-        }
+        self.state_cache
+            .write()
+            .await
+            .insert(key.clone(), state.clone());
+        self.state_init_locks.lock().await.remove(&key);
         Ok(state)
     }
 
@@ -754,7 +899,7 @@ impl HotTierManager {
         let state = self.get_or_load_state(stream, tenant_id).await?;
         let latest_minutes = PARSEABLE.options.hot_tier_latest_minutes;
         let previous_watermark = state.runtime.lock().await.source_watermark;
-        let candidate_dates = Self::inventory_dates(anchor, previous_watermark);
+        let candidate_dates = Self::inventory_dates(anchor, previous_watermark, latest_minutes);
         let inventory_started = std::time::Instant::now();
 
         let s3_manifests = self
@@ -891,6 +1036,7 @@ impl HotTierManager {
     fn inventory_dates(
         anchor: DateTime<Utc>,
         previous_watermark: Option<DateTime<Utc>>,
+        latest_minutes: u64,
     ) -> Vec<String> {
         let mut dates = std::collections::BTreeSet::from([
             anchor
@@ -900,7 +1046,15 @@ impl HotTierManager {
             anchor.date_naive(),
         ]);
         if let Some(watermark) = previous_watermark {
-            dates.insert(watermark.date_naive());
+            let cutoff = watermark - chrono::Duration::minutes(latest_minutes as i64);
+            let mut date = cutoff.date_naive();
+            while date <= watermark.date_naive() {
+                dates.insert(date);
+                let Some(next) = date.succ_opt() else {
+                    break;
+                };
+                date = next;
+            }
         }
         dates
             .into_iter()
@@ -939,28 +1093,33 @@ impl HotTierManager {
         work: Vec<WorkItem>,
     ) -> TickStats {
         let concurrency = PARSEABLE.options.hot_tier_files_per_stream_concurrency as usize;
-        let stream_owned = stream.to_owned();
-        let tenant_owned = tenant_id.clone();
-        let root_owned = stream_root.to_path_buf();
         let active = Arc::new(AtomicUsize::new(0));
         let maximum = Arc::new(AtomicUsize::new(0));
-        let results = futures::stream::iter(work)
-            .map(|item| {
-                let context = DownloadContext {
-                    stream: stream_owned.clone(),
-                    tenant_id: tenant_owned.clone(),
-                    tenant_label: tenant_owned.as_deref().unwrap_or(DEFAULT_TENANT).to_owned(),
-                    state: state.clone(),
-                    stream_root: root_owned.clone(),
-                    quota,
-                    active: active.clone(),
-                    maximum: maximum.clone(),
-                };
-                async move { self.process_work_item(context, item).await }
-            })
-            .buffer_unordered(concurrency.max(1))
-            .collect::<Vec<_>>()
-            .await;
+        let context = DownloadContext {
+            stream: stream.to_owned(),
+            tenant_id: tenant_id.clone(),
+            tenant_label: tenant_id.as_deref().unwrap_or(DEFAULT_TENANT).to_owned(),
+            state: state.clone(),
+            stream_root: stream_root.to_path_buf(),
+            quota,
+            active: active.clone(),
+            maximum: maximum.clone(),
+        };
+        let prepare_context = context.clone();
+        let start_context = context;
+        let results = run_bounded_newest_first(
+            work,
+            concurrency,
+            |item| {
+                let context = prepare_context.clone();
+                async move { self.prepare_work_item(context, item).await }
+            },
+            |prepared| {
+                let context = start_context.clone();
+                async move { self.process_prepared_item(context, prepared).await }
+            },
+        )
+        .await;
         let mut stats = TickStats {
             max_in_flight: maximum.load(Ordering::Relaxed),
             ..TickStats::default()
@@ -979,12 +1138,16 @@ impl HotTierManager {
         stats
     }
 
-    async fn process_work_item(&self, context: DownloadContext, item: WorkItem) -> DownloadOutcome {
+    async fn prepare_work_item(
+        &self,
+        context: DownloadContext,
+        item: WorkItem,
+    ) -> Result<PreparedWork, DownloadOutcome> {
         let minute = match item.minute_path.strip_prefix(&context.stream_root) {
             Ok(value) => value.to_string_lossy().into_owned(),
             Err(error) => {
                 error!(file = %item.file.file_path, %error, "invalid hot-tier minute path");
-                return DownloadOutcome::failed(0);
+                return Err(DownloadOutcome::failed(0));
             }
         };
         let reservation = self
@@ -998,12 +1161,29 @@ impl HotTierManager {
             .await;
         let evicted_bytes = match reservation {
             Ok(Some(bytes)) => bytes,
-            Ok(None) => return DownloadOutcome::capacity(0),
+            Ok(None) => return Err(DownloadOutcome::capacity(0)),
             Err(error) => {
                 error!(stream = %context.stream, tenant = ?context.tenant_id, file = %item.file.file_path, %error, "reservation failed");
-                return DownloadOutcome::failed(0);
+                return Err(DownloadOutcome::failed(0));
             }
         };
+        Ok(PreparedWork {
+            item,
+            minute,
+            evicted_bytes,
+        })
+    }
+
+    async fn process_prepared_item(
+        &self,
+        context: DownloadContext,
+        prepared: PreparedWork,
+    ) -> DownloadOutcome {
+        let PreparedWork {
+            item,
+            minute,
+            evicted_bytes,
+        } = prepared;
         let _inflight = InFlightGuard::new(
             context.active.clone(),
             &context.maximum,
@@ -1070,11 +1250,20 @@ impl HotTierManager {
             {
                 return Ok(Some(evicted));
             }
-            let Some(oldest) = runtime.oldest_evictable_bucket().map(str::to_owned) else {
+            let Some(oldest) = runtime
+                .oldest_evictable_bucket_before(minute)
+                .map(str::to_owned)
+            else {
                 runtime.unmark_bucket_inflight(minute);
                 return Ok(None);
             };
-            let totals = verify_bucket(stream_root, &oldest).await?;
+            let totals = match verify_bucket(stream_root, &oldest).await {
+                Ok(totals) => totals,
+                Err(error) => {
+                    runtime.unmark_bucket_inflight(minute);
+                    return Err(error.into());
+                }
+            };
             runtime.minutes.insert(oldest.clone(), totals);
             let path = stream_root.join(&oldest);
             match fs::remove_dir_all(&path).await {
@@ -1097,12 +1286,7 @@ impl HotTierManager {
         commit: bool,
     ) {
         let mut runtime = state.runtime.lock().await;
-        if commit {
-            runtime.commit(&item.file.file_path, minute.to_owned());
-        } else {
-            runtime.refund(&item.file.file_path);
-        }
-        runtime.unmark_bucket_inflight(minute);
+        runtime.finish_item(&item.file.file_path, minute, commit);
     }
 
     /// fetch the list of dates available in the hot tier directory for the stream and sort them
@@ -1170,39 +1354,12 @@ impl HotTierManager {
         &self,
         manifest_files: &mut Vec<File>,
     ) -> Result<Vec<File>, HotTierError> {
-        // Check which query-relevant files exist locally in the hot tier directory.
-        let mut hot_tier_files = Vec::new();
-        let mut remaining = Vec::with_capacity(manifest_files.len());
-
-        for file in manifest_files.drain(..) {
-            let hot_tier_path = self.hot_tier_path.join(&file.file_path);
-            match fs::metadata(&hot_tier_path).await {
-                Ok(meta) => {
-                    if meta.len() == file.file_size {
-                        hot_tier_files.push(file);
-                        continue;
-                    } else {
-                        tracing::error!(
-                            "hot tier file metadata check failed for {hot_tier_path:?} - meta.len() != file.file_size"
-                        );
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(
-                        "hot tier file metadata check failed for {hot_tier_path:?} - {e}"
-                    );
-                }
-            }
-
-            remaining.push(file);
-        }
-
+        let files = std::mem::take(manifest_files);
+        let concurrency = manifest_check_concurrency(files.len(), num_cpus::get());
+        let (hot_tier_files, remaining) =
+            classify_manifest_files_with(self.hot_tier_path, files, concurrency, local_file_size)
+                .await;
         *manifest_files = remaining;
-
-        // Sort both lists in descending order by file path.
-        hot_tier_files.sort_unstable_by(|a, b| b.file_path.cmp(&a.file_path));
-        manifest_files.sort_unstable_by(|a, b| b.file_path.cmp(&a.file_path));
-
         Ok(hot_tier_files)
     }
 
@@ -1422,9 +1579,213 @@ pub enum HotTierError {
 
 #[cfg(test)]
 mod tests {
-    use chrono::{TimeZone, Utc};
+    use std::{
+        path::PathBuf,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
 
-    use super::HotTierManager;
+    use chrono::{TimeZone, Utc};
+    use tokio::sync::Semaphore;
+
+    use crate::catalog::manifest::File;
+
+    use super::{
+        HotTierManager, classify_manifest_files_with, manifest_check_concurrency,
+        run_bounded_newest_first,
+    };
+
+    fn manifest_file(path: &str, size: u64) -> File {
+        File {
+            file_path: path.to_owned(),
+            file_size: size,
+            ..File::default()
+        }
+    }
+
+    async fn local_file_len(path: PathBuf) -> std::io::Result<u64> {
+        tokio::fs::metadata(path)
+            .await
+            .map(|metadata| metadata.len())
+    }
+
+    fn manifest_paths(files: &[File]) -> Vec<&str> {
+        files.iter().map(|file| file.file_path.as_str()).collect()
+    }
+
+    async fn wait_until_len(values: &Arc<Mutex<Vec<u8>>>, expected: usize) {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while values.lock().unwrap().len() < expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("ordered download did not start in time");
+    }
+
+    #[tokio::test]
+    async fn bounded_downloads_prepare_and_start_newest_first() {
+        let prepared = Arc::new(Mutex::new(Vec::new()));
+        let started = Arc::new(Mutex::new(Vec::new()));
+        let gates = Arc::new(Semaphore::new(0));
+
+        let task = tokio::spawn(run_bounded_newest_first(
+            vec![14_u8, 13, 12, 11],
+            2,
+            {
+                let prepared = Arc::clone(&prepared);
+                move |item| {
+                    prepared.lock().unwrap().push(item);
+                    async move { Ok::<_, u8>(item) }
+                }
+            },
+            {
+                let started = Arc::clone(&started);
+                let gates = Arc::clone(&gates);
+                move |item| {
+                    started.lock().unwrap().push(item);
+                    let gates = Arc::clone(&gates);
+                    async move {
+                        gates.acquire_owned().await.unwrap().forget();
+                        item
+                    }
+                }
+            },
+        ));
+
+        wait_until_len(&started, 2).await;
+        assert_eq!(*prepared.lock().unwrap(), vec![14, 13]);
+        assert_eq!(*started.lock().unwrap(), vec![14, 13]);
+
+        gates.add_permits(1);
+        wait_until_len(&started, 3).await;
+        assert_eq!(*started.lock().unwrap(), vec![14, 13, 12]);
+
+        gates.add_permits(3);
+        let mut outcomes = task.await.unwrap();
+        outcomes.sort_unstable();
+        assert_eq!(outcomes, vec![11, 12, 13, 14]);
+    }
+
+    #[tokio::test]
+    async fn failed_newer_download_does_not_reorder_remaining_starts() {
+        let started = Arc::new(Mutex::new(Vec::new()));
+
+        let outcomes = run_bounded_newest_first(
+            vec![14_u8, 13, 12],
+            2,
+            |item| async move { Ok::<_, (u8, bool)>(item) },
+            {
+                let started = Arc::clone(&started);
+                move |item| {
+                    started.lock().unwrap().push(item);
+                    async move { (item, item != 14) }
+                }
+            },
+        )
+        .await;
+
+        assert_eq!(*started.lock().unwrap(), vec![14, 13, 12]);
+        assert_eq!(outcomes.len(), 3);
+        assert!(outcomes.contains(&(14, false)));
+    }
+
+    #[tokio::test]
+    async fn concurrent_initialization_uses_same_stream_lock() {
+        let root = Box::leak(tempfile::tempdir().unwrap().keep().into_boxed_path());
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let manager = HotTierManager::new(root, sender);
+        let key = (None, "logs".to_owned());
+
+        let (first, second) =
+            tokio::join!(manager.state_init_lock(&key), manager.state_init_lock(&key),);
+
+        assert!(Arc::ptr_eq(&first, &second));
+    }
+
+    #[test]
+    fn manifest_check_concurrency_matches_policy() {
+        assert_eq!(manifest_check_concurrency(32, 8), None);
+        assert_eq!(manifest_check_concurrency(33, 8), Some(33));
+        assert_eq!(manifest_check_concurrency(1_000, 8), Some(128));
+        assert_eq!(manifest_check_concurrency(1_000, 64), Some(512));
+        assert_eq!(manifest_check_concurrency(70, 1), Some(64));
+    }
+
+    #[tokio::test]
+    async fn manifest_classification_is_identical_serial_and_parallel() {
+        let temp = tempfile::tempdir().unwrap();
+        tokio::fs::write(temp.path().join("z.parquet"), [1_u8; 5])
+            .await
+            .unwrap();
+        tokio::fs::write(temp.path().join("y.parquet"), [1_u8; 2])
+            .await
+            .unwrap();
+        let files = vec![
+            manifest_file("x.parquet", 3),
+            manifest_file("z.parquet", 5),
+            manifest_file("y.parquet", 7),
+        ];
+
+        let serial =
+            classify_manifest_files_with(temp.path(), files.clone(), None, local_file_len).await;
+        let parallel =
+            classify_manifest_files_with(temp.path(), files, Some(64), local_file_len).await;
+
+        assert_eq!(manifest_paths(&serial.0), vec!["z.parquet"]);
+        assert_eq!(manifest_paths(&serial.1), vec!["y.parquet", "x.parquet"]);
+        assert_eq!(manifest_paths(&parallel.0), manifest_paths(&serial.0));
+        assert_eq!(manifest_paths(&parallel.1), manifest_paths(&serial.1));
+    }
+
+    #[tokio::test]
+    async fn manifest_parallelism_is_bounded() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let maximum = Arc::new(AtomicUsize::new(0));
+        let release = Arc::new(Semaphore::new(0));
+        let files = (0..100)
+            .map(|index| manifest_file(&format!("{index:03}.parquet"), 1))
+            .collect();
+        let root = PathBuf::from("/unused");
+        let task = tokio::spawn({
+            let active = Arc::clone(&active);
+            let maximum = Arc::clone(&maximum);
+            let release = Arc::clone(&release);
+            async move {
+                classify_manifest_files_with(&root, files, Some(64), move |_path| {
+                    let active = Arc::clone(&active);
+                    let maximum = Arc::clone(&maximum);
+                    let release = Arc::clone(&release);
+                    async move {
+                        let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        maximum.fetch_max(current, Ordering::SeqCst);
+                        release.acquire_owned().await.unwrap().forget();
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        Ok(1)
+                    }
+                })
+                .await
+            }
+        });
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while maximum.load(Ordering::SeqCst) < 64 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("parallel manifest checks did not fill concurrency");
+        assert_eq!(active.load(Ordering::SeqCst), 64);
+        assert_eq!(maximum.load(Ordering::SeqCst), 64);
+
+        release.add_permits(100);
+        let (local, remaining) = task.await.unwrap();
+        assert_eq!(local.len(), 100);
+        assert!(remaining.is_empty());
+        assert_eq!(maximum.load(Ordering::SeqCst), 64);
+    }
 
     #[test]
     fn inventory_dates_cover_watermark_and_midnight_rollover() {
@@ -1432,8 +1793,42 @@ mod tests {
         let watermark = Utc.with_ymd_and_hms(2026, 7, 14, 23, 59, 0).unwrap();
 
         assert_eq!(
-            HotTierManager::inventory_dates(anchor, Some(watermark)),
+            HotTierManager::inventory_dates(anchor, Some(watermark), 15),
             vec!["date=2026-07-14", "date=2026-07-15", "date=2026-07-16",]
+        );
+    }
+
+    #[test]
+    fn inventory_dates_include_watermark_cutoff_date() {
+        let anchor = Utc.with_ymd_and_hms(2026, 7, 23, 12, 0, 0).unwrap();
+        let watermark = Utc.with_ymd_and_hms(2026, 7, 20, 0, 5, 0).unwrap();
+
+        assert_eq!(
+            HotTierManager::inventory_dates(anchor, Some(watermark), 15),
+            vec![
+                "date=2026-07-19",
+                "date=2026-07-20",
+                "date=2026-07-22",
+                "date=2026-07-23",
+            ]
+        );
+    }
+
+    #[test]
+    fn inventory_dates_include_each_watermark_window_date() {
+        let anchor = Utc.with_ymd_and_hms(2026, 7, 23, 12, 0, 0).unwrap();
+        let watermark = Utc.with_ymd_and_hms(2026, 7, 20, 12, 0, 0).unwrap();
+
+        assert_eq!(
+            HotTierManager::inventory_dates(anchor, Some(watermark), 3 * 24 * 60),
+            vec![
+                "date=2026-07-17",
+                "date=2026-07-18",
+                "date=2026-07-19",
+                "date=2026-07-20",
+                "date=2026-07-22",
+                "date=2026-07-23",
+            ]
         );
     }
 }

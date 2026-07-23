@@ -85,11 +85,26 @@ impl RuntimeState {
         }
     }
 
-    pub fn oldest_evictable_bucket(&self) -> Option<&str> {
+    pub fn oldest_evictable_bucket_before(&self, target: &str) -> Option<&str> {
         self.minutes
             .keys()
+            .take_while(|minute| minute.as_str() < target)
             .find(|minute| !self.inflight_buckets.contains_key(*minute))
             .map(String::as_str)
+    }
+
+    pub fn finish_item(&mut self, path: &str, minute: &str, commit: bool) {
+        if commit {
+            self.commit(path, minute.to_owned());
+        } else {
+            self.refund(path);
+        }
+        self.unmark_bucket_inflight(minute);
+    }
+
+    #[cfg(test)]
+    pub fn bucket_is_inflight(&self, minute: &str) -> bool {
+        self.inflight_buckets.contains_key(minute)
     }
 
     pub fn remove_bucket(&mut self, minute: &str) -> u64 {
@@ -103,21 +118,15 @@ impl RuntimeState {
 pub(super) async fn load_or_rebuild(stream_root: &Path) -> io::Result<RuntimeState> {
     tokio::fs::create_dir_all(stream_root).await?;
     let checkpoint_path = stream_root.join(INDEX_FILENAME);
-    if let Ok(bytes) = tokio::fs::read(&checkpoint_path).await
-        && let Ok(mut checkpoint) = serde_json::from_slice::<Checkpoint>(&bytes)
-    {
-        for totals in checkpoint.minutes.values_mut() {
-            totals.verified = false;
-        }
-        return Ok(RuntimeState {
-            source_watermark: checkpoint.source_watermark,
-            minutes: checkpoint.minutes,
-            ..RuntimeState::default()
-        });
-    }
-
+    let source_watermark = match tokio::fs::read(&checkpoint_path).await {
+        Ok(bytes) => serde_json::from_slice::<Checkpoint>(&bytes)
+            .ok()
+            .and_then(|checkpoint| checkpoint.source_watermark),
+        Err(_) => None,
+    };
     let (minutes, legacy_manifests) = scan_stream_root(stream_root).await?;
     let state = RuntimeState {
+        source_watermark,
         minutes,
         ..RuntimeState::default()
     };
@@ -223,9 +232,13 @@ pub(super) async fn cleanup_stale_partials(stream_root: PathBuf) -> io::Result<u
         while let Some(entry) = entries.next_entry().await? {
             if entry.file_type().await?.is_dir() {
                 pending.push(entry.path());
-            } else if entry.file_name().to_string_lossy().ends_with(".partial") {
-                tokio::fs::remove_file(entry.path()).await?;
-                removed += 1;
+            } else {
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if name.ends_with(".partial") && name != PARTIAL_INDEX_FILENAME {
+                    tokio::fs::remove_file(entry.path()).await?;
+                    removed += 1;
+                }
             }
         }
     }
@@ -241,9 +254,24 @@ mod tests {
     use crate::catalog::manifest::{File, Manifest};
 
     use super::{
-        INDEX_FILENAME, MinuteTotals, RuntimeState, cleanup_stale_partials, load_or_rebuild,
-        persist_checkpoint,
+        INDEX_FILENAME, MinuteTotals, PARTIAL_INDEX_FILENAME, RuntimeState, cleanup_stale_partials,
+        load_or_rebuild, persist_checkpoint,
     };
+
+    fn runtime_with_minutes(minutes: &[&str]) -> RuntimeState {
+        let mut state = RuntimeState::default();
+        for minute in minutes {
+            state.minutes.insert(
+                format!("date=2026-07-16/hour=12/{minute}"),
+                MinuteTotals {
+                    bytes: 10,
+                    files: 1,
+                    verified: true,
+                },
+            );
+        }
+        state
+    }
 
     #[test]
     fn reservations_are_per_file_and_always_refunded_or_committed() {
@@ -275,24 +303,47 @@ mod tests {
     }
 
     #[test]
-    fn oldest_non_inflight_bucket_is_selected_for_eviction() {
-        let mut state = RuntimeState::default();
-        for minute in ["minute=00", "minute=01", "minute=02"] {
-            state.minutes.insert(
-                format!("date=2026-07-16/hour=12/{minute}"),
-                MinuteTotals {
-                    bytes: 10,
-                    files: 1,
-                    verified: true,
-                },
-            );
-        }
+    fn eviction_selects_oldest_bucket_strictly_before_target() {
+        let mut state = runtime_with_minutes(&["minute=00", "minute=05", "minute=14"]);
         state.mark_bucket_inflight("date=2026-07-16/hour=12/minute=00");
 
         assert_eq!(
-            state.oldest_evictable_bucket(),
-            Some("date=2026-07-16/hour=12/minute=01")
+            state.oldest_evictable_bucket_before("date=2026-07-16/hour=12/minute=14"),
+            Some("date=2026-07-16/hour=12/minute=05")
         );
+    }
+
+    #[test]
+    fn older_target_cannot_evict_newer_cached_bucket() {
+        let state = runtime_with_minutes(&["minute=14"]);
+
+        assert_eq!(
+            state.oldest_evictable_bucket_before("date=2026-07-16/hour=12/minute=00"),
+            None
+        );
+    }
+
+    #[test]
+    fn same_minute_is_not_an_eviction_candidate() {
+        let state = runtime_with_minutes(&["minute=14"]);
+
+        assert_eq!(
+            state.oldest_evictable_bucket_before("date=2026-07-16/hour=12/minute=14"),
+            None
+        );
+    }
+
+    #[test]
+    fn failed_item_refunds_and_unmarks_target() {
+        let mut state = RuntimeState::default();
+        let minute = "date=2026-07-16/hour=12/minute=14";
+        state.mark_bucket_inflight(minute);
+        assert!(state.try_reserve("new.parquet", 10, 100));
+
+        state.finish_item("new.parquet", minute, false);
+
+        assert_eq!(state.reserved_bytes(), 0);
+        assert!(!state.bucket_is_inflight(minute));
     }
 
     #[tokio::test]
@@ -331,6 +382,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn valid_checkpoint_undercount_is_rebuilt_from_disk() {
+        let temp = tempdir().unwrap();
+        persist_checkpoint(temp.path(), &RuntimeState::default())
+            .await
+            .unwrap();
+        let minute = temp.path().join("date=2026-07-16/hour=12/minute=14");
+        fs::create_dir_all(&minute).unwrap();
+        fs::write(minute.join("a.parquet"), [1_u8; 9]).unwrap();
+
+        let restored = load_or_rebuild(temp.path()).await.unwrap();
+
+        assert_eq!(restored.used_bytes(), 9);
+    }
+
+    #[tokio::test]
+    async fn valid_checkpoint_overcount_is_rebuilt_from_disk() {
+        let temp = tempdir().unwrap();
+        let mut stale = RuntimeState::default();
+        stale.minutes.insert(
+            "date=2026-07-16/hour=12/minute=14".to_owned(),
+            MinuteTotals {
+                bytes: 99,
+                files: 3,
+                verified: true,
+            },
+        );
+        persist_checkpoint(temp.path(), &stale).await.unwrap();
+
+        let restored = load_or_rebuild(temp.path()).await.unwrap();
+
+        assert_eq!(restored.used_bytes(), 0);
+        assert!(restored.minutes.is_empty());
+    }
+
+    #[tokio::test]
     async fn legacy_manifest_is_deleted_only_after_checkpoint_is_written() {
         let temp = tempdir().unwrap();
         let stream_root = temp.path().join("logs");
@@ -364,6 +450,10 @@ mod tests {
     #[tokio::test]
     async fn checkpoint_restart_restores_committed_state_without_reservations() {
         let temp = tempdir().unwrap();
+        let minute = temp.path().join("date=2026-07-16/hour=12/minute=14");
+        fs::create_dir_all(&minute).unwrap();
+        fs::write(minute.join("a.parquet"), [1_u8; 5]).unwrap();
+        fs::write(minute.join("b.parquet"), [1_u8; 6]).unwrap();
         let mut state = RuntimeState::default();
         state.minutes.insert(
             "date=2026-07-16/hour=12/minute=14".to_owned(),
@@ -395,5 +485,20 @@ mod tests {
         assert_eq!(removed, 1);
         assert!(!temp.path().join("crash.parquet.partial").exists());
         assert!(temp.path().join("committed.parquet").exists());
+    }
+
+    #[tokio::test]
+    async fn download_partial_cleanup_leaves_checkpoint_partial_alone() {
+        let temp = tempdir().unwrap();
+        fs::write(temp.path().join("a.parquet.partial"), [1_u8]).unwrap();
+        fs::write(temp.path().join(PARTIAL_INDEX_FILENAME), [2_u8]).unwrap();
+
+        let removed = cleanup_stale_partials(temp.path().to_path_buf())
+            .await
+            .unwrap();
+
+        assert_eq!(removed, 1);
+        assert!(!temp.path().join("a.parquet.partial").exists());
+        assert!(temp.path().join(PARTIAL_INDEX_FILENAME).exists());
     }
 }

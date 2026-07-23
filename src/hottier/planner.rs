@@ -81,9 +81,10 @@ pub(super) fn build_work(
         })
         .collect::<Vec<_>>();
     items.sort_by(|left, right| {
-        left.timestamp
-            .cmp(&right.timestamp)
-            .then_with(|| left.file.file_path.cmp(&right.file.file_path))
+        right
+            .timestamp
+            .cmp(&left.timestamp)
+            .then_with(|| right.file.file_path.cmp(&left.file.file_path))
     });
 
     WorkPlan {
@@ -147,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn work_uses_source_watermark_and_orders_oldest_path_first() {
+    fn work_uses_source_watermark_deduplicates_and_orders_newest_first() {
         let mut manifests = BTreeMap::new();
         manifests.insert(
             "date=2026-07-16".to_owned(),
@@ -185,9 +186,9 @@ mod tests {
                 .map(|item| item.file.file_path.as_str())
                 .collect::<Vec<_>>(),
             vec![
-                "logs/date=2026-07-16/hour=12/minute=00/z.parquet",
-                "logs/date=2026-07-16/hour=12/minute=14/a.parquet",
                 "logs/date=2026-07-16/hour=12/minute=14/b.parquet",
+                "logs/date=2026-07-16/hour=12/minute=14/a.parquet",
+                "logs/date=2026-07-16/hour=12/minute=00/z.parquet",
             ]
         );
     }
