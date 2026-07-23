@@ -382,7 +382,7 @@ pub struct UsersPrism {
     pub username: String,
     // oaith or native
     pub method: String,
-    // email only if method is oauth
+    // email if set
     pub email: Option<String>,
     // picture only if oauth
     pub picture: Option<Url>,
