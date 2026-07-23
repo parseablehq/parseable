@@ -37,6 +37,7 @@ use crate::{
     handlers::http::rbac::{InvalidUserGroupError, RBACError},
     parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::{
+        Users,
         map::{mut_sessions, read_user_groups, roles, users},
         role::model::RoleType,
         roles_to_permission,
@@ -49,13 +50,28 @@ static EMAIL_VALIDATOR_RE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 #[derive(Debug, Deserialize)]
-pub struct UserEmail {
-    pub email: String,
+pub struct UpdateUser {
+    pub email: Option<String>,
 }
 
-impl UserEmail {
-    pub fn is_valid(&self) -> bool {
-        EMAIL_VALIDATOR_RE.is_match(&self.email)
+impl UpdateUser {
+    pub fn update(&self, userid: &str, tenant_id: &Option<String>) -> Result<(), RBACError> {
+        if let Some(email) = &self.email {
+            if self.is_valid_email() {
+                Users.put_email(email.clone(), tenant_id, userid)?;
+            } else {
+                return Err(RBACError::Anyhow(anyhow::Error::msg("Invalid Email")));
+            }
+        }
+
+        Ok(())
+    }
+    fn is_valid_email(&self) -> bool {
+        if let Some(email) = &self.email {
+            EMAIL_VALIDATOR_RE.is_match(email)
+        } else {
+            false
+        }
     }
 }
 

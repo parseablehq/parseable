@@ -710,14 +710,12 @@ impl Server {
                             .to(http::rbac::delete_user)
                             .authorize(Action::DeleteUser),
                     )
+                    .route(
+                        web::patch()
+                            .to(http::rbac::patch_user)
+                            .authorize_for_user(Action::PatchUser),
+                    )
                     .wrap(DisAllowRootUser),
-            )
-            .service(
-                web::resource("/{userid}/email").route(
-                    web::put()
-                        .to(http::rbac::put_email)
-                        .authorize_for_user(Action::PutEmail),
-                ),
             )
             .service(
                 web::resource("/{userid}/role").route(

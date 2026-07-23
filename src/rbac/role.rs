@@ -34,7 +34,7 @@ pub enum Action {
     GetStats,
     DeleteStream,
     GetRetention,
-    PutEmail,
+    PatchUser,
     PutRetention,
     PutHotTierEnabled,
     GetHotTierEnabled,
@@ -118,7 +118,7 @@ impl RoleBuilder {
                 | Action::Metrics
                 | Action::PutUser
                 | Action::ListUser
-                | Action::PutEmail
+                | Action::PatchUser
                 | Action::PutUserRoles
                 | Action::GetUserRoles
                 | Action::DeleteUser
@@ -380,7 +380,7 @@ pub mod model {
                 Action::CreateDashboard,
                 Action::DeleteDashboard,
                 Action::GetUserRoles,
-                Action::PutEmail,
+                Action::PatchUser,
             ],
             resource_type: Some(ParseableResourceType::All),
         }
@@ -421,7 +421,7 @@ pub mod model {
                 Action::CreateFilter,
                 Action::DeleteFilter,
                 Action::GetUserRoles,
-                Action::PutEmail,
+                Action::PatchUser,
             ],
             resource_type: None,
         }
@@ -455,7 +455,7 @@ pub mod model {
                 Action::GetHotTierEnabled,
                 Action::GetStreamInfo,
                 Action::GetUserRoles,
-                Action::PutEmail,
+                Action::PatchUser,
                 Action::GetAlert,
             ],
             resource_type: None,

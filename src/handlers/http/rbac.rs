@@ -24,7 +24,7 @@ use crate::{
         self, Users,
         map::{read_user_groups, roles, users},
         role::model::Role,
-        user::{self, UserEmail, UserType},
+        user::{self, UpdateUser, UserType},
         utils::to_prism_user,
     },
     storage::ObjectStorageError,
@@ -178,12 +178,12 @@ pub async fn post_user(
     Ok(password)
 }
 
-// Handler for PUT /api/v1/user/{userid}/email
-// Upsert email
-pub async fn put_email(
+// Handler for PATCH /api/v1/user/{userid}
+// Upsert user (e.g. email)
+pub async fn patch_user(
     req: HttpRequest,
     userid: web::Path<String>,
-    web::Json(email): web::Json<UserEmail>,
+    web::Json(update): web::Json<UpdateUser>,
 ) -> Result<impl Responder, RBACError> {
     let userid = userid.into_inner();
     let tenant_id = get_tenant_id_from_request(&req);
@@ -193,10 +193,8 @@ pub async fn put_email(
     {
         return Err(RBACError::ProtectedUser);
     };
-    if !email.is_valid() {
-        return Err(RBACError::Anyhow(anyhow::Error::msg("Invalid Email")));
-    }
-    Users.put_email(email.email, &tenant_id, &userid)?;
+
+    update.update(&userid, &tenant_id)?;
 
     Ok(HttpResponse::Ok())
 }
