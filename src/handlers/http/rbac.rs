@@ -24,7 +24,7 @@ use crate::{
         self, Users,
         map::{read_user_groups, roles, users},
         role::model::Role,
-        user::{self, UserType},
+        user::{self, UpdateUser, UserType},
         utils::to_prism_user,
     },
     storage::ObjectStorageError,
@@ -176,6 +176,27 @@ pub async fn post_user(
         .await?;
     }
     Ok(password)
+}
+
+// Handler for PATCH /api/v1/user/{userid}
+// Upsert user (e.g. email)
+pub async fn patch_user(
+    req: HttpRequest,
+    userid: web::Path<String>,
+    web::Json(update): web::Json<UpdateUser>,
+) -> Result<impl Responder, RBACError> {
+    let userid = userid.into_inner();
+    let tenant_id = get_tenant_id_from_request(&req);
+
+    if let Some(p) = Users.is_protected(&userid, &tenant_id)
+        && p
+    {
+        return Err(RBACError::ProtectedUser);
+    };
+
+    update.update(&userid, &tenant_id)?;
+
+    Ok(HttpResponse::Ok())
 }
 
 // Handler for POST /api/v1/user/{userid}/generate-new-password

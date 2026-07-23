@@ -16,7 +16,7 @@
  *
  */
 
-use std::collections::HashSet;
+use std::{collections::HashSet, sync::LazyLock};
 
 use argon2::{
     Argon2, PasswordHash, PasswordVerifier,
@@ -29,17 +29,51 @@ use rand::{
     RngCore,
     distributions::{Alphanumeric, DistString},
 };
+use regex::Regex;
+use serde::Deserialize;
 use ulid::Ulid;
 
 use crate::{
     handlers::http::rbac::{InvalidUserGroupError, RBACError},
     parseable::{DEFAULT_TENANT, PARSEABLE},
     rbac::{
+        Users,
         map::{mut_sessions, read_user_groups, roles, users},
         role::model::RoleType,
         roles_to_permission,
     },
 };
+
+static EMAIL_VALIDATOR_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?i)[a-z0-9!#$%&'*+/=?^_`{|}~-]+(?:\.[a-z0-9!#$%&'*+/=?^_`{|}~-]+)*@(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
+        .expect("email validation regex is invalid")
+});
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateUser {
+    pub email: Option<String>,
+}
+
+impl UpdateUser {
+    pub fn update(&self, userid: &str, tenant_id: &Option<String>) -> Result<(), RBACError> {
+        if let Some(email) = &self.email {
+            if self.is_valid_email() {
+                Users.put_email(email.clone(), tenant_id, userid)?;
+            } else {
+                return Err(RBACError::Anyhow(anyhow::Error::msg("Invalid Email")));
+            }
+        }
+
+        Ok(())
+    }
+    fn is_valid_email(&self) -> bool {
+        if let Some(email) = &self.email {
+            EMAIL_VALIDATOR_RE.is_match(email)
+        } else {
+            false
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(untagged)]
@@ -73,6 +107,7 @@ impl User {
                 ty: UserType::Native(Basic {
                     username,
                     password_hash: hash,
+                    email: None,
                 }),
                 roles: HashSet::new(),
                 user_groups: HashSet::new(),
@@ -128,6 +163,19 @@ impl User {
             tenant,
             protected,
         }
+    }
+
+    pub fn insert_email(&mut self, email: String) -> Result<(), RBACError> {
+        match self.ty {
+            UserType::Native(ref mut user) => user.email = Some(email),
+            UserType::OAuth(ref mut oauth) => oauth.user_info.email = Some(email),
+            _ => {
+                return Err(RBACError::Anyhow(anyhow::Error::msg(
+                    "Can't add email to API key",
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub fn userid(&self) -> &str {
@@ -186,6 +234,7 @@ impl User {
 pub struct Basic {
     pub username: String,
     pub password_hash: String,
+    pub email: Option<String>,
 }
 
 impl Basic {
@@ -240,6 +289,7 @@ pub fn get_super_admin_user() -> User {
         ty: UserType::Native(Basic {
             username,
             password_hash: hashcode,
+            email: None,
         }),
         roles: ["super-admin".to_string()].into(),
         user_groups: HashSet::new(),

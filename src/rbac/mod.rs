@@ -32,6 +32,7 @@ use serde::Serialize;
 use url::Url;
 
 use crate::handlers::TENANT_ID;
+use crate::handlers::http::rbac::RBACError;
 use crate::parseable::DEFAULT_TENANT;
 use crate::rbac::map::{mut_sessions, mut_users, read_user_groups, roles, sessions, users};
 use crate::rbac::role::Action;
@@ -58,6 +59,24 @@ pub enum Response {
 pub struct Users;
 
 impl Users {
+    pub fn put_email(
+        &self,
+        email: String,
+        tenant_id: &Option<String>,
+        userid: &str,
+    ) -> Result<(), RBACError> {
+        // won't change permissions so don't refresh session
+        let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        if let Some(tenant_users) = mut_users().get_mut(tenant_id)
+            && let Some(user) = tenant_users.get_mut(userid)
+        {
+            user.insert_email(email)?;
+            Ok(())
+        } else {
+            Err(RBACError::UserDoesNotExist)
+        }
+    }
+
     pub fn put_user(&self, user: User) {
         let tenant_id = user.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
         mut_sessions().remove_user(user.userid(), tenant_id);
@@ -363,7 +382,7 @@ pub struct UsersPrism {
     pub username: String,
     // oaith or native
     pub method: String,
-    // email only if method is oauth
+    // email if set
     pub email: Option<String>,
     // picture only if oauth
     pub picture: Option<Url>,
