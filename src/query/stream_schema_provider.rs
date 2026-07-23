@@ -59,7 +59,10 @@ use crate::{
     metrics::{QUERY_CACHE_HIT, increment_files_scanned_in_query_by_date},
     option::Mode,
     parseable::{DEFAULT_TENANT, PARSEABLE, STREAM_EXISTS},
-    storage::{ObjectStorage, ObjectStoreFormat},
+    storage::{
+        ObjectStorage, ObjectStoreFormat,
+        hot_tier::{HOT_TIER_OBJECT_STORE_URL, hot_tier_object_path},
+    },
 };
 
 use super::listing_table_builder::ListingTableBuilder;
@@ -109,6 +112,54 @@ struct StandardTableProvider {
     tenant_id: Option<String>,
 }
 
+fn exact_source_filters(filters: &[Expr]) -> Vec<Expr> {
+    filters
+        .iter()
+        .filter(|filter| expr_in_boundary(filter))
+        .cloned()
+        .collect()
+}
+
+fn build_parquet_scan_components(
+    schema: SchemaRef,
+    filters: &[Expr],
+    state: &dyn Session,
+) -> Result<(ParquetFormat, ParquetSource), DataFusionError> {
+    let parquet_options = state.default_table_options().parquet;
+    let file_format = ParquetFormat::default().with_options(parquet_options.clone());
+    let mut file_source =
+        ParquetSource::new(schema.clone()).with_table_parquet_options(parquet_options);
+
+    if let Some(expr) = conjunction(exact_source_filters(filters)) {
+        let table_df_schema = schema.as_ref().clone().to_dfschema()?;
+        let predicate = create_physical_expr(&expr, &table_df_schema, state.execution_props())?;
+        file_source = file_source.with_predicate(predicate);
+    }
+
+    Ok((file_format, file_source))
+}
+
+fn balanced_file_groups(manifest_files: Vec<File>, target_partitions: usize) -> Vec<Vec<File>> {
+    let group_count = target_partitions.min(manifest_files.len());
+    if group_count == 0 {
+        return Vec::new();
+    }
+
+    let mut groups = Vec::from_iter((0..group_count).map(|_| Vec::new()));
+    let mut group_bytes = vec![0_u64; group_count];
+    for file in manifest_files {
+        let group = group_bytes
+            .iter()
+            .enumerate()
+            .min_by_key(|(index, bytes)| (**bytes, *index))
+            .map(|(index, _)| index)
+            .expect("at least one file group");
+        group_bytes[group] = group_bytes[group].saturating_add(file.file_size);
+        groups[group].push(file);
+    }
+    groups
+}
+
 impl StandardTableProvider {
     #[allow(clippy::too_many_arguments)]
     async fn create_parquet_physical_plan(
@@ -123,14 +174,6 @@ impl StandardTableProvider {
         state: &dyn Session,
         time_partition: Option<String>,
     ) -> Result<(), DataFusionError> {
-        let filters = if let Some(expr) = conjunction(filters.to_vec()) {
-            let table_df_schema = self.schema.as_ref().clone().to_dfschema()?;
-            let filters = create_physical_expr(&expr, &table_df_schema, state.execution_props())?;
-            Some(filters)
-        } else {
-            None
-        };
-
         let sort_expr = PhysicalSortExpr {
             expr: if let Some(time_partition) = time_partition {
                 col(&time_partition, &self.schema)?
@@ -143,22 +186,11 @@ impl StandardTableProvider {
             },
         };
 
-        let file_format = ParquetFormat::default().with_enable_pruning(true);
+        let (file_format, file_source) =
+            build_parquet_scan_components(self.schema.clone(), filters, state)?;
 
         // create file groups from vec file partitions
         let file_groups = partitions.into_iter().map(FileGroup::new).collect_vec();
-
-        // parquet file source, default table parquet options
-        let file_source = if let Some(phyiscal_expr) = filters {
-            ParquetSource::new(self.schema.clone())
-                .with_predicate(phyiscal_expr)
-                .with_pushdown_filters(true)
-                .with_reorder_filters(true)
-        } else {
-            ParquetSource::new(self.schema.clone())
-                .with_pushdown_filters(true)
-                .with_reorder_filters(true)
-        };
 
         let mut conf_builder = FileScanConfigBuilder::new(object_store_url, file_source.into())
             .with_statistics(statistics)
@@ -213,23 +245,27 @@ impl StandardTableProvider {
         let hot_tier_files: Vec<File> = hot_tier_files
             .into_iter()
             .map(|mut file| {
-                let path = PARSEABLE
-                    .options
-                    .hot_tier_storage_path
-                    .as_ref()
-                    .unwrap()
-                    .join(&file.file_path);
-                file.file_path = path.to_str().unwrap().to_string();
-                file
+                file.file_path = hot_tier_object_path(&file.file_path)
+                    .map_err(|error| DataFusionError::External(Box::new(error)))?
+                    .to_string();
+                Ok(file)
             })
-            .collect();
+            .collect::<Result<_, DataFusionError>>()?;
 
-        let (partitioned_files, statistics) = self.partitioned_files(hot_tier_files);
+        tracing::warn!(
+            num_files = hot_tier_files.len(),
+            "hot_tier_files={:#?}",
+            &&hot_tier_files.iter().map(|f| &f.file_path).collect_vec(),
+        );
 
-        let object_store_url = "file:///";
+        let (partitioned_files, statistics) = self.partitioned_files(
+            hot_tier_files,
+            state.config_options().execution.target_partitions,
+        );
+
         self.create_parquet_physical_plan(
             execution_plans,
-            ObjectStoreUrl::parse(object_store_url).unwrap(),
+            ObjectStoreUrl::parse(HOT_TIER_OBJECT_STORE_URL).unwrap(),
             partitioned_files,
             statistics,
             projection,
@@ -358,61 +394,64 @@ impl StandardTableProvider {
     fn partitioned_files(
         &self,
         manifest_files: Vec<File>,
+        target_partitions: usize,
     ) -> (Vec<Vec<PartitionedFile>>, datafusion::common::Statistics) {
-        let target_partition: usize = num_cpus::get();
-        let mut partitioned_files = Vec::from_iter((0..target_partition).map(|_| Vec::new()));
+        let file_groups = balanced_file_groups(manifest_files, target_partitions);
+        let mut partitioned_files = Vec::with_capacity(file_groups.len());
         let mut column_statistics = HashMap::<String, Option<TypedStatistics>>::new();
         let mut count = 0;
         let mut file_count = 0u64;
-        for (index, file) in manifest_files
-            .into_iter()
-            .enumerate()
-            .map(|(x, y)| (x % target_partition, y))
-        {
-            #[allow(unused_mut)]
-            let File {
-                mut file_path,
-                num_rows,
-                columns,
-                ..
-            } = file;
+        for group in file_groups {
+            let mut partition = Vec::with_capacity(group.len());
+            for file in group {
+                #[allow(unused_mut)]
+                let File {
+                    mut file_path,
+                    num_rows,
+                    columns,
+                    file_size,
+                    ..
+                } = file;
 
-            // Track billing metrics for files scanned in query
-            file_count += 1;
+                // Track billing metrics for files scanned in query
+                file_count += 1;
 
-            // object_store::path::Path doesn't automatically deal with Windows path separators
-            // to do that, we are using from_absolute_path() which takes into consideration the underlying filesystem
-            // before sending the file path to PartitionedFile
-            // the github issue- https://github.com/parseablehq/parseable/issues/824
-            // For some reason, the `from_absolute_path()` doesn't work for macos, hence the ugly solution
-            // TODO: figure out an elegant solution to this
-            #[cfg(windows)]
-            {
-                if PARSEABLE.storage.name() == "drive" {
-                    file_path = object_store::path::Path::from_absolute_path(file_path)
-                        .unwrap()
-                        .to_string();
+                // object_store::path::Path doesn't automatically deal with Windows path separators
+                // to do that, we are using from_absolute_path() which takes into consideration the underlying filesystem
+                // before sending the file path to PartitionedFile
+                // the github issue- https://github.com/parseablehq/parseable/issues/824
+                // For some reason, the `from_absolute_path()` doesn't work for macos, hence the ugly solution
+                // TODO: figure out an elegant solution to this
+                #[cfg(windows)]
+                {
+                    if PARSEABLE.storage.name() == "drive" {
+                        file_path = object_store::path::Path::from_absolute_path(file_path)
+                            .unwrap()
+                            .to_string();
+                    }
                 }
-            }
-            let pf = PartitionedFile::new(file_path, file.file_size);
-            partitioned_files[index].push(pf);
+                let pf = PartitionedFile::new(file_path, file_size);
+                partition.push(pf);
 
-            columns.into_iter().for_each(|col| {
-                column_statistics
-                    .entry(col.name)
-                    .and_modify(|x| {
-                        if let Some((stats, col_stats)) = x.as_ref().cloned().zip(col.stats.clone())
-                        {
-                            // update() returns None on type mismatch (e.g. column
-                            // historically written as both Utf8 and Timestamp(ms)).
-                            // Dropping to None here makes the planner skip min/max
-                            // pushdown for this column instead of crashing the worker.
-                            *x = stats.update(col_stats);
-                        }
-                    })
-                    .or_insert_with(|| col.stats.as_ref().cloned());
-            });
-            count += num_rows;
+                columns.into_iter().for_each(|col| {
+                    column_statistics
+                        .entry(col.name)
+                        .and_modify(|x| {
+                            if let Some((stats, col_stats)) =
+                                x.as_ref().cloned().zip(col.stats.clone())
+                            {
+                                // update() returns None on type mismatch (e.g. column
+                                // historically written as both Utf8 and Timestamp(ms)).
+                                // Dropping to None here makes the planner skip min/max
+                                // pushdown for this column instead of crashing the worker.
+                                *x = stats.update(col_stats);
+                            }
+                        })
+                        .or_insert_with(|| col.stats.as_ref().cloned());
+                });
+                count += num_rows;
+            }
+            partitioned_files.push(partition);
         }
         let statistics = self
             .schema
@@ -645,7 +684,16 @@ impl TableProvider for StandardTableProvider {
             return self.final_plan(execution_plans, projection);
         }
 
-        let (partitioned_files, statistics) = self.partitioned_files(manifest_files);
+        tracing::warn!(
+            num_files = manifest_files.len(),
+            "objectstore_files={:#?}",
+            &&manifest_files.iter().map(|f| &f.file_path).collect_vec(),
+        );
+
+        let (partitioned_files, statistics) = self.partitioned_files(
+            manifest_files,
+            state.config_options().execution.target_partitions,
+        );
 
         let object_store_url = glob_storage.store_url();
 
@@ -1051,18 +1099,266 @@ fn satisfy_constraints(value: CastRes, op: Operator, stats: &TypedStatistics) ->
 
 #[cfg(test)]
 mod tests {
-    use std::ops::Add;
+    use std::{ops::Add, sync::Arc};
 
+    use arrow_schema::{DataType, Field, Schema};
     use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, NaiveTime, Utc};
     use datafusion::{
-        logical_expr::{BinaryExpr, Operator},
+        datasource::{
+            TableProvider,
+            listing::PartitionedFile,
+            physical_plan::{FileScanConfigBuilder, FileSource},
+            source::DataSourceExec,
+        },
+        execution::context::{SessionConfig, SessionContext},
+        execution::object_store::ObjectStoreUrl,
+        logical_expr::{BinaryExpr, Operator, TableProviderFilterPushDown, TableType},
+        physical_plan::{ExecutionPlan, displayable},
         prelude::Expr,
         scalar::ScalarValue,
     };
 
-    use crate::catalog::snapshot::ManifestItem;
+    use crate::catalog::{manifest::File, snapshot::ManifestItem};
 
-    use super::{PartialTimeFilter, extract_timestamp_bound, is_overlapping_query};
+    use super::{
+        PartialTimeFilter, balanced_file_groups, build_parquet_scan_components,
+        exact_source_filters, extract_timestamp_bound, is_overlapping_query,
+    };
+
+    fn file(path: &str, size: u64) -> File {
+        File {
+            file_path: path.to_owned(),
+            file_size: size,
+            ..File::default()
+        }
+    }
+
+    fn group_paths(groups: &[Vec<File>]) -> Vec<Vec<&str>> {
+        groups
+            .iter()
+            .map(|group| group.iter().map(|file| file.file_path.as_str()).collect())
+            .collect()
+    }
+
+    #[derive(Debug)]
+    struct TestParquetProvider {
+        schema: Arc<Schema>,
+    }
+
+    #[async_trait::async_trait]
+    impl TableProvider for TestParquetProvider {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+
+        fn schema(&self) -> Arc<Schema> {
+            Arc::clone(&self.schema)
+        }
+
+        fn table_type(&self) -> TableType {
+            TableType::Base
+        }
+
+        async fn scan(
+            &self,
+            state: &dyn datafusion::catalog::Session,
+            projection: Option<&Vec<usize>>,
+            filters: &[Expr],
+            limit: Option<usize>,
+        ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
+            let (_, source) =
+                build_parquet_scan_components(Arc::clone(&self.schema), filters, state)?;
+            let mut builder =
+                FileScanConfigBuilder::new(ObjectStoreUrl::local_filesystem(), source.into())
+                    .with_file(PartitionedFile::new("test.parquet", 10))
+                    .with_limit(limit);
+            if let Some(projection) = projection {
+                builder = builder.with_projection_indices(Some(projection.clone()))?;
+            }
+            Ok(DataSourceExec::from_data_source(builder.build()))
+        }
+
+        fn supports_filters_pushdown(
+            &self,
+            filters: &[&Expr],
+        ) -> datafusion::error::Result<Vec<TableProviderFilterPushDown>> {
+            Ok(filters
+                .iter()
+                .map(|filter| {
+                    if super::expr_in_boundary(filter) {
+                        TableProviderFilterPushDown::Exact
+                    } else {
+                        TableProviderFilterPushDown::Inexact
+                    }
+                })
+                .collect())
+        }
+    }
+
+    #[test]
+    fn parquet_scan_components_preserve_session_options() {
+        let mut config = SessionConfig::new();
+        let parquet = &mut config.options_mut().execution.parquet;
+        parquet.pruning = false;
+        parquet.pushdown_filters = true;
+        parquet.reorder_filters = true;
+        parquet.binary_as_string = true;
+        parquet.metadata_size_hint = Some(2 * 1024 * 1024);
+        parquet.enable_page_index = true;
+        parquet.max_predicate_cache_size = Some(987_654);
+        parquet.schema_force_view_types = true;
+        let context = SessionContext::new_with_config(config);
+        let state = context.state();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "p_timestamp",
+            DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, None),
+            false,
+        )]));
+
+        let (format, source) =
+            build_parquet_scan_components(schema, &[], &state).expect("components build");
+
+        let format_options = format.options();
+        let source_options = source.table_parquet_options();
+        for options in [format_options, source_options] {
+            assert!(!options.global.pruning);
+            assert!(options.global.pushdown_filters);
+            assert!(options.global.reorder_filters);
+            assert!(options.global.binary_as_string);
+            assert_eq!(options.global.metadata_size_hint, Some(2 * 1024 * 1024));
+            assert!(options.global.enable_page_index);
+            assert_eq!(options.global.max_predicate_cache_size, Some(987_654));
+            assert!(options.global.schema_force_view_types);
+        }
+    }
+
+    #[test]
+    fn only_exact_time_filters_are_preinstalled_in_parquet_source() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "p_timestamp",
+                DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, None),
+                false,
+            ),
+            Field::new("job", DataType::Utf8, false),
+        ]));
+        let exact_time = Expr::Column("p_timestamp".into()).gt_eq(Expr::Literal(
+            ScalarValue::TimestampMillisecond(Some(1_672_531_200_000), None),
+            None,
+        ));
+        let inexact_label = Expr::Column("job".into()).eq(Expr::Literal(
+            ScalarValue::Utf8(Some("api".to_owned())),
+            None,
+        ));
+        let filters = vec![exact_time.clone(), inexact_label.clone()];
+
+        assert_eq!(exact_source_filters(&filters), vec![exact_time]);
+
+        let context = SessionContext::new();
+        let state = context.state();
+        let (_, source) =
+            build_parquet_scan_components(schema, &filters, &state).expect("components build");
+        let predicate = source.filter().expect("exact predicate").to_string();
+        assert!(predicate.contains("p_timestamp"));
+        assert!(!predicate.contains("job"));
+        assert!(!predicate.contains("api"));
+    }
+
+    #[tokio::test]
+    async fn optimized_plan_enforces_exact_time_once_without_duplicating_inexact_filter() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "p_timestamp",
+                DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, None),
+                false,
+            ),
+            Field::new("job", DataType::Utf8, false),
+        ]));
+        let context = SessionContext::new();
+        context
+            .register_table(
+                "metrics",
+                Arc::new(TestParquetProvider {
+                    schema: Arc::clone(&schema),
+                }),
+            )
+            .unwrap();
+        let exact_time = Expr::Column("p_timestamp".into()).gt_eq(Expr::Literal(
+            ScalarValue::TimestampMillisecond(Some(1_672_531_200_000), None),
+            None,
+        ));
+        let inexact_label = Expr::Column("job".into()).eq(Expr::Literal(
+            ScalarValue::Utf8(Some("api".to_owned())),
+            None,
+        ));
+
+        let plan = context
+            .table("metrics")
+            .await
+            .unwrap()
+            .filter(exact_time.and(inexact_label))
+            .unwrap()
+            .create_physical_plan()
+            .await
+            .unwrap();
+        let plan = displayable(plan.as_ref()).indent(true).to_string();
+        let filter_lines = plan
+            .lines()
+            .filter(|line| line.contains("FilterExec"))
+            .collect::<Vec<_>>();
+        let source_line = plan
+            .lines()
+            .find(|line| line.contains("DataSourceExec"))
+            .expect("parquet source line");
+
+        assert_eq!(filter_lines.len(), 1, "{plan}");
+        assert!(filter_lines[0].contains("job"), "{plan}");
+        assert!(!filter_lines[0].contains("p_timestamp"), "{plan}");
+        assert!(source_line.contains("predicate=p_timestamp"), "{plan}");
+        assert!(!source_line.contains("predicate=job"), "{plan}");
+    }
+
+    #[test]
+    fn byte_balancing_uses_least_loaded_group_and_preserves_input_order() {
+        let files = vec![
+            file("z.parquet", 10),
+            file("y.parquet", 9),
+            file("x.parquet", 8),
+            file("w.parquet", 7),
+            file("v.parquet", 6),
+        ];
+
+        let groups = balanced_file_groups(files, 3);
+
+        assert_eq!(
+            group_paths(&groups),
+            vec![
+                vec!["z.parquet"],
+                vec!["y.parquet", "v.parquet"],
+                vec!["x.parquet", "w.parquet"],
+            ]
+        );
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.iter().map(|file| file.file_size).sum::<u64>())
+                .collect::<Vec<_>>(),
+            vec![10, 15, 15]
+        );
+    }
+
+    #[test]
+    fn byte_balancing_omits_empty_groups_and_handles_empty_input() {
+        assert_eq!(
+            group_paths(&balanced_file_groups(
+                vec![file("z.parquet", 2), file("y.parquet", 1)],
+                8,
+            )),
+            vec![vec!["z.parquet"], vec!["y.parquet"]]
+        );
+        assert!(balanced_file_groups(Vec::new(), 4).is_empty());
+        assert!(balanced_file_groups(vec![file("z.parquet", 1)], 0).is_empty());
+    }
 
     fn datetime_min(year: i32, month: u32, day: u32) -> DateTime<Utc> {
         NaiveDate::from_ymd_opt(year, month, day)

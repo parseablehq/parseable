@@ -26,6 +26,7 @@ use arrow_schema::Schema;
 use bytes::Bytes;
 use chrono::{DateTime, Utc};
 use dashmap::DashMap;
+use futures::{StreamExt, TryStreamExt};
 use relative_path::RelativePathBuf;
 use tonic::async_trait;
 use tracing::{info, warn};
@@ -959,11 +960,12 @@ impl Metastore for ObjectStoreMetastore {
         dates: &[String],
     ) -> Result<BTreeMap<String, Vec<Manifest>>, MetastoreError> {
         let total_start = std::time::Instant::now();
+        let inventory_limit = Arc::new(tokio::sync::Semaphore::new(16));
         let date_futures = dates.iter().map(|date| {
-            // let storage = self.storage.clone();
             let stream = stream_name.to_string();
             let tenant = tenant_id.clone();
             let date = date.clone();
+            let inventory_limit = inventory_limit.clone();
             async move {
                 let t_start = std::time::Instant::now();
                 let date_path = if let Some(tenant) = tenant.as_ref() {
@@ -973,7 +975,14 @@ impl Metastore for ObjectStoreMetastore {
                 };
 
                 let t_list = std::time::Instant::now();
-                let resp = match self.storage.list_with_delimiter(Some(date_path)).await {
+                let list_permit = inventory_limit
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .expect("inventory semaphore remains open");
+                let list_result = self.storage.list_with_delimiter(Some(date_path)).await;
+                drop(list_permit);
+                let resp = match list_result {
                     Ok(r) => r,
                     Err(ObjectStorageError::NoSuchKey(_)) => {
                         info!(
@@ -998,14 +1007,25 @@ impl Metastore for ObjectStoreMetastore {
                 let manifest_count = manifest_paths.len();
 
                 let t_gets = std::time::Instant::now();
-                let mut manifests: Vec<Manifest> = Vec::with_capacity(manifest_count);
-                for path in manifest_paths {
-                    let bytes = self
-                        .storage
-                        .get_object(&RelativePathBuf::from(path), &tenant)
-                        .await?;
-                    manifests.push(serde_json::from_slice::<Manifest>(&bytes)?);
-                }
+                let manifests = futures::stream::iter(manifest_paths)
+                    .map(|path| {
+                        let tenant = tenant.clone();
+                        let inventory_limit = inventory_limit.clone();
+                        async move {
+                            let _permit = inventory_limit
+                                .acquire_owned()
+                                .await
+                                .expect("inventory semaphore remains open");
+                            let bytes = self
+                                .storage
+                                .get_object(&RelativePathBuf::from(path), &tenant)
+                                .await?;
+                            Ok::<Manifest, MetastoreError>(serde_json::from_slice(&bytes)?)
+                        }
+                    })
+                    .buffer_unordered(16)
+                    .try_collect::<Vec<_>>()
+                    .await?;
                 let gets_ms = t_gets.elapsed().as_millis() as u64;
                 let total_ms = t_start.elapsed().as_millis() as u64;
 
