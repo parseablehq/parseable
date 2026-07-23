@@ -713,6 +713,13 @@ impl Server {
                     .wrap(DisAllowRootUser),
             )
             .service(
+                web::resource("/{userid}/email").route(
+                    web::put()
+                        .to(http::rbac::put_email)
+                        .authorize_for_user(Action::PutEmail),
+                ),
+            )
+            .service(
                 web::resource("/{userid}/role").route(
                     web::get()
                         .to(http::rbac::get_role)

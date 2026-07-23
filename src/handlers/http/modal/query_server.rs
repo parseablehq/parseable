@@ -25,6 +25,7 @@ use crate::handlers::http::logstream;
 use crate::handlers::http::max_event_payload_size;
 use crate::handlers::http::middleware::{DisAllowRootUser, RouteExt};
 use crate::handlers::http::modal::initialize_hot_tier_metadata_on_startup;
+use crate::handlers::http::rbac::put_email;
 use crate::handlers::http::{base_path, prism_base_path};
 use crate::handlers::http::{rbac, role};
 use crate::hottier::GLOBAL_HOTTIER;
@@ -227,6 +228,13 @@ impl QueryServer {
                     web::get()
                         .to(rbac::get_role)
                         .authorize_for_user(Action::GetUserRoles),
+                ),
+            )
+            .service(
+                web::resource("/{userid}/email").route(
+                    web::put()
+                        .to(put_email)
+                        .authorize_for_user(Action::PutEmail),
                 ),
             )
             .service(
