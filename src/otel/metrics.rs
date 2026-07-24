@@ -31,17 +31,23 @@ use std::hash::Hasher;
 use tracing::info_span;
 
 use crate::metrics::increment_metrics_collected_by_date;
+use crate::parseable::PARSEABLE;
 
 use super::otel_utils::{
     convert_epoch_nano_to_timestamp, insert_attributes, insert_number_if_some,
 };
 
-pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 37] = [
+pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 38] = [
     "metric_name",
     "metric_description",
     "metric_unit",
     "start_time_unix_nano",
     "time_unix_nano",
+    // Nested array of exemplar objects (default). Kept out of the series
+    // hash so exemplar contents never fragment physical-series identity.
+    "exemplars",
+    // Legacy flat per-exemplar columns, emitted only when the
+    // `otel-flatten-exemplars` flag is set.
     "exemplar_time_unix_nano",
     "exemplar_span_id",
     "exemplar_trace_id",
@@ -126,7 +132,72 @@ fn compute_series_hash(dp: &Map<String, Value>) -> u64 {
     hasher.finish()
 }
 
-fn insert_exemplars(map: &mut Map<String, Value>, exemplars: &[Exemplar]) {
+/// Convert a single exemplar's value into a JSON number.
+///
+/// Both int and double exemplar values are emitted as `f64` so the flattened
+/// `exemplars_exemplar_value` column has a stable `List<Float64>` type. If int
+/// and double values were emitted as-is, the column would infer as
+/// `List<Int64>` in some batches and `List<Float64>` in others; Parseable's
+/// schema-conflict handling would then route the mismatched batch to a separate
+/// `exemplars_exemplar_value_list` column, leaving the original empty
+/// (reported in the PR #1720 review).
+fn exemplar_value_to_json(value: &ExemplarValue) -> Value {
+    let as_f64 = match value {
+        ExemplarValue::AsDouble(double_val) => *double_val,
+        ExemplarValue::AsInt(int_val) => *int_val as f64,
+    };
+    serde_json::Number::from_f64(as_f64)
+        .map(Value::Number)
+        .unwrap_or(Value::Null)
+}
+
+/// Build one JSON object for a single exemplar. Used to populate the nested
+/// `exemplars` array so every exemplar of a data point is preserved. The field
+/// names match the legacy flat columns, so switching representations via the
+/// flag changes only the shape, not the field names.
+fn exemplar_to_json(exemplar: &Exemplar) -> Value {
+    let mut exemplar_json = Map::with_capacity(exemplar.filtered_attributes.len() + 4);
+    insert_attributes(&mut exemplar_json, &exemplar.filtered_attributes);
+    exemplar_json.insert(
+        "exemplar_time_unix_nano".to_string(),
+        Value::String(convert_epoch_nano_to_timestamp(
+            exemplar.time_unix_nano as i64,
+        )),
+    );
+    exemplar_json.insert(
+        "exemplar_span_id".to_string(),
+        Value::String(hex::encode(&exemplar.span_id)),
+    );
+    exemplar_json.insert(
+        "exemplar_trace_id".to_string(),
+        Value::String(hex::encode(&exemplar.trace_id)),
+    );
+    if let Some(value) = &exemplar.value {
+        exemplar_json.insert("exemplar_value".to_string(), exemplar_value_to_json(value));
+    }
+    Value::Object(exemplar_json)
+}
+
+/// Flatten a data point's exemplars into `map`.
+///
+/// By default every exemplar is preserved under a single nested `exemplars`
+/// array column. With `flatten_exemplars` set, the legacy flat columns
+/// (`exemplar_*`) are emitted instead; because they share static keys, only
+/// the last exemplar of the data point survives (kept for backward
+/// compatibility with deployments already querying those columns).
+fn insert_exemplars(map: &mut Map<String, Value>, exemplars: &[Exemplar], flatten_exemplars: bool) {
+    if exemplars.is_empty() {
+        return;
+    }
+
+    if !flatten_exemplars {
+        let exemplars_json = exemplars.iter().map(exemplar_to_json).collect();
+        map.insert("exemplars".to_string(), Value::Array(exemplars_json));
+        return;
+    }
+
+    // Legacy behavior: flatten each exemplar into shared columns. The final
+    // exemplar wins as each iteration overwrites the previous one.
     for exemplar in exemplars {
         insert_attributes(map, &exemplar.filtered_attributes);
         map.insert(
@@ -144,22 +215,7 @@ fn insert_exemplars(map: &mut Map<String, Value>, exemplars: &[Exemplar]) {
             Value::String(hex::encode(&exemplar.trace_id)),
         );
         if let Some(value) = &exemplar.value {
-            match value {
-                ExemplarValue::AsDouble(double_val) => {
-                    map.insert(
-                        "exemplar_value".to_string(),
-                        serde_json::Number::from_f64(*double_val)
-                            .map(Value::Number)
-                            .unwrap_or(Value::Null),
-                    );
-                }
-                ExemplarValue::AsInt(int_val) => {
-                    map.insert(
-                        "exemplar_value".to_string(),
-                        Value::Number(serde_json::Number::from(*int_val)),
-                    );
-                }
-            }
+            map.insert("exemplar_value".to_string(), exemplar_value_to_json(value));
         }
     }
 }
@@ -168,7 +224,10 @@ fn insert_exemplars(map: &mut Map<String, Value>, exemplars: &[Exemplar]) {
 /// this function flatten the number data points json array
 /// and returns a `Vec` of `Map` of the flattened json
 /// this function is reused in all json objects that have number data points
-fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<Map<String, Value>> {
+fn flatten_number_data_points(
+    data_points: &[NumberDataPoint],
+    flatten_exemplars: bool,
+) -> Vec<Map<String, Value>> {
     data_points
         .iter()
         .map(|data_point| {
@@ -187,7 +246,11 @@ fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<Map<String
                 )),
             );
 
-            insert_exemplars(&mut data_point_json, &data_point.exemplars);
+            insert_exemplars(
+                &mut data_point_json,
+                &data_point.exemplars,
+                flatten_exemplars,
+            );
 
             insert_data_point_flags(&mut data_point_json, data_point.flags);
             if let Some(value) = &data_point.value {
@@ -217,16 +280,16 @@ fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<Map<String
 /// each gauge object has json array for data points
 /// this function flatten the gauge json object
 /// and returns a `Vec` of `Map` for each data point
-fn flatten_gauge(gauge: &Gauge) -> Vec<Map<String, Value>> {
-    flatten_number_data_points(&gauge.data_points)
+fn flatten_gauge(gauge: &Gauge, flatten_exemplars: bool) -> Vec<Map<String, Value>> {
+    flatten_number_data_points(&gauge.data_points, flatten_exemplars)
 }
 
 /// otel metrics event has json object for sum
 /// each sum object has json array for data points
 /// this function flatten the sum json object
 /// and returns a `Vec` of `Map` for each data point
-fn flatten_sum(sum: &Sum) -> Vec<Map<String, Value>> {
-    let mut data_points = flatten_number_data_points(&sum.data_points);
+fn flatten_sum(sum: &Sum, flatten_exemplars: bool) -> Vec<Map<String, Value>> {
+    let mut data_points = flatten_number_data_points(&sum.data_points, flatten_exemplars);
     for dp in &mut data_points {
         insert_aggregation_temporality(dp, sum.aggregation_temporality);
         dp.insert("is_monotonic".to_string(), Value::Bool(sum.is_monotonic));
@@ -238,7 +301,7 @@ fn flatten_sum(sum: &Sum) -> Vec<Map<String, Value>> {
 /// each histogram object has json array for data points
 /// this function flatten the histogram json object
 /// and returns a `Vec` of `Map` for each data point
-fn flatten_histogram(histogram: &Histogram) -> Vec<Map<String, Value>> {
+fn flatten_histogram(histogram: &Histogram, flatten_exemplars: bool) -> Vec<Map<String, Value>> {
     let mut data_points_json = Vec::with_capacity(histogram.data_points.len());
     for data_point in &histogram.data_points {
         let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 10);
@@ -286,7 +349,11 @@ fn flatten_histogram(histogram: &Histogram) -> Vec<Map<String, Value>> {
             "data_point_explicit_bounds".to_string(),
             data_point_explicit_bounds,
         );
-        insert_exemplars(&mut data_point_json, &data_point.exemplars);
+        insert_exemplars(
+            &mut data_point_json,
+            &data_point.exemplars,
+            flatten_exemplars,
+        );
 
         insert_data_point_flags(&mut data_point_json, data_point.flags);
         insert_number_if_some(&mut data_point_json, "min", &data_point.min);
@@ -320,7 +387,10 @@ fn flatten_buckets(bucket: &Buckets) -> Map<String, Value> {
 /// each exponential histogram object has json array for data points
 /// this function flatten the exponential histogram json object
 /// and returns a `Vec` of `Map` for each data point
-fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<Map<String, Value>> {
+fn flatten_exp_histogram(
+    exp_histogram: &ExponentialHistogram,
+    flatten_exemplars: bool,
+) -> Vec<Map<String, Value>> {
     let mut data_points_json = Vec::with_capacity(exp_histogram.data_points.len());
     for data_point in &exp_histogram.data_points {
         let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 12);
@@ -362,7 +432,11 @@ fn flatten_exp_histogram(exp_histogram: &ExponentialHistogram) -> Vec<Map<String
                 data_point_json.insert(format!("negative_{key}"), value);
             }
         }
-        insert_exemplars(&mut data_point_json, &data_point.exemplars);
+        insert_exemplars(
+            &mut data_point_json,
+            &data_point.exemplars,
+            flatten_exemplars,
+        );
 
         insert_aggregation_temporality(&mut data_point_json, exp_histogram.aggregation_temporality);
         data_points_json.push(data_point_json);
@@ -437,13 +511,19 @@ fn flatten_summary(summary: &Summary) -> Vec<Map<String, Value>> {
 /// this function flatten the metric json object
 /// and returns a `Vec` of `Map` of the flattened json
 /// this function is called recursively for each metric record object in the otel metrics event
-pub fn flatten_metrics_record(metrics_record: &Metric) -> Vec<Map<String, Value>> {
+pub fn flatten_metrics_record(
+    metrics_record: &Metric,
+    flatten_exemplars: bool,
+) -> Vec<Map<String, Value>> {
     let (mut data_points, metric_type) = match &metrics_record.data {
-        Some(metric::Data::Gauge(gauge)) => (flatten_gauge(gauge), "gauge"),
-        Some(metric::Data::Sum(sum)) => (flatten_sum(sum), "sum"),
-        Some(metric::Data::Histogram(histogram)) => (flatten_histogram(histogram), "histogram"),
+        Some(metric::Data::Gauge(gauge)) => (flatten_gauge(gauge, flatten_exemplars), "gauge"),
+        Some(metric::Data::Sum(sum)) => (flatten_sum(sum, flatten_exemplars), "sum"),
+        Some(metric::Data::Histogram(histogram)) => (
+            flatten_histogram(histogram, flatten_exemplars),
+            "histogram",
+        ),
         Some(metric::Data::ExponentialHistogram(exp_histogram)) => (
-            flatten_exp_histogram(exp_histogram),
+            flatten_exp_histogram(exp_histogram, flatten_exemplars),
             "exponential_histogram",
         ),
         Some(metric::Data::Summary(summary)) => (flatten_summary(summary), "summary"),
@@ -518,6 +598,7 @@ fn process_resource_metrics<T, S, M>(
     get_metrics: fn(&S) -> &[M],
     get_metric: fn(&M) -> &Metric,
     tenant_id: &str,
+    flatten_exemplars: bool,
 ) -> Vec<Value> {
     let _span = info_span!(
         "process_resource_metrics",
@@ -579,7 +660,7 @@ fn process_resource_metrics<T, S, M>(
 
             // Flatten each metric's data points and merge envelope in one pass
             for metric in metrics {
-                let data_points = flatten_metrics_record(get_metric(metric));
+                let data_points = flatten_metrics_record(get_metric(metric), flatten_exemplars);
                 for mut dp in data_points {
                     for (k, v) in &envelope {
                         dp.insert(k.clone(), v.clone());
@@ -620,6 +701,7 @@ pub fn flatten_otel_metrics(message: MetricsData, tenant_id: &str) -> Vec<Value>
         |scope_metric| &scope_metric.metrics,
         |metric| metric,
         tenant_id,
+        PARSEABLE.options.otel_flatten_exemplars,
     )
 }
 
@@ -645,6 +727,7 @@ pub fn flatten_otel_metrics_protobuf(
         |scope_metric| &scope_metric.metrics,
         |metric| metric,
         tenant_id,
+        PARSEABLE.options.otel_flatten_exemplars,
     );
 
     span.record("output_count", result.len());
@@ -785,5 +868,164 @@ mod tests {
         b.insert("cd".to_string(), Value::String("e".into()));
 
         assert_ne!(compute_series_hash(&a), compute_series_hash(&b));
+    }
+
+    fn make_exemplar(span_id: &[u8], trace_id: &[u8], time_ns: u64, value: f64) -> Exemplar {
+        Exemplar {
+            filtered_attributes: vec![],
+            time_unix_nano: time_ns,
+            span_id: span_id.to_vec(),
+            trace_id: trace_id.to_vec(),
+            value: Some(ExemplarValue::AsDouble(value)),
+        }
+    }
+
+    #[test]
+    fn exemplars_array_preserves_every_exemplar() {
+        // Regression for #1662: two exemplars on one data point must BOTH
+        // survive under the nested `exemplars` array (the old code kept only
+        // the last one).
+        let exemplars = vec![
+            make_exemplar(b"\xaa\xaa", b"\x11\x11", 1_000_000_000, 1.5),
+            make_exemplar(b"\xbb\xbb", b"\x22\x22", 2_000_000_000, 2.5),
+        ];
+        let mut map = Map::new();
+        insert_exemplars(&mut map, &exemplars, false);
+
+        let arr = map
+            .get("exemplars")
+            .and_then(Value::as_array)
+            .expect("exemplars array column present");
+        assert_eq!(arr.len(), 2, "both exemplars must be preserved");
+
+        // No legacy flat columns in the default mode.
+        assert!(map.get("exemplar_span_id").is_none());
+        assert!(map.get("exemplar_value").is_none());
+
+        let first = arr[0].as_object().unwrap();
+        assert_eq!(
+            first.get("exemplar_span_id").unwrap(),
+            &Value::String(hex::encode(b"\xaa\xaa"))
+        );
+        assert_eq!(first.get("exemplar_value").unwrap().as_f64().unwrap(), 1.5);
+
+        let second = arr[1].as_object().unwrap();
+        assert_eq!(
+            second.get("exemplar_span_id").unwrap(),
+            &Value::String(hex::encode(b"\xbb\xbb"))
+        );
+        assert_eq!(second.get("exemplar_value").unwrap().as_f64().unwrap(), 2.5);
+    }
+
+    #[test]
+    fn exemplars_legacy_flat_mode_keeps_last() {
+        // With the flag set, the legacy flat columns are emitted and the last
+        // exemplar wins (documented backward-compatible behavior).
+        let exemplars = vec![
+            make_exemplar(b"\xaa\xaa", b"\x11\x11", 1_000_000_000, 1.5),
+            make_exemplar(b"\xbb\xbb", b"\x22\x22", 2_000_000_000, 2.5),
+        ];
+        let mut map = Map::new();
+        insert_exemplars(&mut map, &exemplars, true);
+
+        assert!(map.get("exemplars").is_none());
+        assert_eq!(
+            map.get("exemplar_span_id").unwrap(),
+            &Value::String(hex::encode(b"\xbb\xbb"))
+        );
+        assert_eq!(map.get("exemplar_value").unwrap().as_f64().unwrap(), 2.5);
+    }
+
+    #[test]
+    fn exemplars_empty_inserts_nothing() {
+        let mut map = Map::new();
+        insert_exemplars(&mut map, &[], false);
+        assert!(map.is_empty());
+        insert_exemplars(&mut map, &[], true);
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn exemplar_int_value_emitted_as_float() {
+        // Int and double exemplar values must both serialize as JSON floats so
+        // the flattened `exemplars_exemplar_value` column stays List<Float64>.
+        // Otherwise it infers as List<Int64> vs List<Float64> across batches and
+        // Parseable's schema-conflict handling splits it into an empty column
+        // plus an `exemplars_exemplar_value_list` sibling (PR #1720 review).
+        let int_exemplar = Exemplar {
+            filtered_attributes: vec![],
+            time_unix_nano: 1_000_000_000,
+            span_id: b"\xaa".to_vec(),
+            trace_id: b"\x11".to_vec(),
+            value: Some(ExemplarValue::AsInt(42)),
+        };
+
+        // Array (default) mode: nested exemplar_value is a float.
+        let mut map = Map::new();
+        insert_exemplars(&mut map, std::slice::from_ref(&int_exemplar), false);
+        let arr = map.get("exemplars").and_then(Value::as_array).unwrap();
+        let value = arr[0].as_object().unwrap().get("exemplar_value").unwrap();
+        assert!(value.is_f64(), "expected f64, got {value:?}");
+        assert_eq!(value.as_f64().unwrap(), 42.0);
+
+        // Legacy flat mode: same normalization.
+        let mut flat = Map::new();
+        insert_exemplars(&mut flat, std::slice::from_ref(&int_exemplar), true);
+        let flat_value = flat.get("exemplar_value").unwrap();
+        assert!(flat_value.is_f64(), "expected f64, got {flat_value:?}");
+        assert_eq!(flat_value.as_f64().unwrap(), 42.0);
+    }
+
+    #[test]
+    fn flatten_sum_preserves_all_exemplars() {
+        // End-to-end through flatten_metrics_record for a Sum: both exemplars
+        // reach the flattened data point.
+        let dp = NumberDataPoint {
+            exemplars: vec![
+                make_exemplar(b"\xaa", b"\x11", 1_000_000_000, 1.0),
+                make_exemplar(b"\xbb", b"\x22", 2_000_000_000, 2.0),
+            ],
+            ..Default::default()
+        };
+        let metric = Metric {
+            name: "requests_total".to_string(),
+            data: Some(metric::Data::Sum(Sum {
+                data_points: vec![dp],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+
+        let out = flatten_metrics_record(&metric, false);
+        assert_eq!(out.len(), 1);
+        let arr = out[0]
+            .get("exemplars")
+            .and_then(Value::as_array)
+            .expect("exemplars array present");
+        assert_eq!(arr.len(), 2);
+    }
+
+    #[test]
+    fn exemplars_do_not_affect_series_hash() {
+        // The array column is a known field, so differing exemplar contents
+        // must NOT change the physical-series identity. This is the secondary
+        // fix: previously exemplar attributes leaked into the series hash.
+        let mut a = make_dp();
+        a.insert(
+            "exemplars".to_string(),
+            Value::Array(vec![Value::String("ex-a".into())]),
+        );
+        let mut b = make_dp();
+        b.insert(
+            "exemplars".to_string(),
+            Value::Array(vec![Value::String("ex-b-different".into())]),
+        );
+        assert_eq!(compute_series_hash(&a), compute_series_hash(&b));
+    }
+
+    #[test]
+    fn known_field_list_contains_exemplars() {
+        assert_eq!(OTEL_METRICS_KNOWN_FIELD_LIST.len(), 38);
+        assert!(OTEL_METRICS_KNOWN_FIELDS.contains("exemplars"));
     }
 }
