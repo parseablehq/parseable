@@ -46,8 +46,8 @@ pub mod outbound_http_policy;
 pub mod target;
 
 pub use crate::alerts::alert_enums::{
-    AggregateFunction, AlertOperator, AlertState, AlertTask, AlertType, AlertVersion, EvalConfig,
-    LogicalOperator, NotificationState, Severity, WhereConfigOperator,
+    AggregateFunction, AlertOperator, AlertQueryType, AlertState, AlertTask, AlertType,
+    AlertVersion, EvalConfig, LogicalOperator, NotificationState, Severity, WhereConfigOperator,
 };
 pub use crate::alerts::alert_structs::{
     AlertConfig, AlertInfo, AlertRequest, AlertStateEntry, Alerts, AlertsInfo, AlertsInfoByState,
@@ -62,6 +62,7 @@ use crate::metastore::MetastoreError;
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE, StreamNotFound};
 use crate::query::{QUERY_SESSION, resolve_stream_names};
 use crate::rbac::map::{SessionKey, sessions};
+use crate::rbac::{Response, Users, role::Action};
 use crate::sse::{SSE_HANDLER, SSEAlertInfo, SSEEvent};
 use crate::storage;
 use crate::storage::ObjectStorageError;
@@ -93,6 +94,71 @@ pub async fn set_alert_manager(manager: Arc<dyn AlertManagerTrait>) {
     *ALERTS.write().await = Some(manager);
 }
 
+fn ensure_schedulable_in_oss(alert: &dyn AlertTrait) -> Result<(), AlertError> {
+    if matches!(alert.get_alert_type(), AlertType::Threshold)
+        && alert.get_query_type() == AlertQueryType::Promql
+    {
+        return Err(AlertError::NotPresentInOSS("promql alerts"));
+    }
+
+    Ok(())
+}
+
+async fn parse_alert_config(alert_bytes: &[u8], tenant: &Option<String>) -> Option<AlertConfig> {
+    let json_value: JsonValue = match serde_json::from_slice(alert_bytes) {
+        Ok(val) => val,
+        Err(e) => {
+            error!("Failed to parse alert JSON: {e}");
+            return None;
+        }
+    };
+
+    match json_value["version"].as_str() {
+        Some("v1") => migrate_v1_alert(&json_value, tenant, "Failed to migrate v1 alert").await,
+        Some(_) if json_value["query"].is_null() || json_value.get("stream").is_some() => {
+            migrate_v1_alert(&json_value, tenant, "Failed to migrate v1 alert").await
+        }
+        Some(_) => match serde_json::from_value::<AlertConfig>(json_value) {
+            Ok(alert) => Some(alert),
+            Err(e) => {
+                error!("Failed to parse v2 alert: {e}");
+                None
+            }
+        },
+        None => {
+            warn!("Found alert without version field, assuming v1 and migrating");
+            migrate_v1_alert(
+                &json_value,
+                tenant,
+                "Failed to migrate alert without version",
+            )
+            .await
+        }
+    }
+}
+
+async fn migrate_v1_alert(
+    json_value: &JsonValue,
+    tenant: &Option<String>,
+    error_context: &str,
+) -> Option<AlertConfig> {
+    match AlertConfig::migrate_from_v1(json_value, tenant).await {
+        Ok(migrated) => Some(migrated),
+        Err(e) => {
+            error!("{error_context}: {e}");
+            None
+        }
+    }
+}
+
+fn alert_from_config_oss(alert: AlertConfig) -> Result<Box<dyn AlertTrait>, AlertError> {
+    match &alert.alert_type {
+        AlertType::Threshold => Ok(Box::new(ThresholdAlert::from(alert)) as Box<dyn AlertTrait>),
+        AlertType::Anomaly(_) => Err(AlertError::NotPresentInOSS("anomaly")),
+        AlertType::Forecast(_) => Err(AlertError::NotPresentInOSS("forecast")),
+    }
+}
+
 pub fn create_default_alerts_manager() -> Alerts {
     let (tx, rx) = mpsc::channel::<AlertTask>(1000);
     let alerts = Alerts {
@@ -101,6 +167,33 @@ pub fn create_default_alerts_manager() -> Alerts {
     };
     thread::spawn(|| alert_runtime(rx));
     alerts
+}
+
+pub async fn user_auth_for_alert_config(
+    session: &SessionKey,
+    alert: &AlertConfig,
+) -> Result<(), actix_web::Error> {
+    match alert.query_type {
+        AlertQueryType::Builder | AlertQueryType::Code => {
+            user_auth_for_query(session, &alert.query).await
+        }
+        AlertQueryType::Promql => {
+            let [dataset] = alert.datasets.as_slice() else {
+                return Err(actix_web::error::ErrorUnauthorized(
+                    "User does not have access to PromQL alert stream",
+                ));
+            };
+
+            if Users.authorize(session.clone(), Action::Query, Some(dataset), None)
+                != Response::Authorized
+            {
+                return Err(actix_web::error::ErrorUnauthorized(format!(
+                    "User does not have access to stream- {dataset}"
+                )));
+            }
+            Ok(())
+        }
+    }
 }
 
 impl AlertConfig {
@@ -126,6 +219,7 @@ impl AlertConfig {
             severity: basic_fields.severity,
             title: basic_fields.title,
             query,
+            query_type: AlertQueryType::Builder,
             datasets,
             alert_type: AlertType::Threshold,
             threshold_config,
@@ -631,7 +725,7 @@ impl AlertConfig {
         let active_session = sessions().get_active_sessions();
         let mut broadcast_to = vec![];
         for (session, _, _) in active_session {
-            if user_auth_for_query(&session, &self.query).await.is_ok()
+            if user_auth_for_alert_config(&session, self).await.is_ok()
                 && let SessionKey::SessionId(id) = &session
             {
                 broadcast_to.push(*id);
@@ -1084,72 +1178,35 @@ impl AlertManagerTrait for Alerts {
                 &Some(tenant_id.clone())
             };
             for alert_bytes in raw_bytes {
-                // First, try to parse as JSON Value to check version
-                let json_value: JsonValue = match serde_json::from_slice(&alert_bytes) {
-                    Ok(val) => val,
-                    Err(e) => {
-                        error!("Failed to parse alert JSON: {e}");
-                        continue;
-                    }
-                };
-
-                // Check version and handle migration
-                let mut alert = if let Some(version_str) = json_value["version"].as_str() {
-                    if version_str == "v1"
-                        || json_value["query"].is_null()
-                        || json_value.get("stream").is_some()
-                    {
-                        // This is a v1 alert that needs migration
-                        match AlertConfig::migrate_from_v1(&json_value, tenant).await {
-                            Ok(migrated) => migrated,
-                            Err(e) => {
-                                error!("Failed to migrate v1 alert: {e}");
-                                continue;
-                            }
-                        }
-                    } else {
-                        // Try to parse as v2
-                        match serde_json::from_value::<AlertConfig>(json_value) {
-                            Ok(alert) => alert,
-                            Err(e) => {
-                                error!("Failed to parse v2 alert: {e}");
-                                continue;
-                            }
-                        }
-                    }
-                } else {
-                    // No version field, assume v1 and migrate
-                    warn!("Found alert without version field, assuming v1 and migrating");
-                    match AlertConfig::migrate_from_v1(&json_value, tenant).await {
-                        Ok(migrated) => migrated,
-                        Err(e) => {
-                            error!("Failed to migrate alert without version: {e}");
-                            continue;
-                        }
-                    }
+                let Some(mut alert) = parse_alert_config(&alert_bytes, tenant).await else {
+                    continue;
                 };
 
                 // ensure that alert config's tenant is correctly set
                 alert.tenant_id.clone_from(tenant);
 
-                let alert: Box<dyn AlertTrait> = match &alert.alert_type {
-                    AlertType::Threshold => {
-                        Box::new(ThresholdAlert::from(alert)) as Box<dyn AlertTrait>
+                let alert = match alert_from_config_oss(alert) {
+                    Ok(alert) => alert,
+                    Err(e @ AlertError::NotPresentInOSS(_)) => {
+                        warn!("Skipping unsupported OSS alert: {e}");
+                        continue;
                     }
-                    AlertType::Anomaly(_) => {
-                        return Err(anyhow::Error::msg(
-                            AlertError::NotPresentInOSS("anomaly").to_string(),
-                        ));
-                    }
-                    AlertType::Forecast(_) => {
-                        return Err(anyhow::Error::msg(
-                            AlertError::NotPresentInOSS("forecast").to_string(),
-                        ));
-                    }
+                    Err(e) => return Err(anyhow::Error::msg(e.to_string())),
                 };
 
                 // Create alert task iff alert's state is not paused
                 if alert.get_state().eq(&AlertState::Disabled) {
+                    map.entry(tenant_id.clone())
+                        .or_default()
+                        .insert(*alert.get_id(), alert);
+                    continue;
+                }
+
+                if let Err(e) = ensure_schedulable_in_oss(alert.as_ref()) {
+                    warn!(
+                        "Skipping unsupported alert task for alert {}: {e}",
+                        alert.get_id()
+                    );
                     map.entry(tenant_id.clone())
                         .or_default()
                         .insert(*alert.get_id(), alert);
@@ -1209,7 +1266,7 @@ impl AlertManagerTrait for Alerts {
             let futures: Vec<_> = all_alerts
                 .into_iter()
                 .map(|alert| async {
-                    if user_auth_for_query(&session.clone(), &alert.query)
+                    if user_auth_for_alert_config(&session.clone(), &alert)
                         .await
                         .is_ok()
                     {
@@ -1230,7 +1287,7 @@ impl AlertManagerTrait for Alerts {
             let futures: Vec<_> = all_alerts
                 .into_iter()
                 .map(|alert| async {
-                    if user_auth_for_query(&session, &alert.query).await.is_ok() {
+                    if user_auth_for_alert_config(&session, &alert).await.is_ok() {
                         Some(alert)
                     } else {
                         None
@@ -1353,6 +1410,7 @@ impl AlertManagerTrait for Alerts {
                 .await
                 .map_err(|e| AlertError::CustomError(e.to_string()))?;
         } else if should_create_task {
+            ensure_schedulable_in_oss(alert.as_ref())?;
             self.sender
                 .send(AlertTask::Create(alert.clone_box()))
                 .await
@@ -1451,6 +1509,7 @@ impl AlertManagerTrait for Alerts {
 
     /// Start a scheduled alert task
     async fn start_task(&self, alert: Box<dyn AlertTrait>) -> Result<(), AlertError> {
+        ensure_schedulable_in_oss(alert.as_ref())?;
         self.sender
             .send(AlertTask::Create(alert))
             .await

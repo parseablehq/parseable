@@ -116,6 +116,26 @@ impl Display for AlertType {
     }
 }
 
+#[derive(Debug, serde::Serialize, serde::Deserialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum AlertQueryType {
+    #[default]
+    Builder,
+    #[serde(alias = "sql")]
+    Code,
+    Promql,
+}
+
+impl Display for AlertQueryType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AlertQueryType::Builder => write!(f, "builder"),
+            AlertQueryType::Code => write!(f, "code"),
+            AlertQueryType::Promql => write!(f, "promql"),
+        }
+    }
+}
+
 #[derive(Debug, serde::Serialize, serde::Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub enum AlertOperator {
@@ -208,6 +228,67 @@ impl Display for WhereConfigOperator {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // We can reuse our as_str method to get the string representation
         write!(f, "{}", self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AlertQueryType;
+
+    #[test]
+    fn alert_query_type_deserializes_supported_modes() {
+        assert_eq!(
+            serde_json::from_str::<AlertQueryType>("\"builder\"").unwrap(),
+            AlertQueryType::Builder
+        );
+        assert_eq!(
+            serde_json::from_str::<AlertQueryType>("\"code\"").unwrap(),
+            AlertQueryType::Code
+        );
+        assert_eq!(
+            serde_json::from_str::<AlertQueryType>("\"promql\"").unwrap(),
+            AlertQueryType::Promql
+        );
+    }
+
+    #[test]
+    fn alert_query_type_accepts_legacy_sql_as_code() {
+        assert_eq!(
+            serde_json::from_str::<AlertQueryType>("\"sql\"").unwrap(),
+            AlertQueryType::Code
+        );
+    }
+
+    #[test]
+    fn alert_query_type_rejects_unknown_mode() {
+        assert!(serde_json::from_str::<AlertQueryType>("\"rawSql\"").is_err());
+    }
+
+    #[test]
+    fn alert_request_deserializes_promql_query_type() {
+        let request: crate::alerts::alert_structs::AlertRequest =
+            serde_json::from_value(serde_json::json!({
+                "severity": "high",
+                "title": "Test alert",
+                "alertType": "threshold",
+                "queryType": "promql",
+                "query": "sum({\"k8s.pod.cpu.usage\"}) by (\"k8s.namespace.name\")",
+                "thresholdConfig": {"operator": ">", "value": -1.0},
+                "evalConfig": {
+                    "rollingWindow": {
+                        "evalStart": "10 minutes",
+                        "evalEnd": "now",
+                        "evalFrequency": 10
+                    }
+                },
+                "targets": [],
+                "notificationConfig": {"interval": 1},
+                "datasets": ["azure-prod-cluster-metrics"]
+            }))
+            .unwrap();
+
+        assert_eq!(request.query_type, AlertQueryType::Promql);
+        assert_eq!(request.datasets, vec!["azure-prod-cluster-metrics"]);
     }
 }
 
