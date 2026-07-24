@@ -25,7 +25,6 @@ use opentelemetry_proto::tonic::metrics::v1::{
 use serde_json::{Map, Value};
 
 use rustc_hash::FxHasher;
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::hash::Hasher;
 use tracing::info_span;
@@ -87,6 +86,37 @@ pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 37] = [
 static OTEL_METRICS_KNOWN_FIELDS: Lazy<HashSet<&'static str>> =
     Lazy::new(|| OTEL_METRICS_KNOWN_FIELD_LIST.iter().copied().collect());
 
+/// To avoid heap allocations for non-string attributes (int/float/bool)
+/// values are formatted via a zero-alloc [`StackBuf`] backed by a 32-byte
+/// stack array. This limit is safely bounded by the maximum string length
+/// of OTel `i64` (20 bytes) and `f64` (24 bytes) values
+struct StackBuf {
+    data: [u8; 32],
+    len: usize,
+}
+
+impl StackBuf {
+    fn new() -> Self {
+        Self {
+            data: [0u8; 32],
+            len: 0,
+        }
+    }
+    fn as_bytes(&self) -> &[u8] {
+        &self.data[..self.len]
+    }
+}
+
+impl std::fmt::Write for StackBuf {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        let bytes = s.as_bytes();
+        let end = std::cmp::min(self.len + bytes.len(), 32);
+        self.data[self.len..end].copy_from_slice(&bytes[..end - self.len]);
+        self.len = end;
+        Ok(())
+    }
+}
+
 /// Compute a stable u64 identifier for the physical series a sample
 /// belongs to. Hashes `metric_name` plus every attribute key/value pair
 /// that survived OTel flattening — everything in the flattened data
@@ -97,18 +127,13 @@ static OTEL_METRICS_KNOWN_FIELDS: Lazy<HashSet<&'static str>> =
 /// non-cryptographic) and feeds keys in sorted order so the hash
 /// doesn't depend on JSON Map iteration order.
 fn compute_series_hash(dp: &Map<String, Value>) -> u64 {
-    let mut label_pairs: Vec<(&str, Cow<'_, str>)> = Vec::with_capacity(dp.len());
-    for (key, value) in dp {
-        if OTEL_METRICS_KNOWN_FIELDS.contains(key.as_str()) {
-            continue;
+    let mut keys: Vec<&str> = Vec::with_capacity(dp.len());
+    for key in dp.keys() {
+        if !OTEL_METRICS_KNOWN_FIELDS.contains(key.as_str()) {
+            keys.push(key);
         }
-        let value = match value {
-            Value::String(s) => Cow::Borrowed(s.as_str()),
-            other => Cow::Owned(other.to_string()),
-        };
-        label_pairs.push((key.as_str(), value));
     }
-    label_pairs.sort_by(|a, b| a.0.cmp(b.0));
+    keys.sort_unstable();
 
     let mut hasher = FxHasher::default();
     // Include metric_name in the identity. Without it, two different
@@ -117,10 +142,28 @@ fn compute_series_hash(dp: &Map<String, Value>) -> u64 {
         hasher.write(name.as_bytes());
         hasher.write(b"\0");
     }
-    for (k, v) in &label_pairs {
-        hasher.write(k.as_bytes());
+    for key in keys {
+        hasher.write(key.as_bytes());
         hasher.write(b"=");
-        hasher.write(v.as_bytes());
+        if let Some(val) = dp.get(key) {
+            match val {
+                Value::String(s) => hasher.write(s.as_bytes()),
+                Value::Bool(b) => {
+                    if *b {
+                        hasher.write(b"true");
+                    } else {
+                        hasher.write(b"false");
+                    }
+                }
+                Value::Number(n) => {
+                    // Zero- Alloc number formatting
+                    let mut buf = StackBuf::new();
+                    let _ = std::fmt::Write::write_fmt(&mut buf, format_args!("{}", n));
+                    hasher.write(buf.as_bytes());
+                }
+                _ => hasher.write(b"null"),
+            }
+        }
         hasher.write(b"\0");
     }
     hasher.finish()
@@ -172,7 +215,9 @@ fn flatten_number_data_points(data_points: &[NumberDataPoint]) -> Vec<Map<String
     data_points
         .iter()
         .map(|data_point| {
-            let mut data_point_json = Map::with_capacity(data_point.attributes.len() + 8);
+            let mut data_point_json = Map::with_capacity(
+                data_point.attributes.len() + 8 + (data_point.exemplars.len() * 4),
+            );
             insert_attributes(&mut data_point_json, &data_point.attributes);
             data_point_json.insert(
                 "start_time_unix_nano".to_string(),

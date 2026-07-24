@@ -117,7 +117,8 @@ fn category_from_body(body_str: &str) -> &'static str {
 /// and returns a `Map` of the flattened json
 /// this function is called recursively for each log record object in the otel logs
 pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
-    let mut log_record_json: Map<String, Value> = Map::new();
+    let mut log_record_json: Map<String, Value> =
+        Map::with_capacity(24 + log_record.attributes.len());
     log_record_json.insert(
         "time_unix_nano".to_string(),
         Value::String(convert_epoch_nano_to_timestamp(
@@ -144,16 +145,26 @@ pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
             log_record_json.insert(key.clone(), value.clone());
 
             // If value is a string that can be parsed as JSON object, extract its fields
-            if let Value::String(s) = value
-                && let Ok(parsed) = serde_json::from_str::<Value>(s)
-                && parsed.is_object()
-                && let Ok(flattened_values) = generic_flattening(&parsed)
-            {
-                for flattened_value in flattened_values {
-                    if let Value::Object(flattened_obj) = flattened_value {
-                        for (inner_key, inner_value) in flattened_obj {
-                            let prefixed_key = format!("{key}_{inner_key}");
-                            log_record_json.insert(prefixed_key, inner_value);
+            //
+            if let Value::String(s) = value {
+                let trimmed = s.trim();
+                let looks_like_json = trimmed.len() >= 2
+                    && matches!(
+                        (trimmed.as_bytes().first(), trimmed.as_bytes().last()),
+                        (Some(b'{'), Some(b'}')) | (Some(b'['), Some(b']'))
+                    );
+                // Skip speculative JSON parsing unless the body looks like structured JSON
+                if looks_like_json
+                    && let Ok(parsed) = serde_json::from_str::<Value>(s)
+                    && parsed.is_object()
+                    && let Ok(flattened_values) = generic_flattening(&parsed)
+                {
+                    for flattened_value in flattened_values {
+                        if let Value::Object(flattened_obj) = flattened_value {
+                            for (inner_key, inner_value) in flattened_obj {
+                                let prefixed_key = format!("{key}_{inner_key}");
+                                log_record_json.insert(prefixed_key, inner_value);
+                            }
                         }
                     }
                 }
@@ -185,7 +196,6 @@ pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
         "log_record_dropped_attributes_count".to_string(),
         Value::Number(log_record.dropped_attributes_count.into()),
     );
-
     log_record_json.insert(
         "flags".to_string(),
         Value::Number((log_record.flags).into()),
@@ -204,9 +214,14 @@ pub fn flatten_log_record(log_record: &LogRecord) -> Map<String, Value> {
 
 /// this function flattens the `ScopeLogs` object
 /// and returns a `Vec` of `Map` of the flattened json
-fn flatten_scope_log(scope_log: &ScopeLogs, tenant_id: &str) -> Vec<Map<String, Value>> {
-    let mut vec_scope_log_json = Vec::new();
-    let mut scope_log_json = Map::new();
+fn flatten_scope_log(
+    scope_log: &ScopeLogs,
+    tenant_id: &str,
+    resource_base_json: &Map<String, Value>,
+) -> Vec<Map<String, Value>> {
+    let mut vec_scope_log_json = Vec::with_capacity(scope_log.log_records.len());
+    // resources and scope merged once
+    let mut scope_log_json = resource_base_json.clone();
     if let Some(scope) = &scope_log.scope {
         scope_log_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
         scope_log_json.insert(
@@ -219,11 +234,11 @@ fn flatten_scope_log(scope_log: &ScopeLogs, tenant_id: &str) -> Vec<Map<String, 
             Value::Number(scope.dropped_attributes_count.into()),
         );
     }
+
     scope_log_json.insert(
         "scope_log_schema_url".to_string(),
         Value::String(scope_log.schema_url.clone()),
     );
-
     for log_record in &scope_log.log_records {
         let log_record_json = flatten_log_record(log_record);
         let mut combined_json = scope_log_json.clone();
@@ -262,20 +277,22 @@ where
             );
         }
 
-        let mut vec_resource_logs_json = Vec::new();
-        let scope_logs = get_scope_logs(resource_log);
-
-        for scope_log in scope_logs {
-            vec_resource_logs_json.extend(flatten_scope_log(scope_log, tenant_id));
-        }
-
         resource_log_json.insert(
             "schema_url".to_string(),
             Value::String(get_schema_url(resource_log).to_string()),
         );
+        let mut vec_resource_logs_json = Vec::new();
+        let scope_logs = get_scope_logs(resource_log);
+
+        for scope_log in scope_logs {
+            vec_resource_logs_json.extend(flatten_scope_log(
+                scope_log,
+                tenant_id,
+                &resource_log_json,
+            ));
+        }
 
         for resource_logs_json in &mut vec_resource_logs_json {
-            resource_logs_json.extend(resource_log_json.clone());
             vec_otel_json.push(Value::Object(resource_logs_json.clone()));
         }
     }
@@ -292,7 +309,6 @@ pub fn flatten_otel_protobuf(message: &ExportLogsServiceRequest, tenant_id: &str
         tenant_id,
     )
 }
-
 /// this function performs the custom flattening of the otel logs
 /// and returns a `Vec` of `Value::Object` of the flattened json
 pub fn flatten_otel_logs(message: &LogsData, tenant_id: &str) -> Vec<Value> {

@@ -67,16 +67,18 @@ pub const OTEL_TRACES_KNOWN_FIELD_LIST: [&str; 32] = [
 ];
 /// this function flattens the `ScopeSpans` object
 /// and returns a `Vec` of `Map` of the flattened json
-fn flatten_scope_span(scope_span: &ScopeSpans, tenant_id: &str) -> Vec<Map<String, Value>> {
+fn flatten_scope_span(
+    scope_span: &ScopeSpans,
+    tenant_id: &str,
+    date: &str,
+) -> Vec<Map<String, Value>> {
     let mut vec_scope_span_json = Vec::new();
     let mut scope_span_json = Map::new();
     for span in &scope_span.spans {
         let span_record_json = flatten_span_record(span);
         vec_scope_span_json.extend(span_record_json);
     }
-
-    let date = chrono::Utc::now().date_naive().to_string();
-    increment_traces_collected_by_date(scope_span.spans.len() as u64, &date, tenant_id);
+    increment_traces_collected_by_date(scope_span.spans.len() as u64, date, tenant_id);
 
     if let Some(scope) = &scope_span.scope {
         scope_span_json.insert("scope_name".to_string(), Value::String(scope.name.clone()));
@@ -114,6 +116,7 @@ fn process_resource_spans<T>(
     get_scope_spans: fn(&T) -> &[ScopeSpans],
     get_schema_url: fn(&T) -> &str,
     tenant_id: &str,
+    date: &str,
 ) -> Vec<Value>
 where
     T: std::fmt::Debug,
@@ -135,7 +138,7 @@ where
         // Process scope spans
         let mut vec_resource_spans_json = Vec::new();
         for scope_span in get_scope_spans(resource_span) {
-            let scope_span_json = flatten_scope_span(scope_span, tenant_id);
+            let scope_span_json = flatten_scope_span(scope_span, tenant_id, date);
             vec_resource_spans_json.extend(scope_span_json);
         }
 
@@ -146,9 +149,9 @@ where
         );
 
         // Merge resource-level fields into each span record
-        for resource_spans_json in &mut vec_resource_spans_json {
+        for mut resource_spans_json in vec_resource_spans_json {
             resource_spans_json.extend(resource_span_json.clone());
-            vec_otel_json.push(Value::Object(resource_spans_json.clone()));
+            vec_otel_json.push(Value::Object(resource_spans_json));
         }
     }
 
@@ -160,24 +163,29 @@ pub fn flatten_otel_traces_protobuf(
     message: &ExportTraceServiceRequest,
     tenant_id: &str,
 ) -> Vec<Value> {
+    let date = chrono::Utc::now().date_naive().to_string();
+
     process_resource_spans(
         &message.resource_spans,
         |rs| rs.resource.as_ref(),
         |rs| &rs.scope_spans,
         |rs| &rs.schema_url,
         tenant_id,
+        &date,
     )
 }
 
 /// this function performs the custom flattening of the otel traces event
 /// and returns a `Vec` of `Value::Object` of the flattened json
 pub fn flatten_otel_traces(message: &TracesData, tenant_id: &str) -> Vec<Value> {
+    let date = chrono::Utc::now().date_naive().to_string();
     process_resource_spans(
         &message.resource_spans,
         |rs| rs.resource.as_ref(),
         |rs| &rs.scope_spans,
         |rs| &rs.schema_url,
         tenant_id,
+        &date,
     )
 }
 
@@ -326,7 +334,8 @@ fn flatten_kind(kind: i32) -> Map<String, Value> {
 /// and returns a `Vec` of `Map` of the flattened json
 /// this function is called recursively for each span record object in the otel traces event
 fn flatten_span_record(span_record: &Span) -> Vec<Map<String, Value>> {
-    let mut span_records_json = Vec::new();
+    let total_records = span_record.events.len() + span_record.links.len();
+    let mut span_records_json = Vec::with_capacity(total_records);
     let mut span_record_json = Map::new();
     span_record_json.insert(
         "span_trace_id".to_string(),
