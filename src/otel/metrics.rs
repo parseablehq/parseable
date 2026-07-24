@@ -132,15 +132,23 @@ fn compute_series_hash(dp: &Map<String, Value>) -> u64 {
     hasher.finish()
 }
 
-/// Convert a single exemplar's value into a JSON number, mirroring the
-/// int/double handling used for data point values.
+/// Convert a single exemplar's value into a JSON number.
+///
+/// Both int and double exemplar values are emitted as `f64` so the flattened
+/// `exemplars_exemplar_value` column has a stable `List<Float64>` type. If int
+/// and double values were emitted as-is, the column would infer as
+/// `List<Int64>` in some batches and `List<Float64>` in others; Parseable's
+/// schema-conflict handling would then route the mismatched batch to a separate
+/// `exemplars_exemplar_value_list` column, leaving the original empty
+/// (reported in the PR #1720 review).
 fn exemplar_value_to_json(value: &ExemplarValue) -> Value {
-    match value {
-        ExemplarValue::AsDouble(double_val) => serde_json::Number::from_f64(*double_val)
-            .map(Value::Number)
-            .unwrap_or(Value::Null),
-        ExemplarValue::AsInt(int_val) => Value::Number(serde_json::Number::from(*int_val)),
-    }
+    let as_f64 = match value {
+        ExemplarValue::AsDouble(double_val) => *double_val,
+        ExemplarValue::AsInt(int_val) => *int_val as f64,
+    };
+    serde_json::Number::from_f64(as_f64)
+        .map(Value::Number)
+        .unwrap_or(Value::Null)
 }
 
 /// Build one JSON object for a single exemplar. Used to populate the nested
@@ -935,6 +943,37 @@ mod tests {
         assert!(map.is_empty());
         insert_exemplars(&mut map, &[], true);
         assert!(map.is_empty());
+    }
+
+    #[test]
+    fn exemplar_int_value_emitted_as_float() {
+        // Int and double exemplar values must both serialize as JSON floats so
+        // the flattened `exemplars_exemplar_value` column stays List<Float64>.
+        // Otherwise it infers as List<Int64> vs List<Float64> across batches and
+        // Parseable's schema-conflict handling splits it into an empty column
+        // plus an `exemplars_exemplar_value_list` sibling (PR #1720 review).
+        let int_exemplar = Exemplar {
+            filtered_attributes: vec![],
+            time_unix_nano: 1_000_000_000,
+            span_id: b"\xaa".to_vec(),
+            trace_id: b"\x11".to_vec(),
+            value: Some(ExemplarValue::AsInt(42)),
+        };
+
+        // Array (default) mode: nested exemplar_value is a float.
+        let mut map = Map::new();
+        insert_exemplars(&mut map, std::slice::from_ref(&int_exemplar), false);
+        let arr = map.get("exemplars").and_then(Value::as_array).unwrap();
+        let value = arr[0].as_object().unwrap().get("exemplar_value").unwrap();
+        assert!(value.is_f64(), "expected f64, got {value:?}");
+        assert_eq!(value.as_f64().unwrap(), 42.0);
+
+        // Legacy flat mode: same normalization.
+        let mut flat = Map::new();
+        insert_exemplars(&mut flat, std::slice::from_ref(&int_exemplar), true);
+        let flat_value = flat.get("exemplar_value").unwrap();
+        assert!(flat_value.is_f64(), "expected f64, got {flat_value:?}");
+        assert_eq!(flat_value.as_f64().unwrap(), 42.0);
     }
 
     #[test]
