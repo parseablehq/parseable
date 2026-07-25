@@ -1045,16 +1045,15 @@ impl HotTierManager {
                 .unwrap_or(anchor.date_naive()),
             anchor.date_naive(),
         ]);
-        if let Some(watermark) = previous_watermark {
-            let cutoff = watermark - chrono::Duration::minutes(latest_minutes as i64);
-            let mut date = cutoff.date_naive();
-            while date <= watermark.date_naive() {
-                dates.insert(date);
-                let Some(next) = date.succ_opt() else {
-                    break;
-                };
-                date = next;
-            }
+        let inventory_watermark = previous_watermark.unwrap_or(anchor);
+        let cutoff = inventory_watermark - chrono::Duration::minutes(latest_minutes as i64);
+        let mut date = cutoff.date_naive();
+        while date <= inventory_watermark.date_naive() {
+            dates.insert(date);
+            let Some(next) = date.succ_opt() else {
+                break;
+            };
+            date = next;
         }
         dates
             .into_iter()
@@ -1828,6 +1827,21 @@ mod tests {
                 "date=2026-07-20",
                 "date=2026-07-22",
                 "date=2026-07-23",
+            ]
+        );
+    }
+
+    #[test]
+    fn inventory_dates_without_watermark_use_configured_lookback() {
+        let anchor = Utc.with_ymd_and_hms(2026, 7, 24, 12, 0, 0).unwrap();
+
+        assert_eq!(
+            HotTierManager::inventory_dates(anchor, None, 3 * 24 * 60),
+            vec![
+                "date=2026-07-21",
+                "date=2026-07-22",
+                "date=2026-07-23",
+                "date=2026-07-24",
             ]
         );
     }
