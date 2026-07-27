@@ -64,14 +64,14 @@ impl Users {
         email: String,
         tenant_id: &Option<String>,
         userid: &str,
-    ) -> Result<(), RBACError> {
+    ) -> Result<User, RBACError> {
         // won't change permissions so don't refresh session
         let tenant_id = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
         if let Some(tenant_users) = mut_users().get_mut(tenant_id)
             && let Some(user) = tenant_users.get_mut(userid)
         {
             user.insert_email(email)?;
-            Ok(())
+            Ok(user.clone())
         } else {
             Err(RBACError::UserDoesNotExist)
         }

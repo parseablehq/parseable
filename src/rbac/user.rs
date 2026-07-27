@@ -55,16 +55,21 @@ pub struct UpdateUser {
 }
 
 impl UpdateUser {
-    pub fn update(&self, userid: &str, tenant_id: &Option<String>) -> Result<(), RBACError> {
+    pub fn update(
+        &self,
+        userid: &str,
+        tenant_id: &Option<String>,
+    ) -> Result<Option<User>, RBACError> {
+        let mut user = None;
         if let Some(email) = &self.email {
             if self.is_valid_email() {
-                Users.put_email(email.clone(), tenant_id, userid)?;
+                user = Some(Users.put_email(email.clone(), tenant_id, userid)?);
             } else {
                 return Err(RBACError::Anyhow(anyhow::Error::msg("Invalid Email")));
             }
         }
 
-        Ok(())
+        Ok(user)
     }
     fn is_valid_email(&self) -> bool {
         if let Some(email) = &self.email {

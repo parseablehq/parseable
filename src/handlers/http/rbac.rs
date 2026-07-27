@@ -193,8 +193,22 @@ pub async fn patch_user(
     {
         return Err(RBACError::ProtectedUser);
     };
+    let _guard = UPDATE_LOCK.lock().await;
+    if let Some(updated_user) = update.update(&userid, &tenant_id)? {
+        let mut metadata = get_metadata(&tenant_id).await?;
+        if let Some(user) = metadata
+            .users
+            .iter_mut()
+            .find(|user| user.userid() == userid)
+        {
+            *user = updated_user;
+        } else {
+            // should be unreachable given state is always consistent
+            return Err(RBACError::UserDoesNotExist);
+        }
 
-    update.update(&userid, &tenant_id)?;
+        put_metadata(&metadata, &tenant_id).await?;
+    };
 
     Ok(HttpResponse::Ok())
 }
