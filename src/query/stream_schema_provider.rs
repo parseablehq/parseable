@@ -252,7 +252,7 @@ impl StandardTableProvider {
             })
             .collect::<Result<_, DataFusionError>>()?;
 
-        tracing::warn!(
+        tracing::info!(
             num_files = hot_tier_files.len(),
             "hot_tier_files={:#?}",
             &&hot_tier_files.iter().map(|f| &f.file_path).collect_vec(),
@@ -261,6 +261,7 @@ impl StandardTableProvider {
         let (partitioned_files, statistics) = self.partitioned_files(
             hot_tier_files,
             state.config_options().execution.target_partitions,
+            true,
         );
 
         self.create_parquet_physical_plan(
@@ -395,6 +396,7 @@ impl StandardTableProvider {
         &self,
         manifest_files: Vec<File>,
         target_partitions: usize,
+        _is_hot_tier: bool,
     ) -> (Vec<Vec<PartitionedFile>>, datafusion::common::Statistics) {
         let file_groups = balanced_file_groups(manifest_files, target_partitions);
         let mut partitioned_files = Vec::with_capacity(file_groups.len());
@@ -424,7 +426,7 @@ impl StandardTableProvider {
                 // TODO: figure out an elegant solution to this
                 #[cfg(windows)]
                 {
-                    if PARSEABLE.storage.name() == "drive" {
+                    if !_is_hot_tier && PARSEABLE.storage.name() == "drive" {
                         file_path = object_store::path::Path::from_absolute_path(file_path)
                             .unwrap()
                             .to_string();
@@ -693,6 +695,7 @@ impl TableProvider for StandardTableProvider {
         let (partitioned_files, statistics) = self.partitioned_files(
             manifest_files,
             state.config_options().execution.target_partitions,
+            false,
         );
 
         let object_store_url = glob_storage.store_url();

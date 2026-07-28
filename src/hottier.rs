@@ -242,6 +242,7 @@ struct DownloadContext {
     state: Arc<StreamSyncState>,
     stream_root: PathBuf,
     quota: u64,
+    disk_budget: DiskBudget,
     active: Arc<AtomicUsize>,
     maximum: Arc<AtomicUsize>,
 }
@@ -905,17 +906,22 @@ impl HotTierManager {
         let s3_manifests = self
             .fetch_manifests(stream, tenant_id, &candidate_dates)
             .await?;
-        let plan = build_work(
-            &s3_manifests,
-            latest_minutes,
-            self.hot_tier_path,
-            reconcile_local_file,
-        );
+        let cache_root = self.hot_tier_path;
+        let plan = tokio::task::spawn_blocking(move || {
+            build_work(
+                &s3_manifests,
+                latest_minutes,
+                cache_root,
+                reconcile_local_file,
+            )
+        })
+        .await
+        .map_err(|error| HotTierError::Anyhow(error.into()))?;
         let stream_root = self.stream_root(stream, tenant_id);
         let total_bytes: u64 = plan.items.iter().map(|item| item.file.file_size).sum();
         let oldest_missing_lag_seconds = plan
             .items
-            .first()
+            .last()
             .map(|item| (anchor - item.timestamp).num_seconds().max(0))
             .unwrap_or_default();
         let tenant_label = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
@@ -1042,13 +1048,14 @@ impl HotTierManager {
             anchor
                 .date_naive()
                 .pred_opt()
-                .unwrap_or(anchor.date_naive()),
+                .unwrap_or_else(|| anchor.date_naive()),
             anchor.date_naive(),
         ]);
         let inventory_watermark = previous_watermark.unwrap_or(anchor);
         let cutoff = inventory_watermark - chrono::Duration::minutes(latest_minutes as i64);
         let mut date = cutoff.date_naive();
-        while date <= inventory_watermark.date_naive() {
+        let last = inventory_watermark.date_naive().max(anchor.date_naive());
+        while date <= last {
             dates.insert(date);
             let Some(next) = date.succ_opt() else {
                 break;
@@ -1092,6 +1099,7 @@ impl HotTierManager {
         work: Vec<WorkItem>,
     ) -> TickStats {
         let concurrency = PARSEABLE.options.hot_tier_files_per_stream_concurrency as usize;
+        let disk_budget = self.snapshot_disk_budget().await;
         let active = Arc::new(AtomicUsize::new(0));
         let maximum = Arc::new(AtomicUsize::new(0));
         let context = DownloadContext {
@@ -1101,6 +1109,7 @@ impl HotTierManager {
             state: state.clone(),
             stream_root: stream_root.to_path_buf(),
             quota,
+            disk_budget,
             active: active.clone(),
             maximum: maximum.clone(),
         };
@@ -1156,6 +1165,7 @@ impl HotTierManager {
                 &minute,
                 &item,
                 context.quota,
+                &context.disk_budget,
             )
             .await;
         let evicted_bytes = match reservation {
@@ -1193,7 +1203,7 @@ impl HotTierManager {
         if let Some(parent) = item.local_path.parent()
             && let Err(error) = fs::create_dir_all(parent).await
         {
-            self.finish_reservation(&context.state, &item, &minute, false)
+            self.finish_reservation(&context.state, &context.disk_budget, &item, &minute, false)
                 .await;
             error!(file = %item.file.file_path, %error, "failed to create hot-tier directory");
             return DownloadOutcome::failed(evicted_bytes);
@@ -1213,7 +1223,7 @@ impl HotTierManager {
         if !valid {
             let _ = fs::remove_file(&item.local_path).await;
         }
-        self.finish_reservation(&context.state, &item, &minute, valid)
+        self.finish_reservation(&context.state, &context.disk_budget, &item, &minute, valid)
             .await;
 
         match result {
@@ -1236,19 +1246,21 @@ impl HotTierManager {
         minute: &str,
         item: &WorkItem,
         quota: u64,
+        disk_budget: &DiskBudget,
     ) -> Result<Option<u64>, HotTierError> {
         if item.file.file_size > quota {
             return Ok(None);
         }
         let mut runtime = state.runtime.lock().await;
         runtime.mark_bucket_inflight(minute);
+        let reclaim_target = required_reclaim(
+            runtime.free_bytes(quota),
+            disk_budget.deficit(item.file.file_size).await,
+            item.file.file_size,
+        );
+        let mut reclaim = ReclaimBudget::new(reclaim_target);
         let mut evicted = 0_u64;
-        loop {
-            if self.is_disk_available(item.file.file_size).await
-                && runtime.try_reserve(&item.file.file_path, item.file.file_size, quota)
-            {
-                return Ok(Some(evicted));
-            }
+        while reclaim.needs_more() {
             let Some(oldest) = runtime
                 .oldest_evictable_bucket_before(minute)
                 .map(str::to_owned)
@@ -1273,19 +1285,37 @@ impl HotTierManager {
                     return Err(error.into());
                 }
             }
-            evicted = evicted.saturating_add(runtime.remove_bucket(&oldest));
+            let removed = runtime.remove_bucket(&oldest);
+            disk_budget.credit_eviction(removed).await;
+            evicted = evicted.saturating_add(removed);
+            reclaim.record_eviction(removed);
         }
+        if disk_budget
+            .try_reserve(&item.file.file_path, item.file.file_size)
+            .await
+        {
+            if runtime.try_reserve(&item.file.file_path, item.file.file_size, quota) {
+                return Ok(Some(evicted));
+            }
+            disk_budget.finish(&item.file.file_path, false).await;
+        }
+        runtime.unmark_bucket_inflight(minute);
+        Ok(None)
     }
 
     async fn finish_reservation(
         &self,
         state: &Arc<StreamSyncState>,
+        disk_budget: &DiskBudget,
         item: &WorkItem,
         minute: &str,
         commit: bool,
     ) {
-        let mut runtime = state.runtime.lock().await;
-        runtime.finish_item(&item.file.file_path, minute, commit);
+        {
+            let mut runtime = state.runtime.lock().await;
+            runtime.finish_item(&item.file.file_path, minute, commit);
+        }
+        disk_budget.finish(&item.file.file_path, commit).await;
     }
 
     /// fetch the list of dates available in the hot tier directory for the stream and sort them
@@ -1398,6 +1428,19 @@ impl HotTierManager {
         }
 
         true
+    }
+
+    async fn snapshot_disk_budget(&self) -> DiskBudget {
+        let hot_tier_path = self.hot_tier_path.to_path_buf();
+        let usage =
+            match tokio::task::spawn_blocking(move || disk_usage_for_path(&hot_tier_path)).await {
+                Ok(usage) => usage,
+                Err(error) => {
+                    error!(%error, "failed to snapshot hot-tier disk usage");
+                    None
+                }
+            };
+        DiskBudget::new(usage, PARSEABLE.options.max_disk_usage)
     }
 
     pub async fn get_oldest_date_time_entry(
@@ -1528,26 +1571,140 @@ impl HotTierManager {
     /// And parseable is running with `P_HOT_TIER_DIR` pointing to a directory in
     /// `/home/parseable`, we should return the usage stats of the disk mounted there.
     fn get_disk_usage(&self) -> Option<DiskUtil> {
-        let mut disks = Disks::new_with_refreshed_list();
-        // Order the disk partitions by decreasing length of mount path
-        disks.sort_by_key(|disk| disk.mount_point().to_str().unwrap().len());
-        disks.reverse();
-
-        for disk in disks.iter() {
-            // Returns disk utilisation of first matching mount point
-            if self.hot_tier_path.starts_with(disk.mount_point()) {
-                return Some(DiskUtil {
-                    total_space: disk.total_space(),
-                    available_space: disk.available_space(),
-                    used_space: disk.total_space() - disk.available_space(),
-                });
-            }
-        }
-
-        None
+        disk_usage_for_path(self.hot_tier_path)
     }
 }
 
+fn disk_usage_for_path(hot_tier_path: &Path) -> Option<DiskUtil> {
+    let mut disks = Disks::new_with_refreshed_list();
+    // Order the disk partitions by decreasing length of mount path.
+    disks.sort_by_key(|disk| disk.mount_point().as_os_str().len());
+    disks.reverse();
+
+    disks.iter().find_map(|disk| {
+        hot_tier_path
+            .starts_with(disk.mount_point())
+            .then(|| DiskUtil {
+                total_space: disk.total_space(),
+                available_space: disk.available_space(),
+                used_space: disk.total_space() - disk.available_space(),
+            })
+    })
+}
+
+#[derive(Clone)]
+struct DiskBudget {
+    state: Arc<AsyncMutex<Option<DiskBudgetState>>>,
+}
+
+struct DiskBudgetState {
+    total_space: u64,
+    available_space: u64,
+    used_space: u64,
+    max_used_space: u64,
+    reservations: HashMap<String, u64>,
+}
+
+impl DiskBudget {
+    fn new(usage: Option<DiskUtil>, max_disk_usage: f64) -> Self {
+        let state = usage.map(|usage| DiskBudgetState {
+            total_space: usage.total_space,
+            available_space: usage.available_space,
+            used_space: usage.used_space,
+            max_used_space: ((max_disk_usage * usage.total_space as f64) / 100.0) as u64,
+            reservations: HashMap::new(),
+        });
+        Self {
+            state: Arc::new(AsyncMutex::new(state)),
+        }
+    }
+
+    async fn deficit(&self, bytes: u64) -> u64 {
+        let state = self.state.lock().await;
+        let Some(state) = state.as_ref() else {
+            return 0;
+        };
+        bytes.saturating_sub(state.available_space).max(
+            state
+                .used_space
+                .saturating_add(bytes)
+                .saturating_sub(state.max_used_space),
+        )
+    }
+
+    async fn try_reserve(&self, path: &str, bytes: u64) -> bool {
+        let mut state = self.state.lock().await;
+        let Some(state) = state.as_mut() else {
+            return true;
+        };
+        if state.reservations.contains_key(path)
+            || bytes > state.available_space
+            || state.used_space.saturating_add(bytes) > state.max_used_space
+        {
+            return false;
+        }
+        state.available_space -= bytes;
+        state.used_space = state.used_space.saturating_add(bytes);
+        state.reservations.insert(path.to_owned(), bytes);
+        true
+    }
+
+    async fn finish(&self, path: &str, commit: bool) {
+        let mut state = self.state.lock().await;
+        let Some(state) = state.as_mut() else {
+            return;
+        };
+        let Some(bytes) = state.reservations.remove(path) else {
+            return;
+        };
+        if !commit {
+            state.used_space = state.used_space.saturating_sub(bytes);
+            state.available_space = state
+                .available_space
+                .saturating_add(bytes)
+                .min(state.total_space);
+        }
+    }
+
+    async fn credit_eviction(&self, bytes: u64) {
+        let mut state = self.state.lock().await;
+        let Some(state) = state.as_mut() else {
+            return;
+        };
+        state.used_space = state.used_space.saturating_sub(bytes);
+        state.available_space = state
+            .available_space
+            .saturating_add(bytes)
+            .min(state.total_space);
+    }
+}
+
+fn required_reclaim(stream_free_bytes: u64, disk_deficit: u64, item_bytes: u64) -> u64 {
+    item_bytes
+        .saturating_sub(stream_free_bytes)
+        .max(disk_deficit)
+}
+
+struct ReclaimBudget {
+    target: u64,
+    evicted: u64,
+}
+
+impl ReclaimBudget {
+    fn new(target: u64) -> Self {
+        Self { target, evicted: 0 }
+    }
+
+    fn needs_more(&self) -> bool {
+        self.evicted < self.target
+    }
+
+    fn record_eviction(&mut self, bytes: u64) {
+        self.evicted = self.evicted.saturating_add(bytes);
+    }
+}
+
+#[derive(Clone, Copy)]
 struct DiskUtil {
     total_space: u64,
     available_space: u64,
@@ -1591,8 +1748,10 @@ mod tests {
 
     use crate::catalog::manifest::File;
 
+    use super::local_state::{MinuteTotals, RuntimeState};
     use super::{
-        HotTierManager, classify_manifest_files_with, manifest_check_concurrency,
+        DiskBudget, DiskUtil, HotTierManager, ReclaimBudget, StreamSyncState, WorkItem,
+        classify_manifest_files_with, manifest_check_concurrency, required_reclaim,
         run_bounded_newest_first,
     };
 
@@ -1612,6 +1771,131 @@ mod tests {
 
     fn manifest_paths(files: &[File]) -> Vec<&str> {
         files.iter().map(|file| file.file_path.as_str()).collect()
+    }
+
+    fn disk_budget() -> DiskBudget {
+        DiskBudget::new(
+            Some(DiskUtil {
+                total_space: 1_000,
+                available_space: 400,
+                used_space: 600,
+            }),
+            80.0,
+        )
+    }
+
+    #[tokio::test]
+    async fn disk_budget_reports_threshold_deficit() {
+        let budget = disk_budget();
+
+        assert_eq!(budget.deficit(250).await, 50);
+    }
+
+    #[tokio::test]
+    async fn disk_budget_reservations_are_shared() {
+        let budget = disk_budget();
+
+        assert!(budget.try_reserve("first", 150).await);
+        assert!(!budget.try_reserve("second", 100).await);
+    }
+
+    #[tokio::test]
+    async fn disk_budget_failed_download_refunds_reservation() {
+        let budget = disk_budget();
+        assert!(budget.try_reserve("first", 200).await);
+
+        budget.finish("first", false).await;
+
+        assert!(budget.try_reserve("second", 200).await);
+    }
+
+    #[tokio::test]
+    async fn disk_budget_successful_download_consumes_capacity() {
+        let budget = disk_budget();
+        assert!(budget.try_reserve("first", 200).await);
+
+        budget.finish("first", true).await;
+
+        assert!(!budget.try_reserve("second", 1).await);
+    }
+
+    #[tokio::test]
+    async fn disk_budget_eviction_credits_capacity() {
+        let budget = disk_budget();
+
+        budget.credit_eviction(75).await;
+
+        assert!(budget.try_reserve("file", 250).await);
+    }
+
+    #[test]
+    fn required_reclaim_uses_larger_quota_or_disk_deficit() {
+        assert_eq!(required_reclaim(40, 70, 100), 70);
+        assert_eq!(required_reclaim(20, 10, 100), 80);
+    }
+
+    #[test]
+    fn reclaim_budget_stops_after_covering_deficit() {
+        let mut reclaim = ReclaimBudget::new(75);
+        assert!(reclaim.needs_more());
+
+        reclaim.record_eviction(100);
+
+        assert!(!reclaim.needs_more());
+    }
+
+    #[tokio::test]
+    async fn reservation_evicts_only_until_initial_deficit_is_covered() {
+        let root = Box::leak(tempfile::tempdir().unwrap().keep().into_boxed_path());
+        let stream_root = root.join("logs");
+        let oldest = "date=2026-07-16/hour=12/minute=00";
+        let next = "date=2026-07-16/hour=12/minute=01";
+        for minute in [oldest, next] {
+            let directory = stream_root.join(minute);
+            tokio::fs::create_dir_all(&directory).await.unwrap();
+            tokio::fs::write(directory.join("cached.parquet"), [0_u8; 100])
+                .await
+                .unwrap();
+        }
+        let mut runtime = RuntimeState::default();
+        for minute in [oldest, next] {
+            runtime.minutes.insert(
+                minute.to_owned(),
+                MinuteTotals {
+                    bytes: 100,
+                    files: 1,
+                    verified: true,
+                },
+            );
+        }
+        let state = Arc::new(StreamSyncState {
+            runtime: tokio::sync::Mutex::new(runtime),
+        });
+        let item = WorkItem {
+            timestamp: Utc::now(),
+            minute_path: stream_root.join("date=2026-07-16/hour=12/minute=02"),
+            local_path: stream_root.join("date=2026-07-16/hour=12/minute=02/new.parquet"),
+            file: manifest_file("logs/date=2026-07-16/hour=12/minute=02/new.parquet", 275),
+        };
+        let budget = disk_budget();
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel();
+        let manager = HotTierManager::new(root, sender);
+
+        let evicted = manager
+            .reserve_item(
+                &state,
+                &stream_root,
+                "date=2026-07-16/hour=12/minute=02",
+                &item,
+                1_000,
+                &budget,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(evicted, Some(100));
+        assert!(!stream_root.join(oldest).exists());
+        assert!(stream_root.join(next).exists());
     }
 
     async fn wait_until_len(values: &Arc<Mutex<Vec<u8>>>, expected: usize) {
@@ -1798,7 +2082,7 @@ mod tests {
     }
 
     #[test]
-    fn inventory_dates_include_watermark_cutoff_date() {
+    fn inventory_dates_walk_from_watermark_cutoff_through_anchor() {
         let anchor = Utc.with_ymd_and_hms(2026, 7, 23, 12, 0, 0).unwrap();
         let watermark = Utc.with_ymd_and_hms(2026, 7, 20, 0, 5, 0).unwrap();
 
@@ -1807,6 +2091,7 @@ mod tests {
             vec![
                 "date=2026-07-19",
                 "date=2026-07-20",
+                "date=2026-07-21",
                 "date=2026-07-22",
                 "date=2026-07-23",
             ]
@@ -1825,6 +2110,7 @@ mod tests {
                 "date=2026-07-18",
                 "date=2026-07-19",
                 "date=2026-07-20",
+                "date=2026-07-21",
                 "date=2026-07-22",
                 "date=2026-07-23",
             ]

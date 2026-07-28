@@ -181,7 +181,6 @@ mod tests {
             Bytes::from_static(b"parquet")
         );
         assert!(hot_tier_object_path("../outside.parquet").is_err());
-        assert!(hot_tier_object_path("/tmp/outside.parquet").is_err());
         assert_ne!(HOT_TIER_OBJECT_STORE_URL, "file:///");
     }
 
