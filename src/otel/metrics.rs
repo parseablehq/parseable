@@ -64,8 +64,8 @@ pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 37] = [
     // inside this array, never as top-level data-point fields.)
     "data_point_quantile_values",
     // Histogram per-sample min/max statistics.
-    "min",
-    "max",
+    "data_point_min",
+    "data_point_max",
     "data_point_scale",
     "data_point_zero_count",
     "data_point_flags",
@@ -364,8 +364,8 @@ fn flatten_histogram(histogram: &Histogram, flatten_exemplars: bool) -> Vec<Map<
         );
 
         insert_data_point_flags(&mut data_point_json, data_point.flags);
-        insert_number_if_some(&mut data_point_json, "min", &data_point.min);
-        insert_number_if_some(&mut data_point_json, "max", &data_point.max);
+        insert_number_if_some(&mut data_point_json, "data_point_min", &data_point.min);
+        insert_number_if_some(&mut data_point_json, "data_point_max", &data_point.max);
         insert_aggregation_temporality(&mut data_point_json, histogram.aggregation_temporality);
         data_points_json.push(data_point_json);
     }
@@ -1039,16 +1039,16 @@ mod tests {
 
     #[test]
     fn series_hash_ignores_histogram_min_max() {
-        // `min`/`max` are per-sample histogram statistics, not series
-        // labels. Two samples of the same series with different min/max
-        // must hash identically, otherwise histogram series fragment on
-        // every scrape.
+        // `data_point_min`/`data_point_max` are per-sample histogram
+        // statistics, not series labels. Two samples of the same series with
+        // different min/max must hash identically, otherwise histogram
+        // series fragment on every scrape.
         let mut a = make_dp();
-        a.insert("min".to_string(), number(1.0));
-        a.insert("max".to_string(), number(9.0));
+        a.insert("data_point_min".to_string(), number(1.0));
+        a.insert("data_point_max".to_string(), number(9.0));
         let mut b = make_dp();
-        b.insert("min".to_string(), number(2.0));
-        b.insert("max".to_string(), number(8.0));
+        b.insert("data_point_min".to_string(), number(2.0));
+        b.insert("data_point_max".to_string(), number(8.0));
         assert_eq!(compute_series_hash(&a), compute_series_hash(&b));
     }
 
@@ -1095,11 +1095,35 @@ mod tests {
     }
 
     #[test]
+    fn series_hash_distinguishes_attribute_named_min_or_max() {
+        // Histogram min/max statistics are emitted under the prefixed
+        // `data_point_min`/`data_point_max` keys, not bare `min`/`max`. A
+        // user attribute literally named `min` or `max` is a real label and
+        // must affect series identity.
+        let mut a = make_dp();
+        a.insert("min".to_string(), Value::String("x".into()));
+        let mut b = make_dp();
+        b.insert("min".to_string(), Value::String("y".into()));
+        assert_ne!(compute_series_hash(&a), compute_series_hash(&b));
+
+        let mut c = make_dp();
+        c.insert("max".to_string(), Value::String("x".into()));
+        let mut d = make_dp();
+        d.insert("max".to_string(), Value::String("y".into()));
+        assert_ne!(compute_series_hash(&c), compute_series_hash(&d));
+    }
+
+    #[test]
     fn known_field_list_matches_emitted_keys() {
         // Guard the list against drifting from the keys the flatteners
         // actually emit as top-level data-point fields.
         assert_eq!(OTEL_METRICS_KNOWN_FIELD_LIST.len(), 37);
-        for field in ["min", "max", "data_point_quantile_values", "exemplars"] {
+        for field in [
+            "data_point_min",
+            "data_point_max",
+            "data_point_quantile_values",
+            "exemplars",
+        ] {
             assert!(
                 OTEL_METRICS_KNOWN_FIELDS.contains(field),
                 "expected `{field}` to be a known field"
@@ -1109,6 +1133,8 @@ mod tests {
         for field in [
             "quantile",
             "value",
+            "min",
+            "max",
             "data_point_quantile_values_quantile",
             "data_point_quantile_values_value",
         ] {
