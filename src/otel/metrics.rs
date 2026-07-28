@@ -108,6 +108,9 @@ fn compute_series_hash(dp: &Map<String, Value>) -> u64 {
         if OTEL_METRICS_KNOWN_FIELDS.contains(key.as_str()) {
             continue;
         }
+        if key.starts_with("exemplars_") {
+            continue;
+        }
         let value = match value {
             Value::String(s) => Cow::Borrowed(s.as_str()),
             other => Cow::Owned(other.to_string()),
