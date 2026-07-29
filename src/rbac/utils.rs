@@ -33,7 +33,13 @@ use super::{
 pub fn to_prism_user(user: &User) -> UsersPrism {
     let tenant_id = user.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
     let (id, username, method, email, picture) = match &user.ty {
-        UserType::Native(_) => (user.userid(), user.userid(), "native", None, None),
+        UserType::Native(basic) => (
+            user.userid(),
+            user.userid(),
+            "native",
+            basic.email.clone(),
+            None,
+        ),
         UserType::OAuth(oauth) => {
             let userid = user.userid();
             let display_name = oauth.user_info.name.as_deref().unwrap_or(userid);
