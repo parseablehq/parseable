@@ -521,10 +521,9 @@ pub fn flatten_metrics_record(
     let (mut data_points, metric_type) = match &metrics_record.data {
         Some(metric::Data::Gauge(gauge)) => (flatten_gauge(gauge, flatten_exemplars), "gauge"),
         Some(metric::Data::Sum(sum)) => (flatten_sum(sum, flatten_exemplars), "sum"),
-        Some(metric::Data::Histogram(histogram)) => (
-            flatten_histogram(histogram, flatten_exemplars),
-            "histogram",
-        ),
+        Some(metric::Data::Histogram(histogram)) => {
+            (flatten_histogram(histogram, flatten_exemplars), "histogram")
+        }
         Some(metric::Data::ExponentialHistogram(exp_histogram)) => (
             flatten_exp_histogram(exp_histogram, flatten_exemplars),
             "exponential_histogram",

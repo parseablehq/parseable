@@ -108,8 +108,9 @@ pub const SETTINGS_ROOT_DIRECTORY: &str = ".settings";
 pub const TARGETS_ROOT_DIRECTORY: &str = ".targets";
 pub const MANIFEST_FILE: &str = "manifest.json";
 
-// max concurrent request allowed for datafusion object store
-const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
+// max concurrent request allowed for datafusion object store, overridable per
+// backend with P_MAX_OBJECT_STORE_REQUESTS
+pub const DEFAULT_MAX_OBJECT_STORE_REQUESTS: usize = 1000;
 
 // all the supported permissions
 // const PERMISSIONS_READ: &str = "readonly";
