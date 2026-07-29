@@ -19,6 +19,7 @@
 use std::{
     collections::HashSet,
     fmt::Display,
+    num::NonZeroUsize,
     ops::Range,
     path::{Path, PathBuf},
     str::FromStr,
@@ -174,7 +175,7 @@ pub struct S3Config {
         value_name = "number",
         default_value_t = DEFAULT_MAX_OBJECT_STORE_REQUESTS
     )]
-    pub max_object_store_requests: usize,
+    pub max_object_store_requests: NonZeroUsize,
 }
 
 /// This represents the server side encryption to be
@@ -352,7 +353,7 @@ impl ObjectStorageProvider for S3Config {
         let s3 = self.get_default_builder().build().unwrap();
 
         // limit objectstore to a concurrent request limit
-        let s3 = LimitStore::new(s3, self.max_object_store_requests);
+        let s3 = LimitStore::new(s3, self.max_object_store_requests.get());
         let s3 =
             MetricLayer::new(s3, "s3").with_cache_control_no_store(self.cache_control_no_store);
 
@@ -366,7 +367,7 @@ impl ObjectStorageProvider for S3Config {
     fn construct_client(&self) -> Arc<dyn ObjectStorage> {
         let s3 = self.get_default_builder().build().unwrap();
         // limit objectstore to a concurrent request limit
-        let s3 = LimitStore::new(s3, self.max_object_store_requests);
+        let s3 = LimitStore::new(s3, self.max_object_store_requests.get());
         let s3 =
             MetricLayer::new(s3, "s3").with_cache_control_no_store(self.cache_control_no_store);
         Arc::new(S3 {

@@ -18,6 +18,7 @@
 
 use std::{
     collections::HashSet,
+    num::NonZeroUsize,
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
@@ -109,7 +110,7 @@ pub struct GcsConfig {
         value_name = "number",
         default_value_t = DEFAULT_MAX_OBJECT_STORE_REQUESTS
     )]
-    pub max_object_store_requests: usize,
+    pub max_object_store_requests: NonZeroUsize,
 }
 
 impl GcsConfig {
@@ -145,7 +146,7 @@ impl ObjectStorageProvider for GcsConfig {
         let gcs = self.get_default_builder().build().unwrap();
 
         // limit objectstore to a concurrent request limit
-        let gcs = LimitStore::new(gcs, self.max_object_store_requests);
+        let gcs = LimitStore::new(gcs, self.max_object_store_requests.get());
         let gcs = MetricLayer::new(gcs, "gcs");
 
         let object_store_registry = DefaultObjectStoreRegistry::new();
@@ -160,7 +161,7 @@ impl ObjectStorageProvider for GcsConfig {
     fn construct_client(&self) -> Arc<dyn ObjectStorage> {
         let gcs = self.get_default_builder().build().unwrap();
         // limit objectstore to a concurrent request limit
-        let gcs = LimitStore::new(gcs, self.max_object_store_requests);
+        let gcs = LimitStore::new(gcs, self.max_object_store_requests.get());
         let gcs = MetricLayer::new(gcs, "gcs");
         Arc::new(Gcs {
             client: Arc::new(gcs),
