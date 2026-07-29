@@ -391,14 +391,6 @@ pub struct Options {
     )]
     pub hot_tier_latest_minutes: u64,
 
-    #[arg(
-        long = "hot-tier-read-coalesce-gap-bytes",
-        env = "P_HOT_TIER_READ_COALESCE_GAP_BYTES",
-        default_value = "0",
-        help = "Maximum gap in bytes between hot-tier read ranges to merge; 0 disables coalescing"
-    )]
-    pub hot_tier_read_coalesce_gap_bytes: u64,
-
     //TODO: remove this when smart cache is implemented
     #[arg(
         long = "index-storage-path",

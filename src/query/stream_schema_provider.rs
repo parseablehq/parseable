@@ -59,10 +59,7 @@ use crate::{
     metrics::{QUERY_CACHE_HIT, increment_files_scanned_in_query_by_date},
     option::Mode,
     parseable::{DEFAULT_TENANT, PARSEABLE, STREAM_EXISTS},
-    storage::{
-        ObjectStorage, ObjectStoreFormat,
-        hot_tier::{HOT_TIER_OBJECT_STORE_URL, hot_tier_object_path},
-    },
+    storage::{ObjectStorage, ObjectStoreFormat},
 };
 
 use super::listing_table_builder::ListingTableBuilder;
@@ -245,9 +242,19 @@ impl StandardTableProvider {
         let hot_tier_files: Vec<File> = hot_tier_files
             .into_iter()
             .map(|mut file| {
-                file.file_path = hot_tier_object_path(&file.file_path)
-                    .map_err(|error| DataFusionError::External(Box::new(error)))?
-                    .to_string();
+                let disk_path = hot_tier_manager
+                    .disk_path(&file.file_path)
+                    .map_err(|error| DataFusionError::External(Box::new(error)))?;
+                #[cfg(windows)]
+                {
+                    file.file_path = object_store::path::Path::from_absolute_path(disk_path)
+                        .map_err(|error| DataFusionError::External(Box::new(error)))?
+                        .to_string();
+                }
+                #[cfg(not(windows))]
+                {
+                    file.file_path = disk_path.to_string_lossy().into_owned();
+                }
                 Ok(file)
             })
             .collect::<Result<_, DataFusionError>>()?;
@@ -266,7 +273,7 @@ impl StandardTableProvider {
 
         self.create_parquet_physical_plan(
             execution_plans,
-            ObjectStoreUrl::parse(HOT_TIER_OBJECT_STORE_URL).unwrap(),
+            ObjectStoreUrl::parse("file:///").unwrap(),
             partitioned_files,
             statistics,
             projection,

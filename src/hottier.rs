@@ -193,6 +193,25 @@ async fn local_file_size(path: PathBuf) -> io::Result<u64> {
     fs::metadata(path).await.map(|metadata| metadata.len())
 }
 
+pub(crate) fn hot_tier_disk_path(
+    root: &Path,
+    manifest_path: &str,
+) -> object_store::Result<PathBuf> {
+    if Path::new(manifest_path).is_absolute() {
+        return Err(object_store::Error::Generic {
+            store: "hot-tier",
+            source: "hot-tier manifest path must be relative".into(),
+        });
+    }
+    let relative = object_store::path::Path::parse(manifest_path).map_err(|source| {
+        object_store::Error::Generic {
+            store: "hot-tier",
+            source: Box::new(source),
+        }
+    })?;
+    Ok(root.join(relative.as_ref()))
+}
+
 pub enum HotTierMessage {
     StartTask(StreamKey),
     KillTask(StreamKey),
@@ -526,6 +545,10 @@ impl HotTierManager {
         } else {
             self.hot_tier_path.join(stream)
         }
+    }
+
+    pub(crate) fn disk_path(&self, manifest_path: &str) -> object_store::Result<PathBuf> {
+        hot_tier_disk_path(self.hot_tier_path, manifest_path)
     }
 
     /// Drop cached state for a stream (used after delete).
@@ -1751,8 +1774,8 @@ mod tests {
     use super::local_state::{MinuteTotals, RuntimeState};
     use super::{
         DiskBudget, DiskUtil, HotTierManager, ReclaimBudget, StreamSyncState, WorkItem,
-        classify_manifest_files_with, manifest_check_concurrency, required_reclaim,
-        run_bounded_newest_first,
+        classify_manifest_files_with, hot_tier_disk_path, manifest_check_concurrency,
+        required_reclaim, run_bounded_newest_first,
     };
 
     fn manifest_file(path: &str, size: u64) -> File {
@@ -1771,6 +1794,31 @@ mod tests {
 
     fn manifest_paths(files: &[File]) -> Vec<&str> {
         files.iter().map(|file| file.file_path.as_str()).collect()
+    }
+
+    #[test]
+    fn hot_tier_disk_path_resolves_below_root() {
+        let root = tempfile::tempdir().unwrap();
+
+        assert_eq!(
+            hot_tier_disk_path(root.path(), "logs/date=2026-07-21/a.parquet").unwrap(),
+            root.path().join("logs/date=2026-07-21/a.parquet")
+        );
+    }
+
+    #[test]
+    fn hot_tier_disk_path_rejects_absolute_path() {
+        let root = tempfile::tempdir().unwrap();
+        let absolute = root.path().join("outside.parquet");
+
+        assert!(hot_tier_disk_path(root.path(), absolute.to_str().unwrap()).is_err());
+    }
+
+    #[test]
+    fn hot_tier_disk_path_rejects_parent_traversal() {
+        let root = tempfile::tempdir().unwrap();
+
+        assert!(hot_tier_disk_path(root.path(), "../outside.parquet").is_err());
     }
 
     fn disk_budget() -> DiskBudget {

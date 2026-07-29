@@ -42,7 +42,6 @@ use std::num::NonZeroUsize;
 mod azure_blob;
 pub mod field_stats;
 mod gcs;
-pub(crate) mod hot_tier;
 mod localfs;
 mod metrics_layer;
 pub mod object_storage;

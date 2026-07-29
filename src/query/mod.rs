@@ -72,7 +72,6 @@ use crate::handlers::http::query::QueryError;
 use crate::metrics::increment_bytes_scanned_in_query_by_date;
 use crate::option::Mode;
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
-use crate::storage::hot_tier::register_hot_tier_store;
 use crate::storage::{ObjectStorageProvider, ObjectStoreFormat};
 use crate::utils::time::{DATE_BIN_EPOCH_ANCHOR, TimeRange, count_api_bin_interval};
 
@@ -226,14 +225,6 @@ impl Query {
 
         let runtime_config = runtime_config.with_memory_limit(pool_size, fraction);
         let runtime = Arc::new(runtime_config.build().unwrap());
-        if let Some(hot_tier_path) = PARSEABLE.options.hot_tier_storage_path.as_deref() {
-            register_hot_tier_store(
-                &runtime,
-                hot_tier_path,
-                PARSEABLE.options.hot_tier_read_coalesce_gap_bytes,
-            )
-            .expect("hot-tier object store can be registered");
-        }
 
         // All the config options are explained here -
         // https://datafusion.apache.org/user-guide/configs.html
