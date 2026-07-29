@@ -17,7 +17,7 @@
  */
 
 use clap::{Parser, value_parser};
-use std::{env, fs, ops::Div, path::PathBuf};
+use std::{env, fs, ops::Mul, path::PathBuf};
 
 use url::Url;
 
@@ -36,6 +36,7 @@ pub const DEFAULT_USERNAME: &str = "admin";
 pub const DEFAULT_PASSWORD: &str = "admin";
 
 pub const DATASET_FIELD_COUNT_LIMIT: usize = 1000;
+const DEFAULT_PARQUET_METADATA_CACHE_SIZE: usize = 50 * 1024 * 1024; // 50 MB
 #[derive(Parser)]
 #[command(
     name = "parseable",
@@ -221,7 +222,7 @@ pub struct Options {
     #[arg(
         long,
         env = "P_DATAFUSION_TARGET_PARTITIONS",
-        default_value_t = num_cpus::get().div(2).max(1) as u64,
+        default_value_t = num_cpus::get().mul(4).max(1) as u64,
         value_parser = value_parser!(u64).range(1..),
         help = "Number of partitions for DF to split execution into"
     )]
@@ -443,6 +444,15 @@ pub struct Options {
         help = "Set a fixed memory limit for query in GiB"
     )]
     pub query_memory_pool_size: Option<usize>,
+
+    #[arg(
+        long,
+        env = "P_PARQUET_METADATA_CACHE_SIZE",
+        default_value_t = DEFAULT_PARQUET_METADATA_CACHE_SIZE,
+        help = "Maximum size in bytes of the DataFusion Parquet metadata cache"
+    )]
+    pub parquet_metadata_cache_size: usize,
+
     // reduced the max row group size from 1048576
     // smaller row groups help in faster query performance in multi threaded query
     #[arg(
