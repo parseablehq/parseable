@@ -31,8 +31,7 @@ use crate::{
         increment_files_scanned_in_object_store_calls_by_date,
         increment_object_store_calls_by_date,
         increment_partial_file_scans_in_object_store_calls_by_date,
-    },
-    parseable::{DEFAULT_TENANT, LogStream, PARSEABLE},
+    }, parseable::{DEFAULT_TENANT, LogStream, PARSEABLE}, storage::RETRY_TIMEOUT_SECS,
 };
 use async_trait::async_trait;
 use bytes::Bytes;
@@ -113,6 +112,28 @@ pub struct GcsConfig {
     pub max_object_store_requests: NonZeroUsize,
 }
 
+/// Log the full source chain of an object store error.
+///
+/// `object_store`'s `Display` collapses transport failures into opaque strings
+/// such as "HTTP error: request or response body error", which is not enough to
+/// tell a connection reset from a truncated body from a decode failure. The
+/// underlying `reqwest`/`hyper` error names the actual cause, so walk the chain.
+fn log_object_store_error(op: &str, path: &RelativePath, err: &object_store::Error) {
+    let mut chain = vec![err.to_string()];
+    let mut source = std::error::Error::source(err);
+    while let Some(err) = source {
+        chain.push(err.to_string());
+        source = err.source();
+    }
+    tracing::error!(
+        op,
+        path = %path,
+        chain = ?chain,
+        debug = ?err,
+        "object store error"
+    );
+}
+
 impl GcsConfig {
     fn get_default_builder(&self) -> GoogleCloudStorageBuilder {
         let mut client_options = ClientOptions::default()
@@ -125,7 +146,7 @@ impl GcsConfig {
         }
         let retry_config = RetryConfig {
             max_retries: 5,
-            retry_timeout: Duration::from_secs(30),
+            retry_timeout: Duration::from_secs(RETRY_TIMEOUT_SECS),
             backoff: BackoffConfig::default(),
         };
 
@@ -304,7 +325,13 @@ impl Gcs {
         increment_object_store_calls_by_date("GET", &Utc::now().date_naive().to_string(), tenant);
         match resp {
             Ok(resp) => {
-                let body: Bytes = resp.bytes().await?;
+                let body: Bytes = match resp.bytes().await {
+                    Ok(body) => body,
+                    Err(err) => {
+                        log_object_store_error("GET body", path, &err);
+                        return Err(err.into());
+                    }
+                };
                 tracing::Span::current().record("bytes", body.len());
                 increment_files_scanned_in_object_store_calls_by_date(
                     "GET",
@@ -320,7 +347,10 @@ impl Gcs {
                 );
                 Ok(body)
             }
-            Err(err) => Err(err.into()),
+            Err(err) => {
+                log_object_store_error("GET", path, &err);
+                Err(err.into())
+            }
         }
     }
 
@@ -664,6 +694,30 @@ impl ObjectStorage for Gcs {
         tenant_id: &Option<String>,
     ) -> Result<Bytes, ObjectStorageError> {
         Ok(self._get_object(path, tenant_id).await?)
+    }
+
+    async fn get_object_ranged(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<Bytes, ObjectStorageError> {
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let date = Utc::now().date_naive().to_string();
+        let body = crate::storage::get_object_ranged(
+            &self.client,
+            &to_object_store_path(path),
+            path,
+            || increment_object_store_calls_by_date("GET", &date, tenant),
+        )
+        .await?;
+        increment_files_scanned_in_object_store_calls_by_date("GET", 1, &date, tenant);
+        increment_bytes_scanned_in_object_store_calls_by_date(
+            "GET",
+            body.len() as u64,
+            &date,
+            tenant,
+        );
+        Ok(body)
     }
 
     async fn get_objects(

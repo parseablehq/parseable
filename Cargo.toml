@@ -186,6 +186,7 @@ thiserror = "2.0"
 ulid = { version = "1.2.1", features = ["serde"] }
 uuid = { version = "1.23.3", features = ["v4"] }
 xxhash-rust = { version = "0.8.15", features = ["xxh3"] }
+zstd = "0.13.3"
 rustc-hash = "2.1.2"
 futures-core = "0.3.31"
 tempfile = "3.20.0"

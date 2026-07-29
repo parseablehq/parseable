@@ -49,6 +49,220 @@ pub mod retention;
 mod s3;
 pub mod store_metadata;
 
+/// Size of the first request issued by [`get_object_ranged`], which doubles as
+/// the size probe. Anything at or below this is fetched as one plain GET, with
+/// no generation pinning and no retry path. Sized so that a compressed manifest
+/// stays comfortably inside it; only legacy uncompressed manifests should ever
+/// need ranging.
+pub(crate) const RANGED_GET_PROBE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Size of each byte range issued by [`get_object_ranged`] after the first.
+pub(crate) const RANGED_GET_CHUNK_BYTES: u64 = 16 * 1024 * 1024;
+
+/// Number of byte ranges of a single object fetched concurrently.
+pub(crate) const RANGED_GET_CONCURRENCY: usize = 8;
+
+/// How many times a ranged read restarts when the object is rewritten under it.
+pub(crate) const RANGED_GET_MAX_ATTEMPTS: u32 = 3;
+
+/// Log the full source chain of an object store error.
+///
+/// `object_store`'s `Display` collapses transport failures into opaque strings
+/// such as "HTTP error: request or response body error", which is not enough to
+/// tell a connection reset from a truncated body from a decode failure. The
+/// underlying `reqwest`/`hyper` error names the actual cause, so walk the chain.
+pub(crate) fn log_object_store_error(op: &str, path: &RelativePath, err: &object_store::Error) {
+    let mut chain = vec![err.to_string()];
+    let mut source = std::error::Error::source(err);
+    while let Some(err) = source {
+        chain.push(err.to_string());
+        source = err.source();
+    }
+    tracing::error!(
+        op,
+        path = %path,
+        chain = ?chain,
+        debug = ?err,
+        "object store error"
+    );
+}
+
+/// Fetch an object as a series of bounded byte ranges rather than one stream.
+///
+/// A single multi-hundred-MB response body is regularly killed mid transfer by
+/// the peer ("peer closed connection without sending TLS close_notify"), which
+/// discards the entire download. Splitting the read keeps every stream short
+/// lived and lets `object_store`'s retry layer recover a single chunk instead of
+/// the whole object.
+///
+/// The first range doubles as a size probe: the response reports the object's
+/// full length, so an object smaller than [`RANGED_GET_PROBE_BYTES`] costs
+/// exactly one request and needs no HEAD.
+///
+/// `on_request` is invoked once per issued GET so callers can keep their own
+/// request accounting accurate.
+pub(crate) async fn get_object_ranged<S: object_store::ObjectStore>(
+    client: &S,
+    src: &Path,
+    log_path: &RelativePath,
+    on_request: impl Fn() + Send + Sync,
+) -> Result<bytes::Bytes, ObjectStorageError> {
+    for attempt in 1..=RANGED_GET_MAX_ATTEMPTS {
+        match get_object_ranged_once(client, src, log_path, &on_request).await {
+            Ok(body) => return Ok(body),
+            // The object was rewritten while its ranges were being read. Every
+            // range fetched so far may belong to a different generation, so the
+            // assembled buffer is discarded and the read restarts.
+            Err(RangedReadError::ObjectChanged) if attempt < RANGED_GET_MAX_ATTEMPTS => {
+                tracing::warn!(
+                    path = %log_path,
+                    attempt,
+                    "object changed during ranged read, retrying"
+                );
+            }
+            Err(RangedReadError::ObjectChanged) => {
+                return Err(ObjectStorageError::Custom(format!(
+                    "{log_path} was rewritten during every one of \
+                     {RANGED_GET_MAX_ATTEMPTS} ranged read attempts"
+                )));
+            }
+            Err(RangedReadError::Failed(err)) => return Err(err),
+        }
+    }
+    unreachable!("loop returns on the final attempt")
+}
+
+/// Distinguishes "the object moved under us, try again" from a real failure.
+/// `ObjectStorageError` boxes `object_store::Error`, so the precondition case
+/// has to be carried out of the inner read separately to stay matchable.
+enum RangedReadError {
+    ObjectChanged,
+    Failed(ObjectStorageError),
+}
+
+impl From<ObjectStorageError> for RangedReadError {
+    fn from(err: ObjectStorageError) -> Self {
+        Self::Failed(err)
+    }
+}
+
+async fn get_object_ranged_once<S: object_store::ObjectStore>(
+    client: &S,
+    src: &Path,
+    log_path: &RelativePath,
+    on_request: &(impl Fn() + Send + Sync),
+) -> Result<bytes::Bytes, RangedReadError> {
+    use futures::StreamExt;
+
+    let first = client
+        .get_opts(
+            src,
+            object_store::GetOptions {
+                range: Some(object_store::GetRange::Bounded(0..RANGED_GET_PROBE_BYTES)),
+                ..Default::default()
+            },
+        )
+        .await;
+    on_request();
+    let first = match first {
+        Ok(first) => first,
+        Err(err) => {
+            log_object_store_error("GET", log_path, &err);
+            return Err(ObjectStorageError::from(err).into());
+        }
+    };
+
+    let total = first.meta.size;
+    // Pin the generation seen by the first range. Ranged reads are not atomic:
+    // each range is its own request, and these objects are rewritten while
+    // being read, so without this the ranges can splice two different versions
+    // of the object together into a corrupt buffer.
+    // Only the ETag, never the store's version/generation id: these objects are
+    // rewritten constantly and the superseded generation is deleted, so pinning
+    // it turns a concurrent rewrite into a 404 for an object that plainly
+    // exists. A stale ETag returns 412, which is what the retry expects.
+    let e_tag = first.meta.e_tag.clone();
+    let head = match first.bytes().await {
+        Ok(head) => head,
+        Err(err) => {
+            log_object_store_error("GET body", log_path, &err);
+            return Err(ObjectStorageError::from(err).into());
+        }
+    };
+
+    if total <= head.len() as u64 {
+        return Ok(head);
+    }
+
+    // `buffered` preserves range order, so chunks append straight into the
+    // output buffer and no second full size assembly copy is needed.
+    let ranges: Vec<std::ops::Range<u64>> = (head.len() as u64..total)
+        .step_by(RANGED_GET_CHUNK_BYTES as usize)
+        .map(|start| start..(start + RANGED_GET_CHUNK_BYTES).min(total))
+        .collect();
+
+    let mut buf = Vec::with_capacity(total as usize);
+    buf.extend_from_slice(&head);
+    drop(head);
+
+    let chunks = futures::stream::iter(ranges)
+        .map(|range| {
+            let e_tag = e_tag.clone();
+            async move {
+                let result = client
+                    .get_opts(
+                        src,
+                        object_store::GetOptions {
+                            range: Some(object_store::GetRange::Bounded(range)),
+                            if_match: e_tag,
+                            ..Default::default()
+                        },
+                    )
+                    .await;
+                on_request();
+                match result {
+                    Ok(result) => result.bytes().await,
+                    Err(err) => Err(err),
+                }
+            }
+        })
+        .buffered(RANGED_GET_CONCURRENCY);
+    futures::pin_mut!(chunks);
+
+    while let Some(chunk) = chunks.next().await {
+        match chunk {
+            Ok(chunk) => buf.extend_from_slice(&chunk),
+            Err(err) => {
+                // A stale `if_match` is answered with 412. `NotFound` counts as
+                // the same case: the first range proved the object exists, so a
+                // later range missing it means it was replaced mid read, not
+                // that it is absent. Reporting absence here would let the
+                // caller silently drop this manifest's files from the query.
+                if matches!(
+                    err,
+                    object_store::Error::Precondition { .. } | object_store::Error::NotFound { .. }
+                ) {
+                    return Err(RangedReadError::ObjectChanged);
+                }
+                log_object_store_error("GET range", log_path, &err);
+                return Err(ObjectStorageError::from(err).into());
+            }
+        }
+    }
+
+    // A short buffer means the ranges did not cover the object. Catch it here
+    // rather than handing a truncated body to a parser downstream.
+    if buf.len() as u64 != total {
+        return Err(ObjectStorageError::Custom(format!(
+            "ranged read of {log_path} assembled {} bytes, expected {total}",
+            buf.len()
+        ))
+        .into());
+    }
+
+    Ok(bytes::Bytes::from(buf))
+}
+
 /// Cross-platform positional write: pwrite(2) on Unix, seek_write+loop on Windows.
 /// Both APIs accept `&File`, so concurrent ranged downloads can share an Arc<File>.
 #[inline(always)]
@@ -128,7 +342,8 @@ pub const CURRENT_OBJECT_STORE_VERSION: &str = "v7";
 pub const CURRENT_SCHEMA_VERSION: &str = "v7";
 
 const CONNECT_TIMEOUT_SECS: u64 = 5;
-const REQUEST_TIMEOUT_SECS: u64 = 30;
+const REQUEST_TIMEOUT_SECS: u64 = 120;
+const RETRY_TIMEOUT_SECS: u64 = 180;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectStoreFormat {

@@ -243,6 +243,16 @@ impl ObjectStorage for LocalFS {
         res
     }
 
+    /// Local reads have no response body to be severed, so ranging buys
+    /// nothing here.
+    async fn get_object_ranged(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<Bytes, ObjectStorageError> {
+        self.get_object(path, tenant_id).await
+    }
+
     async fn get_ingestor_meta_file_paths(
         &self,
         tenant_id: &Option<String>,

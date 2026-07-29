@@ -742,7 +742,8 @@ impl Stream {
             let column_path = ColumnPath::new(vec!["metric_name".to_string()]);
             props = props
                 .set_column_bloom_filter_enabled(column_path.clone(), true)
-                .set_column_bloom_filter_ndv(column_path, METRIC_NAME_BLOOM_FILTER_NDV);
+                .set_column_bloom_filter_ndv(column_path, METRIC_NAME_BLOOM_FILTER_NDV)
+                .set_bloom_filter_position(parquet::file::properties::BloomFilterPosition::End);
         }
         sorting_column_vec.push(SortingColumn {
             column_idx: time_partition_idx as i32,

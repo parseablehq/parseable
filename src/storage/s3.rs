@@ -56,8 +56,7 @@ use crate::{
         increment_files_scanned_in_object_store_calls_by_date,
         increment_object_store_calls_by_date,
         increment_partial_file_scans_in_object_store_calls_by_date,
-    },
-    parseable::{DEFAULT_TENANT, LogStream, PARSEABLE},
+    }, parseable::{DEFAULT_TENANT, LogStream, PARSEABLE}, storage::RETRY_TIMEOUT_SECS,
 };
 
 use super::{
@@ -267,7 +266,7 @@ impl S3Config {
         }
         let retry_config = RetryConfig {
             max_retries: 5,
-            retry_timeout: Duration::from_secs(5),
+            retry_timeout: Duration::from_secs(RETRY_TIMEOUT_SECS),
             backoff: BackoffConfig::default(),
         };
 
@@ -903,6 +902,30 @@ impl ObjectStorage for S3 {
         tenant_id: &Option<String>,
     ) -> Result<Bytes, ObjectStorageError> {
         self._get_object(path, tenant_id).await
+    }
+
+    async fn get_object_ranged(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<Bytes, ObjectStorageError> {
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let date = Utc::now().date_naive().to_string();
+        let body = crate::storage::get_object_ranged(
+            &self.client,
+            &to_object_store_path(path),
+            path,
+            || increment_object_store_calls_by_date("GET", &date, tenant),
+        )
+        .await?;
+        increment_files_scanned_in_object_store_calls_by_date("GET", 1, &date, tenant);
+        increment_bytes_scanned_in_object_store_calls_by_date(
+            "GET",
+            body.len() as u64,
+            &date,
+            tenant,
+        );
+        Ok(body)
     }
 
     async fn get_objects(
