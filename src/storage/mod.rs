@@ -65,6 +65,11 @@ pub(crate) const RANGED_GET_CONCURRENCY: usize = 8;
 /// How many times a ranged read restarts when the object is rewritten under it.
 pub(crate) const RANGED_GET_MAX_ATTEMPTS: u32 = 3;
 
+/// How many objects `ObjectStorage::get_objects` downloads concurrently. These
+/// are small metadata objects (`stream.json` and friends) where the cost is
+/// round trip latency, so overlapping them is close to a pure win.
+pub(crate) const GET_OBJECTS_CONCURRENCY: usize = 32;
+
 /// Log the full source chain of an object store error.
 ///
 /// `object_store`'s `Display` collapses transport failures into opaque strings

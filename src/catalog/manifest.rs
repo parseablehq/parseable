@@ -61,10 +61,21 @@ const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
 /// this cheap level; higher levels cost write time for very little extra.
 const ZSTD_LEVEL: i32 = 3;
 
+/// Cap on manifests being decoded at once by [`decode_manifest_blocking`].
+///
+/// Decoding is CPU bound, so there is nothing to gain past the core count, and
+/// each in-flight decode holds a fully decompressed manifest in memory — which
+/// is two orders of magnitude larger than the compressed form.
+static DECODE_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
+    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(num_cpus::get()));
+
 #[derive(Debug, thiserror::Error)]
 pub enum ManifestCodecError {
     #[error("failed to compress manifest: {0}")]
     Compress(std::io::Error),
+
+    #[error("manifest decode task failed: {0}")]
+    Join(#[from] tokio::task::JoinError),
 
     #[error("failed to decompress manifest: {0}")]
     Decompress(std::io::Error),
@@ -97,6 +108,24 @@ pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, ManifestCodecError> {
     } else {
         serde_json::from_slice(bytes).map_err(ManifestCodecError::Parse)
     }
+}
+
+/// Decode a manifest on the blocking pool.
+///
+/// Decompressing and parsing a manifest is hundreds of milliseconds of pure
+/// CPU. Run inline on an async task it serialises against every other decode
+/// that task drives — callers fetch manifests with `buffered(..)`, which gives
+/// concurrent I/O but polls all those futures from one task, so the decodes
+/// queue up behind each other and each pending GET appears to take longer and
+/// longer. Handing the work to the blocking pool lets them actually run in
+/// parallel.
+pub async fn decode_manifest_blocking(bytes: bytes::Bytes) -> Result<Manifest, ManifestCodecError> {
+    let _permit = DECODE_PERMITS
+        .acquire()
+        .await
+        .expect("decode semaphore is never closed");
+
+    tokio::task::spawn_blocking(move || decode_manifest(&bytes)).await?
 }
 
 /// An entry in a manifest which points to a single file.
@@ -285,13 +314,19 @@ mod codec_tests {
         assert_eq!(decoded.version, manifest.version);
         assert_eq!(decoded.files.len(), manifest.files.len());
         assert_eq!(decoded.files[0].file_path, manifest.files[0].file_path);
-        assert_eq!(decoded.files[0].columns.len(), manifest.files[0].columns.len());
+        assert_eq!(
+            decoded.files[0].columns.len(),
+            manifest.files[0].columns.len()
+        );
     }
 
     #[test]
     fn encodes_as_zstd() {
         let encoded = encode_manifest(&sample_manifest(1)).unwrap();
-        assert!(encoded.starts_with(&ZSTD_MAGIC), "manifest was not compressed");
+        assert!(
+            encoded.starts_with(&ZSTD_MAGIC),
+            "manifest was not compressed"
+        );
     }
 
     /// Manifests written before compression are never rewritten, so plain JSON

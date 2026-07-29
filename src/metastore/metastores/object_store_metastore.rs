@@ -39,7 +39,7 @@ use crate::{
         target::Target,
     },
     catalog::{
-        manifest::{Manifest, decode_manifest, encode_manifest},
+        manifest::{Manifest, decode_manifest_blocking, encode_manifest},
         partition_path,
     },
     handlers::http::{
@@ -1023,7 +1023,7 @@ impl Metastore for ObjectStoreMetastore {
                                 .storage
                                 .get_object(&RelativePathBuf::from(path), &tenant)
                                 .await?;
-                            Ok::<Manifest, MetastoreError>(decode_manifest(&bytes)?)
+                            Ok::<Manifest, MetastoreError>(decode_manifest_blocking(bytes).await?)
                         }
                     })
                     .buffer_unordered(16)
@@ -1086,7 +1086,7 @@ impl Metastore for ObjectStoreMetastore {
         };
         match self.storage.get_object(&path, tenant_id).await {
             Ok(bytes) => {
-                let manifest = decode_manifest(&bytes)?;
+                let manifest = decode_manifest_blocking(bytes).await?;
                 Ok(Some(manifest))
             }
             Err(ObjectStorageError::NoSuchKey(_)) => Ok(None),

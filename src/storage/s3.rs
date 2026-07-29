@@ -56,7 +56,9 @@ use crate::{
         increment_files_scanned_in_object_store_calls_by_date,
         increment_object_store_calls_by_date,
         increment_partial_file_scans_in_object_store_calls_by_date,
-    }, parseable::{DEFAULT_TENANT, LogStream, PARSEABLE}, storage::RETRY_TIMEOUT_SECS,
+    },
+    parseable::{DEFAULT_TENANT, LogStream, PARSEABLE},
+    storage::RETRY_TIMEOUT_SECS,
 };
 
 use super::{
@@ -65,6 +67,7 @@ use super::{
     STREAM_METADATA_FILE_NAME, metrics_layer::MetricLayer, object_storage::parseable_json_path,
     partial_path, to_object_store_path,
 };
+use crate::storage::GET_OBJECTS_CONCURRENCY;
 
 // in bytes
 // const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
@@ -943,9 +946,11 @@ impl ObjectStorage for S3 {
 
         let mut list_stream = self.client.list(Some(&prefix));
 
-        let mut res = vec![];
+        let mut paths = vec![];
         let mut files_scanned = 0;
 
+        // Drain the listing first, then fetch. Awaiting each GET inside the
+        // listing loop serialises every download against the one before it.
         // Note: We track each streaming list item retrieval
         while let Some(meta_result) = list_stream.next().await {
             let meta = match meta_result {
@@ -962,15 +967,21 @@ impl ObjectStorage for S3 {
                 continue;
             }
 
-            let byts = self
-                .get_object(
-                    RelativePath::from_path(meta.location.as_ref())
-                        .map_err(ObjectStorageError::PathError)?,
-                    tenant_id,
-                )
-                .await?;
-            res.push(byts);
+            paths.push(
+                RelativePath::from_path(meta.location.as_ref())
+                    .map_err(ObjectStorageError::PathError)?
+                    .to_relative_path_buf(),
+            );
         }
+
+        // `buffered` rather than `buffer_unordered`: callers of this generic
+        // helper may rely on results following listing order.
+        let res: Vec<Bytes> = futures::stream::iter(paths)
+            .map(|path| async move { self.get_object(&path, tenant_id).await })
+            .buffered(GET_OBJECTS_CONCURRENCY)
+            .try_collect()
+            .await?;
+
         // Record total files scanned
         increment_files_scanned_in_object_store_calls_by_date(
             "LIST",
