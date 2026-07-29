@@ -46,6 +46,7 @@ use datafusion::{
 };
 use futures_util::{StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
+use rayon::prelude::*;
 
 /// Number of manifest files fetched from the metastore in parallel while
 /// planning a query.
@@ -572,19 +573,46 @@ async fn collect_from_snapshot(
         .try_collect::<Vec<_>>()
         .await?;
 
-    let mut manifest_files: Vec<_> = manifest_files
+    let manifest_files: Vec<_> = manifest_files
         .into_iter()
         .flatten()
         .flat_map(|file| file.files)
         .rev()
         .collect();
     let files_before_prune = manifest_files.len();
-    let mut pruned_by_filter: Vec<(String, usize)> = Vec::new();
-    for filter in filters {
-        let before = manifest_files.len();
-        manifest_files.retain(|file| !file.can_be_pruned(filter));
-        pruned_by_filter.push((filter.to_string(), before - manifest_files.len()));
+
+    // One parallel pass rather than a `retain` per filter. Every
+    // `can_be_pruned` call linearly scans the file's column list (hundreds of
+    // entries on wide streams), so a sequential pass per filter over tens of
+    // thousands of files is hundreds of milliseconds of single threaded work.
+    // `position` keeps attribution identical to the sequential chain: a file is
+    // credited to the first filter that would have dropped it.
+    let prune_reason: Vec<Option<usize>> = manifest_files
+        .par_iter()
+        .map(|file| filters.iter().position(|filter| file.can_be_pruned(filter)))
+        .collect();
+
+    let mut pruned_counts = vec![0usize; filters.len()];
+    for reason in prune_reason.iter().flatten() {
+        pruned_counts[*reason] += 1;
     }
+    let pruned_by_filter: Vec<(String, usize)> = filters
+        .iter()
+        .zip(pruned_counts)
+        .map(|(filter, count)| (filter.to_string(), count))
+        .collect();
+
+    // Parallel because of the drops, not the filtering. Pruning discards the
+    // overwhelming majority of files, and every discarded `File` owns a `Vec`
+    // of hundreds of `Column`s, each with its own heap allocated name and
+    // stats. Tens of millions of frees on one thread is hundreds of
+    // milliseconds; `into_par_iter` spreads them. Order is preserved — the
+    // `rev()` above establishes the ordering the limit below depends on.
+    let mut manifest_files: Vec<_> = manifest_files
+        .into_par_iter()
+        .zip(prune_reason)
+        .filter_map(|(file, reason)| reason.is_none().then_some(file))
+        .collect();
     tracing::warn!(
         stream = %stream_name,
         files_before_prune,
