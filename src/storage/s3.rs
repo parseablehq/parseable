@@ -478,11 +478,6 @@ impl S3 {
             .try_collect::<Vec<_>>()
             .await?;
 
-        let std_file_sync = std_file.clone();
-        tokio::task::spawn_blocking(move || std_file_sync.sync_all())
-            .await
-            .map_err(|e| ObjectStorageError::Custom(format!("join: {e}")))??;
-
         increment_object_store_calls_by_date("GET", &date, tenant_str);
         increment_files_scanned_in_object_store_calls_by_date("GET", 1, &date, tenant_str);
         increment_bytes_scanned_in_object_store_calls_by_date("GET", total, &date, tenant_str);
