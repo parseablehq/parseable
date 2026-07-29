@@ -18,6 +18,7 @@
 
 use std::{
     collections::HashSet,
+    num::NonZeroUsize,
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
@@ -59,10 +60,10 @@ use crate::{
 };
 
 use super::{
-    CONNECT_TIMEOUT_SECS, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
-    PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, STREAM_METADATA_FILE_NAME,
-    metrics_layer::MetricLayer, object_storage::parseable_json_path, partial_path,
-    to_object_store_path,
+    CONNECT_TIMEOUT_SECS, DEFAULT_MAX_OBJECT_STORE_REQUESTS, ObjectStorage, ObjectStorageError,
+    ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS,
+    STREAM_METADATA_FILE_NAME, metrics_layer::MetricLayer, object_storage::parseable_json_path,
+    partial_path, to_object_store_path,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -128,6 +129,15 @@ pub struct AzureBlobConfig {
         required = true
     )]
     pub container: String,
+
+    /// Cap on concurrent in-flight requests to the object store.
+    #[arg(
+        long,
+        env = "P_MAX_OBJECT_STORE_REQUESTS",
+        value_name = "number",
+        default_value_t = DEFAULT_MAX_OBJECT_STORE_REQUESTS
+    )]
+    pub max_object_store_requests: NonZeroUsize,
 }
 
 impl AzureBlobConfig {
@@ -173,7 +183,7 @@ impl ObjectStorageProvider for AzureBlobConfig {
     fn get_datafusion_runtime(&self) -> RuntimeEnvBuilder {
         let azure = self.get_default_builder().build().unwrap();
         // limit objectstore to a concurrent request limit
-        let azure = LimitStore::new(azure, super::MAX_OBJECT_STORE_REQUESTS);
+        let azure = LimitStore::new(azure, self.max_object_store_requests.get());
         let azure = MetricLayer::new(azure, "azure_blob");
 
         let object_store_registry = DefaultObjectStoreRegistry::new();
@@ -187,7 +197,7 @@ impl ObjectStorageProvider for AzureBlobConfig {
     fn construct_client(&self) -> Arc<dyn super::ObjectStorage> {
         let azure = self.get_default_builder().build().unwrap();
         // limit objectstore to a concurrent request limit
-        let azure = LimitStore::new(azure, super::MAX_OBJECT_STORE_REQUESTS);
+        let azure = LimitStore::new(azure, self.max_object_store_requests.get());
         let azure = MetricLayer::new(azure, "azure_blob");
         Arc::new(BlobStore {
             client: Arc::new(azure),

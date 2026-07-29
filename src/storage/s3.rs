@@ -19,6 +19,7 @@
 use std::{
     collections::HashSet,
     fmt::Display,
+    num::NonZeroUsize,
     ops::Range,
     path::{Path, PathBuf},
     str::FromStr,
@@ -60,10 +61,10 @@ use crate::{
 };
 
 use super::{
-    CONNECT_TIMEOUT_SECS, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
-    PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, STREAM_METADATA_FILE_NAME,
-    metrics_layer::MetricLayer, object_storage::parseable_json_path, partial_path,
-    to_object_store_path,
+    CONNECT_TIMEOUT_SECS, DEFAULT_MAX_OBJECT_STORE_REQUESTS, ObjectStorage, ObjectStorageError,
+    ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS,
+    STREAM_METADATA_FILE_NAME, metrics_layer::MetricLayer, object_storage::parseable_json_path,
+    partial_path, to_object_store_path,
 };
 
 // in bytes
@@ -166,6 +167,15 @@ pub struct S3Config {
         required = false
     )]
     pub metadata_endpoint: Option<String>,
+
+    /// Cap on concurrent in-flight requests to the object store.
+    #[arg(
+        long,
+        env = "P_MAX_OBJECT_STORE_REQUESTS",
+        value_name = "number",
+        default_value_t = DEFAULT_MAX_OBJECT_STORE_REQUESTS
+    )]
+    pub max_object_store_requests: NonZeroUsize,
 }
 
 /// This represents the server side encryption to be
@@ -343,7 +353,7 @@ impl ObjectStorageProvider for S3Config {
         let s3 = self.get_default_builder().build().unwrap();
 
         // limit objectstore to a concurrent request limit
-        let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
+        let s3 = LimitStore::new(s3, self.max_object_store_requests.get());
         let s3 =
             MetricLayer::new(s3, "s3").with_cache_control_no_store(self.cache_control_no_store);
 
@@ -357,7 +367,7 @@ impl ObjectStorageProvider for S3Config {
     fn construct_client(&self) -> Arc<dyn ObjectStorage> {
         let s3 = self.get_default_builder().build().unwrap();
         // limit objectstore to a concurrent request limit
-        let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
+        let s3 = LimitStore::new(s3, self.max_object_store_requests.get());
         let s3 =
             MetricLayer::new(s3, "s3").with_cache_control_no_store(self.cache_control_no_store);
         Arc::new(S3 {

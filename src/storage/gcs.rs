@@ -18,6 +18,7 @@
 
 use std::{
     collections::HashSet,
+    num::NonZeroUsize,
     ops::Range,
     path::{Path, PathBuf},
     sync::Arc,
@@ -58,10 +59,10 @@ use tokio::{fs::OpenOptions, io::AsyncReadExt};
 use tracing::error;
 
 use super::{
-    CONNECT_TIMEOUT_SECS, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
-    PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, STREAM_METADATA_FILE_NAME,
-    metrics_layer::MetricLayer, object_storage::parseable_json_path, partial_path,
-    to_object_store_path,
+    CONNECT_TIMEOUT_SECS, DEFAULT_MAX_OBJECT_STORE_REQUESTS, ObjectStorage, ObjectStorageError,
+    ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS,
+    STREAM_METADATA_FILE_NAME, metrics_layer::MetricLayer, object_storage::parseable_json_path,
+    partial_path, to_object_store_path,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -101,6 +102,15 @@ pub struct GcsConfig {
         default_value = "false"
     )]
     pub skip_tls: bool,
+
+    /// Cap on concurrent in-flight requests to the object store.
+    #[arg(
+        long,
+        env = "P_MAX_OBJECT_STORE_REQUESTS",
+        value_name = "number",
+        default_value_t = DEFAULT_MAX_OBJECT_STORE_REQUESTS
+    )]
+    pub max_object_store_requests: NonZeroUsize,
 }
 
 impl GcsConfig {
@@ -136,7 +146,7 @@ impl ObjectStorageProvider for GcsConfig {
         let gcs = self.get_default_builder().build().unwrap();
 
         // limit objectstore to a concurrent request limit
-        let gcs = LimitStore::new(gcs, super::MAX_OBJECT_STORE_REQUESTS);
+        let gcs = LimitStore::new(gcs, self.max_object_store_requests.get());
         let gcs = MetricLayer::new(gcs, "gcs");
 
         let object_store_registry = DefaultObjectStoreRegistry::new();
@@ -151,7 +161,7 @@ impl ObjectStorageProvider for GcsConfig {
     fn construct_client(&self) -> Arc<dyn ObjectStorage> {
         let gcs = self.get_default_builder().build().unwrap();
         // limit objectstore to a concurrent request limit
-        let gcs = LimitStore::new(gcs, super::MAX_OBJECT_STORE_REQUESTS);
+        let gcs = LimitStore::new(gcs, self.max_object_store_requests.get());
         let gcs = MetricLayer::new(gcs, "gcs");
         Arc::new(Gcs {
             client: Arc::new(gcs),

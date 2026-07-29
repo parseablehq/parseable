@@ -37,6 +37,7 @@ use crate::{
 use chrono::Utc;
 
 use std::fmt::Debug;
+use std::num::NonZeroUsize;
 
 mod azure_blob;
 pub mod field_stats;
@@ -108,8 +109,13 @@ pub const SETTINGS_ROOT_DIRECTORY: &str = ".settings";
 pub const TARGETS_ROOT_DIRECTORY: &str = ".targets";
 pub const MANIFEST_FILE: &str = "manifest.json";
 
-// max concurrent request allowed for datafusion object store
-const MAX_OBJECT_STORE_REQUESTS: usize = 1000;
+// max concurrent request allowed for datafusion object store, overridable per
+// backend with P_MAX_OBJECT_STORE_REQUESTS.
+//
+// NonZero because this becomes the permit count of the `LimitStore` semaphore:
+// at zero every object store request would await a permit that never arrives,
+// hanging the server silently rather than failing.
+pub const DEFAULT_MAX_OBJECT_STORE_REQUESTS: NonZeroUsize = NonZeroUsize::new(1000).unwrap();
 
 // all the supported permissions
 // const PERMISSIONS_READ: &str = "readonly";
@@ -403,4 +409,55 @@ pub fn partial_path(
     let mut buf = write_path.to_path_buf();
     buf.set_file_name(next);
     Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{DEFAULT_MAX_OBJECT_STORE_REQUESTS, GcsConfig};
+
+    #[derive(Debug, Parser)]
+    struct TestArgs {
+        #[command(flatten)]
+        gcs: GcsConfig,
+    }
+
+    fn parse(args: &[&str]) -> Result<TestArgs, clap::Error> {
+        TestArgs::try_parse_from(args)
+    }
+
+    #[test]
+    fn max_object_store_requests_rejects_zero() {
+        // Zero would leave the LimitStore semaphore with no permits, so every
+        // object store request would await forever instead of failing.
+        let err = parse(&[
+            "test",
+            "--bucket-name",
+            "b",
+            "--max-object-store-requests",
+            "0",
+        ])
+        .expect_err("zero must not parse");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ValueValidation);
+    }
+
+    #[test]
+    fn max_object_store_requests_accepts_positive_and_defaults() {
+        let parsed = parse(&[
+            "test",
+            "--bucket-name",
+            "b",
+            "--max-object-store-requests",
+            "500",
+        ])
+        .expect("positive value must parse");
+        assert_eq!(parsed.gcs.max_object_store_requests.get(), 500);
+
+        let parsed = parse(&["test", "--bucket-name", "b"]).expect("default must parse");
+        assert_eq!(
+            parsed.gcs.max_object_store_requests,
+            DEFAULT_MAX_OBJECT_STORE_REQUESTS
+        );
+    }
 }
