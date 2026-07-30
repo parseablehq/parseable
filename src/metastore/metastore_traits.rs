@@ -277,9 +277,12 @@ pub trait Metastore: std::fmt::Debug + Send + Sync {
         manifest_url: Option<String>,
         tenant_id: &Option<String>,
     ) -> Result<Option<Manifest>, MetastoreError>;
+    /// Takes a concrete `&Manifest` rather than `&dyn MetastoreObject` because
+    /// manifests have their own encoding (see `catalog::manifest::encode_manifest`)
+    /// and must not go through the generic JSON path used by other metadata.
     async fn put_manifest(
         &self,
-        obj: &dyn MetastoreObject,
+        manifest: &Manifest,
         stream_name: &str,
         lower_bound: DateTime<Utc>,
         upper_bound: DateTime<Utc>,

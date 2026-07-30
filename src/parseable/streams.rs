@@ -28,7 +28,10 @@ use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
     file::{
-        FOOTER_SIZE, metadata::SortingColumn, properties::WriterProperties, reader::FileReader,
+        FOOTER_SIZE,
+        metadata::SortingColumn,
+        properties::{BloomFilterPosition, WriterProperties},
+        reader::FileReader,
         serialized_reader::SerializedFileReader,
     },
     schema::types::ColumnPath,
@@ -740,9 +743,15 @@ impl Stream {
             // queried name still gets read. The bloom answers membership exactly,
             // so a row group that never saw the metric is rejected outright.
             let column_path = ColumnPath::new(vec!["metric_name".to_string()]);
+            let bloom_filter_position = if PARSEABLE.options.bloom_filter_default_position {
+                BloomFilterPosition::AfterRowGroup
+            } else {
+                BloomFilterPosition::End
+            };
             props = props
                 .set_column_bloom_filter_enabled(column_path.clone(), true)
-                .set_column_bloom_filter_ndv(column_path, METRIC_NAME_BLOOM_FILTER_NDV);
+                .set_column_bloom_filter_ndv(column_path, METRIC_NAME_BLOOM_FILTER_NDV)
+                .set_bloom_filter_position(bloom_filter_position);
         }
         sorting_column_vec.push(SortingColumn {
             column_idx: time_partition_idx as i32,

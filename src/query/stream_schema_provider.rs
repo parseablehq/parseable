@@ -44,8 +44,15 @@ use datafusion::{
     prelude::Expr,
     scalar::ScalarValue,
 };
-use futures_util::TryFutureExt;
+use futures_util::{StreamExt, TryFutureExt, TryStreamExt};
 use itertools::Itertools;
+use rayon::prelude::*;
+
+/// Number of manifest files fetched from the metastore in parallel while
+/// planning a query. Each fetch is one object store GET followed by a decode
+/// on the blocking pool, so this bounds both the in-flight transfers and the
+/// manifests held decompressed in memory at once.
+const MANIFEST_FETCH_CONCURRENCY: usize = 64;
 
 use crate::{
     catalog::{
@@ -258,12 +265,6 @@ impl StandardTableProvider {
                 Ok(file)
             })
             .collect::<Result<_, DataFusionError>>()?;
-
-        tracing::info!(
-            num_files = hot_tier_files.len(),
-            "hot_tier_files={:#?}",
-            &&hot_tier_files.iter().map(|f| &f.file_path).collect_vec(),
-        );
 
         let (partitioned_files, statistics) = self.partitioned_files(
             hot_tier_files,
@@ -509,40 +510,74 @@ async fn collect_from_snapshot(
     stream_name: &str,
     tenant_id: &Option<String>,
 ) -> Result<Vec<File>, DataFusionError> {
-    let mut manifest_files = Vec::new();
+    // Manifest fetches are one object store GET each and are pure round trip
+    // latency, so run them concurrently instead of serially. `buffered` keeps
+    // the snapshot ordering, which the `rev()` below depends on.
+    let manifest_files = futures_util::stream::iter(snapshot.manifests(time_filters))
+        .map(|manifest_item| {
+            let ManifestItem {
+                time_lower_bound,
+                time_upper_bound,
+                manifest_path,
+                ..
+            } = manifest_item;
+            async move {
+                let manifest_opt = PARSEABLE
+                    .metastore
+                    .get_manifest(
+                        stream_name,
+                        time_lower_bound,
+                        time_upper_bound,
+                        Some(manifest_path),
+                        tenant_id,
+                    )
+                    .await
+                    .map_err(|e| DataFusionError::Plan(e.to_string()))?;
+                if manifest_opt.is_none() {
+                    tracing::warn!(
+                        "Manifest missing for stream={} [{:?} - {:?}]",
+                        stream_name,
+                        time_lower_bound,
+                        time_upper_bound
+                    );
+                }
+                Ok::<_, DataFusionError>(manifest_opt)
+            }
+        })
+        .buffered(MANIFEST_FETCH_CONCURRENCY)
+        .try_collect::<Vec<_>>()
+        .await?;
 
-    for manifest_item in snapshot.manifests(time_filters) {
-        let manifest_opt = PARSEABLE
-            .metastore
-            .get_manifest(
-                stream_name,
-                manifest_item.time_lower_bound,
-                manifest_item.time_upper_bound,
-                Some(manifest_item.manifest_path),
-                tenant_id,
-            )
-            .await
-            .map_err(|e| DataFusionError::Plan(e.to_string()))?;
-        if let Some(manifest) = manifest_opt {
-            manifest_files.push(manifest);
-        } else {
-            tracing::warn!(
-                "Manifest missing for stream={} [{:?} - {:?}]",
-                stream_name,
-                manifest_item.time_lower_bound,
-                manifest_item.time_upper_bound
-            );
-        }
-    }
-
-    let mut manifest_files: Vec<_> = manifest_files
+    let manifest_files: Vec<_> = manifest_files
         .into_iter()
+        .flatten()
         .flat_map(|file| file.files)
         .rev()
         .collect();
-    for filter in filters {
-        manifest_files.retain(|file| !file.can_be_pruned(filter))
-    }
+
+    // One parallel pass rather than a `retain` per filter. Every
+    // `can_be_pruned` call linearly scans the file's column list (hundreds of
+    // entries on wide streams), so a sequential pass per filter over tens of
+    // thousands of files is hundreds of milliseconds of single threaded work.
+    // `position` matches the sequential chain: a file is dropped by the first
+    // filter that rejects it.
+    let prune_reason: Vec<Option<usize>> = manifest_files
+        .par_iter()
+        .map(|file| filters.iter().position(|filter| file.can_be_pruned(filter)))
+        .collect();
+
+    // Parallel because of the drops, not the filtering. Pruning discards the
+    // overwhelming majority of files, and every discarded `File` owns a `Vec`
+    // of hundreds of `Column`s, each with its own heap allocated name and
+    // stats. Tens of millions of frees on one thread is hundreds of
+    // milliseconds; `into_par_iter` spreads them. Order is preserved — the
+    // `rev()` above establishes the ordering the limit below depends on.
+    let mut manifest_files: Vec<_> = manifest_files
+        .into_par_iter()
+        .zip(prune_reason)
+        .filter_map(|(file, reason)| reason.is_none().then_some(file))
+        .collect();
+
     if let Some(limit) = limit {
         let limit = limit as u64;
         let mut curr_limit = 0;
@@ -692,12 +727,6 @@ impl TableProvider for StandardTableProvider {
                 .inc();
             return self.final_plan(execution_plans, projection);
         }
-
-        tracing::warn!(
-            num_files = manifest_files.len(),
-            "objectstore_files={:#?}",
-            &&manifest_files.iter().map(|f| &f.file_path).collect_vec(),
-        );
 
         let (partitioned_files, statistics) = self.partitioned_files(
             manifest_files,

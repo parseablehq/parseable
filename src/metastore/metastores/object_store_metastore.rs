@@ -38,7 +38,10 @@ use crate::{
         outbound_http_policy::AlertTargetPolicyConfig,
         target::Target,
     },
-    catalog::{manifest::Manifest, partition_path},
+    catalog::{
+        manifest::{Manifest, decode_manifest_blocking, encode_manifest},
+        partition_path,
+    },
     handlers::http::{
         modal::{Metadata, NodeMetadata, NodeType},
         users::USERS_ROOT_DIR,
@@ -1020,7 +1023,7 @@ impl Metastore for ObjectStoreMetastore {
                                 .storage
                                 .get_object(&RelativePathBuf::from(path), &tenant)
                                 .await?;
-                            Ok::<Manifest, MetastoreError>(serde_json::from_slice(&bytes)?)
+                            Ok::<Manifest, MetastoreError>(decode_manifest_blocking(bytes).await?)
                         }
                     })
                     .buffer_unordered(16)
@@ -1083,7 +1086,7 @@ impl Metastore for ObjectStoreMetastore {
         };
         match self.storage.get_object(&path, tenant_id).await {
             Ok(bytes) => {
-                let manifest = serde_json::from_slice(&bytes)?;
+                let manifest = decode_manifest_blocking(bytes).await?;
                 Ok(Some(manifest))
             }
             Err(ObjectStorageError::NoSuchKey(_)) => Ok(None),
@@ -1120,7 +1123,7 @@ impl Metastore for ObjectStoreMetastore {
 
     async fn put_manifest(
         &self,
-        obj: &dyn MetastoreObject,
+        manifest: &Manifest,
         stream_name: &str,
         lower_bound: DateTime<Utc>,
         upper_bound: DateTime<Utc>,
@@ -1132,7 +1135,7 @@ impl Metastore for ObjectStoreMetastore {
 
         Ok(self
             .storage
-            .put_object(&path, to_bytes(obj), tenant_id)
+            .put_object(&path, encode_manifest(manifest)?, tenant_id)
             .await?)
     }
 

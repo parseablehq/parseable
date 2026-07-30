@@ -43,6 +43,9 @@ pub enum MetastoreError {
     #[error("JSON parsing error: {0}")]
     JsonParseError(#[from] serde_json::Error),
 
+    #[error("Manifest encoding error: {0}")]
+    ManifestCodecError(#[from] crate::catalog::manifest::ManifestCodecError),
+
     #[error("JSON schema validation error: {message}")]
     JsonSchemaError { message: String },
 
@@ -97,6 +100,15 @@ impl MetastoreError {
                 metadata: std::collections::HashMap::new(),
                 status_code: 400,
             },
+            MetastoreError::ManifestCodecError(e) => MetastoreErrorDetail {
+                operation: "ManifestCodecError".to_string(),
+                message: e.to_string(),
+                stream_name: None,
+                file_path: None,
+                timestamp: Some(chrono::Utc::now()),
+                metadata: std::collections::HashMap::new(),
+                status_code: 500,
+            },
             MetastoreError::JsonSchemaError { message } => MetastoreErrorDetail {
                 operation: "JsonSchemaError".to_string(),
                 message: message.clone(),
@@ -150,6 +162,7 @@ impl MetastoreError {
         match self {
             MetastoreError::ObjectStorageError(..) => StatusCode::INTERNAL_SERVER_ERROR,
             MetastoreError::JsonParseError(..) => StatusCode::INTERNAL_SERVER_ERROR,
+            MetastoreError::ManifestCodecError(..) => StatusCode::INTERNAL_SERVER_ERROR,
             MetastoreError::JsonSchemaError { .. } => StatusCode::INTERNAL_SERVER_ERROR,
             MetastoreError::InvalidJsonStructure { .. } => StatusCode::INTERNAL_SERVER_ERROR,
             MetastoreError::MissingJsonField { .. } => StatusCode::INTERNAL_SERVER_ERROR,
