@@ -25,9 +25,7 @@ use actix_web::Responder;
 use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use error::MetricsError;
 use once_cell::sync::Lazy;
-use prometheus::{
-    HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry,
-};
+use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
 
 pub const METRICS_NAMESPACE: &str = env!("CARGO_PKG_NAME");
 

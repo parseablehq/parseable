@@ -34,6 +34,7 @@ use tracing::info_span;
 use crate::{
     handlers::TelemetryType,
     metadata::SchemaVersion,
+    otel::metrics::SERIES_HASH_COLUMN,
     storage::StreamType,
     utils::arrow::{add_parseable_fields, get_field},
 };
@@ -369,6 +370,12 @@ pub fn override_data_type(
             let mut field_name = field.name().to_string();
             normalize_field_name(&mut field_name);
             match (schema_version, map.get(field.name())) {
+                // Series identity must retain all 64 bits. Schema V1 normally
+                // coerces JSON numbers to Float64, which cannot represent the
+                // full u64 range exactly.
+                (_, Some(Value::Number(_))) if field_name == SERIES_HASH_COLUMN => {
+                    Field::new(field_name, DataType::UInt64, true)
+                }
                 // in V1 for new fields in json named "time"/"date" or such and having
                 // inferred type string, that can be parsed as timestamp, use the
                 // timestamp type. Gated on `infer_timestamp` (default true) — settable
