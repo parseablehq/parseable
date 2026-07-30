@@ -228,6 +228,16 @@ pub struct Options {
     )]
     pub target_partitions: u64,
 
+    // DataFusion bloom filter position
+    // defaults to true, which means `BloomFilterPosition::AfterRowGroup`
+    #[arg(
+        long,
+        env = "P_DATAFUSION_BLOOM_FILTER_DEFAULT_POSITION",
+        default_value_t = true,
+        help = "DataFusion bloom filter position"
+    )]
+    pub bloom_filter_default_position: bool,
+
     #[arg(
         long = "origin",
         env = "P_ORIGIN_URI",
