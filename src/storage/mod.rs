@@ -70,28 +70,6 @@ pub(crate) const RANGED_GET_MAX_ATTEMPTS: u32 = 3;
 /// round trip latency, so overlapping them is close to a pure win.
 pub(crate) const GET_OBJECTS_CONCURRENCY: usize = 32;
 
-/// Log the full source chain of an object store error.
-///
-/// `object_store`'s `Display` collapses transport failures into opaque strings
-/// such as "HTTP error: request or response body error", which is not enough to
-/// tell a connection reset from a truncated body from a decode failure. The
-/// underlying `reqwest`/`hyper` error names the actual cause, so walk the chain.
-pub(crate) fn log_object_store_error(op: &str, path: &RelativePath, err: &object_store::Error) {
-    let mut chain = vec![err.to_string()];
-    let mut source = std::error::Error::source(err);
-    while let Some(err) = source {
-        chain.push(err.to_string());
-        source = err.source();
-    }
-    tracing::error!(
-        op,
-        path = %path,
-        chain = ?chain,
-        debug = ?err,
-        "object store error"
-    );
-}
-
 /// Fetch an object as a series of bounded byte ranges rather than one stream.
 ///
 /// A single multi-hundred-MB response body is regularly killed mid transfer by
@@ -171,10 +149,7 @@ async fn get_object_ranged_once<S: object_store::ObjectStore>(
     on_request();
     let first = match first {
         Ok(first) => first,
-        Err(err) => {
-            log_object_store_error("GET", log_path, &err);
-            return Err(ObjectStorageError::from(err).into());
-        }
+        Err(err) => return Err(ObjectStorageError::from(err).into()),
     };
 
     let total = first.meta.size;
@@ -182,17 +157,15 @@ async fn get_object_ranged_once<S: object_store::ObjectStore>(
     // each range is its own request, and these objects are rewritten while
     // being read, so without this the ranges can splice two different versions
     // of the object together into a corrupt buffer.
-    // Only the ETag, never the store's version/generation id: these objects are
+    //
+    // The ETag only, never the store's version/generation id: these objects are
     // rewritten constantly and the superseded generation is deleted, so pinning
-    // it turns a concurrent rewrite into a 404 for an object that plainly
+    // that turns a concurrent rewrite into a 404 for an object which plainly
     // exists. A stale ETag returns 412, which is what the retry expects.
     let e_tag = first.meta.e_tag.clone();
     let head = match first.bytes().await {
         Ok(head) => head,
-        Err(err) => {
-            log_object_store_error("GET body", log_path, &err);
-            return Err(ObjectStorageError::from(err).into());
-        }
+        Err(err) => return Err(ObjectStorageError::from(err).into()),
     };
 
     if total <= head.len() as u64 {
@@ -249,7 +222,6 @@ async fn get_object_ranged_once<S: object_store::ObjectStore>(
                 ) {
                     return Err(RangedReadError::ObjectChanged);
                 }
-                log_object_store_error("GET range", log_path, &err);
                 return Err(ObjectStorageError::from(err).into());
             }
         }

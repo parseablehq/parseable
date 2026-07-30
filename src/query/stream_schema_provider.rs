@@ -49,28 +49,10 @@ use itertools::Itertools;
 use rayon::prelude::*;
 
 /// Number of manifest files fetched from the metastore in parallel while
-/// planning a query.
-///
-/// Kept deliberately low. Manifests are hundreds of MB each, so a wide fan-out
-/// is bandwidth bound rather than latency bound: it does not finish sooner, and
-/// it stretches every individual GET long enough to trip the object store
-/// client's body timeout ("request or response body error"). A handful of
-/// concurrent transfers is enough to keep the pipe full.
+/// planning a query. Each fetch is one object store GET followed by a decode
+/// on the blocking pool, so this bounds both the in-flight transfers and the
+/// manifests held decompressed in memory at once.
 const MANIFEST_FETCH_CONCURRENCY: usize = 64;
-
-/// Measurement escape hatch: when `P_DISABLE_MANIFEST_STATS=1`, the table level
-/// `Statistics` handed to DataFusion are reported as unknown instead of being
-/// derived from the per column min/max recorded in the manifest. Used to test
-/// whether those stats change the plan at all before deciding to stop writing
-/// them on the ingest side.
-fn manifest_stats_disabled() -> bool {
-    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *DISABLED.get_or_init(|| {
-        std::env::var("P_DISABLE_MANIFEST_STATS")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
-}
 
 use crate::{
     catalog::{
@@ -462,9 +444,6 @@ impl StandardTableProvider {
                 partition.push(pf);
 
                 columns.into_iter().for_each(|col| {
-                    if manifest_stats_disabled() {
-                        return;
-                    }
                     column_statistics
                         .entry(col.name)
                         .and_modify(|x| {
@@ -505,14 +484,10 @@ impl StandardTableProvider {
             })
             .collect();
 
-        let statistics = if manifest_stats_disabled() {
-            Statistics::new_unknown(&self.schema)
-        } else {
-            datafusion::common::Statistics {
-                num_rows: Precision::Exact(count as usize),
-                total_byte_size: Precision::Absent,
-                column_statistics: statistics,
-            }
+        let statistics = datafusion::common::Statistics {
+            num_rows: Precision::Exact(count as usize),
+            total_byte_size: Precision::Absent,
+            column_statistics: statistics,
         };
 
         // Track billing metrics for query scan
@@ -579,27 +554,16 @@ async fn collect_from_snapshot(
         .flat_map(|file| file.files)
         .rev()
         .collect();
-    let files_before_prune = manifest_files.len();
 
     // One parallel pass rather than a `retain` per filter. Every
     // `can_be_pruned` call linearly scans the file's column list (hundreds of
     // entries on wide streams), so a sequential pass per filter over tens of
     // thousands of files is hundreds of milliseconds of single threaded work.
-    // `position` keeps attribution identical to the sequential chain: a file is
-    // credited to the first filter that would have dropped it.
+    // `position` matches the sequential chain: a file is dropped by the first
+    // filter that rejects it.
     let prune_reason: Vec<Option<usize>> = manifest_files
         .par_iter()
         .map(|file| filters.iter().position(|filter| file.can_be_pruned(filter)))
-        .collect();
-
-    let mut pruned_counts = vec![0usize; filters.len()];
-    for reason in prune_reason.iter().flatten() {
-        pruned_counts[*reason] += 1;
-    }
-    let pruned_by_filter: Vec<(String, usize)> = filters
-        .iter()
-        .zip(pruned_counts)
-        .map(|(filter, count)| (filter.to_string(), count))
         .collect();
 
     // Parallel because of the drops, not the filtering. Pruning discards the
@@ -613,13 +577,7 @@ async fn collect_from_snapshot(
         .zip(prune_reason)
         .filter_map(|(file, reason)| reason.is_none().then_some(file))
         .collect();
-    tracing::warn!(
-        stream = %stream_name,
-        files_before_prune,
-        files_after_prune = manifest_files.len(),
-        ?pruned_by_filter,
-        "manifest stats pruning"
-    );
+
     if let Some(limit) = limit {
         let limit = limit as u64;
         let mut curr_limit = 0;
@@ -662,7 +620,6 @@ impl TableProvider for StandardTableProvider {
         filters: &[Expr],
         limit: Option<usize>,
     ) -> Result<Arc<dyn ExecutionPlan>, DataFusionError> {
-        let t_scan = std::time::Instant::now();
         let mut execution_plans = vec![];
         let glob_storage = PARSEABLE.storage.get_object_store();
 
@@ -675,11 +632,8 @@ impl TableProvider for StandardTableProvider {
         )
         .map_err(|e| DataFusionError::Plan(e.to_string()))?;
 
-        let stream_json_ms = t_scan.elapsed().as_millis() as u64;
-
         let time_partition = object_store_format.time_partition;
         let mut time_filters = extract_primary_filter(filters, &time_partition);
-        let t_staging = std::time::Instant::now();
         if is_within_staging_window(&time_filters) {
             self.get_staging_execution_plan(
                 &mut execution_plans,
@@ -691,9 +645,6 @@ impl TableProvider for StandardTableProvider {
             )
             .await?;
         };
-        let staging_ms = t_staging.elapsed().as_millis() as u64;
-
-        let t_snapshot = std::time::Instant::now();
         let mut merged_snapshot = Snapshot::default();
         if PARSEABLE.options.mode == Mode::Query || PARSEABLE.options.mode == Mode::Prism {
             let obs = PARSEABLE
@@ -716,11 +667,8 @@ impl TableProvider for StandardTableProvider {
             merged_snapshot = object_store_format.snapshot;
         }
 
-        let snapshot_ms = t_snapshot.elapsed().as_millis() as u64;
-
         // Is query timerange is overlapping with older data.
         // if true, then get listing table time filters and execution plan separately
-        let t_listing = std::time::Instant::now();
         if is_overlapping_query(&merged_snapshot.manifest_list, &time_filters) {
             let listing_time_fiters =
                 return_listing_time_filters(&merged_snapshot.manifest_list, &mut time_filters);
@@ -740,9 +688,6 @@ impl TableProvider for StandardTableProvider {
             }
         }
 
-        let listing_ms = t_listing.elapsed().as_millis() as u64;
-
-        let t_manifests = std::time::Instant::now();
         let mut manifest_files = collect_from_snapshot(
             &merged_snapshot,
             &time_filters,
@@ -752,14 +697,12 @@ impl TableProvider for StandardTableProvider {
             &self.tenant_id,
         )
         .await?;
-        let manifests_ms = t_manifests.elapsed().as_millis() as u64;
 
         if manifest_files.is_empty() {
             return self.final_plan(execution_plans, projection);
         }
 
         // Hot tier data fetch
-        let t_hottier = std::time::Instant::now();
         if let Some(hot_tier_manager) = GLOBAL_HOTTIER.get()
             && hot_tier_manager.check_stream_hot_tier_exists(&self.stream, &self.tenant_id)
         {
@@ -785,19 +728,13 @@ impl TableProvider for StandardTableProvider {
             return self.final_plan(execution_plans, projection);
         }
 
-        let hottier_ms = t_hottier.elapsed().as_millis() as u64;
-
-        let t_partition = std::time::Instant::now();
-        let num_files = manifest_files.len();
         let (partitioned_files, statistics) = self.partitioned_files(
             manifest_files,
             state.config_options().execution.target_partitions,
             false,
         );
-        let partition_ms = t_partition.elapsed().as_millis() as u64;
 
         let object_store_url = glob_storage.store_url();
-        let t_physical = std::time::Instant::now();
 
         self.create_parquet_physical_plan(
             &mut execution_plans,
@@ -811,23 +748,6 @@ impl TableProvider for StandardTableProvider {
             time_partition.clone(),
         )
         .await?;
-        let physical_ms = t_physical.elapsed().as_millis() as u64;
-
-        tracing::warn!(
-            stream = %self.stream,
-            num_files,
-            num_fields = self.schema.fields().len(),
-            stream_json_ms,
-            staging_ms,
-            snapshot_ms,
-            listing_ms,
-            manifests_ms,
-            hottier_ms,
-            partition_ms,
-            physical_ms,
-            total_ms = t_scan.elapsed().as_millis() as u64,
-            "scan phase timings"
-        );
 
         Ok(self.final_plan(execution_plans, projection)?)
     }
