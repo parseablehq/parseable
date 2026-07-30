@@ -172,6 +172,15 @@ async fn get_object_ranged_once<S: object_store::ObjectStore>(
         return Ok(head);
     }
 
+    // Without an ETag the follow up ranges carry no precondition, so a rewrite
+    // mid read splices two generations together silently. Fail instead.
+    let Some(e_tag) = e_tag else {
+        return Err(ObjectStorageError::Custom(format!(
+            "ranged read of {log_path} needs an ETag to pin the object, store returned none"
+        ))
+        .into());
+    };
+
     // `buffered` preserves range order, so chunks append straight into the
     // output buffer and no second full size assembly copy is needed.
     let ranges: Vec<std::ops::Range<u64>> = (head.len() as u64..total)
@@ -185,7 +194,7 @@ async fn get_object_ranged_once<S: object_store::ObjectStore>(
 
     let chunks = futures::stream::iter(ranges)
         .map(|range| {
-            let e_tag = e_tag.clone();
+            let e_tag = Some(e_tag.clone());
             async move {
                 let result = client
                     .get_opts(

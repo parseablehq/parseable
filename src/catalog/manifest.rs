@@ -66,8 +66,8 @@ const ZSTD_LEVEL: i32 = 3;
 /// Decoding is CPU bound, so there is nothing to gain past the core count, and
 /// each in-flight decode holds a fully decompressed manifest in memory — which
 /// is two orders of magnitude larger than the compressed form.
-static DECODE_PERMITS: std::sync::LazyLock<tokio::sync::Semaphore> =
-    std::sync::LazyLock::new(|| tokio::sync::Semaphore::new(num_cpus::get()));
+static DECODE_PERMITS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(num_cpus::get())));
 
 #[derive(Debug, thiserror::Error)]
 pub enum ManifestCodecError {
@@ -120,12 +120,20 @@ pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, ManifestCodecError> {
 /// longer. Handing the work to the blocking pool lets them actually run in
 /// parallel.
 pub async fn decode_manifest_blocking(bytes: bytes::Bytes) -> Result<Manifest, ManifestCodecError> {
-    let _permit = DECODE_PERMITS
-        .acquire()
+    // Owned permit moved into the task: dropping this future cancels the await
+    // but not the blocking work, so the permit has to outlive it to keep
+    // detached decodes counted.
+    let permit = DECODE_PERMITS
+        .clone()
+        .acquire_owned()
         .await
         .expect("decode semaphore is never closed");
 
-    tokio::task::spawn_blocking(move || decode_manifest(&bytes)).await?
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        decode_manifest(&bytes)
+    })
+    .await?
 }
 
 /// An entry in a manifest which points to a single file.
