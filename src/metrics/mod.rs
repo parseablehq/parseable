@@ -25,9 +25,7 @@ use actix_web::Responder;
 use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use error::MetricsError;
 use once_cell::sync::Lazy;
-use prometheus::{
-    HistogramOpts, HistogramVec, IntCounterVec, IntGauge, IntGaugeVec, Opts, Registry,
-};
+use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
 
 pub const METRICS_NAMESPACE: &str = env!("CARGO_PKG_NAME");
 
@@ -189,73 +187,6 @@ pub static QUERY_CACHE_HIT: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         Opts::new("QUERY_CACHE_HIT", "Full Cache hit").namespace(METRICS_NAMESPACE),
         &["stream", "tenant_id"],
-    )
-    .expect("metric can be created")
-});
-
-pub static PARQUET_METADATA_CACHE_ENTRIES: Lazy<IntGauge> = Lazy::new(|| {
-    IntGauge::with_opts(
-        Opts::new(
-            "parquet_metadata_cache_entries",
-            "Number of Parquet metadata entries currently retained",
-        )
-        .namespace(METRICS_NAMESPACE),
-    )
-    .expect("metric can be created")
-});
-
-pub static PARQUET_METADATA_CACHE_USED_BYTES: Lazy<IntGauge> = Lazy::new(|| {
-    IntGauge::with_opts(
-        Opts::new(
-            "parquet_metadata_cache_used_bytes",
-            "Logical memory used by retained Parquet metadata entries",
-        )
-        .namespace(METRICS_NAMESPACE),
-    )
-    .expect("metric can be created")
-});
-
-pub static PARQUET_METADATA_CACHE_LIMIT_BYTES: Lazy<IntGauge> = Lazy::new(|| {
-    IntGauge::with_opts(
-        Opts::new(
-            "parquet_metadata_cache_limit_bytes",
-            "Configured Parquet metadata cache memory limit",
-        )
-        .namespace(METRICS_NAMESPACE),
-    )
-    .expect("metric can be created")
-});
-
-pub static PARQUET_METADATA_CACHE_RETAINED_HITS: Lazy<IntGauge> = Lazy::new(|| {
-    IntGauge::with_opts(
-        Opts::new(
-            "parquet_metadata_cache_retained_hits",
-            "Cache hits recorded by entries that are currently retained",
-        )
-        .namespace(METRICS_NAMESPACE),
-    )
-    .expect("metric can be created")
-});
-
-pub static PARQUET_METADATA_CACHE_PAGE_INDEX_ENTRIES: Lazy<IntGauge> = Lazy::new(|| {
-    IntGauge::with_opts(
-        Opts::new(
-            "parquet_metadata_cache_page_index_entries",
-            "Retained Parquet metadata entries containing page indexes",
-        )
-        .namespace(METRICS_NAMESPACE),
-    )
-    .expect("metric can be created")
-});
-
-pub static PARQUET_METADATA_CACHE_ENTRY_SIZE_BYTES: Lazy<IntGaugeVec> = Lazy::new(|| {
-    IntGaugeVec::new(
-        Opts::new(
-            "parquet_metadata_cache_entry_size_bytes",
-            "Parquet metadata cache entry size distribution",
-        )
-        .namespace(METRICS_NAMESPACE),
-        &["stat"],
     )
     .expect("metric can be created")
 });
@@ -739,24 +670,6 @@ fn custom_metrics(registry: &Registry) {
         .register(Box::new(QUERY_CACHE_HIT.clone()))
         .expect("metric can be registered");
     registry
-        .register(Box::new(PARQUET_METADATA_CACHE_ENTRIES.clone()))
-        .expect("metric can be registered");
-    registry
-        .register(Box::new(PARQUET_METADATA_CACHE_USED_BYTES.clone()))
-        .expect("metric can be registered");
-    registry
-        .register(Box::new(PARQUET_METADATA_CACHE_LIMIT_BYTES.clone()))
-        .expect("metric can be registered");
-    registry
-        .register(Box::new(PARQUET_METADATA_CACHE_RETAINED_HITS.clone()))
-        .expect("metric can be registered");
-    registry
-        .register(Box::new(PARQUET_METADATA_CACHE_PAGE_INDEX_ENTRIES.clone()))
-        .expect("metric can be registered");
-    registry
-        .register(Box::new(PARQUET_METADATA_CACHE_ENTRY_SIZE_BYTES.clone()))
-        .expect("metric can be registered");
-    registry
         .register(Box::new(ALERTS_STATES.clone()))
         .expect("metric can be registered");
     // Register billing metrics
@@ -880,32 +793,6 @@ pub fn build_metrics_handler() -> PrometheusMetrics {
 
     prom_process_metrics(&prometheus);
     prometheus
-}
-
-pub fn set_parquet_metadata_cache_metrics(
-    entries: usize,
-    used_bytes: usize,
-    limit_bytes: usize,
-    retained_hits: usize,
-    page_index_entries: usize,
-    p50_entry_bytes: usize,
-    p95_entry_bytes: usize,
-    max_entry_bytes: usize,
-) {
-    PARQUET_METADATA_CACHE_ENTRIES.set(entries as i64);
-    PARQUET_METADATA_CACHE_USED_BYTES.set(used_bytes as i64);
-    PARQUET_METADATA_CACHE_LIMIT_BYTES.set(limit_bytes as i64);
-    PARQUET_METADATA_CACHE_RETAINED_HITS.set(retained_hits as i64);
-    PARQUET_METADATA_CACHE_PAGE_INDEX_ENTRIES.set(page_index_entries as i64);
-    PARQUET_METADATA_CACHE_ENTRY_SIZE_BYTES
-        .with_label_values(&["p50"])
-        .set(p50_entry_bytes as i64);
-    PARQUET_METADATA_CACHE_ENTRY_SIZE_BYTES
-        .with_label_values(&["p95"])
-        .set(p95_entry_bytes as i64);
-    PARQUET_METADATA_CACHE_ENTRY_SIZE_BYTES
-        .with_label_values(&["max"])
-        .set(max_entry_bytes as i64);
 }
 
 #[cfg(target_os = "linux")]
