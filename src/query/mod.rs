@@ -69,9 +69,7 @@ use crate::catalog::manifest::Manifest;
 use crate::catalog::snapshot::Snapshot;
 use crate::event::DEFAULT_TIMESTAMP_KEY;
 use crate::handlers::http::query::QueryError;
-use crate::metrics::{
-    increment_bytes_scanned_in_query_by_date, set_parquet_metadata_cache_metrics,
-};
+use crate::metrics::increment_bytes_scanned_in_query_by_date;
 use crate::option::Mode;
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
 use crate::storage::{ObjectStorageProvider, ObjectStoreFormat};
@@ -328,7 +326,6 @@ impl Query {
             // Track billing metrics for query scan
             let current_date = chrono::Utc::now().date_naive().to_string();
             increment_bytes_scanned_in_query_by_date(actual_io_bytes, &current_date, tenant);
-            report_parquet_metadata_cache();
 
             Either::Left(batches)
         } else {
@@ -1060,65 +1057,8 @@ impl PartitionedMetricMonitor {
                 &current_date,
                 self.tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
             );
-            report_parquet_metadata_cache();
         }
     }
-}
-
-fn report_parquet_metadata_cache() {
-    let ctx = QUERY_SESSION.get_ctx();
-    let state = ctx.state();
-    let runtime = state.runtime_env();
-    let cache = runtime.cache_manager.get_file_metadata_cache();
-    let entries = cache.list_entries();
-
-    let mut entry_sizes: Vec<usize> = entries.values().map(|entry| entry.size_bytes).collect();
-    entry_sizes.sort_unstable();
-
-    let used_bytes = entry_sizes.iter().sum();
-    let limit_bytes = cache.cache_limit();
-    let retained_hits = entries.values().map(|entry| entry.hits).sum();
-    let page_index_entries = entries
-        .values()
-        .filter(|entry| {
-            entry
-                .extra
-                .get("page_index")
-                .is_some_and(|value| value == "true")
-        })
-        .count();
-    let percentile = |percent: usize| {
-        entry_sizes
-            .get(entry_sizes.len().saturating_sub(1) * percent / 100)
-            .copied()
-            .unwrap_or_default()
-    };
-    let p50_entry_bytes = percentile(50);
-    let p95_entry_bytes = percentile(95);
-    let max_entry_bytes = entry_sizes.last().copied().unwrap_or_default();
-
-    set_parquet_metadata_cache_metrics(
-        entries.len(),
-        used_bytes,
-        limit_bytes,
-        retained_hits,
-        page_index_entries,
-        p50_entry_bytes,
-        p95_entry_bytes,
-        max_entry_bytes,
-    );
-
-    tracing::warn!(
-        entries = entries.len(),
-        used_bytes,
-        limit_bytes,
-        retained_hits,
-        page_index_entries,
-        p50_entry_bytes,
-        p95_entry_bytes,
-        max_entry_bytes,
-        "parquet metadata cache stats"
-    );
 }
 
 #[cfg(test)]
