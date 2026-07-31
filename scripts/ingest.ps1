@@ -86,14 +86,19 @@ function Test-FluentBitRunning {
     if (Test-Path $PID_FILE) {
         $processId = Get-Content $PID_FILE
         try {
-            $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
-            if ($process) {
+            $process = Get-Process -Id $processId -ErrorAction Stop
+            $actualPath = [System.IO.Path]::GetFullPath($process.Path)
+            $expectedPath = [System.IO.Path]::GetFullPath($FLUENT_BIT_EXE)
+
+            if ([System.StringComparer]::OrdinalIgnoreCase.Equals($actualPath, $expectedPath)) {
                 return $true
             }
         }
         catch {
-            return $false
+            # Treat missing or inaccessible processes as stale.
         }
+
+        Remove-Item $PID_FILE -ErrorAction SilentlyContinue
     }
     return $false
 }
