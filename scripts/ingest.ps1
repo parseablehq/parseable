@@ -49,6 +49,39 @@ function Write-ErrorMsg {
     Write-Host "[ERROR] $Message" -ForegroundColor Red
 }
 
+function Write-ParseableBanner {
+    $accent = "$([char]27)[38;2;158;158;240m"
+    $reset = "$([char]27)[0m"
+    $logo = @(
+        ' ____   _    ____  ____  _____    _    ____  _     _____',
+        '|  _ \ / \  |  _ \/ ___|| ____|  / \  | __ )| |   | ____|',
+        '| |_) / _ \ | |_) \___ \|  _|   / _ \ |  _ \| |   |  _|',
+        '|  __/ ___ \|  _ < ___) | |___ / ___ \| |_) | |___| |___',
+        '|_| /_/   \_\_| \_\____/|_____/_/   \_\____/|_____|_____|'
+    )
+
+    Write-Host ""
+    $logo | ForEach-Object { Write-Host "$accent$_$reset" }
+    Write-Host ""
+    Write-Host "Host metrics setup" -ForegroundColor White
+    Write-Host "Installing and configuring the metrics agent for Parseable..."
+    Write-Host ""
+}
+
+function Write-SetupComplete {
+    param([string]$StreamName)
+
+    $accent = "$([char]27)[38;2;158;158;240m"
+    $ok = "$([char]27)[38;2;52;211;153m"
+    $reset = "$([char]27)[0m"
+    Write-Host ""
+    Write-Host "${ok}✓ You're all set!${reset}"
+    Write-Host "Host metrics are now being sent to Parseable."
+    Write-Host "Dataset: " -NoNewline
+    Write-Host "${accent}${StreamName}${reset}"
+    Write-Host "Return to Parseable and click Continue to verify your data."
+}
+
 function Test-FluentBitRunning {
     if (Test-Path $PID_FILE) {
         $processId = Get-Content $PID_FILE
@@ -282,6 +315,8 @@ function Setup-FluentBit {
         exit 1
     }
 
+    Write-ParseableBanner
+
     $tlsSetting = "On"
     $defaultPort = "443"
     if ($IngestorHost -like "https://*") {
@@ -360,6 +395,7 @@ function Setup-FluentBit {
     
     Write-Host ""
     Start-FluentBit
+    Write-SetupComplete -StreamName $StreamName
 }
 
 function Show-Help {

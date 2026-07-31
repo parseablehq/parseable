@@ -14,6 +14,9 @@ set -e
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+ACCENT='\033[38;2;158;158;240m' 
+OK='\033[38;2;52;211;153m'      
+BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 # File locations
@@ -32,6 +35,29 @@ print_error() {
 
 print_warning() {
     echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+print_parseable_banner() {
+    echo ""
+    printf '%b%s%b\n' "$ACCENT" ' ____   _    ____  ____  _____    _    ____  _     _____' "$NC"
+    printf '%b%s%b\n' "$ACCENT" '|  _ \ / \  |  _ \/ ___|| ____|  / \  | __ )| |   | ____|' "$NC"
+    printf '%b%s%b\n' "$ACCENT" '| |_) / _ \ | |_) \___ \|  _|   / _ \ |  _ \| |   |  _|' "$NC"
+    printf '%b%s%b\n' "$ACCENT" '|  __/ ___ \|  _ < ___) | |___ / ___ \| |_) | |___| |___' "$NC"
+    printf '%b%s%b\n' "$ACCENT" '|_| /_/   \_\_| \_\____/|_____/_/   \_\____/|_____|_____|' "$NC"
+    echo ""
+    echo -e "${BOLD}Host metrics setup${NC}"
+    echo "Installing and configuring the metrics agent for Parseable..."
+    echo ""
+}
+
+print_setup_complete() {
+    local stream_name="$1"
+
+    echo ""
+    echo -e "${OK}${BOLD}✓ You're all set!${NC}"
+    echo "Host metrics are now being sent to Parseable."
+    echo -e "Dataset: ${BOLD}${stream_name}${NC}"
+    echo "Return to Parseable and click Continue to verify your data."
 }
 
 # Function to check if Fluent Bit is running
@@ -256,6 +282,8 @@ setup_fluent_bit() {
         exit 1
     fi
 
+    print_parseable_banner
+
     if [[ "$INGESTOR_HOST" =~ ^[Hh][Tt][Tt][Pp][Ss]:// ]]; then
         INGESTOR_HOST="${INGESTOR_HOST#*://}"
         TLS_SETTING="On"
@@ -340,6 +368,7 @@ EOF
     # Start Fluent Bit
     echo ""
     start_fluent_bit
+    print_setup_complete "$STREAM_NAME"
 }
 
 # Main script logic
