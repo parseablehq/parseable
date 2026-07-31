@@ -39,7 +39,7 @@ use super::otel_utils::{
 
 pub const SERIES_HASH_COLUMN: &str = "__series_hash_u64";
 
-pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 38] = [
+pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 39] = [
     "metric_name",
     "metric_description",
     "metric_unit",
@@ -59,12 +59,9 @@ pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 38] = [
     "data_point_sum",
     "data_point_bucket_counts",
     "data_point_explicit_bounds",
-    // Nested array of summary quantile objects, each carrying `quantile`
-    // and `value`. Stored under this single key and kept out of the
-    // series hash so per-sample quantile values never fragment series
-    // identity. (The bare `quantile`/`value` keys only ever appear nested
-    // inside this array, never as top-level data-point fields.)
     "data_point_quantile_values",
+    "data_point_quantile_values_quantile",
+    "data_point_quantile_values_value",
     // Histogram per-sample min/max statistics.
     "data_point_min",
     "data_point_max",
