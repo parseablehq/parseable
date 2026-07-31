@@ -85,17 +85,27 @@ function Write-SetupComplete {
 function Test-FluentBitRunning {
     if (Test-Path $PID_FILE) {
         $processId = Get-Content $PID_FILE
-        try {
-            $process = Get-Process -Id $processId -ErrorAction Stop
-            $actualPath = [System.IO.Path]::GetFullPath($process.Path)
-            $expectedPath = [System.IO.Path]::GetFullPath($FLUENT_BIT_EXE)
 
-            if ([System.StringComparer]::OrdinalIgnoreCase.Equals($actualPath, $expectedPath)) {
-                return $true
-            }
+        try {
+            $process = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $processId" -ErrorAction Stop
         }
         catch {
-            # Treat missing or inaccessible processes as stale.
+            throw "Unable to inspect process $processId; PID file was preserved. $_"
+        }
+
+        if ($null -eq $process) {
+            Remove-Item $PID_FILE -ErrorAction SilentlyContinue
+            return $false
+        }
+
+        if ([string]::IsNullOrWhiteSpace($process.ExecutablePath)) {
+            throw "Unable to verify process $processId; PID file was preserved."
+        }
+
+        $actualPath = [System.IO.Path]::GetFullPath($process.ExecutablePath)
+        $expectedPath = [System.IO.Path]::GetFullPath($FLUENT_BIT_EXE)
+        if ([System.StringComparer]::OrdinalIgnoreCase.Equals($actualPath, $expectedPath)) {
+            return $true
         }
 
         Remove-Item $PID_FILE -ErrorAction SilentlyContinue
