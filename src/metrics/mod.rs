@@ -401,6 +401,156 @@ pub static STORAGE_REQUESTS_INFLIGHT: Lazy<IntGaugeVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
+pub static STORAGE_READ_BYTES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "storage_read_bytes_total",
+            "Logical bytes requested from an object store",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["provider"],
+    )
+    .expect("metric can be created")
+});
+
+pub static STORAGE_READ_RANGES_TOTAL: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "storage_read_ranges_total",
+            "Logical byte ranges requested from an object store",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["provider"],
+    )
+    .expect("metric can be created")
+});
+
+pub static HOT_TIER_SOURCE_WATERMARK_SECONDS: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "hot_tier_source_watermark_seconds",
+            "Latest source timestamp observed by hot tier",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["stream", "tenant_id"],
+    )
+    .expect("metric can be created")
+});
+
+pub static HOT_TIER_ACTIVE_MISSING_FILES: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "hot_tier_active_missing_files",
+            "Missing files in the active hot-tier window",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["stream", "tenant_id"],
+    )
+    .expect("metric can be created")
+});
+
+pub static HOT_TIER_ACTIVE_MISSING_BYTES: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "hot_tier_active_missing_bytes",
+            "Missing bytes in the active hot-tier window",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["stream", "tenant_id"],
+    )
+    .expect("metric can be created")
+});
+
+pub static HOT_TIER_OLDEST_MISSING_LAG_SECONDS: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "hot_tier_oldest_missing_lag_seconds",
+            "Age of the oldest missing hot-tier file",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["stream", "tenant_id"],
+    )
+    .expect("metric can be created")
+});
+
+pub static HOT_TIER_INFLIGHT_FILES: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "hot_tier_inflight_files",
+            "Hot-tier files currently being processed",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["stream", "tenant_id"],
+    )
+    .expect("metric can be created")
+});
+
+pub static HOT_TIER_USED_BYTES: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "hot_tier_used_bytes",
+            "Bytes committed in hot-tier runtime state",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["stream", "tenant_id"],
+    )
+    .expect("metric can be created")
+});
+
+pub static HOT_TIER_RESERVED_BYTES: Lazy<IntGaugeVec> = Lazy::new(|| {
+    IntGaugeVec::new(
+        Opts::new(
+            "hot_tier_reserved_bytes",
+            "Bytes reserved by in-flight hot-tier downloads",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["stream", "tenant_id"],
+    )
+    .expect("metric can be created")
+});
+
+pub static HOT_TIER_DOWNLOAD_BYTES: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new(
+            "hot_tier_download_bytes",
+            "Bytes successfully downloaded into hot tier",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["stream", "tenant_id"],
+    )
+    .expect("metric can be created")
+});
+
+pub static HOT_TIER_DOWNLOAD_OUTCOMES: Lazy<IntCounterVec> = Lazy::new(|| {
+    IntCounterVec::new(
+        Opts::new("hot_tier_download_outcomes", "Hot-tier download outcomes")
+            .namespace(METRICS_NAMESPACE),
+        &["stream", "tenant_id", "outcome"],
+    )
+    .expect("metric can be created")
+});
+
+pub static HOT_TIER_INVENTORY_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
+    HistogramVec::new(
+        HistogramOpts::new(
+            "hot_tier_inventory_duration_seconds",
+            "Hot-tier inventory duration",
+        )
+        .namespace(METRICS_NAMESPACE),
+        &["stream", "tenant_id"],
+    )
+    .expect("metric can be created")
+});
+
+pub static HOT_TIER_TICK_DURATION: Lazy<HistogramVec> = Lazy::new(|| {
+    HistogramVec::new(
+        HistogramOpts::new("hot_tier_tick_duration_seconds", "Hot-tier pass duration")
+            .namespace(METRICS_NAMESPACE),
+        &["stream", "tenant_id"],
+    )
+    .expect("metric can be created")
+});
+
 pub static TOTAL_METRICS_COLLECTED_BY_DATE: Lazy<IntCounterVec> = Lazy::new(|| {
     IntCounterVec::new(
         Opts::new(
@@ -579,6 +729,37 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(STORAGE_REQUESTS_INFLIGHT.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(STORAGE_READ_BYTES_TOTAL.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(STORAGE_READ_RANGES_TOTAL.clone()))
+        .expect("metric can be registered");
+    for metric in [
+        &*HOT_TIER_SOURCE_WATERMARK_SECONDS,
+        &*HOT_TIER_ACTIVE_MISSING_FILES,
+        &*HOT_TIER_ACTIVE_MISSING_BYTES,
+        &*HOT_TIER_OLDEST_MISSING_LAG_SECONDS,
+        &*HOT_TIER_INFLIGHT_FILES,
+        &*HOT_TIER_USED_BYTES,
+        &*HOT_TIER_RESERVED_BYTES,
+    ] {
+        registry
+            .register(Box::new(metric.clone()))
+            .expect("metric can be registered");
+    }
+    registry
+        .register(Box::new(HOT_TIER_DOWNLOAD_BYTES.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(HOT_TIER_DOWNLOAD_OUTCOMES.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(HOT_TIER_INVENTORY_DURATION.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(HOT_TIER_TICK_DURATION.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(TOTAL_METRICS_COLLECTED_BY_DATE.clone()))

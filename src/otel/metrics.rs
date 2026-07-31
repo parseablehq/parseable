@@ -37,7 +37,9 @@ use super::otel_utils::{
     convert_epoch_nano_to_timestamp, insert_attributes, insert_number_if_some,
 };
 
-pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 37] = [
+pub const SERIES_HASH_COLUMN: &str = "__series_hash_u64";
+
+pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 38] = [
     "metric_name",
     "metric_description",
     "metric_unit",
@@ -85,14 +87,11 @@ pub const OTEL_METRICS_KNOWN_FIELD_LIST: [&str; 37] = [
     "resource_dropped_attributes_count",
     "resource_schema_url",
     // Precomputed per-sample identity of the physical series. Stable
-    // u64 hash of `metric_name` + sorted attribute key/value pairs,
-    // stored as a decimal-encoded string so arrow-json infers Utf8 and
-    // we get byte-exact roundtrip. Int64/Float64 inference dropped bits
-    // for hashes near the high range; string sidesteps that entirely.
+    // u64 hash of `metric_name` + sorted attribute key/value pairs.
     // Lets the query layer group samples into physical series via a
     // single column read instead of decoding every label column and
     // hashing per row.
-    "__series_hash",
+    SERIES_HASH_COLUMN,
 ];
 
 static OTEL_METRICS_KNOWN_FIELDS: Lazy<HashSet<&'static str>> =
@@ -526,10 +525,9 @@ pub fn flatten_metrics_record(
     let (mut data_points, metric_type) = match &metrics_record.data {
         Some(metric::Data::Gauge(gauge)) => (flatten_gauge(gauge, flatten_exemplars), "gauge"),
         Some(metric::Data::Sum(sum)) => (flatten_sum(sum, flatten_exemplars), "sum"),
-        Some(metric::Data::Histogram(histogram)) => (
-            flatten_histogram(histogram, flatten_exemplars),
-            "histogram",
-        ),
+        Some(metric::Data::Histogram(histogram)) => {
+            (flatten_histogram(histogram, flatten_exemplars), "histogram")
+        }
         Some(metric::Data::ExponentialHistogram(exp_histogram)) => (
             flatten_exp_histogram(exp_histogram, flatten_exemplars),
             "exponential_histogram",
@@ -679,12 +677,9 @@ fn process_resource_metrics<T, S, M>(
                     // perspective). Computed once per data point — O(label
                     // count) per sample, ~200 ns at typical attribute counts.
                     let series_hash = compute_series_hash(&dp);
-                    // Stored as decimal-encoded string. Arrow-json
-                    // infers Utf8, preserving all 64 bits — Int64/Float64
-                    // inference truncated values near the high range.
                     dp.insert(
-                        "__series_hash".to_string(),
-                        Value::String(series_hash.to_string()),
+                        SERIES_HASH_COLUMN.to_string(),
+                        Value::Number(series_hash.into()),
                     );
                     vec_otel_json.push(Value::Object(dp));
                 }

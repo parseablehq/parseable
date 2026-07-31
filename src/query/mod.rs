@@ -212,7 +212,9 @@ impl Query {
     fn create_session_state(storage: Arc<dyn ObjectStorageProvider>) -> SessionState {
         let runtime_config = storage
             .get_datafusion_runtime()
-            .with_disk_manager_builder(DiskManager::builder());
+            .with_disk_manager_builder(DiskManager::builder())
+            .with_metadata_cache_limit(PARSEABLE.options.parquet_metadata_cache_size);
+
         let (pool_size, fraction) = match PARSEABLE.options.query_memory_pool_size {
             Some(size) => (size, 1.),
             None => {

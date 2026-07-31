@@ -28,7 +28,10 @@ use parquet::{
     arrow::ArrowWriter,
     basic::Encoding,
     file::{
-        FOOTER_SIZE, metadata::SortingColumn, properties::WriterProperties, reader::FileReader,
+        FOOTER_SIZE,
+        metadata::SortingColumn,
+        properties::{BloomFilterPosition, WriterProperties},
+        reader::FileReader,
         serialized_reader::SerializedFileReader,
     },
     schema::types::ColumnPath,
@@ -86,6 +89,7 @@ static DISK_WRITE_BATCH_ROWS: Lazy<usize> = Lazy::new(|| {
 });
 
 const INPROCESS_DIR_PREFIX: &str = "processing_";
+const METRIC_NAME_BLOOM_FILTER_NDV: u64 = 32768;
 const METRIC_ROW_GROUP_PREP_IN_FLIGHT_VAR: &str = "METRIC_ROW_GROUP_PREP_IN_FLIGHT";
 /// Caps how many arrow files feed a single parquet conversion group. A
 /// minute with heavy schema-key churn can stage thousands of small arrow
@@ -732,6 +736,22 @@ impl Stream {
                 descending: false,
                 nulls_first: false,
             });
+
+            // Bloom filter on the same column. The sort already narrows per-page
+            // min/max, but that only prunes pages within a row group the reader
+            // has opened; a row group whose metric range merely brackets the
+            // queried name still gets read. The bloom answers membership exactly,
+            // so a row group that never saw the metric is rejected outright.
+            let column_path = ColumnPath::new(vec!["metric_name".to_string()]);
+            let bloom_filter_position = if PARSEABLE.options.bloom_filter_default_position {
+                BloomFilterPosition::AfterRowGroup
+            } else {
+                BloomFilterPosition::End
+            };
+            props = props
+                .set_column_bloom_filter_enabled(column_path.clone(), true)
+                .set_column_bloom_filter_ndv(column_path, METRIC_NAME_BLOOM_FILTER_NDV)
+                .set_bloom_filter_position(bloom_filter_position);
         }
         sorting_column_vec.push(SortingColumn {
             column_idx: time_partition_idx as i32,

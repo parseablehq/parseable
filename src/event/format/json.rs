@@ -526,9 +526,38 @@ fn validate_struct(
 mod tests {
     use std::str::FromStr;
 
+    use arrow_array::UInt64Array;
     use serde_json::json;
 
     use super::*;
+    use crate::otel::metrics::SERIES_HASH_COLUMN;
+
+    #[test]
+    fn series_hash_is_decoded_as_uint64_without_precision_loss() {
+        let hash = u64::MAX;
+        let event = Event::new(json!({ "__series_hash_u64": hash }), Utc::now());
+
+        let (data, fields, _) = event
+            .to_data(&HashMap::new(), None, SchemaVersion::V1, false, true)
+            .unwrap();
+        let schema = Arc::new(Schema::new(fields));
+        assert_eq!(
+            schema
+                .field_with_name(SERIES_HASH_COLUMN)
+                .unwrap()
+                .data_type(),
+            &DataType::UInt64
+        );
+
+        let batch = Event::decode(data, schema).unwrap();
+        let hashes = batch
+            .column_by_name(SERIES_HASH_COLUMN)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<UInt64Array>()
+            .unwrap();
+        assert_eq!(hashes.value(0), hash);
+    }
 
     #[test]
     fn parse_time_parition_from_value() {

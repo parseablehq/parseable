@@ -31,7 +31,10 @@ use object_store::{
     Result as ObjectStoreResult, path::Path,
 };
 
-use crate::metrics::{STORAGE_REQUEST_RESPONSE_TIME, STORAGE_REQUESTS_INFLIGHT};
+use crate::metrics::{
+    STORAGE_READ_BYTES_TOTAL, STORAGE_READ_RANGES_TOTAL, STORAGE_REQUEST_RESPONSE_TIME,
+    STORAGE_REQUESTS_INFLIGHT,
+};
 
 /// RAII guard that increments the in-flight gauge on construction and
 /// decrements on drop. Handles early returns, panics, and dropped futures.
@@ -173,6 +176,14 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
     }
 
     async fn get_opts(&self, location: &Path, options: GetOptions) -> ObjectStoreResult<GetResult> {
+        let requested_bytes = options.range.as_ref().and_then(|range| match range {
+            object_store::GetRange::Bounded(range) => Some(range.end.saturating_sub(range.start)),
+            object_store::GetRange::Suffix(bytes) => Some(*bytes),
+            object_store::GetRange::Offset(_) => None,
+        });
+        STORAGE_READ_RANGES_TOTAL
+            .with_label_values(&[&self.provider])
+            .inc();
         let _guard = InflightGuard::new(&self.provider, "GET");
         let time = time::Instant::now();
         let result = self.inner.get_opts(location, options).await;
@@ -186,6 +197,17 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         STORAGE_REQUEST_RESPONSE_TIME
             .with_label_values(&[&self.provider, "GET", status])
             .observe(elapsed);
+        let requested_bytes = requested_bytes.or_else(|| {
+            result
+                .as_ref()
+                .ok()
+                .map(|result| result.range.end.saturating_sub(result.range.start))
+        });
+        if let Some(bytes) = requested_bytes {
+            STORAGE_READ_BYTES_TOTAL
+                .with_label_values(&[&self.provider])
+                .inc_by(bytes);
+        }
         result
     }
 
@@ -194,6 +216,17 @@ impl<T: ObjectStore> ObjectStore for MetricLayer<T> {
         location: &Path,
         ranges: &[Range<u64>],
     ) -> ObjectStoreResult<Vec<Bytes>> {
+        STORAGE_READ_BYTES_TOTAL
+            .with_label_values(&[&self.provider])
+            .inc_by(
+                ranges
+                    .iter()
+                    .map(|range| range.end.saturating_sub(range.start))
+                    .sum(),
+            );
+        STORAGE_READ_RANGES_TOTAL
+            .with_label_values(&[&self.provider])
+            .inc_by(ranges.len() as u64);
         let _guard = InflightGuard::new(&self.provider, "GET_RANGES");
         let time = time::Instant::now();
         let result = self.inner.get_ranges(location, ranges).await;
@@ -344,9 +377,51 @@ impl<T> Stream for StreamMetricWrapper<'_, T> {
 
 #[cfg(test)]
 mod tests {
-    use object_store::{Attribute, Attributes, memory::InMemory, path::Path};
+    use object_store::{
+        Attribute, Attributes, ObjectStore, ObjectStoreExt, PutPayload, memory::InMemory,
+        path::Path,
+    };
 
     use super::MetricLayer;
+    use crate::metrics::{STORAGE_READ_BYTES_TOTAL, STORAGE_READ_RANGES_TOTAL};
+
+    #[tokio::test]
+    async fn requested_read_bytes_and_ranges_are_counted_without_path_labels() {
+        let provider = "hot-tier-metrics-test";
+        let store = InMemory::new();
+        store
+            .put(&Path::from("file"), PutPayload::from_static(b"0123456789"))
+            .await
+            .unwrap();
+        let layer = MetricLayer::new(store, provider);
+        let bytes_before = STORAGE_READ_BYTES_TOTAL
+            .with_label_values(&[provider])
+            .get();
+        let ranges_before = STORAGE_READ_RANGES_TOTAL
+            .with_label_values(&[provider])
+            .get();
+
+        let result = layer
+            .get_ranges(&Path::from("file"), &[0..2, 4..7])
+            .await
+            .unwrap();
+
+        assert_eq!(result.concat(), b"01456");
+        assert_eq!(
+            STORAGE_READ_BYTES_TOTAL
+                .with_label_values(&[provider])
+                .get()
+                - bytes_before,
+            5
+        );
+        assert_eq!(
+            STORAGE_READ_RANGES_TOTAL
+                .with_label_values(&[provider])
+                .get()
+                - ranges_before,
+            2
+        );
+    }
 
     #[test]
     fn s3_metadata_uploads_disable_caching() {

@@ -324,6 +324,17 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         path: &RelativePath,
         tenant_id: &Option<String>,
     ) -> Result<Bytes, ObjectStorageError>;
+    /// Fetch an object as concurrent bounded byte ranges instead of one stream.
+    ///
+    /// Intended for the few objects that are large enough (hundreds of MB) that
+    /// a single response body is likely to be severed mid transfer. For
+    /// everything else prefer [`ObjectStorage::get_object`]; ranging a small
+    /// object buys nothing and only widens the set of response shapes involved.
+    async fn get_object_ranged(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<Bytes, ObjectStorageError>;
     // TODO: make the filter function optional as we may want to get all objects
     async fn get_objects(
         &self,

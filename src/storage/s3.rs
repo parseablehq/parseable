@@ -19,6 +19,7 @@
 use std::{
     collections::HashSet,
     fmt::Display,
+    num::NonZeroUsize,
     ops::Range,
     path::{Path, PathBuf},
     str::FromStr,
@@ -57,14 +58,16 @@ use crate::{
         increment_partial_file_scans_in_object_store_calls_by_date,
     },
     parseable::{DEFAULT_TENANT, LogStream, PARSEABLE},
+    storage::RETRY_TIMEOUT_SECS,
 };
 
 use super::{
-    CONNECT_TIMEOUT_SECS, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
-    PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS, STREAM_METADATA_FILE_NAME,
-    metrics_layer::MetricLayer, object_storage::parseable_json_path, partial_path,
-    to_object_store_path,
+    CONNECT_TIMEOUT_SECS, DEFAULT_MAX_OBJECT_STORE_REQUESTS, ObjectStorage, ObjectStorageError,
+    ObjectStorageProvider, PARSEABLE_ROOT_DIRECTORY, REQUEST_TIMEOUT_SECS,
+    STREAM_METADATA_FILE_NAME, metrics_layer::MetricLayer, object_storage::parseable_json_path,
+    partial_path, to_object_store_path,
 };
+use crate::storage::GET_OBJECTS_CONCURRENCY;
 
 // in bytes
 // const MULTIPART_UPLOAD_SIZE: usize = 1024 * 1024 * 100;
@@ -166,6 +169,15 @@ pub struct S3Config {
         required = false
     )]
     pub metadata_endpoint: Option<String>,
+
+    /// Cap on concurrent in-flight requests to the object store.
+    #[arg(
+        long,
+        env = "P_MAX_OBJECT_STORE_REQUESTS",
+        value_name = "number",
+        default_value_t = DEFAULT_MAX_OBJECT_STORE_REQUESTS
+    )]
+    pub max_object_store_requests: NonZeroUsize,
 }
 
 /// This represents the server side encryption to be
@@ -257,7 +269,7 @@ impl S3Config {
         }
         let retry_config = RetryConfig {
             max_retries: 5,
-            retry_timeout: Duration::from_secs(5),
+            retry_timeout: Duration::from_secs(RETRY_TIMEOUT_SECS),
             backoff: BackoffConfig::default(),
         };
 
@@ -343,7 +355,7 @@ impl ObjectStorageProvider for S3Config {
         let s3 = self.get_default_builder().build().unwrap();
 
         // limit objectstore to a concurrent request limit
-        let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
+        let s3 = LimitStore::new(s3, self.max_object_store_requests.get());
         let s3 =
             MetricLayer::new(s3, "s3").with_cache_control_no_store(self.cache_control_no_store);
 
@@ -357,7 +369,7 @@ impl ObjectStorageProvider for S3Config {
     fn construct_client(&self) -> Arc<dyn ObjectStorage> {
         let s3 = self.get_default_builder().build().unwrap();
         // limit objectstore to a concurrent request limit
-        let s3 = LimitStore::new(s3, super::MAX_OBJECT_STORE_REQUESTS);
+        let s3 = LimitStore::new(s3, self.max_object_store_requests.get());
         let s3 =
             MetricLayer::new(s3, "s3").with_cache_control_no_store(self.cache_control_no_store);
         Arc::new(S3 {
@@ -467,11 +479,6 @@ impl S3 {
             .buffer_unordered(concurrency as usize)
             .try_collect::<Vec<_>>()
             .await?;
-
-        let std_file_sync = std_file.clone();
-        tokio::task::spawn_blocking(move || std_file_sync.sync_all())
-            .await
-            .map_err(|e| ObjectStorageError::Custom(format!("join: {e}")))??;
 
         increment_object_store_calls_by_date("GET", &date, tenant_str);
         increment_files_scanned_in_object_store_calls_by_date("GET", 1, &date, tenant_str);
@@ -900,6 +907,30 @@ impl ObjectStorage for S3 {
         self._get_object(path, tenant_id).await
     }
 
+    async fn get_object_ranged(
+        &self,
+        path: &RelativePath,
+        tenant_id: &Option<String>,
+    ) -> Result<Bytes, ObjectStorageError> {
+        let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
+        let date = Utc::now().date_naive().to_string();
+        let body = crate::storage::get_object_ranged(
+            &self.client,
+            &to_object_store_path(path),
+            path,
+            || increment_object_store_calls_by_date("GET", &date, tenant),
+        )
+        .await?;
+        increment_files_scanned_in_object_store_calls_by_date("GET", 1, &date, tenant);
+        increment_bytes_scanned_in_object_store_calls_by_date(
+            "GET",
+            body.len() as u64,
+            &date,
+            tenant,
+        );
+        Ok(body)
+    }
+
     async fn get_objects(
         &self,
         base_path: Option<&RelativePath>,
@@ -915,9 +946,11 @@ impl ObjectStorage for S3 {
 
         let mut list_stream = self.client.list(Some(&prefix));
 
-        let mut res = vec![];
+        let mut paths = vec![];
         let mut files_scanned = 0;
 
+        // Drain the listing first, then fetch. Awaiting each GET inside the
+        // listing loop serialises every download against the one before it.
         // Note: We track each streaming list item retrieval
         while let Some(meta_result) = list_stream.next().await {
             let meta = match meta_result {
@@ -934,15 +967,21 @@ impl ObjectStorage for S3 {
                 continue;
             }
 
-            let byts = self
-                .get_object(
-                    RelativePath::from_path(meta.location.as_ref())
-                        .map_err(ObjectStorageError::PathError)?,
-                    tenant_id,
-                )
-                .await?;
-            res.push(byts);
+            paths.push(
+                RelativePath::from_path(meta.location.as_ref())
+                    .map_err(ObjectStorageError::PathError)?
+                    .to_relative_path_buf(),
+            );
         }
+
+        // `buffered` rather than `buffer_unordered`: callers of this generic
+        // helper may rely on results following listing order.
+        let res: Vec<Bytes> = futures::stream::iter(paths)
+            .map(|path| async move { self.get_object(&path, tenant_id).await })
+            .buffered(GET_OBJECTS_CONCURRENCY)
+            .try_collect()
+            .await?;
+
         // Record total files scanned
         increment_files_scanned_in_object_store_calls_by_date(
             "LIST",

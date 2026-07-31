@@ -50,6 +50,92 @@ pub enum SortOrder {
 pub type SortInfo = (String, SortOrder);
 pub const CURRENT_MANIFEST_VERSION: &str = "v1";
 
+/// Leading bytes of a zstd frame, used to tell a compressed manifest from a
+/// plain JSON one. Manifests written before compression was introduced are
+/// still read as-is, and the file name is identical either way, so this is the
+/// only thing distinguishing the two encodings.
+const ZSTD_MAGIC: [u8; 4] = [0x28, 0xB5, 0x2F, 0xFD];
+
+/// Compression level for manifests. Manifest JSON repeats the same column names
+/// across thousands of file entries, so it compresses roughly 15-25x even at
+/// this cheap level; higher levels cost write time for very little extra.
+const ZSTD_LEVEL: i32 = 3;
+
+/// Cap on manifests being decoded at once by [`decode_manifest_blocking`].
+///
+/// Decoding is CPU bound, so there is nothing to gain past the core count, and
+/// each in-flight decode holds a fully decompressed manifest in memory — which
+/// is two orders of magnitude larger than the compressed form.
+static DECODE_PERMITS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+    std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(num_cpus::get())));
+
+#[derive(Debug, thiserror::Error)]
+pub enum ManifestCodecError {
+    #[error("failed to compress manifest: {0}")]
+    Compress(std::io::Error),
+
+    #[error("manifest decode task failed: {0}")]
+    Join(#[from] tokio::task::JoinError),
+
+    #[error("failed to decompress manifest: {0}")]
+    Decompress(std::io::Error),
+
+    #[error("failed to serialize manifest: {0}")]
+    Serialize(serde_json::Error),
+
+    #[error("failed to parse manifest: {0}")]
+    Parse(serde_json::Error),
+}
+
+/// Encode a manifest for storage. This and [`decode_manifest`] are the only
+/// places manifest bytes are produced or interpreted; going around them would
+/// write a manifest nothing else can read.
+pub fn encode_manifest(manifest: &Manifest) -> Result<bytes::Bytes, ManifestCodecError> {
+    let json = serde_json::to_vec(manifest).map_err(ManifestCodecError::Serialize)?;
+    let compressed =
+        zstd::encode_all(json.as_slice(), ZSTD_LEVEL).map_err(ManifestCodecError::Compress)?;
+    Ok(bytes::Bytes::from(compressed))
+}
+
+/// Decode a manifest, accepting both the compressed and the plain JSON form.
+///
+/// Existing manifests are never rewritten, so uncompressed ones stay readable
+/// indefinitely rather than being migrated.
+pub fn decode_manifest(bytes: &[u8]) -> Result<Manifest, ManifestCodecError> {
+    if bytes.starts_with(&ZSTD_MAGIC) {
+        let json = zstd::decode_all(bytes).map_err(ManifestCodecError::Decompress)?;
+        serde_json::from_slice(&json).map_err(ManifestCodecError::Parse)
+    } else {
+        serde_json::from_slice(bytes).map_err(ManifestCodecError::Parse)
+    }
+}
+
+/// Decode a manifest on the blocking pool.
+///
+/// Decompressing and parsing a manifest is hundreds of milliseconds of pure
+/// CPU. Run inline on an async task it serialises against every other decode
+/// that task drives — callers fetch manifests with `buffered(..)`, which gives
+/// concurrent I/O but polls all those futures from one task, so the decodes
+/// queue up behind each other and each pending GET appears to take longer and
+/// longer. Handing the work to the blocking pool lets them actually run in
+/// parallel.
+pub async fn decode_manifest_blocking(bytes: bytes::Bytes) -> Result<Manifest, ManifestCodecError> {
+    // Owned permit moved into the task: dropping this future cancels the await
+    // but not the blocking work, so the permit has to outlive it to keep
+    // detached decodes counted.
+    let permit = DECODE_PERMITS
+        .clone()
+        .acquire_owned()
+        .await
+        .expect("decode semaphore is never closed");
+
+    tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        decode_manifest(&bytes)
+    })
+    .await?
+}
+
 /// An entry in a manifest which points to a single file.
 /// Additionally, it is meant to store the statistics for the file it
 /// points to. Used for pruning file at planning level.
@@ -198,4 +284,102 @@ fn column_statistics(row_groups: &[RowGroupMetaData]) -> HashMap<String, Column>
         }
     }
     columns
+}
+
+#[cfg(test)]
+mod codec_tests {
+    use super::*;
+
+    fn sample_manifest(file_count: usize) -> Manifest {
+        let files = (0..file_count)
+            .map(|i| File {
+                file_path: format!("stream/date=2026-07-29/hour=00/file-{i}.parquet"),
+                num_rows: 262_144,
+                file_size: 1_048_576,
+                ingestion_size: 2_097_152,
+                columns: (0..64)
+                    .map(|c| Column {
+                        name: format!("some_reasonably_long_column_name_{c}"),
+                        stats: None,
+                        uncompressed_size: 1024,
+                        compressed_size: 512,
+                    })
+                    .collect(),
+                sort_order_id: Vec::new(),
+            })
+            .collect();
+        Manifest {
+            version: CURRENT_MANIFEST_VERSION.to_string(),
+            files,
+        }
+    }
+
+    #[test]
+    fn round_trips() {
+        let manifest = sample_manifest(4);
+        let decoded = decode_manifest(&encode_manifest(&manifest).unwrap()).unwrap();
+
+        assert_eq!(decoded.version, manifest.version);
+        assert_eq!(decoded.files.len(), manifest.files.len());
+        assert_eq!(decoded.files[0].file_path, manifest.files[0].file_path);
+        assert_eq!(
+            decoded.files[0].columns.len(),
+            manifest.files[0].columns.len()
+        );
+    }
+
+    #[test]
+    fn encodes_as_zstd() {
+        let encoded = encode_manifest(&sample_manifest(1)).unwrap();
+        assert!(
+            encoded.starts_with(&ZSTD_MAGIC),
+            "manifest was not compressed"
+        );
+    }
+
+    /// Manifests written before compression are never rewritten, so plain JSON
+    /// has to stay readable forever.
+    #[test]
+    fn reads_uncompressed_manifests() {
+        let manifest = sample_manifest(3);
+        let plain = serde_json::to_vec(&manifest).unwrap();
+        assert!(!plain.starts_with(&ZSTD_MAGIC));
+
+        let decoded = decode_manifest(&plain).unwrap();
+        assert_eq!(decoded.files.len(), 3);
+        assert_eq!(decoded.files[2].file_path, manifest.files[2].file_path);
+    }
+
+    /// Guards against the codec silently degrading to a no-op: this shape is
+    /// the whole reason compression is worth doing.
+    #[test]
+    fn compresses_repetitive_manifests_substantially() {
+        let manifest = sample_manifest(64);
+        let plain_len = serde_json::to_vec(&manifest).unwrap().len();
+        let encoded_len = encode_manifest(&manifest).unwrap().len();
+
+        assert!(
+            encoded_len * 10 < plain_len,
+            "expected >10x compression, got {plain_len} -> {encoded_len}"
+        );
+    }
+
+    #[test]
+    fn rejects_truncated_compressed_input() {
+        let encoded = encode_manifest(&sample_manifest(8)).unwrap();
+        let truncated = &encoded[..encoded.len() / 2];
+
+        assert!(matches!(
+            decode_manifest(truncated),
+            Err(ManifestCodecError::Decompress(_))
+        ));
+    }
+
+    #[test]
+    fn rejects_garbage_input() {
+        assert!(matches!(
+            decode_manifest(b"not json, not zstd"),
+            Err(ManifestCodecError::Parse(_))
+        ));
+    }
 }
