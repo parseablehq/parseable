@@ -364,6 +364,12 @@ ${TENANT_HEADER}
 EOF
     chmod 600 "$CONFIG_FILE"
     sed "s/Header                    X-API-Key.*/Header                    X-API-Key [REDACTED]/" "$CONFIG_FILE"
+
+    if is_running; then
+        print_info "Restarting Fluent Bit to apply the updated configuration..."
+        stop_fluent_bit
+        sleep 2
+    fi
     
     # Start Fluent Bit
     echo ""

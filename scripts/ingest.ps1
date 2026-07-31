@@ -75,7 +75,7 @@ function Write-SetupComplete {
     $ok = "$([char]27)[38;2;52;211;153m"
     $reset = "$([char]27)[0m"
     Write-Host ""
-    Write-Host "${ok}✓ You're all set!${reset}"
+    Write-Host "${ok}[OK] You're all set!${reset}"
     Write-Host "Host metrics are now being sent to Parseable."
     Write-Host "Dataset: " -NoNewline
     Write-Host "${accent}${StreamName}${reset}"
@@ -244,7 +244,7 @@ function Start-FluentBit {
         $processId = Get-Content $PID_FILE
         Write-Warning "Fluent Bit is already running (PID: $processId)"
         Write-Info "Use '$SCRIPT_CMD stop' to stop it first"
-        return
+        return $false
     }
     
     if (-not (Test-Path $CONFIG_FILE)) {
@@ -293,13 +293,14 @@ function Start-FluentBit {
         Write-Info "To check status: $SCRIPT_CMD status"
         Write-Info "To see logs: $SCRIPT_CMD logs"
         Write-Info "To stop: $SCRIPT_CMD stop"
+        return $true
     }
 }
 
 function Restart-FluentBit {
     Stop-FluentBit
     Start-Sleep -Seconds 2
-    Start-FluentBit
+    [void](Start-FluentBit)
 }
 
 function Setup-FluentBit {
@@ -392,10 +393,17 @@ function Setup-FluentBit {
     # Use UTF8 without BOM (important for Fluent Bit)
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     [System.IO.File]::WriteAllText($CONFIG_FILE, $configContent, $utf8NoBom)
+
+    if (Test-FluentBitRunning) {
+        Write-Info "Restarting Fluent Bit to apply the updated configuration..."
+        Stop-FluentBit
+        Start-Sleep -Seconds 2
+    }
     
     Write-Host ""
-    Start-FluentBit
-    Write-SetupComplete -StreamName $StreamName
+    if (Start-FluentBit) {
+        Write-SetupComplete -StreamName $StreamName
+    }
 }
 
 function Show-Help {
@@ -447,7 +455,7 @@ switch ($Param1.ToLower()) {
         Restart-FluentBit
     }
     "start" {
-        Start-FluentBit
+        [void](Start-FluentBit)
     }
     "status" {
         Show-Status
