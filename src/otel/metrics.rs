@@ -1109,11 +1109,13 @@ mod tests {
     fn known_field_list_matches_emitted_keys() {
         // Guard the list against drifting from the keys the flatteners
         // actually emit as top-level data-point fields.
-        assert_eq!(OTEL_METRICS_KNOWN_FIELD_LIST.len(), 37);
+        assert_eq!(OTEL_METRICS_KNOWN_FIELD_LIST.len(), 39);
         for field in [
             "data_point_min",
             "data_point_max",
             "data_point_quantile_values",
+            "data_point_quantile_values_quantile",
+            "data_point_quantile_values_value",
             "exemplars",
         ] {
             assert!(
@@ -1122,14 +1124,7 @@ mod tests {
             );
         }
         // Removed dead entries that were never emitted as top-level keys.
-        for field in [
-            "quantile",
-            "value",
-            "min",
-            "max",
-            "data_point_quantile_values_quantile",
-            "data_point_quantile_values_value",
-        ] {
+        for field in ["quantile", "value", "min", "max"] {
             assert!(
                 !OTEL_METRICS_KNOWN_FIELDS.contains(field),
                 "`{field}` must not be a known field"
