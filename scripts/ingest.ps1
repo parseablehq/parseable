@@ -49,18 +49,66 @@ function Write-ErrorMsg {
     Write-Host "[ERROR] $Message" -ForegroundColor Red
 }
 
+function Write-ParseableBanner {
+    $accent = "$([char]27)[38;2;158;158;240m"
+    $reset = "$([char]27)[0m"
+    $logo = @(
+        ' ____   _    ____  ____  _____    _    ____  _     _____',
+        '|  _ \ / \  |  _ \/ ___|| ____|  / \  | __ )| |   | ____|',
+        '| |_) / _ \ | |_) \___ \|  _|   / _ \ |  _ \| |   |  _|',
+        '|  __/ ___ \|  _ < ___) | |___ / ___ \| |_) | |___| |___',
+        '|_| /_/   \_\_| \_\____/|_____/_/   \_\____/|_____|_____|'
+    )
+
+    Write-Host ""
+    $logo | ForEach-Object { Write-Host "$accent$_$reset" }
+    Write-Host ""
+    Write-Host "Host metrics setup" -ForegroundColor White
+    Write-Host "Installing and configuring the metrics agent for Parseable..."
+    Write-Host ""
+}
+
+function Write-SetupComplete {
+    param([string]$StreamName)
+
+    $accent = "$([char]27)[38;2;158;158;240m"
+    $ok = "$([char]27)[38;2;52;211;153m"
+    $reset = "$([char]27)[0m"
+    Write-Host ""
+    Write-Host "${ok}[OK] You're all set!${reset}"
+    Write-Host "Host metrics are now being sent to Parseable."
+    Write-Host "Dataset: " -NoNewline
+    Write-Host "${accent}${StreamName}${reset}"
+    Write-Host "Return to Parseable and click Continue to verify your data."
+}
+
 function Test-FluentBitRunning {
     if (Test-Path $PID_FILE) {
         $processId = Get-Content $PID_FILE
+
         try {
-            $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
-            if ($process) {
-                return $true
-            }
+            $process = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $processId" -ErrorAction Stop
         }
         catch {
+            throw "Unable to inspect process $processId; PID file was preserved. $_"
+        }
+
+        if ($null -eq $process) {
+            Remove-Item $PID_FILE -ErrorAction SilentlyContinue
             return $false
         }
+
+        if ([string]::IsNullOrWhiteSpace($process.ExecutablePath)) {
+            throw "Unable to verify process $processId; PID file was preserved."
+        }
+
+        $actualPath = [System.IO.Path]::GetFullPath($process.ExecutablePath)
+        $expectedPath = [System.IO.Path]::GetFullPath($FLUENT_BIT_EXE)
+        if ([System.StringComparer]::OrdinalIgnoreCase.Equals($actualPath, $expectedPath)) {
+            return $true
+        }
+
+        Remove-Item $PID_FILE -ErrorAction SilentlyContinue
     }
     return $false
 }
@@ -211,7 +259,7 @@ function Start-FluentBit {
         $processId = Get-Content $PID_FILE
         Write-Warning "Fluent Bit is already running (PID: $processId)"
         Write-Info "Use '$SCRIPT_CMD stop' to stop it first"
-        return
+        return $false
     }
     
     if (-not (Test-Path $CONFIG_FILE)) {
@@ -260,13 +308,14 @@ function Start-FluentBit {
         Write-Info "To check status: $SCRIPT_CMD status"
         Write-Info "To see logs: $SCRIPT_CMD logs"
         Write-Info "To stop: $SCRIPT_CMD stop"
+        return $true
     }
 }
 
 function Restart-FluentBit {
     Stop-FluentBit
     Start-Sleep -Seconds 2
-    Start-FluentBit
+    [void](Start-FluentBit)
 }
 
 function Setup-FluentBit {
@@ -281,6 +330,8 @@ function Setup-FluentBit {
         Write-ErrorMsg "Invalid setup parameters"
         exit 1
     }
+
+    Write-ParseableBanner
 
     $tlsSetting = "On"
     $defaultPort = "443"
@@ -357,9 +408,17 @@ function Setup-FluentBit {
     # Use UTF8 without BOM (important for Fluent Bit)
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     [System.IO.File]::WriteAllText($CONFIG_FILE, $configContent, $utf8NoBom)
+
+    if (Test-FluentBitRunning) {
+        Write-Info "Restarting Fluent Bit to apply the updated configuration..."
+        Stop-FluentBit
+        Start-Sleep -Seconds 2
+    }
     
     Write-Host ""
-    Start-FluentBit
+    if (Start-FluentBit) {
+        Write-SetupComplete -StreamName $StreamName
+    }
 }
 
 function Show-Help {
@@ -411,7 +470,7 @@ switch ($Param1.ToLower()) {
         Restart-FluentBit
     }
     "start" {
-        Start-FluentBit
+        [void](Start-FluentBit)
     }
     "status" {
         Show-Status
