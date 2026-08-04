@@ -111,7 +111,7 @@ pub static TENANT_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 pub fn validate_tenant_id(tenant_id: &str) -> Result<(), String> {
-    if !TENANT_ID_REGEX.is_match(&tenant_id) {
+    if !TENANT_ID_REGEX.is_match(tenant_id) {
         return Err("tenant ID should follow regex- ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,35}$".into());
     }
     if tenant_id.eq(DEFAULT_TENANT) {
@@ -1183,7 +1183,7 @@ impl Parseable {
         if !self.options.is_multi_tenant() {
             return Err(anyhow::Error::msg("P_MULTI_TENANCY is set to false"));
         }
-
+        validate_tenant_id(&tenant_id).map_err(|e| anyhow::anyhow!(e))?;
         let mut tenants = self.tenants.write().unwrap();
         if tenants.contains(&tenant_id) {
             return Err(anyhow::Error::msg(format!(
@@ -1278,14 +1278,14 @@ impl Parseable {
 
         // validate the possible presence of tenant storage metadata
         for tenant_id in dirs.into_iter() {
-            // check if tenantID is valid
-            validate_tenant_id(&tenant_id).map_err(|e| anyhow::anyhow!(e))?;
             if let Some(meta) = PARSEABLE
                 .metastore
                 .get_parseable_metadata(&Some(tenant_id.clone()))
                 .await?
                 && is_multi_tenant
             {
+                // check if tenantID is valid
+                validate_tenant_id(&tenant_id).map_err(|e| anyhow::anyhow!(e))?;
                 let metadata: StorageMetadata = serde_json::from_slice(&meta)?;
 
                 TENANT_METADATA.insert_tenant(tenant_id.clone(), metadata.clone());
