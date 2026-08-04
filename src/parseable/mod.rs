@@ -22,7 +22,7 @@ use std::{
     num::NonZeroU32,
     path::PathBuf,
     str::FromStr,
-    sync::{Arc, RwLock},
+    sync::{Arc, LazyLock, RwLock},
 };
 
 use actix_web::http::{
@@ -34,6 +34,7 @@ use bytes::Bytes;
 use chrono::Utc;
 use clap::{Parser, error::ErrorKind};
 use once_cell::sync::{Lazy, OnceCell};
+use regex::Regex;
 use relative_path::RelativePathBuf;
 pub use staging::StagingError;
 use streams::StreamRef;
@@ -101,6 +102,23 @@ pub const STREAM_EXISTS: &str = "Stream exists";
 
 /// OnceCell to return metastore
 pub static METASTORE: OnceCell<Arc<dyn Metastore>> = OnceCell::new();
+
+/// LazyLock for tenant id regex
+pub static TENANT_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex::RegexBuilder::new(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,35}$")
+        .build()
+        .expect("Unable to create tenant id validation regex")
+});
+
+pub fn validate_tenant_id(tenant_id: &str) -> Result<(), String> {
+    if !TENANT_ID_REGEX.is_match(tenant_id) {
+        return Err("tenant ID should follow regex- ^[a-zA-Z0-9][a-zA-Z0-9_-]{0,35}$".into());
+    }
+    if tenant_id.eq(DEFAULT_TENANT) {
+        return Err(format!("tenant ID can't be {DEFAULT_TENANT}"));
+    }
+    Ok(())
+}
 
 /// For OTel log sources the telemetry_type is fully determined by the log_source.
 /// When the user explicitly sets x-p-telemetry-type and it disagrees with the
@@ -1165,7 +1183,7 @@ impl Parseable {
         if !self.options.is_multi_tenant() {
             return Err(anyhow::Error::msg("P_MULTI_TENANCY is set to false"));
         }
-
+        validate_tenant_id(&tenant_id).map_err(|e| anyhow::anyhow!(e))?;
         let mut tenants = self.tenants.write().unwrap();
         if tenants.contains(&tenant_id) {
             return Err(anyhow::Error::msg(format!(
@@ -1266,6 +1284,8 @@ impl Parseable {
                 .await?
                 && is_multi_tenant
             {
+                // check if tenantID is valid
+                validate_tenant_id(&tenant_id).map_err(|e| anyhow::anyhow!(e))?;
                 let metadata: StorageMetadata = serde_json::from_slice(&meta)?;
 
                 TENANT_METADATA.insert_tenant(tenant_id.clone(), metadata.clone());
