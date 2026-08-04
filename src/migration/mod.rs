@@ -341,6 +341,17 @@ pub async fn migrate_stream_metadata(
     schema: &Bytes,
     tenant_id: &Option<String>,
 ) -> anyhow::Result<Value> {
+    // Repair, not a version step: snapshots written before the manifest ownership fix can
+    // hold duplicate entries regardless of their metadata version, so this runs on every
+    // load and is a no-op once there is nothing left to collapse.
+    let duplicates_removed =
+        stream_metadata_migration::dedup_manifest_list(&mut stream_metadata_value);
+    if duplicates_removed > 0 {
+        warn!(
+            "Removed {duplicates_removed} duplicate manifest entries from snapshot of stream {stream}"
+        );
+    }
+
     let version = stream_metadata_value
         .as_object()
         .and_then(|meta| meta.get("version"))
@@ -432,7 +443,16 @@ pub async fn migrate_stream_metadata(
                 .await?;
         }
         _ => {
-            // If the version is not recognized, we assume it's already in the latest format
+            // If the version is not recognized, we assume it's already in the latest format.
+            // The snapshot repair above still needs persisting when it changed anything.
+            if duplicates_removed > 0 {
+                let stream_json: ObjectStoreFormat =
+                    serde_json::from_value(stream_metadata_value.clone())?;
+                PARSEABLE
+                    .metastore
+                    .put_stream_json(&stream_json, stream, tenant_id)
+                    .await?;
+            }
             return Ok(stream_metadata_value);
         }
     }

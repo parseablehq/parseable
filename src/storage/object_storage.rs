@@ -23,6 +23,7 @@ use crate::handlers::DatasetTag;
 use crate::handlers::http::fetch_schema;
 use crate::handlers::http::modal::ingest_server::INGESTOR_EXPECT;
 use crate::handlers::http::modal::ingest_server::INGESTOR_META;
+use crate::handlers::http::modal::server::NODE_META;
 use crate::handlers::http::users::{FILTER_DIR, USERS_ROOT_DIR};
 use crate::metrics::increment_parquets_stored_by_date;
 use crate::metrics::increment_parquets_stored_size_by_date;
@@ -1540,6 +1541,17 @@ pub fn manifest_path(prefix: &str) -> RelativePathBuf {
             .get_node_id();
 
         let manifest_file_name = format!("ingestor.{hostname}.{id}.{MANIFEST_FILE}");
+        RelativePathBuf::from_iter([prefix, &manifest_file_name])
+    } else if PARSEABLE.options.mode == Mode::All
+        && let Some(meta) = NODE_META.get()
+    {
+        // Standalone shares one `.stream.json` across restarts, so naming manifests after the
+        // hostname makes a restarted node look like a foreign writer. The persisted node id is
+        // stable across restarts, which keeps this node writing to its own manifest.
+        //
+        // Falls through to the hostname below if identity has not been resolved yet, which is the
+        // pre-existing behaviour rather than a new failure mode.
+        let manifest_file_name = format!("{}.{MANIFEST_FILE}", meta.get_node_id());
         RelativePathBuf::from_iter([prefix, &manifest_file_name])
     } else {
         let manifest_file_name = format!("{hostname}.{MANIFEST_FILE}");

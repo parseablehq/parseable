@@ -23,6 +23,7 @@ use crate::{
     storage,
 };
 use serde_json::{Value, json};
+use std::collections::HashMap;
 
 pub fn v1_v4(mut stream_metadata: Value) -> Value {
     let stream_metadata_map = stream_metadata.as_object_mut().unwrap();
@@ -295,6 +296,57 @@ fn v1_v2_snapshot_migration(mut snapshot: Value) -> Value {
     snapshot
 }
 
+/// Collapses duplicate entries in `snapshot.manifest_list`, returning the number removed.
+///
+/// https://github.com/parseablehq/parseable/issues/1739
+pub fn dedup_manifest_list(stream_metadata: &mut Value) -> usize {
+    let Some(manifest_list) = stream_metadata
+        .get_mut("snapshot")
+        .and_then(|snapshot| snapshot.get_mut("manifest_list"))
+        .and_then(|list| list.as_array_mut())
+    else {
+        return 0;
+    };
+
+    let original_len = manifest_list.len();
+    let mut kept: Vec<Value> = Vec::with_capacity(original_len);
+    // manifest_path -> index into `kept`
+    let mut seen: HashMap<String, usize> = HashMap::new();
+
+    for entry in manifest_list.drain(..) {
+        let Some(path) = entry
+            .get("manifest_path")
+            .and_then(|path| path.as_str())
+            .map(str::to_owned)
+        else {
+            // Keep anything we cannot key; dropping it would lose data.
+            kept.push(entry);
+            continue;
+        };
+
+        match seen.get(&path) {
+            Some(&pos) => {
+                if entry_rank(&entry) > entry_rank(&kept[pos]) {
+                    kept[pos] = entry;
+                }
+            }
+            None => {
+                seen.insert(path, kept.len());
+                kept.push(entry);
+            }
+        }
+    }
+
+    *manifest_list = kept;
+    original_len - manifest_list.len()
+}
+
+/// Orders duplicate entries for the same manifest path by how complete their statistics are.
+fn entry_rank(entry: &Value) -> (u64, u64) {
+    let field = |name: &str| entry.get(name).and_then(|v| v.as_u64()).unwrap_or(0);
+    (field("events_ingested"), field("storage_size"))
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -399,5 +451,170 @@ mod tests {
         let expected = serde_json::json!({"version":"v7","schema_version":"v0","objectstore-format":"v7","created-at":"2025-03-10T14:38:29.355131524-04:00","first-event-at":"2025-03-10T14:38:29.356-04:00","owner":{"id":"admin","group":"admin"},"permissions":[{"id":"admin","group":"admin","access":["all"]}],"stats":{"lifetime_stats":{"events":3,"ingestion":70,"storage":1969},"current_stats":{"events":3,"ingestion":70,"storage":1969},"deleted_stats":{"events":0,"ingestion":0,"storage":0}},"snapshot":{"version":"v2","manifest_list":[{"manifest_path":"home/nikhilsinha/Parseable/parseable/data/test10/date=2025-03-10/manifest.json","time_lower_bound":"2025-03-10T00:00:00Z","time_upper_bound":"2025-03-10T23:59:59.999999999Z","events_ingested":3,"ingestion_size":70,"storage_size":1969}]},"hot_tier_enabled":false,"stream_type":"UserDefined","log_source":[],"telemetry_type":"logs"});
         let updated_stream_metadata = super::v6_v7(stream_metadata.clone());
         assert_eq!(updated_stream_metadata, expected);
+    }
+
+    fn entry(path: &str, date: &str, events: u64, storage: u64) -> serde_json::Value {
+        serde_json::json!({
+            "manifest_path": path,
+            "time_lower_bound": format!("{date}T00:00:00Z"),
+            "time_upper_bound": format!("{date}T23:59:59.999999999Z"),
+            "events_ingested": events,
+            "ingestion_size": events * 10,
+            "storage_size": storage
+        })
+    }
+
+    fn snapshot_with(entries: Vec<serde_json::Value>) -> serde_json::Value {
+        serde_json::json!({
+            "version": "v7",
+            "snapshot": { "version": "v2", "manifest_list": entries }
+        })
+    }
+
+    fn manifest_list(metadata: &serde_json::Value) -> &Vec<serde_json::Value> {
+        metadata["snapshot"]["manifest_list"].as_array().unwrap()
+    }
+
+    #[test]
+    fn dedup_collapses_repeated_paths_keeping_the_largest_stats() {
+        let path = "test/date=2025-03-10/pod-a.manifest.json";
+        let mut metadata = snapshot_with(vec![
+            entry(path, "2025-03-10", 10, 100),
+            entry(path, "2025-03-10", 25, 250),
+            entry(path, "2025-03-10", 17, 170),
+        ]);
+
+        assert_eq!(super::dedup_manifest_list(&mut metadata), 2);
+        assert_eq!(
+            manifest_list(&metadata),
+            &vec![entry(path, "2025-03-10", 25, 250)]
+        );
+    }
+
+    #[test]
+    fn dedup_keeps_one_entry_per_writer_for_the_same_date() {
+        let pod_a = "test/date=2025-03-10/pod-a.manifest.json";
+        let pod_b = "test/date=2025-03-10/pod-b.manifest.json";
+        let mut metadata = snapshot_with(vec![
+            entry(pod_a, "2025-03-10", 10, 100),
+            entry(pod_b, "2025-03-10", 5, 50),
+            entry(pod_b, "2025-03-10", 8, 80),
+            entry(pod_a, "2025-03-10", 12, 120),
+        ]);
+
+        assert_eq!(super::dedup_manifest_list(&mut metadata), 2);
+        // First-appearance order is preserved, so pod-a stays ahead of pod-b.
+        assert_eq!(
+            manifest_list(&metadata),
+            &vec![
+                entry(pod_a, "2025-03-10", 12, 120),
+                entry(pod_b, "2025-03-10", 8, 80),
+            ]
+        );
+    }
+
+    #[test]
+    fn dedup_is_a_noop_on_a_clean_snapshot() {
+        let mut metadata = snapshot_with(vec![
+            entry(
+                "test/date=2025-03-10/pod-a.manifest.json",
+                "2025-03-10",
+                3,
+                30,
+            ),
+            entry(
+                "test/date=2025-03-11/pod-a.manifest.json",
+                "2025-03-11",
+                4,
+                40,
+            ),
+        ]);
+        let before = metadata.clone();
+
+        assert_eq!(super::dedup_manifest_list(&mut metadata), 0);
+        assert_eq!(metadata, before);
+    }
+
+    #[test]
+    fn dedup_is_idempotent() {
+        let path = "test/date=2025-03-10/pod-a.manifest.json";
+        let mut metadata = snapshot_with(vec![
+            entry(path, "2025-03-10", 10, 100),
+            entry(path, "2025-03-10", 25, 250),
+        ]);
+
+        assert_eq!(super::dedup_manifest_list(&mut metadata), 1);
+        let after_first_pass = metadata.clone();
+        assert_eq!(super::dedup_manifest_list(&mut metadata), 0);
+        assert_eq!(metadata, after_first_pass);
+    }
+
+    #[test]
+    fn dedup_never_collapses_across_a_writer_rename() {
+        // Upgrading a standalone node switches its manifests from being named after the hostname
+        // to being named after its persisted node id. Both objects exist and both hold real data,
+        // so entries for the same date must survive as separate entries.
+        let by_hostname = "test/date=2025-03-10/node-a.manifest.json";
+        let by_node_id = "test/date=2025-03-10/01K9ZQ.manifest.json";
+        let mut metadata = snapshot_with(vec![
+            entry(by_hostname, "2025-03-10", 40, 400),
+            entry(by_node_id, "2025-03-10", 12, 120),
+        ]);
+        let before = metadata.clone();
+
+        assert_eq!(super::dedup_manifest_list(&mut metadata), 0);
+        assert_eq!(metadata, before);
+    }
+
+    #[test]
+    fn dedup_tolerates_a_missing_snapshot() {
+        let mut metadata = serde_json::json!({ "version": "v7" });
+        assert_eq!(super::dedup_manifest_list(&mut metadata), 0);
+    }
+
+    #[test]
+    fn dedup_tolerates_v1_metadata_with_no_snapshot_key() {
+        // v1/v2 metadata predates the snapshot entirely - `v1_v4`/`v2_v4` insert an empty one.
+        // The repair runs before the version chain, so it has to cope with the key being absent.
+        let mut metadata = serde_json::json!({
+            "version": "v1",
+            "stats": {"events": 3, "ingestion": 70, "storage": 1969}
+        });
+        let before = metadata.clone();
+
+        assert_eq!(super::dedup_manifest_list(&mut metadata), 0);
+        assert_eq!(metadata, before);
+    }
+
+    #[test]
+    fn dedup_handles_v1_format_snapshot_entries_without_stats() {
+        // A v3 document can still carry a v1-format snapshot, whose entries have no
+        // events_ingested/ingestion_size/storage_size. Ranking must not trip over the missing
+        // fields, and the surviving entry must still migrate through v3_v4 afterwards.
+        let path = "test/date=2025-03-10/node-a.manifest.json";
+        let v1_entry = serde_json::json!({
+            "manifest_path": path,
+            "time_lower_bound": "2025-03-10T00:00:00Z",
+            "time_upper_bound": "2025-03-10T23:59:59.999999999Z"
+        });
+        let mut metadata = serde_json::json!({
+            "version": "v3",
+            "stats": {"events": 3, "ingestion": 70, "storage": 1969},
+            "snapshot": {
+                "version": "v1",
+                "manifest_list": [v1_entry.clone(), v1_entry.clone(), v1_entry]
+            }
+        });
+
+        assert_eq!(super::dedup_manifest_list(&mut metadata), 2);
+        assert_eq!(manifest_list(&metadata).len(), 1);
+
+        // The v1 -> v2 snapshot migration still runs cleanly over the collapsed list.
+        let migrated = super::v3_v4(metadata);
+        let entries = migrated["snapshot"]["manifest_list"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["manifest_path"], path);
+        assert_eq!(entries[0]["events_ingested"], 0);
+        assert_eq!(migrated["snapshot"]["version"], "v2");
     }
 }

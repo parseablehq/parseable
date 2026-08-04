@@ -436,12 +436,18 @@ impl NodeMetadata {
                 continue;
             }
 
-            let bytes = std::fs::read(&path).expect("File should be present");
+            let bytes = match std::fs::read(&path) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    error!("Couldn't read {}: {}", path.display(), e);
+                    continue;
+                }
+            };
             match Self::from_bytes(&bytes, options.flight_port) {
                 Ok(meta) => return Some(meta),
                 Err(e) => {
                     error!("Failed to extract {} metadata: {}", node_type_str, e);
-                    return None;
+                    continue;
                 }
             }
         }
@@ -449,11 +455,23 @@ impl NodeMetadata {
         None
     }
 
-    /// Check if a file is a valid metadata file for the given node type
+    /// Check if a path is this node type's metadata file, i.e. a *file* named
+    /// `{node_type}.{id}.json`.
+    ///
+    /// The shape has to be matched exactly rather than by substring. The staging root holds one
+    /// directory per stream alongside the node metadata, so a substring test lets a stream name
+    /// that happens to contain the node type - `calls` and `install_logs` both contain `all` -
+    /// masquerade as metadata.
     fn is_valid_metadata_file(path: &Path, node_type_str: &str) -> bool {
+        if !path.is_file() {
+            return false;
+        }
+
         path.file_name()
             .and_then(|s| s.to_str())
-            .is_some_and(|s| s.contains(node_type_str))
+            .and_then(|s| s.strip_prefix(node_type_str))
+            .and_then(|rest| rest.strip_suffix(".json"))
+            .is_some_and(|id| id.starts_with('.') && id.len() > 1)
     }
 
     /// Update metadata fields if they differ from the current configuration
@@ -631,6 +649,7 @@ pub type IngestorMetadata = NodeMetadata;
 pub type IndexerMetadata = NodeMetadata;
 pub type QuerierMetadata = NodeMetadata;
 pub type PrismMetadata = NodeMetadata;
+pub type StandaloneMetadata = NodeMetadata;
 
 /// Initialize hot tier metadata files for streams that have hot tier configuration
 /// in their stream metadata but don't have local hot tier metadata files yet.
@@ -697,6 +716,72 @@ mod test {
     use crate::handlers::http::modal::NodeType;
 
     use super::IngestorMetadata;
+    use super::NodeMetadata;
+
+    #[rstest]
+    fn valid_metadata_file_matches_exact_shape() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let path = dir.path().join("all.01K9ZQ.json");
+        std::fs::write(&path, b"{}").unwrap();
+
+        assert!(NodeMetadata::is_valid_metadata_file(&path, "all"));
+        // The node type has to be the whole prefix, not just present somewhere.
+        assert!(!NodeMetadata::is_valid_metadata_file(&path, "ingestor"));
+    }
+
+    #[rstest]
+    fn stream_directory_containing_node_type_is_not_metadata() {
+        let dir = temp_dir::TempDir::new().unwrap();
+
+        // Staging holds one directory per stream next to the node metadata. A stream whose name
+        // contains the node type must not be mistaken for it - reading a directory would fail.
+        for stream in ["calls", "install_logs", "all"] {
+            let path = dir.path().join(stream);
+            std::fs::create_dir(&path).unwrap();
+            assert!(!NodeMetadata::is_valid_metadata_file(&path, "all"));
+        }
+    }
+
+    #[rstest]
+    fn bare_node_type_file_without_id_is_rejected() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        for name in ["all.json", "all..json", "allsomething.json", "all"] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"{}").unwrap();
+            assert!(
+                !NodeMetadata::is_valid_metadata_file(&path, "all"),
+                "{name} should not be treated as metadata"
+            );
+        }
+    }
+
+    #[rstest]
+    fn unparseable_candidate_does_not_abort_the_scan() {
+        let dir = temp_dir::TempDir::new().unwrap();
+        let options = crate::cli::Options::default();
+
+        // A junk candidate sorts before the real one on most filesystems; either way the scan must
+        // keep going rather than give up and mint a fresh identity.
+        std::fs::write(dir.path().join("all.aaaa.json"), b"not json").unwrap();
+        let good = NodeMetadata::new(
+            "8000".to_string(),
+            "http://0.0.0.0:8000".to_string(),
+            "bucket".to_string(),
+            "admin",
+            "admin",
+            "stable-id".to_owned(),
+            "8002".to_string(),
+            NodeType::All,
+        );
+        std::fs::write(
+            dir.path().join("all.zzzz.json"),
+            serde_json::to_vec(&good).unwrap(),
+        )
+        .unwrap();
+
+        let found = NodeMetadata::load_from_staging(dir.path(), "all", &options);
+        assert_eq!(found.map(|m| m.node_id), Some("stable-id".to_string()));
+    }
 
     #[rstest]
     fn test_deserialize_resource() {

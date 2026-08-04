@@ -262,8 +262,17 @@ async fn process_single_partition(
     storage_size: u64,
     tenant_id: &Option<String>,
 ) -> Result<Option<snapshot::ManifestItem>, ObjectStorageError> {
+    // The entry we may update in place must be both time-overlapping *and* owned by this
+    // writer. Matching on the time range alone returns the first overlapping entry, which
+    // may belong to a different writer (e.g. after a restart changed the hostname). The
+    // ownership test then fails, a new entry is appended, and the next sync repeats the
+    // same lookup with the same result - appending one duplicate entry per sync cycle
+    // until the date rolls over.
+    let manifest_file_name = manifest_path("").to_string();
     let pos = meta.snapshot.manifest_list.iter().position(|item| {
-        item.time_lower_bound <= partition_lower && partition_lower < item.time_upper_bound
+        item.time_lower_bound <= partition_lower
+            && partition_lower < item.time_upper_bound
+            && item.manifest_path.contains(&manifest_file_name)
     });
 
     if let Some(pos) = pos {
@@ -311,65 +320,48 @@ async fn handle_existing_partition(
 ) -> Result<Option<snapshot::ManifestItem>, ObjectStorageError> {
     let manifests = &mut meta.snapshot.manifest_list;
 
-    let manifest_file_name = manifest_path("").to_string();
-    let should_update = manifests[pos].manifest_path.contains(&manifest_file_name);
-
-    if should_update {
-        if let Some(mut manifest) = PARSEABLE
+    // `pos` is only ever produced for an entry this writer owns, so the manifest object it
+    // points at is ours to update in place.
+    if let Some(mut manifest) = PARSEABLE
+        .metastore
+        .get_manifest(
+            stream_name,
+            manifests[pos].time_lower_bound,
+            manifests[pos].time_upper_bound,
+            Some(manifests[pos].manifest_path.clone()),
+            tenant_id,
+        )
+        .await
+        .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
+    {
+        // Update existing manifest
+        for change in partition_changes {
+            manifest.apply_change(change);
+        }
+        PARSEABLE
             .metastore
-            .get_manifest(
+            .put_manifest(
+                &manifest,
                 stream_name,
                 manifests[pos].time_lower_bound,
                 manifests[pos].time_upper_bound,
-                Some(manifests[pos].manifest_path.clone()),
                 tenant_id,
             )
             .await
-            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
-        {
-            // Update existing manifest
-            for change in partition_changes {
-                manifest.apply_change(change);
-            }
-            PARSEABLE
-                .metastore
-                .put_manifest(
-                    &manifest,
-                    stream_name,
-                    manifests[pos].time_lower_bound,
-                    manifests[pos].time_upper_bound,
-                    tenant_id,
-                )
-                .await
-                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
-            manifests[pos].events_ingested = events_ingested;
-            manifests[pos].ingestion_size = ingestion_size;
-            manifests[pos].storage_size = storage_size;
-            Ok(None)
-        } else {
-            // Manifest not found, create new one
-            create_manifest(
-                partition_lower,
-                partition_changes,
-                stream_name,
-                false,
-                meta.clone(),
-                events_ingested,
-                ingestion_size,
-                storage_size,
-                tenant_id,
-            )
-            .await
-        }
+        manifests[pos].events_ingested = events_ingested;
+        manifests[pos].ingestion_size = ingestion_size;
+        manifests[pos].storage_size = storage_size;
+        Ok(None)
     } else {
-        // Create new manifest for different partition
+        // Manifest not found, create new one
         create_manifest(
             partition_lower,
             partition_changes,
             stream_name,
             false,
-            ObjectStoreFormat::default(),
+            meta.clone(),
             events_ingested,
             ingestion_size,
             storage_size,

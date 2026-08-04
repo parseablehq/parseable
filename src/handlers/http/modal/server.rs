@@ -57,6 +57,8 @@ use actix_web_prometheus::PrometheusMetrics;
 use actix_web_static_files::ResourceFiles;
 use async_trait::async_trait;
 use bytes::Bytes;
+use std::sync::Arc;
+use tokio::sync::OnceCell;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 
@@ -71,11 +73,21 @@ use crate::{
 };
 
 // use super::generate;
+use super::NodeType;
 use super::ParseableServer;
+use super::StandaloneMetadata;
 use super::generate;
 use super::load_on_init;
 
 pub struct Server;
+
+/// Identity of this standalone node.
+///
+/// Standalone owns a single shared `.stream.json`, so the only thing distinguishing its manifests
+/// from those of a previous incarnation is the writer name embedded in the manifest path. Deriving
+/// that from the hostname makes a restarted pod look like a different writer; resolving a persisted
+/// node id here keeps the identity stable across restarts. See [`super::NodeMetadata::load_node_metadata`].
+pub static NODE_META: OnceCell<Arc<StandaloneMetadata>> = OnceCell::const_new();
 
 #[async_trait]
 impl ParseableServer for Server {
@@ -136,6 +148,16 @@ impl ParseableServer for Server {
         prometheus: &PrometheusMetrics,
         shutdown_rx: oneshot::Receiver<()>,
     ) -> anyhow::Result<()> {
+        // Resolve node identity before anything can write a manifest: `manifest_path` reads this
+        // to name the manifests this node owns.
+        NODE_META
+            .get_or_init(|| async {
+                StandaloneMetadata::load_node_metadata(NodeType::All, &None)
+                    .await
+                    .expect("Node Metadata should be set in standalone mode")
+            })
+            .await;
+
         migration::run_migration(&PARSEABLE).await?;
 
         // load on init
