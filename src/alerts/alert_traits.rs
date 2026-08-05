@@ -18,7 +18,7 @@
 
 use crate::{
     alerts::{
-        AlertConfig, AlertError, AlertState, AlertType, EvalConfig, Severity,
+        AlertConfig, AlertError, AlertQueryType, AlertState, AlertType, EvalConfig, Severity,
         alert_enums::NotificationState,
         alert_structs::{Context, ThresholdConfig},
     },
@@ -64,6 +64,7 @@ pub trait AlertTrait: Debug + Send + Sync + MetastoreObject {
     fn get_severity(&self) -> &Severity;
     fn get_title(&self) -> &str;
     fn get_query(&self) -> &str;
+    fn get_query_type(&self) -> AlertQueryType;
     fn get_alert_type(&self) -> &AlertType;
     fn get_threshold_config(&self) -> &ThresholdConfig;
     fn get_eval_config(&self) -> &EvalConfig;
