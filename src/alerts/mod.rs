@@ -850,7 +850,7 @@ pub async fn get_number_of_agg_exprs(
         .map_err(|err| AlertError::CustomError(format!("Failed to parse query: {err}")))?;
 
     // Check if the plan structure indicates an aggregate query
-    _get_number_of_agg_exprs(&logical_plan)
+    get_number_of_agg_exprs_from_plan(&logical_plan)
 }
 
 /// Extract the projection which deals with aggregation
@@ -1040,13 +1040,15 @@ fn is_likely_aggregate_column(column_name: &str) -> bool {
 /// Analyze a logical plan to determine if it represents an aggregate query
 ///
 /// Returns the number of aggregate expressions found in the plan
-fn _get_number_of_agg_exprs(plan: &LogicalPlan) -> Result<usize, AlertError> {
+pub fn get_number_of_agg_exprs_from_plan(plan: &LogicalPlan) -> Result<usize, AlertError> {
     match plan {
         // Direct aggregate: SELECT COUNT(*), AVG(col), etc.
         LogicalPlan::Aggregate(agg) => Ok(agg.aggr_expr.len()),
 
         // Projection over aggregate: SELECT COUNT(*) as total, SELECT AVG(col) as average
-        LogicalPlan::Projection(Projection { input, .. }) => _get_number_of_agg_exprs(input),
+        LogicalPlan::Projection(Projection { input, .. }) => {
+            get_number_of_agg_exprs_from_plan(input)
+        }
 
         // Do not consider any aggregates inside a subquery or recursive CTEs
         LogicalPlan::Subquery(_) | LogicalPlan::RecursiveQuery(_) => {
@@ -1058,7 +1060,7 @@ fn _get_number_of_agg_exprs(plan: &LogicalPlan) -> Result<usize, AlertError> {
             // Use inputs() method to get all input plans
             plan.inputs()
                 .iter()
-                .map(|input| _get_number_of_agg_exprs(input))
+                .map(|input| get_number_of_agg_exprs_from_plan(input))
                 .sum()
         }
     }
