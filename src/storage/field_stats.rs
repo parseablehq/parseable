@@ -70,8 +70,10 @@ use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use rayon::prelude::*;
 use rayon::{ThreadPool, ThreadPoolBuilder};
 use regex::Regex;
+use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use serde::Serialize;
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::fmt::Debug;
 use std::fs::File;
@@ -83,6 +85,7 @@ pub const DATASET_STATS_STREAM_NAME: &str = "pstats";
 const DATASET_STATS_CUSTOM_PARTITION: &str = "dataset_name";
 const MIN_TRACKED_DISTINCT_VALUES_PER_FIELD: usize = 1024;
 const MAX_TRACKED_DISTINCT_VALUES_PER_FIELD: usize = 10_000;
+const NULL_VALUE: &str = "NULL";
 const HLL_PRECISION_BITS: u32 = 12;
 const HLL_REGISTER_COUNT: usize = 1 << HLL_PRECISION_BITS;
 static FIELD_STATS_RAYON_POOL: Lazy<ThreadPool> = Lazy::new(|| {
@@ -377,9 +380,40 @@ fn collect_field_counts(
         max_field_statistics,
     );
 
+    // Fast paths for the string-like types that dominate log payloads. These read the value as a
+    // borrowed `&str` straight out of the Arrow buffer, so a `String` is only allocated when the
+    // value is actually inserted into the tracked-values map.
+    match array.data_type() {
+        DataType::Utf8 => {
+            if let Some(arr) = array.as_any().downcast_ref::<StringArray>() {
+                for row_index in 0..arr.len() {
+                    if arr.is_null(row_index) {
+                        field_count.record_value(Cow::Borrowed(NULL_VALUE));
+                    } else {
+                        field_count.record_value(Cow::Borrowed(arr.value(row_index)));
+                    }
+                }
+                return Some((field_name.to_string(), field_count));
+            }
+        }
+        DataType::Utf8View => {
+            if let Some(arr) = array.as_any().downcast_ref::<StringViewArray>() {
+                for row_index in 0..arr.len() {
+                    if arr.is_null(row_index) {
+                        field_count.record_value(Cow::Borrowed(NULL_VALUE));
+                    } else {
+                        field_count.record_value(Cow::Borrowed(arr.value(row_index)));
+                    }
+                }
+                return Some((field_name.to_string(), field_count));
+            }
+        }
+        _ => {}
+    }
+
     for row_index in 0..array.len() {
         let value = format_arrow_value(array.as_ref(), row_index);
-        field_count.record_value(value);
+        field_count.record_value(Cow::Owned(value));
     }
 
     Some((field_name.to_string(), field_count))
@@ -401,9 +435,13 @@ struct FieldCountState {
     stream_name: String,
     field_name: String,
     total_count: i64,
-    counts: HashMap<String, i64>,
+    counts: FxHashMap<String, i64>,
     hll: HyperLogLog,
     max_tracked_values: usize,
+    /// Lower bound on the smallest count currently in `counts`. Tracked counts only ever grow, so a
+    /// stale value stays a valid lower bound. Lets `track_value` reject candidates that cannot
+    /// possibly evict anything without paying for a linear scan of `counts`.
+    min_count_hint: i64,
     approximate: bool,
     log_cardinality_cap: bool,
 }
@@ -427,16 +465,17 @@ impl FieldCountState {
             stream_name,
             field_name,
             total_count: 0,
-            counts: HashMap::new(),
+            counts: FxHashMap::default(),
             hll: HyperLogLog::new(),
             max_tracked_values: tracked_distinct_value_limit(max_field_statistics),
+            min_count_hint: i64::MAX,
             approximate: false,
             log_cardinality_cap,
         }
     }
 
-    fn record_value(&mut self, value: String) {
-        self.hll.add(&value);
+    fn record_value(&mut self, value: Cow<'_, str>) {
+        self.hll.add(value.as_ref());
         self.total_count += 1;
         self.track_value(value, 1);
     }
@@ -446,7 +485,7 @@ impl FieldCountState {
         for (value, count) in counts {
             self.hll.add(&value);
             self.total_count += count;
-            self.track_value(value, count);
+            self.track_value(Cow::Owned(value), count);
         }
     }
 
@@ -459,28 +498,39 @@ impl FieldCountState {
         }
 
         for (value, count) in state.counts {
-            self.track_value(value, count);
+            self.track_value(Cow::Owned(value), count);
         }
     }
 
-    fn track_value(&mut self, value: String, count: i64) {
-        if let Some(existing_count) = self.counts.get_mut(&value) {
+    fn track_value(&mut self, value: Cow<'_, str>, count: i64) {
+        if let Some(existing_count) = self.counts.get_mut(value.as_ref()) {
             *existing_count += count;
             return;
         }
 
         if self.counts.len() < self.max_tracked_values {
-            self.counts.insert(value, count);
+            self.min_count_hint = self.min_count_hint.min(count);
+            self.counts.insert(value.into_owned(), count);
             return;
         }
 
         self.mark_approximate();
 
-        if let Some((min_value, min_count)) = self.current_min_value()
-            && count > min_count
-        {
-            self.counts.remove(&min_value);
-            self.counts.insert(value, count);
+        // `min_count_hint` is a lower bound on the smallest tracked count, so a candidate that
+        // cannot beat the hint cannot beat the real minimum either. This short-circuits the common
+        // high-cardinality case (every row a fresh value with count 1) before the linear scan.
+        if count <= self.min_count_hint {
+            return;
+        }
+
+        if let Some((min_value, min_count)) = self.current_min_value() {
+            // Every retained entry has a count >= the evicted minimum, and the inserted candidate
+            // is strictly greater, so the old minimum remains a valid lower bound.
+            self.min_count_hint = min_count;
+            if count > min_count {
+                self.counts.remove(&min_value);
+                self.counts.insert(value.into_owned(), count);
+            }
         }
     }
 
@@ -1053,15 +1103,16 @@ mod tests {
 
     use arrow::buffer::OffsetBuffer;
     use arrow_array::{
-        BooleanArray, Float64Array, Int64Array, ListArray, RecordBatch, StringArray,
-        TimestampMillisecondArray,
+        Array, BooleanArray, Float64Array, Int64Array, ListArray, RecordBatch, StringArray,
+        StringViewArray, TimestampMillisecondArray,
     };
     use arrow_schema::{DataType, Field, Schema, TimeUnit};
     use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
     use temp_dir::TempDir;
 
     use crate::storage::field_stats::{
-        FieldCountState, build_stats_sql, collect_all_field_stats_from_parquet_blocking,
+        FieldCountState, NULL_VALUE, build_stats_sql,
+        collect_all_field_stats_from_parquet_blocking, collect_field_counts,
     };
 
     async fn create_test_parquet_with_data() -> (TempDir, std::path::PathBuf) {
@@ -1330,5 +1381,117 @@ mod tests {
 
         assert!(!state.counts.contains_key("C"));
         assert!(state.counts.contains_key("E"));
+    }
+
+    /// `track_value` skips the linear minimum scan when a candidate cannot beat `min_count_hint`.
+    /// The hint is only a lower bound, so it must never reject a candidate that would really evict:
+    /// here the tracked minimum climbs above the hint before the candidates arrive.
+    #[test]
+    fn test_field_count_state_eviction_survives_stale_min_hint() {
+        let mut state = FieldCountState::new("test_stream".to_string(), "status".to_string(), 3);
+        state.max_tracked_values = 3;
+
+        for (value, count) in [("A", 1), ("B", 2), ("C", 3)] {
+            state.merge_counts(HashMap::from([(value.to_string(), count)]));
+        }
+        // Grow the smallest tracked value so the real minimum (B = 2) exceeds the hint (1).
+        state.merge_counts(HashMap::from([("A".to_string(), 9)]));
+        assert_eq!(state.counts.get("A"), Some(&10));
+
+        // Ties with the real minimum must not evict.
+        state.merge_counts(HashMap::from([("D".to_string(), 2)]));
+        assert!(!state.counts.contains_key("D"));
+        assert!(state.counts.contains_key("B"));
+
+        // A candidate above the real minimum must still evict, despite the stale hint.
+        state.merge_counts(HashMap::from([("E".to_string(), 3)]));
+        assert!(!state.counts.contains_key("B"));
+        assert_eq!(state.counts.get("E"), Some(&3));
+        assert_eq!(state.counts.len(), 3);
+    }
+
+    /// The `Utf8`/`Utf8View` fast paths in `collect_field_counts` bypass `format_arrow_value`, so
+    /// they must agree with it on both real values and nulls.
+    #[test]
+    fn test_collect_field_counts_string_fast_path_matches_generic_path() {
+        let values = vec![Some("alpha"), Some("beta"), None, Some("alpha")];
+        let utf8: Arc<dyn Array> = Arc::new(StringArray::from(values.clone()));
+        let utf8_view: Arc<dyn Array> = Arc::new(StringViewArray::from(values));
+
+        for (name, array) in [("utf8", utf8), ("utf8_view", utf8_view)] {
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                name,
+                array.data_type().clone(),
+                true,
+            )]));
+            let batch = RecordBatch::try_new(schema, vec![array]).expect("valid batch");
+            let (_, state) =
+                collect_field_counts("test_stream", &batch, name, 10).expect("column exists");
+
+            assert_eq!(state.total_count, 4, "{name}");
+            assert_eq!(state.counts.get("alpha"), Some(&2), "{name}");
+            assert_eq!(state.counts.get("beta"), Some(&1), "{name}");
+            assert_eq!(state.counts.get(NULL_VALUE), Some(&1), "{name}");
+        }
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_field_stats_high_cardinality() {
+        use std::time::Instant;
+
+        const ROWS: usize = 200_000;
+        const HIGH_CARD_FIELDS: usize = 10;
+        const LOW_CARD_FIELDS: usize = 10;
+
+        let mut fields = Vec::new();
+        for i in 0..HIGH_CARD_FIELDS {
+            fields.push(Field::new(format!("trace_id_{i}"), DataType::Utf8, true));
+        }
+        for i in 0..LOW_CARD_FIELDS {
+            fields.push(Field::new(format!("severity_{i}"), DataType::Utf8, true));
+        }
+        let schema = Arc::new(Schema::new(fields));
+
+        let mut columns: Vec<Arc<dyn Array>> = Vec::new();
+        for f in 0..HIGH_CARD_FIELDS {
+            let vals: Vec<String> = (0..ROWS)
+                .map(|r| format!("7f3a9c2e1b8d4f6a{f:02}{r:010}"))
+                .collect();
+            columns.push(Arc::new(StringArray::from(vals)));
+        }
+        for f in 0..LOW_CARD_FIELDS {
+            let vals: Vec<String> = (0..ROWS).map(|r| format!("sev-{f}-{}", r % 8)).collect();
+            columns.push(Arc::new(StringArray::from(vals)));
+        }
+
+        let batch = RecordBatch::try_new(schema.clone(), columns).expect("valid batch");
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("bench.parquet");
+        let file = std::fs::File::create(&path).unwrap();
+        let props = WriterProperties::builder()
+            .set_max_row_group_row_count(Some(100_000))
+            .build();
+        let mut writer = ArrowWriter::try_new(file, schema.clone(), Some(props)).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+
+        // warmup
+        let _ = collect_all_field_stats_from_parquet_blocking("bench", &path, &schema, 50).unwrap();
+
+        let started = Instant::now();
+        let runs = 3;
+        for _ in 0..runs {
+            let stats =
+                collect_all_field_stats_from_parquet_blocking("bench", &path, &schema, 50).unwrap();
+            assert_eq!(stats.len(), HIGH_CARD_FIELDS + LOW_CARD_FIELDS);
+        }
+        let per_run = started.elapsed() / runs;
+        println!(
+            "BENCH rows={ROWS} fields={} per_run={:?} rows_per_sec={:.0}",
+            HIGH_CARD_FIELDS + LOW_CARD_FIELDS,
+            per_run,
+            ROWS as f64 / per_run.as_secs_f64()
+        );
     }
 }
