@@ -32,7 +32,10 @@ use tokio::{
 use tracing::{info, trace, warn};
 
 use crate::analytics::{SYS_INFO, refresh_sys_info};
+use crate::metrics::record_process_metrics_sample;
 use crate::parseable::PARSEABLE;
+
+const PROCESS_METRICS_SAMPLE_INTERVAL: Duration = Duration::from_secs(10);
 
 static RESOURCE_CHECK_ENABLED: LazyLock<Arc<AtomicBool>> =
     LazyLock::new(|| Arc::new(AtomicBool::new(false)));
@@ -42,6 +45,7 @@ pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
     tokio::spawn(async move {
         let resource_check_interval = PARSEABLE.options.resource_check_interval;
         let mut check_interval = interval(Duration::from_secs(resource_check_interval));
+        let mut process_metrics_interval = interval(PROCESS_METRICS_SAMPLE_INTERVAL);
         let mut shutdown_rx = shutdown_rx;
 
         let cpu_threshold = PARSEABLE.options.cpu_utilization_threshold;
@@ -104,6 +108,20 @@ pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
                         } else {
                             warn!("Resource utilization too high - requests will be rejected");
                         }
+                    }
+                },
+                _ = process_metrics_interval.tick() => {
+                    refresh_sys_info();
+                    let process_metrics = tokio::task::spawn_blocking(|| {
+                        let sys = SYS_INFO.lock().unwrap();
+                        sysinfo::get_current_pid()
+                            .ok()
+                            .and_then(|pid| sys.process(pid))
+                            .map(|process| (process.cpu_usage() as f64, process.memory()))
+                    }).await.unwrap();
+
+                    if let Some((cpu_usage, memory_bytes)) = process_metrics {
+                        record_process_metrics_sample(cpu_usage, memory_bytes);
                     }
                 },
                 _ = &mut shutdown_rx => {
