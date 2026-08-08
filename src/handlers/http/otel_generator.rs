@@ -8,6 +8,7 @@
  */
 
 use actix_web::{HttpRequest, HttpResponse, web};
+use base64::{Engine, prelude::BASE64_STANDARD};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
@@ -257,15 +258,27 @@ fn generator_authorization(req: &HttpRequest) -> Result<String, HttpResponse> {
     } else {
         AUTHORIZATION_KEY
     };
-    req.headers()
+    if let Some(auth) = req
+        .headers()
         .get(header)
         .and_then(|value| value.to_str().ok())
-        .map(str::to_owned)
-        .ok_or_else(|| {
-            HttpResponse::BadRequest().json(OtelGeneratorErrorResponse {
-                error: "Authorization header is required to export generated telemetry".to_string(),
-            })
-        })
+    {
+        return Ok(auth.to_owned());
+    }
+
+    if !PARSEABLE.options.is_multi_tenant() {
+        return Ok(format!(
+            "Basic {}",
+            BASE64_STANDARD.encode(format!(
+                "{}:{}",
+                PARSEABLE.options.username, PARSEABLE.options.password
+            ))
+        ));
+    }
+
+    Err(HttpResponse::BadRequest().json(OtelGeneratorErrorResponse {
+        error: "Authorization header is required to export generated telemetry".to_string(),
+    }))
 }
 
 fn unavailable_in_mode() -> HttpResponse {
