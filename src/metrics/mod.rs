@@ -25,7 +25,8 @@ use actix_web::Responder;
 use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use error::MetricsError;
 use once_cell::sync::Lazy;
-use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
+use prometheus::{Gauge, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const METRICS_NAMESPACE: &str = env!("CARGO_PKG_NAME");
 
@@ -174,6 +175,79 @@ pub static STAGING_FILES: Lazy<IntGaugeVec> = Lazy::new(|| {
     )
     .expect("metric can be created")
 });
+
+pub static PROCESS_CPU_USAGE_PERCENT: Lazy<Gauge> = Lazy::new(|| {
+    Gauge::with_opts(
+        Opts::new(
+            "process_cpu_usage_percent",
+            "Current CPU usage percent for this Parseable process",
+        )
+        .namespace(METRICS_NAMESPACE),
+    )
+    .expect("metric can be created")
+});
+
+pub static PROCESS_MEMORY_BYTES: Lazy<Gauge> = Lazy::new(|| {
+    Gauge::with_opts(
+        Opts::new(
+            "process_memory_bytes",
+            "Current resident memory used by this Parseable process in bytes",
+        )
+        .namespace(METRICS_NAMESPACE),
+    )
+    .expect("metric can be created")
+});
+
+const CPU_USAGE_PRECISION: f64 = 1_000.0;
+
+#[derive(Default)]
+struct ProcessMetricsAccumulator {
+    cpu_usage_sum: AtomicU64,
+    memory_bytes_sum: AtomicU64,
+    sample_count: AtomicU64,
+}
+
+impl ProcessMetricsAccumulator {
+    fn record(&self, cpu_usage_percent: f64, memory_bytes: u64) -> (f64, f64) {
+        self.cpu_usage_sum.fetch_add(
+            (cpu_usage_percent * CPU_USAGE_PRECISION).round() as u64,
+            Ordering::Relaxed,
+        );
+        self.memory_bytes_sum
+            .fetch_add(memory_bytes, Ordering::Relaxed);
+        let sample_count = self.sample_count.fetch_add(1, Ordering::Relaxed) + 1;
+
+        (
+            self.cpu_usage_sum.load(Ordering::Relaxed) as f64
+                / sample_count as f64
+                / CPU_USAGE_PRECISION,
+            self.memory_bytes_sum.load(Ordering::Relaxed) as f64 / sample_count as f64,
+        )
+    }
+}
+
+static PROCESS_METRICS_ACCUMULATOR: Lazy<ProcessMetricsAccumulator> =
+    Lazy::new(ProcessMetricsAccumulator::default);
+
+pub fn record_process_metrics_sample(cpu_usage_percent: f64, memory_bytes: u64) {
+    let (average_cpu_usage, average_memory_bytes) =
+        PROCESS_METRICS_ACCUMULATOR.record(cpu_usage_percent, memory_bytes);
+    PROCESS_CPU_USAGE_PERCENT.set(average_cpu_usage);
+    PROCESS_MEMORY_BYTES.set(average_memory_bytes);
+}
+
+#[cfg(test)]
+mod process_metrics_tests {
+    use super::ProcessMetricsAccumulator;
+
+    #[test]
+    fn averages_process_metric_samples() {
+        let accumulator = ProcessMetricsAccumulator::default();
+
+        assert_eq!(accumulator.record(10.0, 100), (10.0, 100.0));
+        assert_eq!(accumulator.record(20.0, 300), (15.0, 200.0));
+    }
+}
 
 pub static QUERY_EXECUTE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
     HistogramVec::new(
@@ -662,6 +736,12 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(STAGING_FILES.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(PROCESS_CPU_USAGE_PERCENT.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(PROCESS_MEMORY_BYTES.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(QUERY_EXECUTE_TIME.clone()))
