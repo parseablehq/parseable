@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Fluent Bit Setup and Management Script
-# Usage: 
+# OpenTelemetry Collector host-metrics setup and management script
+# Usage:
 #   Setup:   ./ingest.sh <host[:port]> <stream> <api_key> [tenant_id]
 #   Stop:    ./ingest.sh stop
 #   Restart: ./ingest.sh restart
@@ -10,21 +10,21 @@
 
 set -e
 
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-ACCENT='\033[38;2;158;158;240m' 
-OK='\033[38;2;52;211;153m'      
+ACCENT='\033[38;2;158;158;240m'
+OK='\033[38;2;52;211;153m'
 BOLD='\033[1m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# File locations
-PID_FILE="./fluent-bit.pid"
-LOG_FILE="./fluent-bit.log"
-CONFIG_FILE="./fluent-bit.conf"
+COLLECTOR_VERSION="0.157.0"
+COLLECTOR_DIR="./otelcol"
+COLLECTOR_BIN="$COLLECTOR_DIR/otelcol"
+PID_FILE="./otelcol.pid"
+LOG_FILE="./otelcol.log"
+CONFIG_FILE="./otelcol.yaml"
 
-# Function to print colored output
 print_info() {
     echo -e "${GREEN}[INFO]${NC} $1"
 }
@@ -55,55 +55,58 @@ print_setup_complete() {
 
     echo ""
     echo -e "${OK}${BOLD}✓ You're all set!${NC}"
-    echo "Host metrics are now being sent to Parseable."
+    echo "Host metrics are now being sent to Parseable as OTLP JSON."
     echo -e "Dataset: ${BOLD}${stream_name}${NC}"
     echo "Return to Parseable and click Continue to verify your data."
 }
 
-# Function to check if Fluent Bit is running
 is_running() {
+    local process_command
+
     if [ -f "$PID_FILE" ]; then
         PID=$(cat "$PID_FILE")
-        if ps -p "$PID" > /dev/null 2>&1; then
-            return 0
+        if [[ "$PID" =~ ^[0-9]+$ ]] && ps -p "$PID" > /dev/null 2>&1; then
+            process_command=$(ps -p "$PID" -o command= 2>/dev/null || true)
+            case "$process_command" in
+                *otelcol*otelcol.yaml*) return 0 ;;
+            esac
         fi
     fi
     return 1
 }
 
-# Function to stop Fluent Bit
-stop_fluent_bit() {
+stop_collector() {
     if is_running; then
         PID=$(cat "$PID_FILE")
-        print_info "Stopping Fluent Bit (PID: $PID)..."
+        print_info "Stopping OpenTelemetry Collector (PID: $PID)..."
         kill "$PID"
-        
-        # Wait for process to stop (max 10 seconds)
-        for i in {1..10}; do
+
+        for _ in {1..10}; do
             if ! ps -p "$PID" > /dev/null 2>&1; then
-                print_info "✓ Fluent Bit stopped successfully"
+                print_info "✓ OpenTelemetry Collector stopped successfully"
                 rm -f "$PID_FILE"
                 return 0
             fi
             sleep 1
         done
-        
-        # Force kill if still running
+
         if ps -p "$PID" > /dev/null 2>&1; then
-            print_warning "Force killing Fluent Bit..."
+            print_warning "Force killing OpenTelemetry Collector..."
             kill -9 "$PID"
             rm -f "$PID_FILE"
         fi
     else
-        print_warning "Fluent Bit is not running"
+        print_warning "OpenTelemetry Collector is not running"
+        if [ -f "$PID_FILE" ]; then
+            rm -f "$PID_FILE"
+        fi
     fi
 }
 
-# Function to show status
 show_status() {
     if is_running; then
         PID=$(cat "$PID_FILE")
-        print_info "✓ Fluent Bit is running (PID: $PID)"
+        print_info "✓ OpenTelemetry Collector is running (PID: $PID)"
         print_info ""
         print_info "Process details:"
         ps -p "$PID" -o pid,ppid,user,%cpu,%mem,etime,command
@@ -111,7 +114,7 @@ show_status() {
         print_info "Log file: $LOG_FILE"
         print_info "Config file: $CONFIG_FILE"
     else
-        print_warning "✗ Fluent Bit is not running"
+        print_warning "✗ OpenTelemetry Collector is not running"
         if [ -f "$PID_FILE" ]; then
             print_info "Cleaning up stale PID file..."
             rm -f "$PID_FILE"
@@ -119,12 +122,11 @@ show_status() {
     fi
 }
 
-# Function to show logs
 show_logs() {
     if [ -f "$LOG_FILE" ]; then
-        print_info "Showing last 50 lines of logs (Ctrl+C to exit)..."
+        print_info "Showing last 80 OpenTelemetry Collector log lines..."
         echo ""
-        tail -50 "$LOG_FILE"
+        tail -80 "$LOG_FILE"
         echo ""
         print_info "To follow logs in real-time, run:"
         print_info "  tail -f $LOG_FILE"
@@ -133,150 +135,154 @@ show_logs() {
     fi
 }
 
-# Function to get Fluent Bit binary path
-get_fluent_bit_bin() {
-    if [ -f /opt/fluent-bit/bin/fluent-bit ]; then
-        echo "/opt/fluent-bit/bin/fluent-bit"
-    elif [ -f /opt/homebrew/bin/fluent-bit ]; then
-        echo "/opt/homebrew/bin/fluent-bit"
-    elif [ -f /usr/local/bin/fluent-bit ]; then
-        echo "/usr/local/bin/fluent-bit"
-    else
-        which fluent-bit 2>/dev/null || echo "fluent-bit"
-    fi
-}
+install_collector() {
+    local collector_os
+    local collector_arch
+    local expected_hash
+    local archive_name
+    local download_url
+    local temp_dir
+    local archive_path
+    local actual_hash
+    local extracted_bin
 
-# Function to start Fluent Bit
-start_fluent_bit() {
-    if is_running; then
-        PID=$(cat "$PID_FILE")
-        print_warning "Fluent Bit is already running (PID: $PID)"
-        print_info "Use '$0 stop' to stop it first, or '$0 restart' to restart"
-        exit 0
+    if [ -x "$COLLECTOR_BIN" ] && "$COLLECTOR_BIN" --version 2>/dev/null | grep -q "$COLLECTOR_VERSION"; then
+        return 0
     fi
-    
-    if [ ! -f "$CONFIG_FILE" ]; then
-        print_error "Configuration file not found: $CONFIG_FILE"
-        print_error "Please run setup first with: $0 <host[:port]> <api_key> [tenant_id]"
+
+    case "$(uname -s)" in
+        Linux) collector_os="linux" ;;
+        Darwin) collector_os="darwin" ;;
+        *)
+            print_error "Unsupported OS: $(uname -s)"
+            exit 1
+            ;;
+    esac
+
+    case "$(uname -m)" in
+        x86_64|amd64) collector_arch="amd64" ;;
+        arm64|aarch64) collector_arch="arm64" ;;
+        *)
+            print_error "Unsupported CPU architecture: $(uname -m)"
+            exit 1
+            ;;
+    esac
+
+    case "$collector_os/$collector_arch" in
+        linux/amd64) expected_hash="2937cf24892af55b143c072fddece17862239cf78280620029276493eb81beae" ;;
+        linux/arm64) expected_hash="59b63b99bab315509375fee76e22a9065eb9d9ba0a8995f8e985d60ca50d34ea" ;;
+        darwin/amd64) expected_hash="974420dce3aa9ba22b9e4e26cd68761f91e439bea441482166f19ece3fc186c3" ;;
+        darwin/arm64) expected_hash="1ea74db004f247948db7f5f99bc88a38a3c017cd5fb9b3a1fb62a98af0caa8c8" ;;
+    esac
+
+    if ! command -v curl > /dev/null 2>&1; then
+        print_error "curl is required to install OpenTelemetry Collector"
         exit 1
     fi
-    
-    FLUENT_BIT_BIN=$(get_fluent_bit_bin)
-    FINAL_VERSION=$("$FLUENT_BIT_BIN" --version 2>/dev/null | head -n1 | sed -n 's/.*v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' || echo "unknown")
-    
-    nohup "$FLUENT_BIT_BIN" -c "$CONFIG_FILE" > "$LOG_FILE" 2>&1 &
-    FLUENT_PID=$!
-    echo "$FLUENT_PID" > "$PID_FILE"
-    
-    sleep 2
-    if ps -p "$FLUENT_PID" > /dev/null 2>&1; then
-        print_info "✓ Fluent Bit started successfully (PID: $FLUENT_PID)"
-        print_info "View logs:     tail -f $LOG_FILE"
-        print_info "Check status:  ps -p \$(cat $PID_FILE)"
-        print_info "Stop:          kill \$(cat $PID_FILE)"
+
+    archive_name="otelcol_${COLLECTOR_VERSION}_${collector_os}_${collector_arch}.tar.gz"
+    download_url="https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${COLLECTOR_VERSION}/${archive_name}"
+    temp_dir=$(mktemp -d)
+    archive_path="$temp_dir/$archive_name"
+
+    print_info "Installing OpenTelemetry Collector v$COLLECTOR_VERSION..."
+    curl -fsSL "$download_url" -o "$archive_path"
+
+    if command -v sha256sum > /dev/null 2>&1; then
+        actual_hash=$(sha256sum "$archive_path" | awk '{print $1}')
+    elif command -v shasum > /dev/null 2>&1; then
+        actual_hash=$(shasum -a 256 "$archive_path" | awk '{print $1}')
     else
-        print_error "✗ Fluent Bit failed to start. Check logs: cat $LOG_FILE"
+        print_error "Cannot verify download: sha256sum or shasum is required"
+        rm -rf "$temp_dir"
+        exit 1
+    fi
+
+    if [ "$actual_hash" != "$expected_hash" ]; then
+        print_error "OpenTelemetry Collector checksum verification failed"
+        rm -rf "$temp_dir"
+        exit 1
+    fi
+
+    tar -xzf "$archive_path" -C "$temp_dir"
+    extracted_bin=$(find "$temp_dir" -type f -name otelcol -print -quit)
+    if [ -z "$extracted_bin" ]; then
+        print_error "OpenTelemetry Collector executable not found in downloaded archive"
+        rm -rf "$temp_dir"
+        exit 1
+    fi
+
+    mkdir -p "$COLLECTOR_DIR"
+    cp "$extracted_bin" "$COLLECTOR_BIN.new"
+    chmod 755 "$COLLECTOR_BIN.new"
+    mv "$COLLECTOR_BIN.new" "$COLLECTOR_BIN"
+    rm -rf "$temp_dir"
+}
+
+start_collector() {
+    if is_running; then
+        PID=$(cat "$PID_FILE")
+        print_warning "OpenTelemetry Collector is already running (PID: $PID)"
+        return 0
+    fi
+
+    if [ ! -f "$CONFIG_FILE" ]; then
+        print_error "Configuration file not found: $CONFIG_FILE"
+        print_error "Please run setup first"
+        exit 1
+    fi
+
+    install_collector
+
+    if ! "$COLLECTOR_BIN" validate --config "$CONFIG_FILE" > /dev/null; then
+        print_error "OpenTelemetry Collector configuration validation failed"
+        exit 1
+    fi
+
+    nohup "$COLLECTOR_BIN" --config "$CONFIG_FILE" > "$LOG_FILE" 2>&1 &
+    PID=$!
+    echo "$PID" > "$PID_FILE"
+
+    sleep 2
+    if ps -p "$PID" > /dev/null 2>&1; then
+        print_info "✓ OpenTelemetry Collector started successfully (PID: $PID)"
+        print_info "View logs:     tail -f $LOG_FILE"
+        print_info "Check status:  $0 status"
+        print_info "Stop:          $0 stop"
+    else
+        print_error "✗ OpenTelemetry Collector failed to start. Check logs: cat $LOG_FILE"
         rm -f "$PID_FILE"
         exit 1
     fi
 }
 
-# Function to restart Fluent Bit
-restart_fluent_bit() {
-    stop_fluent_bit
+restart_collector() {
+    stop_collector
     sleep 2
-    start_fluent_bit
+    start_collector
 }
 
-# Function to compare versions
-version_gt() {
-    test "$(printf '%s\n' "$@" | sort -V | head -n 1)" != "$1"
+yaml_escape() {
+    printf '%s' "$1" | sed "s/'/''/g"
 }
 
-# Function to get Fluent Bit version
-get_fluent_bit_version() {
-    local version_output
-    local fluent_bit_cmd
-    
-    # Try different installation locations
-    if [ -f /opt/fluent-bit/bin/fluent-bit ]; then
-        fluent_bit_cmd="/opt/fluent-bit/bin/fluent-bit"
-    elif [ -f /opt/homebrew/bin/fluent-bit ]; then
-        fluent_bit_cmd="/opt/homebrew/bin/fluent-bit"
-    elif [ -f /usr/local/bin/fluent-bit ]; then
-        fluent_bit_cmd="/usr/local/bin/fluent-bit"
-    else
-        fluent_bit_cmd="fluent-bit"
-    fi
-    
-    version_output=$($fluent_bit_cmd --version 2>/dev/null | head -n1)
-    
-    # Extract version using sed (portable across macOS and Linux)
-    echo "$version_output" | sed -n 's/.*v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' || echo "0.0.0"
-}
+setup_collector() {
+    local ingestor_host="$1"
+    local stream_name="$2"
+    local api_key="$3"
+    local tenant_id="${4:-}"
+    local ingestor_scheme="https"
+    local default_port="443"
+    local port
+    local endpoint_yaml
+    local api_key_yaml
+    local stream_name_yaml
+    local tenant_id_yaml
+    local host_name_yaml
+    local tenant_header=""
+    local scrapers
 
-# Detect OS
-detect_os() {
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        echo "macos"
-    elif [[ "$OSTYPE" == "linux-gnu"* ]]; then
-        if [ -f /etc/os-release ]; then
-            . /etc/os-release
-            echo "$ID"
-        else
-            echo "linux"
-        fi
-    else
-        echo "unknown"
-    fi
-}
-
-# Install Fluent Bit based on OS
-install_fluent_bit() {
-    case "$OS" in
-        macos)
-            print_info "Installing Fluent Bit on macOS using Homebrew..."
-            if ! command -v brew &> /dev/null; then
-                print_error "Homebrew is not installed. Please install Homebrew first:"
-                print_error '/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-                exit 1
-            fi
-            brew install fluent-bit
-            ;;
-        ubuntu|debian)
-            print_info "Installing Fluent Bit on Ubuntu/Debian..."
-            curl -fsSL https://raw.githubusercontent.com/fluent/fluent-bit/master/install.sh -o /tmp/install-fluentbit.sh
-            chmod +x /tmp/install-fluentbit.sh
-            /tmp/install-fluentbit.sh
-            ;;
-        
-        centos|rhel|fedora)
-            print_info "Installing Fluent Bit on CentOS/RHEL/Fedora..."
-            curl -fsSL https://raw.githubusercontent.com/fluent/fluent-bit/master/install.sh -o /tmp/install-fluentbit.sh
-            chmod +x /tmp/install-fluentbit.sh
-            /tmp/install-fluentbit.sh
-            ;;
-        *)
-            print_error "Unsupported OS: $OS"
-            print_info "Please install Fluent Bit manually from: https://docs.fluentbit.io/manual/installation/getting-started-with-fluent-bit"
-            exit 1
-            ;;
-    esac
-}
-
-# Setup function
-setup_fluent_bit() {
-    local INGESTOR_HOST="$1"
-    local STREAM_NAME="$2"
-    local API_KEY="$3"
-    local TENANT_ID="${4:-}"
-    local TENANT_HEADER=""
-    local TLS_SETTING="On"
-    local DEFAULT_PORT="443"
-    local PORT=""
-    
-    # Validate all fields are present
-    if [ -z "$INGESTOR_HOST" ] || [ -z "$STREAM_NAME" ] || [ -z "$API_KEY" ]; then
+    if [ -z "$ingestor_host" ] || [ -z "$stream_name" ] || [ -z "$api_key" ]; then
         print_error "Invalid setup parameters"
         print_error "Expected format: $0 <host[:port]> <stream> <api_key> [tenant_id]"
         exit 1
@@ -284,109 +290,124 @@ setup_fluent_bit() {
 
     print_parseable_banner
 
-    if [[ "$INGESTOR_HOST" =~ ^[Hh][Tt][Tt][Pp][Ss]:// ]]; then
-        INGESTOR_HOST="${INGESTOR_HOST#*://}"
-        TLS_SETTING="On"
-        DEFAULT_PORT="443"
-    elif [[ "$INGESTOR_HOST" =~ ^[Hh][Tt][Tt][Pp]:// ]]; then
-        INGESTOR_HOST="${INGESTOR_HOST#*://}"
-        TLS_SETTING="Off"
-        DEFAULT_PORT="80"
+    if [[ "$ingestor_host" =~ ^[Hh][Tt][Tt][Pp][Ss]:// ]]; then
+        ingestor_host="${ingestor_host#*://}"
+        ingestor_scheme="https"
+        default_port="443"
+    elif [[ "$ingestor_host" =~ ^[Hh][Tt][Tt][Pp]:// ]]; then
+        ingestor_host="${ingestor_host#*://}"
+        ingestor_scheme="http"
+        default_port="80"
     fi
-    INGESTOR_HOST="${INGESTOR_HOST%%/*}"
+    ingestor_host="${ingestor_host%%/*}"
 
-    if [[ "$INGESTOR_HOST" == *:* ]]; then
-        PORT="${INGESTOR_HOST##*:}"
-        INGESTOR_HOST="${INGESTOR_HOST%:*}"
+    if [[ "$ingestor_host" == *:* ]]; then
+        port="${ingestor_host##*:}"
+        ingestor_host="${ingestor_host%:*}"
     else
-        PORT="$DEFAULT_PORT"
+        port="$default_port"
     fi
 
-    if [ -z "$INGESTOR_HOST" ]; then
+    if [ -z "$ingestor_host" ]; then
         print_error "Invalid host"
         exit 1
     fi
 
-    if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
-        print_error "Invalid port: $PORT"
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then
+        print_error "Invalid port: $port"
         print_error "Port must be a number between 1 and 65535"
         exit 1
     fi
 
-    if [ -n "$TENANT_ID" ]; then
-        TENANT_HEADER="    Header                    X-P-Tenant $TENANT_ID"
+    install_collector
+
+    endpoint_yaml=$(yaml_escape "${ingestor_scheme}://${ingestor_host}:${port}")
+    api_key_yaml=$(yaml_escape "$api_key")
+    stream_name_yaml=$(yaml_escape "$stream_name")
+    tenant_id_yaml=$(yaml_escape "$tenant_id")
+    host_name_yaml=$(yaml_escape "$(hostname)")
+
+    if [ -n "$tenant_id" ]; then
+        tenant_header="      X-P-Tenant: '$tenant_id_yaml'"
     fi
-    
-    OS=$(detect_os)
-    
-    # Minimum version required for node_exporter_metrics plugin
-    MIN_VERSION="1.9.0"
-    
-    # Check if Fluent Bit is already installed
-    if command -v fluent-bit &> /dev/null || [ -f /opt/homebrew/bin/fluent-bit ] || [ -f /usr/local/bin/fluent-bit ]; then
-        CURRENT_VERSION=$(get_fluent_bit_version)
-        
-        if version_gt "$MIN_VERSION" "$CURRENT_VERSION"; then
-            install_fluent_bit
-            # Clear command hash to get updated binary
-            hash -r 2>/dev/null || true
-            NEW_VERSION=$(get_fluent_bit_version)
-        fi
-    else
-        install_fluent_bit
-        # Clear command hash to get updated binary
-        hash -r 2>/dev/null || true
-        NEW_VERSION=$(get_fluent_bit_version)
-    fi
-    
+
+    scrapers=$(cat <<'EOF'
+      cpu:
+      disk:
+      filesystem:
+      load:
+      memory:
+      network:
+      paging:
+      processes:
+      system:
+EOF
+)
+
     cat > "$CONFIG_FILE" << EOF
-[SERVICE]
-    flush                     1
-    log_level                 info
+receivers:
+  host_metrics:
+    collection_interval: 2s
+    scrapers:
+$scrapers
 
-[INPUT]
-    Name                      node_exporter_metrics
-    Tag                       node_metrics
-    Scrape_interval           2
+processors:
+  resource:
+    attributes:
+      - key: host.name
+        value: '$host_name_yaml'
+        action: upsert
+  batch:
+    timeout: 1s
 
-[OUTPUT]
-    Name                      opentelemetry
-    Match                     node_metrics
-    Host                      $INGESTOR_HOST
-    Port                      $PORT
-    Metrics_uri               /v1/metrics
-    Log_response_payload      True
-    TLS                       $TLS_SETTING
-    Header                    X-API-Key $API_KEY
-${TENANT_HEADER}
-    Header                    X-P-Stream $STREAM_NAME
-    Header                    X-P-Log-Source otel-metrics
+exporters:
+  otlp_http/parseable:
+    endpoint: '$endpoint_yaml'
+    encoding: json
+    compression: none
+    headers:
+      X-API-Key: '$api_key_yaml'
+      X-P-Stream: '$stream_name_yaml'
+      X-P-Log-Source: otel-metrics
+${tenant_header}
+
+service:
+  telemetry:
+    metrics:
+      level: none
+  pipelines:
+    metrics:
+      receivers: [host_metrics]
+      processors: [resource, batch]
+      exporters: [otlp_http/parseable]
 EOF
     chmod 600 "$CONFIG_FILE"
-    sed "s/Header                    X-API-Key.*/Header                    X-API-Key [REDACTED]/" "$CONFIG_FILE"
+
+    if ! "$COLLECTOR_BIN" validate --config "$CONFIG_FILE" > /dev/null; then
+        print_error "OpenTelemetry Collector configuration validation failed"
+        exit 1
+    fi
 
     if is_running; then
-        print_info "Restarting Fluent Bit to apply the updated configuration..."
-        stop_fluent_bit
+        print_info "Restarting OpenTelemetry Collector to apply updated configuration..."
+        stop_collector
         sleep 2
     fi
-    
-    # Start Fluent Bit
+
     echo ""
-    start_fluent_bit
-    print_setup_complete "$STREAM_NAME"
+    start_collector
+    print_setup_complete "$stream_name"
 }
 
-# Main script logic
 case "${1:-}" in
     stop)
-        stop_fluent_bit
+        stop_collector
         ;;
     restart)
-        restart_fluent_bit
+        restart_collector
         ;;
     start)
-        start_fluent_bit
+        start_collector
         ;;
     status)
         show_status
@@ -395,40 +416,29 @@ case "${1:-}" in
         show_logs
         ;;
     -h|--help|help)
-        echo "Fluent Bit Setup and Management Script"
+        echo "OpenTelemetry Collector Host Metrics Setup and Management Script"
         echo ""
         echo "Usage:"
         echo "  Setup and start:"
         echo "    $0 <host[:port]> <stream> <api_key> [tenant_id]"
         echo ""
         echo "  Management commands:"
-        echo "    $0 start    - Start Fluent Bit (if config exists)"
-        echo "    $0 stop     - Stop Fluent Bit"
-        echo "    $0 restart  - Restart Fluent Bit"
-        echo "    $0 status   - Show Fluent Bit status"
-        echo "    $0 logs     - Show Fluent Bit logs"
+        echo "    $0 start    - Start OpenTelemetry Collector"
+        echo "    $0 stop     - Stop OpenTelemetry Collector"
+        echo "    $0 restart  - Restart OpenTelemetry Collector"
+        echo "    $0 status   - Show OpenTelemetry Collector status"
+        echo "    $0 logs     - Show OpenTelemetry Collector logs"
         echo ""
         echo "Example:"
         echo "  $0 https://example.parseable.com:443 node-metrics px_api_key"
         echo "  $0 http://localhost:8000 node-metrics px_api_key tenant-id"
         ;;
     *)
-        # If not a command, treat as setup parameters
         if [ $# -lt 3 ] || [ $# -gt 4 ]; then
             print_error "Usage: $0 <host[:port]> <stream> <api_key> [tenant_id]"
             print_error "   Or: $0 [start|stop|restart|status|logs|help]"
-            print_error ""
-            print_error "Example:"
-            print_error "  $0 https://ec9cfee0-2fd4-45eb-8209-d7cd992c4bcc-ingestor.workspace-staging.parseable.com:443 node-metrics px_api_key"
-            print_error "  $0 http://localhost:8000 node-metrics px_api_key tenant-id"
-            print_error ""
-            print_error "Management commands:"
-            print_error "  $0 status   - Check if running"
-            print_error "  $0 stop     - Stop Fluent Bit"
-            print_error "  $0 restart  - Restart Fluent Bit"
-            print_error "  $0 logs     - View logs"
             exit 1
         fi
-        setup_fluent_bit "$1" "$2" "$3" "${4:-}"
+        setup_collector "$1" "$2" "$3" "${4:-}"
         ;;
 esac

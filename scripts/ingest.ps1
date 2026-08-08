@@ -3,7 +3,7 @@
 param(
     [Parameter(Position=0)]
     [string]$Param1,
-    
+
     [Parameter(Position=1)]
     [string]$Param2,
 
@@ -16,13 +16,14 @@ param(
 
 $ProgressPreference = 'SilentlyContinue'
 
-$INSTALL_DIR = "$env:LOCALAPPDATA\fluent-bit"
-$BIN_DIR = "$INSTALL_DIR\bin"
-$FLUENT_BIT_EXE = "$BIN_DIR\fluent-bit.exe"
-$CONFIG_FILE = "$PSScriptRoot\fluent-bit.conf"
-$PID_FILE = "$PSScriptRoot\fluent-bit.pid"
-$LOG_FILE = "$PSScriptRoot\fluent-bit.log"
-$ERROR_LOG_FILE = "$PSScriptRoot\fluent-bit.err.log"
+$COLLECTOR_VERSION = "0.157.0"
+$INSTALL_DIR = "$env:LOCALAPPDATA\parseable-otelcol"
+$COLLECTOR_EXE = "$INSTALL_DIR\otelcol.exe"
+$CONFIG_FILE = "$PSScriptRoot\otelcol.yaml"
+$PID_FILE = "$PSScriptRoot\otelcol.pid"
+$LOG_FILE = "$PSScriptRoot\otelcol.log"
+$ERROR_LOG_FILE = "$PSScriptRoot\otelcol.err.log"
+
 $SCRIPT_PATH = $PSCommandPath
 if ([string]::IsNullOrWhiteSpace($SCRIPT_PATH)) {
     $SCRIPT_PATH = $MyInvocation.MyCommand.Path
@@ -31,8 +32,6 @@ if ([string]::IsNullOrWhiteSpace($SCRIPT_PATH)) {
     $SCRIPT_PATH = Join-Path $PSScriptRoot "ingest.ps1"
 }
 $SCRIPT_CMD = "powershell -NoProfile -ExecutionPolicy Bypass -File '$SCRIPT_PATH'"
-
-$SUPPORTED_ARCH = @("AMD64", "ARM64")
 
 function Write-Info {
     param([string]$Message)
@@ -76,13 +75,26 @@ function Write-SetupComplete {
     $reset = "$([char]27)[0m"
     Write-Host ""
     Write-Host "${ok}[OK] You're all set!${reset}"
-    Write-Host "Host metrics are now being sent to Parseable."
+    Write-Host "Host metrics are now being sent to Parseable as OTLP JSON."
     Write-Host "Dataset: " -NoNewline
     Write-Host "${accent}${StreamName}${reset}"
     Write-Host "Return to Parseable and click Continue to verify your data."
 }
 
-function Test-FluentBitRunning {
+function Get-Architecture {
+    $arch = $env:PROCESSOR_ARCHITECTURE
+    if ($arch -eq "AMD64") {
+        return "AMD64"
+    }
+    if ($arch -eq "ARM64") {
+        return "ARM64"
+    }
+
+    Write-ErrorMsg "Unsupported CPU architecture: $arch"
+    exit 1
+}
+
+function Test-CollectorRunning {
     if (Test-Path $PID_FILE) {
         $processId = Get-Content $PID_FILE
 
@@ -103,7 +115,7 @@ function Test-FluentBitRunning {
         }
 
         $actualPath = [System.IO.Path]::GetFullPath($process.ExecutablePath)
-        $expectedPath = [System.IO.Path]::GetFullPath($FLUENT_BIT_EXE)
+        $expectedPath = [System.IO.Path]::GetFullPath($COLLECTOR_EXE)
         if ([System.StringComparer]::OrdinalIgnoreCase.Equals($actualPath, $expectedPath)) {
             return $true
         }
@@ -113,44 +125,41 @@ function Test-FluentBitRunning {
     return $false
 }
 
-function Stop-FluentBit {
-    if (Test-FluentBitRunning) {
+function Stop-Collector {
+    if (Test-CollectorRunning) {
         $processId = Get-Content $PID_FILE
-        Write-Info "Stopping Fluent Bit (PID: $processId)..."
-        
+        Write-Info "Stopping OpenTelemetry Collector (PID: $processId)..."
+
         try {
             Stop-Process -Id $processId -Force -ErrorAction Stop
             Start-Sleep -Seconds 2
-            Write-Info "Fluent Bit stopped successfully"
+            Write-Info "OpenTelemetry Collector stopped successfully"
             Remove-Item $PID_FILE -ErrorAction SilentlyContinue
         }
         catch {
-            Write-ErrorMsg "Failed to stop Fluent Bit: $_"
+            Write-ErrorMsg "Failed to stop OpenTelemetry Collector: $_"
             exit 1
         }
     }
     else {
-        Write-Warning "Fluent Bit is not running"
+        Write-Warning "OpenTelemetry Collector is not running"
     }
 }
 
 function Show-Status {
-    if (Test-FluentBitRunning) {
+    if (Test-CollectorRunning) {
         $processId = Get-Content $PID_FILE
-        Write-Info "Fluent Bit is running (PID: $processId)"
+        Write-Info "OpenTelemetry Collector is running (PID: $processId)"
         Write-Host ""
-        Write-Info "Process details:"
         Get-Process -Id $processId | Format-Table Id, ProcessName, CPU, WS, StartTime -AutoSize
-        Write-Host ""
         Write-Info "Config file: $CONFIG_FILE"
         Write-Info "Log file: $LOG_FILE"
         Write-Info "Error log file: $ERROR_LOG_FILE"
-        Write-Host ""
         Write-Info "To see logs: $SCRIPT_CMD logs"
         Write-Info "To stop: $SCRIPT_CMD stop"
     }
     else {
-        Write-Warning "Fluent Bit is not running"
+        Write-Warning "OpenTelemetry Collector is not running"
         if (Test-Path $PID_FILE) {
             Write-Info "Cleaning up stale PID file..."
             Remove-Item $PID_FILE -ErrorAction SilentlyContinue
@@ -177,155 +186,140 @@ function Show-Logs {
     }
 }
 
-function Get-Architecture {
-    $arch = $env:PROCESSOR_ARCHITECTURE
-    if ($arch -eq "AMD64") {
-        return "AMD64"
-    }
-    elseif ($arch -eq "ARM64") {
-        return "ARM64"
+function Install-Collector {
+    $arch = Get-Architecture
+    $archSuffix = if ($arch -eq "ARM64") { "arm64" } else { "amd64" }
+    $expectedHash = if ($arch -eq "ARM64") {
+        "5dbbd3dd0344f759f41ab3557604d73ab720a17827375c346af6d4c2234ce776"
     }
     else {
-        Write-ErrorMsg "Unsupported architecture: $arch"
-        exit 1
+        "f1468356aee226c4bf8bb846d260e3bada0121ef7da31db2e2e023f8207b7b9e"
     }
-}
 
-function Install-FluentBit {
-    
-    $arch = Get-Architecture
-    
-    if ($SUPPORTED_ARCH -notcontains $arch) {
-        Write-ErrorMsg "Unsupported CPU architecture: $arch"
-        exit 1
+    if (Test-Path $COLLECTOR_EXE) {
+        $installedVersion = & $COLLECTOR_EXE --version 2>$null | Select-Object -First 1
+        if ($installedVersion -match [regex]::Escape($COLLECTOR_VERSION)) {
+            return
+        }
     }
-    
-    if (Test-Path $FLUENT_BIT_EXE) {
-        $version = & $FLUENT_BIT_EXE --version 2>$null | Select-Object -First 1
-        return
-    }
-    
-    if (-not (Test-Path $INSTALL_DIR)) {
-        New-Item -ItemType Directory -Path $INSTALL_DIR -Force | Out-Null
-    }
-    if (-not (Test-Path $BIN_DIR)) {
-        New-Item -ItemType Directory -Path $BIN_DIR -Force | Out-Null
-    }
-    
+
+    $archiveName = "otelcol_${COLLECTOR_VERSION}_windows_${archSuffix}.tar.gz"
+    $downloadUrl = "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${COLLECTOR_VERSION}/${archiveName}"
+    $tempDir = Join-Path $env:TEMP ("parseable-otelcol-" + [guid]::NewGuid().ToString("N"))
+    $archivePath = Join-Path $tempDir $archiveName
+
     try {
-        $version = "3.2.2"
-        $archSuffix = if ($arch -eq "ARM64") { "winarm64" } else { "win64" }
-        $downloadUrl = "https://packages.fluentbit.io/windows/fluent-bit-$version-$archSuffix.zip"
-        $zipFile = "$env:TEMP\fluent-bit-$version-$archSuffix.zip"
-        Invoke-WebRequest -Uri $downloadUrl -OutFile $zipFile
-        Expand-Archive -Path $zipFile -DestinationPath $INSTALL_DIR -Force
-        
-        $extractedExe = Get-ChildItem -Path $INSTALL_DIR -Filter "fluent-bit.exe" -Recurse | Select-Object -First 1
-        
-        if ($extractedExe) {
-            Copy-Item -Path $extractedExe.FullName -Destination $FLUENT_BIT_EXE -Force
-            
-            $dllPath = Split-Path $extractedExe.FullName
-            Get-ChildItem -Path $dllPath -Filter "*.dll" -ErrorAction SilentlyContinue | ForEach-Object {
-                Copy-Item -Path $_.FullName -Destination $BIN_DIR -Force
-            }
-            
-            $pluginsDir = Join-Path $dllPath "plugins"
-            if (Test-Path $pluginsDir) {
-                $targetPluginsDir = Join-Path $BIN_DIR "plugins"
-                if (-not (Test-Path $targetPluginsDir)) {
-                    New-Item -ItemType Directory -Path $targetPluginsDir -Force | Out-Null
-                }
-                Copy-Item -Path "$pluginsDir\*" -Destination $targetPluginsDir -Recurse -Force
-            }
+        Write-Info "Installing OpenTelemetry Collector v$COLLECTOR_VERSION..."
+        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+        Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath
+
+        $actualHash = (Get-FileHash -Path $archivePath -Algorithm SHA256).Hash
+        if (-not [System.StringComparer]::OrdinalIgnoreCase.Equals($actualHash, $expectedHash)) {
+            throw "OpenTelemetry Collector checksum verification failed"
         }
-        else {
-            Write-ErrorMsg "Could not find fluent-bit.exe in the downloaded package"
-            exit 1
+
+        $tarCommand = Get-Command tar.exe -ErrorAction SilentlyContinue
+        if ($null -eq $tarCommand) {
+            throw "tar.exe is required to extract OpenTelemetry Collector"
         }
-        
-        Remove-Item $zipFile -Force -ErrorAction SilentlyContinue
-        
-        $installedVersion = & $FLUENT_BIT_EXE --version 2>$null | Select-Object -First 1
+
+        & $tarCommand.Source -xzf $archivePath -C $tempDir
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to extract OpenTelemetry Collector archive"
+        }
+
+        $extractedExe = Get-ChildItem -Path $tempDir -Filter "otelcol.exe" -Recurse | Select-Object -First 1
+        if ($null -eq $extractedExe) {
+            throw "OpenTelemetry Collector executable not found in downloaded archive"
+        }
+
+        if (Test-CollectorRunning) {
+            Stop-Collector
+        }
+
+        if (-not (Test-Path $INSTALL_DIR)) {
+            New-Item -ItemType Directory -Path $INSTALL_DIR -Force | Out-Null
+        }
+        Copy-Item -Path $extractedExe.FullName -Destination $COLLECTOR_EXE -Force
     }
     catch {
-        Write-ErrorMsg "Failed to install Fluent Bit: $_"
+        Write-ErrorMsg "Failed to install OpenTelemetry Collector: $_"
+        Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
         exit 1
     }
+
+    Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-function Start-FluentBit {
-    if (Test-FluentBitRunning) {
+function Start-Collector {
+    if (Test-CollectorRunning) {
         $processId = Get-Content $PID_FILE
-        Write-Warning "Fluent Bit is already running (PID: $processId)"
-        Write-Info "Use '$SCRIPT_CMD stop' to stop it first"
+        Write-Warning "OpenTelemetry Collector is already running (PID: $processId)"
         return $false
     }
-    
+
     if (-not (Test-Path $CONFIG_FILE)) {
         Write-ErrorMsg "Configuration file not found: $CONFIG_FILE"
         Write-ErrorMsg "Please run setup first"
         exit 1
     }
-    
-    if (-not (Test-Path $FLUENT_BIT_EXE)) {
-        Write-ErrorMsg "Fluent Bit not installed. Installing..."
-        Install-FluentBit
+
+    Install-Collector
+
+    & $COLLECTOR_EXE validate --config $CONFIG_FILE *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-ErrorMsg "OpenTelemetry Collector configuration validation failed"
+        exit 1
     }
-    
-    $version = & $FLUENT_BIT_EXE --version 2>$null | Select-Object -First 1
-    
+
     Remove-Item $LOG_FILE, $ERROR_LOG_FILE -ErrorAction SilentlyContinue
 
-    # Start Fluent Bit process in background and capture logs
-    $process = Start-Process -FilePath $FLUENT_BIT_EXE `
-        -ArgumentList "-c", "`"$CONFIG_FILE`"" `
-        -WorkingDirectory $BIN_DIR `
+    $process = Start-Process -FilePath $COLLECTOR_EXE `
+        -ArgumentList "--config", "`"$CONFIG_FILE`"" `
+        -WorkingDirectory $INSTALL_DIR `
         -WindowStyle Hidden `
         -RedirectStandardOutput $LOG_FILE `
         -RedirectStandardError $ERROR_LOG_FILE `
         -PassThru
-    
-    # Save PID
+
     $process.Id | Out-File -FilePath $PID_FILE -Force
-    
-    Write-Info "Process started with PID: $($process.Id)"
+    Write-Info "OpenTelemetry Collector started with PID: $($process.Id)"
     Start-Sleep -Seconds 3
-    
-    # Check if process is still running
+
     $stillRunning = Get-Process -Id $process.Id -ErrorAction SilentlyContinue
-    
     if (-not $stillRunning) {
-        Write-ErrorMsg "Fluent Bit exited immediately"
-        Write-ErrorMsg "Run '$SCRIPT_CMD debug' to see error details"
+        Write-ErrorMsg "OpenTelemetry Collector exited immediately"
+        Write-ErrorMsg "Run '$SCRIPT_CMD logs' to see error details"
         Remove-Item $PID_FILE -ErrorAction SilentlyContinue
         exit 1
     }
-    else {
-        Write-Info "Fluent Bit started successfully (PID: $($process.Id))"
-        Write-Host ""
-        Write-Info "To debug: $SCRIPT_CMD debug"
-        Write-Info "To check status: $SCRIPT_CMD status"
-        Write-Info "To see logs: $SCRIPT_CMD logs"
-        Write-Info "To stop: $SCRIPT_CMD stop"
-        return $true
-    }
+
+    Write-Info "OpenTelemetry Collector started successfully (PID: $($process.Id))"
+    Write-Info "To check status: $SCRIPT_CMD status"
+    Write-Info "To see logs: $SCRIPT_CMD logs"
+    Write-Info "To stop: $SCRIPT_CMD stop"
+    return $true
 }
 
-function Restart-FluentBit {
-    Stop-FluentBit
+function Restart-Collector {
+    Stop-Collector
     Start-Sleep -Seconds 2
-    [void](Start-FluentBit)
+    [void](Start-Collector)
 }
 
-function Setup-FluentBit {
+function ConvertTo-YamlSingleQuoted {
+    param([string]$Value)
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function Setup-Collector {
     param(
         [string]$IngestorHost,
         [string]$StreamName,
         [string]$ApiKey,
         [string]$TenantId
     )
-    
+
     if ([string]::IsNullOrWhiteSpace($IngestorHost) -or [string]::IsNullOrWhiteSpace($StreamName) -or [string]::IsNullOrWhiteSpace($ApiKey)) {
         Write-ErrorMsg "Invalid setup parameters"
         exit 1
@@ -333,16 +327,16 @@ function Setup-FluentBit {
 
     Write-ParseableBanner
 
-    $tlsSetting = "On"
+    $ingestorScheme = "https"
     $defaultPort = "443"
     if ($IngestorHost -like "https://*") {
         $IngestorHost = $IngestorHost.Substring("https://".Length)
-        $tlsSetting = "On"
+        $ingestorScheme = "https"
         $defaultPort = "443"
     }
     elseif ($IngestorHost -like "http://*") {
         $IngestorHost = $IngestorHost.Substring("http://".Length)
-        $tlsSetting = "Off"
+        $ingestorScheme = "http"
         $defaultPort = "80"
     }
     $IngestorHost = ($IngestorHost -split '/', 2)[0]
@@ -367,63 +361,89 @@ function Setup-FluentBit {
         exit 1
     }
 
-    Install-FluentBit
+    Install-Collector
 
+    $endpoint = ConvertTo-YamlSingleQuoted "${ingestorScheme}://${IngestorHost}:${Port}"
+    $apiKeyValue = ConvertTo-YamlSingleQuoted $ApiKey
+    $streamNameValue = ConvertTo-YamlSingleQuoted $StreamName
+    $hostNameValue = ConvertTo-YamlSingleQuoted $env:COMPUTERNAME
     $configLines = @(
-        "[SERVICE]",
-        "    flush                     1",
-        "    log_level                 info",
+        "receivers:",
+        "  host_metrics:",
+        "    collection_interval: 1s",
+        "    scrapers:",
+        "      cpu:",
+        "      disk:",
+        "      filesystem:",
+        "      load:",
+        "      memory:",
+        "      network:",
+        "      paging:",
+        "      system:",
         "",
-        "[INPUT]",
-        "    Name                      windows_exporter_metrics",
-        "    Tag                       node_metrics",
-        "    Scrape_interval           1",
-        "    # Collect only essential metrics",
-        "    metrics                   cpu",
+        "processors:",
+        "  resource:",
+        "    attributes:",
+        "      - key: host.name",
+        "        value: $hostNameValue",
+        "        action: upsert",
+        "  batch:",
+        "    timeout: 1s",
         "",
-        "[OUTPUT]",
-        "    Name                      opentelemetry",
-        "    Match                     node_metrics",
-        "    Host                      $IngestorHost",
-        "    Port                      $Port",
-        "    Metrics_uri               /v1/metrics",
-        "    Log_response_payload      True",
-        "    TLS                       $tlsSetting",
-        "    Grpc                      Off",
-        "    Http2                     Off",
-        "    Header                    X-API-Key $ApiKey"
+        "exporters:",
+        "  otlp_http/parseable:",
+        "    endpoint: $endpoint",
+        "    encoding: json",
+        "    compression: none",
+        "    headers:",
+        "      X-API-Key: $apiKeyValue",
+        "      X-P-Stream: $streamNameValue",
+        "      X-P-Log-Source: otel-metrics"
     )
 
     if (-not [string]::IsNullOrWhiteSpace($TenantId)) {
-        $configLines += "    Header                    X-P-Tenant $TenantId"
+        $tenantIdValue = ConvertTo-YamlSingleQuoted $TenantId
+        $configLines += "      X-P-Tenant: $tenantIdValue"
     }
 
     $configLines += @(
-        "    Header                    X-P-Stream $StreamName",
-        "    Header                    X-P-Log-Source otel-metrics"
+        "",
+        "service:",
+        "  telemetry:",
+        "    metrics:",
+        "      level: none",
+        "  pipelines:",
+        "    metrics:",
+        "      receivers: [host_metrics]",
+        "      processors: [resource, batch]",
+        "      exporters: [otlp_http/parseable]"
     )
 
     $configContent = ($configLines -join [Environment]::NewLine) + [Environment]::NewLine
-    
-    # Use UTF8 without BOM (important for Fluent Bit)
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     [System.IO.File]::WriteAllText($CONFIG_FILE, $configContent, $utf8NoBom)
 
-    if (Test-FluentBitRunning) {
-        Write-Info "Restarting Fluent Bit to apply the updated configuration..."
-        Stop-FluentBit
+    & $COLLECTOR_EXE validate --config $CONFIG_FILE *> $null
+    if ($LASTEXITCODE -ne 0) {
+        Write-ErrorMsg "OpenTelemetry Collector configuration validation failed"
+        exit 1
+    }
+
+    if (Test-CollectorRunning) {
+        Write-Info "Restarting OpenTelemetry Collector to apply updated configuration..."
+        Stop-Collector
         Start-Sleep -Seconds 2
     }
-    
+
     Write-Host ""
-    if (Start-FluentBit) {
+    if (Start-Collector) {
         Write-SetupComplete -StreamName $StreamName
     }
 }
 
 function Show-Help {
     Write-Host @"
-Fluent Bit Setup and Management Script for Windows
+OpenTelemetry Collector Host Metrics Setup and Management Script for Windows
 
 Usage:
   Setup:   $SCRIPT_CMD [host[:port]] [stream] [api_key] [tenant_id]
@@ -441,20 +461,16 @@ Example:
 "@
 }
 
-function Debug-FluentBit {
+function Debug-Collector {
     if (-not (Test-Path $CONFIG_FILE)) {
         Write-ErrorMsg "Configuration file not found: $CONFIG_FILE"
         exit 1
     }
-    
-    if (-not (Test-Path $FLUENT_BIT_EXE)) {
-        Write-ErrorMsg "Fluent Bit not installed"
-        exit 1
-    }
+
+    Install-Collector
     Write-Info "Config: $CONFIG_FILE"
     Write-Host ""
-    
-    & $FLUENT_BIT_EXE -c "$CONFIG_FILE"
+    & $COLLECTOR_EXE --config $CONFIG_FILE
 }
 
 if ([string]::IsNullOrWhiteSpace($Param1)) {
@@ -464,13 +480,13 @@ if ([string]::IsNullOrWhiteSpace($Param1)) {
 
 switch ($Param1.ToLower()) {
     "stop" {
-        Stop-FluentBit
+        Stop-Collector
     }
     "restart" {
-        Restart-FluentBit
+        Restart-Collector
     }
     "start" {
-        [void](Start-FluentBit)
+        [void](Start-Collector)
     }
     "status" {
         Show-Status
@@ -479,7 +495,7 @@ switch ($Param1.ToLower()) {
         Show-Logs
     }
     "debug" {
-        Debug-FluentBit
+        Debug-Collector
     }
     "help" {
         Show-Help
@@ -496,6 +512,6 @@ switch ($Param1.ToLower()) {
             Write-ErrorMsg "   Or: $SCRIPT_CMD [start|stop|restart|status|logs|debug|help]"
             exit 1
         }
-        Setup-FluentBit -IngestorHost $Param1 -StreamName $Param2 -ApiKey $Param3 -TenantId $Param4
+        Setup-Collector -IngestorHost $Param1 -StreamName $Param2 -ApiKey $Param3 -TenantId $Param4
     }
 }
