@@ -48,28 +48,27 @@ const SERVICES: [&str; 5] = [
     "payment-service",
     "inventory-service",
 ];
-const OPERATIONS: [&str; 5] = [
-    "GET /api/checkout",
-    "auth.validate",
-    "order.create",
-    "payment.charge",
-    "inventory.reserve",
-];
 const HTTP_METHODS: [&str; 4] = ["GET", "POST", "PUT", "DELETE"];
-const HTTP_PATHS: [&str; 5] = [
+const HTTP_PATHS: [&str; 7] = [
     "/api/users",
     "/api/orders",
     "/api/products",
     "/api/checkout",
     "/api/inventory",
+    "/health",
+    "/metrics",
 ];
-const LOG_MESSAGES: [&str; 6] = [
+const LOG_MESSAGES: [&str; 10] = [
     "Request processed successfully",
     "Database query executed",
     "User authenticated",
     "Cache hit for key",
     "Event published to queue",
     "Retrying failed request",
+    "Rate limit checked",
+    "Connection pool acquired",
+    "Circuit breaker open",
+    "Validation passed",
 ];
 
 pub static OTEL_GENERATOR: Lazy<OtelGenerator> = Lazy::new(OtelGenerator::default);
@@ -401,115 +400,45 @@ async fn send_signal<T: Serialize + ?Sized>(
 fn build_batch(sequence: u64) -> TelemetryBatch {
     let mut rng = rand::thread_rng();
     let now = unix_nanos();
-    let mut trace_id = vec![0; 16];
-    rng.fill_bytes(&mut trace_id);
-    let span_ids: Vec<Vec<u8>> = SERVICES
-        .iter()
-        .map(|_| {
-            let mut span_id = vec![0; 8];
-            rng.fill_bytes(&mut span_id);
-            span_id
-        })
-        .collect();
     let method = *HTTP_METHODS
         .choose(&mut rng)
         .expect("methods are non-empty");
     let path = *HTTP_PATHS.choose(&mut rng).expect("paths are non-empty");
-    let error_index = if rng.gen_ratio(1, 5) {
-        Some(rng.gen_range(1..SERVICES.len()))
-    } else {
-        None
-    };
-
     let mut resource_spans = Vec::with_capacity(SERVICES.len());
     let mut resource_logs = Vec::with_capacity(SERVICES.len());
     let mut resource_metrics = Vec::with_capacity(SERVICES.len());
 
     for (index, service) in SERVICES.iter().enumerate() {
-        let is_error = error_index == Some(index);
+        let is_error = rng.gen_ratio(1, 4);
         let start = now + (index as u64 * 1_000_000);
-        // Child spans stay inside their parent while retaining varied latency.
-        let duration_ms = ((SERVICES.len() - index) as u64 * 20) + rng.gen_range(5_u64..15);
+        let duration_ms = rng.gen_range(250_u64..500);
         let end = start + duration_ms * 1_000_000;
-        let parent_span_id = if index == 0 {
-            Vec::new()
+        let status_code = if is_error {
+            *[400_i64, 404, 500]
+                .choose(&mut rng)
+                .expect("error status codes are non-empty")
         } else {
-            span_ids[index - 1].clone()
+            *[200_i64, 200, 200, 201]
+                .choose(&mut rng)
+                .expect("success status codes are non-empty")
         };
-        let status_code = if is_error { 500 } else { 200 };
         let resource = resource(service, sequence);
-        let span_attributes = vec![
-            kv_string("service.name", service),
-            kv_string("service.version", "1.3.0"),
-            kv_string("http.method", method),
-            kv_string("http.url", path),
-            kv_int("http.status_code", status_code),
-            kv_string("http.scheme", "http"),
-            kv_string("http.target", path),
-            kv_string("http.host", &format!("{service}.internal:8080")),
-            kv_string("deployment.environment", "production"),
-            kv_string("k8s.namespace.name", "production"),
-            kv_string("k8s.cluster.name", "demo-cluster"),
-            kv_string("k8s.pod.name", &format!("{service}-demo-{sequence}")),
-            kv_string("db.system", if index > 1 { "postgresql" } else { "none" }),
-            kv_double("app.demo.sequence", sequence as f64),
-        ];
-        let events = if is_error {
-            vec![span::Event {
-                time_unix_nano: end,
-                name: "error.occurred".to_string(),
-                attributes: vec![
-                    kv_string("exception.type", "DemoServiceError"),
-                    kv_string("exception.message", "Synthetic demo request failed"),
-                ],
-                ..Default::default()
-            }]
-        } else {
-            vec![span::Event {
-                time_unix_nano: start,
-                name: "request.received".to_string(),
-                attributes: vec![kv_string("request.id", &format!("req-{sequence}-{index}"))],
-                ..Default::default()
-            }]
-        };
-        let span = Span {
-            trace_id: trace_id.clone(),
-            span_id: span_ids[index].clone(),
-            parent_span_id,
-            flags: 1,
-            name: if index == 0 {
-                format!("{method} {path}")
-            } else {
-                OPERATIONS[index].to_string()
-            },
-            kind: if index == 0 {
-                span::SpanKind::Server as i32
-            } else {
-                span::SpanKind::Client as i32
-            },
-            start_time_unix_nano: start,
-            end_time_unix_nano: end,
-            attributes: span_attributes,
-            events,
-            status: Some(Status {
-                message: if is_error {
-                    "Synthetic HTTP 500 error".to_string()
-                } else {
-                    String::default()
-                },
-                code: if is_error {
-                    status::StatusCode::Error as i32
-                } else {
-                    status::StatusCode::Ok as i32
-                },
-            }),
-            ..Default::default()
-        };
+        let (trace_id, root_span_id, spans) = build_service_trace(
+            &mut rng,
+            service,
+            sequence,
+            method,
+            path,
+            status_code,
+            start,
+            end,
+            is_error,
+        );
         resource_spans.push(ResourceSpans {
             resource: Some(resource.clone()),
             scope_spans: vec![ScopeSpans {
                 scope: Some(scope("parseable.otel-demo.traces")),
-                spans: vec![span],
+                spans,
                 ..Default::default()
             }],
             ..Default::default()
@@ -522,14 +451,17 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
                 "Synthetic request failed",
             )
         } else {
-            (
-                SeverityNumber::Info as i32,
-                "INFO",
-                *LOG_MESSAGES
-                    .choose(&mut rng)
-                    .expect("messages are non-empty"),
-            )
+            let (severity_number, severity_text) = match rng.gen_range(0_u8..5) {
+                3 => (SeverityNumber::Warn as i32, "WARN"),
+                4 => (SeverityNumber::Error as i32, "ERROR"),
+                _ => (SeverityNumber::Info as i32, "INFO"),
+            };
+            let message = *LOG_MESSAGES
+                .choose(&mut rng)
+                .expect("messages are non-empty");
+            (severity_number, severity_text, message)
         };
+        let log_message = format!("{message} - {method} {path} {status_code}");
         resource_logs.push(ResourceLogs {
             resource: Some(resource.clone()),
             scope_logs: vec![ScopeLogs {
@@ -539,16 +471,25 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
                     observed_time_unix_nano: end,
                     severity_number,
                     severity_text: severity_text.to_string(),
-                    body: Some(any_string(message)),
+                    body: Some(any_string(&log_message)),
                     attributes: vec![
-                        kv_string("service.name", service),
+                        kv_string("service", service),
+                        kv_string("k8s.namespace.name", "production"),
+                        kv_string("k8s.pod.name", &format!("{service}-demo-{sequence}")),
+                        kv_string("k8s.cluster.name", "demo-cluster"),
+                        kv_string("cloud.provider", "aws"),
+                        kv_string("cloud.region", "us-east-1"),
                         kv_string("http.method", method),
-                        kv_string("http.target", path),
+                        kv_string("http.url", path),
                         kv_int("http.status_code", status_code),
+                        kv_string("trace.id", &hex::encode(&trace_id)),
+                        kv_string("span.id", &hex::encode(&root_span_id)),
+                        kv_string("net.peer.ip", &format!("10.0.{}.{}", index + 1, 10 + index)),
+                        kv_string("container.id", &format!("container-{sequence}-{index}")),
                     ],
                     flags: 1,
                     trace_id: trace_id.clone(),
-                    span_id: span_ids[index].clone(),
+                    span_id: root_span_id,
                     event_name: if is_error {
                         "request.failed".to_string()
                     } else {
@@ -748,6 +689,564 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn build_service_trace(
+    rng: &mut impl Rng,
+    service: &str,
+    sequence: u64,
+    method: &str,
+    path: &str,
+    status_code: i64,
+    start: u64,
+    end: u64,
+    is_error: bool,
+) -> (Vec<u8>, Vec<u8>, Vec<Span>) {
+    const SPAN_COUNT: usize = 13;
+    let trace_id = random_id(rng, 16);
+    let span_ids: Vec<Vec<u8>> = (0..SPAN_COUNT).map(|_| random_id(rng, 8)).collect();
+    let at = |percent: u64| start + end.saturating_sub(start) * percent / 100;
+
+    let mut root_events = vec![demo_event(
+        start,
+        "request.received",
+        vec![
+            kv_string("client.ip", "10.0.1.42"),
+            kv_string("request.id", &format!("req-{sequence}-{service}")),
+            kv_int("trace.flags", 1),
+        ],
+    )];
+    if is_error {
+        root_events.push(demo_event(
+            at(95),
+            "error.occurred",
+            vec![
+                kv_string("exception.type", "InternalServerError"),
+                kv_string("exception.code", &status_code.to_string()),
+                kv_string("exception.message", "Synthetic demo request failed"),
+                kv_string(
+                    "exception.stacktrace",
+                    &format!("at {service}.handler({service}.rs:123)"),
+                ),
+            ],
+        ));
+    }
+    root_events.push(demo_event(
+        end,
+        "request.completed",
+        vec![
+            kv_int("duration_ms", end.saturating_sub(start) as i64 / 1_000_000),
+            kv_int("response.size_bytes", 8_192),
+        ],
+    ));
+
+    let root_attributes = vec![
+        kv_string("service.name", service),
+        kv_string("service.version", "1.3.0"),
+        kv_string(
+            "service.instance.id",
+            &format!("{service}-{}", sequence % 5 + 1),
+        ),
+        kv_string("http.method", method),
+        kv_string("http.url", path),
+        kv_int("http.status_code", status_code),
+        kv_string("http.scheme", "https"),
+        kv_string("http.target", path),
+        kv_string("http.host", &format!("{service}.internal:8080")),
+        kv_string("http.flavor", "HTTP/2"),
+        kv_string("http.user_agent", "parseable-otel-demo/1.0"),
+        kv_int("http.request_content_length", 1_024),
+        kv_int("http.response_content_length", 8_192),
+        kv_string("k8s.namespace.name", "production"),
+        kv_string("k8s.cluster.name", "prod-us-east-1"),
+        kv_string("k8s.pod.name", &format!("{service}-demo-{sequence}")),
+        kv_string("k8s.deployment.name", &format!("{service}-deploy")),
+        kv_string("k8s.replicaset.name", &format!("{service}-rs-123")),
+        kv_string("k8s.node.name", "node-pool-1-abc123"),
+        kv_string("k8s.container.name", service),
+        kv_string("cloud.provider", "aws"),
+        kv_string("cloud.region", "us-east-1"),
+        kv_string("cloud.availability_zone", "us-east-1a"),
+        kv_string("cloud.account.id", "123456789012"),
+        kv_string("cloud.platform", "aws_ec2"),
+        kv_string("net.protocol.name", "HTTP/2"),
+        kv_string("net.transport", "tcp"),
+        kv_string("net.peer.ip", "10.0.1.42"),
+        kv_int("net.peer.port", 44_321),
+        kv_string("net.host.ip", "10.0.1.10"),
+        kv_int("net.host.port", 8_080),
+        kv_string("container.id", &format!("container-{sequence}-{service}")),
+        kv_string("container.name", service),
+        kv_string(
+            "container.image.name",
+            &format!("registry.internal/{service}"),
+        ),
+        kv_string("container.image.tag", "v1.3.0"),
+        kv_string("container.runtime", "containerd"),
+        kv_int("process.pid", 1_000 + sequence as i64 % 50_000),
+        kv_string("process.executable.name", "parseable-demo"),
+        kv_string("process.runtime.name", "Rust"),
+        kv_string("process.runtime.version", env!("CARGO_PKG_VERSION")),
+        kv_double("app.demo.sequence", sequence as f64),
+    ];
+
+    let spans = vec![
+        demo_span(
+            &trace_id,
+            &span_ids[0],
+            &[],
+            &format!("{method} {path}"),
+            span::SpanKind::Server,
+            start,
+            end,
+            root_attributes,
+            root_events,
+            is_error,
+        ),
+        demo_span(
+            &trace_id,
+            &span_ids[1],
+            &span_ids[0],
+            "auth.validate",
+            span::SpanKind::Internal,
+            at(2),
+            at(12),
+            vec![
+                kv_string("auth.method", "jwt"),
+                kv_string("auth.token.type", "bearer"),
+                kv_string("enduser.id", &format!("user_{}", sequence % 9_000 + 1_000)),
+                kv_string("enduser.role", "user"),
+                kv_string("enduser.scope", "read:write"),
+                kv_bool("auth.success", !is_error),
+                kv_double("auth.latency_ms", 12.5),
+            ],
+            vec![
+                demo_event(
+                    at(3),
+                    "auth.started",
+                    vec![kv_string("auth.provider", "internal")],
+                ),
+                if is_error {
+                    demo_event(
+                        at(11),
+                        "auth.failed",
+                        vec![
+                            kv_string("reason", "invalid_token"),
+                            kv_string("auth.error_code", "AUTH001"),
+                        ],
+                    )
+                } else {
+                    demo_event(
+                        at(11),
+                        "auth.completed",
+                        vec![
+                            kv_string("user.id", &format!("user_{}", sequence % 9_000 + 1_000)),
+                            kv_string("session.id", &format!("sess-{sequence}")),
+                            kv_int("token.expires_in", 3_600),
+                        ],
+                    )
+                },
+            ],
+            is_error,
+        ),
+        demo_span(
+            &trace_id,
+            &span_ids[2],
+            &span_ids[0],
+            "business_logic",
+            span::SpanKind::Internal,
+            at(15),
+            at(70),
+            vec![kv_string("operation.type", "compute")],
+            vec![
+                demo_event(at(15), "processing.started", vec![]),
+                demo_event(at(70), "processing.completed", vec![]),
+            ],
+            false,
+        ),
+        demo_span(
+            &trace_id,
+            &span_ids[3],
+            &span_ids[2],
+            "db.query",
+            span::SpanKind::Client,
+            at(20),
+            at(42),
+            vec![
+                kv_string("db.system", "postgresql"),
+                kv_string("db.name", "app_production"),
+                kv_string("db.user", "app_user"),
+                kv_string(
+                    "db.connection_string",
+                    "postgresql://db-primary.internal:5432",
+                ),
+                kv_string("db.operation", "SELECT"),
+                kv_string("db.sql.table", "orders"),
+                kv_string("db.statement", "SELECT * FROM orders WHERE id = $1"),
+                kv_string("db.server.address", "db-primary.internal"),
+                kv_int("db.server.port", 5_432),
+                kv_string("db.pool.name", "postgresql_pool"),
+                kv_int("db.pool.max_size", 50),
+                kv_int("db.pool.min_size", 5),
+                kv_string("db.query.id", &format!("query-{sequence}")),
+                kv_string("db.query.plan", "index_scan"),
+                kv_double("db.query.cost", 42.5),
+                kv_string("db.transaction.id", &format!("txn-{sequence}")),
+                kv_int("db.rows_returned", 12),
+                kv_double("db.duration_ms", 35.5),
+            ],
+            vec![
+                demo_event(
+                    at(21),
+                    "query.prepared",
+                    vec![
+                        kv_string("query.hash", &format!("hash-{sequence}")),
+                        kv_bool("query.parameterized", true),
+                    ],
+                ),
+                demo_event(
+                    at(40),
+                    "query.executed",
+                    vec![
+                        kv_int("rows_affected", 12),
+                        kv_double("execution_time_ms", 35.5),
+                        kv_double("lock_time_ms", 1.2),
+                    ],
+                ),
+            ],
+            false,
+        ),
+        demo_span(
+            &trace_id,
+            &span_ids[4],
+            &span_ids[3],
+            "db.connection_pool",
+            span::SpanKind::Internal,
+            at(22),
+            at(30),
+            vec![
+                kv_string("db.pool.name", "postgresql_pool"),
+                kv_int("db.pool.max_size", 50),
+                kv_int("db.pool.min_size", 5),
+                kv_int("db.pool.active_connections", 8),
+                kv_int("db.pool.idle_connections", 3),
+                kv_int("db.pool.waiting_requests", 1),
+                kv_string("db.connection.id", &format!("conn-{sequence}")),
+            ],
+            vec![
+                demo_event(
+                    at(23),
+                    "connection.acquired",
+                    vec![
+                        kv_double("wait_time_ms", 2.5),
+                        kv_bool("connection.reused", true),
+                    ],
+                ),
+                demo_event(at(29), "connection.released", vec![]),
+            ],
+            false,
+        ),
+        demo_span(
+            &trace_id,
+            &span_ids[5],
+            &span_ids[2],
+            "cache.operation",
+            span::SpanKind::Client,
+            at(43),
+            at(52),
+            vec![
+                kv_string("cache.operation", "get"),
+                kv_string("cache.backend", "redis"),
+                kv_string("cache.key", &format!("{service}:orders:{sequence}")),
+                kv_bool("cache.hit", !sequence.is_multiple_of(3)),
+                kv_string("db.system", "redis"),
+                kv_string("db.server.address", "redis-master.internal"),
+                kv_int("db.server.port", 6_379),
+                kv_int("db.redis.database_index", 0),
+                kv_int("cache.ttl_seconds", 300),
+            ],
+            vec![demo_event(
+                at(44),
+                "cache.get",
+                vec![
+                    kv_string("key", &format!("{service}:orders:{sequence}")),
+                    kv_string("key.prefix", service),
+                    kv_int("value.size_bytes", 512),
+                ],
+            )],
+            false,
+        ),
+        demo_span(
+            &trace_id,
+            &span_ids[6],
+            &span_ids[5],
+            "redis.command",
+            span::SpanKind::Client,
+            at(44),
+            at(49),
+            vec![
+                kv_string("db.system", "redis"),
+                kv_string("db.operation", "GET"),
+                kv_string("db.statement", "GET demo:key"),
+                kv_string("db.redis.flags", ""),
+                kv_string("net.peer.name", "redis-master.internal"),
+                kv_int("net.peer.port", 6_379),
+            ],
+            vec![
+                demo_event(
+                    at(45),
+                    "command.sent",
+                    vec![kv_int("command.args_count", 1)],
+                ),
+                demo_event(
+                    at(48),
+                    "response.received",
+                    vec![kv_string("response.type", "string")],
+                ),
+            ],
+            false,
+        ),
+        demo_span(
+            &trace_id,
+            &span_ids[7],
+            &span_ids[2],
+            "messaging.publish",
+            span::SpanKind::Producer,
+            at(53),
+            at(65),
+            vec![
+                kv_string("messaging.system", "kafka"),
+                kv_string("messaging.destination.name", "orders"),
+                kv_string("messaging.destination.kind", "topic"),
+                kv_string("messaging.operation", "publish"),
+                kv_string("messaging.message.id", &format!("msg-{sequence}")),
+                kv_int("messaging.message.payload_size_bytes", 2_048),
+                kv_int("messaging.kafka.partition", sequence as i64 % 12),
+                kv_int("messaging.kafka.message.offset", sequence as i64 * 100),
+            ],
+            vec![
+                demo_event(
+                    at(54),
+                    "message.created",
+                    vec![
+                        kv_string("message.type", "event"),
+                        kv_string("message.priority", "normal"),
+                    ],
+                ),
+                demo_event(
+                    at(64),
+                    "message.published",
+                    vec![kv_double("delivery.time_ms", 8.5)],
+                ),
+            ],
+            false,
+        ),
+        demo_span(
+            &trace_id,
+            &span_ids[8],
+            &span_ids[7],
+            "messaging.broker",
+            span::SpanKind::Client,
+            at(55),
+            at(61),
+            vec![
+                kv_string("net.peer.name", "kafka-broker.internal"),
+                kv_int("net.peer.port", 9_092),
+                kv_string("messaging.client_id", &format!("client-{service}")),
+            ],
+            vec![
+                demo_event(at(56), "broker.connected", vec![]),
+                demo_event(at(60), "message.sent", vec![kv_bool("ack.received", true)]),
+            ],
+            false,
+        ),
+        demo_span(
+            &trace_id,
+            &span_ids[9],
+            &span_ids[0],
+            "external.call",
+            span::SpanKind::Client,
+            at(72),
+            at(98),
+            vec![
+                kv_string("peer.service", "stripe"),
+                kv_string("http.method", "POST"),
+                kv_string("rpc.system", "http"),
+                kv_string("rpc.service", "stripe"),
+                kv_string("rpc.method", "createPayment"),
+            ],
+            vec![
+                demo_event(
+                    at(73),
+                    "request.sent",
+                    vec![
+                        kv_string("target", "stripe"),
+                        kv_string("request.id", &format!("ext-req-{sequence}")),
+                        kv_bool("request.retryable", true),
+                    ],
+                ),
+                demo_event(
+                    at(97),
+                    "response.received",
+                    vec![
+                        kv_int("status", if is_error { 503 } else { 200 }),
+                        kv_double("response.time_ms", 125.0),
+                    ],
+                ),
+            ],
+            is_error,
+        ),
+        demo_span(
+            &trace_id,
+            &span_ids[10],
+            &span_ids[9],
+            "http.client",
+            span::SpanKind::Client,
+            at(75),
+            at(96),
+            vec![
+                kv_string("http.url", "https://api.stripe.com/v1/charge"),
+                kv_string("http.method", "POST"),
+                kv_string("http.scheme", "https"),
+                kv_string("http.host", "api.stripe.com"),
+                kv_string("http.target", "/v1/charge"),
+                kv_string("http.flavor", "HTTP/2"),
+                kv_int("http.request_content_length", 1_024),
+                kv_int("http.status_code", if is_error { 503 } else { 200 }),
+                kv_int("http.response_content_length", 2_048),
+                kv_string("net.peer.name", "api.stripe.com"),
+                kv_int("net.peer.port", 443),
+            ],
+            if is_error {
+                vec![demo_event(
+                    at(95),
+                    "external.error",
+                    vec![
+                        kv_int("status", 503),
+                        kv_string("service", "stripe"),
+                        kv_string("error.type", "ServiceError"),
+                        kv_bool("retry.recommended", true),
+                    ],
+                )]
+            } else {
+                vec![demo_event(at(95), "response.received", vec![])]
+            },
+            is_error,
+        ),
+        demo_span(
+            &trace_id,
+            &span_ids[11],
+            &span_ids[10],
+            "dns.resolve",
+            span::SpanKind::Client,
+            at(77),
+            at(82),
+            vec![
+                kv_string("dns.hostname", "api.stripe.com"),
+                kv_string("dns.question.type", "A"),
+                kv_string("dns.question.class", "IN"),
+                kv_string("dns.answers", "54.187.174.169"),
+                kv_string("dns.response_code", "NOERROR"),
+            ],
+            vec![
+                demo_event(
+                    at(78),
+                    "dns.lookup.started",
+                    vec![kv_string("dns.resolver", "8.8.8.8")],
+                ),
+                demo_event(
+                    at(81),
+                    "dns.lookup.completed",
+                    vec![
+                        kv_string("ip", "54.187.174.169"),
+                        kv_int("ttl_seconds", 300),
+                    ],
+                ),
+            ],
+            false,
+        ),
+        demo_span(
+            &trace_id,
+            &span_ids[12],
+            &span_ids[10],
+            "tls.handshake",
+            span::SpanKind::Client,
+            at(84),
+            at(90),
+            vec![
+                kv_string("tls.protocol.version", "TLSv1.3"),
+                kv_string("tls.cipher", "TLS_AES_256_GCM_SHA384"),
+                kv_bool("tls.resumed", false),
+            ],
+            vec![demo_event(
+                at(89),
+                "handshake.completed",
+                vec![
+                    kv_string("certificate.issuer", "Let's Encrypt Authority X3"),
+                    kv_string("certificate.valid_until", "2027-12-31"),
+                ],
+            )],
+            false,
+        ),
+    ];
+
+    (trace_id, span_ids[0].clone(), spans)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn demo_span(
+    trace_id: &[u8],
+    span_id: &[u8],
+    parent_span_id: &[u8],
+    name: &str,
+    kind: span::SpanKind,
+    start_time_unix_nano: u64,
+    end_time_unix_nano: u64,
+    attributes: Vec<KeyValue>,
+    events: Vec<span::Event>,
+    is_error: bool,
+) -> Span {
+    Span {
+        trace_id: trace_id.to_vec(),
+        span_id: span_id.to_vec(),
+        parent_span_id: parent_span_id.to_vec(),
+        flags: 1,
+        name: name.to_string(),
+        kind: kind as i32,
+        start_time_unix_nano,
+        end_time_unix_nano,
+        attributes,
+        events,
+        status: Some(Status {
+            message: if is_error {
+                "Synthetic demo error".to_string()
+            } else {
+                String::default()
+            },
+            code: if is_error {
+                status::StatusCode::Error as i32
+            } else {
+                status::StatusCode::Ok as i32
+            },
+        }),
+        ..Default::default()
+    }
+}
+
+fn demo_event(time_unix_nano: u64, name: &str, attributes: Vec<KeyValue>) -> span::Event {
+    span::Event {
+        time_unix_nano,
+        name: name.to_string(),
+        attributes,
+        ..Default::default()
+    }
+}
+
+fn random_id(rng: &mut impl RngCore, len: usize) -> Vec<u8> {
+    let mut id = vec![0; len];
+    rng.fill_bytes(&mut id);
+    id
+}
+
 fn resource(service: &str, sequence: u64) -> Resource {
     Resource {
         attributes: vec![
@@ -879,6 +1378,16 @@ fn kv_double(key: &str, value: f64) -> KeyValue {
     }
 }
 
+fn kv_bool(key: &str, value: bool) -> KeyValue {
+    KeyValue {
+        key: key.to_string(),
+        value: Some(AnyValue {
+            value: Some(any_value::Value::BoolValue(value)),
+        }),
+        ..Default::default()
+    }
+}
+
 fn any_string(value: &str) -> AnyValue {
     AnyValue {
         value: Some(any_value::Value::StringValue(value.to_string())),
@@ -906,17 +1415,65 @@ mod tests {
         assert_eq!(batch.metrics.resource_metrics.len(), SERVICES.len());
         assert_eq!(batch.logs.resource_logs.len(), SERVICES.len());
 
-        let trace_id = &batch.traces.resource_spans[0].scope_spans[0].spans[0].trace_id;
-        assert_eq!(trace_id.len(), 16);
-        for (index, resource_spans) in batch.traces.resource_spans.iter().enumerate() {
-            let span = &resource_spans.scope_spans[0].spans[0];
-            assert_eq!(&span.trace_id, trace_id);
-            assert_eq!(span.span_id.len(), 8);
-            if index > 0 {
-                let parent = &batch.traces.resource_spans[index - 1].scope_spans[0].spans[0];
-                assert_eq!(span.parent_span_id, parent.span_id);
-                assert!(span.end_time_unix_nano <= parent.end_time_unix_nano);
+        for resource_spans in &batch.traces.resource_spans {
+            let spans = &resource_spans.scope_spans[0].spans;
+            assert_eq!(spans.len(), 13);
+            let root = &spans[0];
+            assert_eq!(root.trace_id.len(), 16);
+            assert_eq!(root.span_id.len(), 8);
+            assert!(root.parent_span_id.is_empty());
+            for span in &spans[1..] {
+                assert_eq!(span.trace_id, root.trace_id);
+                assert_eq!(span.span_id.len(), 8);
+                assert!(
+                    spans
+                        .iter()
+                        .any(|parent| parent.span_id == span.parent_span_id)
+                );
+                assert!(span.start_time_unix_nano >= root.start_time_unix_nano);
+                assert!(span.end_time_unix_nano <= root.end_time_unix_nano);
             }
+        }
+    }
+
+    #[test]
+    fn every_generated_trace_record_has_service_name() {
+        let batch = build_batch(7);
+        let records = crate::otel::traces::flatten_otel_traces_protobuf(&batch.traces, "default");
+        assert!(!records.is_empty());
+        assert!(records.iter().all(|record| {
+            record
+                .get("service.name")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|service| !service.is_empty())
+        }));
+    }
+
+    #[test]
+    fn generated_logs_include_python_context_attributes() {
+        let batch = build_batch(7);
+        let log = &batch.logs.resource_logs[0].scope_logs[0].log_records[0];
+        let keys: Vec<&str> = log
+            .attributes
+            .iter()
+            .map(|attribute| attribute.key.as_str())
+            .collect();
+        for key in [
+            "service",
+            "k8s.namespace.name",
+            "k8s.pod.name",
+            "k8s.cluster.name",
+            "cloud.provider",
+            "cloud.region",
+            "http.method",
+            "http.url",
+            "http.status_code",
+            "trace.id",
+            "span.id",
+            "net.peer.ip",
+            "container.id",
+        ] {
+            assert!(keys.contains(&key), "missing log attribute {key}");
         }
     }
 

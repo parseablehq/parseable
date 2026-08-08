@@ -28,6 +28,8 @@ use crate::{INTRA_CLUSTER_CLIENT, parseable::PARSEABLE};
 
 use self::query::Query;
 
+pub const PARSEABLE_CDN_ORIGIN: &str = "https://cdn.parseable.com";
+
 pub mod about;
 pub mod alert_target_policy;
 pub mod alerts;
@@ -74,7 +76,51 @@ pub(crate) fn cross_origin_config() -> Cors {
     if !PARSEABLE.options.cors || cfg!(debug_assertions) {
         Cors::permissive().block_on_origin_mismatch(false)
     } else {
-        Cors::default().block_on_origin_mismatch(false)
+        let mut cors = Cors::default()
+            .allow_any_method()
+            .allow_any_header()
+            .supports_credentials()
+            .block_on_origin_mismatch(false);
+        for origin in cors_allowed_origins() {
+            cors = cors.allowed_origin(&origin);
+        }
+        cors
+    }
+}
+
+pub fn cors_allowed_origins() -> Vec<String> {
+    normalize_cors_origins(&PARSEABLE.options.allow_origins)
+}
+
+fn normalize_cors_origins(configured: &[url::Url]) -> Vec<String> {
+    let mut origins = vec![PARSEABLE_CDN_ORIGIN.to_string()];
+    for url in configured {
+        let origin = url.origin().ascii_serialization();
+        if origin != "null" && !origins.contains(&origin) {
+            origins.push(origin);
+        }
+    }
+    origins
+}
+
+#[cfg(test)]
+mod cors_tests {
+    use super::*;
+
+    #[test]
+    fn cdn_origin_is_always_allowed_in_addition_to_configured_origins() {
+        let configured = [
+            url::Url::parse("https://example.com/app").unwrap(),
+            url::Url::parse("https://cdn.parseable.com/duplicate").unwrap(),
+        ];
+
+        assert_eq!(
+            normalize_cors_origins(&configured),
+            vec![
+                "https://cdn.parseable.com".to_string(),
+                "https://example.com".to_string(),
+            ]
+        );
     }
 }
 
