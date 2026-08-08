@@ -40,6 +40,7 @@ pub mod oauth;
 pub mod oidc;
 pub mod option;
 pub mod otel;
+pub mod otel_generator;
 pub mod parseable;
 pub mod prism;
 pub mod query;

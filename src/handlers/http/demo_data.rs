@@ -17,13 +17,18 @@
  */
 
 use crate::{
-    handlers::http::{cluster::get_demo_data_from_ingestor, ingest::PostError},
+    handlers::http::{
+        cluster::{get_node_info, utils::check_liveness},
+        ingest::PostError,
+        modal::{NodeMetadata, NodeType},
+    },
     option::Mode,
     parseable::PARSEABLE,
     utils::get_tenant_id_from_request,
 };
 use actix_web::{HttpRequest, HttpResponse, web};
 use std::{collections::HashMap, fs, process::Command};
+use tracing::error;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -44,38 +49,31 @@ pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> 
         .cloned()
         .ok_or(PostError::MissingQueryParameter)?;
 
-    let url = &PARSEABLE.options.address;
-    let username = &PARSEABLE.options.username;
-    let password = &PARSEABLE.options.password;
+    let username = PARSEABLE.options.username.clone();
+    let password = PARSEABLE.options.password.clone();
     let scheme = PARSEABLE.options.get_scheme();
-    let url = format!("{scheme}://{url}");
+    let standalone_url = format!("{scheme}://{}", PARSEABLE.options.address);
     let tenant_id = get_tenant_id_from_request(&req);
     match action.as_str() {
         "ingest" => match PARSEABLE.options.mode {
-            Mode::Ingest | Mode::All => {
-                // Fire the script execution asynchronously
-                tokio::spawn(async move {
-                    execute_demo_script(&action, &url, username, password).await
-                });
+            Mode::All => {
+                spawn_demo_script(action, standalone_url, username, password);
 
                 Ok(HttpResponse::Accepted().finish())
             }
             Mode::Query | Mode::Prism => {
-                // Forward the request to ingestor asynchronously
-                match get_demo_data_from_ingestor(&action, &tenant_id).await {
-                    Ok(()) => Ok(HttpResponse::Accepted().finish()),
-                    Err(e) => Err(e),
-                }
+                let ingestor_url = get_live_ingestor_url(&tenant_id).await?;
+                // Execute on Query/Prism; the script sends data to the ingestor.
+                spawn_demo_script(action, ingestor_url, username, password);
+
+                Ok(HttpResponse::Accepted().finish())
             }
             _ => Err(PostError::Invalid(anyhow::anyhow!(
                 "Demo data is not available in this mode"
             ))),
         },
         "filters" | "alerts" | "dashboards" => {
-            // Fire the script execution asynchronously
-            tokio::spawn(
-                async move { execute_demo_script(&action, &url, username, password).await },
-            );
+            spawn_demo_script(action, standalone_url, username, password);
 
             Ok(HttpResponse::Accepted().finish())
         }
@@ -83,7 +81,39 @@ pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> 
     }
 }
 
-async fn execute_demo_script(
+async fn get_live_ingestor_url(tenant_id: &Option<String>) -> Result<String, PostError> {
+    let mut ingestors: Vec<NodeMetadata> = get_node_info(NodeType::Ingestor, tenant_id)
+        .await
+        .map_err(PostError::Invalid)?;
+    ingestors.sort_by(|left, right| left.domain_name.cmp(&right.domain_name));
+
+    for ingestor in ingestors {
+        if check_liveness(&ingestor.domain_name).await {
+            return Ok(ingestor.domain_name.trim_end_matches('/').to_string());
+        }
+    }
+
+    Err(PostError::Invalid(anyhow::anyhow!(
+        "No live ingestors found"
+    )))
+}
+
+fn spawn_demo_script(action: String, url: String, username: String, password: String) {
+    tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            execute_demo_script(&action, &url, &username, &password)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => error!(%error, "demo data script failed"),
+            Err(error) => error!(%error, "demo data script task failed"),
+        }
+    });
+}
+
+fn execute_demo_script(
     action: &str,
     url: &str,
     username: &str,

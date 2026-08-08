@@ -76,7 +76,7 @@ impl ParseableServer for IngestServer {
                     .service(Self::get_user_role_webscope())
                     .service(Server::get_metrics_webscope())
                     .service(Server::get_readiness_factory())
-                    .service(Server::get_demo_data_webscope()),
+                    .service(Server::get_otel_generator_ingest_webscope()),
             )
             .service(Server::get_ingest_otel_factory());
     }

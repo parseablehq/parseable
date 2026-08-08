@@ -28,6 +28,9 @@ use crate::handlers::http::demo_data::get_demo_data;
 use crate::handlers::http::health_check;
 use crate::handlers::http::max_event_payload_size;
 use crate::handlers::http::middleware::IntraClusterRequest;
+use crate::handlers::http::otel_generator::{
+    get_otel_generator_status, start_otel_generator, stop_otel_generator,
+};
 use crate::handlers::http::prism_base_path;
 use crate::handlers::http::query;
 use crate::handlers::http::query_context;
@@ -61,7 +64,7 @@ use crate::{
     handlers::http::{
         self, ingest, llm, logstream,
         middleware::{DisAllowRootUser, RouteExt},
-        oidc, role,
+        oidc, role, traces,
     },
     parseable::PARSEABLE,
     rbac::role::Action,
@@ -110,6 +113,8 @@ impl ParseableServer for Server {
                     .service(Server::get_prism_logstream())
                     .service(Server::get_prism_datasets())
                     .service(Server::get_apikeys_webscope())
+                    .service(Self::get_otel_generator_webscope())
+                    .service(Self::get_traces_webscope())
                     .service(Self::get_dataset_stats_webscope()),
             )
             .service(Self::get_ingest_otel_factory())
@@ -244,6 +249,49 @@ impl Server {
 
     pub fn get_demo_data_webscope() -> Scope {
         web::scope("/demodata").service(web::resource("").route(web::get().to(get_demo_data)))
+    }
+
+    pub fn get_otel_generator_webscope() -> Scope {
+        web::scope("/otel_generator").service(Self::get_otel_generator_resource())
+    }
+
+    pub fn get_otel_generator_ingest_webscope() -> Scope {
+        web::scope("/otel_generator")
+            .service(Self::get_otel_generator_resource().wrap(IntraClusterRequest))
+    }
+
+    fn get_otel_generator_resource() -> Resource {
+        web::resource("")
+            .route(
+                web::get()
+                    .to(get_otel_generator_status)
+                    .authorize(Action::Ingest),
+            )
+            .route(
+                web::post()
+                    .to(start_otel_generator)
+                    .authorize(Action::Ingest),
+            )
+            .route(
+                web::delete()
+                    .to(stop_otel_generator)
+                    .authorize(Action::Ingest),
+            )
+    }
+
+    pub fn get_traces_webscope() -> Scope {
+        web::scope("/services/traces")
+            .service(
+                web::resource("/list")
+                    .route(web::post().to(traces::list_traces).authorize(Action::Query)),
+            )
+            .service(
+                web::resource("/detail").route(
+                    web::post()
+                        .to(traces::get_trace_detail)
+                        .authorize(Action::Query),
+                ),
+            )
     }
 
     pub fn get_metrics_webscope() -> Scope {
