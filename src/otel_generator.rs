@@ -422,7 +422,7 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
                 .choose(&mut rng)
                 .expect("success status codes are non-empty")
         };
-        let resource = resource(service, sequence);
+        let resource = resource(service);
         let (trace_id, root_span_id, spans) = build_service_trace(
             &mut rng,
             service,
@@ -507,29 +507,30 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
             kv_string("k8s.namespace.name", "production"),
             kv_string("k8s.cluster.name", "demo-cluster"),
         ];
+        let metric_method = HTTP_METHODS[index % HTTP_METHODS.len()];
+        let metric_path = HTTP_PATHS[index % HTTP_PATHS.len()];
         let mut request_metric_attributes = base_metric_attributes.clone();
         request_metric_attributes.extend([
-            kv_string("method", method),
-            kv_string("endpoint", path),
-            kv_string("status", &status_code.to_string()),
+            kv_string("method", metric_method),
+            kv_string("endpoint", metric_path),
+            kv_string("status", "200"),
         ]);
         let mut duration_metric_attributes = base_metric_attributes.clone();
-        duration_metric_attributes
-            .extend([kv_string("method", method), kv_string("endpoint", path)]);
+        duration_metric_attributes.extend([
+            kv_string("method", metric_method),
+            kv_string("endpoint", metric_path),
+        ]);
         let mut database_metric_attributes = base_metric_attributes.clone();
         database_metric_attributes.push(kv_string(
             "db.operation",
             if index % 2 == 0 { "SELECT" } else { "UPDATE" },
         ));
         let mut auth_metric_attributes = base_metric_attributes.clone();
-        auth_metric_attributes.push(kv_string(
-            "success",
-            if is_error { "false" } else { "true" },
-        ));
+        auth_metric_attributes.push(kv_string("success", "true"));
         let mut error_metric_attributes = base_metric_attributes.clone();
         error_metric_attributes.extend([
-            kv_string("status", &status_code.to_string()),
-            kv_string("endpoint", path),
+            kv_string("status", "500"),
+            kv_string("endpoint", metric_path),
         ]);
         let connection_attributes = vec![
             kv_string("service", service),
@@ -537,7 +538,6 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
         ];
         let gauge_attributes = vec![kv_string("service", "otel-demo")];
         let service_factor = index as u64 + 1;
-        let counter_value = sequence.max(1).saturating_mul(service_factor);
         resource_metrics.push(ResourceMetrics {
             resource: Some(resource),
             scope_metrics: vec![ScopeMetrics {
@@ -546,7 +546,7 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
                     counter_metric(
                         "http_requests_total",
                         "Total HTTP requests",
-                        counter_value,
+                        random_cumulative_value(&mut rng, sequence, service_factor),
                         sequence,
                         now,
                         request_metric_attributes,
@@ -554,7 +554,11 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
                     counter_metric(
                         "cache_hits_total",
                         "Total cache hits",
-                        counter_value.saturating_mul(3),
+                        random_cumulative_value(
+                            &mut rng,
+                            sequence,
+                            service_factor.saturating_mul(3),
+                        ),
                         sequence,
                         now,
                         base_metric_attributes.clone(),
@@ -562,7 +566,7 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
                     counter_metric(
                         "cache_misses_total",
                         "Total cache misses",
-                        counter_value,
+                        random_cumulative_value(&mut rng, sequence, service_factor),
                         sequence,
                         now,
                         base_metric_attributes.clone(),
@@ -570,7 +574,7 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
                     counter_metric(
                         "errors_total",
                         "Total errors",
-                        counter_value.div_ceil(5),
+                        random_cumulative_value(&mut rng, sequence, 2),
                         sequence,
                         now,
                         error_metric_attributes,
@@ -578,7 +582,11 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
                     counter_metric(
                         "bytes_sent_total",
                         "Total bytes sent",
-                        counter_value.saturating_mul(5_000),
+                        random_cumulative_value(
+                            &mut rng,
+                            sequence,
+                            service_factor.saturating_mul(5_000),
+                        ),
                         sequence,
                         now,
                         base_metric_attributes.clone(),
@@ -586,7 +594,11 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
                     counter_metric(
                         "bytes_received_total",
                         "Total bytes received",
-                        counter_value.saturating_mul(2_500),
+                        random_cumulative_value(
+                            &mut rng,
+                            sequence,
+                            service_factor.saturating_mul(2_500),
+                        ),
                         sequence,
                         now,
                         base_metric_attributes.clone(),
@@ -594,7 +606,11 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
                     counter_metric(
                         "db_queries_total",
                         "Total database queries",
-                        counter_value.saturating_mul(3),
+                        random_cumulative_value(
+                            &mut rng,
+                            sequence,
+                            service_factor.saturating_mul(3),
+                        ),
                         sequence,
                         now,
                         database_metric_attributes,
@@ -602,7 +618,7 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
                     counter_metric(
                         "auth_attempts_total",
                         "Total authentication attempts",
-                        counter_value,
+                        random_cumulative_value(&mut rng, sequence, service_factor),
                         sequence,
                         now,
                         auth_metric_attributes,
@@ -610,7 +626,11 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
                     up_down_counter_metric(
                         "active_connections",
                         "Current active connections",
-                        10 + index as i64,
+                        random_cumulative_value(
+                            &mut rng,
+                            sequence,
+                            service_factor.saturating_mul(3),
+                        ) as i64,
                         sequence,
                         now,
                         connection_attributes.clone(),
@@ -618,7 +638,11 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
                     up_down_counter_metric(
                         "queue_size",
                         "Current queue size",
-                        rng.gen_range(0_i64..20),
+                        random_cumulative_value(
+                            &mut rng,
+                            sequence,
+                            service_factor.saturating_mul(5),
+                        ) as i64,
                         sequence,
                         now,
                         connection_attributes,
@@ -626,7 +650,11 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
                     up_down_counter_metric(
                         "request_duration_ms",
                         "Request duration in ms",
-                        duration_ms as i64,
+                        random_cumulative_value(
+                            &mut rng,
+                            sequence,
+                            service_factor.saturating_mul(100),
+                        ) as i64,
                         sequence,
                         now,
                         duration_metric_attributes,
@@ -634,7 +662,11 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
                     up_down_counter_metric(
                         "active_requests",
                         "Current in-flight requests",
-                        rng.gen_range(0_i64..15),
+                        random_cumulative_value(
+                            &mut rng,
+                            sequence,
+                            service_factor.saturating_mul(2),
+                        ) as i64,
                         sequence,
                         now,
                         base_metric_attributes.clone(),
@@ -642,7 +674,11 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
                     up_down_counter_metric(
                         "open_file_handles",
                         "Current open file handles",
-                        rng.gen_range(20_i64..200),
+                        random_cumulative_value(
+                            &mut rng,
+                            sequence,
+                            service_factor.saturating_mul(10),
+                        ) as i64,
                         sequence,
                         now,
                         base_metric_attributes,
@@ -1247,18 +1283,26 @@ fn random_id(rng: &mut impl RngCore, len: usize) -> Vec<u8> {
     id
 }
 
-fn resource(service: &str, sequence: u64) -> Resource {
+fn resource(service: &str) -> Resource {
     Resource {
         attributes: vec![
             kv_string("service.name", service),
             kv_string("service.version", "1.3.0"),
-            kv_string("service.instance.id", &format!("{service}-{sequence}")),
+            kv_string("service.instance.id", &format!("{service}-demo")),
             kv_string("deployment.environment", "production"),
             kv_string("telemetry.sdk.language", "rust"),
             kv_string("telemetry.sdk.name", "parseable-otel-demo"),
         ],
         ..Default::default()
     }
+}
+
+fn random_cumulative_value(rng: &mut impl Rng, sequence: u64, average_step: u64) -> u64 {
+    let step = average_step.max(2);
+    sequence
+        .max(1)
+        .saturating_mul(step)
+        .saturating_add(rng.gen_range(0..step))
 }
 
 fn scope(name: &str) -> InstrumentationScope {
@@ -1507,6 +1551,67 @@ mod tests {
         ];
         expected.sort_unstable();
         assert_eq!(names, expected);
+    }
+
+    #[test]
+    fn generated_metric_series_are_stable_and_all_values_change() {
+        let mut values_by_series =
+            std::collections::HashMap::<(String, String), std::collections::HashSet<String>>::new();
+
+        for sequence in 1..=8 {
+            let batch = build_batch(sequence);
+            for resource_metrics in batch.metrics.resource_metrics {
+                let resource_attributes = resource_metrics.resource.unwrap().attributes;
+                for metric in &resource_metrics.scope_metrics[0].metrics {
+                    let data_points = match &metric.data {
+                        Some(metric::Data::Sum(sum)) => &sum.data_points,
+                        Some(metric::Data::Gauge(gauge)) => &gauge.data_points,
+                        _ => panic!("demo metric must be a sum or gauge"),
+                    };
+                    for data_point in data_points {
+                        let mut labels: Vec<(String, String)> = resource_attributes
+                            .iter()
+                            .chain(&data_point.attributes)
+                            .map(|attribute| {
+                                (attribute.key.clone(), format!("{:?}", attribute.value))
+                            })
+                            .collect();
+                        labels.sort_unstable();
+                        let series = format!("{labels:?}");
+                        let value = format!("{:?}", data_point.value);
+                        values_by_series
+                            .entry((metric.name.clone(), series))
+                            .or_default()
+                            .insert(value);
+                    }
+                }
+            }
+        }
+
+        assert_eq!(values_by_series.len(), SERVICES.len() * 17);
+        for ((metric_name, _), values) in values_by_series {
+            assert!(
+                values.len() > 1,
+                "metric series {metric_name} did not change value"
+            );
+        }
+    }
+
+    #[test]
+    fn cumulative_metric_rates_are_randomized_and_monotonic() {
+        use rand::{SeedableRng, rngs::StdRng};
+
+        let mut rng = StdRng::seed_from_u64(42);
+        let values: Vec<u64> = (1..=64)
+            .map(|sequence| random_cumulative_value(&mut rng, sequence, 10))
+            .collect();
+        assert!(values.windows(2).all(|window| window[0] < window[1]));
+
+        let rates: std::collections::HashSet<u64> = values
+            .windows(2)
+            .map(|window| window[1] - window[0])
+            .collect();
+        assert!(rates.len() > 1);
     }
 
     #[test]
