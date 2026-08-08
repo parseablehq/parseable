@@ -17,7 +17,11 @@
  */
 
 use crate::{
-    handlers::http::{cluster::get_demo_data_from_ingestor, ingest::PostError},
+    handlers::http::{
+        cluster::{get_node_info, utils::check_liveness},
+        ingest::PostError,
+        modal::{NodeMetadata, NodeType},
+    },
     option::Mode,
     parseable::PARSEABLE,
     utils::get_tenant_id_from_request,
@@ -44,28 +48,29 @@ pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> 
         .cloned()
         .ok_or(PostError::MissingQueryParameter)?;
 
-    let url = &PARSEABLE.options.address;
     let username = &PARSEABLE.options.username;
     let password = &PARSEABLE.options.password;
     let scheme = PARSEABLE.options.get_scheme();
-    let url = format!("{scheme}://{url}");
+    let standalone_url = format!("{scheme}://{}", PARSEABLE.options.address);
     let tenant_id = get_tenant_id_from_request(&req);
     match action.as_str() {
         "ingest" => match PARSEABLE.options.mode {
-            Mode::Ingest | Mode::All => {
+            Mode::All => {
                 // Fire the script execution asynchronously
                 tokio::spawn(async move {
-                    execute_demo_script(&action, &url, username, password).await
+                    execute_demo_script(&action, &standalone_url, username, password).await
                 });
 
                 Ok(HttpResponse::Accepted().finish())
             }
             Mode::Query | Mode::Prism => {
-                // Forward the request to ingestor asynchronously
-                match get_demo_data_from_ingestor(&action, &tenant_id).await {
-                    Ok(()) => Ok(HttpResponse::Accepted().finish()),
-                    Err(e) => Err(e),
-                }
+                let ingestor_url = get_live_ingestor_url(&tenant_id).await?;
+                // Execute on Query/Prism; the script sends data to the ingestor.
+                tokio::spawn(async move {
+                    execute_demo_script(&action, &ingestor_url, username, password).await
+                });
+
+                Ok(HttpResponse::Accepted().finish())
             }
             _ => Err(PostError::Invalid(anyhow::anyhow!(
                 "Demo data is not available in this mode"
@@ -73,14 +78,31 @@ pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> 
         },
         "filters" | "alerts" | "dashboards" => {
             // Fire the script execution asynchronously
-            tokio::spawn(
-                async move { execute_demo_script(&action, &url, username, password).await },
-            );
+            tokio::spawn(async move {
+                execute_demo_script(&action, &standalone_url, username, password).await
+            });
 
             Ok(HttpResponse::Accepted().finish())
         }
         _ => Err(PostError::InvalidQueryParameter),
     }
+}
+
+async fn get_live_ingestor_url(tenant_id: &Option<String>) -> Result<String, PostError> {
+    let mut ingestors: Vec<NodeMetadata> = get_node_info(NodeType::Ingestor, tenant_id)
+        .await
+        .map_err(PostError::Invalid)?;
+    ingestors.sort_by(|left, right| left.domain_name.cmp(&right.domain_name));
+
+    for ingestor in ingestors {
+        if check_liveness(&ingestor.domain_name).await {
+            return Ok(ingestor.domain_name.trim_end_matches('/').to_string());
+        }
+    }
+
+    Err(PostError::Invalid(anyhow::anyhow!(
+        "No live ingestors found"
+    )))
 }
 
 async fn execute_demo_script(
