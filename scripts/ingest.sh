@@ -62,13 +62,16 @@ print_setup_complete() {
 
 is_running() {
     local process_command
+    local config_base
+
+    config_base=$(basename "$CONFIG_FILE")
 
     if [ -f "$PID_FILE" ]; then
         PID=$(cat "$PID_FILE")
         if [[ "$PID" =~ ^[0-9]+$ ]] && ps -p "$PID" > /dev/null 2>&1; then
             process_command=$(ps -p "$PID" -o command= 2>/dev/null || true)
             case "$process_command" in
-                *otelcol*otelcol.yaml*) return 0 ;;
+                *otelcol*"$config_base"*) return 0 ;;
             esac
         fi
     fi
@@ -186,7 +189,12 @@ install_collector() {
     archive_path="$temp_dir/$archive_name"
 
     print_info "Installing OpenTelemetry Collector v$COLLECTOR_VERSION..."
-    curl -fsSL "$download_url" -o "$archive_path"
+    if ! curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 300 \
+        "$download_url" -o "$archive_path"; then
+        print_error "Failed to download OpenTelemetry Collector from $download_url"
+        rm -rf "$temp_dir"
+        exit 1
+    fi
 
     if command -v sha256sum > /dev/null 2>&1; then
         actual_hash=$(sha256sum "$archive_path" | awk '{print $1}')
@@ -344,6 +352,8 @@ setup_collector() {
 EOF
 )
 
+    : > "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"
     cat > "$CONFIG_FILE" << EOF
 receivers:
   host_metrics:
@@ -381,7 +391,6 @@ service:
       processors: [resource, batch]
       exporters: [otlp_http/parseable]
 EOF
-    chmod 600 "$CONFIG_FILE"
 
     if ! "$COLLECTOR_BIN" validate --config "$CONFIG_FILE" > /dev/null; then
         print_error "OpenTelemetry Collector configuration validation failed"

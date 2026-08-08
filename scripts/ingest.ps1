@@ -82,7 +82,10 @@ function Write-SetupComplete {
 }
 
 function Get-Architecture {
-    $arch = $env:PROCESSOR_ARCHITECTURE
+    $arch = $env:PROCESSOR_ARCHITEW6432
+    if ([string]::IsNullOrWhiteSpace($arch)) {
+        $arch = $env:PROCESSOR_ARCHITECTURE
+    }
     if ($arch -eq "AMD64") {
         return "AMD64"
     }
@@ -370,7 +373,7 @@ function Setup-Collector {
     $configLines = @(
         "receivers:",
         "  host_metrics:",
-        "    collection_interval: 1s",
+        "    collection_interval: 2s",
         "    scrapers:",
         "      cpu:",
         "      disk:",
@@ -422,6 +425,20 @@ function Setup-Collector {
     $configContent = ($configLines -join [Environment]::NewLine) + [Environment]::NewLine
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
     [System.IO.File]::WriteAllText($CONFIG_FILE, $configContent, $utf8NoBom)
+
+    $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $fileRights = [System.Security.AccessControl.FileSystemRights]::Read -bor `
+        [System.Security.AccessControl.FileSystemRights]::Write
+    $accessRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+        $currentIdentity.User,
+        $fileRights,
+        [System.Security.AccessControl.AccessControlType]::Allow
+    )
+    $acl = [System.Security.AccessControl.FileSecurity]::new()
+    $acl.SetOwner($currentIdentity.User)
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.AddAccessRule($accessRule)
+    Set-Acl -Path $CONFIG_FILE -AclObject $acl -ErrorAction Stop
 
     & $COLLECTOR_EXE validate --config $CONFIG_FILE *> $null
     if ($LASTEXITCODE -ne 0) {
