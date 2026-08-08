@@ -8,7 +8,6 @@
  */
 
 use actix_web::{HttpRequest, HttpResponse, web};
-use base64::{Engine, prelude::BASE64_STANDARD};
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
 use tracing::{error, info};
@@ -30,6 +29,7 @@ use super::{
 };
 
 const FORWARDED_AUTHORIZATION: &str = "x-p-otel-generator-authorization";
+const MAX_DURATION_SECS: u64 = 7 * 24 * 60 * 60;
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct StartGeneratorRequest {
@@ -56,8 +56,12 @@ pub async fn start_otel_generator(
     };
     let duration_secs = body
         .as_ref()
-        .map(|body| body.duration_secs)
-        .unwrap_or_else(default_duration);
+        .map_or_else(default_duration, |body| body.duration_secs);
+    if duration_secs == 0 || duration_secs > MAX_DURATION_SECS {
+        return HttpResponse::BadRequest().json(OtelGeneratorErrorResponse {
+            error: format!("durationSecs must be between 1 and {MAX_DURATION_SECS}"),
+        });
+    }
 
     match PARSEABLE.options.mode {
         Mode::Query | Mode::Prism => {
@@ -109,12 +113,9 @@ pub async fn stop_otel_generator(req: HttpRequest) -> HttpResponse {
         Mode::Query | Mode::Prism => {
             forward_to_ingestor(&req, Method::DELETE, None, tenant_id).await
         }
-        Mode::Ingest | Mode::All => match OTEL_GENERATOR.stop(tenant_id.as_deref()) {
-            Ok(result) => HttpResponse::Ok().json(result),
-            Err(error) => HttpResponse::InternalServerError().json(OtelGeneratorErrorResponse {
-                error: format!("Failed to stop generator: {error}"),
-            }),
-        },
+        Mode::Ingest | Mode::All => {
+            HttpResponse::Ok().json(OTEL_GENERATOR.stop(tenant_id.as_deref()))
+        }
         Mode::Index => unavailable_in_mode(),
     }
 }
@@ -126,12 +127,9 @@ pub async fn get_otel_generator_status(req: HttpRequest) -> HttpResponse {
     };
     match PARSEABLE.options.mode {
         Mode::Query | Mode::Prism => forward_to_ingestor(&req, Method::GET, None, tenant_id).await,
-        Mode::Ingest | Mode::All => match OTEL_GENERATOR.status(tenant_id.as_deref()) {
-            Ok(status) => HttpResponse::Ok().json(status),
-            Err(error) => HttpResponse::InternalServerError().json(OtelGeneratorErrorResponse {
-                error: format!("Failed to get generator status: {error}"),
-            }),
-        },
+        Mode::Ingest | Mode::All => {
+            HttpResponse::Ok().json(OTEL_GENERATOR.status(tenant_id.as_deref()))
+        }
         Mode::Index => unavailable_in_mode(),
     }
 }
@@ -182,6 +180,7 @@ async fn forward_to_ingestor(
         ingestor.domain_name,
         base_path_without_preceding_slash()
     );
+    let forwards_authorization = method == Method::POST;
     let mut request = INTRA_CLUSTER_CLIENT
         .request(method, url)
         .header(AUTHORIZATION_KEY, &ingestor.token)
@@ -208,8 +207,7 @@ async fn forward_to_ingestor(
     if let Some(tenant_id) = tenant_id.as_deref() {
         request = request.header(TENANT_ID, tenant_id);
     }
-    if body.is_some()
-        && PARSEABLE.options.is_multi_tenant()
+    if forwards_authorization
         && let Some(auth) = req
             .headers()
             .get(AUTHORIZATION_KEY)
@@ -254,16 +252,6 @@ async fn forward_to_ingestor(
 }
 
 fn generator_authorization(req: &HttpRequest) -> Result<String, HttpResponse> {
-    if !PARSEABLE.options.is_multi_tenant() {
-        return Ok(format!(
-            "Basic {}",
-            BASE64_STANDARD.encode(format!(
-                "{}:{}",
-                PARSEABLE.options.username, PARSEABLE.options.password
-            ))
-        ));
-    }
-
     let header = if PARSEABLE.options.mode == Mode::Ingest {
         FORWARDED_AUTHORIZATION
     } else {
@@ -275,7 +263,7 @@ fn generator_authorization(req: &HttpRequest) -> Result<String, HttpResponse> {
         .map(str::to_owned)
         .ok_or_else(|| {
             HttpResponse::BadRequest().json(OtelGeneratorErrorResponse {
-                error: "Authorization header is required when multi-tenancy is enabled".to_string(),
+                error: "Authorization header is required to export generated telemetry".to_string(),
             })
         })
 }

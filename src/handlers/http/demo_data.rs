@@ -28,6 +28,7 @@ use crate::{
 };
 use actix_web::{HttpRequest, HttpResponse, web};
 use std::{collections::HashMap, fs, process::Command};
+use tracing::error;
 
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
@@ -48,27 +49,22 @@ pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> 
         .cloned()
         .ok_or(PostError::MissingQueryParameter)?;
 
-    let username = &PARSEABLE.options.username;
-    let password = &PARSEABLE.options.password;
+    let username = PARSEABLE.options.username.clone();
+    let password = PARSEABLE.options.password.clone();
     let scheme = PARSEABLE.options.get_scheme();
     let standalone_url = format!("{scheme}://{}", PARSEABLE.options.address);
     let tenant_id = get_tenant_id_from_request(&req);
     match action.as_str() {
         "ingest" => match PARSEABLE.options.mode {
             Mode::All => {
-                // Fire the script execution asynchronously
-                tokio::spawn(async move {
-                    execute_demo_script(&action, &standalone_url, username, password).await
-                });
+                spawn_demo_script(action, standalone_url, username, password);
 
                 Ok(HttpResponse::Accepted().finish())
             }
             Mode::Query | Mode::Prism => {
                 let ingestor_url = get_live_ingestor_url(&tenant_id).await?;
                 // Execute on Query/Prism; the script sends data to the ingestor.
-                tokio::spawn(async move {
-                    execute_demo_script(&action, &ingestor_url, username, password).await
-                });
+                spawn_demo_script(action, ingestor_url, username, password);
 
                 Ok(HttpResponse::Accepted().finish())
             }
@@ -77,10 +73,7 @@ pub async fn get_demo_data(req: HttpRequest) -> Result<HttpResponse, PostError> 
             ))),
         },
         "filters" | "alerts" | "dashboards" => {
-            // Fire the script execution asynchronously
-            tokio::spawn(async move {
-                execute_demo_script(&action, &standalone_url, username, password).await
-            });
+            spawn_demo_script(action, standalone_url, username, password);
 
             Ok(HttpResponse::Accepted().finish())
         }
@@ -105,7 +98,22 @@ async fn get_live_ingestor_url(tenant_id: &Option<String>) -> Result<String, Pos
     )))
 }
 
-async fn execute_demo_script(
+fn spawn_demo_script(action: String, url: String, username: String, password: String) {
+    tokio::spawn(async move {
+        let result = tokio::task::spawn_blocking(move || {
+            execute_demo_script(&action, &url, &username, &password)
+        })
+        .await;
+
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => error!(%error, "demo data script failed"),
+            Err(error) => error!(%error, "demo data script task failed"),
+        }
+    });
+}
+
+fn execute_demo_script(
     action: &str,
     url: &str,
     username: &str,

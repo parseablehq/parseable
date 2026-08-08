@@ -433,7 +433,11 @@ fn condition_to_expr(condition: &ConditionConfig) -> Result<String, String> {
                 "value must be null when operator is either `is null` or `is not null`".into(),
             );
         }
-        return Ok(format!("\"{}\" {}", condition.column, condition.operator));
+        return Ok(format!(
+            "{} {}",
+            quote_identifier(&condition.column),
+            condition.operator
+        ));
     }
 
     let value = condition.value.as_deref().unwrap_or("");
@@ -579,6 +583,7 @@ fn list_condition_expr(
     operator: &WhereConfigOperator,
     value: &str,
 ) -> Result<String, String> {
+    let column = quote_identifier(column);
     // Strip surrounding brackets if present to avoid nested arrays
     let inner_value = value
         .trim()
@@ -591,13 +596,13 @@ fn list_condition_expr(
 
     match operator {
         WhereConfigOperator::Contains => {
-            Ok(format!("array_has_all(\"{column}\", ARRAY[{safe_value}])"))
+            Ok(format!("array_has_all({column}, ARRAY[{safe_value}])"))
         }
-        WhereConfigOperator::DoesNotContain => Ok(format!(
-            "NOT array_has_all(\"{column}\", ARRAY[{safe_value}])"
-        )),
-        WhereConfigOperator::Equal => Ok(format!("\"{column}\" = ARRAY[{safe_value}]")),
-        WhereConfigOperator::NotEqual => Ok(format!("\"{column}\" != ARRAY[{safe_value}]")),
+        WhereConfigOperator::DoesNotContain => {
+            Ok(format!("NOT array_has_all({column}, ARRAY[{safe_value}])"))
+        }
+        WhereConfigOperator::Equal => Ok(format!("{column} = ARRAY[{safe_value}]")),
+        WhereConfigOperator::NotEqual => Ok(format!("{column} != ARRAY[{safe_value}]")),
         _ => Err(format!(
             "Operator '{operator}' is not supported for list type columns"
         )),
@@ -610,6 +615,7 @@ fn scalar_condition_expr(
     value: &str,
     column_type: Option<&str>,
 ) -> Result<String, String> {
+    let column = quote_identifier(column);
     let operator_and_value = match operator {
         WhereConfigOperator::Contains => {
             format!("LIKE '%{}%' ESCAPE '\\'", escape_like(value))
@@ -652,7 +658,11 @@ fn scalar_condition_expr(
             format!("{operator} {formatted}")
         }
     };
-    Ok(format!("\"{column}\" {operator_and_value}"))
+    Ok(format!("{column} {operator_and_value}"))
+}
+
+fn quote_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 fn escape_like(value: &str) -> String {
@@ -881,5 +891,24 @@ mod tests {
         let result = list_condition_expr("tags", &WhereConfigOperator::GreaterThan, "1");
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("not supported"));
+    }
+
+    #[test]
+    fn condition_columns_are_quoted_as_identifiers() {
+        let scalar = scalar_condition_expr(
+            "name\" OR 1=1 --",
+            &WhereConfigOperator::Equal,
+            "alice",
+            Some("string"),
+        )
+        .unwrap();
+        assert_eq!(scalar, "\"name\"\" OR 1=1 --\" = 'alice'");
+
+        let list = list_condition_expr("tags\" OR 1=1 --", &WhereConfigOperator::Contains, "admin")
+            .unwrap();
+        assert_eq!(
+            list,
+            "array_has_all(\"tags\"\" OR 1=1 --\", ARRAY['admin'])"
+        );
     }
 }

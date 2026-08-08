@@ -252,48 +252,31 @@ impl Server {
     }
 
     pub fn get_otel_generator_webscope() -> Scope {
-        web::scope("/otel_generator").service(
-            web::resource("")
-                .route(
-                    web::get()
-                        .to(get_otel_generator_status)
-                        .authorize(Action::Ingest),
-                )
-                .route(
-                    web::post()
-                        .to(start_otel_generator)
-                        .authorize(Action::Ingest),
-                )
-                .route(
-                    web::delete()
-                        .to(stop_otel_generator)
-                        .authorize(Action::Ingest),
-                ),
-        )
+        web::scope("/otel_generator").service(Self::get_otel_generator_resource())
     }
 
     pub fn get_otel_generator_ingest_webscope() -> Scope {
-        web::scope("/otel_generator").service(
-            web::resource("")
-                .route(
-                    web::get()
-                        .to(get_otel_generator_status)
-                        .authorize(Action::Ingest)
-                        .wrap(IntraClusterRequest),
-                )
-                .route(
-                    web::post()
-                        .to(start_otel_generator)
-                        .authorize(Action::Ingest)
-                        .wrap(IntraClusterRequest),
-                )
-                .route(
-                    web::delete()
-                        .to(stop_otel_generator)
-                        .authorize(Action::Ingest)
-                        .wrap(IntraClusterRequest),
-                ),
-        )
+        web::scope("/otel_generator")
+            .service(Self::get_otel_generator_resource().wrap(IntraClusterRequest))
+    }
+
+    fn get_otel_generator_resource() -> Resource {
+        web::resource("")
+            .route(
+                web::get()
+                    .to(get_otel_generator_status)
+                    .authorize(Action::Ingest),
+            )
+            .route(
+                web::post()
+                    .to(start_otel_generator)
+                    .authorize(Action::Ingest),
+            )
+            .route(
+                web::delete()
+                    .to(stop_otel_generator)
+                    .authorize(Action::Ingest),
+            )
     }
 
     pub fn get_traces_webscope() -> Scope {

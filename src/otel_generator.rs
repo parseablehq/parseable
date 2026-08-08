@@ -83,8 +83,6 @@ pub struct OtelGeneratorResult {
 #[derive(Debug, Serialize, Clone)]
 pub struct OtelGeneratorStatus {
     pub state: String,
-    #[serde(skip_serializing)]
-    pub running: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub endpoint: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -130,6 +128,7 @@ struct GeneratorSession {
 pub struct OtelGenerator {
     sessions: Arc<Mutex<HashMap<Option<String>, GeneratorSession>>>,
     next_session_id: AtomicU64,
+    export_enabled: bool,
 }
 
 impl Default for OtelGenerator {
@@ -137,6 +136,7 @@ impl Default for OtelGenerator {
         Self {
             sessions: Arc::new(Mutex::new(HashMap::new())),
             next_session_id: AtomicU64::new(1),
+            export_enabled: true,
         }
     }
 }
@@ -191,15 +191,20 @@ impl OtelGenerator {
         let tenant_for_task = tenant_key.clone();
         let tenant_header = tenant_key.clone();
         let auth = auth.to_string();
+        let export_enabled = self.export_enabled;
         tokio::spawn(async move {
-            run_generator(
-                &endpoint,
-                &auth,
-                tenant_header.as_deref(),
-                duration_secs,
-                cancellation,
-            )
-            .await;
+            if export_enabled {
+                run_generator(
+                    &endpoint,
+                    &auth,
+                    tenant_header.as_deref(),
+                    duration_secs,
+                    cancellation,
+                )
+                .await;
+            } else {
+                cancellation.cancelled().await;
+            }
 
             let mut sessions = lock_sessions(&sessions);
             if sessions
@@ -221,57 +226,60 @@ impl OtelGenerator {
         })
     }
 
-    pub fn stop(&self, tenant_id: Option<&str>) -> Result<OtelGeneratorResult, OtelGeneratorError> {
+    pub fn stop(&self, tenant_id: Option<&str>) -> OtelGeneratorResult {
         let tenant_key = tenant_id.map(str::to_owned);
         let tenant_description = tenant_id
             .map(|tenant| format!(" for tenant '{tenant}'"))
             .unwrap_or_default();
         let mut sessions = lock_sessions(&self.sessions);
         let Some(session) = sessions.get_mut(&tenant_key) else {
-            return Ok(OtelGeneratorResult {
+            return OtelGeneratorResult {
                 status: "not_running".to_string(),
                 message: format!("Generator is not running{tenant_description}"),
-            });
+            };
         };
 
         if session.state == SessionState::Stopping {
-            return Ok(OtelGeneratorResult {
+            return OtelGeneratorResult {
                 status: "stopping".to_string(),
                 message: format!("Generator is already stopping{tenant_description}"),
-            });
+            };
         }
 
         session.state = SessionState::Stopping;
         session.cancellation.cancel();
-        Ok(OtelGeneratorResult {
+        OtelGeneratorResult {
             status: "stopping".to_string(),
             message: format!("Generator stop requested{tenant_description}"),
-        })
+        }
     }
 
-    pub fn status(
-        &self,
-        tenant_id: Option<&str>,
-    ) -> Result<OtelGeneratorStatus, OtelGeneratorError> {
+    pub fn status(&self, tenant_id: Option<&str>) -> OtelGeneratorStatus {
         let tenant_key = tenant_id.map(str::to_owned);
         let sessions = lock_sessions(&self.sessions);
         let Some(session) = sessions.get(&tenant_key) else {
-            return Ok(OtelGeneratorStatus {
+            return OtelGeneratorStatus {
                 state: "stopped".to_string(),
-                running: false,
                 endpoint: None,
                 duration: None,
                 elapsed_secs: None,
-            });
+            };
         };
 
-        Ok(OtelGeneratorStatus {
+        OtelGeneratorStatus {
             state: session.state.as_str().to_string(),
-            running: true,
             endpoint: Some(session.endpoint.clone()),
             duration: Some(session.duration_secs),
             elapsed_secs: Some(session.started_at.elapsed().as_secs_f64()),
-        })
+        }
+    }
+
+    #[cfg(test)]
+    fn without_exports() -> Self {
+        Self {
+            export_enabled: false,
+            ..Self::default()
+        }
     }
 }
 
@@ -487,7 +495,7 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
                 message: if is_error {
                     "Synthetic HTTP 500 error".to_string()
                 } else {
-                    String::new()
+                    String::default()
                 },
                 code: if is_error {
                     status::StatusCode::Error as i32
@@ -553,43 +561,178 @@ fn build_batch(sequence: u64) -> TelemetryBatch {
             ..Default::default()
         });
 
-        let metric_attributes = vec![
-            kv_string("service.name", service),
-            kv_string("http.method", method),
-            kv_string("http.route", path),
+        let base_metric_attributes = vec![
+            kv_string("service", service),
+            kv_string("k8s.namespace.name", "production"),
+            kv_string("k8s.cluster.name", "demo-cluster"),
         ];
+        let mut request_metric_attributes = base_metric_attributes.clone();
+        request_metric_attributes.extend([
+            kv_string("method", method),
+            kv_string("endpoint", path),
+            kv_string("status", &status_code.to_string()),
+        ]);
+        let mut duration_metric_attributes = base_metric_attributes.clone();
+        duration_metric_attributes
+            .extend([kv_string("method", method), kv_string("endpoint", path)]);
+        let mut database_metric_attributes = base_metric_attributes.clone();
+        database_metric_attributes.push(kv_string(
+            "db.operation",
+            if index % 2 == 0 { "SELECT" } else { "UPDATE" },
+        ));
+        let mut auth_metric_attributes = base_metric_attributes.clone();
+        auth_metric_attributes.push(kv_string(
+            "success",
+            if is_error { "false" } else { "true" },
+        ));
+        let mut error_metric_attributes = base_metric_attributes.clone();
+        error_metric_attributes.extend([
+            kv_string("status", &status_code.to_string()),
+            kv_string("endpoint", path),
+        ]);
+        let connection_attributes = vec![
+            kv_string("service", service),
+            kv_string("k8s.namespace.name", "production"),
+        ];
+        let gauge_attributes = vec![kv_string("service", "otel-demo")];
+        let service_factor = index as u64 + 1;
+        let counter_value = sequence.max(1).saturating_mul(service_factor);
         resource_metrics.push(ResourceMetrics {
             resource: Some(resource),
             scope_metrics: vec![ScopeMetrics {
                 scope: Some(scope("parseable.otel-demo.metrics")),
                 metrics: vec![
-                    sum_metric(
+                    counter_metric(
                         "http_requests_total",
                         "Total HTTP requests",
-                        sequence.max(1),
+                        counter_value,
+                        sequence,
                         now,
-                        metric_attributes.clone(),
+                        request_metric_attributes,
                     ),
-                    gauge_metric(
-                        "request_duration_ms",
-                        "Request duration",
-                        duration_ms as f64,
+                    counter_metric(
+                        "cache_hits_total",
+                        "Total cache hits",
+                        counter_value.saturating_mul(3),
+                        sequence,
                         now,
-                        metric_attributes.clone(),
+                        base_metric_attributes.clone(),
+                    ),
+                    counter_metric(
+                        "cache_misses_total",
+                        "Total cache misses",
+                        counter_value,
+                        sequence,
+                        now,
+                        base_metric_attributes.clone(),
+                    ),
+                    counter_metric(
+                        "errors_total",
+                        "Total errors",
+                        counter_value.div_ceil(5),
+                        sequence,
+                        now,
+                        error_metric_attributes,
+                    ),
+                    counter_metric(
+                        "bytes_sent_total",
+                        "Total bytes sent",
+                        counter_value.saturating_mul(5_000),
+                        sequence,
+                        now,
+                        base_metric_attributes.clone(),
+                    ),
+                    counter_metric(
+                        "bytes_received_total",
+                        "Total bytes received",
+                        counter_value.saturating_mul(2_500),
+                        sequence,
+                        now,
+                        base_metric_attributes.clone(),
+                    ),
+                    counter_metric(
+                        "db_queries_total",
+                        "Total database queries",
+                        counter_value.saturating_mul(3),
+                        sequence,
+                        now,
+                        database_metric_attributes,
+                    ),
+                    counter_metric(
+                        "auth_attempts_total",
+                        "Total authentication attempts",
+                        counter_value,
+                        sequence,
+                        now,
+                        auth_metric_attributes,
+                    ),
+                    up_down_counter_metric(
+                        "active_connections",
+                        "Current active connections",
+                        10 + index as i64,
+                        sequence,
+                        now,
+                        connection_attributes.clone(),
+                    ),
+                    up_down_counter_metric(
+                        "queue_size",
+                        "Current queue size",
+                        rng.gen_range(0_i64..20),
+                        sequence,
+                        now,
+                        connection_attributes,
+                    ),
+                    up_down_counter_metric(
+                        "request_duration_ms",
+                        "Request duration in ms",
+                        duration_ms as i64,
+                        sequence,
+                        now,
+                        duration_metric_attributes,
+                    ),
+                    up_down_counter_metric(
+                        "active_requests",
+                        "Current in-flight requests",
+                        rng.gen_range(0_i64..15),
+                        sequence,
+                        now,
+                        base_metric_attributes.clone(),
+                    ),
+                    up_down_counter_metric(
+                        "open_file_handles",
+                        "Current open file handles",
+                        rng.gen_range(20_i64..200),
+                        sequence,
+                        now,
+                        base_metric_attributes,
                     ),
                     gauge_metric(
                         "cpu_usage_percent",
                         "CPU usage",
                         rng.gen_range(10.0..90.0),
                         now,
-                        metric_attributes.clone(),
+                        gauge_attributes.clone(),
                     ),
                     gauge_metric(
                         "memory_usage_percent",
                         "Memory usage",
                         rng.gen_range(20.0..85.0),
                         now,
-                        metric_attributes,
+                        gauge_attributes.clone(),
+                    ),
+                    gauge_metric(
+                        "thread_count",
+                        "Current thread count",
+                        rng.gen_range(5.0..50.0),
+                        now,
+                        gauge_attributes.clone(),
+                    ),
+                    gauge_metric(
+                        "connection_pool_available",
+                        "Available connection pool entries",
+                        rng.gen_range(1.0..20.0),
+                        now,
+                        gauge_attributes,
                     ),
                 ],
                 ..Default::default()
@@ -627,14 +770,15 @@ fn scope(name: &str) -> InstrumentationScope {
     }
 }
 
-fn sum_metric(
+fn counter_metric(
     name: &str,
     description: &str,
     value: u64,
+    sequence: u64,
     now: u64,
     attributes: Vec<KeyValue>,
 ) -> Metric {
-    let elapsed_nanos = (GENERATION_INTERVAL.as_nanos() as u64).saturating_mul(value);
+    let elapsed_nanos = (GENERATION_INTERVAL.as_nanos() as u64).saturating_mul(sequence);
     Metric {
         name: name.to_string(),
         description: description.to_string(),
@@ -651,6 +795,34 @@ fn sum_metric(
             }],
             aggregation_temporality: AggregationTemporality::Cumulative as i32,
             is_monotonic: true,
+        })),
+        ..Default::default()
+    }
+}
+
+fn up_down_counter_metric(
+    name: &str,
+    description: &str,
+    value: i64,
+    sequence: u64,
+    now: u64,
+    attributes: Vec<KeyValue>,
+) -> Metric {
+    let elapsed_nanos = (GENERATION_INTERVAL.as_nanos() as u64).saturating_mul(sequence);
+    Metric {
+        name: name.to_string(),
+        description: description.to_string(),
+        unit: "1".to_string(),
+        data: Some(metric::Data::Sum(Sum {
+            data_points: vec![NumberDataPoint {
+                attributes,
+                start_time_unix_nano: now.saturating_sub(elapsed_nanos),
+                time_unix_nano: now,
+                value: Some(number_data_point::Value::AsInt(value)),
+                ..Default::default()
+            }],
+            aggregation_temporality: AggregationTemporality::Cumulative as i32,
+            is_monotonic: false,
         })),
         ..Default::default()
     }
@@ -749,6 +921,38 @@ mod tests {
     }
 
     #[test]
+    fn generated_batch_matches_python_metric_set() {
+        let batch = build_batch(7);
+        let mut names: Vec<&str> = batch.metrics.resource_metrics[0].scope_metrics[0]
+            .metrics
+            .iter()
+            .map(|metric| metric.name.as_str())
+            .collect();
+        names.sort_unstable();
+        let mut expected = vec![
+            "active_connections",
+            "active_requests",
+            "auth_attempts_total",
+            "bytes_received_total",
+            "bytes_sent_total",
+            "cache_hits_total",
+            "cache_misses_total",
+            "connection_pool_available",
+            "cpu_usage_percent",
+            "db_queries_total",
+            "errors_total",
+            "http_requests_total",
+            "memory_usage_percent",
+            "open_file_handles",
+            "queue_size",
+            "request_duration_ms",
+            "thread_count",
+        ];
+        expected.sort_unstable();
+        assert_eq!(names, expected);
+    }
+
+    #[test]
     fn generated_batch_serializes_as_otlp_json() {
         let batch = build_batch(1);
         let traces = serde_json::to_value(batch.traces).unwrap();
@@ -782,22 +986,22 @@ mod tests {
 
     #[tokio::test]
     async fn lifecycle_is_per_tenant() {
-        let generator = OtelGenerator::default();
+        let generator = OtelGenerator::without_exports();
         let first = generator
             .start("http://127.0.0.1:1", "Basic test", Some(60), Some("acme"))
             .unwrap();
         assert_eq!(first.status, "started");
-        assert_eq!(generator.status(Some("acme")).unwrap().state, "running");
-        assert_eq!(generator.status(Some("other")).unwrap().state, "stopped");
+        assert_eq!(generator.status(Some("acme")).state, "running");
+        assert_eq!(generator.status(Some("other")).state, "stopped");
 
         let duplicate = generator
             .start("http://127.0.0.1:1", "Basic test", Some(60), Some("acme"))
             .unwrap();
         assert_eq!(duplicate.status, "error");
-        assert_eq!(generator.stop(Some("acme")).unwrap().status, "stopping");
+        assert_eq!(generator.stop(Some("acme")).status, "stopping");
 
         tokio::time::timeout(Duration::from_secs(1), async {
-            while generator.status(Some("acme")).unwrap().state != "stopped" {
+            while generator.status(Some("acme")).state != "stopped" {
                 tokio::task::yield_now().await;
             }
         })

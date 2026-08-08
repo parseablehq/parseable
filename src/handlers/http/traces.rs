@@ -34,15 +34,14 @@ use crate::{
     rbac::map::SessionKey,
     tenants::TENANT_METADATA,
     utils::{
-        actix::extract_session_key_from_req,
-        arrow::record_batches_to_json,
-        get_tenant_id_from_request, get_user_from_request,
-        time::{TimeRange, count_api_bin_interval},
+        actix::extract_session_key_from_req, arrow::record_batches_to_json,
+        get_tenant_id_from_request, get_user_from_request, time::TimeRange,
     },
 };
 
 const DEFAULT_TRACE_LIMIT: usize = 500;
 const MAX_TRACE_LIMIT: usize = 1000;
+const MAX_TRACE_DEPTH: usize = 100;
 const TRACE_LIST_REQUIRED_FIELDS: &[&str] = &[
     "service.name",
     "span_name",
@@ -53,7 +52,6 @@ const TRACE_LIST_REQUIRED_FIELDS: &[&str] = &[
     "span_start_time_unix_nano_epoch",
     "span_status_code",
     "span_parent_span_id",
-    "p_timestamp",
 ];
 const TRACE_DETAIL_REQUIRED_FIELDS: &[&str] = TRACE_LIST_REQUIRED_FIELDS;
 
@@ -160,6 +158,8 @@ pub enum TraceError {
     StreamNotFound(#[from] StreamNotFound),
     #[error("{0}")]
     BadRequest(String),
+    #[error("{0}")]
+    Internal(String),
     #[error("Trace not found: {0}")]
     TraceNotFound(String),
 }
@@ -167,7 +167,7 @@ pub enum TraceError {
 impl actix_web::ResponseError for TraceError {
     fn status_code(&self) -> StatusCode {
         match self {
-            Self::Query(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            Self::Query(_) | Self::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
             Self::TimeParse(_) | Self::BadRequest(_) => StatusCode::BAD_REQUEST,
             Self::StreamNotFound(_) | Self::TraceNotFound(_) => StatusCode::NOT_FOUND,
         }
@@ -274,7 +274,7 @@ pub async fn get_trace_detail(
     let bounds = execute_trace_query(
         "traces/detail/bounds",
         target.clone(),
-        build_trace_bounds_sql(&body.dataset, trace_id),
+        build_trace_bounds_sql(&body.dataset, trace_id, &dataset_info.time_column),
         &discovery_range.start.to_rfc3339(),
         &discovery_range.end.to_rfc3339(),
         &tenant_id,
@@ -305,7 +305,12 @@ pub async fn get_trace_detail(
     let records = execute_trace_query(
         "traces/detail",
         target,
-        build_trace_detail_sql(&body.dataset, trace_id, dataset_info.has_event_name),
+        build_trace_detail_sql(
+            &body.dataset,
+            trace_id,
+            &dataset_info.time_column,
+            dataset_info.has_event_name,
+        ),
         &start_time.to_rfc3339(),
         &(end_time + Duration::minutes(1)).to_rfc3339(),
         &tenant_id,
@@ -415,9 +420,6 @@ impl TraceSqlContext {
         time_range: &TimeRange,
         service_name: Option<&str>,
     ) -> Self {
-        // Validate the range through the shared count interval helper as the
-        // query APIs use the same supported bounds.
-        let _ = count_api_bin_interval(&time_range.start, &time_range.end);
         Self {
             table: quote_identifier(dataset),
             time_column: quote_identifier(time_column),
@@ -429,7 +431,7 @@ impl TraceSqlContext {
 
     fn filter(&self, alias: &str) -> String {
         let prefix = if alias.is_empty() {
-            String::new()
+            String::default()
         } else {
             format!("{alias}.")
         };
@@ -527,21 +529,28 @@ WHERE {source_filter} AND {option_filter}"#
     )
 }
 
-fn build_trace_bounds_sql(dataset: &str, trace_id: &str) -> String {
+fn build_trace_bounds_sql(dataset: &str, trace_id: &str, time_column: &str) -> String {
     let table = quote_identifier(dataset);
     let trace_id = escape_sql_string_literal(trace_id);
+    let time_column = quote_identifier(time_column);
     format!(
         r#"SELECT
-  MIN("p_timestamp") AS start_time,
-  MAX("p_timestamp") AS end_time
+  MIN({time_column}) AS start_time,
+  MAX({time_column}) AS end_time
 FROM {table}
 WHERE "span_trace_id" = '{trace_id}'"#
     )
 }
 
-fn build_trace_detail_sql(dataset: &str, trace_id: &str, has_event_name: bool) -> String {
+fn build_trace_detail_sql(
+    dataset: &str,
+    trace_id: &str,
+    time_column: &str,
+    has_event_name: bool,
+) -> String {
     let table = quote_identifier(dataset);
     let trace_id = escape_sql_string_literal(trace_id);
+    let time_column = quote_identifier(time_column);
     let event_name_projection = if has_event_name {
         "\"event_name\",\n    "
     } else {
@@ -565,7 +574,7 @@ trace_spans AS (
     "span_start_time_unix_nano_epoch",
     "span_trace_id",
     "span_status_code",
-    {event_name_projection}"p_timestamp"
+    {event_name_projection}{time_column} AS p_timestamp
   FROM {table}
   WHERE "span_trace_id" = '{trace_id}'
 ),
@@ -605,6 +614,7 @@ span_hierarchy AS (
   SELECT s."span_span_id", s.p_timestamp, sh.level + 1
   FROM deduped s
   INNER JOIN span_hierarchy sh ON s."span_parent_span_id" = sh."span_span_id"
+  WHERE sh.level < {MAX_TRACE_DEPTH}
 ),
 span_levels AS (
   SELECT "span_span_id", MIN(level) AS level
@@ -633,7 +643,7 @@ ORDER BY sl.level, d."span_start_time_unix_nano""#
 #[derive(Clone)]
 enum TraceQueryTarget {
     Local(SessionKey),
-    Remote(Option<HeaderMap>),
+    Remote(HeaderMap),
 }
 
 fn query_target(
@@ -644,7 +654,9 @@ fn query_target(
         Mode::All | Mode::Query => Ok(TraceQueryTarget::Local(
             extract_session_key_from_req(req).map_err(QueryError::ActixError)?,
         )),
-        Mode::Prism => Ok(TraceQueryTarget::Remote(build_auth_headers(req, tenant_id))),
+        Mode::Prism => Ok(TraceQueryTarget::Remote(build_auth_headers(
+            req, tenant_id,
+        )?)),
         mode => Err(TraceError::BadRequest(format!(
             "Trace queries are not available in {mode:?} mode"
         ))),
@@ -683,7 +695,7 @@ async fn execute_trace_query(
             Ok(records.into_iter().map(Value::Object).collect())
         }
         TraceQueryTarget::Remote(auth) => {
-            let (response, _) = send_query_request(auth, &request, tenant_id)
+            let (response, _) = send_query_request(Some(auth), &request, tenant_id)
                 .await
                 .map_err(|error| {
                     error!("traces/{query_name} query failed: {error:?}");
@@ -699,35 +711,57 @@ async fn execute_trace_query(
             {
                 return Ok(records.clone());
             }
-            warn!("traces/{query_name} unexpected response: {response}");
-            Err(TraceError::BadRequest(format!(
-                "Unexpected query response: {response}"
-            )))
+            warn!(
+                response_type = response_type(&response),
+                "traces/{query_name} returned an unexpected response shape"
+            );
+            Err(TraceError::BadRequest(
+                "Unexpected query response shape".to_string(),
+            ))
         }
     }
 }
 
-fn build_auth_headers(req: &HttpRequest, tenant_id: &Option<String>) -> Option<HeaderMap> {
-    let (_, hash) = CLUSTER_SECRET.get()?;
+fn response_type(response: &Value) -> &'static str {
+    match response {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
+}
+
+fn build_auth_headers(
+    req: &HttpRequest,
+    tenant_id: &Option<String>,
+) -> Result<HeaderMap, TraceError> {
+    let (_, hash) = CLUSTER_SECRET.get().ok_or_else(|| {
+        TraceError::Internal(
+            "P_CLUSTER_SECRET is required for distributed trace queries".to_string(),
+        )
+    })?;
     let tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT);
     let mut headers = HeaderMap::new();
-    if let Some(auth) = TENANT_METADATA.get_global_query_auth(tenant)
-        && let Ok(value) = HeaderValue::from_str(&auth)
-    {
+    if let Some(auth) = TENANT_METADATA.get_global_query_auth(tenant) {
+        let value = HeaderValue::from_str(&auth).map_err(|_| {
+            TraceError::Internal("Stored query authorization is invalid".to_string())
+        })?;
         headers.insert(HeaderName::from_static("authorization"), value);
     }
-    if let Ok(value) = HeaderValue::from_str(hash) {
-        headers.insert(HeaderName::from_static(CLUSTER_SECRET_HEADER), value);
-    }
-    if let Ok(value) = HeaderValue::from_str(tenant) {
-        headers.insert(HeaderName::from_static("intra-cluster-tenant"), value);
-    }
-    if let Ok(user) = get_user_from_request(req)
-        && let Ok(value) = HeaderValue::from_str(&user)
-    {
-        headers.insert(HeaderName::from_static("intra-cluster-userid"), value);
-    }
-    Some(headers)
+    let secret = HeaderValue::from_str(hash)
+        .map_err(|_| TraceError::Internal("P_CLUSTER_SECRET is invalid".to_string()))?;
+    headers.insert(HeaderName::from_static(CLUSTER_SECRET_HEADER), secret);
+    let tenant = HeaderValue::from_str(tenant)
+        .map_err(|_| TraceError::Internal("Tenant ID is invalid".to_string()))?;
+    headers.insert(HeaderName::from_static("intra-cluster-tenant"), tenant);
+    let user = get_user_from_request(req)
+        .map_err(|_| TraceError::Internal("Unable to identify requesting user".to_string()))?;
+    let user = HeaderValue::from_str(&user)
+        .map_err(|_| TraceError::Internal("Requesting user ID is invalid".to_string()))?;
+    headers.insert(HeaderName::from_static("intra-cluster-userid"), user);
+    Ok(headers)
 }
 
 fn quote_identifier(value: &str) -> String {
@@ -777,19 +811,22 @@ mod tests {
 
     #[test]
     fn trace_detail_sql_escapes_id_and_builds_hierarchy() {
-        let bounds = build_trace_bounds_sql("traces", "abc' OR 1=1 --");
+        let bounds = build_trace_bounds_sql("traces", "abc' OR 1=1 --", "observed_at");
         assert!(bounds.contains("\"span_trace_id\" = 'abc'' OR 1=1 --'"));
+        assert!(bounds.contains("MIN(\"observed_at\") AS start_time"));
 
-        let detail = build_trace_detail_sql("traces", "abc", true);
+        let detail = build_trace_detail_sql("traces", "abc", "observed_at", true);
         assert!(detail.contains("WITH RECURSIVE"));
         assert!(detail.contains("\"event_name\""));
+        assert!(detail.contains("\"observed_at\" AS p_timestamp"));
         assert!(detail.contains("INNER JOIN span_hierarchy"));
+        assert!(detail.contains(&format!("WHERE sh.level < {MAX_TRACE_DEPTH}")));
         assert!(detail.contains("COUNT(*) OVER () AS total_span_count"));
     }
 
     #[test]
     fn trace_detail_sql_omits_unavailable_event_name() {
-        let detail = build_trace_detail_sql("traces", "abc", false);
+        let detail = build_trace_detail_sql("traces", "abc", "p_timestamp", false);
         assert!(!detail.contains("\"event_name\""));
         assert!(detail.contains("0 AS event_count"));
     }
