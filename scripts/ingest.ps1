@@ -247,11 +247,11 @@ function Install-Collector {
     }
     catch {
         Write-ErrorMsg "Failed to install OpenTelemetry Collector: $_"
-        Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
         exit 1
     }
-
-    Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    finally {
+        Remove-Item $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Start-Collector {
@@ -344,7 +344,15 @@ function Setup-Collector {
     }
     $IngestorHost = ($IngestorHost -split '/', 2)[0]
 
-    if ($IngestorHost -match '^(.*):([0-9]+)$') {
+    if ($IngestorHost -match '^(\[[^]]+\])(?::([0-9]+))?$') {
+        $IngestorHost = $Matches[1]
+        $Port = if ([string]::IsNullOrWhiteSpace($Matches[2])) { $defaultPort } else { $Matches[2] }
+    }
+    elseif (($IngestorHost -split ':').Count -gt 2) {
+        Write-ErrorMsg "IPv6 hosts must be enclosed in brackets"
+        exit 1
+    }
+    elseif ($IngestorHost -match '^(.*):([0-9]+)$') {
         $Port = $Matches[2]
         $IngestorHost = $Matches[1]
     }
@@ -424,26 +432,45 @@ function Setup-Collector {
 
     $configContent = ($configLines -join [Environment]::NewLine) + [Environment]::NewLine
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-    [System.IO.File]::WriteAllText($CONFIG_FILE, $configContent, $utf8NoBom)
+    $tempConfigFile = "$CONFIG_FILE.$([guid]::NewGuid().ToString('N')).tmp"
 
-    $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
-    $fileRights = [System.Security.AccessControl.FileSystemRights]::Read -bor `
-        [System.Security.AccessControl.FileSystemRights]::Write
-    $accessRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
-        $currentIdentity.User,
-        $fileRights,
-        [System.Security.AccessControl.AccessControlType]::Allow
-    )
-    $acl = [System.Security.AccessControl.FileSecurity]::new()
-    $acl.SetOwner($currentIdentity.User)
-    $acl.SetAccessRuleProtection($true, $false)
-    $acl.AddAccessRule($accessRule)
-    Set-Acl -Path $CONFIG_FILE -AclObject $acl -ErrorAction Stop
+    try {
+        $tempConfigStream = [System.IO.File]::Create($tempConfigFile)
+        $tempConfigStream.Dispose()
 
-    & $COLLECTOR_EXE validate --config $CONFIG_FILE *> $null
-    if ($LASTEXITCODE -ne 0) {
-        Write-ErrorMsg "OpenTelemetry Collector configuration validation failed"
-        exit 1
+        $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+        $fileRights = [System.Security.AccessControl.FileSystemRights]::Read -bor `
+            [System.Security.AccessControl.FileSystemRights]::Write
+        $accessRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+            $currentIdentity.User,
+            $fileRights,
+            [System.Security.AccessControl.AccessControlType]::Allow
+        )
+        $acl = [System.Security.AccessControl.FileSecurity]::new()
+        $acl.SetOwner($currentIdentity.User)
+        $acl.SetAccessRuleProtection($true, $false)
+        $acl.AddAccessRule($accessRule)
+        Set-Acl -Path $tempConfigFile -AclObject $acl -ErrorAction Stop
+
+        [System.IO.File]::WriteAllText($tempConfigFile, $configContent, $utf8NoBom)
+
+        & $COLLECTOR_EXE validate --config $tempConfigFile *> $null
+        if ($LASTEXITCODE -ne 0) {
+            Write-ErrorMsg "OpenTelemetry Collector configuration validation failed"
+            exit 1
+        }
+
+        if (Test-Path $CONFIG_FILE) {
+            Set-Acl -Path $CONFIG_FILE -AclObject $acl -ErrorAction Stop
+            [System.IO.File]::Replace($tempConfigFile, $CONFIG_FILE, $null)
+        }
+        else {
+            [System.IO.File]::Move($tempConfigFile, $CONFIG_FILE)
+        }
+        Set-Acl -Path $CONFIG_FILE -AclObject $acl -ErrorAction Stop
+    }
+    finally {
+        Remove-Item $tempConfigFile -Force -ErrorAction SilentlyContinue
     }
 
     if (Test-CollectorRunning) {

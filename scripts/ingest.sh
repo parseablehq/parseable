@@ -187,12 +187,14 @@ install_collector() {
     download_url="https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v${COLLECTOR_VERSION}/${archive_name}"
     temp_dir=$(mktemp -d)
     archive_path="$temp_dir/$archive_name"
+    INGEST_INSTALL_TEMP_DIR="$temp_dir"
+    INGEST_INSTALL_NEW_BIN="$COLLECTOR_BIN.new"
+    trap 'rm -rf "$INGEST_INSTALL_TEMP_DIR"; rm -f "$INGEST_INSTALL_NEW_BIN"' EXIT
 
     print_info "Installing OpenTelemetry Collector v$COLLECTOR_VERSION..."
     if ! curl -fsSL --retry 3 --retry-delay 2 --connect-timeout 10 --max-time 300 \
         "$download_url" -o "$archive_path"; then
         print_error "Failed to download OpenTelemetry Collector from $download_url"
-        rm -rf "$temp_dir"
         exit 1
     fi
 
@@ -202,13 +204,11 @@ install_collector() {
         actual_hash=$(shasum -a 256 "$archive_path" | awk '{print $1}')
     else
         print_error "Cannot verify download: sha256sum or shasum is required"
-        rm -rf "$temp_dir"
         exit 1
     fi
 
     if [ "$actual_hash" != "$expected_hash" ]; then
         print_error "OpenTelemetry Collector checksum verification failed"
-        rm -rf "$temp_dir"
         exit 1
     fi
 
@@ -216,7 +216,6 @@ install_collector() {
     extracted_bin=$(find "$temp_dir" -type f -name otelcol -print -quit)
     if [ -z "$extracted_bin" ]; then
         print_error "OpenTelemetry Collector executable not found in downloaded archive"
-        rm -rf "$temp_dir"
         exit 1
     fi
 
@@ -225,6 +224,8 @@ install_collector() {
     chmod 755 "$COLLECTOR_BIN.new"
     mv "$COLLECTOR_BIN.new" "$COLLECTOR_BIN"
     rm -rf "$temp_dir"
+    trap - EXIT
+    unset INGEST_INSTALL_TEMP_DIR INGEST_INSTALL_NEW_BIN
 }
 
 start_collector() {
@@ -289,6 +290,8 @@ setup_collector() {
     local host_name_yaml
     local tenant_header=""
     local scrapers
+    local bracketed_host_pattern='^(\[[^]]+\])(:([0-9]+))?$'
+    local temp_config
 
     if [ -z "$ingestor_host" ] || [ -z "$stream_name" ] || [ -z "$api_key" ]; then
         print_error "Invalid setup parameters"
@@ -309,7 +312,13 @@ setup_collector() {
     fi
     ingestor_host="${ingestor_host%%/*}"
 
-    if [[ "$ingestor_host" == *:* ]]; then
+    if [[ "$ingestor_host" =~ $bracketed_host_pattern ]]; then
+        port="${BASH_REMATCH[3]:-$default_port}"
+        ingestor_host="${BASH_REMATCH[1]}"
+    elif [[ "$ingestor_host" == *:*:* ]]; then
+        print_error "IPv6 hosts must be enclosed in brackets"
+        exit 1
+    elif [[ "$ingestor_host" == *:* ]]; then
         port="${ingestor_host##*:}"
         ingestor_host="${ingestor_host%:*}"
     else
@@ -352,9 +361,11 @@ setup_collector() {
 EOF
 )
 
-    : > "$CONFIG_FILE"
-    chmod 600 "$CONFIG_FILE"
-    cat > "$CONFIG_FILE" << EOF
+    temp_config=$(mktemp "${CONFIG_FILE}.tmp.XXXXXX")
+    INGEST_TEMP_CONFIG="$temp_config"
+    trap 'rm -f "$INGEST_TEMP_CONFIG"' EXIT
+    chmod 600 "$temp_config"
+    cat > "$temp_config" << EOF
 receivers:
   host_metrics:
     collection_interval: 2s
@@ -392,10 +403,14 @@ service:
       exporters: [otlp_http/parseable]
 EOF
 
-    if ! "$COLLECTOR_BIN" validate --config "$CONFIG_FILE" > /dev/null; then
+    if ! "$COLLECTOR_BIN" validate --config "$temp_config" > /dev/null; then
         print_error "OpenTelemetry Collector configuration validation failed"
         exit 1
     fi
+
+    mv -f "$temp_config" "$CONFIG_FILE"
+    trap - EXIT
+    unset INGEST_TEMP_CONFIG
 
     if is_running; then
         print_info "Restarting OpenTelemetry Collector to apply updated configuration..."
