@@ -146,9 +146,19 @@ function Stop-Collector {
 
         try {
             Stop-Process -Id $processId -Force -ErrorAction Stop
-            Start-Sleep -Seconds 2
+            for ($attempt = 0; $attempt -lt 10; $attempt++) {
+                if ($null -eq (Get-Process -Id $processId -ErrorAction SilentlyContinue)) {
+                    break
+                }
+                Start-Sleep -Seconds 1
+            }
+
+            if ($null -ne (Get-Process -Id $processId -ErrorAction SilentlyContinue)) {
+                throw "Process $processId did not stop within 10 seconds; PID file was preserved."
+            }
+
+            Remove-Item $PID_FILE -Force -ErrorAction Stop
             Write-Info "OpenTelemetry Collector stopped successfully"
-            Remove-Item $PID_FILE -ErrorAction SilentlyContinue
         }
         catch {
             Write-ErrorMsg "Failed to stop OpenTelemetry Collector: $_"
@@ -170,9 +180,8 @@ function Show-Status {
         Write-Info "Log file: $LOG_FILE"
         Write-Info "Error log file: $ERROR_LOG_FILE"
         $pidFileCommand = ConvertTo-PowerShellSingleQuoted $PID_FILE
-        $logFileCommand = ConvertTo-PowerShellSingleQuoted $LOG_FILE
         $errorLogFileCommand = ConvertTo-PowerShellSingleQuoted $ERROR_LOG_FILE
-        Write-Info "To see logs: Get-Content $logFileCommand,$errorLogFileCommand -Tail 80 -Wait"
+        Write-Info "To see logs: Get-Content $errorLogFileCommand -Tail 80 -Wait"
         Write-Info "To stop: Stop-Process -Id (Get-Content $pidFileCommand); Remove-Item $pidFileCommand"
     }
     else {
@@ -313,11 +322,10 @@ function Start-Collector {
     }
 
     $pidFileCommand = ConvertTo-PowerShellSingleQuoted $PID_FILE
-    $logFileCommand = ConvertTo-PowerShellSingleQuoted $LOG_FILE
     $errorLogFileCommand = ConvertTo-PowerShellSingleQuoted $ERROR_LOG_FILE
     Write-Info "OpenTelemetry Collector started successfully (PID: $($process.Id))"
     Write-Info "To check status: Get-Process -Id (Get-Content $pidFileCommand)"
-    Write-Info "To see logs: Get-Content $logFileCommand,$errorLogFileCommand -Tail 80 -Wait"
+    Write-Info "To see logs: Get-Content $errorLogFileCommand -Tail 80 -Wait"
     Write-Info "To stop: Stop-Process -Id (Get-Content $pidFileCommand); Remove-Item $pidFileCommand"
     return $true
 }
@@ -450,7 +458,9 @@ function Setup-Collector {
 
     $configContent = ($configLines -join [Environment]::NewLine) + [Environment]::NewLine
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-    $tempConfigFile = "$CONFIG_FILE.$([guid]::NewGuid().ToString('N')).tmp"
+    $configUpdateId = [guid]::NewGuid().ToString('N')
+    $tempConfigFile = "$CONFIG_FILE.$configUpdateId.tmp"
+    $backupConfigFile = "$CONFIG_FILE.$configUpdateId.bak"
 
     try {
         $tempConfigStream = [System.IO.File]::Create($tempConfigFile)
@@ -480,15 +490,20 @@ function Setup-Collector {
 
         if (Test-Path $CONFIG_FILE) {
             Set-Acl -Path $CONFIG_FILE -AclObject $acl -ErrorAction Stop
-            [System.IO.File]::Replace($tempConfigFile, $CONFIG_FILE, $null)
+            [System.IO.File]::Replace($tempConfigFile, $CONFIG_FILE, $backupConfigFile)
         }
         else {
             [System.IO.File]::Move($tempConfigFile, $CONFIG_FILE)
         }
         Set-Acl -Path $CONFIG_FILE -AclObject $acl -ErrorAction Stop
     }
+    catch {
+        Write-ErrorMsg "Failed to update OpenTelemetry Collector configuration: $_"
+        exit 1
+    }
     finally {
         Remove-Item $tempConfigFile -Force -ErrorAction SilentlyContinue
+        Remove-Item $backupConfigFile -Force -ErrorAction SilentlyContinue
     }
 
     if (Test-CollectorRunning) {

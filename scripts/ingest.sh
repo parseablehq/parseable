@@ -82,7 +82,10 @@ stop_collector() {
     if is_running; then
         PID=$(cat "$PID_FILE")
         print_info "Stopping OpenTelemetry Collector (PID: $PID)..."
-        kill "$PID"
+        if ! kill "$PID"; then
+            print_error "Failed to stop OpenTelemetry Collector; PID file was preserved"
+            return 1
+        fi
 
         for _ in {1..10}; do
             if ! ps -p "$PID" > /dev/null 2>&1; then
@@ -93,11 +96,28 @@ stop_collector() {
             sleep 1
         done
 
-        if ps -p "$PID" > /dev/null 2>&1; then
+        if is_running; then
             print_warning "Force killing OpenTelemetry Collector..."
-            kill -9 "$PID"
-            rm -f "$PID_FILE"
+            if ! kill -9 "$PID"; then
+                print_error "Failed to force stop OpenTelemetry Collector; PID file was preserved"
+                return 1
+            fi
+
+            for _ in {1..5}; do
+                if ! ps -p "$PID" > /dev/null 2>&1; then
+                    rm -f "$PID_FILE"
+                    print_info "✓ OpenTelemetry Collector stopped successfully"
+                    return 0
+                fi
+                sleep 1
+            done
+
+            print_error "OpenTelemetry Collector did not stop; PID file was preserved"
+            return 1
         fi
+
+        rm -f "$PID_FILE"
+        print_info "✓ OpenTelemetry Collector stopped successfully"
     else
         print_warning "OpenTelemetry Collector is not running"
         if [ -f "$PID_FILE" ]; then
