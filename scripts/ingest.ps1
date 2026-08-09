@@ -19,17 +19,23 @@ $ProgressPreference = 'SilentlyContinue'
 $COLLECTOR_VERSION = "0.157.0"
 $INSTALL_DIR = "$env:LOCALAPPDATA\parseable-otelcol"
 $COLLECTOR_EXE = "$INSTALL_DIR\otelcol.exe"
-$CONFIG_FILE = "$PSScriptRoot\otelcol.yaml"
-$PID_FILE = "$PSScriptRoot\otelcol.pid"
-$LOG_FILE = "$PSScriptRoot\otelcol.log"
-$ERROR_LOG_FILE = "$PSScriptRoot\otelcol.err.log"
+$SCRIPT_DIR = if ([string]::IsNullOrWhiteSpace($PSScriptRoot)) {
+    (Get-Location).Path
+}
+else {
+    $PSScriptRoot
+}
+$CONFIG_FILE = Join-Path $SCRIPT_DIR "otelcol.yaml"
+$PID_FILE = Join-Path $SCRIPT_DIR "otelcol.pid"
+$LOG_FILE = Join-Path $SCRIPT_DIR "otelcol.log"
+$ERROR_LOG_FILE = Join-Path $SCRIPT_DIR "otelcol.err.log"
 
 $SCRIPT_PATH = $PSCommandPath
 if ([string]::IsNullOrWhiteSpace($SCRIPT_PATH)) {
     $SCRIPT_PATH = $MyInvocation.MyCommand.Path
 }
 if ([string]::IsNullOrWhiteSpace($SCRIPT_PATH)) {
-    $SCRIPT_PATH = Join-Path $PSScriptRoot "ingest.ps1"
+    $SCRIPT_PATH = Join-Path $SCRIPT_DIR "ingest.ps1"
 }
 $SCRIPT_CMD = "powershell -NoProfile -ExecutionPolicy Bypass -File '$SCRIPT_PATH'"
 
@@ -46,6 +52,11 @@ function Write-Warning {
 function Write-ErrorMsg {
     param([string]$Message)
     Write-Host "[ERROR] $Message" -ForegroundColor Red
+}
+
+function ConvertTo-PowerShellSingleQuoted {
+    param([string]$Value)
+    return "'" + $Value.Replace("'", "''") + "'"
 }
 
 function Write-ParseableBanner {
@@ -158,8 +169,11 @@ function Show-Status {
         Write-Info "Config file: $CONFIG_FILE"
         Write-Info "Log file: $LOG_FILE"
         Write-Info "Error log file: $ERROR_LOG_FILE"
-        Write-Info "To see logs: $SCRIPT_CMD logs"
-        Write-Info "To stop: $SCRIPT_CMD stop"
+        $pidFileCommand = ConvertTo-PowerShellSingleQuoted $PID_FILE
+        $logFileCommand = ConvertTo-PowerShellSingleQuoted $LOG_FILE
+        $errorLogFileCommand = ConvertTo-PowerShellSingleQuoted $ERROR_LOG_FILE
+        Write-Info "To see logs: Get-Content $logFileCommand,$errorLogFileCommand -Tail 80 -Wait"
+        Write-Info "To stop: Stop-Process -Id (Get-Content $pidFileCommand); Remove-Item $pidFileCommand"
     }
     else {
         Write-Warning "OpenTelemetry Collector is not running"
@@ -292,15 +306,19 @@ function Start-Collector {
     $stillRunning = Get-Process -Id $process.Id -ErrorAction SilentlyContinue
     if (-not $stillRunning) {
         Write-ErrorMsg "OpenTelemetry Collector exited immediately"
-        Write-ErrorMsg "Run '$SCRIPT_CMD logs' to see error details"
+        $errorLogFileCommand = ConvertTo-PowerShellSingleQuoted $ERROR_LOG_FILE
+        Write-ErrorMsg "Check logs: Get-Content $errorLogFileCommand -Tail 80"
         Remove-Item $PID_FILE -ErrorAction SilentlyContinue
         exit 1
     }
 
+    $pidFileCommand = ConvertTo-PowerShellSingleQuoted $PID_FILE
+    $logFileCommand = ConvertTo-PowerShellSingleQuoted $LOG_FILE
+    $errorLogFileCommand = ConvertTo-PowerShellSingleQuoted $ERROR_LOG_FILE
     Write-Info "OpenTelemetry Collector started successfully (PID: $($process.Id))"
-    Write-Info "To check status: $SCRIPT_CMD status"
-    Write-Info "To see logs: $SCRIPT_CMD logs"
-    Write-Info "To stop: $SCRIPT_CMD stop"
+    Write-Info "To check status: Get-Process -Id (Get-Content $pidFileCommand)"
+    Write-Info "To see logs: Get-Content $logFileCommand,$errorLogFileCommand -Tail 80 -Wait"
+    Write-Info "To stop: Stop-Process -Id (Get-Content $pidFileCommand); Remove-Item $pidFileCommand"
     return $true
 }
 

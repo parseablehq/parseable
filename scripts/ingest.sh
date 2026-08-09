@@ -256,8 +256,8 @@ start_collector() {
     if ps -p "$PID" > /dev/null 2>&1; then
         print_info "✓ OpenTelemetry Collector started successfully (PID: $PID)"
         print_info "View logs:     tail -f $LOG_FILE"
-        print_info "Check status:  $0 status"
-        print_info "Stop:          $0 stop"
+        print_info "Check status:  ps -p \$(cat $PID_FILE) -o pid,ppid,user,%cpu,%mem,etime,command"
+        print_info "Stop:          kill \$(cat $PID_FILE) && rm -f $PID_FILE"
     else
         print_error "✗ OpenTelemetry Collector failed to start. Check logs: cat $LOG_FILE"
         rm -f "$PID_FILE"
