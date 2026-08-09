@@ -325,11 +325,17 @@ impl Metastore for ObjectStoreMetastore {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        let path = obj.get_object_path();
-        Ok(self
-            .storage
-            .delete_object(&RelativePathBuf::from(path), tenant_id)
-            .await?)
+        let id = Ulid::from_string(&obj.get_object_id()).map_err(|e| MetastoreError::Error {
+            status_code: StatusCode::BAD_REQUEST,
+            message: e.to_string(),
+            flow: "delete_alert".into(),
+        })?;
+        let path = alert_json_path(id, tenant_id);
+        match self.storage.delete_object(&path, tenant_id).await {
+            Ok(()) => Ok(()),
+            Err(err) if is_missing_optional_dir(&err) => Ok(()),
+            Err(err) => Err(MetastoreError::ObjectStorageError(err)),
+        }
     }
 
     /// alerts state
@@ -439,11 +445,17 @@ impl Metastore for ObjectStoreMetastore {
         obj: &dyn MetastoreObject,
         tenant_id: &Option<String>,
     ) -> Result<(), MetastoreError> {
-        let path = obj.get_object_path();
-        Ok(self
-            .storage
-            .delete_object(&RelativePathBuf::from(path), tenant_id)
-            .await?)
+        let id = Ulid::from_string(&obj.get_object_id()).map_err(|e| MetastoreError::Error {
+            status_code: StatusCode::BAD_REQUEST,
+            message: e.to_string(),
+            flow: "delete_alert_state".into(),
+        })?;
+        let path = alert_state_json_path(id, tenant_id);
+        match self.storage.delete_object(&path, tenant_id).await {
+            Ok(()) => Ok(()),
+            Err(err) if is_missing_optional_dir(&err) => Ok(()),
+            Err(err) => Err(MetastoreError::ObjectStorageError(err)),
+        }
     }
 
     /// Get MTTR history from storage
@@ -1504,5 +1516,89 @@ impl Metastore for ObjectStoreMetastore {
             }
             Ok(result_file_list)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::storage::LocalFS;
+
+    #[derive(serde::Serialize)]
+    struct TestMetastoreObject {
+        id: Ulid,
+        path: String,
+    }
+
+    impl MetastoreObject for TestMetastoreObject {
+        fn get_object_path(&self) -> String {
+            self.path.clone()
+        }
+
+        fn get_object_id(&self) -> String {
+            self.id.to_string()
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_alert_uses_request_tenant_path_and_is_idempotent() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(LocalFS::new(temp_dir.path().to_path_buf()));
+        let metastore = ObjectStoreMetastore {
+            storage: storage.clone(),
+        };
+        let id = Ulid::new();
+        let tenant_id = None;
+        let path = alert_json_path(id, &tenant_id);
+        storage
+            .put_object(&path, Bytes::from_static(b"{}"), &tenant_id)
+            .await
+            .unwrap();
+        let object = TestMetastoreObject {
+            id,
+            path: format!("{DEFAULT_TENANT}/{ALERTS_ROOT_DIRECTORY}/{id}.json"),
+        };
+
+        metastore.delete_alert(&object, &tenant_id).await.unwrap();
+        metastore.delete_alert(&object, &tenant_id).await.unwrap();
+
+        assert!(matches!(
+            storage.get_object(&path, &tenant_id).await,
+            Err(ObjectStorageError::NoSuchKey(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn delete_alert_state_uses_request_tenant_path_and_is_idempotent() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let storage = Arc::new(LocalFS::new(temp_dir.path().to_path_buf()));
+        let metastore = ObjectStoreMetastore {
+            storage: storage.clone(),
+        };
+        let id = Ulid::new();
+        let tenant_id = None;
+        let path = alert_state_json_path(id, &tenant_id);
+        storage
+            .put_object(&path, Bytes::from_static(b"{}"), &tenant_id)
+            .await
+            .unwrap();
+        let object = TestMetastoreObject {
+            id,
+            path: format!("{DEFAULT_TENANT}/{ALERTS_ROOT_DIRECTORY}/alert_state_{id}.json"),
+        };
+
+        metastore
+            .delete_alert_state(&object, &tenant_id)
+            .await
+            .unwrap();
+        metastore
+            .delete_alert_state(&object, &tenant_id)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            storage.get_object(&path, &tenant_id).await,
+            Err(ObjectStorageError::NoSuchKey(_))
+        ));
     }
 }

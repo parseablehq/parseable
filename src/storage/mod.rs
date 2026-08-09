@@ -43,6 +43,8 @@ mod azure_blob;
 pub mod field_stats;
 mod gcs;
 mod localfs;
+#[cfg(test)]
+pub(crate) use localfs::LocalFS;
 mod metrics_layer;
 pub mod object_storage;
 pub mod retention;

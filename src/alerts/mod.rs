@@ -169,6 +169,10 @@ pub fn create_default_alerts_manager() -> Alerts {
     alerts
 }
 
+fn alert_tenant_from_storage_key(tenant: &str) -> Option<String> {
+    (!tenant.is_empty() && tenant != DEFAULT_TENANT).then(|| tenant.to_owned())
+}
+
 pub async fn user_auth_for_alert_config(
     session: &SessionKey,
     alert: &AlertConfig,
@@ -1174,18 +1178,14 @@ impl AlertManagerTrait for Alerts {
         let mut map = self.alerts.write().await;
 
         for (tenant_id, raw_bytes) in raw_objects {
-            let tenant = if tenant_id.is_empty() {
-                &None
-            } else {
-                &Some(tenant_id.clone())
-            };
+            let tenant = alert_tenant_from_storage_key(&tenant_id);
             for alert_bytes in raw_bytes {
-                let Some(mut alert) = parse_alert_config(&alert_bytes, tenant).await else {
+                let Some(mut alert) = parse_alert_config(&alert_bytes, &tenant).await else {
                     continue;
                 };
 
                 // ensure that alert config's tenant is correctly set
-                alert.tenant_id.clone_from(tenant);
+                alert.tenant_id.clone_from(&tenant);
 
                 let alert = match alert_from_config_oss(alert) {
                     Ok(alert) => alert,
@@ -1671,5 +1671,21 @@ fn get_severity_priority(severity: &Severity) -> u8 {
         Severity::High => 1,
         Severity::Medium => 2,
         Severity::Low => 3,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::alert_tenant_from_storage_key;
+    use crate::parseable::DEFAULT_TENANT;
+
+    #[test]
+    fn default_storage_tenant_is_not_an_explicit_tenant() {
+        assert_eq!(alert_tenant_from_storage_key(""), None);
+        assert_eq!(alert_tenant_from_storage_key(DEFAULT_TENANT), None);
+        assert_eq!(
+            alert_tenant_from_storage_key("tenant-a"),
+            Some("tenant-a".to_owned())
+        );
     }
 }
