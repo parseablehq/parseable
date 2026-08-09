@@ -458,9 +458,7 @@ function Setup-Collector {
 
     $configContent = ($configLines -join [Environment]::NewLine) + [Environment]::NewLine
     $utf8NoBom = New-Object System.Text.UTF8Encoding $false
-    $configUpdateId = [guid]::NewGuid().ToString('N')
-    $tempConfigFile = "$CONFIG_FILE.$configUpdateId.tmp"
-    $backupConfigFile = "$CONFIG_FILE.$configUpdateId.bak"
+    $tempConfigFile = "$CONFIG_FILE.$([guid]::NewGuid().ToString('N')).tmp"
 
     try {
         $tempConfigStream = [System.IO.File]::Create($tempConfigFile)
@@ -488,14 +486,7 @@ function Setup-Collector {
             exit 1
         }
 
-        if (Test-Path $CONFIG_FILE) {
-            Set-Acl -Path $CONFIG_FILE -AclObject $acl -ErrorAction Stop
-            [System.IO.File]::Replace($tempConfigFile, $CONFIG_FILE, $backupConfigFile)
-        }
-        else {
-            [System.IO.File]::Move($tempConfigFile, $CONFIG_FILE)
-        }
-        Set-Acl -Path $CONFIG_FILE -AclObject $acl -ErrorAction Stop
+        Move-Item -LiteralPath $tempConfigFile -Destination $CONFIG_FILE -Force -ErrorAction Stop
     }
     catch {
         Write-ErrorMsg "Failed to update OpenTelemetry Collector configuration: $_"
@@ -503,7 +494,6 @@ function Setup-Collector {
     }
     finally {
         Remove-Item $tempConfigFile -Force -ErrorAction SilentlyContinue
-        Remove-Item $backupConfigFile -Force -ErrorAction SilentlyContinue
     }
 
     if (Test-CollectorRunning) {
