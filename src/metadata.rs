@@ -31,7 +31,10 @@ use crate::metrics::{
     EVENTS_INGESTED, EVENTS_INGESTED_DATE, EVENTS_INGESTED_SIZE, EVENTS_INGESTED_SIZE_DATE,
     EVENTS_STORAGE_SIZE_DATE, LIFETIME_EVENTS_INGESTED, LIFETIME_EVENTS_INGESTED_SIZE,
 };
+use crate::option::Mode;
+use crate::parseable::PARSEABLE;
 use crate::storage::StreamType;
+use crate::storage::object_storage::{manifest_segment_matches, own_manifest_file_name};
 use crate::storage::retention::Retention;
 
 pub fn update_stats(
@@ -202,7 +205,22 @@ pub async fn update_data_type_time_partition(
 }
 
 pub fn load_daily_metrics(manifests: &Vec<ManifestItem>, stream_name: &str, tenant_id: &str) {
+    // In standalone (All) mode a single `.stream.json` accumulates snapshot entries across
+    // restarts. Because the container hostname changes on restart, those entries belong to
+    // different writer lineages, yet EVENTS_INGESTED_DATE carries no writer dimension. Summing
+    // every entry here would rehydrate the per-date counter to the whole-day running total,
+    // and the next entry this process writes (via extract_partition_metrics) would inherit it
+    // — compounding on every restart (issue #1739). Rehydrate only from this node's own
+    // entries. In distributed modes each node writes its own stream.json, so the filter would
+    // match everything anyway; gating on `All` also avoids `manifest_path` touching
+    // INGESTOR_META before it is initialised.
+    let own_manifest = (PARSEABLE.options.mode == Mode::All).then(own_manifest_file_name);
     for manifest in manifests {
+        if let Some(own) = &own_manifest
+            && !manifest_segment_matches(&manifest.manifest_path, own)
+        {
+            continue;
+        }
         let manifest_date = manifest.time_lower_bound.date_naive().to_string();
         let events_ingested = manifest.events_ingested;
         let ingestion_size = manifest.ingestion_size;

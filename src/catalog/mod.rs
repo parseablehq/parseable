@@ -39,7 +39,8 @@ use crate::{
     query::PartialTimeFilter,
     stats::{event_labels_date, get_current_stats, storage_size_labels_date, update_deleted_stats},
     storage::{
-        ObjectStorage, ObjectStorageError, ObjectStoreFormat, object_storage::manifest_path,
+        ObjectStorage, ObjectStorageError, ObjectStoreFormat,
+        object_storage::{manifest_segment_matches, own_manifest_file_name},
     },
 };
 pub use manifest::create_from_parquet_file;
@@ -262,8 +263,19 @@ async fn process_single_partition(
     storage_size: u64,
     tenant_id: &Option<String>,
 ) -> Result<Option<snapshot::ManifestItem>, ObjectStorageError> {
+    // Match on BOTH the time window and manifest ownership. Matching on time alone (and
+    // checking ownership separately afterwards) meant that when another writer's entry
+    // occupied the first overlapping slot, this writer failed the ownership check, fell
+    // through to `create_manifest`, and appended a fresh entry every sync while overwriting
+    // its own manifest with only that sync's files — inflating the snapshot and orphaning
+    // every earlier parquet (issue #1739). Folding ownership into the lookup makes a writer
+    // find its own entry and update it in place; a hostname change now costs one extra entry
+    // once, not one per sync.
+    let own_manifest = own_manifest_file_name();
     let pos = meta.snapshot.manifest_list.iter().position(|item| {
-        item.time_lower_bound <= partition_lower && partition_lower < item.time_upper_bound
+        item.time_lower_bound <= partition_lower
+            && partition_lower < item.time_upper_bound
+            && manifest_segment_matches(&item.manifest_path, &own_manifest)
     });
 
     if let Some(pos) = pos {
@@ -311,65 +323,48 @@ async fn handle_existing_partition(
 ) -> Result<Option<snapshot::ManifestItem>, ObjectStorageError> {
     let manifests = &mut meta.snapshot.manifest_list;
 
-    let manifest_file_name = manifest_path("").to_string();
-    let should_update = manifests[pos].manifest_path.contains(&manifest_file_name);
-
-    if should_update {
-        if let Some(mut manifest) = PARSEABLE
+    // `pos` already guarantees this entry is ours (see the lookup predicate), so the only
+    // question left is whether the manifest object still exists on the store.
+    if let Some(mut manifest) = PARSEABLE
+        .metastore
+        .get_manifest(
+            stream_name,
+            manifests[pos].time_lower_bound,
+            manifests[pos].time_upper_bound,
+            Some(manifests[pos].manifest_path.clone()),
+            tenant_id,
+        )
+        .await
+        .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
+    {
+        // Update existing manifest
+        for change in partition_changes {
+            manifest.apply_change(change);
+        }
+        PARSEABLE
             .metastore
-            .get_manifest(
+            .put_manifest(
+                &manifest,
                 stream_name,
                 manifests[pos].time_lower_bound,
                 manifests[pos].time_upper_bound,
-                Some(manifests[pos].manifest_path.clone()),
                 tenant_id,
             )
             .await
-            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?
-        {
-            // Update existing manifest
-            for change in partition_changes {
-                manifest.apply_change(change);
-            }
-            PARSEABLE
-                .metastore
-                .put_manifest(
-                    &manifest,
-                    stream_name,
-                    manifests[pos].time_lower_bound,
-                    manifests[pos].time_upper_bound,
-                    tenant_id,
-                )
-                .await
-                .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
+            .map_err(|e| ObjectStorageError::MetastoreError(Box::new(e.to_detail())))?;
 
-            manifests[pos].events_ingested = events_ingested;
-            manifests[pos].ingestion_size = ingestion_size;
-            manifests[pos].storage_size = storage_size;
-            Ok(None)
-        } else {
-            // Manifest not found, create new one
-            create_manifest(
-                partition_lower,
-                partition_changes,
-                stream_name,
-                false,
-                meta.clone(),
-                events_ingested,
-                ingestion_size,
-                storage_size,
-                tenant_id,
-            )
-            .await
-        }
+        manifests[pos].events_ingested = events_ingested;
+        manifests[pos].ingestion_size = ingestion_size;
+        manifests[pos].storage_size = storage_size;
+        Ok(None)
     } else {
-        // Create new manifest for different partition
+        // Manifest not found on the store, create a new one
         create_manifest(
             partition_lower,
             partition_changes,
             stream_name,
             false,
-            ObjectStoreFormat::default(),
+            meta.clone(),
             events_ingested,
             ingestion_size,
             storage_size,
