@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 Recovery tool for parseablehq/parseable#1739 - duplicated manifest_list entries.
 
@@ -112,7 +113,6 @@ from collections import defaultdict
 METRICS = ("events_ingested", "ingestion_size", "storage_size")
 ZSTD_MAGIC = b"\x28\xb5\x2f\xfd"
 ZSTD_LEVEL = 3
-MANIFEST_VERSION = "v1"
 
 
 # --------------------------------------------------------------------------- storage
@@ -174,6 +174,12 @@ class Storage:
         )
         res = self._run(cmd)
         if res.returncode != 0:
+            # A no-match wildcard is a normal empty result; anything else (auth, network,
+            # permission) must be surfaced, or the operator reads a failed listing as a clean
+            # store and concludes there is nothing to repair.
+            err = res.stderr.decode(errors="replace").strip()
+            if err and "matched no objects" not in err:
+                print(f"  ! list {url} failed: {err}", file=sys.stderr)
             return []
         keys = []
         base = f"{'gs' if self.backend == 'gcs' else 's3'}://{self.bucket}/"
@@ -194,6 +200,38 @@ class Storage:
                 k = k[len(self.prefix) + 1 :]
             keys.append(k)
         return keys
+
+    def ls_prefixes(self, key_prefix=""):
+        """Immediate child directory names under a prefix, one level deep (no recursion).
+
+        Used for stream discovery so we never enumerate the whole store just to find the
+        handful of `<stream>/.stream/` paths.
+        """
+        url = self._url(key_prefix)
+        if self.backend == "local":
+            base = url if url.endswith(os.sep) else url + os.sep
+            if not os.path.isdir(base):
+                return []
+            return sorted(d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d)))
+        # Non-recursive listing: gsutil prints child prefixes with a trailing `/`; aws prints
+        # them as `PRE name/` lines.
+        base_url = url if url.endswith("/") else url + "/"
+        cmd = ["gsutil", "ls", base_url] if self.backend == "gcs" else self._aws("ls", base_url)
+        res = self._run(cmd)
+        if res.returncode != 0:
+            err = res.stderr.decode(errors="replace").strip()
+            if err and "matched no objects" not in err:
+                print(f"  ! list {base_url} failed: {err}", file=sys.stderr)
+            return []
+        names = []
+        for line in res.stdout.decode(errors="replace").splitlines():
+            line = line.strip()
+            if self.backend == "gcs":
+                if line.endswith("/"):
+                    names.append(line.rstrip("/").rsplit("/", 1)[-1])
+            elif line.startswith("PRE "):
+                names.append(line[4:].strip().rstrip("/"))
+        return sorted(set(names))
 
     def read(self, key):
         url = self._url(key)
@@ -247,12 +285,19 @@ def decode_manifest(raw):
     return json.loads(zstandard.ZstdDecompressor().decompress(raw, max_output_size=1 << 30))
 
 
-def encode_manifest(manifest):
+def reencode_manifest(raw, new_files):
+    """Rewrite a manifest, replacing only `files` and preserving everything else about the
+    original document — its `version` and any other fields — and its framing (plain JSON vs
+    zstd). The server reads both encodings; matching the original avoids silently changing a
+    manifest's version label or compression on repair."""
+    doc = decode_manifest(raw)
+    doc["files"] = new_files
+    payload = json.dumps(doc, separators=(",", ":")).encode()
+    if raw[:4] != ZSTD_MAGIC:
+        return payload
     import zstandard
 
-    return zstandard.ZstdCompressor(level=ZSTD_LEVEL).compress(
-        json.dumps(manifest, separators=(",", ":")).encode()
-    )
+    return zstandard.ZstdCompressor(level=ZSTD_LEVEL).compress(payload)
 
 
 # ------------------------------------------------------------- tier 1: collapse stats
@@ -473,7 +518,16 @@ def plan_rebuild_date(store, stream, date, parquet_keys, manifest_keys, path_pre
       plans     - {manifest_key: {raw, files, added, corrected, events, storage, count}}
       unassigned- orphan parquet keys whose writer's manifest no longer exists
     """
-    key_by_base = {k.rsplit("/", 1)[-1]: k for k in parquet_keys}
+    # Map basename -> store key. Parquet filenames embed hour/minute plus a random suffix, so
+    # collisions within a date should not happen; if two objects ever share a basename we
+    # cannot tell which one an entry's file_path means, so we exclude it from both correction
+    # and orphan-assignment (leaving it as-is) rather than silently pick one.
+    keys_by_base = defaultdict(list)
+    for k in parquet_keys:
+        keys_by_base[k.rsplit("/", 1)[-1]].append(k)
+    for base in sorted(b for b, ks in keys_by_base.items() if len(ks) > 1):
+        print(f"    ! basename {base} maps to {len(keys_by_base[base])} objects; left untouched")
+    key_by_base = {b: ks[0] for b, ks in keys_by_base.items() if len(ks) == 1}
 
     # Load every manifest once; keep raw bytes for the backup.
     loaded = {}
@@ -600,11 +654,15 @@ def describe_credentials(backend, env, endpoint):
 def find_stream_jsons(store, stream_filter):
     """<stream>/.stream/.stream.json and <stream>/.stream/.ingestor.{id}.stream.json"""
     pat = re.compile(r"^(?P<stream>[^/]+)/\.stream/\.(?:ingestor\.[^/]+)?\.?stream\.json$")
+    # Scope discovery to `<stream>/.stream/` instead of a full recursive listing of the store,
+    # which on a large bucket enumerates every parquet object just to find a few stream.json.
+    streams = [stream_filter] if stream_filter else store.ls_prefixes("")
     found = []
-    for key in store.ls(""):
-        m = pat.match(key)
-        if m and (not stream_filter or m.group("stream") == stream_filter):
-            found.append((m.group("stream"), key))
+    for stream in streams:
+        for key in store.ls(f"{stream}/.stream/"):
+            m = pat.match(key)
+            if m:
+                found.append((m.group("stream"), key))
     return sorted(set(found))
 
 
@@ -643,7 +701,20 @@ def process(store, stream, key, meta, args, today, multi_writer, stamp):
     # Per-date audit, and (with --rebuild) plan manifest repairs. Plans are computed first and
     # written only after backups are taken, so nothing is mutated before it is backed up.
     order, buckets = group_by_date(new)
-    bucket_key = {k[0][:10]: k for k in order if isinstance(k[0], str)}
+    # Rebuild planning assumes one (lower, upper) group per date. All entries for a date
+    # normally share full-day bounds, so there is exactly one. If a date carries more than one
+    # bound pair we cannot pick a single group to infer the prefix from without guessing, so we
+    # exclude that date from rebuild entirely (the orphan audit below still runs for it).
+    bucket_key = {}
+    ambiguous_dates = set()
+    for k in order:
+        if not isinstance(k[0], str):
+            continue
+        d = k[0][:10]
+        if d in bucket_key:
+            ambiguous_dates.add(d)
+        else:
+            bucket_key[d] = k
     date_plans = {}
     print()
     for date in dates:
@@ -658,6 +729,9 @@ def process(store, stream, key, meta, args, today, multi_writer, stamp):
         )
 
         if not args.rebuild:
+            continue
+        if date in ambiguous_dates:
+            print("    SKIPPED: date has multiple time-bound groups; rebuild needs a single group")
             continue
         if multi_writer:
             print("    SKIPPED: stream has multiple stream.json (distributed) - see docstring")
@@ -705,7 +779,7 @@ def process(store, stream, key, meta, args, today, multi_writer, stamp):
                         store.write(f"{s['key']}.bak-{stamp}", s["raw"])
                         store.write(
                             s["key"],
-                            encode_manifest({"version": MANIFEST_VERSION, "files": s["files"]}),
+                            reencode_manifest(s["raw"], s["files"]),
                         )
         new = merge_rebuilt_snapshot(order, buckets, date_plans)
 
@@ -720,6 +794,11 @@ def merge_rebuilt_snapshot(order, buckets, date_plans):
     snapshot, so it is carried over per manifest_path. Entries whose manifest was not part of
     a plan are kept unchanged; a plan for a manifest with no prior entry is appended."""
     final = []
+    # A date's plans are shared across every (lower, upper) group that maps to it. Track
+    # manifest paths already appended so that, if a date somehow carries more than one bound
+    # pair, a plan entry is not appended once per group — which would reintroduce exactly the
+    # duplicate-manifest_path entries this tool exists to remove.
+    appended = set()
     for lower, upper in order:
         date = lower[:10] if isinstance(lower, str) else None
         plans = date_plans.get(date)
@@ -735,6 +814,7 @@ def merge_rebuilt_snapshot(order, buckets, date_plans):
                 final.append(e)
                 continue
             seen.add(e["manifest_path"])
+            appended.add(e["manifest_path"])
             final.append(
                 {
                     **e,
@@ -743,8 +823,9 @@ def merge_rebuilt_snapshot(order, buckets, date_plans):
                 }
             )
         for mpath, s in sorted(plans.items()):
-            if mpath in seen:
+            if mpath in seen or mpath in appended:
                 continue
+            appended.add(mpath)
             final.append(
                 {
                     "manifest_path": mpath,

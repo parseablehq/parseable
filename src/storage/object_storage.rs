@@ -1553,7 +1553,7 @@ pub fn manifest_path(prefix: &str) -> RelativePathBuf {
 #[inline]
 pub fn own_manifest_file_name() -> String {
     let own = manifest_path("").to_string();
-    own.rsplit('/').next().unwrap_or(own.as_str()).to_string()
+    own.rsplit('/').next().unwrap_or_else(|| &own).to_string()
 }
 
 /// Whether a full manifest object path belongs to the writer identified by `file_name`.
