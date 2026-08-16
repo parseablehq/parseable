@@ -176,22 +176,22 @@ pub static STAGING_FILES: Lazy<IntGaugeVec> = Lazy::new(|| {
     .expect("metric can be created")
 });
 
-pub static PROCESS_CPU_USAGE_PERCENT: Lazy<Gauge> = Lazy::new(|| {
+pub static PROCESS_CPU_USAGE_PERCENT_AVG: Lazy<Gauge> = Lazy::new(|| {
     Gauge::with_opts(
         Opts::new(
-            "process_cpu_usage_percent",
-            "Current CPU usage percent for this Parseable process",
+            "process_cpu_usage_percent_avg",
+            "Lifetime average CPU usage percent for this Parseable process",
         )
         .namespace(METRICS_NAMESPACE),
     )
     .expect("metric can be created")
 });
 
-pub static PROCESS_MEMORY_BYTES: Lazy<Gauge> = Lazy::new(|| {
+pub static PROCESS_MEMORY_BYTES_AVG: Lazy<Gauge> = Lazy::new(|| {
     Gauge::with_opts(
         Opts::new(
-            "process_memory_bytes",
-            "Current resident memory used by this Parseable process in bytes",
+            "process_memory_bytes_avg",
+            "Lifetime average resident memory used by this Parseable process in bytes",
         )
         .namespace(METRICS_NAMESPACE),
     )
@@ -232,8 +232,8 @@ static PROCESS_METRICS_ACCUMULATOR: Lazy<ProcessMetricsAccumulator> =
 pub fn record_process_metrics_sample(cpu_usage_percent: f64, memory_bytes: u64) {
     let (average_cpu_usage, average_memory_bytes) =
         PROCESS_METRICS_ACCUMULATOR.record(cpu_usage_percent, memory_bytes);
-    PROCESS_CPU_USAGE_PERCENT.set(average_cpu_usage);
-    PROCESS_MEMORY_BYTES.set(average_memory_bytes);
+    PROCESS_CPU_USAGE_PERCENT_AVG.set(average_cpu_usage);
+    PROCESS_MEMORY_BYTES_AVG.set(average_memory_bytes);
 }
 
 #[cfg(test)]
@@ -738,10 +738,10 @@ fn custom_metrics(registry: &Registry) {
         .register(Box::new(STAGING_FILES.clone()))
         .expect("metric can be registered");
     registry
-        .register(Box::new(PROCESS_CPU_USAGE_PERCENT.clone()))
+        .register(Box::new(PROCESS_CPU_USAGE_PERCENT_AVG.clone()))
         .expect("metric can be registered");
     registry
-        .register(Box::new(PROCESS_MEMORY_BYTES.clone()))
+        .register(Box::new(PROCESS_MEMORY_BYTES_AVG.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(QUERY_EXECUTE_TIME.clone()))
