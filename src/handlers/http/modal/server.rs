@@ -62,7 +62,7 @@ use tokio::sync::oneshot;
 
 use crate::{
     handlers::http::{
-        self, ingest, llm, logstream,
+        self, ingest, logstream,
         middleware::{DisAllowRootUser, RouteExt},
         oidc, role, traces,
     },
@@ -96,7 +96,6 @@ impl ParseableServer for Server {
                     .service(Self::get_users_webscope())
                     .service(Self::get_dashboards_webscope())
                     .service(Self::get_filters_webscope())
-                    .service(Self::get_llm_webscope())
                     .service(Self::get_oauth_webscope())
                     .service(Self::get_user_role_webscope())
                     .service(Self::get_roles_webscope())
@@ -802,17 +801,6 @@ impl Server {
                             .wrap(DisAllowRootUser),
                     ),
             )
-    }
-
-    // get the llm webscope
-    pub fn get_llm_webscope() -> Scope {
-        web::scope("/llm").service(
-            web::resource("").route(
-                web::post()
-                    .to(llm::make_llm_request)
-                    .authorize(Action::QueryLLM),
-            ),
-        )
     }
 
     // get the live check

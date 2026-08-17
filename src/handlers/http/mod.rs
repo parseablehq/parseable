@@ -40,7 +40,6 @@ pub mod demo_data;
 pub mod health_check;
 pub mod ingest;
 mod kinesis;
-pub mod llm;
 pub mod logstream;
 pub mod middleware;
 pub mod modal;
