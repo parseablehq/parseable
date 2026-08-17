@@ -35,7 +35,7 @@ use crate::analytics::{SYS_INFO, refresh_sys_info};
 use crate::metrics::record_process_metrics_sample;
 use crate::parseable::PARSEABLE;
 
-const PROCESS_METRICS_SAMPLE_INTERVAL: Duration = Duration::from_secs(10);
+const PROCESS_METRICS_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 
 static RESOURCE_CHECK_ENABLED: LazyLock<Arc<AtomicBool>> =
     LazyLock::new(|| Arc::new(AtomicBool::new(false)));

@@ -196,7 +196,9 @@ impl Metrics {
                     "parseable_process_cpu_usage_percent_avg" => {
                         prom_dress.process_cpu_usage_percent_avg += val
                     }
-                    "parseable_process_memory_bytes_avg" => prom_dress.process_memory_bytes_avg += val,
+                    "parseable_process_memory_bytes_avg" => {
+                        prom_dress.process_memory_bytes_avg += val
+                    }
                     "parseable_storage_size" => {
                         if sample.labels.get("type").expect("type is present") == "staging" {
                             prom_dress.parseable_storage_size.staging += val;

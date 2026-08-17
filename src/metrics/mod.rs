@@ -204,7 +204,6 @@ const CPU_USAGE_PRECISION: f64 = 1_000.0;
 struct ProcessMetricsAccumulator {
     cpu_usage_sum: AtomicU64,
     memory_bytes_sum: AtomicU64,
-    sample_count: AtomicU64,
 }
 
 impl ProcessMetricsAccumulator {
@@ -215,14 +214,20 @@ impl ProcessMetricsAccumulator {
         );
         self.memory_bytes_sum
             .fetch_add(memory_bytes, Ordering::Relaxed);
-        let sample_count = self.sample_count.fetch_add(1, Ordering::Relaxed) + 1;
 
-        (
-            self.cpu_usage_sum.load(Ordering::Relaxed) as f64
-                / sample_count as f64
-                / CPU_USAGE_PRECISION,
-            self.memory_bytes_sum.load(Ordering::Relaxed) as f64 / sample_count as f64,
-        )
+        // Exponentially Weighted Moving Average is better than
+        // a lifetime average
+        // A spike which occurred 5 days ago should not affect the average utilization
+        // for the last minute
+        // α = 1 - exp(-Δt / τ) = 1 - exp(-5/60) ≈ 0.0800
+        // S_new = S_old + α * (x_new - S_old)
+        let s_cpu_old = self.cpu_usage_sum.load(Ordering::Relaxed) as f64;
+        let s_cpu_new = s_cpu_old + 0.08 * (cpu_usage_percent - s_cpu_old);
+
+        let s_mem_old = self.memory_bytes_sum.load(Ordering::Relaxed) as f64;
+        let s_mem_new = s_mem_old + 0.08 * (memory_bytes as f64 - s_mem_old);
+
+        (s_cpu_new, s_mem_new)
     }
 }
 
