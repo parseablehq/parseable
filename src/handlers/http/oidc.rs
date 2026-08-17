@@ -96,7 +96,7 @@ pub async fn login(
             let scope = PARSEABLE.options.scope.to_string();
             let mut auth_url: String = client.read().await.auth_url(&scope, Some(redirect)).into();
 
-            auth_url.push_str("&access_type=offline&prompt=consent");
+            auth_url.push_str("&access_type=offline");
             return Ok(HttpResponse::TemporaryRedirect()
                 .insert_header((actix_web::http::header::LOCATION, auth_url))
                 .finish());
@@ -153,7 +153,7 @@ pub async fn login(
                         .await
                         .auth_url(&scope, Some(redirect))
                         .into();
-                    auth_url.push_str("&access_type=offline&prompt=consent");
+                    auth_url.push_str("&access_type=offline");
                     HttpResponse::TemporaryRedirect()
                         .insert_header((actix_web::http::header::LOCATION, auth_url))
                         .finish()
