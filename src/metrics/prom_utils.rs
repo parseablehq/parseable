@@ -53,6 +53,8 @@ pub struct Metrics {
     event_time: NaiveDateTime,
     commit: String,
     staging: String,
+    process_cpu_usage_percent_avg: f64,
+    process_memory_bytes_avg: f64,
 }
 
 #[derive(Debug, Serialize, Default, Clone)]
@@ -89,6 +91,8 @@ impl Default for Metrics {
             event_time: Utc::now().naive_utc(),
             commit: "".to_string(),
             staging: "".to_string(),
+            process_cpu_usage_percent_avg: 0.0,
+            process_memory_bytes_avg: 0.0,
         }
     }
 }
@@ -113,6 +117,8 @@ impl Metrics {
             event_time: Utc::now().naive_utc(),
             commit: "".to_string(),
             staging: "".to_string(),
+            process_cpu_usage_percent_avg: 0.0,
+            process_memory_bytes_avg: 0.0,
         }
     }
 }
@@ -186,6 +192,12 @@ impl Metrics {
                     "parseable_staging_files" => prom_dress.parseable_staging_files += val,
                     "process_resident_memory_bytes" => {
                         prom_dress.process_resident_memory_bytes += val
+                    }
+                    "parseable_process_cpu_usage_percent_avg" => {
+                        prom_dress.process_cpu_usage_percent_avg += val
+                    }
+                    "parseable_process_memory_bytes_avg" => {
+                        prom_dress.process_memory_bytes_avg += val
                     }
                     "parseable_storage_size" => {
                         if sample.labels.get("type").expect("type is present") == "staging" {

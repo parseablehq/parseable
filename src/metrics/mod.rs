@@ -17,6 +17,8 @@
  */
 
 pub mod prom_utils;
+use std::sync::OnceLock;
+
 use crate::{
     handlers::{TelemetryType, http::metrics_path},
     stats::FullStats,
@@ -25,7 +27,10 @@ use actix_web::Responder;
 use actix_web_prometheus::{PrometheusMetrics, PrometheusMetricsBuilder};
 use error::MetricsError;
 use once_cell::sync::Lazy;
-use prometheus::{HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry};
+use prometheus::{
+    Gauge, HistogramOpts, HistogramVec, IntCounterVec, IntGaugeVec, Opts, Registry,
+    core::{Atomic, AtomicF64},
+};
 
 pub const METRICS_NAMESPACE: &str = env!("CARGO_PKG_NAME");
 
@@ -174,6 +179,97 @@ pub static STAGING_FILES: Lazy<IntGaugeVec> = Lazy::new(|| {
     )
     .expect("metric can be created")
 });
+
+pub static PROCESS_CPU_USAGE_PERCENT_AVG: Lazy<Gauge> = Lazy::new(|| {
+    Gauge::with_opts(
+        Opts::new(
+            "process_cpu_usage_percent_avg",
+            "Lifetime average CPU usage percent for this Parseable process",
+        )
+        .namespace(METRICS_NAMESPACE),
+    )
+    .expect("metric can be created")
+});
+
+pub static PROCESS_MEMORY_BYTES_AVG: Lazy<Gauge> = Lazy::new(|| {
+    Gauge::with_opts(
+        Opts::new(
+            "process_memory_bytes_avg",
+            "Lifetime average resident memory used by this Parseable process in bytes",
+        )
+        .namespace(METRICS_NAMESPACE),
+    )
+    .expect("metric can be created")
+});
+pub static PROCESS_METRICS_INIT: OnceLock<(f64, u64)> = OnceLock::new();
+struct ProcessMetricsAccumulator {
+    cpu_usage_avg: AtomicF64,
+    memory_bytes_avg: AtomicF64,
+}
+
+impl Default for ProcessMetricsAccumulator {
+    fn default() -> Self {
+        // PROCESS_METRICS_INIT must be initialized by now
+        let (cpu, mem) = *PROCESS_METRICS_INIT.get().unwrap();
+        Self {
+            cpu_usage_avg: AtomicF64::new(cpu),
+            memory_bytes_avg: AtomicF64::new(mem as f64),
+        }
+    }
+}
+
+impl ProcessMetricsAccumulator {
+    fn record(&self, cpu_usage_percent: f64, memory_bytes: u64) -> (f64, f64) {
+        // Exponentially Weighted Moving Average is better than
+        // a lifetime average
+        // A spike which occurred 5 days ago should not affect the average utilization
+        // for the last minute
+        // α = 1 - exp(-Δt / τ) = 1 - exp(-5/60) ≈ 0.0800
+        // S_new = S_old + α * (x_new - S_old)
+        let s_cpu_old = self.cpu_usage_avg.get();
+        let s_cpu_new = s_cpu_old + 0.08 * (cpu_usage_percent - s_cpu_old);
+
+        let s_mem_old = self.memory_bytes_avg.get();
+        let s_mem_new = s_mem_old + 0.08 * (memory_bytes as f64 - s_mem_old);
+
+        // update accumulator
+        self.cpu_usage_avg.set(s_cpu_new);
+        self.memory_bytes_avg.set(s_mem_new);
+
+        (s_cpu_new, s_mem_new)
+    }
+}
+
+static PROCESS_METRICS_ACCUMULATOR: Lazy<ProcessMetricsAccumulator> =
+    Lazy::new(ProcessMetricsAccumulator::default);
+
+pub fn record_process_metrics_sample(cpu_usage_percent: f64, memory_bytes: u64) {
+    if PROCESS_METRICS_INIT.get().is_none() {
+        // first measurement
+        let _ = PROCESS_METRICS_INIT.set((cpu_usage_percent, memory_bytes));
+    }
+    let (average_cpu_usage, average_memory_bytes) =
+        PROCESS_METRICS_ACCUMULATOR.record(cpu_usage_percent, memory_bytes);
+    PROCESS_CPU_USAGE_PERCENT_AVG.set(average_cpu_usage);
+    PROCESS_MEMORY_BYTES_AVG.set(average_memory_bytes);
+}
+
+#[cfg(test)]
+mod process_metrics_tests {
+    use crate::metrics::PROCESS_METRICS_INIT;
+
+    use super::ProcessMetricsAccumulator;
+
+    #[test]
+    fn averages_process_metric_samples() {
+        // init PROCESS_METRICS_INIT
+        PROCESS_METRICS_INIT.get_or_init(|| (10.0, 100));
+        let accumulator = ProcessMetricsAccumulator::default();
+
+        assert_eq!(accumulator.record(10.0, 100), (10.0, 100.0));
+        assert_eq!(accumulator.record(20.0, 300), (10.8, 116.0));
+    }
+}
 
 pub static QUERY_EXECUTE_TIME: Lazy<HistogramVec> = Lazy::new(|| {
     HistogramVec::new(
@@ -662,6 +758,12 @@ fn custom_metrics(registry: &Registry) {
         .expect("metric can be registered");
     registry
         .register(Box::new(STAGING_FILES.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(PROCESS_CPU_USAGE_PERCENT_AVG.clone()))
+        .expect("metric can be registered");
+    registry
+        .register(Box::new(PROCESS_MEMORY_BYTES_AVG.clone()))
         .expect("metric can be registered");
     registry
         .register(Box::new(QUERY_EXECUTE_TIME.clone()))
