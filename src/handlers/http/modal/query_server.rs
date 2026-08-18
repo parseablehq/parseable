@@ -179,8 +179,6 @@ impl QueryServer {
     // get the role webscope
     pub fn get_user_role_webscope() -> Scope {
         web::scope("/role")
-            // GET Role List
-            .service(resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
             .service(
                 // PUT and GET Default Role
                 resource("/default")

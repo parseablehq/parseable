@@ -146,8 +146,6 @@ impl IngestServer {
     // get the role webscope
     pub fn get_user_role_webscope() -> Scope {
         web::scope("/role")
-            // GET Role List
-            .service(web::resource("").route(web::get().to(role::list).authorize(Action::ListRole)))
             .service(
                 // PUT and GET Default Role
                 web::resource("/default")
