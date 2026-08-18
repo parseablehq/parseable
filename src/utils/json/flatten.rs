@@ -319,11 +319,14 @@ pub fn generic_flattening(value: &Value) -> Result<Vec<Value>, JsonFlattenError>
                 .fold(vec![Map::new()], |results, (key, val)| match val {
                     Value::Array(arr) => {
                         if arr.is_empty() {
-                            // Insert empty array for this key in all current results
+                            // Generic flattening expands non-empty arrays into scalar rows.
+                            // Keep empty arrays consistent with that representation: they
+                            // contain no concrete value and must not create `List(Null)`
+                            // schema fields.
                             results
                                 .into_iter()
                                 .map(|mut result| {
-                                    result.insert(key.clone(), Value::Array(vec![]));
+                                    result.insert(key.clone(), Value::Null);
                                     result
                                 })
                                 .collect()
@@ -662,6 +665,14 @@ mod tests {
     fn flatten_json() {
         let value = json!({"a":{"b":{"e":["a","b"]}}});
         let expected = vec![json!({"a":{"b":{"e":"a"}}}), json!({"a":{"b":{"e":"b"}}})];
+        assert_eq!(generic_flattening(&value).unwrap(), expected);
+    }
+
+    #[test]
+    fn generic_flattening_treats_empty_array_as_unknown_value() {
+        let value = json!({"a":{"b":{"e":[]}}});
+        let expected = vec![json!({"a":{"b":{"e":null}}})];
+
         assert_eq!(generic_flattening(&value).unwrap(), expected);
     }
 }
