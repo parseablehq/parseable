@@ -204,6 +204,37 @@ pub fn insert_attributes(map: &mut Map<String, Value>, attributes: &[KeyValue]) 
 }
 
 pub fn convert_epoch_nano_to_timestamp(epoch_ns: i64) -> String {
+    if epoch_ns == 0 {
+        return chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.9fZ")
+            .to_string();
+    }
     let dt = DateTime::from_timestamp_nanos(epoch_ns).naive_utc();
     dt.format("%Y-%m-%dT%H:%M:%S%.9fZ").to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zero_epoch_uses_current_utc_time() {
+        let before = chrono::Utc::now();
+        let timestamp = convert_epoch_nano_to_timestamp(0);
+        let after = chrono::Utc::now();
+        let parsed = chrono::DateTime::parse_from_rfc3339(&timestamp)
+            .expect("generated timestamp must be RFC 3339")
+            .with_timezone(&chrono::Utc);
+
+        assert!(parsed >= before);
+        assert!(parsed <= after);
+    }
+
+    #[test]
+    fn nonzero_epoch_is_preserved() {
+        assert_eq!(
+            convert_epoch_nano_to_timestamp(1_000_000_000),
+            "1970-01-01T00:00:01.000000000Z"
+        );
+    }
 }
