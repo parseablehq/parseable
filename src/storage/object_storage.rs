@@ -1546,3 +1546,59 @@ pub fn manifest_path(prefix: &str) -> RelativePathBuf {
         RelativePathBuf::from_iter([prefix, &manifest_file_name])
     }
 }
+
+/// This node's own manifest file name (the final path segment), e.g. `host.manifest.json`
+/// or `ingestor.host.id.manifest.json`. This is the identity used to decide manifest
+/// ownership; compute it once and pass it to [`manifest_segment_matches`].
+#[inline]
+pub fn own_manifest_file_name() -> String {
+    let own = manifest_path("").to_string();
+    own.rsplit('/').next().unwrap_or_else(|| &own).to_string()
+}
+
+/// Whether a full manifest object path belongs to the writer identified by `file_name`.
+///
+/// Compares the FINAL path segment for exact equality. A substring (`contains`) or suffix
+/// (`ends_with`) test would let one host claim another whose name is a suffix of its own —
+/// e.g. `node.manifest.json` is contained in, and a suffix of, `prod-node.manifest.json` —
+/// silently corrupting the wrong writer's manifest (issue #1739).
+#[inline]
+pub fn manifest_segment_matches(manifest_path_str: &str, file_name: &str) -> bool {
+    manifest_path_str.rsplit('/').next() == Some(file_name)
+}
+
+#[cfg(test)]
+mod manifest_ownership_tests {
+    use super::manifest_segment_matches;
+
+    #[test]
+    fn matches_own_manifest_exactly() {
+        assert!(manifest_segment_matches(
+            "stream/date=2026-08-13/node.manifest.json",
+            "node.manifest.json"
+        ));
+        assert!(manifest_segment_matches(
+            "tenant/stream/date=2026-08-13/ingestor.host.abc123.manifest.json",
+            "ingestor.host.abc123.manifest.json"
+        ));
+    }
+
+    #[test]
+    fn rejects_hostname_that_is_a_suffix_of_another() {
+        // The core of issue #1739: `node` must NOT claim `prod-node`'s manifest. A `contains`
+        // or `ends_with` test would return true here and corrupt the wrong writer's data.
+        let other = "stream/date=2026-08-13/prod-node.manifest.json";
+        assert!(!manifest_segment_matches(other, "node.manifest.json"));
+        // Guard the assumption that makes this a real bug, not a hypothetical one.
+        assert!(other.contains("node.manifest.json"));
+        assert!(other.ends_with("node.manifest.json"));
+    }
+
+    #[test]
+    fn rejects_a_different_writer() {
+        assert!(!manifest_segment_matches(
+            "stream/date=2026-08-13/host-a.manifest.json",
+            "host-b.manifest.json"
+        ));
+    }
+}
