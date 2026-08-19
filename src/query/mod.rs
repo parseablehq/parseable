@@ -763,14 +763,6 @@ pub async fn get_manifest_list(
     time_range: &TimeRange,
     tenant_id: &Option<String>,
 ) -> Result<Vec<Manifest>, QueryError> {
-    // get object store
-    let object_store_format: ObjectStoreFormat = serde_json::from_slice(
-        &PARSEABLE
-            .metastore
-            .get_stream_json(stream_name, false, tenant_id, false)
-            .await?,
-    )?;
-
     // all the manifests will go here
     let mut merged_snapshot: Snapshot = Snapshot::default();
 
@@ -791,6 +783,14 @@ pub async fn get_manifest_list(
             }
         }
     } else {
+        // Only needed here: Query/Prism mode merges every ingestor's stream.json
+        // above instead and never reads the base file.
+        let object_store_format: ObjectStoreFormat = serde_json::from_slice(
+            &PARSEABLE
+                .metastore
+                .get_stream_json(stream_name, false, tenant_id, false)
+                .await?,
+        )?;
         merged_snapshot = object_store_format.snapshot;
     }
 

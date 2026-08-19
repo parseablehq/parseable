@@ -931,13 +931,11 @@ pub trait ObjectStorage: Debug + Send + Sync + 'static {
         let min_date = &parsed_dates[0].1;
         let max_date = &parsed_dates[parsed_dates.len() - 1].1;
 
-        // Extract timestamps for min and max dates
-        let first_timestamp = self
-            .extract_timestamp_for_date(stream_name, min_date, true, tenant_id)
-            .await?;
-        let latest_timestamp = self
-            .extract_timestamp_for_date(stream_name, max_date, false, tenant_id)
-            .await?;
+        // Extract timestamps for min and max dates concurrently; independent reads, no shared state
+        let (first_timestamp, latest_timestamp) = tokio::try_join!(
+            self.extract_timestamp_for_date(stream_name, min_date, true, tenant_id),
+            self.extract_timestamp_for_date(stream_name, max_date, false, tenant_id)
+        )?;
 
         let first_event_at = first_timestamp.map(|ts| ts.to_rfc3339());
         let latest_event_at = latest_timestamp.map(|ts| ts.to_rfc3339());
