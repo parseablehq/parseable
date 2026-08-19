@@ -35,7 +35,6 @@ pub mod alert_target_policy;
 pub mod alerts;
 pub mod apikeys;
 pub mod cluster;
-pub mod correlation;
 pub mod demo_data;
 pub mod health_check;
 pub mod ingest;

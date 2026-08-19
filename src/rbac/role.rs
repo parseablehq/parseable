@@ -73,10 +73,6 @@ pub enum Action {
     DeleteFilter,
     Login,
     Metrics,
-    GetCorrelation,
-    CreateCorrelation,
-    DeleteCorrelation,
-    PutCorrelation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -132,10 +128,6 @@ impl RoleBuilder {
                 | Action::GetStreamInfo
                 | Action::ListCluster
                 | Action::ListClusterMetrics
-                | Action::CreateCorrelation
-                | Action::DeleteCorrelation
-                | Action::GetCorrelation
-                | Action::PutCorrelation
                 | Action::DeleteNode
                 | Action::PutHotTierEnabled
                 | Action::GetHotTierEnabled
@@ -351,10 +343,6 @@ pub mod model {
                 Action::DeleteStream,
                 Action::ListStream,
                 Action::GetStreamInfo,
-                Action::CreateCorrelation,
-                Action::DeleteCorrelation,
-                Action::GetCorrelation,
-                Action::PutCorrelation,
                 Action::DetectSchema,
                 Action::GetSchema,
                 Action::GetStats,
@@ -403,10 +391,6 @@ pub mod model {
                 Action::PutHotTierEnabled,
                 Action::GetHotTierEnabled,
                 Action::DeleteHotTierEnabled,
-                Action::CreateCorrelation,
-                Action::DeleteCorrelation,
-                Action::GetCorrelation,
-                Action::PutCorrelation,
                 Action::ListDashboard,
                 Action::GetDashboard,
                 Action::CreateDashboard,
@@ -443,10 +427,6 @@ pub mod model {
                 Action::GetFilter,
                 Action::CreateFilter,
                 Action::DeleteFilter,
-                Action::CreateCorrelation,
-                Action::DeleteCorrelation,
-                Action::GetCorrelation,
-                Action::PutCorrelation,
                 Action::ListDashboard,
                 Action::GetDashboard,
                 Action::CreateDashboard,
