@@ -215,14 +215,14 @@ where
                         })
                         .unwrap_or("unknown");
 
-                    let error_message = format!(
-                        "Invalid API key (source IP: {source_ip}, user agent: {user_agent}, dataset: {dataset})"
-                    );
                     tracing::warn!(
-                        tenant = tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
-                        "{error_message}"
+                        source_ip,
+                        user_agent,
+                        dataset,
+                        requested_tenant = tenant_id.as_deref().unwrap_or("unknown"),
+                        "Invalid API key"
                     );
-                    return Box::pin(async move { Err(ErrorUnauthorized(error_message)) });
+                    return Box::pin(async { Err(ErrorUnauthorized("Invalid API key")) });
                 }
             }
         } else {
