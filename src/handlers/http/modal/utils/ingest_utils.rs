@@ -593,6 +593,17 @@ mod tests {
 
         assert_eq!(custom_fields.len(), 2);
         assert_eq!(custom_fields.get(USER_AGENT_KEY).unwrap(), "");
-        assert_eq!(custom_fields.get(SOURCE_IP_KEY).unwrap(), "");
+        assert_eq!(custom_fields.get(SOURCE_IP_KEY).unwrap(), "unknown");
+    }
+
+    #[test]
+    fn test_get_custom_fields_from_header_with_peer_address() {
+        let req = TestRequest::default()
+            .peer_addr("192.0.2.1:8080".parse().unwrap())
+            .to_http_request();
+
+        let custom_fields = get_custom_fields_from_header(&req);
+
+        assert_eq!(custom_fields.get(SOURCE_IP_KEY).unwrap(), "192.0.2.1");
     }
 }
