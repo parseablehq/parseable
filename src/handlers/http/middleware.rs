@@ -200,6 +200,7 @@ where
                 None => {
                     let connection_info = req.connection_info();
                     let source_ip = connection_info.realip_remote_addr().unwrap_or("unknown");
+                    let endpoint = req.path();
                     let user_agent = req
                         .headers()
                         .get(header::USER_AGENT)
@@ -217,6 +218,7 @@ where
 
                     tracing::warn!(
                         source_ip,
+                        endpoint,
                         user_agent,
                         dataset,
                         requested_tenant = tenant_id.as_deref().unwrap_or("unknown"),
