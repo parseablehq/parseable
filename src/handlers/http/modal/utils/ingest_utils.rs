@@ -412,12 +412,13 @@ pub fn get_custom_fields_from_header(req: &HttpRequest) -> HashMap<String, Strin
         .and_then(|a| a.to_str().ok())
         .unwrap_or_default();
 
-    let conn = req.connection_info().clone();
-
-    let source_ip = conn.realip_remote_addr().unwrap_or_default();
+    let source_ip = req
+        .peer_addr()
+        .map(|address| address.ip().to_string())
+        .unwrap_or_else(|| "unknown".to_string());
     let mut p_custom_fields = HashMap::new();
     p_custom_fields.insert(USER_AGENT_KEY.to_string(), user_agent.to_string());
-    p_custom_fields.insert(SOURCE_IP_KEY.to_string(), source_ip.to_string());
+    p_custom_fields.insert(SOURCE_IP_KEY.to_string(), source_ip);
 
     // Iterate through headers and add custom fields
     for (header_name, header_value) in req.headers().iter() {
@@ -592,6 +593,17 @@ mod tests {
 
         assert_eq!(custom_fields.len(), 2);
         assert_eq!(custom_fields.get(USER_AGENT_KEY).unwrap(), "");
-        assert_eq!(custom_fields.get(SOURCE_IP_KEY).unwrap(), "");
+        assert_eq!(custom_fields.get(SOURCE_IP_KEY).unwrap(), "unknown");
+    }
+
+    #[test]
+    fn test_get_custom_fields_from_header_with_peer_address() {
+        let req = TestRequest::default()
+            .peer_addr("192.0.2.1:8080".parse().unwrap())
+            .to_http_request();
+
+        let custom_fields = get_custom_fields_from_header(&req);
+
+        assert_eq!(custom_fields.get(SOURCE_IP_KEY).unwrap(), "192.0.2.1");
     }
 }

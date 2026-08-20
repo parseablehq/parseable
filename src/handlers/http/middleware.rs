@@ -198,6 +198,34 @@ where
                     Some(session_id)
                 }
                 None => {
+                    let source_ip = req
+                        .peer_addr()
+                        .map(|address| address.ip().to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    let endpoint = req.path();
+                    let user_agent = req
+                        .headers()
+                        .get(header::USER_AGENT)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default();
+                    let dataset = req
+                        .match_info()
+                        .get("logstream")
+                        .or_else(|| {
+                            req.headers()
+                                .get(STREAM_NAME_HEADER_KEY)
+                                .and_then(|value| value.to_str().ok())
+                        })
+                        .unwrap_or("unknown");
+
+                    tracing::warn!(
+                        source_ip,
+                        endpoint,
+                        user_agent,
+                        dataset,
+                        requested_tenant = tenant_id.as_deref().unwrap_or("unknown"),
+                        "Invalid API key"
+                    );
                     return Box::pin(async { Err(ErrorUnauthorized("Invalid API key")) });
                 }
             }
