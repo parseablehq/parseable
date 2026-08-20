@@ -198,8 +198,10 @@ where
                     Some(session_id)
                 }
                 None => {
-                    let connection_info = req.connection_info();
-                    let source_ip = connection_info.realip_remote_addr().unwrap_or("unknown");
+                    let source_ip = req
+                        .peer_addr()
+                        .map(|address| address.ip().to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
                     let endpoint = req.path();
                     let user_agent = req
                         .headers()
