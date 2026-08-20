@@ -332,7 +332,9 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
             };
 
             server
-                .max_frame_size(16 * 1024 * 1024 - 2)
+                .initial_stream_window_size(16 * 1024 * 1024)
+                .initial_connection_window_size(32 * 1024 * 1024)
+                .http2_adaptive_window(Some(true))
                 .accept_http1(true)
                 .layer(cors)
                 .layer(GrpcWebLayer::new())
@@ -341,7 +343,9 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
                 .map_err(err_map_fn)
         }
         None => Server::builder()
-            .max_frame_size(16 * 1024 * 1024 - 2)
+            .initial_stream_window_size(16 * 1024 * 1024)
+            .initial_connection_window_size(32 * 1024 * 1024)
+            .http2_adaptive_window(Some(true))
             .accept_http1(true)
             .layer(cors)
             .layer(GrpcWebLayer::new())

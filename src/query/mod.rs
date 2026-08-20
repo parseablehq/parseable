@@ -413,7 +413,7 @@ impl Query {
             });
 
             let partition_streams = execute_stream_partitioned(plan.clone(), task_ctx.clone())?;
-
+            tracing::warn!(num_partition_streams=partition_streams.len());
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
                 Result<RecordBatch, datafusion::error::DataFusionError>,
             >();

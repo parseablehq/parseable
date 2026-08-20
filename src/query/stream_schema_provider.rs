@@ -132,12 +132,34 @@ pub fn build_parquet_scan_components(
     filters: &[Expr],
     state: &dyn Session,
 ) -> Result<(ParquetFormat, ParquetSource), DataFusionError> {
+    build_parquet_scan_components_with_filters(schema, exact_source_filters(filters), state)
+}
+
+/// Build Parquet scan components with every filter attached to the source.
+///
+/// Use this only when the caller still retains DataFusion's filter above the
+/// scan (for example, filters reported as `Inexact` by a table provider). The
+/// source predicate is then an additional, safe pruning/pushdown opportunity,
+/// while the retained filter remains responsible for exact query semantics.
+pub fn build_parquet_scan_components_with_full_filters(
+    schema: SchemaRef,
+    filters: &[Expr],
+    state: &dyn Session,
+) -> Result<(ParquetFormat, ParquetSource), DataFusionError> {
+    build_parquet_scan_components_with_filters(schema, filters.to_vec(), state)
+}
+
+fn build_parquet_scan_components_with_filters(
+    schema: SchemaRef,
+    source_filters: Vec<Expr>,
+    state: &dyn Session,
+) -> Result<(ParquetFormat, ParquetSource), DataFusionError> {
     let parquet_options = state.default_table_options().parquet;
     let file_format = ParquetFormat::default().with_options(parquet_options.clone());
     let mut file_source =
         ParquetSource::new(schema.clone()).with_table_parquet_options(parquet_options);
 
-    if let Some(expr) = conjunction(exact_source_filters(filters)) {
+    if let Some(expr) = conjunction(source_filters) {
         let table_df_schema = schema.as_ref().clone().to_dfschema()?;
         let predicate = create_physical_expr(&expr, &table_df_schema, state.execution_props())?;
         file_source = file_source.with_predicate(predicate);
@@ -1185,7 +1207,8 @@ mod tests {
 
     use super::{
         PartialTimeFilter, balanced_file_groups, build_parquet_scan_components,
-        exact_source_filters, extract_timestamp_bound, is_overlapping_query,
+        build_parquet_scan_components_with_full_filters, exact_source_filters,
+        extract_timestamp_bound, is_overlapping_query,
     };
 
     fn file(path: &str, size: u64) -> File {
@@ -1325,6 +1348,37 @@ mod tests {
         assert!(predicate.contains("p_timestamp"));
         assert!(!predicate.contains("job"));
         assert!(!predicate.contains("api"));
+    }
+
+    #[test]
+    fn full_filters_are_preinstalled_in_parquet_source_when_requested() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "p_timestamp",
+                DataType::Timestamp(arrow_schema::TimeUnit::Millisecond, None),
+                false,
+            ),
+            Field::new("job", DataType::Utf8, false),
+        ]));
+        let filters = vec![
+            Expr::Column("p_timestamp".into()).gt_eq(Expr::Literal(
+                ScalarValue::TimestampMillisecond(Some(1_672_531_200_000), None),
+                None,
+            )),
+            Expr::Column("job".into()).eq(Expr::Literal(
+                ScalarValue::Utf8(Some("api".to_owned())),
+                None,
+            )),
+        ];
+
+        let context = SessionContext::new();
+        let state = context.state();
+        let (_, source) = build_parquet_scan_components_with_full_filters(schema, &filters, &state)
+            .expect("components build");
+        let predicate = source.filter().expect("full predicate").to_string();
+        assert!(predicate.contains("p_timestamp"));
+        assert!(predicate.contains("job"));
+        assert!(predicate.contains("api"));
     }
 
     #[tokio::test]
