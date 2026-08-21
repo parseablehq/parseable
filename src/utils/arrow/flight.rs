@@ -152,7 +152,6 @@ fn lit_timestamp_milli(time: i64) -> Expr {
 pub fn into_flight_data_stream(
     stream: datafusion::execution::SendableRecordBatchStream,
 ) -> Result<Response<DoGetStream>, Box<Status>> {
-    tracing::warn!("Streaming flight data");
     let record_stream = stream.map_err(|e| {
         arrow_flight::error::FlightError::Arrow(arrow_schema::ArrowError::ExternalError(Box::new(
             e,
@@ -174,7 +173,6 @@ pub fn into_flight_data_stream(
 }
 
 pub fn into_flight_data(records: Vec<RecordBatch>) -> Result<Response<DoGetStream>, Box<Status>> {
-    tracing::warn!("Non-Streaming flight data");
     let input_stream = futures::stream::iter(records.into_iter().map(Ok));
     let write_options = IpcWriteOptions::default()
         .try_with_compression(Some(arrow_ipc::CompressionType(1)))
