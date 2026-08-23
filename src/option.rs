@@ -209,6 +209,56 @@ pub mod validation {
         }
     }
 
+    pub fn validate_query_params(mut query: &str) -> Result<String, String> {
+        fn valid_component(value: &str) -> bool {
+            let bytes = value.as_bytes();
+            let mut i = 0;
+
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'%' if i + 2 < bytes.len()
+                        && bytes[i + 1].is_ascii_hexdigit()
+                        && bytes[i + 2].is_ascii_hexdigit() =>
+                    {
+                        i += 3;
+                    }
+                    b if b.is_ascii_alphanumeric()
+                        || matches!(b, b'-' | b'.' | b'_' | b'~' | b'+') =>
+                    {
+                        i += 1;
+                    }
+                    _ => return false,
+                }
+            }
+
+            true
+        }
+
+        if query.is_empty() {
+            return Err("query string cannot be empty".into());
+        }
+        query = if let Some(query) = query.strip_prefix('&') {
+            query
+        } else {
+            query
+        };
+        for param in query.split('&') {
+            let (key, value) = param
+                .split_once('=')
+                .ok_or_else(|| format!("invalid parameter: {param}"))?;
+
+            if key.is_empty() {
+                return Err("parameter key cannot be empty".into());
+            }
+
+            if !valid_component(key) || !valid_component(value) {
+                return Err(format!("invalid characters in parameter: {param}"));
+            }
+        }
+
+        Ok(query.to_owned())
+    }
+
     pub fn validate_payload_size(s: &str) -> Result<usize, String> {
         const MIN_SIZE: usize = 100; // 100 bytes
         const MAX_SIZE: usize = 100 * 1024 * 1024; // 100 MB
