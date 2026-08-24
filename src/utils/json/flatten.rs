@@ -309,6 +309,7 @@ pub fn flatten_array_objects(
 /// 5. `{"a":{"b":{"c":{"d":{"e":["a","b"]}}}}}` ~> returns error - heavily nested, cannot flatten this JSON
 pub fn generic_flattening(value: &Value) -> Result<Vec<Value>, JsonFlattenError> {
     match value {
+        Value::Array(arr) if arr.is_empty() => Ok(vec![Value::Null]),
         Value::Array(arr) => Ok(arr
             .iter()
             .flat_map(|flatten_item| generic_flattening(flatten_item).unwrap_or_default())
@@ -674,5 +675,15 @@ mod tests {
         let expected = vec![json!({"a":{"b":{"e":null}}})];
 
         assert_eq!(generic_flattening(&value).unwrap(), expected);
+    }
+
+    #[test]
+    fn generic_flattening_treats_empty_nested_array_item_as_unknown_value() {
+        let value = json!({"a": [[]]});
+        let expected = vec![json!({"a": null})];
+
+        let flattened = generic_flattening(&value).unwrap();
+        assert!(flattened.iter().all(Value::is_object));
+        assert_eq!(flattened, expected);
     }
 }
