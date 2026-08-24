@@ -631,11 +631,22 @@ pub struct Options {
         long = "oidc-scope",
         name = "oidc-scope",
         env = "P_OIDC_SCOPE",
-        default_value = "openid profile email offline_access",
+        default_value = "openid profile email",
         required = false,
-        help = "OIDC scope to request (default: openid profile email offline_access)"
+        help = "OIDC scope to request (default: openid profile email)"
     )]
     pub scope: String,
+
+    // additional query params for oidc auth url
+    #[arg(
+        long,
+        name = "oidc-query-params",
+        env = "P_OIDC_QUERY_PARAMS",
+        value_parser = validation::validate_query_params,
+        required = false,
+        help = "Additional query params to add to the auth url"
+    )]
+    pub oidc_query_params: Option<String>,
 
     // event's maximum chunk age in hours
     #[arg(

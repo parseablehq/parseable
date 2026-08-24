@@ -96,7 +96,13 @@ pub async fn login(
             let scope = PARSEABLE.options.scope.to_string();
             let mut auth_url: String = client.read().await.auth_url(&scope, Some(redirect)).into();
 
-            auth_url.push_str("&access_type=offline");
+            if let Some(query_params) = PARSEABLE.options.oidc_query_params.as_ref() {
+                if !query_params.starts_with('&') {
+                    auth_url = format!("{auth_url}&{query_params}");
+                } else {
+                    auth_url.push_str(query_params.as_str());
+                }
+            }
             return Ok(HttpResponse::TemporaryRedirect()
                 .insert_header((actix_web::http::header::LOCATION, auth_url))
                 .finish());
@@ -153,7 +159,13 @@ pub async fn login(
                         .await
                         .auth_url(&scope, Some(redirect))
                         .into();
-                    auth_url.push_str("&access_type=offline");
+                    if let Some(query_params) = PARSEABLE.options.oidc_query_params.as_ref() {
+                        if !query_params.starts_with('&') {
+                            auth_url = format!("{auth_url}&{query_params}");
+                        } else {
+                            auth_url.push_str(query_params.as_str());
+                        }
+                    }
                     HttpResponse::TemporaryRedirect()
                         .insert_header((actix_web::http::header::LOCATION, auth_url))
                         .finish()
