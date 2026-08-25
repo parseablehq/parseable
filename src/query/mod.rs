@@ -53,7 +53,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
-use sysinfo::System;
+use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 use tokio::runtime::Runtime;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::Instrument;
@@ -81,9 +81,6 @@ type BoxedBatchStream = SendableRecordBatchStream;
 /// Result type returned by query execution: either collected batches or a streaming adapter, plus field names.
 type QueryResult = Result<(Either<Vec<RecordBatch>, BoxedBatchStream>, Vec<String>), ExecuteError>;
 const DEFAULT_COUNTS_TOP_K: usize = 10;
-
-// pub static QUERY_SESSION: Lazy<SessionContext> =
-//     Lazy::new(|| Query::create_session_context(PARSEABLE.storage()));
 
 pub static QUERY_SESSION_STATE: Lazy<SessionState> =
     Lazy::new(|| Query::create_session_state(PARSEABLE.storage()));
@@ -147,10 +144,41 @@ impl InMemorySessionContext {
     }
 }
 
+async fn enough_available_memory() -> Result<(), ExecuteError> {
+    let mut s = System::new_with_specifics(
+        RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
+    );
+    s.refresh_all();
+    let threshold = (PARSEABLE.options.query_mem_threshold / 100.0) as f64;
+
+    let f = async {
+        loop {
+            if let Some(cgroup) = s.cgroup_limits() {
+                if (cgroup.rss as f64) < threshold * (cgroup.total_memory as f64) {
+                    return;
+                }
+            } else {
+                if (s.used_memory() as f64) < threshold * (s.available_memory() as f64) {
+                    return;
+                }
+            }
+            tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+        }
+    };
+    if let Err(e) = tokio::time::timeout(tokio::time::Duration::from_secs(10), f).await {
+        Err(ExecuteError::ServerBusy(e))
+    } else {
+        Ok(())
+    }
+}
+
 /// This function executes a query on the dedicated runtime, ensuring that the query is not isolated to a single thread/CPU
 /// at a time and has access to the entire thread pool, enabling better concurrent processing, and thus quicker results.
 pub async fn execute(query: Query, is_streaming: bool, tenant_id: &Option<String>) -> QueryResult {
     let id = tenant_id.clone();
+
+    // before executing query, check whether enough memory is available or not
+    enough_available_memory().await?;
     QUERY_RUNTIME
         .spawn(async move {
             tokio::time::timeout(
@@ -269,6 +297,8 @@ impl Query {
             .execution
             .parquet
             .schema_force_view_types = true;
+
+        config.options_mut().explain.show_statistics = true;
 
         SessionStateBuilder::new()
             .with_default_features()
@@ -958,6 +988,7 @@ pub fn flatten_objects_for_count(objects: Vec<Value>) -> Vec<Value> {
 
 pub mod error {
     use crate::{parseable::StreamNotFound, storage::ObjectStorageError};
+    use actix_web::http::{StatusCode, header::ContentType};
     use datafusion::error::DataFusionError;
     use tokio::time::error::Elapsed;
 
@@ -971,6 +1002,26 @@ pub mod error {
         StreamNotFound(#[from] StreamNotFound),
         #[error("{0}: {1}s")]
         Timeout(Elapsed, u64),
+        #[error("{0}: Not enough memory available to serve the request")]
+        ServerBusy(Elapsed),
+    }
+
+    impl actix_web::ResponseError for ExecuteError {
+        fn status_code(&self) -> StatusCode {
+            match self {
+                ExecuteError::ObjectStorage(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                ExecuteError::Datafusion(_) => StatusCode::INTERNAL_SERVER_ERROR,
+                ExecuteError::StreamNotFound(_) => StatusCode::NOT_FOUND,
+                ExecuteError::Timeout(_, _) => StatusCode::REQUEST_TIMEOUT,
+                ExecuteError::ServerBusy(_) => StatusCode::SERVICE_UNAVAILABLE,
+            }
+        }
+
+        fn error_response(&self) -> actix_web::HttpResponse<actix_web::body::BoxBody> {
+            actix_web::HttpResponse::build(self.status_code())
+                .insert_header(ContentType::plaintext())
+                .body(self.to_string())
+        }
     }
 }
 

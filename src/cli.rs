@@ -451,9 +451,19 @@ pub struct Options {
         long,
         long = "query-mempool-size",
         env = "P_QUERY_MEMORY_LIMIT",
-        help = "Set a fixed memory limit for query in GiB"
+        help = "Set a fixed memory limit for query in Bytes"
     )]
     pub query_memory_pool_size: Option<usize>,
+
+    #[arg(
+        long,
+        long = "query-mem-threshold",
+        value_parser = validation::validate_percentage,
+        default_value = "80.0",
+        env = "P_QUERY_MEMORY_THRESHOLD",
+        help = "Set a threshold (percentage) for memory beyond which query will get queued for 60s to prevent OOM"
+    )]
+    pub query_mem_threshold: f32,
 
     #[arg(
         long,
