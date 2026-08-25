@@ -730,7 +730,8 @@ Description: {0}"#
 impl actix_web::ResponseError for QueryError {
     fn status_code(&self) -> StatusCode {
         match self {
-            QueryError::Execute(_) | QueryError::JsonParse(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            QueryError::JsonParse(_) => StatusCode::INTERNAL_SERVER_ERROR,
+            QueryError::Execute(e) => e.status_code(),
             QueryError::MetastoreError(e) => e.status_code(),
             _ => StatusCode::BAD_REQUEST,
         }
