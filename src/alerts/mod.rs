@@ -21,7 +21,7 @@ use actix_web::http::header::ContentType;
 use arrow_schema::{ArrowError, DataType, Schema};
 use async_trait::async_trait;
 use chrono::Utc;
-use datafusion::logical_expr::{LogicalPlan, Projection};
+use datafusion::logical_expr::{LogicalPlan, Projection, utils::find_aggregate_exprs};
 use datafusion::prelude::Expr;
 use datafusion::sql::sqlparser::parser::ParserError;
 use derive_more::FromStrError;
@@ -854,7 +854,121 @@ pub async fn get_number_of_agg_exprs(
         .map_err(|err| AlertError::CustomError(format!("Failed to parse query: {err}")))?;
 
     // Check if the plan structure indicates an aggregate query
-    get_number_of_agg_exprs_from_plan(&logical_plan)
+    let aggregate_count = get_number_of_agg_exprs_from_plan(&logical_plan)?;
+    if aggregate_count == 1 {
+        resolve_alert_output_layout(&logical_plan)?;
+    }
+    Ok(aggregate_count)
+}
+
+/// Output columns used when evaluating an alert query.
+///
+/// Exactly one final output column must derive from the query's aggregate
+/// expression. Every other output column is treated as a group dimension.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlertOutputLayout {
+    pub measure_index: usize,
+    pub measure_name: String,
+    pub dimension_indices: Vec<usize>,
+}
+
+/// Resolve the final aggregate-derived output without relying on function or
+/// alias names. Aggregate lineage is propagated through arbitrary projection
+/// expressions, including scalar functions, UDFs, casts, arithmetic, and CASE.
+pub fn resolve_alert_output_layout(plan: &LogicalPlan) -> Result<AlertOutputLayout, AlertError> {
+    let measure_indices = aggregate_output_indices(plan);
+    let [measure_index] = measure_indices.as_slice() else {
+        return Err(AlertError::InvalidAlertQuery(format!(
+            "Alert query must return exactly one aggregate-derived value, found {}",
+            measure_indices.len()
+        )));
+    };
+
+    let measure_field = plan.schema().field(*measure_index);
+    if !measure_field.data_type().is_numeric() {
+        return Err(AlertError::InvalidAlertQuery(format!(
+            "Alert aggregate-derived value '{}' must be numeric, found {}",
+            measure_field.name(),
+            measure_field.data_type()
+        )));
+    }
+
+    Ok(AlertOutputLayout {
+        measure_index: *measure_index,
+        measure_name: measure_field.name().clone(),
+        dimension_indices: (0..plan.schema().fields().len())
+            .filter(|index| index != measure_index)
+            .collect(),
+    })
+}
+
+fn aggregate_output_indices(plan: &LogicalPlan) -> Vec<usize> {
+    let mut indices = match plan {
+        LogicalPlan::Aggregate(aggregate) => {
+            (aggregate.group_expr.len()..aggregate.schema.fields().len()).collect()
+        }
+        LogicalPlan::Projection(projection) => {
+            let input_indices = aggregate_output_indices(&projection.input);
+            projection
+                .expr
+                .iter()
+                .enumerate()
+                .filter_map(|(index, expr)| {
+                    expression_depends_on_aggregate(
+                        expr,
+                        projection.input.schema(),
+                        &input_indices,
+                    )
+                    .then_some(index)
+                })
+                .collect()
+        }
+        LogicalPlan::Window(window) => {
+            let mut indices = aggregate_output_indices(&window.input);
+            let input_len = window.input.schema().fields().len();
+            for (index, expr) in window.window_expr.iter().enumerate() {
+                if expression_depends_on_aggregate(expr, window.input.schema(), &indices) {
+                    indices.push(input_len + index);
+                }
+            }
+            indices
+        }
+        LogicalPlan::Union(union) => union
+            .inputs
+            .iter()
+            .flat_map(|input| aggregate_output_indices(input))
+            .collect(),
+        _ => {
+            let inputs = plan.inputs();
+            if let [input] = inputs.as_slice()
+                && input.schema().fields().len() == plan.schema().fields().len()
+            {
+                aggregate_output_indices(input)
+            } else {
+                Vec::new()
+            }
+        }
+    };
+    indices.sort_unstable();
+    indices.dedup();
+    indices
+}
+
+fn expression_depends_on_aggregate(
+    expr: &Expr,
+    input_schema: &datafusion::common::DFSchema,
+    aggregate_indices: &[usize],
+) -> bool {
+    if !find_aggregate_exprs([expr]).is_empty() {
+        return true;
+    }
+
+    expr.column_refs().iter().any(|column| {
+        input_schema
+            .maybe_index_of_column(column)
+            .or_else(|| input_schema.index_of_column_by_name(None, &column.name))
+            .is_some_and(|index| aggregate_indices.contains(&index))
+    })
 }
 
 /// Extract the projection which deals with aggregation
