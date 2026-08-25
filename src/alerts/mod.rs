@@ -902,10 +902,13 @@ pub fn resolve_alert_output_layout(plan: &LogicalPlan) -> Result<AlertOutputLayo
     })
 }
 
+/// Return output positions whose values derive from aggregate expressions.
 fn aggregate_output_indices(plan: &LogicalPlan) -> Vec<usize> {
     let mut indices = match plan {
         LogicalPlan::Aggregate(aggregate) => {
-            (aggregate.group_expr.len()..aggregate.schema.fields().len()).collect()
+            let schema_len = aggregate.schema.fields().len();
+            let aggregate_start = schema_len - aggregate.aggr_expr.len();
+            (aggregate_start..schema_len).collect()
         }
         LogicalPlan::Projection(projection) => {
             let input_indices = aggregate_output_indices(&projection.input);
@@ -950,6 +953,7 @@ fn aggregate_output_indices(plan: &LogicalPlan) -> Vec<usize> {
     indices
 }
 
+/// Check whether an expression directly contains or references an aggregate value.
 fn expression_depends_on_aggregate(
     expr: &Expr,
     input_schema: &datafusion::common::DFSchema,

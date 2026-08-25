@@ -205,7 +205,13 @@ fn convert_result_to_group_results(
             let group_values = object
                 .iter()
                 .filter(|(key, _)| *key != aggregate_key)
-                .map(|(key, value)| (key.clone(), value.to_string().trim_matches('"').to_string()))
+                .map(|(key, value)| {
+                    let rendered = match value {
+                        serde_json::Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    };
+                    (key.clone(), rendered)
+                })
                 .collect();
 
             groups.push(GroupResult {
@@ -730,6 +736,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn remote_string_dimensions_are_not_json_escaped() {
+        let context = SessionContext::new();
+        let plan = context
+            .state()
+            .create_logical_plan(WRAPPED_AGGREGATE_QUERY)
+            .await
+            .unwrap();
+        let app = r#"he said "hi" at C:\temp"#;
+        let result = convert_result_to_group_results(
+            serde_json::json!([
+                {"app": app, "estimated_spend_usd": 3.2346}
+            ]),
+            plan,
+        )
+        .unwrap();
+
+        assert_eq!(result.groups[0].group_values["app"], app);
+    }
+
+    #[tokio::test]
     async fn aggregate_lineage_survives_nested_scalar_expressions() {
         let context = SessionContext::new();
         let plan = context
@@ -758,6 +784,31 @@ mod tests {
         let layout = resolve_alert_output_layout(&plan).unwrap();
         assert_eq!(layout.measure_name, "score");
         assert_eq!(layout.dimension_indices, [0]);
+    }
+
+    #[tokio::test]
+    async fn rollup_internal_grouping_id_is_not_a_measure() {
+        let context = SessionContext::new();
+        let plan = context
+            .state()
+            .create_logical_plan(
+                r#"
+                    SELECT
+                        region,
+                        app,
+                        ROUND(SUM(cost), 2) AS spend
+                    FROM (
+                        VALUES ('us-east', 'Codex', CAST(1.0 AS DOUBLE))
+                    ) AS usage(region, app, cost)
+                    GROUP BY ROLLUP(region, app)
+                "#,
+            )
+            .await
+            .unwrap();
+
+        let layout = resolve_alert_output_layout(&plan).unwrap();
+        assert_eq!(layout.measure_name, "spend");
+        assert_eq!(layout.dimension_indices, [0, 1]);
     }
 
     #[tokio::test]
