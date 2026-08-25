@@ -19,7 +19,8 @@
 use std::{collections::HashMap, fmt::Display};
 
 use actix_web::{Either, http::header::HeaderMap};
-use arrow_array::{Array, Float64Array, Int64Array, RecordBatch};
+use arrow::{compute::cast, datatypes::DataType, util::display::array_value_to_string};
+use arrow_array::{Array, Float64Array, RecordBatch};
 use datafusion::{
     logical_expr::{Literal, LogicalPlan},
     prelude::{Expr, lit},
@@ -30,7 +31,7 @@ use crate::{
     alerts::{
         AlertTrait, LogicalOperator, WhereConfigOperator,
         alert_structs::{AlertQueryResult, ConditionConfig, Conditions, GroupResult},
-        extract_aggregate_aliases,
+        resolve_alert_output_layout,
     },
     handlers::http::{
         cluster::send_query_request,
@@ -127,7 +128,7 @@ async fn execute_local_query(
         }
     };
 
-    Ok(extract_group_results(records, raw_logical_plan))
+    extract_group_results(records, raw_logical_plan)
 }
 
 /// Execute alert query remotely (Prism mode)
@@ -172,52 +173,46 @@ fn convert_result_to_group_results(
         .as_array()
         .ok_or_else(|| AlertError::CustomError("Expected array in query result".to_string()))?;
 
-    let aggregate_aliases = extract_aggregate_aliases(&plan);
+    let layout = resolve_alert_output_layout(&plan)?;
 
-    if array_val.is_empty() || aggregate_aliases.is_empty() {
+    if array_val.is_empty() {
         return Ok(AlertQueryResult {
             groups: vec![],
-            is_simple_query: true,
+            is_simple_query: layout.dimension_indices.is_empty(),
         });
     }
 
-    // take the first entry and extract the column name / alias
-    let (agg_condition, alias) = &aggregate_aliases[0];
-
-    let aggregate_key = if let Some(alias) = alias {
-        alias
-    } else {
-        agg_condition
-    };
-
-    // Find the aggregate column from the first row
-    let first_row = array_val[0]
-        .as_object()
-        .ok_or_else(|| AlertError::CustomError("Expected object in query result".to_string()))?;
-
-    let is_simple_query = first_row.len() == 1;
+    let aggregate_key = &layout.measure_name;
+    let is_simple_query = layout.dimension_indices.is_empty();
     let mut groups = Vec::new();
 
     // Process each row as a separate group
     for row in array_val {
         if let Some(object) = row.as_object() {
-            let mut group_values = HashMap::new();
-            let mut aggregate_value = 0.0;
-
-            for (key, value) in object {
-                if key == aggregate_key {
-                    aggregate_value = value.as_f64().ok_or_else(|| {
-                        AlertError::CustomError(format!(
-                            "Non-numeric value found in aggregate column '{}'",
-                            aggregate_key
-                        ))
-                    })?;
-                } else {
-                    // This is a GROUP BY column
-                    group_values
-                        .insert(key.clone(), value.to_string().trim_matches('"').to_string());
+            let aggregate_value = match object.get(aggregate_key) {
+                Some(serde_json::Value::Null) => 0.0,
+                Some(value) => value.as_f64().ok_or_else(|| {
+                    AlertError::CustomError(format!(
+                        "Non-numeric value found in aggregate column '{aggregate_key}'"
+                    ))
+                })?,
+                None => {
+                    return Err(AlertError::CustomError(format!(
+                        "Aggregate column '{aggregate_key}' missing from query result"
+                    )));
                 }
-            }
+            };
+            let group_values = object
+                .iter()
+                .filter(|(key, _)| *key != aggregate_key)
+                .map(|(key, value)| {
+                    let rendered = match value {
+                        serde_json::Value::String(text) => text.clone(),
+                        other => other.to_string(),
+                    };
+                    (key.clone(), rendered)
+                })
+                .collect();
 
             groups.push(GroupResult {
                 group_values,
@@ -232,38 +227,12 @@ fn convert_result_to_group_results(
     })
 }
 
-/// Extract numeric value from an Arrow array at the given row index
-fn extract_numeric_value(column: &dyn Array, row_index: usize) -> f64 {
-    if let Some(float_array) = column.as_any().downcast_ref::<Float64Array>() {
-        if !float_array.is_null(row_index) {
-            return float_array.value(row_index);
-        }
-    } else if let Some(int_array) = column.as_any().downcast_ref::<Int64Array>()
-        && !int_array.is_null(row_index)
-    {
-        return int_array.value(row_index) as f64;
-    }
-    0.0
-}
-
 /// Extract string value from an Arrow array at the given row index
-fn extract_string_value(column: &dyn Array, row_index: usize) -> String {
-    use arrow_array::StringArray;
-
-    if let Some(string_array) = column.as_any().downcast_ref::<StringArray>() {
-        if !string_array.is_null(row_index) {
-            return string_array.value(row_index).to_string();
-        }
-    } else if let Some(int_array) = column.as_any().downcast_ref::<Int64Array>() {
-        if !int_array.is_null(row_index) {
-            return int_array.value(row_index).to_string();
-        }
-    } else if let Some(float_array) = column.as_any().downcast_ref::<Float64Array>()
-        && !float_array.is_null(row_index)
-    {
-        return float_array.value(row_index).to_string();
+fn extract_string_value(column: &dyn Array, row_index: usize) -> Result<String, AlertError> {
+    if column.is_null(row_index) {
+        return Ok("null".to_string());
     }
-    "null".to_string()
+    Ok(array_value_to_string(column, row_index)?)
 }
 
 pub fn evaluate_condition(operator: &AlertOperator, actual: f64, expected: f64) -> bool {
@@ -327,51 +296,47 @@ async fn update_alert_state(
 }
 
 /// Extract group results from record batches, supporting both simple and GROUP BY queries
-fn extract_group_results(records: Vec<RecordBatch>, plan: LogicalPlan) -> AlertQueryResult {
+fn extract_group_results(
+    records: Vec<RecordBatch>,
+    plan: LogicalPlan,
+) -> Result<AlertQueryResult, AlertError> {
     trace!("records-\n{records:?}");
 
-    let aggregate_aliases = extract_aggregate_aliases(&plan);
+    let layout = resolve_alert_output_layout(&plan)?;
 
-    // since there is going to be only one aggregate, we'll check if it is empty
-    if aggregate_aliases.is_empty() || records.is_empty() {
-        return AlertQueryResult {
+    if records.is_empty() {
+        return Ok(AlertQueryResult {
             groups: vec![],
-            is_simple_query: true,
-        };
+            is_simple_query: layout.dimension_indices.is_empty(),
+        });
     }
 
-    // take the first entry and extract the column name / alias
-    let (agg_condition, alias) = &aggregate_aliases[0];
-
-    let alias = if let Some(alias) = alias {
-        alias
-    } else {
-        agg_condition
-    };
-
-    let first_batch = &records[0];
-    let schema = first_batch.schema();
-
-    // Determine if this is a simple query (no GROUP BY) or a grouped query
-    let is_simple_query = schema.fields().len() == 1;
+    let is_simple_query = layout.dimension_indices.is_empty();
 
     let mut groups = Vec::new();
 
     for batch in &records {
+        let schema = batch.schema();
+        let measure_values = cast(batch.column(layout.measure_index), &DataType::Float64)?;
+        let measure_values = measure_values
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .ok_or_else(|| {
+                AlertError::CustomError("Failed to cast alert value to Float64".into())
+            })?;
         for row_index in 0..batch.num_rows() {
             let mut group_values = HashMap::new();
-            let mut aggregate_value = 0.0;
+            let aggregate_value = if measure_values.is_null(row_index) {
+                0.0
+            } else {
+                measure_values.value(row_index)
+            };
 
-            // Extract values for each column
-            for (col_index, field) in schema.fields().iter().enumerate() {
-                let column = batch.column(col_index);
-                if field.name().eq(alias) {
-                    aggregate_value = extract_numeric_value(column, row_index)
-                } else {
-                    // This is a GROUP BY column
-                    let value = extract_string_value(column, row_index);
-                    group_values.insert(field.name().clone(), value);
-                }
+            for dimension_index in &layout.dimension_indices {
+                let field = schema.field(*dimension_index);
+                let value =
+                    extract_string_value(batch.column(*dimension_index).as_ref(), row_index)?;
+                group_values.insert(field.name().clone(), value);
             }
 
             groups.push(GroupResult {
@@ -381,10 +346,10 @@ fn extract_group_results(records: Vec<RecordBatch>, plan: LogicalPlan) -> AlertQ
         }
     }
 
-    AlertQueryResult {
+    Ok(AlertQueryResult {
         groups,
         is_simple_query,
-    }
+    })
 }
 
 pub fn get_filter_string(where_clause: &Conditions) -> Result<String, String> {
@@ -713,7 +678,162 @@ impl Display for ValueType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::alerts::WhereConfigOperator;
+    use crate::alerts::{WhereConfigOperator, resolve_alert_output_layout};
+    use datafusion::prelude::SessionContext;
+
+    const WRAPPED_AGGREGATE_QUERY: &str = r#"
+        SELECT
+            app,
+            ROUND(SUM(cost), 4) AS estimated_spend_usd
+        FROM (
+            VALUES
+                ('Codex', CAST(1.23456 AS DOUBLE)),
+                ('Codex', CAST(2.0 AS DOUBLE)),
+                ('Claude Code', CAST(4.5 AS DOUBLE))
+        ) AS usage(app, cost)
+        GROUP BY app
+        ORDER BY app
+    "#;
+
+    #[tokio::test]
+    async fn wrapped_aggregate_is_resolved_by_lineage() {
+        let context = SessionContext::new();
+        let dataframe = context.sql(WRAPPED_AGGREGATE_QUERY).await.unwrap();
+        let plan = dataframe.logical_plan().clone();
+        let layout = resolve_alert_output_layout(&plan).unwrap();
+
+        assert_eq!(layout.measure_index, 1);
+        assert_eq!(layout.measure_name, "estimated_spend_usd");
+        assert_eq!(layout.dimension_indices, [0]);
+
+        let result = extract_group_results(dataframe.collect().await.unwrap(), plan).unwrap();
+        assert!(!result.is_simple_query);
+        assert_eq!(result.groups.len(), 2);
+        assert_eq!(result.groups[0].group_values["app"], "Claude Code");
+        assert_eq!(result.groups[0].aggregate_value, 4.5);
+        assert_eq!(result.groups[1].group_values["app"], "Codex");
+        assert!((result.groups[1].aggregate_value - 3.2346).abs() < f64::EPSILON);
+    }
+
+    #[tokio::test]
+    async fn wrapped_aggregate_uses_final_alias_for_remote_results() {
+        let context = SessionContext::new();
+        let plan = context
+            .state()
+            .create_logical_plan(WRAPPED_AGGREGATE_QUERY)
+            .await
+            .unwrap();
+        let result = convert_result_to_group_results(
+            serde_json::json!([
+                {"app": "Codex", "estimated_spend_usd": 3.2346}
+            ]),
+            plan,
+        )
+        .unwrap();
+
+        assert_eq!(result.groups[0].group_values["app"], "Codex");
+        assert_eq!(result.groups[0].aggregate_value, 3.2346);
+    }
+
+    #[tokio::test]
+    async fn remote_string_dimensions_are_not_json_escaped() {
+        let context = SessionContext::new();
+        let plan = context
+            .state()
+            .create_logical_plan(WRAPPED_AGGREGATE_QUERY)
+            .await
+            .unwrap();
+        let app = r#"he said "hi" at C:\temp"#;
+        let result = convert_result_to_group_results(
+            serde_json::json!([
+                {"app": app, "estimated_spend_usd": 3.2346}
+            ]),
+            plan,
+        )
+        .unwrap();
+
+        assert_eq!(result.groups[0].group_values["app"], app);
+    }
+
+    #[tokio::test]
+    async fn aggregate_lineage_survives_nested_scalar_expressions() {
+        let context = SessionContext::new();
+        let plan = context
+            .state()
+            .create_logical_plan(
+                r#"
+                    SELECT
+                        app,
+                        CAST(
+                            CASE
+                                WHEN SUM(cost) > 0
+                                THEN ABS(SUM(cost) * 2) + 1
+                                ELSE 0
+                            END
+                            AS DOUBLE
+                        ) AS score
+                    FROM (
+                        VALUES ('Codex', CAST(1.0 AS DOUBLE))
+                    ) AS usage(app, cost)
+                    GROUP BY app
+                "#,
+            )
+            .await
+            .unwrap();
+
+        let layout = resolve_alert_output_layout(&plan).unwrap();
+        assert_eq!(layout.measure_name, "score");
+        assert_eq!(layout.dimension_indices, [0]);
+    }
+
+    #[tokio::test]
+    async fn rollup_internal_grouping_id_is_not_a_measure() {
+        let context = SessionContext::new();
+        let plan = context
+            .state()
+            .create_logical_plan(
+                r#"
+                    SELECT
+                        region,
+                        app,
+                        ROUND(SUM(cost), 2) AS spend
+                    FROM (
+                        VALUES ('us-east', 'Codex', CAST(1.0 AS DOUBLE))
+                    ) AS usage(region, app, cost)
+                    GROUP BY ROLLUP(region, app)
+                "#,
+            )
+            .await
+            .unwrap();
+
+        let layout = resolve_alert_output_layout(&plan).unwrap();
+        assert_eq!(layout.measure_name, "spend");
+        assert_eq!(layout.dimension_indices, [0, 1]);
+    }
+
+    #[tokio::test]
+    async fn multiple_aggregate_derived_outputs_are_rejected() {
+        let context = SessionContext::new();
+        let plan = context
+            .state()
+            .create_logical_plan(
+                r#"
+                    SELECT
+                        app,
+                        SUM(cost) AS raw_spend,
+                        ROUND(SUM(cost), 2) AS rounded_spend
+                    FROM (
+                        VALUES ('Codex', CAST(1.0 AS DOUBLE))
+                    ) AS usage(app, cost)
+                    GROUP BY app
+                "#,
+            )
+            .await
+            .unwrap();
+
+        let error = resolve_alert_output_layout(&plan).unwrap_err();
+        assert!(error.to_string().contains("found 2"));
+    }
 
     // -------------------------------------------------------------------------
     // sanitize_array_elements — happy-path cases
