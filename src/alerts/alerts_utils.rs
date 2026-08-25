@@ -205,12 +205,7 @@ fn convert_result_to_group_results(
             let group_values = object
                 .iter()
                 .filter(|(key, _)| *key != aggregate_key)
-                .map(|(key, value)| {
-                    (
-                        key.clone(),
-                        value.to_string().trim_matches('"').to_string(),
-                    )
-                })
+                .map(|(key, value)| (key.clone(), value.to_string().trim_matches('"').to_string()))
                 .collect();
 
             groups.push(GroupResult {
@@ -333,10 +328,8 @@ fn extract_group_results(
 
             for dimension_index in &layout.dimension_indices {
                 let field = schema.field(*dimension_index);
-                let value = extract_string_value(
-                    batch.column(*dimension_index).as_ref(),
-                    row_index,
-                )?;
+                let value =
+                    extract_string_value(batch.column(*dimension_index).as_ref(), row_index)?;
                 group_values.insert(field.name().clone(), value);
             }
 

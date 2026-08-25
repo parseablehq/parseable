@@ -914,12 +914,8 @@ fn aggregate_output_indices(plan: &LogicalPlan) -> Vec<usize> {
                 .iter()
                 .enumerate()
                 .filter_map(|(index, expr)| {
-                    expression_depends_on_aggregate(
-                        expr,
-                        projection.input.schema(),
-                        &input_indices,
-                    )
-                    .then_some(index)
+                    expression_depends_on_aggregate(expr, projection.input.schema(), &input_indices)
+                        .then_some(index)
                 })
                 .collect()
         }
