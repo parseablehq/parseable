@@ -340,7 +340,11 @@ impl AlertRequest {
             AlertQueryType::Promql => self.datasets,
         };
 
-        if datasets.len() != 1 {
+        if matches!(
+            self.query_type,
+            AlertQueryType::Builder | AlertQueryType::Promql
+        ) && datasets.len() != 1
+        {
             return Err(AlertError::ValidationFailure(format!(
                 "Alert should include only one dataset. Found: {datasets:?}"
             )));
@@ -934,5 +938,72 @@ impl MetastoreObject for MTTRHistory {
 
     fn get_object_path(&self) -> String {
         mttr_json_path(&self.tenant_id).to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AlertRequest;
+    use crate::alerts::AlertError;
+
+    fn alert_request(query_type: &str, query: &str, datasets: &[&str]) -> AlertRequest {
+        serde_json::from_value(serde_json::json!({
+            "severity": "high",
+            "title": "Test alert",
+            "alertType": "threshold",
+            "queryType": query_type,
+            "query": query,
+            "thresholdConfig": {"operator": ">", "value": 1.0},
+            "evalConfig": {
+                "rollingWindow": {
+                    "evalStart": "10 minutes",
+                    "evalEnd": "now",
+                    "evalFrequency": 10
+                }
+            },
+            "targets": [],
+            "notificationConfig": {"interval": 1},
+            "datasets": datasets
+        }))
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn sql_alert_request_accepts_multiple_datasets() {
+        let request = alert_request(
+            "code",
+            "SELECT COUNT(*) FROM \"logs-a\" UNION ALL SELECT COUNT(*) FROM \"logs-b\"",
+            &[],
+        );
+
+        let config = request.into(None).await.unwrap();
+
+        assert_eq!(config.datasets, ["logs-a", "logs-b"]);
+    }
+
+    #[tokio::test]
+    async fn builder_alert_request_rejects_multiple_datasets() {
+        let request = alert_request(
+            "builder",
+            "SELECT COUNT(*) FROM \"logs-a\" UNION ALL SELECT COUNT(*) FROM \"logs-b\"",
+            &[],
+        );
+
+        let error = request.into(None).await.unwrap_err();
+
+        assert!(matches!(error, AlertError::ValidationFailure(_)));
+    }
+
+    #[tokio::test]
+    async fn promql_alert_request_rejects_multiple_datasets() {
+        let request = alert_request("promql", "up", &["metrics-a", "metrics-b"]);
+
+        let error = request.into(None).await.unwrap_err();
+
+        assert!(matches!(
+            error,
+            AlertError::ValidationFailure(message)
+                if message == "Alert should include only one dataset. Found: [\"metrics-a\", \"metrics-b\"]"
+        ));
     }
 }
