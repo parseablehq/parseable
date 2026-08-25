@@ -461,7 +461,7 @@ pub struct Options {
         value_parser = validation::validate_percentage,
         default_value = "80.0",
         env = "P_QUERY_MEMORY_THRESHOLD",
-        help = "Set a threshold (percentage) for memory beyond which query will get queued for 60s to prevent OOM"
+        help = "Set a threshold (percentage) for memory beyond which query will get queued for 10s to prevent OOM"
     )]
     pub query_mem_threshold: f32,
 

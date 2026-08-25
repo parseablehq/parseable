@@ -158,7 +158,8 @@ async fn enough_available_memory() -> Result<(), ExecuteError> {
                     return;
                 }
             } else {
-                if (s.used_memory() as f64) < threshold * (s.available_memory() as f64) {
+                s.refresh_memory();
+                if (s.used_memory() as f64) < threshold * (s.total_memory() as f64) {
                     return;
                 }
             }
@@ -248,7 +249,11 @@ impl Query {
             None => {
                 let mut system = System::new();
                 system.refresh_memory();
-                let available_mem = system.available_memory();
+                let available_mem = if let Some(cgroup) = system.cgroup_limits() {
+                    cgroup.total_memory
+                } else {
+                    system.total_memory()
+                };
                 (available_mem as usize, 0.85)
             }
         };
