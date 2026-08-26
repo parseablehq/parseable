@@ -28,7 +28,7 @@ use actix_web::web::{self, Json};
 use actix_web::{Either, FromRequest, HttpRequest, HttpResponse, Responder};
 use arrow_array::{ArrayRef, RecordBatch, StringArray, UInt64Array};
 use bytes::Bytes;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use datafusion::error::DataFusionError;
 use datafusion::execution::context::SessionState;
 use datafusion::sql::sqlparser::parser::ParserError;
@@ -55,7 +55,7 @@ use crate::rbac::Users;
 use crate::response::QueryResponse;
 use crate::storage::ObjectStorageError;
 use crate::utils::actix::extract_session_key_from_req;
-use crate::utils::time::{TimeParseError, TimeRange};
+use crate::utils::time::{TimeParseError, TimeRange, parse_time_expression};
 use crate::utils::{get_tenant_id_from_request, user_auth_for_datasets};
 
 pub const TIME_ELAPSED_HEADER: &str = "p-time-elapsed";
@@ -658,13 +658,7 @@ fn transform_query_for_ingestor(query: &Query) -> Option<Query> {
         return None;
     }
 
-    let end_time: DateTime<Utc> = if query.end_time == "now" {
-        Utc::now()
-    } else {
-        DateTime::parse_from_rfc3339(&query.end_time)
-            .ok()?
-            .with_timezone(&Utc)
-    };
+    let end_time = parse_time_expression(&query.end_time, Utc::now()).ok()?;
 
     let start_time = end_time - chrono::Duration::minutes(1);
     // when transforming the query, the ingestors are forced to return an array of values
