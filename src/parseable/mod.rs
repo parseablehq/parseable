@@ -789,6 +789,21 @@ impl Parseable {
         let stream_in_memory_dont_update =
             self.streams.contains(stream_name, tenant_id) && !update_stream_flag;
 
+        // A stream still resident with is_deleting()=true is functionally
+        // gone (reads/writes are already rejected elsewhere), but its entry
+        // isn't removed from memory until the background deletion job
+        // finishes -- surface that distinctly rather than telling the
+        // caller it "already exists", which reads as if nothing were wrong.
+        if stream_in_memory_dont_update
+            && let Ok(stream) = self.get_stream(stream_name, tenant_id)
+            && stream.is_deleting()
+        {
+            return Err(StreamError::Custom {
+                msg: format!("Logstream {stream_name} is being deleted, please retry shortly"),
+                status: StatusCode::CONFLICT,
+            });
+        }
+
         // check if stream in storage only if not in memory
         // for Parseable OSS, create_update_stream is called only from query node
         // for Parseable Enterprise, create_update_stream is called from prism node

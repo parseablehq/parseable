@@ -31,7 +31,6 @@ use crate::{
     catalog::remove_manifest_from_snapshot,
     handlers::http::logstream::error::StreamError,
     parseable::{PARSEABLE, StreamNotFound},
-    stats,
     utils::get_tenant_id_from_request,
 };
 
@@ -78,6 +77,7 @@ pub async fn delete(
     let tenant_id = get_tenant_id_from_request(&req);
     // Delete from staging
     let stream_dir = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
+    stream_dir.mark_deleting();
 
     // delete staging only for ingest server or standalone server
     // else skip
@@ -91,12 +91,16 @@ pub async fn delete(
         )
     }
 
-    // Delete from memory
-    PARSEABLE.streams.delete(&stream_name, &tenant_id);
-    stats::delete_stats(&stream_name, "json", &tenant_id)
-        .unwrap_or_else(|e| warn!("failed to delete stats for stream {}: {:?}", stream_name, e));
-
-    Ok((format!("log stream {stream_name} deleted"), StatusCode::OK))
+    // Not removed from memory here: this node doesn't run the background
+    // deletion job, so it doesn't know when the underlying prefix is
+    // actually gone. The entry is reaped once `sync_all_streams` notices
+    // the tombstone has cleared (see its is_deleting()/is_tombstoned()
+    // self-heal check) -- until then, `is_deleting()` keeps rejecting
+    // ingestion for this stream with a clear "being deleted" error.
+    Ok((
+        format!("log stream {stream_name} deletion started"),
+        StatusCode::OK,
+    ))
 }
 
 pub async fn put_stream(
