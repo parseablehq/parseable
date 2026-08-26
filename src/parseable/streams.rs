@@ -1217,8 +1217,12 @@ impl Stream {
     }
 
     /// Stores the provided stream metadata in memory mapping
-    pub async fn set_metadata(&self, updated_metadata: LogStreamMetadata) {
-        *self.metadata.write().expect(LOCK_EXPECT) = updated_metadata;
+    pub async fn set_metadata(&self, mut updated_metadata: LogStreamMetadata) {
+        let mut metadata = self.metadata.write().expect(LOCK_EXPECT);
+        // mark_deleting() is documented as monotonic -- a reload racing a
+        // delete must not silently clear it back to false.
+        updated_metadata.deleting |= metadata.deleting;
+        *metadata = updated_metadata;
     }
 
     pub fn get_first_event(&self) -> Option<String> {

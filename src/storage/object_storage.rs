@@ -1612,13 +1612,27 @@ pub async fn is_tombstoned(
 /// node, since a tombstoned stream whose `.stream.json` is already gone
 /// would otherwise never surface via `list_streams`. See `is_tombstoned` for
 /// the equivalent single-name check.
+///
+/// `list_dirs_relative` only proves a directory exists under the tombstone
+/// root, not that it actually holds a `.tombstone` marker (e.g. a partial or
+/// interrupted write could leave an empty one behind) -- each candidate is
+/// re-checked with `is_tombstoned` before being returned, so a directory
+/// without a real marker is silently skipped rather than misreported.
 pub async fn list_tombstoned_streams(
     storage: &(impl ObjectStorage + ?Sized),
     tenant_id: &Option<String>,
 ) -> Result<Vec<String>, ObjectStorageError> {
     let tenant = tenant_id.as_deref().unwrap_or("");
     let root = RelativePathBuf::from_iter([TOMBSTONE_ROOT_DIRECTORY, tenant]);
-    storage.list_dirs_relative(&root, tenant_id).await
+    let candidates = storage.list_dirs_relative(&root, tenant_id).await?;
+
+    let mut confirmed = Vec::with_capacity(candidates.len());
+    for stream_name in candidates {
+        if is_tombstoned(storage, &stream_name, tenant_id).await? {
+            confirmed.push(stream_name);
+        }
+    }
+    Ok(confirmed)
 }
 
 /// if filter_id is an empty str it should not append it to the rel path
@@ -1798,6 +1812,33 @@ mod tombstone_tests {
 
         let discovered = list_tombstoned_streams(&storage, &None).await.unwrap();
         assert_eq!(discovered, vec!["test_stream".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn directory_without_the_actual_marker_is_not_reported_as_tombstoned() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalFS::new(dir.path().to_path_buf());
+
+        // A directory can exist under the tombstone root without ever
+        // containing the marker itself (e.g. an interrupted write) --
+        // list_dirs_relative alone can't tell the difference, so
+        // list_tombstoned_streams must re-verify via is_tombstoned.
+        let sibling_path = tombstone_path("test_stream", &None)
+            .parent()
+            .unwrap()
+            .join("not-the-marker");
+        storage
+            .put_object(&sibling_path, to_bytes(&()), &None)
+            .await
+            .unwrap();
+
+        assert!(!is_tombstoned(&storage, "test_stream", &None).await.unwrap());
+        assert!(
+            list_tombstoned_streams(&storage, &None)
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 }
 
