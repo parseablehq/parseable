@@ -107,7 +107,7 @@ pub async fn get(req: HttpRequest, name: web::Path<String>) -> Result<impl Respo
     Ok(web::Json(role))
 }
 
-// Handler for GET /api/v1/role
+// Handler for GET /api/v1/roles
 // Fetch all roles in the system
 pub async fn list(req: HttpRequest) -> Result<impl Responder, RoleError> {
     let tenant_id = get_tenant_id_from_request(&req);
