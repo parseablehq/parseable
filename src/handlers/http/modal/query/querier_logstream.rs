@@ -81,6 +81,12 @@ pub async fn delete(
     // deletion.
     let stream = PARSEABLE.get_stream(&stream_name, &tenant_id)?;
 
+    // Flip the in-memory guard before any `.await` point: check_or_load_stream's
+    // resident-stream fast path doesn't itself consult is_tombstoned, so a
+    // concurrent request on this node could otherwise slip through in the
+    // window between the tombstone becoming durable and this flag being set.
+    stream.mark_deleting();
+
     let objectstore = PARSEABLE.storage.get_object_store();
 
     // Durable marker first: if the process crashes anywhere after this
@@ -107,7 +113,6 @@ pub async fn delete(
         );
     }
 
-    stream.mark_deleting();
     // Scheduled immediately once the stream is durably tombstoned and
     // flagged locally, before any of the remaining best-effort steps --
     // none of them are allowed to leave the deletion itself unscheduled if
