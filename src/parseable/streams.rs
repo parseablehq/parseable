@@ -1352,6 +1352,17 @@ impl Stream {
         self.metadata.read().expect(LOCK_EXPECT).hot_tier_enabled
     }
 
+    /// Marks this stream as being deleted. Once set, this flag is never
+    /// cleared for this in-memory entry — a deletion in progress runs to
+    /// completion (or is resumed on restart), it is never cancelled.
+    pub fn mark_deleting(&self) {
+        self.metadata.write().expect(LOCK_EXPECT).deleting = true;
+    }
+
+    pub fn is_deleting(&self) -> bool {
+        self.metadata.read().expect(LOCK_EXPECT).deleting
+    }
+
     pub fn get_stream_type(&self) -> StreamType {
         self.metadata.read().expect(LOCK_EXPECT).stream_type
     }
@@ -1742,6 +1753,22 @@ mod tests {
             staging.data_path,
             options.local_stream_data_path(stream_name, &None)
         );
+    }
+
+    #[test]
+    fn test_mark_deleting_sets_is_deleting() {
+        let options = Arc::new(Options::default());
+        let stream = Stream::new(
+            options,
+            "test_stream",
+            LogStreamMetadata::default(),
+            None,
+            &None,
+        );
+
+        assert!(!stream.is_deleting());
+        stream.mark_deleting();
+        assert!(stream.is_deleting());
     }
 
     #[test]

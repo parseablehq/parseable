@@ -509,6 +509,10 @@ pub fn validate_stream_for_ingestion(
 ) -> Result<(), PostError> {
     let stream = PARSEABLE.get_stream(stream_name, tenant_id)?;
 
+    if stream.is_deleting() {
+        return Err(PostError::StreamBeingDeleted(stream_name.to_string()));
+    }
+
     // Validate that the stream's log source is compatible
     stream
         .get_log_source()

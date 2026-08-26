@@ -49,6 +49,7 @@ use crate::{
 use super::{
     ALERTS_ROOT_DIRECTORY, ObjectStorage, ObjectStorageError, ObjectStorageProvider,
     PARSEABLE_ROOT_DIRECTORY, STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY,
+    TOMBSTONE_ROOT_DIRECTORY,
 };
 
 #[derive(Debug, Clone, clap::Args)]
@@ -533,6 +534,7 @@ impl ObjectStorage for LocalFS {
             USERS_ROOT_DIR,
             ALERTS_ROOT_DIRECTORY,
             SETTINGS_ROOT_DIRECTORY,
+            TOMBSTONE_ROOT_DIRECTORY,
         ];
 
         let result = fs::read_dir(&self.root).await;

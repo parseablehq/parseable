@@ -68,7 +68,8 @@ use ulid::Ulid;
 use super::{
     ALERTS_ROOT_DIRECTORY, MANIFEST_FILE, ObjectStorageError, ObjectStoreFormat,
     PARSEABLE_METADATA_FILE_NAME, PARSEABLE_ROOT_DIRECTORY, SCHEMA_FILE_NAME,
-    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY, retention::Retention,
+    STREAM_METADATA_FILE_NAME, STREAM_ROOT_DIRECTORY, TOMBSTONE_ROOT_DIRECTORY,
+    retention::Retention,
 };
 
 /// Context for upload operations containing stream information
@@ -1442,6 +1443,41 @@ pub fn stream_json_path(stream_name: &str, tenant_id: &Option<String>) -> Relati
     }
 }
 
+/// Path to a stream's deletion marker. Deliberately lives under
+/// `TOMBSTONE_ROOT_DIRECTORY`, outside the `{tenant}/{stream_name}` prefix
+/// that a bulk stream delete walks, so a mid-deletion crash can never lose
+/// the marker before the deletion it records has actually finished.
+#[inline(always)]
+pub fn tombstone_path(stream_name: &str, tenant_id: &Option<String>) -> RelativePathBuf {
+    let tenant = tenant_id.as_deref().unwrap_or("");
+    RelativePathBuf::from_iter([TOMBSTONE_ROOT_DIRECTORY, tenant, stream_name])
+}
+
+/// Whether a stream has a deletion marker present, i.e. a deletion was
+/// started (possibly by a node that has since crashed or restarted) and has
+/// not yet completed.
+pub async fn is_tombstoned(
+    storage: &(impl ObjectStorage + ?Sized),
+    stream_name: &str,
+    tenant_id: &Option<String>,
+) -> Result<bool, ObjectStorageError> {
+    match storage
+        .head(&tombstone_path(stream_name, tenant_id), tenant_id)
+        .await
+    {
+        Ok(_) => Ok(true),
+        // NoSuchKey is the object-store backends' not-found; LocalFS instead
+        // surfaces a plain io::Error, so both must be treated as "absent"
+        // here (see ObjectStoreMetastore::is_missing_optional_dir for the
+        // same not-found reconciliation across backends).
+        Err(ObjectStorageError::NoSuchKey(_)) => Ok(false),
+        Err(ObjectStorageError::IoError(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(false)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 /// if filter_id is an empty str it should not append it to the rel path
 #[inline(always)]
 pub fn filter_path(
@@ -1565,6 +1601,34 @@ pub fn own_manifest_file_name() -> String {
 #[inline]
 pub fn manifest_segment_matches(manifest_path_str: &str, file_name: &str) -> bool {
     manifest_path_str.rsplit('/').next() == Some(file_name)
+}
+
+#[cfg(test)]
+mod tombstone_tests {
+    use super::{ObjectStorage, is_tombstoned, to_bytes, tombstone_path};
+    use crate::storage::LocalFS;
+    use temp_dir::TempDir;
+
+    #[tokio::test]
+    async fn no_marker_means_not_tombstoned() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalFS::new(dir.path().to_path_buf());
+
+        assert!(!is_tombstoned(&storage, "test_stream", &None).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn marker_present_means_tombstoned() {
+        let dir = TempDir::new().unwrap();
+        let storage = LocalFS::new(dir.path().to_path_buf());
+
+        storage
+            .put_object(&tombstone_path("test_stream", &None), to_bytes(&()), &None)
+            .await
+            .unwrap();
+
+        assert!(is_tombstoned(&storage, "test_stream", &None).await.unwrap());
+    }
 }
 
 #[cfg(test)]
