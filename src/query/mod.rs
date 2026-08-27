@@ -296,6 +296,24 @@ impl Query {
         // Reorder filters allows DF to decide the order of filters minimizing the cost of filter evaluation
         config.options_mut().execution.parquet.reorder_filters = true;
         config.options_mut().execution.parquet.binary_as_string = true;
+        // DataFusion 54 can split Parquet files into row-group morsels and let idle scan
+        // partitions steal work. Keep these explicit because Parseable commonly scans a small
+        // number of large files from object storage, where static file groups underutilize CPUs.
+        config
+            .options_mut()
+            .execution
+            .enable_file_stream_work_stealing = true;
+        config.options_mut().optimizer.repartition_file_scans = true;
+
+        // Feed changing TopK / aggregate bounds into Parquet pruning. This is especially useful
+        // for observability queries such as `ORDER BY p_timestamp DESC LIMIT N`.
+        config
+            .options_mut()
+            .optimizer
+            .enable_dynamic_filter_pushdown = true;
+        config.options_mut().optimizer.enable_topk_aggregation = true;
+        config.options_mut().optimizer.enable_topk_repartition = true;
+        config.options_mut().optimizer.enable_sort_pushdown = true;
         // Bump footer-read hint from the 512 KiB default. Streams with
         // many label columns + page-indexed value columns can have
         // parquet footers in the 1-2 MiB range; sizing the hint above

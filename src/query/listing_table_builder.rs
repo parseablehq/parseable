@@ -25,14 +25,10 @@ use datafusion::{
         listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
     },
     error::DataFusionError,
-    logical_expr::col,
 };
 use itertools::Itertools;
 
-use crate::{
-    OBJECT_STORE_DATA_GRANULARITY, event::DEFAULT_TIMESTAMP_KEY, storage::ObjectStorage,
-    utils::time::TimeRange,
-};
+use crate::{OBJECT_STORE_DATA_GRANULARITY, storage::ObjectStorage, utils::time::TimeRange};
 
 use super::PartialTimeFilter;
 
@@ -121,23 +117,17 @@ impl ListingTableBuilder {
         self,
         schema: Arc<Schema>,
         map: impl Fn(Vec<String>) -> Vec<ListingTableUrl>,
-        time_partition: Option<String>,
+        target_partitions: usize,
     ) -> Result<Option<Arc<ListingTable>>, DataFusionError> {
         if self.listing.is_empty() {
             return Ok(None);
         }
 
-        let file_sort_order = vec![vec![
-            time_partition
-                .map_or_else(|| col(DEFAULT_TIMESTAMP_KEY), col)
-                .sort(true, false),
-        ]];
         let file_format = ParquetFormat::default().with_enable_pruning(true);
         let listing_options = ListingOptions::new(Arc::new(file_format))
             .with_file_extension(".parquet")
-            .with_file_sort_order(file_sort_order)
             .with_collect_stat(true)
-            .with_target_partitions(1);
+            .with_target_partitions(target_partitions.max(1));
         let config = ListingTableConfig::new_with_multi_paths(map(self.listing))
             .with_listing_options(listing_options)
             .with_schema(schema);
