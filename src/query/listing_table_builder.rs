@@ -117,17 +117,14 @@ impl ListingTableBuilder {
         self,
         schema: Arc<Schema>,
         map: impl Fn(Vec<String>) -> Vec<ListingTableUrl>,
-        target_partitions: usize,
     ) -> Result<Option<Arc<ListingTable>>, DataFusionError> {
         if self.listing.is_empty() {
             return Ok(None);
         }
 
         let file_format = ParquetFormat::default().with_enable_pruning(true);
-        let listing_options = ListingOptions::new(Arc::new(file_format))
-            .with_file_extension(".parquet")
-            .with_collect_stat(true)
-            .with_target_partitions(target_partitions.max(1));
+        let listing_options =
+            ListingOptions::new(Arc::new(file_format)).with_file_extension(".parquet");
         let config = ListingTableConfig::new_with_multi_paths(map(self.listing))
             .with_listing_options(listing_options)
             .with_schema(schema);

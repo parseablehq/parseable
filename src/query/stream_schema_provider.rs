@@ -37,7 +37,8 @@ use datafusion::{
     error::{DataFusionError, Result as DataFusionResult},
     execution::object_store::ObjectStoreUrl,
     logical_expr::{
-        BinaryExpr, Operator, TableProviderFilterPushDown, TableType, utils::conjunction,
+        BinaryExpr, Operator, TableProviderFilterPushDown, TableType,
+        physical_planning_context::PhysicalPlanningContext, utils::conjunction,
     },
     physical_expr::{LexOrdering, PhysicalSortExpr, create_physical_expr, expressions::col},
     physical_plan::{ExecutionPlan, Statistics, empty::EmptyExec, union::UnionExec},
@@ -157,7 +158,12 @@ fn build_parquet_scan_components_with_filters(
 
     if let Some(expr) = conjunction(source_filters) {
         let table_df_schema = schema.as_ref().clone().to_dfschema()?;
-        let predicate = create_physical_expr(&expr, &table_df_schema, state.execution_props())?;
+        let predicate = create_physical_expr(
+            &expr,
+            &table_df_schema,
+            state.execution_props(),
+            &PhysicalPlanningContext::default(),
+        )?;
         file_source = file_source.with_predicate(predicate);
     }
 
@@ -458,11 +464,8 @@ impl StandardTableProvider {
         ListingTableBuilder::new(self.stream.to_owned())
             .populate_via_listing(glob_storage.clone(), time_filters)
             .and_then(|builder| async {
-                let table = builder.build(
-                    self.schema.clone(),
-                    |x| glob_storage.query_prefixes(x),
-                    state.config_options().execution.target_partitions,
-                )?;
+                let table =
+                    builder.build(self.schema.clone(), |x| glob_storage.query_prefixes(x))?;
                 if let Some(table) = table {
                     let plan = table.scan(state, projection, filters, limit).await?;
                     execution_plans.push(plan);

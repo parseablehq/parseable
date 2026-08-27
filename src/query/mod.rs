@@ -284,6 +284,7 @@ impl Query {
         let mut config = SessionConfig::default()
             .with_parquet_pruning(true)
             .with_prefer_existing_sort(true)
+            .with_collect_statistics(true)
             //batch size has been made configurable via environment variable
             //default value is 20000
             .with_batch_size(PARSEABLE.options.execution_batch_size)
@@ -296,7 +297,7 @@ impl Query {
         // Reorder filters allows DF to decide the order of filters minimizing the cost of filter evaluation
         config.options_mut().execution.parquet.reorder_filters = true;
         config.options_mut().execution.parquet.binary_as_string = true;
-        // DataFusion 54 can split Parquet files into row-group morsels and let idle scan
+        // DataFusion can split Parquet files into row-group morsels and let idle scan
         // partitions steal work. Keep these explicit because Parseable commonly scans a small
         // number of large files from object storage, where static file groups underutilize CPUs.
         config
@@ -476,6 +477,7 @@ impl Query {
                 LogicalPlan::Explain(Explain {
                     explain_format: plan.explain_format,
                     verbose: plan.verbose,
+                    show_statistics: plan.show_statistics,
                     stringified_plans: vec![
                         transformed
                             .data
