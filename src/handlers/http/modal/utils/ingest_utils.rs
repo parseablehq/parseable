@@ -87,7 +87,7 @@ pub async fn process_otel_content(
     log_source: &LogSource,
     telemetry_type: TelemetryType,
 ) -> Result<(), PostError> {
-    let p_custom_fields = get_custom_fields_from_header(req);
+    let p_custom_fields = get_otel_custom_fields_from_header(req, log_source);
     let content_type = req
         .headers()
         .get("Content-Type")
@@ -467,6 +467,15 @@ pub fn get_custom_fields_from_header(req: &HttpRequest) -> HashMap<String, Strin
     p_custom_fields
 }
 
+pub fn get_otel_custom_fields_from_header(
+    req: &HttpRequest,
+    log_source: &LogSource,
+) -> HashMap<String, String> {
+    let mut custom_fields = get_custom_fields_from_header(req);
+    custom_fields.insert(FORMAT_KEY.to_string(), log_source.to_string());
+    custom_fields
+}
+
 fn verify_dataset_fields_count(
     stream_name: &str,
     tenant_id: &Option<String>,
@@ -581,6 +590,19 @@ mod tests {
 
         assert_eq!(custom_fields.get(USER_AGENT_KEY).unwrap(), "TestUserAgent");
         assert_eq!(custom_fields.get(FORMAT_KEY).unwrap(), "otel-logs");
+    }
+
+    #[test]
+    fn test_otel_custom_fields_use_endpoint_log_source() {
+        let req = TestRequest::default().to_http_request();
+        let custom_fields = get_otel_custom_fields_from_header(&req, &LogSource::OtelMetrics);
+        assert_eq!(custom_fields.get(FORMAT_KEY).unwrap(), "otel-metrics");
+
+        let req = TestRequest::default()
+            .insert_header((LOG_SOURCE_KEY, "otel-traces"))
+            .to_http_request();
+        let custom_fields = get_otel_custom_fields_from_header(&req, &LogSource::OtelMetrics);
+        assert_eq!(custom_fields.get(FORMAT_KEY).unwrap(), "otel-metrics");
     }
 
     #[test]

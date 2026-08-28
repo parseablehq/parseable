@@ -48,7 +48,7 @@ const OTEL_EXPORTER_OTLP_PROTOCOL: &str = "OTEL_EXPORTER_OTLP_PROTOCOL";
 ///     Ignored when endpoint is \`stdout\`.
 /// - \`OTEL_EXPORTER_OTLP_HEADERS\` — comma-separated \`key=value\` pairs forwarded
 ///   as gRPC metadata or HTTP headers, e.g.
-///   \`authorization=Basic <token>,x-p-stream=my-stream,x-p-log-source=otel-traces\`
+///   \`authorization=Basic <token>,x-p-stream=my-stream\`
 ///
 /// Returns \`None\` when \`OTEL_EXPORTER_OTLP_ENDPOINT\` or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is not set (OTEL disabled).
 /// The caller must call \`provider.shutdown()\` before process exit.
