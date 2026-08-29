@@ -290,8 +290,9 @@ impl StandardTableProvider {
                     nulls_first: false,
                 },
             };
-            conf_builder =
-                conf_builder.with_output_ordering(vec![LexOrdering::new([sort_expr]).unwrap()]);
+            conf_builder = conf_builder
+                .with_preserve_order(true)
+                .with_output_ordering(vec![LexOrdering::new([sort_expr]).unwrap()]);
         }
 
         // Set projection if provided

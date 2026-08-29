@@ -297,9 +297,9 @@ impl Query {
         // Reorder filters allows DF to decide the order of filters minimizing the cost of filter evaluation
         config.options_mut().execution.parquet.reorder_filters = true;
         config.options_mut().execution.parquet.binary_as_string = true;
-        // DataFusion can split Parquet files into row-group morsels and let idle scan
-        // partitions steal work. Keep these explicit because Parseable commonly scans a small
-        // number of large files from object storage, where static file groups underutilize CPUs.
+        // Allow unordered Parquet scans to split files into row-group morsels and let idle scan
+        // partitions steal work. Ordered scans set FileScanConfig::preserve_order, which prevents
+        // file reassignment while retaining their advertised output ordering.
         config
             .options_mut()
             .execution
