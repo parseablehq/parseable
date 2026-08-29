@@ -219,10 +219,11 @@ pub async fn ingest_internal_stream(
     Ok(())
 }
 
-// Common validation and setup for OTEL ingestion
+// Common validation and setup for OTEL ingestion. The endpoint determines the log source, so
+// clients do not need to provide x-p-log-source.
 pub async fn setup_otel_stream(
     req: &HttpRequest,
-    expected_log_source: LogSource,
+    log_source: LogSource,
     known_fields: &[&str],
     telemetry_type: TelemetryType,
     dataset_tags: Vec<DatasetTag>,
@@ -231,18 +232,6 @@ pub async fn setup_otel_stream(
     let Some(stream_name) = req.headers().get(STREAM_NAME_HEADER_KEY) else {
         return Err(PostError::Header(ParseHeaderError::MissingStreamName));
     };
-
-    let Some(log_source) = req.headers().get(LOG_SOURCE_KEY) else {
-        return Err(PostError::Header(ParseHeaderError::MissingLogSource));
-    };
-
-    let log_source = LogSource::from(log_source.to_str().unwrap());
-    if log_source != expected_log_source {
-        return Err(PostError::IncorrectLogSource(
-            expected_log_source,
-            telemetry_type.to_string(),
-        ));
-    }
 
     let stream_name = stream_name.to_str().unwrap().to_owned();
 
@@ -531,8 +520,6 @@ pub enum PostError {
     OtelNotSupported(String),
     #[error("The stream {0} is reserved for internal use and cannot be ingested into")]
     InternalStream(String),
-    #[error(r#"Please use "x-p-log-source: {0}" for ingesting otel {1} data"#)]
-    IncorrectLogSource(LogSource, String),
     #[error("Ingestion is not allowed in Query mode")]
     IngestionNotAllowed,
     #[error("Missing field for time partition in json: {0}")]
@@ -563,7 +550,6 @@ impl actix_web::ResponseError for PostError {
             | Header(_)
             | Invalid(_)
             | InternalStream(_)
-            | IncorrectLogSource(_, _)
             | IngestionNotAllowed
             | MissingTimePartition(_)
             | KnownFormat(_)
