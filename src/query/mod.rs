@@ -339,7 +339,6 @@ impl Query {
 
         config.options_mut().explain.show_statistics = true;
 
-        SessionStateBuilder::new()
         let mut builder = SessionStateBuilder::new()
             .with_default_features()
             .with_config(config)
