@@ -168,7 +168,7 @@ where
         let mut header_error = None;
         let user_and_tenant_id = get_user_and_tenant(&self.action, &mut req, &mut header_error);
 
-        // If an X-API-KEY header is present, resolve it to the backing
+        // If an API key is present in X-API-KEY or as a Bearer token, resolve it to the backing
         // `UserType::ApiKey` user and register an ephemeral session whose
         // permissions are derived from the user's assigned roles (same flow
         // as native/OAuth users). The request then falls through to the
@@ -326,12 +326,80 @@ fn extract_kinesis_headers(req: &mut ServiceRequest) {
     }
 }
 
-/// Extract X-API-KEY header value if present (independent of action).
+/// Extract an API key from X-API-KEY or an Authorization Bearer token.
+/// X-API-KEY takes precedence when both headers are present.
 fn extract_api_key(req: &ServiceRequest) -> Option<String> {
-    req.headers()
+    if let Some(api_key) = req
+        .headers()
         .get("x-api-key")
         .and_then(|v| v.to_str().ok())
         .map(String::from)
+    {
+        return Some(api_key);
+    }
+
+    req.headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split_once(' '))
+        .and_then(|(scheme, api_key)| scheme.eq_ignore_ascii_case("Bearer").then_some(api_key))
+        .map(String::from)
+}
+
+#[cfg(test)]
+mod api_key_header_tests {
+    use actix_web::test as actix_test;
+
+    use super::*;
+
+    #[test]
+    fn extracts_x_api_key() {
+        let req = actix_test::TestRequest::default()
+            .insert_header(("x-api-key", "x-api-key-value"))
+            .to_srv_request();
+
+        assert_eq!(extract_api_key(&req).as_deref(), Some("x-api-key-value"));
+    }
+
+    #[test]
+    fn extracts_bearer_api_key() {
+        let req = actix_test::TestRequest::default()
+            .insert_header((header::AUTHORIZATION, "Bearer bearer-api-key-value"))
+            .to_srv_request();
+
+        assert_eq!(
+            extract_api_key(&req).as_deref(),
+            Some("bearer-api-key-value")
+        );
+    }
+
+    #[test]
+    fn bearer_scheme_is_case_insensitive() {
+        let req = actix_test::TestRequest::default()
+            .insert_header((header::AUTHORIZATION, "bearer api-key-value"))
+            .to_srv_request();
+
+        assert_eq!(extract_api_key(&req).as_deref(), Some("api-key-value"));
+    }
+
+    #[test]
+    fn ignores_non_bearer_authorization() {
+        let req = actix_test::TestRequest::default()
+            .insert_header((header::AUTHORIZATION, "Basic dXNlcjpwYXNzd29yZA=="))
+            .to_srv_request();
+
+        assert_eq!(extract_api_key(&req), None);
+    }
+
+    #[test]
+    fn x_api_key_takes_precedence_over_bearer() {
+        let req = actix_test::TestRequest::default()
+            .insert_header(("x-api-key", "x-api-key-value"))
+            .insert_header((header::AUTHORIZATION, "Bearer bearer-api-key-value"))
+            .to_srv_request();
+
+        assert_eq!(extract_api_key(&req).as_deref(), Some("x-api-key-value"));
+    }
 }
 
 /// Resolve an incoming API key value to its backing `UserType::ApiKey` user.
