@@ -341,7 +341,12 @@ fn extract_api_key(req: &ServiceRequest) -> Option<String> {
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
         .and_then(|value| value.split_once(' '))
-        .and_then(|(scheme, api_key)| scheme.eq_ignore_ascii_case("Bearer").then_some(api_key))
+        .and_then(|(scheme, api_key)| {
+            scheme
+                .eq_ignore_ascii_case("Bearer")
+                .then_some(api_key.trim_start_matches(' '))
+        })
+        .filter(|api_key| !api_key.is_empty())
         .map(String::from)
 }
 
@@ -919,6 +924,24 @@ mod api_key_header_tests {
             .to_srv_request();
 
         assert_eq!(extract_api_key(&req).as_deref(), Some("api-key-value"));
+    }
+
+    #[test]
+    fn bearer_allows_repeated_spaces_before_api_key() {
+        let req = actix_test::TestRequest::default()
+            .insert_header((header::AUTHORIZATION, "Bearer   api-key-value"))
+            .to_srv_request();
+
+        assert_eq!(extract_api_key(&req).as_deref(), Some("api-key-value"));
+    }
+
+    #[test]
+    fn bearer_requires_api_key() {
+        let req = actix_test::TestRequest::default()
+            .insert_header((header::AUTHORIZATION, "Bearer   "))
+            .to_srv_request();
+
+        assert_eq!(extract_api_key(&req), None);
     }
 
     #[test]
