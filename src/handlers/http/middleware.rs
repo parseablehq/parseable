@@ -188,12 +188,11 @@ where
                         permissions,
                         &user.tenant,
                     );
-                    if PARSEABLE.options.is_multi_tenant() {
-                        req.headers_mut().insert(
-                            HeaderName::from_static(TENANT_ID),
-                            HeaderValue::from_str(tenant).unwrap(),
-                        );
-                    }
+                    insert_api_key_tenant_header(
+                        &mut req,
+                        &user,
+                        PARSEABLE.options.is_multi_tenant(),
+                    );
                     req.extensions_mut().insert(session_key);
                     Some(session_id)
                 }
@@ -346,59 +345,18 @@ fn extract_api_key(req: &ServiceRequest) -> Option<String> {
         .map(String::from)
 }
 
-#[cfg(test)]
-mod api_key_header_tests {
-    use actix_web::test as actix_test;
-
-    use super::*;
-
-    #[test]
-    fn extracts_x_api_key() {
-        let req = actix_test::TestRequest::default()
-            .insert_header(("x-api-key", "x-api-key-value"))
-            .to_srv_request();
-
-        assert_eq!(extract_api_key(&req).as_deref(), Some("x-api-key-value"));
-    }
-
-    #[test]
-    fn extracts_bearer_api_key() {
-        let req = actix_test::TestRequest::default()
-            .insert_header((header::AUTHORIZATION, "Bearer bearer-api-key-value"))
-            .to_srv_request();
-
-        assert_eq!(
-            extract_api_key(&req).as_deref(),
-            Some("bearer-api-key-value")
+/// Add the tenant resolved from an API-key user to a multi-tenant request.
+fn insert_api_key_tenant_header(
+    req: &mut ServiceRequest,
+    user: &user::User,
+    is_multi_tenant: bool,
+) {
+    if is_multi_tenant {
+        let tenant = user.tenant.as_deref().unwrap_or(DEFAULT_TENANT);
+        req.headers_mut().insert(
+            HeaderName::from_static(TENANT_ID),
+            HeaderValue::from_str(tenant).unwrap(),
         );
-    }
-
-    #[test]
-    fn bearer_scheme_is_case_insensitive() {
-        let req = actix_test::TestRequest::default()
-            .insert_header((header::AUTHORIZATION, "bearer api-key-value"))
-            .to_srv_request();
-
-        assert_eq!(extract_api_key(&req).as_deref(), Some("api-key-value"));
-    }
-
-    #[test]
-    fn ignores_non_bearer_authorization() {
-        let req = actix_test::TestRequest::default()
-            .insert_header((header::AUTHORIZATION, "Basic dXNlcjpwYXNzd29yZA=="))
-            .to_srv_request();
-
-        assert_eq!(extract_api_key(&req), None);
-    }
-
-    #[test]
-    fn x_api_key_takes_precedence_over_bearer() {
-        let req = actix_test::TestRequest::default()
-            .insert_header(("x-api-key", "x-api-key-value"))
-            .insert_header((header::AUTHORIZATION, "Bearer bearer-api-key-value"))
-            .to_srv_request();
-
-        assert_eq!(extract_api_key(&req).as_deref(), Some("x-api-key-value"));
     }
 }
 
@@ -922,5 +880,80 @@ where
                 })
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod api_key_header_tests {
+    use std::collections::HashSet;
+
+    use actix_web::test as actix_test;
+
+    use super::*;
+
+    #[test]
+    fn extracts_x_api_key() {
+        let req = actix_test::TestRequest::default()
+            .insert_header(("x-api-key", "x-api-key-value"))
+            .to_srv_request();
+
+        assert_eq!(extract_api_key(&req).as_deref(), Some("x-api-key-value"));
+    }
+
+    #[test]
+    fn extracts_bearer_api_key() {
+        let req = actix_test::TestRequest::default()
+            .insert_header((header::AUTHORIZATION, "Bearer bearer-api-key-value"))
+            .to_srv_request();
+
+        assert_eq!(
+            extract_api_key(&req).as_deref(),
+            Some("bearer-api-key-value")
+        );
+    }
+
+    #[test]
+    fn bearer_scheme_is_case_insensitive() {
+        let req = actix_test::TestRequest::default()
+            .insert_header((header::AUTHORIZATION, "bearer api-key-value"))
+            .to_srv_request();
+
+        assert_eq!(extract_api_key(&req).as_deref(), Some("api-key-value"));
+    }
+
+    #[test]
+    fn ignores_non_bearer_authorization() {
+        let req = actix_test::TestRequest::default()
+            .insert_header((header::AUTHORIZATION, "Basic dXNlcjpwYXNzd29yZA=="))
+            .to_srv_request();
+
+        assert_eq!(extract_api_key(&req), None);
+    }
+
+    #[test]
+    fn x_api_key_takes_precedence_over_bearer() {
+        let req = actix_test::TestRequest::default()
+            .insert_header(("x-api-key", "x-api-key-value"))
+            .insert_header((header::AUTHORIZATION, "Bearer bearer-api-key-value"))
+            .to_srv_request();
+
+        assert_eq!(extract_api_key(&req).as_deref(), Some("x-api-key-value"));
+    }
+
+    #[test]
+    fn resolved_api_key_user_sets_multi_tenant_header() {
+        let user = user::User::new_api_key(
+            Ulid::new(),
+            "valid-api-key".to_owned(),
+            "test-key".to_owned(),
+            HashSet::new(),
+            "admin".to_owned(),
+            Some("acme".to_owned()),
+        );
+        let mut req = actix_test::TestRequest::default().to_srv_request();
+
+        insert_api_key_tenant_header(&mut req, &user, true);
+
+        assert_eq!(req.headers().get(TENANT_ID).unwrap(), "acme");
     }
 }
