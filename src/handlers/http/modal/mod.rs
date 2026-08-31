@@ -388,8 +388,12 @@ impl NodeMetadata {
         let mut metadata = vec![];
         if let Ok(obs) = obs {
             for object in obs {
-                //convert to NodeMetadata
-                match serde_json::from_slice::<NodeMetadata>(&object) {
+                // convert to NodeMetadata
+                match Self::from_bytes(
+                    &object,
+                    PARSEABLE.options.flight_port,
+                    PARSEABLE.options.query_grpc_port,
+                ) {
                     Ok(node_metadata) => metadata.push(node_metadata),
                     Err(e) => error!("Failed to deserialize NodeMetadata: {:?}", e),
                 }
@@ -428,7 +432,7 @@ impl NodeMetadata {
             }
 
             let bytes = std::fs::read(&path).expect("File should be present");
-            match Self::from_bytes(&bytes, options.flight_port) {
+            match Self::from_bytes(&bytes, options.flight_port, options.query_grpc_port) {
                 Ok(meta) => return Some(meta),
                 Err(e) => {
                     error!("Failed to extract {} metadata: {}", node_type_str, e);
@@ -484,6 +488,15 @@ impl NodeMetadata {
             meta.flight_port = flight_port;
         }
 
+        let query_grpc_port = options.query_grpc_port.to_string();
+        if meta.query_grpc_port != query_grpc_port {
+            info!(
+                "Query gRPC Port was Updated. Old: {} New: {}",
+                meta.query_grpc_port, query_grpc_port
+            );
+            meta.query_grpc_port = query_grpc_port;
+        }
+
         meta.node_type = node_type;
     }
 
@@ -531,7 +544,7 @@ impl NodeMetadata {
     }
 
     /// Updates json with `flight_port` field if not already present
-    fn from_bytes(bytes: &[u8], flight_port: u16) -> anyhow::Result<Self> {
+    fn from_bytes(bytes: &[u8], flight_port: u16, query_grpc_port: u16) -> anyhow::Result<Self> {
         let mut json: Map<String, Value> = serde_json::from_slice(bytes)?;
 
         // Check version
@@ -570,6 +583,9 @@ impl NodeMetadata {
         // Add flight_port if missing
         json.entry("flight_port")
             .or_insert_with(|| Value::String(flight_port.to_string()));
+
+        json.entry("query_grpc_port")
+            .or_insert_with(|| Value::String(query_grpc_port.to_string()));
 
         // Parse the JSON to our struct
         let metadata: Self = serde_json::from_value(Value::Object(json))?;
@@ -712,14 +728,14 @@ mod test {
     #[rstest]
     fn test_from_bytes_adds_flight_port() {
         let json = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","ingestor_id":"ingestor_id"}"#;
-        let meta = IngestorMetadata::from_bytes(json, 8002).unwrap();
+        let meta = IngestorMetadata::from_bytes(json, 8002, 8003).unwrap();
         assert_eq!(meta.flight_port, "8002");
     }
 
     #[rstest]
     fn test_from_bytes_preserves_existing_flight_port() {
         let json = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","ingestor_id":"ingestor_id","flight_port":"9000"}"#;
-        let meta = IngestorMetadata::from_bytes(json, 8002).unwrap();
+        let meta = IngestorMetadata::from_bytes(json, 8002, 8003).unwrap();
         assert_eq!(meta.flight_port, "9000");
     }
 
