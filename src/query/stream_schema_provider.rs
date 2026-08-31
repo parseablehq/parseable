@@ -443,6 +443,7 @@ impl StandardTableProvider {
             &self.tenant_id,
             manifest_files,
             target_partitions,
+            _is_hot_tier,
         )
     }
 }
@@ -453,6 +454,7 @@ pub fn partitioned_files(
     tenant_id: &Option<String>,
     manifest_files: Vec<File>,
     target_partitions: usize,
+    _is_hot_tier: bool,
 ) -> (Vec<Vec<PartitionedFile>>, datafusion::common::Statistics) {
     let file_groups = balanced_file_groups(manifest_files, target_partitions);
     let mut partitioned_files = Vec::with_capacity(file_groups.len());

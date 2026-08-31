@@ -806,6 +806,9 @@ fn custom_metrics(registry: &Registry) {
         .register(Box::new(TOTAL_FILES_SCANNED_IN_QUERY_BY_DATE.clone()))
         .expect("metric can be registered");
     registry
+        .register(Box::new(TOTAL_FILES_SCANNED_IN_HOTTIER_BY_DATE.clone()))
+        .expect("metric can be registered");
+    registry
         .register(Box::new(TOTAL_BYTES_SCANNED_IN_QUERY_BY_DATE.clone()))
         .expect("metric can be registered");
     registry

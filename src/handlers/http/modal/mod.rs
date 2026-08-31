@@ -720,7 +720,7 @@ mod test {
             NodeType::Ingestor,
         );
 
-        let rhs = serde_json::from_slice::<IngestorMetadata>(br#"{"version":"v4","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","node_id": "ingestor_id","flight_port": "8002","node_type":"ingestor"}"#).unwrap();
+        let rhs = serde_json::from_slice::<IngestorMetadata>(br#"{"version":"v4","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","node_id": "ingestor_id","flight_port": "8002","query_grpc_port": "8003","node_type":"ingestor"}"#).unwrap();
 
         assert_eq!(rhs, lhs);
     }
@@ -734,7 +734,7 @@ mod test {
 
     #[rstest]
     fn test_from_bytes_preserves_existing_flight_port() {
-        let json = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","ingestor_id":"ingestor_id","flight_port":"9000"}"#;
+        let json = br#"{"version":"v3","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","ingestor_id":"ingestor_id","flight_port":"9000","query_grpc_port": "8003"}"#;
         let meta = IngestorMetadata::from_bytes(json, 8002, 8003).unwrap();
         assert_eq!(meta.flight_port, "9000");
     }
@@ -754,7 +754,7 @@ mod test {
         );
 
         let lhs = Bytes::from(serde_json::to_vec(&im).unwrap());
-        let rhs = br#"{"version":"v4","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","node_id":"ingestor_id","flight_port":"8002","node_type":"ingestor"}"#
+        let rhs = br#"{"version":"v4","port":"8000","domain_name":"https://localhost:8000","bucket_name":"somebucket","token":"Basic YWRtaW46YWRtaW4=","node_id":"ingestor_id","flight_port":"8002","query_grpc_port":"8003","node_type":"ingestor"}"#
                 .try_into_bytes()
                 .unwrap();
 

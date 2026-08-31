@@ -114,6 +114,17 @@ pub trait ParseableSchemaProvider: Send + Sync {
     ) -> Box<dyn SchemaProvider>;
 }
 
+fn get_schema_provider(tenant_id: &Option<String>) -> Box<dyn SchemaProvider> {
+    if let Some(provider) = SCHEMA_PROVIDER.get() {
+        provider.new_provider(Some(PARSEABLE.storage().get_object_store()), tenant_id)
+    } else {
+        Box::new(GlobalSchemaProvider {
+            storage: PARSEABLE.storage().get_object_store(),
+            tenant_id: tenant_id.to_owned(),
+        })
+    }
+}
+
 pub struct InMemorySessionContext {
     session_context: Arc<RwLock<SessionContext>>,
 }
@@ -135,17 +146,7 @@ impl InMemorySessionContext {
     }
 
     pub fn add_schema(&self, tenant_id: &str) {
-        let schema_provider = if let Some(provider) = SCHEMA_PROVIDER.get() {
-            provider.new_provider(
-                Some(PARSEABLE.storage().get_object_store()),
-                &Some(tenant_id.to_owned()),
-            )
-        } else {
-            Box::new(GlobalSchemaProvider {
-                storage: PARSEABLE.storage().get_object_store(),
-                tenant_id: Some(tenant_id.to_owned()),
-            })
-        };
+        let schema_provider = get_schema_provider(&Some(tenant_id.to_owned()));
         self.session_context
             .write()
             .expect("SessionContext should be writeable")
@@ -239,30 +240,13 @@ impl Query {
             // register multiple schemas
             if let Some(tenants) = PARSEABLE.list_tenants() {
                 for t in tenants.iter() {
-                    let schema_provider = if let Some(provider) = SCHEMA_PROVIDER.get() {
-                        provider.new_provider(
-                            Some(PARSEABLE.storage().get_object_store()),
-                            &Some(t.to_owned()),
-                        )
-                    } else {
-                        Box::new(GlobalSchemaProvider {
-                            storage: PARSEABLE.storage().get_object_store(),
-                            tenant_id: Some(t.to_owned()),
-                        })
-                    };
+                    let schema_provider = get_schema_provider(&Some(t.to_owned()));
                     let _ = catalog.register_schema(t, schema_provider.into());
                 }
             }
         } else {
             // register just one schema
-            let schema_provider = if let Some(provider) = SCHEMA_PROVIDER.get() {
-                provider.new_provider(Some(PARSEABLE.storage().get_object_store()), &None)
-            } else {
-                Box::new(GlobalSchemaProvider {
-                    storage: PARSEABLE.storage().get_object_store(),
-                    tenant_id: None,
-                })
-            };
+            let schema_provider = get_schema_provider(&None);
             let _ = catalog.register_schema(
                 &state.config_options().catalog.default_schema,
                 schema_provider.into(),
@@ -412,7 +396,7 @@ impl Query {
             });
 
             let partition_streams = execute_stream_partitioned(plan.clone(), task_ctx.clone())?;
-            tracing::warn!(num_partition_streams=partition_streams.len());
+
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<
                 Result<RecordBatch, datafusion::error::DataFusionError>,
             >();
