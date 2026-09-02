@@ -3,31 +3,31 @@ name = "parseable"
 version = "3.1.1"
 authors = ["Parseable Team <hi@parseable.com>"]
 edition = "2024"
-rust-version = "1.91.0"
+rust-version = "1.94.0"
 categories = ["logs", "observability", "metrics", "traces"]
 build = "build.rs"
 
 [dependencies]
 # Arrow and DataFusion ecosystem
-arrow = "58.0.0"
-arrow-array = "58.0.0"
-arrow-flight = { version = "58.0.0", features = [
+arrow = "59.2.0"
+arrow-array = "59.2.0"
+arrow-flight = { version = "59.2.0", features = [
     "tls-aws-lc",
     "tls-native-roots",
 ] }
-arrow-ipc = { version = "58.0.0", features = ["zstd"] }
-arrow-json = "58.0.0"
-arrow-schema = { version = "58.0.0", features = ["serde"] }
-arrow-select = "58.0.0"
-datafusion = "53.0.0"
-datafusion-proto = "53.0.0"
-object_store = { version = "0.13.1", features = [
+arrow-ipc = { version = "59.2.0", features = ["zstd"] }
+arrow-json = "59.2.0"
+arrow-schema = { version = "59.2.0", features = ["serde"] }
+arrow-select = "59.2.0"
+datafusion = "55.0.0"
+datafusion-proto = "55.0.0"
+object_store = { version = "0.13.2", features = [
     "cloud",
     "aws",
     "azure",
     "gcp",
 ] }
-parquet = "58.0.0"
+parquet = "59.2.0"
 
 # Web server and HTTP-related
 actix-cors = "0.7.0"
@@ -222,7 +222,7 @@ anyhow = "1.0"
 
 [dev-dependencies]
 rstest = "0.26.1"
-arrow = "58.0.0"
+arrow = "59.2.0"
 temp-dir = "0.1.14"
 
 [package.metadata.parseable_ui]

@@ -16,7 +16,7 @@
  *
  */
 
-use std::{any::Any, collections::HashMap, ops::Bound, sync::Arc};
+use std::{cmp::Reverse, collections::HashMap, ops::Bound, sync::Arc};
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Schema, SchemaRef, SortOptions};
@@ -37,7 +37,8 @@ use datafusion::{
     error::{DataFusionError, Result as DataFusionResult},
     execution::object_store::ObjectStoreUrl,
     logical_expr::{
-        BinaryExpr, Operator, TableProviderFilterPushDown, TableType, utils::conjunction,
+        BinaryExpr, Operator, TableProviderFilterPushDown, TableType,
+        physical_planning_context::PhysicalPlanningContext, utils::conjunction,
     },
     physical_expr::{LexOrdering, PhysicalSortExpr, create_physical_expr, expressions::col},
     physical_plan::{ExecutionPlan, Statistics, empty::EmptyExec, union::UnionExec},
@@ -58,7 +59,7 @@ use crate::{
     catalog::{
         ManifestFile, Snapshot as CatalogSnapshot,
         column::{Column, TypedStatistics},
-        manifest::File,
+        manifest::{File, SortOrder},
         snapshot::{ManifestItem, Snapshot},
     },
     event::DEFAULT_TIMESTAMP_KEY,
@@ -83,10 +84,6 @@ pub struct GlobalSchemaProvider {
 
 #[async_trait::async_trait]
 impl SchemaProvider for GlobalSchemaProvider {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
     fn table_names(&self) -> Vec<String> {
         PARSEABLE.streams.list(&self.tenant_id)
     }
@@ -161,7 +158,12 @@ fn build_parquet_scan_components_with_filters(
 
     if let Some(expr) = conjunction(source_filters) {
         let table_df_schema = schema.as_ref().clone().to_dfschema()?;
-        let predicate = create_physical_expr(&expr, &table_df_schema, state.execution_props())?;
+        let predicate = create_physical_expr(
+            &expr,
+            &table_df_schema,
+            state.execution_props(),
+            &PhysicalPlanningContext::default(),
+        )?;
         file_source = file_source.with_predicate(predicate);
     }
 
@@ -174,9 +176,16 @@ pub fn balanced_file_groups(manifest_files: Vec<File>, target_partitions: usize)
         return Vec::new();
     }
 
+    // Longest-processing-time scheduling avoids a large file being assigned near the end and
+    // leaving one scan partition as the tail. Keep each group's original file order after the
+    // assignment: manifests are newest-first, and that order is needed when file statistics prove
+    // the files form a globally sorted stream.
+    let mut files = manifest_files.into_iter().enumerate().collect_vec();
+    files.sort_by_key(|(original_index, file)| (Reverse(file.file_size), *original_index));
+
     let mut groups = Vec::from_iter((0..group_count).map(|_| Vec::new()));
     let mut group_bytes = vec![0_u64; group_count];
-    for file in manifest_files {
+    for (original_index, file) in files {
         let group = group_bytes
             .iter()
             .enumerate()
@@ -184,9 +193,72 @@ pub fn balanced_file_groups(manifest_files: Vec<File>, target_partitions: usize)
             .map(|(index, _)| index)
             .expect("at least one file group");
         group_bytes[group] = group_bytes[group].saturating_add(file.file_size);
-        groups[group].push(file);
+        groups[group].push((original_index, file));
     }
+
     groups
+        .into_iter()
+        .map(|mut group| {
+            group.sort_by_key(|(original_index, _)| *original_index);
+            group.into_iter().map(|(_, file)| file).collect()
+        })
+        .collect()
+}
+
+fn file_time_statistics(file: &File, time_column: &str) -> Option<(i64, i64, Option<u64>)> {
+    let column = file
+        .columns
+        .iter()
+        .find(|column| column.name == time_column)?;
+    let stats = column.stats.as_ref()?;
+    let TypedStatistics::Int(stats) = stats else {
+        return None;
+    };
+    Some((stats.min, stats.max, column.null_count))
+}
+
+/// DataFusion may eliminate a sort or stop a TopK scan early when this ordering is advertised.
+/// Only do so when every file is timestamp-descending and adjacent file ranges do not overlap.
+/// A single false claim here can produce incorrectly ordered query results.
+fn file_groups_are_time_ordered(file_groups: &[Vec<File>], time_column: &str) -> bool {
+    !file_groups.is_empty()
+        && file_groups.iter().all(|group| {
+            if group.is_empty()
+                || !group.iter().all(|file| {
+                    matches!(
+                        file.sort_order_id.first(),
+                        Some((column, SortOrder::DescNullsLast)) if column == time_column
+                    )
+                })
+            {
+                return false;
+            }
+
+            // One sorted file needs no range proof. For multiple files, inspect each timestamp
+            // statistic once and prove that concatenating them preserves descending order.
+            if group.len() == 1 {
+                return true;
+            }
+            let mut previous_min = None;
+            for (index, file) in group.iter().enumerate() {
+                let Some((current_min, current_max, null_count)) =
+                    file_time_statistics(file, time_column)
+                else {
+                    return false;
+                };
+                // Nulls sort last within a file, but concatenating another file after them would
+                // put its non-null timestamps after those nulls. Only the final file may contain
+                // null timestamps.
+                if index + 1 < group.len() && null_count != Some(0) {
+                    return false;
+                }
+                if previous_min.is_some_and(|min| min < current_max) {
+                    return false;
+                }
+                previous_min = Some(current_min);
+            }
+            true
+        })
 }
 
 impl StandardTableProvider {
@@ -202,19 +274,8 @@ impl StandardTableProvider {
         limit: Option<usize>,
         state: &dyn Session,
         time_partition: Option<String>,
+        output_ordered_by_time: bool,
     ) -> Result<(), DataFusionError> {
-        let sort_expr = PhysicalSortExpr {
-            expr: if let Some(time_partition) = time_partition {
-                col(&time_partition, &self.schema)?
-            } else {
-                col(DEFAULT_TIMESTAMP_KEY, &self.schema)?
-            },
-            options: SortOptions {
-                descending: true,
-                nulls_first: true,
-            },
-        };
-
         let (file_format, file_source) =
             build_parquet_scan_components(self.schema.clone(), filters, state)?;
 
@@ -225,8 +286,21 @@ impl StandardTableProvider {
             .with_statistics(statistics)
             .with_batch_size(Some(PARSEABLE.options.execution_batch_size))
             .with_constraints(Constraints::default())
-            .with_file_groups(file_groups)
-            .with_output_ordering(vec![LexOrdering::new([sort_expr]).unwrap()]);
+            .with_file_groups(file_groups);
+
+        if output_ordered_by_time {
+            let time_column = time_partition.as_deref().unwrap_or(DEFAULT_TIMESTAMP_KEY);
+            let sort_expr = PhysicalSortExpr {
+                expr: col(time_column, &self.schema)?,
+                options: SortOptions {
+                    descending: true,
+                    nulls_first: false,
+                },
+            };
+            conf_builder = conf_builder
+                .with_preserve_order(true)
+                .with_output_ordering(vec![LexOrdering::new([sort_expr]).unwrap()]);
+        }
 
         // Set projection if provided
         if let Some(proj_indices) = projection {
@@ -298,10 +372,11 @@ impl StandardTableProvider {
             })
             .collect::<Result<_, DataFusionError>>()?;
 
-        let (partitioned_files, statistics) = self.partitioned_files(
+        let (partitioned_files, statistics, output_ordered_by_time) = self.partitioned_files(
             hot_tier_files,
             state.config_options().execution.target_partitions,
             true,
+            time_partition.as_deref().unwrap_or(DEFAULT_TIMESTAMP_KEY),
         );
 
         self.create_parquet_physical_plan(
@@ -314,6 +389,7 @@ impl StandardTableProvider {
             limit,
             state,
             time_partition.clone(),
+            output_ordered_by_time,
         )
         .await?;
 
@@ -377,6 +453,7 @@ impl StandardTableProvider {
             limit,
             state,
             time_partition.cloned(),
+            false,
         )
         .await
     }
@@ -391,16 +468,12 @@ impl StandardTableProvider {
         projection: Option<&Vec<usize>>,
         filters: &[Expr],
         limit: Option<usize>,
-        time_partition: Option<String>,
     ) -> Result<(), DataFusionError> {
         ListingTableBuilder::new(self.stream.to_owned())
             .populate_via_listing(glob_storage.clone(), time_filters)
             .and_then(|builder| async {
-                let table = builder.build(
-                    self.schema.clone(),
-                    |x| glob_storage.query_prefixes(x),
-                    time_partition,
-                )?;
+                let table =
+                    builder.build(self.schema.clone(), |x| glob_storage.query_prefixes(x))?;
                 if let Some(table) = table {
                     let plan = table.scan(state, projection, filters, limit).await?;
                     execution_plans.push(plan);
@@ -437,13 +510,19 @@ impl StandardTableProvider {
         manifest_files: Vec<File>,
         target_partitions: usize,
         _is_hot_tier: bool,
-    ) -> (Vec<Vec<PartitionedFile>>, datafusion::common::Statistics) {
+        time_column: &str,
+    ) -> (
+        Vec<Vec<PartitionedFile>>,
+        datafusion::common::Statistics,
+        bool,
+    ) {
         partitioned_files(
             &self.schema,
             &self.tenant_id,
             manifest_files,
             target_partitions,
             _is_hot_tier,
+            time_column,
         )
     }
 }
@@ -455,8 +534,14 @@ pub fn partitioned_files(
     manifest_files: Vec<File>,
     target_partitions: usize,
     _is_hot_tier: bool,
-) -> (Vec<Vec<PartitionedFile>>, datafusion::common::Statistics) {
+    time_column: &str,
+) -> (
+    Vec<Vec<PartitionedFile>>,
+    datafusion::common::Statistics,
+    bool,
+) {
     let file_groups = balanced_file_groups(manifest_files, target_partitions);
+    let output_ordered_by_time = file_groups_are_time_ordered(&file_groups, time_column);
     let mut partitioned_files = Vec::with_capacity(file_groups.len());
     let mut column_statistics = HashMap::<String, Option<TypedStatistics>>::new();
     let mut count = 0;
@@ -546,7 +631,7 @@ pub fn partitioned_files(
         tenant_id.as_deref().unwrap_or(DEFAULT_TENANT),
     );
 
-    (partitioned_files, statistics)
+    (partitioned_files, statistics, output_ordered_by_time)
 }
 
 pub async fn collect_from_snapshot(
@@ -648,10 +733,6 @@ pub async fn collect_from_snapshot(
 
 #[async_trait::async_trait]
 impl TableProvider for StandardTableProvider {
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
-    }
-
     fn schema(&self) -> SchemaRef {
         self.schema.clone()
     }
@@ -729,7 +810,6 @@ impl TableProvider for StandardTableProvider {
                     projection,
                     filters,
                     limit,
-                    time_partition.clone(),
                 )
                 .await?;
             }
@@ -775,10 +855,11 @@ impl TableProvider for StandardTableProvider {
             return self.final_plan(execution_plans, projection);
         }
 
-        let (partitioned_files, statistics) = self.partitioned_files(
+        let (partitioned_files, statistics, output_ordered_by_time) = self.partitioned_files(
             manifest_files,
             state.config_options().execution.target_partitions,
             false,
+            time_partition.as_deref().unwrap_or(DEFAULT_TIMESTAMP_KEY),
         );
 
         let object_store_url = glob_storage.store_url();
@@ -793,6 +874,7 @@ impl TableProvider for StandardTableProvider {
             limit,
             state,
             time_partition.clone(),
+            output_ordered_by_time,
         )
         .await?;
 
@@ -1205,18 +1287,38 @@ mod tests {
         scalar::ScalarValue,
     };
 
-    use crate::catalog::{manifest::File, snapshot::ManifestItem};
+    use crate::catalog::{
+        column::{Column, Int64Type, TypedStatistics},
+        manifest::{File, SortOrder},
+        snapshot::ManifestItem,
+    };
 
     use super::{
         PartialTimeFilter, balanced_file_groups, build_parquet_scan_components,
         build_parquet_scan_components_with_full_filters, exact_source_filters,
-        extract_timestamp_bound, is_overlapping_query,
+        extract_timestamp_bound, file_groups_are_time_ordered, is_overlapping_query,
     };
 
     fn file(path: &str, size: u64) -> File {
         File {
             file_path: path.to_owned(),
             file_size: size,
+            ..File::default()
+        }
+    }
+
+    fn time_sorted_file(path: &str, size: u64, min: i64, max: i64) -> File {
+        File {
+            file_path: path.to_owned(),
+            file_size: size,
+            columns: vec![Column {
+                name: "p_timestamp".to_owned(),
+                stats: Some(TypedStatistics::Int(Int64Type { min, max })),
+                null_count: Some(0),
+                uncompressed_size: 0,
+                compressed_size: 0,
+            }],
+            sort_order_id: vec![("p_timestamp".to_owned(), SortOrder::DescNullsLast)],
             ..File::default()
         }
     }
@@ -1235,10 +1337,6 @@ mod tests {
 
     #[async_trait::async_trait]
     impl TableProvider for TestParquetProvider {
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
-
         fn schema(&self) -> Arc<Schema> {
             Arc::clone(&self.schema)
         }
@@ -1477,6 +1575,75 @@ mod tests {
         );
         assert!(balanced_file_groups(Vec::new(), 4).is_empty());
         assert!(balanced_file_groups(vec![file("z.parquet", 1)], 0).is_empty());
+    }
+
+    #[test]
+    fn byte_balancing_uses_largest_files_first_without_reordering_each_group() {
+        let files = vec![
+            file("first.parquet", 6),
+            file("second.parquet", 10),
+            file("third.parquet", 7),
+            file("fourth.parquet", 9),
+            file("fifth.parquet", 8),
+        ];
+
+        let groups = balanced_file_groups(files, 3);
+
+        assert_eq!(
+            group_paths(&groups),
+            vec![
+                vec!["second.parquet"],
+                vec!["first.parquet", "fourth.parquet"],
+                vec!["third.parquet", "fifth.parquet"],
+            ]
+        );
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.iter().map(|file| file.file_size).sum::<u64>())
+                .collect::<Vec<_>>(),
+            vec![10, 15, 15]
+        );
+    }
+
+    #[test]
+    fn scan_order_is_advertised_only_for_non_overlapping_sorted_files() {
+        let ordered = vec![vec![
+            time_sorted_file("new.parquet", 10, 200, 299),
+            time_sorted_file("old.parquet", 10, 100, 199),
+        ]];
+        assert!(file_groups_are_time_ordered(&ordered, "p_timestamp"));
+
+        let overlapping = vec![vec![
+            time_sorted_file("new.parquet", 10, 150, 299),
+            time_sorted_file("old.parquet", 10, 100, 199),
+        ]];
+        assert!(!file_groups_are_time_ordered(&overlapping, "p_timestamp"));
+
+        let mut wrong_primary_key = time_sorted_file("metric.parquet", 10, 100, 199);
+        wrong_primary_key
+            .sort_order_id
+            .insert(0, ("metric_name".to_owned(), SortOrder::AscNullsLast));
+        assert!(!file_groups_are_time_ordered(
+            &[vec![wrong_primary_key]],
+            "p_timestamp"
+        ));
+        assert!(!file_groups_are_time_ordered(
+            &[vec![file("unsorted.parquet", 10)]],
+            "p_timestamp"
+        ));
+    }
+
+    #[test]
+    fn scan_order_is_not_advertised_when_non_final_file_has_trailing_nulls() {
+        let mut newer = time_sorted_file("new.parquet", 10, 200, 299);
+        newer.columns[0].null_count = Some(1);
+        let older = time_sorted_file("old.parquet", 10, 100, 199);
+
+        assert!(!file_groups_are_time_ordered(
+            &[vec![newer, older]],
+            "p_timestamp"
+        ));
     }
 
     fn datetime_min(year: i32, month: u32, day: u32) -> DateTime<Utc> {

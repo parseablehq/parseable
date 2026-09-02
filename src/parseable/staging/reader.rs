@@ -297,7 +297,7 @@ mod tests {
         types::Int64Type,
     };
     use arrow_ipc::writer::{
-        CompressionContext, DictionaryTracker, IpcDataGenerator, IpcWriteOptions, StreamWriter,
+        DictionaryTracker, IpcDataGenerator, IpcWriteContext, IpcWriteOptions, StreamWriter,
         write_message,
     };
     use arrow_schema::{DataType, Field, Schema};
@@ -389,7 +389,7 @@ mod tests {
         let options = IpcWriteOptions::default();
         let mut dictionary_tracker = DictionaryTracker::new(error_on_replacement);
         let data_gen = IpcDataGenerator {};
-        let mut compression_context = CompressionContext::default();
+        let mut compression_context = IpcWriteContext::default();
 
         let mut buf = Vec::new();
         let rb1 = rb(1);

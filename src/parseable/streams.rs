@@ -750,7 +750,7 @@ impl Stream {
             };
             props = props
                 .set_column_bloom_filter_enabled(column_path.clone(), true)
-                .set_column_bloom_filter_ndv(column_path, METRIC_NAME_BLOOM_FILTER_NDV)
+                .set_column_bloom_filter_max_ndv(column_path, METRIC_NAME_BLOOM_FILTER_NDV)
                 .set_bloom_filter_position(bloom_filter_position);
         }
         sorting_column_vec.push(SortingColumn {

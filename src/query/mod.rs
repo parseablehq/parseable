@@ -284,6 +284,7 @@ impl Query {
         let mut config = SessionConfig::default()
             .with_parquet_pruning(true)
             .with_prefer_existing_sort(true)
+            .with_collect_statistics(true)
             //batch size has been made configurable via environment variable
             //default value is 20000
             .with_batch_size(PARSEABLE.options.execution_batch_size)
@@ -296,6 +297,24 @@ impl Query {
         // Reorder filters allows DF to decide the order of filters minimizing the cost of filter evaluation
         config.options_mut().execution.parquet.reorder_filters = true;
         config.options_mut().execution.parquet.binary_as_string = true;
+        // Allow unordered Parquet scans to split files into row-group morsels and let idle scan
+        // partitions steal work. Ordered scans set FileScanConfig::preserve_order, which prevents
+        // file reassignment while retaining their advertised output ordering.
+        config
+            .options_mut()
+            .execution
+            .enable_file_stream_work_stealing = true;
+        config.options_mut().optimizer.repartition_file_scans = true;
+
+        // Feed changing TopK / aggregate bounds into Parquet pruning. This is especially useful
+        // for observability queries such as `ORDER BY p_timestamp DESC LIMIT N`.
+        config
+            .options_mut()
+            .optimizer
+            .enable_dynamic_filter_pushdown = true;
+        config.options_mut().optimizer.enable_topk_aggregation = true;
+        config.options_mut().optimizer.enable_topk_repartition = true;
+        config.options_mut().optimizer.enable_sort_pushdown = true;
         // Bump footer-read hint from the 512 KiB default. Streams with
         // many label columns + page-indexed value columns can have
         // parquet footers in the 1-2 MiB range; sizing the hint above
@@ -458,6 +477,7 @@ impl Query {
                 LogicalPlan::Explain(Explain {
                     explain_format: plan.explain_format,
                     verbose: plan.verbose,
+                    show_statistics: plan.show_statistics,
                     stringified_plans: vec![
                         transformed
                             .data
