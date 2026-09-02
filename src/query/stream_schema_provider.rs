@@ -205,17 +205,16 @@ pub fn balanced_file_groups(manifest_files: Vec<File>, target_partitions: usize)
         .collect()
 }
 
-fn file_time_bounds(file: &File, time_column: &str) -> Option<(i64, i64)> {
-    let stats = file
+fn file_time_statistics(file: &File, time_column: &str) -> Option<(i64, i64, Option<u64>)> {
+    let column = file
         .columns
         .iter()
-        .find(|column| column.name == time_column)?
-        .stats
-        .as_ref()?;
+        .find(|column| column.name == time_column)?;
+    let stats = column.stats.as_ref()?;
     let TypedStatistics::Int(stats) = stats else {
         return None;
     };
-    Some((stats.min, stats.max))
+    Some((stats.min, stats.max, column.null_count))
 }
 
 /// DataFusion may eliminate a sort or stop a TopK scan early when this ordering is advertised.
@@ -241,10 +240,18 @@ fn file_groups_are_time_ordered(file_groups: &[Vec<File>], time_column: &str) ->
                 return true;
             }
             let mut previous_min = None;
-            for file in group {
-                let Some((current_min, current_max)) = file_time_bounds(file, time_column) else {
+            for (index, file) in group.iter().enumerate() {
+                let Some((current_min, current_max, null_count)) =
+                    file_time_statistics(file, time_column)
+                else {
                     return false;
                 };
+                // Nulls sort last within a file, but concatenating another file after them would
+                // put its non-null timestamps after those nulls. Only the final file may contain
+                // null timestamps.
+                if index + 1 < group.len() && null_count != Some(0) {
+                    return false;
+                }
                 if previous_min.is_some_and(|min| min < current_max) {
                     return false;
                 }
@@ -1307,6 +1314,7 @@ mod tests {
             columns: vec![Column {
                 name: "p_timestamp".to_owned(),
                 stats: Some(TypedStatistics::Int(Int64Type { min, max })),
+                null_count: Some(0),
                 uncompressed_size: 0,
                 compressed_size: 0,
             }],
@@ -1622,6 +1630,18 @@ mod tests {
         ));
         assert!(!file_groups_are_time_ordered(
             &[vec![file("unsorted.parquet", 10)]],
+            "p_timestamp"
+        ));
+    }
+
+    #[test]
+    fn scan_order_is_not_advertised_when_non_final_file_has_trailing_nulls() {
+        let mut newer = time_sorted_file("new.parquet", 10, 200, 299);
+        newer.columns[0].null_count = Some(1);
+        let older = time_sorted_file("old.parquet", 10, 100, 199);
+
+        assert!(!file_groups_are_time_ordered(
+            &[vec![newer, older]],
             "p_timestamp"
         ));
     }
