@@ -321,7 +321,10 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
     let config = identity.map(|id| ServerTlsConfig::new().identity(id));
 
     // rust is treating closures as different types
-    let err_map_fn = |err| Box::new(err) as Box<dyn std::error::Error + Send>;
+    let err_map_fn = move |err| {
+        tracing::error!("Unable to start Flight Server on addr- {:?}", addr);
+        Box::new(err) as Box<dyn std::error::Error + Send>
+    };
 
     // match on config to decide if we want to use tls or not
     match config {
@@ -332,7 +335,9 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
             };
 
             server
-                .max_frame_size(16 * 1024 * 1024 - 2)
+                .initial_stream_window_size(16 * 1024 * 1024)
+                .initial_connection_window_size(32 * 1024 * 1024)
+                .http2_adaptive_window(Some(true))
                 .accept_http1(true)
                 .layer(cors)
                 .layer(GrpcWebLayer::new())
@@ -341,7 +346,9 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
                 .map_err(err_map_fn)
         }
         None => Server::builder()
-            .max_frame_size(16 * 1024 * 1024 - 2)
+            .initial_stream_window_size(16 * 1024 * 1024)
+            .initial_connection_window_size(32 * 1024 * 1024)
+            .http2_adaptive_window(Some(true))
             .accept_http1(true)
             .layer(cors)
             .layer(GrpcWebLayer::new())
