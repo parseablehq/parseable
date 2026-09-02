@@ -488,16 +488,7 @@ impl NodeMetadata {
             meta.flight_port = flight_port;
         }
 
-        let query_grpc_port = options.query_grpc_port.to_string();
-        if let Some(port) = meta.query_grpc_port.as_ref()
-            && *port != query_grpc_port
-        {
-            info!(
-                "Query gRPC Port was Updated. Old: {} New: {}",
-                port, query_grpc_port
-            );
-            meta.query_grpc_port = Some(query_grpc_port);
-        }
+        meta.query_grpc_port = Some(options.query_grpc_port.to_string());
 
         meta.node_type = node_type;
     }

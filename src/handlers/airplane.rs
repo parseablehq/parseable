@@ -321,7 +321,10 @@ pub fn server() -> impl Future<Output = Result<(), Box<dyn std::error::Error + S
     let config = identity.map(|id| ServerTlsConfig::new().identity(id));
 
     // rust is treating closures as different types
-    let err_map_fn = |err| Box::new(err) as Box<dyn std::error::Error + Send>;
+    let err_map_fn = move |err| {
+        tracing::error!("Unable to start Flight Server on addr- {:?}", addr);
+        Box::new(err) as Box<dyn std::error::Error + Send>
+    };
 
     // match on config to decide if we want to use tls or not
     match config {
