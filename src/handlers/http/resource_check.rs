@@ -31,9 +31,12 @@ use tokio::{
 };
 use tracing::{info, trace, warn};
 
-use crate::analytics::{SYS_INFO, refresh_sys_info};
 use crate::metrics::record_process_metrics_sample;
 use crate::parseable::PARSEABLE;
+use crate::{
+    analytics::{SYS_INFO, refresh_sys_info},
+    metrics::PROCESS_METRICS_ACCUMULATOR,
+};
 
 const PROCESS_METRICS_SAMPLE_INTERVAL: Duration = Duration::from_secs(5);
 
@@ -48,56 +51,25 @@ pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
         let mut process_metrics_interval = interval(PROCESS_METRICS_SAMPLE_INTERVAL);
         let mut shutdown_rx = shutdown_rx;
 
-        let cpu_threshold = PARSEABLE.options.cpu_utilization_threshold;
         let memory_threshold = PARSEABLE.options.memory_utilization_threshold;
 
-        info!(
-            "Resource monitor started with thresholds - CPU: {:.1}%, Memory: {:.1}%",
-            cpu_threshold, memory_threshold
-        );
         loop {
             select! {
                 _ = check_interval.tick() => {
-                    trace!("Checking system resource utilization...");
-
+                    if !PARSEABLE.options.resource_check_enabled {
+                        continue;
+                    }
                     refresh_sys_info();
-                    let (used_memory, total_memory, cpu_usage) = tokio::task::spawn_blocking(|| {
-                        let sys = SYS_INFO.lock().unwrap();
-                        let (used_memory, total_memory) = if let Some(cgroup) = sys.cgroup_limits() {
-                            (cgroup.rss as f32,cgroup.total_memory as f32)
-                        } else {
-                            (sys.used_memory() as f32,sys.total_memory() as f32)
-                        };
-                        let cpu_usage = sys.global_cpu_usage();
-                        (used_memory, total_memory, cpu_usage)
-                    }).await.unwrap();
 
                     let mut resource_ok = true;
-
-                    // Calculate memory usage percentage
-                    let memory_usage = if total_memory > 0.0 {
-                        (used_memory / total_memory) * 100.0
-                    } else {
-                        0.0
-                    };
-
-                    // Log current resource usage every few checks for debugging
-                    info!("Current resource usage - CPU: {:.1}%, Memory: {:.1}% ({:.1}GB/{:.1}GB)",
-                          cpu_usage, memory_usage,
-                          used_memory / 1024.0 / 1024.0 / 1024.0,
-                          total_memory / 1024.0 / 1024.0 / 1024.0);
+                    let process_mem = PROCESS_METRICS_ACCUMULATOR.get_mem();
+                    let total_mem = PROCESS_METRICS_ACCUMULATOR.get_total_mem();
+                    let memory_usage = process_mem / total_mem;
 
                     // Check memory utilization
-                    if memory_usage > memory_threshold {
+                    if memory_usage > memory_threshold as f64 {
                         warn!("High memory usage detected: {:.1}% (threshold: {:.1}%)",
                               memory_usage, memory_threshold);
-                        resource_ok = false;
-                    }
-
-                    // Check CPU utilization
-                    if cpu_usage > cpu_threshold {
-                        warn!("High CPU usage detected: {:.1}% (threshold: {:.1}%)",
-                              cpu_usage, cpu_threshold);
                         resource_ok = false;
                     }
 
@@ -117,14 +89,18 @@ pub fn spawn_resource_monitor(shutdown_rx: tokio::sync::oneshot::Receiver<()>) {
                     refresh_sys_info();
                     let process_metrics = tokio::task::spawn_blocking(|| {
                         let sys = SYS_INFO.lock().unwrap();
+                        let total_mem = if let Some(cgroup) = sys.cgroup_limits() {
+                            cgroup.total_memory
+                        } else {
+                            sys.total_memory()
+                        };
                         sysinfo::get_current_pid()
                             .ok()
                             .and_then(|pid| sys.process(pid))
-                            .map(|process| (process.cpu_usage() as f64, process.memory()))
+                            .map(|process| (process.cpu_usage() as f64, process.memory(), total_mem))
                     }).await.unwrap();
-
-                    if let Some((cpu_usage, memory_bytes)) = process_metrics {
-                        record_process_metrics_sample(cpu_usage, memory_bytes);
+                    if let Some((cpu_usage, memory_bytes, total_mem)) = process_metrics {
+                        record_process_metrics_sample(cpu_usage, memory_bytes, total_mem);
                     }
                 },
                 _ = &mut shutdown_rx => {

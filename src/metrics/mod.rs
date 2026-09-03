@@ -201,19 +201,21 @@ pub static PROCESS_MEMORY_BYTES_AVG: Lazy<Gauge> = Lazy::new(|| {
     )
     .expect("metric can be created")
 });
-pub static PROCESS_METRICS_INIT: OnceLock<(f64, u64)> = OnceLock::new();
-struct ProcessMetricsAccumulator {
+pub static PROCESS_METRICS_INIT: OnceLock<(f64, u64, u64)> = OnceLock::new();
+pub struct ProcessMetricsAccumulator {
     cpu_usage_avg: AtomicF64,
     memory_bytes_avg: AtomicF64,
+    total_memory: AtomicF64,
 }
 
 impl Default for ProcessMetricsAccumulator {
     fn default() -> Self {
         // PROCESS_METRICS_INIT must be initialized by now
-        let (cpu, mem) = *PROCESS_METRICS_INIT.get().unwrap();
+        let (cpu, mem, total_mem) = *PROCESS_METRICS_INIT.get().unwrap();
         Self {
             cpu_usage_avg: AtomicF64::new(cpu),
             memory_bytes_avg: AtomicF64::new(mem as f64),
+            total_memory: AtomicF64::new(total_mem as f64),
         }
     }
 }
@@ -238,15 +240,27 @@ impl ProcessMetricsAccumulator {
 
         (s_cpu_new, s_mem_new)
     }
+
+    pub fn get_cpu(&self) -> f64 {
+        self.cpu_usage_avg.get() as f64
+    }
+
+    pub fn get_mem(&self) -> f64 {
+        self.memory_bytes_avg.get() as f64
+    }
+
+    pub fn get_total_mem(&self) -> f64 {
+        self.total_memory.get() as f64
+    }
 }
 
-static PROCESS_METRICS_ACCUMULATOR: Lazy<ProcessMetricsAccumulator> =
+pub static PROCESS_METRICS_ACCUMULATOR: Lazy<ProcessMetricsAccumulator> =
     Lazy::new(ProcessMetricsAccumulator::default);
 
-pub fn record_process_metrics_sample(cpu_usage_percent: f64, memory_bytes: u64) {
+pub fn record_process_metrics_sample(cpu_usage_percent: f64, memory_bytes: u64, total_mem: u64) {
     if PROCESS_METRICS_INIT.get().is_none() {
         // first measurement
-        let _ = PROCESS_METRICS_INIT.set((cpu_usage_percent, memory_bytes));
+        let _ = PROCESS_METRICS_INIT.set((cpu_usage_percent, memory_bytes, total_mem));
     }
     let (average_cpu_usage, average_memory_bytes) =
         PROCESS_METRICS_ACCUMULATOR.record(cpu_usage_percent, memory_bytes);
@@ -263,7 +277,7 @@ mod process_metrics_tests {
     #[test]
     fn averages_process_metric_samples() {
         // init PROCESS_METRICS_INIT
-        PROCESS_METRICS_INIT.get_or_init(|| (10.0, 100));
+        PROCESS_METRICS_INIT.get_or_init(|| (10.0, 100, 100));
         let accumulator = ProcessMetricsAccumulator::default();
 
         assert_eq!(accumulator.record(10.0, 100), (10.0, 100.0));

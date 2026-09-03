@@ -66,8 +66,6 @@ pub async fn about() -> Json<Value> {
     let grpc_port = PARSEABLE.options.grpc_port;
 
     let store_endpoint = PARSEABLE.storage.get_endpoint();
-    let is_llm_active = &PARSEABLE.options.open_ai_key.is_some();
-    let llm_provider = is_llm_active.then_some("OpenAI");
     let is_oidc_active = PARSEABLE.options.openid().is_some();
     let ui_version = option_env!("UI_VERSION").unwrap_or("development");
 
@@ -99,8 +97,6 @@ pub async fn about() -> Json<Value> {
         "deploymentId": deployment_id,
         "updateAvailable": update_available,
         "latestVersion": latest_release,
-        "llmActive": is_llm_active,
-        "llmProvider": llm_provider,
         "oidcActive": is_oidc_active,
         "license": license_info,
         "mode": mode,
