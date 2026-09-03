@@ -145,7 +145,7 @@ fn target_info_record(
         "metric_description".to_string(),
         Value::String("Target metadata".to_string()),
     );
-    target.insert("metric_unit".to_string(), Value::String(String::new()));
+    target.insert("metric_unit".to_string(), Value::String(String::default()));
     target.insert(
         "metric_type".to_string(),
         Value::String("gauge".to_string()),
