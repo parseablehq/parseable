@@ -467,7 +467,7 @@ pub struct Options {
         long,
         long = "query-mem-threshold",
         value_parser = validation::validate_percentage,
-        default_value = "80.0",
+        default_value = "100.0",
         env = "P_QUERY_MEMORY_THRESHOLD",
         help = "Set a threshold (percentage) for memory beyond which query will get queued for 10s to prevent OOM"
     )]
@@ -517,15 +517,6 @@ pub struct Options {
         help = "Resource monitoring check interval in seconds"
     )]
     pub resource_check_interval: u64,
-
-    #[arg(
-        long,
-        env = "P_CPU_THRESHOLD",
-        default_value = "100.0",
-        value_parser = validation::validate_percentage,
-        help = "CPU utilization threshold percentage (0.0-100.0) for resource monitoring"
-    )]
-    pub cpu_utilization_threshold: f32,
 
     #[arg(
         long,
