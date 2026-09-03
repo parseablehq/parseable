@@ -702,7 +702,6 @@ fn process_resource_metrics<T, S, M>(
         if let Some(identity) = &target_identity {
             insert_prometheus_target_identity(&mut resource_fields, identity);
         }
-        let mut has_metrics = false;
         let mut target_timestamp: Option<String> = None;
 
         for scope_metric in get_scope_metrics(resource_metric) {
@@ -732,7 +731,6 @@ fn process_resource_metrics<T, S, M>(
             }
 
             let metrics = get_metrics(scope_metric);
-            has_metrics |= !metrics.is_empty();
             vec_otel_json.reserve(
                 metrics
                     .iter()
@@ -773,8 +771,9 @@ fn process_resource_metrics<T, S, M>(
 
         // Emit one target_info sample per OTel resource, using its latest data
         // point timestamp so current metadata joins remain available.
-        if target_identity.is_some() && has_metrics {
-            let timestamp = target_timestamp.unwrap_or_else(|| convert_epoch_nano_to_timestamp(0));
+        if target_identity.is_some()
+            && let Some(timestamp) = target_timestamp
+        {
             vec_otel_json.push(Value::Object(target_info_record(
                 &resource_fields,
                 timestamp,
@@ -1041,6 +1040,35 @@ mod tests {
         assert_ne!(
             metric.get("metric_name").and_then(Value::as_str),
             Some("target_info"),
+        );
+    }
+
+    #[test]
+    fn target_info_is_not_emitted_without_data_points() {
+        let message = MetricsData {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource {
+                    attributes: vec![string_attribute(SERVICE_NAME_ATTRIBUTE, "api")],
+                    ..Default::default()
+                }),
+                scope_metrics: vec![ScopeMetrics {
+                    metrics: vec![Metric {
+                        name: "empty_gauge".to_string(),
+                        data: Some(metric::Data::Gauge(Gauge::default())),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        };
+
+        let output = flatten_for_test(&message);
+        assert!(
+            output.iter().filter_map(Value::as_object).all(|record| {
+                record.get("metric_name").and_then(Value::as_str) != Some("target_info")
+            }),
+            "target_info requires a real data-point timestamp",
         );
     }
 
