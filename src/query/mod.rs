@@ -54,7 +54,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, RwLock};
 use std::task::{Context, Poll};
-use sysinfo::{MemoryRefreshKind, RefreshKind, System};
+use sysinfo::System;
 use tokio::runtime::Runtime;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::Instrument;
@@ -70,7 +70,7 @@ use crate::catalog::manifest::Manifest;
 use crate::catalog::snapshot::Snapshot;
 use crate::event::DEFAULT_TIMESTAMP_KEY;
 use crate::handlers::http::query::QueryError;
-use crate::metrics::increment_bytes_scanned_in_query_by_date;
+use crate::metrics::{PROCESS_METRICS_ACCUMULATOR, increment_bytes_scanned_in_query_by_date};
 use crate::option::Mode;
 use crate::parseable::{DEFAULT_TENANT, PARSEABLE};
 use crate::storage::{ObjectStorage, ObjectStorageProvider, ObjectStoreFormat};
@@ -169,23 +169,13 @@ impl InMemorySessionContext {
 }
 
 async fn enough_available_memory() -> Result<(), ExecuteError> {
-    let mut s = System::new_with_specifics(
-        RefreshKind::nothing().with_memory(MemoryRefreshKind::everything()),
-    );
-    s.refresh_all();
     let threshold = (PARSEABLE.options.query_mem_threshold / 100.0) as f64;
-
     let f = async {
         loop {
-            if let Some(cgroup) = s.cgroup_limits() {
-                if (cgroup.rss as f64) < threshold * (cgroup.total_memory as f64) {
-                    return;
-                }
-            } else {
-                s.refresh_memory();
-                if (s.used_memory() as f64) < threshold * (s.total_memory() as f64) {
-                    return;
-                }
+            let process_mem = PROCESS_METRICS_ACCUMULATOR.get_mem();
+            let total_mem = PROCESS_METRICS_ACCUMULATOR.get_total_mem();
+            if process_mem < threshold * total_mem {
+                return;
             }
             tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
         }
